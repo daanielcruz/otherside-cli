@@ -1,0 +1,37 @@
+{
+  "session_id": "11111111-2222-4333-8444-555555555555",
+  "transcript_path": "/Users/example/.otherside/sessions/11111111-2222-4333-8444-555555555555/transcript.jsonl",
+  "cwd": "/Users/example/projects/demo/src",
+  "session_name": "auth refactor",
+  "model": {
+    "id": "claude-opus-4-7",
+    "display_name": "Opus 4.7"
+  },
+  "workspace": {
+    "current_dir": "/Users/example/projects/demo/src",
+    "project_dir": "/Users/example/projects/demo",
+    "added_dirs": [
+      "/Users/example/projects/shared-lib"
+    ]
+  },
+  "version": "0.0.1",
+  "output_style": {
+    "name": "default"
+  },
+  "cost": {
+    "total_cost_usd": 0.4210,
+    "total_duration_ms": 145000,
+    "total_api_duration_ms": 92000,
+    "total_lines_added": 312,
+    "total_lines_removed": 187
+  },
+  "context_window": {
+    "total_input_tokens": 48210,
+    "total_output_tokens": 6540,
+    "context_window_size": 200000,
+    "current_usage": 54750,
+    "used_percentage": 27,
+    "remaining_percentage": 73
+  },
+  "exceeds_200k_tokens": false
+}

@@ -61,6 +61,12 @@ pub struct Settings {
     /// Per-provider settings (all optional).
     pub providers: ProviderSettings,
 
+    /// Statusline override — when absent, the native renderer is used.
+    /// See `otherside-cli/src/statusline/` for behavior; see C48/C49/C50/C51
+    /// for the dual-naming + timeout + layout decisions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub statusline: Option<crate::statusline::types::StatuslineConfig>,
+
     // ----- Enterprise locks (read-only to users when set via policy) -----
     /// Block non-plugin customization paths (stricter than user-set).
     pub strict_plugin_only_customization: Option<bool>,

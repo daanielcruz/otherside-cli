@@ -3,7 +3,7 @@ name = "otherside"
 version = "0.0.1"
 edition = "2021"
 rust-version = "1.83"
-description = "Multi-provider interactive coding agent. Rust reimplementation impersonating the upstream CLIs (Claude Code, Codex CLI, Gemini CLI)."
+description = "Multi-provider interactive coding agent, written in Rust. Four backends: anthropic-oauth, codex, gemini-cli, openai-compatible."
 publish = false
 
 # Dual-crate layout: library surface enables integration / conformance tests.
@@ -104,6 +104,11 @@ ratatui = "0.29"
 # feature the only API is blocking `event::read()` which would freeze
 # streaming delta rendering while we wait for keypresses.
 crossterm = { version = "0.28", features = ["event-stream"] }
+
+# Display-width for ANSI-aware statusline truncation. Already a transitive
+# dep of ratatui; listing directly so `statusline/types.rs` + `render.rs`
+# can `use unicode_width::UnicodeWidthChar`.
+unicode-width = "0.1"
 
 [dev-dependencies]
 # Deterministic diffs for golden-file conformance tests.

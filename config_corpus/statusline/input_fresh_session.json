@@ -1,0 +1,34 @@
+{
+  "session_id": "00000000-0000-4000-8000-000000000001",
+  "transcript_path": "/Users/example/.otherside/sessions/00000000-0000-4000-8000-000000000001/transcript.jsonl",
+  "cwd": "/Users/example/projects/demo",
+  "model": {
+    "id": "claude-opus-4-7",
+    "display_name": "Opus 4.7"
+  },
+  "workspace": {
+    "current_dir": "/Users/example/projects/demo",
+    "project_dir": "/Users/example/projects/demo",
+    "added_dirs": []
+  },
+  "version": "0.0.1",
+  "output_style": {
+    "name": "default"
+  },
+  "cost": {
+    "total_cost_usd": 0.0,
+    "total_duration_ms": 0,
+    "total_api_duration_ms": 0,
+    "total_lines_added": 0,
+    "total_lines_removed": 0
+  },
+  "context_window": {
+    "total_input_tokens": 0,
+    "total_output_tokens": 0,
+    "context_window_size": 200000,
+    "current_usage": 0,
+    "used_percentage": 0,
+    "remaining_percentage": 100
+  },
+  "exceeds_200k_tokens": false
+}

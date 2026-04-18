@@ -1,0 +1,35 @@
+{
+  "session_id": "22222222-3333-4444-8555-666666666666",
+  "transcript_path": "/Users/example/.otherside/sessions/22222222-3333-4444-8555-666666666666/transcript.jsonl",
+  "cwd": "/Users/example/projects/large-repo",
+  "session_name": "context overflow",
+  "model": {
+    "id": "claude-opus-4-7",
+    "display_name": "Opus 4.7"
+  },
+  "workspace": {
+    "current_dir": "/Users/example/projects/large-repo",
+    "project_dir": "/Users/example/projects/large-repo",
+    "added_dirs": []
+  },
+  "version": "0.0.1",
+  "output_style": {
+    "name": "default"
+  },
+  "cost": {
+    "total_cost_usd": 2.1540,
+    "total_duration_ms": 820000,
+    "total_api_duration_ms": 510000,
+    "total_lines_added": 2410,
+    "total_lines_removed": 1120
+  },
+  "context_window": {
+    "total_input_tokens": 198400,
+    "total_output_tokens": 12300,
+    "context_window_size": 200000,
+    "current_usage": 210700,
+    "used_percentage": 105,
+    "remaining_percentage": 0
+  },
+  "exceeds_200k_tokens": true
+}

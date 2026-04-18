@@ -41,6 +41,7 @@ pub mod fingerprint;
 pub mod inference;
 pub mod provider;
 pub mod serve;
+pub mod statusline;
 pub mod thinking;
 pub mod translator;
 pub mod tui;
