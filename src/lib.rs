@@ -39,6 +39,7 @@ pub mod auth;
 pub mod config;
 pub mod error;
 pub mod fingerprint;
+pub mod harness;
 pub mod hooks;
 pub mod inference;
 pub mod permissions;
