@@ -70,8 +70,15 @@ use crate::inference::{OpenAiChatRequest, OpenAiChunk};
 use crate::provider::{Provider, Registry};
 use crate::thinking::{parse_suffix, ThinkingConfig};
 
+pub mod autocomplete;
+pub mod diff;
+pub mod layout;
+pub mod mascot;
+pub mod progress;
 pub mod render;
 pub mod state;
+pub mod tips;
+pub mod todos;
 
 use state::ConversationState;
 
