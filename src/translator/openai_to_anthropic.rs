@@ -69,7 +69,7 @@ pub fn strip_1m_suffix(raw: &str) -> (String, bool) {
 /// request body. Embedded at compile time. Cloned and mutated per
 /// request.
 const BODY_TEMPLATE_JSON: &str = include_str!(
-    "../../fingerprint_corpus/hello/request.body.json"
+    "../../../fingerprint_corpus/hello/request.body.json"
 );
 
 /// Captured placeholder values that the template has for session-specific

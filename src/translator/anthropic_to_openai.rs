@@ -418,7 +418,7 @@ mod tests {
         // "connection closed" handoff with `flush_on_eof` so the trailing
         // message_stop event surfaces. The production driver (§11) does
         // the same when reqwest's stream ends.
-        let wire = include_bytes!("../../fingerprint_corpus/hello/response.sse");
+        let wire = include_bytes!("../../../fingerprint_corpus/hello/response.sse");
         let mut buf = SseBuffer::new();
         buf.push(wire);
         let mut events: Vec<_> = buf.drain().collect();

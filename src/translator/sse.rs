@@ -396,7 +396,7 @@ mod tests {
         // "connection closed" with `flush_on_eof` — matches what the
         // production stream driver will do in §11.
         let wire = include_bytes!(
-            "../../fingerprint_corpus/hello/response.sse"
+            "../../../fingerprint_corpus/hello/response.sse"
         );
         let mut b = SseBuffer::new();
         b.push(wire);

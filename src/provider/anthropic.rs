@@ -602,7 +602,7 @@ mod tests {
         // feed captured corpus bytes directly through the
         // AnthropicChunkStream adapter and assert the same 4-chunk
         // sequence as the translator's own conformance test.
-        let wire: &[u8] = include_bytes!("../../fingerprint_corpus/hello/response.sse");
+        let wire: &[u8] = include_bytes!("../../../fingerprint_corpus/hello/response.sse");
         // Split the corpus into two random pieces to ensure the state
         // machine handles multi-chunk delivery.
         let mid = wire.len() / 2;

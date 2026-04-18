@@ -521,7 +521,7 @@ mod tests {
 
     #[test]
     fn login_body_matches_corpus_key_order() {
-        let corpus_path = "fingerprint_corpus/oauth/login.request.json";
+        let corpus_path = "../fingerprint_corpus/oauth/login.request.json";
         let expected = corpus_body(corpus_path);
 
         // Reconstruct with the exact placeholder values used by the
@@ -578,7 +578,7 @@ mod tests {
 
     #[test]
     fn refresh_body_matches_corpus_key_order() {
-        let corpus_path = "fingerprint_corpus/oauth/refresh.request.json";
+        let corpus_path = "../fingerprint_corpus/oauth/refresh.request.json";
         let expected = corpus_body(corpus_path);
 
         let actual = build_refresh_body("XXX_REFRESH_TOKEN_XXX");

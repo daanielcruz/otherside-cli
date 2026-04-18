@@ -108,7 +108,7 @@ Pre-1.0. Scaffolded and streaming. The Anthropic provider works end-to-end;
 the rest are scheduled. The agent loop (tools, permissions, hooks, sessions)
 is landing in phases — see `openspec/changes/` for what's in flight.
 
-Tests: `cargo test` — 177 passing as of the last hop.
+Tests: `cargo test` is the gate. Floor 413 as of 2026-04-18. Count drifts with feature work — all-green is the contract per RULES.md R-112.
 
 ## notes for the curious
 
