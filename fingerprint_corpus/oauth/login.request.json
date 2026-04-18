@@ -1,0 +1,29 @@
+{
+  "method": "POST",
+  "url": "https://platform.claude.com/v1/oauth/token",
+  "headers": {
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Encoding": "gzip, compress, deflate, br",
+    "Content-Type": "application/json",
+    "User-Agent": "axios/1.13.6",
+    "Host": "platform.claude.com",
+    "Content-Length": "325"
+  },
+  "body": {
+    "grant_type": "authorization_code",
+    "code": "XXX_AUTH_CODE_XXX",
+    "redirect_uri": "https://platform.claude.com/oauth/code/callback",
+    "client_id": "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
+    "code_verifier": "XXX_CODE_VERIFIER_XXX",
+    "state": "XXX_STATE_XXX"
+  },
+  "body_key_order": [
+    "grant_type",
+    "code",
+    "redirect_uri",
+    "client_id",
+    "code_verifier",
+    "state"
+  ],
+  "notes": "Authorization code exchange. User-Agent is axios/1.13.6 because Claude Code's OAuth code path uses the axios library directly. Content-Length is observed (325 bytes for this particular payload — will differ based on actual code/state lengths). The code_challenge is NOT sent in this request — only in the prior browser-side authorize URL. Server verifies the verifier against the stored challenge from the authorize step."
+}

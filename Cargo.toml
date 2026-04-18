@@ -1,0 +1,120 @@
+[package]
+name = "otherside"
+version = "0.0.1"
+edition = "2021"
+rust-version = "1.83"
+description = "Multi-provider interactive coding agent. Rust reimplementation impersonating the upstream CLIs (Claude Code, Codex CLI, Gemini CLI)."
+publish = false
+
+# Dual-crate layout: library surface enables integration / conformance tests.
+# The `otherside` binary is a thin shell over the library.
+[lib]
+name = "otherside"
+path = "src/lib.rs"
+
+[[bin]]
+name = "otherside"
+path = "src/main.rs"
+
+[dependencies]
+# Argparse — derive macros for CLI shape.
+clap = { version = "4", features = ["derive", "env"] }
+
+# Async runtime.
+tokio = { version = "1", features = ["full"] }
+
+# HTTP client with rustls. Features per C37 (zstd) + parity with Claude Code's
+# Accept-Encoding: gzip, deflate, br, zstd. json feature enables `.json()`
+# body helpers; stream feature enables `bytes_stream()` for SSE parsing.
+reqwest = { version = "0.12", default-features = false, features = [
+    "rustls-tls",
+    "json",
+    "stream",
+    "gzip",
+    "brotli",
+    "deflate",
+    "zstd",
+] }
+
+# Encoding. preserve_order feature keeps serde_json::Map insertion order
+# so body builders can emit keys in the exact sequence captured in the
+# golden corpus — essential for fingerprint parity (C36).
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+
+# Error handling: anyhow at app-level, thiserror at library-level (C19).
+anyhow = "1"
+thiserror = "1"
+
+# Logging (C18).
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# Byte utilities used by the SSE parser.
+bytes = "1"
+futures = "0.3"
+
+# UUID v4 for session-id and request-id headers per captured fingerprint.
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# XDG-correct path resolution for ~/.otherside/.
+directories = "5"
+
+# URL parsing for OAuth authorize URL construction.
+url = "2"
+
+# PKCE: S256 challenge is base64url(sha256(verifier)).
+base64 = "0.22"
+sha2 = "0.10"
+
+# Rand for PKCE verifier + UUID entropy fallback.
+rand = "0.9"
+
+# System time with strong types.
+chrono = { version = "0.4", features = ["serde"] }
+
+# HTTP server for `otherside serve` — the OpenAI-compatible local proxy.
+# default-features off keeps the surface small (no multipart, no ws, no macros);
+# `http1` is what every OpenAI SDK client uses, `json` enables `Json<T>`
+# extractor/response, `tokio` wires the runtime, `tracing` turns on our tower
+# layer. If we ever need HTTP/2 we flip the feature — the API is stable across.
+axum = { version = "0.7", default-features = false, features = [
+    "http1",
+    "json",
+    "tokio",
+    "tracing",
+] }
+
+# Service layer primitives. axum re-exports a subset but pinning it explicitly
+# makes the dependency obvious and lets us apply our own middleware if needed.
+tower = "0.5"
+
+# Trace middleware for request logging. Cheap insurance — we get structured
+# spans around every /v1/* call without bespoke middleware.
+tower-http = { version = "0.6", features = ["trace"] }
+
+# Interactive TUI. ratatui owns the immediate-mode rendering model;
+# crossterm is the raw-terminal + event backend on darwin/linux. Pinning
+# to the ratatui-0.29 + crossterm-0.28 pair because that's the version
+# combination ratatui ships and tests against. Default features cover
+# what the TUI needs (crossterm backend, underline-color styling).
+ratatui = "0.29"
+# `event-stream` surfaces a futures::Stream of terminal events so the TUI
+# event loop can select! over it alongside the tokio mpsc. Without this
+# feature the only API is blocking `event::read()` which would freeze
+# streaming delta rendering while we wait for keypresses.
+crossterm = { version = "0.28", features = ["event-stream"] }
+
+[dev-dependencies]
+# Deterministic diffs for golden-file conformance tests.
+pretty_assertions = "1"
+
+# Serde for conformance test fixture deserialization.
+# (already pulled above but pinning dev surface)
+
+[profile.release]
+# Smaller binary. Strip debug info. Enable LTO.
+lto = true
+codegen-units = 1
+strip = true
+opt-level = 3

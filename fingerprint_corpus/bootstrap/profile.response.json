@@ -1,0 +1,32 @@
+{
+  "status": 200,
+  "body": {
+    "account": {
+      "uuid": "4e4b65ad-8f31-475b-a0f8-1e3fafac3c87",
+      "full_name": "Daniel Cruz",
+      "display_name": "Daniel",
+      "email": "edaanxx@gmail.com",
+      "has_claude_max": true,
+      "has_claude_pro": false,
+      "created_at": "2025-01-27T06:44:27.494114Z"
+    },
+    "organization": {
+      "uuid": "361d8f74-6366-4bf0-8184-944d24396350",
+      "name": "edaanxx@gmail.com's Organization",
+      "organization_type": "claude_max",
+      "billing_type": "stripe_subscription",
+      "rate_limit_tier": "default_claude_max_20x",
+      "has_extra_usage_enabled": false,
+      "subscription_status": "active",
+      "subscription_created_at": "2026-03-31T05:23:37.659253Z",
+      "cc_onboarding_flags": {},
+      "claude_code_trial_ends_at": null
+    },
+    "application": {
+      "uuid": "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
+      "name": "Claude Code",
+      "slug": "claude-code"
+    }
+  },
+  "notes": "application.uuid == OAuth client_id (confirming app identity). rate_limit_tier=default_claude_max_20x means the 20x Max plan. has_extra_usage_enabled=false → overage rejected at org level (matches 429 response header 'anthropic-ratelimit-unified-overage-disabled-reason: org_level_disabled')."
+}

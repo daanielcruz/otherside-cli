@@ -1,0 +1,12 @@
+{
+  "method": "GET",
+  "url": "https://platform.claude.com/v1/oauth/hello",
+  "headers": {
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Encoding": "gzip, compress, deflate, br",
+    "User-Agent": "claude-cli/2.1.113 (external, cli)",
+    "Host": "platform.claude.com"
+  },
+  "body": null,
+  "notes": "Sanity/warmup call. No auth required. Issued early in login flow before token exchange. Uses canonical claude-cli UA (different from token exchange which uses axios)."
+}

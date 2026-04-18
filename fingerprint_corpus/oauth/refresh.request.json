@@ -1,0 +1,32 @@
+{
+  "method": "POST",
+  "url": "https://platform.claude.com/v1/oauth/token",
+  "headers": {
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Encoding": "gzip, compress, deflate, br",
+    "Content-Type": "application/json",
+    "User-Agent": "axios/1.13.6",
+    "Host": "platform.claude.com",
+    "Content-Length": "306"
+  },
+  "body": {
+    "grant_type": "refresh_token",
+    "refresh_token": "XXX_REFRESH_TOKEN_XXX",
+    "client_id": "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
+    "scope": "user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload"
+  },
+  "body_key_order": [
+    "grant_type",
+    "refresh_token",
+    "client_id",
+    "scope"
+  ],
+  "body_scope_order": [
+    "user:profile",
+    "user:inference",
+    "user:sessions:claude_code",
+    "user:mcp_servers",
+    "user:file_upload"
+  ],
+  "notes": "Refresh token exchange. Same endpoint as login. Same UA (axios/1.13.6). Body differs from login: uses `scope` field (login did not), no `code`/`redirect_uri`/`code_verifier`/`state`. The `scope` string contains 5 scopes (NOT 6 — `org:create_api_key` is absent, since we don't need console scope at runtime). Scope order in request is NOT alphabetical and NOT identical to `CLAUDE_AI_OAUTH_SCOPES` array source order — it's: profile, inference, sessions:claude_code, mcp_servers, file_upload. Likely the exact runtime order the code assembles. Content-Length 306 bytes for this sample (will vary with refresh_token length). Captured by forcing `expiresAt` to past — not by invalidating `accessToken` (see notes on `/oauth/refresh_behavior.md`)."
+}
