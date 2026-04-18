@@ -1,22 +1,23 @@
 //! PKCE (RFC 7636) code verifier + S256 challenge.
 //!
-//! Shared across providers — Claude Code, Codex CLI, and Gemini CLI all use
-//! PKCE on top of the OAuth 2.0 authorization code flow. The verifier is
-//! a high-entropy random string; the challenge is `base64url(sha256(verifier))`.
+//! Shared across providers — every upstream OAuth flow we piggyback on (Anthropic,
+//! OpenAI/Codex, Google/Gemini) layers PKCE on top of the authorization-code flow.
+//! The verifier is a high-entropy random string; the challenge is
+//! `base64url(sha256(verifier))`.
 //!
 //! # Verifier length
 //!
-//! Captured from Claude Code 2.1.113: the verifier we observed was 43 chars
-//! = 32 bytes base64url-no-padding. RFC 7636 §4.1 mandates 43..128 chars
-//! from the allowed alphabet. We default to 32 bytes (→ 43 chars encoded)
-//! to match observed behavior exactly.
+//! Captured from the upstream Anthropic CLI 2.1.113: the verifier we observed
+//! was 43 chars = 32 bytes base64url-no-padding. RFC 7636 §4.1 mandates
+//! 43..128 chars from the allowed alphabet. We default to 32 bytes (→ 43 chars
+//! encoded) to match observed behavior exactly.
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 
 /// Size of the raw random verifier in bytes. 32 bytes encodes to 43 chars
-/// base64url-no-padding, matching Claude Code's captured verifier length.
+/// base64url-no-padding, matching the upstream captured verifier length.
 pub const VERIFIER_BYTES: usize = 32;
 
 /// A PKCE verifier + its S256 challenge pair.
@@ -69,8 +70,8 @@ mod tests {
 
     #[test]
     fn generated_verifier_length() {
-        // 32 bytes → 43 chars base64url-no-padding. Matches captured
-        // Claude Code value (`7F8AyZr6EofRPzgW_FUHTBx3RD4cyTanmOWY6E5FuSY`,
+        // 32 bytes → 43 chars base64url-no-padding. Matches the captured
+        // upstream value (`7F8AyZr6EofRPzgW_FUHTBx3RD4cyTanmOWY6E5FuSY`,
         // which is exactly 43 chars).
         let pair = PkcePair::generate();
         assert_eq!(pair.verifier.len(), 43);

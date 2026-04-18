@@ -4,7 +4,7 @@
 //! socket, accepts OpenAI-shape requests, and funnels them through the same
 //! [`Provider::stream`](crate::provider::Provider::stream) pipeline that
 //! powers `otherside -p`. Clients that only speak OpenAI (Cursor, Cline,
-//! aider, Continue) can therefore ride the user's Claude Code OAuth
+//! aider, Continue) can therefore ride the user's upstream OAuth
 //! subscription by pointing at `http://localhost:<port>/v1` with a dummy
 //! API key.
 //!

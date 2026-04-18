@@ -5,7 +5,7 @@
 //! Each provider backend has its own auth strategy:
 //!
 //! - `anthropic-oauth` — OAuth 2.0 authorization-code + PKCE, piggybacking on
-//!   Claude Code's `client_id` (`9d1c250a-e61b-44d9-88ed-5944d1962f5e`).
+//!   the upstream CLI's `client_id` (`9d1c250a-e61b-44d9-88ed-5944d1962f5e`).
 //!   Token exchange at `https://platform.claude.com/v1/oauth/token`.
 //! - `codex` — ChatGPT OAuth piggyback (future capture session).
 //! - `gemini-cli` — Google OAuth piggyback (future capture session).
@@ -19,7 +19,7 @@
 //!
 //! # Refresh behavior (captured 2026-04-17 — see `fingerprint_corpus/oauth/refresh_behavior.md`)
 //!
-//! Claude Code does refresh PROACTIVELY based on local `expires_at`
+//! The upstream CLI refreshes PROACTIVELY based on local `expires_at`
 //! comparison, not reactively on HTTP 401. otherside matches this behavior
 //! per D6 (impersonation rule). On 401, the CLI exits with auth error
 //! code 10 and tells the user to re-login.
