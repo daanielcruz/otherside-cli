@@ -17,8 +17,8 @@ use crate::config::settings::PermissionMode;
 
 use super::types::{display_width, StatuslineCtx, StatuslineLine};
 
-// Theme palette — truecolor RGB. Mirrors `tui::render::theme::{PRIMARY_VIOLET,
-// ACCENT_PINK}` but as raw RGB so this module stays independent of ratatui.
+// Theme palette — truecolor RGB. Mirrors `tui::render::theme::PRIMARY`
+// but as raw RGB so this module stays independent of ratatui.
 const VIOLET_R: u8 = 0x51;
 const VIOLET_G: u8 = 0x15;
 const VIOLET_B: u8 = 0x8C;

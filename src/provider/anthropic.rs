@@ -55,7 +55,7 @@ use crate::fingerprint::anthropic as fp;
 use crate::inference::{OpenAiChatRequest, OpenAiChunk};
 use crate::thinking::ThinkingConfig;
 use crate::translator::anthropic_to_openai::AnthropicStreamTranslator;
-use crate::translator::openai_to_anthropic::{build_request_body, UserContext};
+use crate::translator::openai_to_anthropic::{build_request_body, strip_1m_suffix, UserContext};
 use crate::translator::sse::SseBuffer;
 
 use super::{ChunkStream, Provider};
@@ -105,28 +105,41 @@ impl Provider for AnthropicProvider {
 
     fn stream<'a>(
         &'a self,
-        req: OpenAiChatRequest,
+        mut req: OpenAiChatRequest,
         _thinking: Option<ThinkingConfig>,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<ChunkStream>> + Send + 'a>> {
         // Everything that happens BEFORE the response headers arrive
         // lives in this async block. Once we hold a byte stream, we
         // return a boxed Stream that is driven by the caller.
         Box::pin(async move {
+            // Strip the `[1m]` alias suffix before the body ships —
+            // the suffix is client-side intent, the API only wants the
+            // bare model id. The `has_1m` flag travels to the header
+            // builder so the 1M beta is advertised when active.
+            let (stripped_model, has_1m) = strip_1m_suffix(&req.model);
+            req.model = stripped_model;
+
             // Proactively refresh if needed, then produce the bearer.
             let bearer = auth::authorization_header().await?;
 
             // Pull session context from env/clock. Template placeholders
             // get substituted with these values in the body builder.
             let (email, date) = resolve_user_context();
+            let env = resolve_session_env();
             let ctx = UserContext {
                 email: &email,
                 current_date: &date,
+                cwd: &env.cwd,
+                is_git_repo: env.is_git_repo,
+                platform: &env.platform,
+                shell: &env.shell,
+                os_version: &env.os_version,
             };
             let body = build_request_body(&req, &ctx)?;
 
             // Build the request with the exact header set captured in
             // MAPPING §Stainless + §/v1/messages.
-            let headers = build_inference_headers(&bearer)?;
+            let headers = build_inference_headers(&bearer, has_1m)?;
 
             let response = self
                 .http
@@ -195,6 +208,84 @@ fn resolve_user_context() -> (String, String) {
     (email, date)
 }
 
+/// Resolved session environment for the body template's `# Environment`
+/// block. Each field is detected once per request — cheap enough not to
+/// cache, robust enough that repeated calls agree.
+struct SessionEnv {
+    cwd: String,
+    is_git_repo: bool,
+    platform: String,
+    shell: String,
+    os_version: String,
+}
+
+fn resolve_session_env() -> SessionEnv {
+    let cwd = std::env::current_dir()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "/".to_string());
+    let is_git_repo = detect_git_repo(&cwd);
+    let platform = detect_platform();
+    let shell = detect_shell();
+    let os_version = detect_os_version();
+    SessionEnv {
+        cwd,
+        is_git_repo,
+        platform,
+        shell,
+        os_version,
+    }
+}
+
+/// Walk upward from `cwd` looking for a `.git` directory. Stops at the
+/// filesystem root. Matches the upstream template's semantics.
+fn detect_git_repo(cwd: &str) -> bool {
+    let mut dir = std::path::PathBuf::from(cwd);
+    loop {
+        if dir.join(".git").exists() {
+            return true;
+        }
+        if !dir.pop() {
+            return false;
+        }
+    }
+}
+
+fn detect_platform() -> String {
+    // Upstream uses `darwin` / `linux` / `win32` — `std::env::consts::OS`
+    // returns the same strings except Windows (`windows` vs `win32`).
+    match std::env::consts::OS {
+        "macos" => "darwin".to_string(),
+        "windows" => "win32".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn detect_shell() -> String {
+    // SHELL is `/bin/zsh` or similar; keep only the basename so the
+    // line reads `- Shell: zsh` like the capture.
+    std::env::var("SHELL")
+        .ok()
+        .as_deref()
+        .and_then(|s| s.rsplit('/').next())
+        .map(str::to_string)
+        .unwrap_or_else(|| "bash".to_string())
+}
+
+fn detect_os_version() -> String {
+    std::process::Command::new("uname")
+        .arg("-sr")
+        .output()
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| std::env::consts::OS.to_string())
+}
+
 /// Truncate a string for error messages to avoid flooding stderr with
 /// a multi-KB upstream body.
 fn truncate(s: &str, max: usize) -> String {
@@ -211,7 +302,7 @@ fn truncate(s: &str, max: usize) -> String {
 /// MAPPING §/v1/messages inference request) or an OAuth-bearer
 /// authorization. Nothing in this function is "our" choice — every
 /// value traces back to the captured corpus.
-fn build_inference_headers(bearer: &str) -> Result<HeaderMap> {
+fn build_inference_headers(bearer: &str, has_1m: bool) -> Result<HeaderMap> {
     let mut h = HeaderMap::new();
 
     // Authorization — the only per-request-rotating header that isn't
@@ -244,7 +335,15 @@ fn build_inference_headers(bearer: &str) -> Result<HeaderMap> {
 
     // Anthropic API version + per-endpoint beta flags.
     static_header(&mut h, "anthropic-version", fp::ANTHROPIC_VERSION)?;
-    static_header(&mut h, "anthropic-beta", fp::ANTHROPIC_BETA_INFERENCE)?;
+    // Append the 1M context beta when the stripped alias carried the
+    // `[1m]` suffix. Order matches upstream `utils/betas.ts:268-270`:
+    // 1M appends to the inference list, never replaces it.
+    let anthropic_beta: String = if has_1m {
+        format!("{},{}", fp::ANTHROPIC_BETA_INFERENCE, fp::ANTHROPIC_BETA_CONTEXT_1M)
+    } else {
+        fp::ANTHROPIC_BETA_INFERENCE.to_string()
+    };
+    static_header(&mut h, "anthropic-beta", &anthropic_beta)?;
     // Captured with value `true` — gates a cross-origin code path on
     // Anthropic's side that we rely on for OAuth-token traffic.
     static_header(&mut h, "anthropic-dangerous-direct-browser-access", "true")?;
@@ -429,7 +528,7 @@ mod tests {
 
     #[test]
     fn build_inference_headers_carries_all_fingerprint_values() {
-        let h = build_inference_headers("Bearer test").unwrap();
+        let h = build_inference_headers("Bearer test", false).unwrap();
         // Spot-check every fingerprint header — if any of these
         // regress, the upstream fingerprint will flag our traffic.
         assert_eq!(h.get(reqwest::header::AUTHORIZATION).unwrap(), "Bearer test");
@@ -469,6 +568,32 @@ mod tests {
             .unwrap();
         assert!(ua.contains("claude-cli/"));
         assert!(ua.contains("(external, sdk-cli)"));
+    }
+
+    #[test]
+    fn build_inference_headers_appends_1m_beta_when_requested() {
+        let h = build_inference_headers("Bearer test", true).unwrap();
+        let beta = h.get("anthropic-beta").unwrap().to_str().unwrap();
+        assert!(
+            beta.contains(fp::ANTHROPIC_BETA_INFERENCE),
+            "original inference beta list must be preserved: {beta}"
+        );
+        assert!(
+            beta.contains(fp::ANTHROPIC_BETA_CONTEXT_1M),
+            "1M context beta must be appended: {beta}"
+        );
+        assert!(
+            beta.ends_with(fp::ANTHROPIC_BETA_CONTEXT_1M),
+            "1M flag must be last: {beta}"
+        );
+    }
+
+    #[test]
+    fn build_inference_headers_omits_1m_beta_by_default() {
+        let h = build_inference_headers("Bearer test", false).unwrap();
+        let beta = h.get("anthropic-beta").unwrap().to_str().unwrap();
+        assert_eq!(beta, fp::ANTHROPIC_BETA_INFERENCE);
+        assert!(!beta.contains("context-1m"));
     }
 
     #[tokio::test]

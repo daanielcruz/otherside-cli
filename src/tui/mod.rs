@@ -66,19 +66,23 @@ use ratatui::Terminal;
 use tokio::sync::mpsc;
 
 use crate::error::{Error, Result};
-use crate::inference::{OpenAiChatRequest, OpenAiChunk};
+use crate::inference::OpenAiChatRequest;
 use crate::provider::{Provider, Registry};
 use crate::thinking::{parse_suffix, ThinkingConfig};
 
 pub mod autocomplete;
 pub mod diff;
 pub mod layout;
+pub mod markdown;
 pub mod mascot;
 pub mod progress;
 pub mod render;
+pub mod slash_catalog;
+pub mod slashes;
 pub mod state;
 pub mod tips;
 pub mod todos;
+pub mod tool_render;
 
 use state::ConversationState;
 
@@ -107,6 +111,7 @@ pub async fn run(
     registry: Arc<Registry>,
     raw_model: String,
     provider_id: String,
+    initial_permission_mode: crate::config::PermissionMode,
 ) -> Result<()> {
     let provider = registry
         .get(&provider_id)
@@ -125,6 +130,7 @@ pub async fn run(
         base_model,
         thinking,
         provider_id,
+        initial_permission_mode,
     )
     .await;
     guard.restore();
@@ -139,14 +145,17 @@ async fn event_loop(
     base_model: String,
     thinking: Option<ThinkingConfig>,
     provider_id: String,
+    initial_permission_mode: crate::config::PermissionMode,
 ) -> Result<()> {
-    let mut st = ConversationState::new();
+    let mut st =
+        ConversationState::new_for_model_with_mode(&base_model, initial_permission_mode);
     let mut key_stream = EventStream::new();
 
-    // Spinner animates at ~10fps so streaming feels alive even when the
-    // provider is between chunks. The same interval doubles as a forced
-    // redraw so any state change without a keypress / chunk still paints.
-    let mut ticker = tokio::time::interval(Duration::from_millis(100));
+    // 50 ms = 20 fps — matches upstream's spinner cadence so rotation
+    // reads as continuous motion, not a stutter. The same interval
+    // doubles as a forced redraw so any state change without a keypress
+    // or chunk still paints.
+    let mut ticker = tokio::time::interval(Duration::from_millis(50));
     let mut spinner_tick: u64 = 0;
 
     // The inference task sends StreamEvents through this channel while the
@@ -195,7 +204,7 @@ async fn event_loop(
             maybe = key_stream.next() => {
                 match maybe {
                     Some(Ok(CtEvent::Key(k))) => {
-                        if handle_key(k, &mut st, &provider, &base_model, &thinking, &tx) {
+                        if handle_key(k, &mut st, &provider, &base_model, &thinking, &provider_id, &tx) {
                             break;
                         }
                     }
@@ -235,6 +244,7 @@ fn handle_key(
     provider: &Arc<dyn Provider>,
     base_model: &str,
     thinking: &Option<ThinkingConfig>,
+    provider_id: &str,
     tx: &mpsc::Sender<StreamEvent>,
 ) -> bool {
     // crossterm emits KeyEventKind::Release on some terminals; we only
@@ -248,9 +258,19 @@ fn handle_key(
     let shift = k.modifiers.contains(KeyModifiers::SHIFT);
 
     match k.code {
-        // Ctrl+C / Esc — always exit, regardless of streaming state.
+        // Ctrl+C — always exit, regardless of popup state.
         KeyCode::Char('c') if ctrl => return true,
-        KeyCode::Esc => return true,
+
+        // Esc — close the autocomplete popup if one is open; otherwise
+        // exit. Lets the user dismiss a /-suggestion without losing the
+        // session.
+        KeyCode::Esc => {
+            if st.autocomplete.is_some() {
+                st.close_autocomplete();
+            } else {
+                return true;
+            }
+        }
 
         // Ctrl+D — only quit when the input is empty (classic shell
         // semantics). A non-empty input means "don't quit, user is typing".
@@ -265,47 +285,182 @@ fn handle_key(
         KeyCode::PageUp => st.scroll_up(10),
         KeyCode::PageDown => st.scroll_down(10),
 
-        // Enter — submit or newline, depending on Shift.
+        // Up / Down — navigate the autocomplete popup when it's open.
+        KeyCode::Up => {
+            if let Some(ac) = st.autocomplete.as_mut() {
+                ac.move_up();
+            }
+        }
+        KeyCode::Down => {
+            if let Some(ac) = st.autocomplete.as_mut() {
+                ac.move_down();
+            }
+        }
+
+        // Tab — commit the highlighted slash completion without
+        // submitting. Standard autocomplete semantics.
+        //
+        // Shift+Tab (no popup open) cycles the permission mode per
+        // the info-row affordance. Most terminals deliver this as
+        // `KeyCode::BackTab`; a handful send `Tab` with the Shift
+        // modifier set, so handle both.
+        KeyCode::Tab if shift => {
+            if st.autocomplete.is_none() {
+                st.cycle_permission_mode();
+            }
+        }
+        KeyCode::BackTab => {
+            if st.autocomplete.is_none() {
+                st.cycle_permission_mode();
+            }
+        }
+        KeyCode::Tab => {
+            if let Some(ac) = st.autocomplete.as_ref() {
+                if let Some(name) = ac.commit() {
+                    st.input = format!("/{name}");
+                    st.close_autocomplete();
+                }
+            }
+        }
+
+        // Enter — submit or newline, depending on Shift. When the
+        // popup is open, Enter commits the selection and submits the
+        // completed slash command. Slash classifier runs before the
+        // provider dispatch so local handlers never hit the network.
         KeyCode::Enter => {
             if shift {
                 st.input_push_newline();
-            } else if let Some(history) = st.submit() {
-                // Build the canonical request; cloning small bits so the
-                // spawn boundary owns only 'static data.
-                let req = OpenAiChatRequest {
-                    model: base_model.to_string(),
-                    messages: history,
-                    stream: Some(true),
-                    max_tokens: None,
-                    temperature: None,
-                    top_p: None,
-                    stop: None,
-                    tools: Vec::new(),
-                    tool_choice: None,
-                    extra: serde_json::Map::new(),
-                };
-                let thinking = *thinking;
-                let tx = tx.clone();
-
-                // Lifetime dance: `provider.stream(req, thinking)` yields
-                // a future bound to `&self`. We can't move that future
-                // into a spawned task. But `Arc<dyn Provider>` is
-                // cheaply clonable and gives every task its own owned
-                // handle, so the `&self` inside the spawned task borrows
-                // from the task-owned Arc, not from the main-task stack.
-                let provider_for_task = provider.clone();
-                tokio::spawn(async move {
-                    let fut = provider_for_task.stream(req, thinking);
-                    pump_stream(fut, tx).await;
-                });
+                st.refresh_autocomplete();
+            } else {
+                if let Some(ac) = st.autocomplete.as_ref() {
+                    if let Some(name) = ac.commit() {
+                        st.input = format!("/{name}");
+                    }
+                    st.close_autocomplete();
+                }
+                match slashes::classify(&st.input) {
+                    slashes::SlashAction::Clear => {
+                        st.clear_conversation();
+                    }
+                    slashes::SlashAction::Exit => {
+                        return true;
+                    }
+                    slashes::SlashAction::ShowHelp => {
+                        st.push_system_note(slashes::help_text());
+                    }
+                    slashes::SlashAction::ShowModel => {
+                        st.push_system_note(format!(
+                            "model: {}  ·  context window: {}  ·  provider: {provider_id}",
+                            st.model,
+                            st.context_window_label()
+                        ));
+                    }
+                    slashes::SlashAction::SwitchModel(new_id) => {
+                        st.switch_model(&new_id);
+                        st.push_system_note(format!(
+                            "model switched to {}  ·  context window now: {}",
+                            st.model,
+                            st.context_window_label()
+                        ));
+                    }
+                    slashes::SlashAction::Compact => {
+                        st.compact_history();
+                    }
+                    slashes::SlashAction::ShowStatus => {
+                        let avail = st.context_available();
+                        let pct = st.context_used_percent();
+                        st.push_system_note(format!(
+                            "🤖 {}  ·  {}  ·  {}/{} ({}% used)",
+                            st.model,
+                            provider_id,
+                            format_tokens(avail),
+                            st.context_window_label(),
+                            pct
+                        ));
+                    }
+                    slashes::SlashAction::ShowContext => {
+                        let used = st.context_window.saturating_sub(st.context_available());
+                        st.push_system_note(format!(
+                            "context: {} / {} tokens used ({}%)  ·  output: {} tokens  ·  thought: {} ms",
+                            format_tokens(used),
+                            st.context_window_label(),
+                            st.context_used_percent(),
+                            st.output_tokens,
+                            st.thought_ms
+                        ));
+                    }
+                    slashes::SlashAction::ShowSettingsHint(slash_name) => {
+                        let hint = match slash_name.as_str() {
+                            "config" | "" => {
+                                "settings live at ~/.otherside/settings.json  —  edit with your shell editor"
+                            }
+                            "keybindings" => {
+                                "keybindings live under the `keybindings` key in ~/.otherside/settings.json"
+                            }
+                            "statusline" => {
+                                "statusline: set settings.statusline.type = \"native\" or \"command\" in ~/.otherside/settings.json"
+                            }
+                            _ => {
+                                "configuration lives at ~/.otherside/settings.json"
+                            }
+                        };
+                        st.push_system_note(hint.to_string());
+                    }
+                    slashes::SlashAction::Login(provider) => {
+                        let provider = if provider.is_empty() { provider_id.to_string() } else { provider };
+                        st.push_system_note(format!(
+                            "/login needs stdin interaction — exit the TUI and run:\n    otherside login --provider {provider}"
+                        ));
+                    }
+                    slashes::SlashAction::Logout(provider) => {
+                        let provider = if provider.is_empty() { provider_id.to_string() } else { provider };
+                        st.push_system_note(format!(
+                            "to log out: exit the TUI and run:\n    otherside logout --provider {provider}"
+                        ));
+                    }
+                    slashes::SlashAction::NotYetWired(name) => {
+                        st.push_system_note(format!(
+                            "/{name} — recognized but not yet wired; the local handler lands in a later change."
+                        ));
+                    }
+                    slashes::SlashAction::SendToLlm(_)
+                    | slashes::SlashAction::Passthrough => {
+                        if let Some(history) = st.submit() {
+                            let thinking = *thinking;
+                            let tx = tx.clone();
+                            let model = base_model.to_string();
+                            // Lifetime dance: `provider.stream(req, thinking)`
+                            // yields a future bound to `&self`. Cloning the
+                            // Arc gives the spawned task its own owned handle
+                            // so the borrow lives on the task stack, not here.
+                            let provider_for_task = provider.clone();
+                            tokio::spawn(async move {
+                                run_agent_turns(
+                                    provider_for_task,
+                                    model,
+                                    thinking,
+                                    history,
+                                    tx,
+                                )
+                                .await;
+                            });
+                        }
+                    }
+                }
             }
         }
 
         // Backspace — char-at-a-time delete. Shells also bind Ctrl+H to
         // backspace historically; some terminals send it for backspace,
         // others for literal ^H. We honor both.
-        KeyCode::Backspace => st.input_backspace(),
-        KeyCode::Char('h') if ctrl => st.input_backspace(),
+        KeyCode::Backspace => {
+            st.input_backspace();
+            st.refresh_autocomplete();
+        }
+        KeyCode::Char('h') if ctrl => {
+            st.input_backspace();
+            st.refresh_autocomplete();
+        }
 
         // Plain character — append to input buffer. We reject chars while
         // streaming so the user doesn't build up a partial prompt they
@@ -313,6 +468,7 @@ fn handle_key(
         KeyCode::Char(c) if !ctrl => {
             if !st.streaming {
                 st.input_push_char(c);
+                st.refresh_autocomplete();
             }
         }
 
@@ -322,57 +478,198 @@ fn handle_key(
     false
 }
 
-/// Drive a single provider stream to completion, pushing events onto the
-/// channel. Runs in its own tokio task so the main UI loop never blocks
-/// on I/O.
+/// Drive the agent loop for one user submission end-to-end, pushing
+/// intermediate text + tool-call markers onto the channel. Multi-turn:
+/// text stream → if the model asks for tools, dispatch them inline,
+/// emit inline markers, then feed the results back and run another
+/// turn, until the model stops asking or the turn cap is hit.
 ///
-/// Why accept a future rather than a stream directly? `provider.stream`
-/// returns `Future<Output = Result<Stream<...>>>` — the future resolves
-/// only after the HTTP connection is open. Awaiting it here (inside the
-/// task) means connection setup failures land as `StreamEvent::Error`
-/// just like mid-stream errors, uniform error path for the UI.
-async fn pump_stream<F>(stream_fut: F, tx: mpsc::Sender<StreamEvent>)
-where
-    F: std::future::Future<Output = Result<crate::provider::ChunkStream>>,
-{
-    let mut stream = match stream_fut.await {
-        Ok(s) => s,
-        Err(e) => {
-            let _ = tx.send(StreamEvent::Error(format_err(&e))).await;
-            return;
-        }
-    };
+/// Tool markers are rendered as plain-text deltas (`⏺ Tool(args)` and
+/// `⎿ result`) so the existing streaming-area renderer shows them
+/// inline with the assistant reply, no new event variants needed.
+async fn run_agent_turns(
+    provider: Arc<dyn Provider>,
+    model: String,
+    thinking: Option<ThinkingConfig>,
+    initial_history: Vec<crate::inference::OpenAiChatMessage>,
+    tx: mpsc::Sender<StreamEvent>,
+) {
+    use crate::agent::{tool_result_message, Turn, MAX_AUTO_TURNS};
+    use crate::inference::{OpenAiChatMessage, OpenAiChatRole};
+    use crate::tools;
 
-    while let Some(item) = stream.next().await {
-        match item {
-            Ok(chunk) => {
-                if let Some(delta) = extract_delta_content(chunk) {
-                    if !delta.is_empty()
-                        && tx.send(StreamEvent::Delta(delta)).await.is_err()
-                    {
-                        return;
-                    }
-                }
-            }
+    let mut history = initial_history;
+    let mut turns_taken = 0u32;
+
+    while turns_taken < MAX_AUTO_TURNS {
+        turns_taken += 1;
+        let req = OpenAiChatRequest {
+            model: model.clone(),
+            messages: history.clone(),
+            stream: Some(true),
+            max_tokens: None,
+            temperature: None,
+            top_p: None,
+            stop: None,
+            tools: tools::openai_tools(),
+            tool_choice: None,
+            extra: serde_json::Map::new(),
+        };
+        let mut stream = match provider.stream(req, thinking).await {
+            Ok(s) => s,
             Err(e) => {
                 let _ = tx.send(StreamEvent::Error(format_err(&e))).await;
                 return;
             }
+        };
+
+        let mut turn = Turn::new();
+        while let Some(item) = stream.next().await {
+            match item {
+                Ok(chunk) => {
+                    if let Some(delta) = turn.fold_chunk(chunk) {
+                        if !delta.is_empty()
+                            && tx.send(StreamEvent::Delta(delta)).await.is_err()
+                        {
+                            return;
+                        }
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(StreamEvent::Error(format_err(&e))).await;
+                    return;
+                }
+            }
         }
+
+        if turn.wants_tool_dispatch() && turn.has_pending_calls() {
+            let assistant_text = turn.assistant_text.clone();
+            let calls = turn.drain_calls();
+            history.push(OpenAiChatMessage {
+                role: OpenAiChatRole::Assistant,
+                content: assistant_text,
+                name: None,
+                tool_calls: calls.clone(),
+                tool_call_id: None,
+            });
+            for call in calls {
+                let args_value: serde_json::Value =
+                    serde_json::from_str(&call.function.arguments)
+                        .unwrap_or_else(|_| serde_json::Value::String(call.function.arguments.clone()));
+                let marker = format!(
+                    "\n⏺ {}({})\n",
+                    call.function.name,
+                    summarize_tool_args(&args_value)
+                );
+                if tx.send(StreamEvent::Delta(marker)).await.is_err() {
+                    return;
+                }
+                let result = match tools::dispatch(&call.function.name, &args_value) {
+                    Ok(v) => v,
+                    Err(e) => serde_json::Value::String(format!("tool error: {e}")),
+                };
+                let result_note = format!("⎿  {}\n", summarize_tool_result(&result));
+                if tx.send(StreamEvent::Delta(result_note)).await.is_err() {
+                    return;
+                }
+                history.push(tool_result_message(&call.id, &result));
+            }
+            continue;
+        }
+
+        break;
+    }
+
+    if turns_taken >= MAX_AUTO_TURNS {
+        let _ = tx
+            .send(StreamEvent::Delta(format!(
+                "\n(auto-turn limit of {MAX_AUTO_TURNS} reached — returning control)\n"
+            )))
+            .await;
     }
     let _ = tx.send(StreamEvent::Done).await;
 }
 
-/// Extract the first non-empty content delta from a chunk, if present.
-/// The canonical OpenAI shape allows multiple `choices` but we only ever
-/// see one from the translator; anything else would be a translator bug
-/// rather than a TUI concern.
-fn extract_delta_content(chunk: OpenAiChunk) -> Option<String> {
-    chunk
-        .choices
-        .into_iter()
-        .next()
-        .and_then(|c| c.delta.content)
+/// Render a token count using the same K/M scale the statusline uses,
+/// so `/status` and `/context` read consistently with the bottom bar.
+fn format_tokens(n: u64) -> String {
+    match n {
+        n if n >= 1_000_000 => format!("{:.1}M", n as f64 / 1_000_000.0),
+        n => format!("{}K", n / 1_000),
+    }
+}
+
+/// Produce a short one-line summary of tool arguments for inline
+/// rendering. Keeps the marker compact and readable.
+fn summarize_tool_args(args: &serde_json::Value) -> String {
+    let obj = match args.as_object() {
+        Some(o) => o,
+        None => return args.to_string(),
+    };
+    let mut parts: Vec<String> = Vec::new();
+    for (key, value) in obj {
+        let short_value = match value {
+            serde_json::Value::String(s) => {
+                if s.chars().count() > 60 {
+                    let mut trimmed: String = s.chars().take(57).collect();
+                    trimmed.push('…');
+                    format!("\"{trimmed}\"")
+                } else {
+                    format!("\"{s}\"")
+                }
+            }
+            other => other.to_string(),
+        };
+        parts.push(format!("{key}={short_value}"));
+    }
+    parts.join(", ")
+}
+
+/// Render a tool result as a one-liner. Checks known tool-specific
+/// shapes first (Glob's `filenames`, Read's `content`, Bash's `output`,
+/// Grep's `matches`), then falls back to generic counts. Stay terse —
+/// the streaming area already shows the full model reply below.
+fn summarize_tool_result(result: &serde_json::Value) -> String {
+    match result {
+        serde_json::Value::String(s) => one_line(s, 120),
+        serde_json::Value::Array(items) => format!("{} items", items.len()),
+        serde_json::Value::Object(obj) => {
+            // Glob: {durationMs, numFiles, filenames, truncated}
+            if let Some(n) = obj.get("numFiles").and_then(|v| v.as_u64()) {
+                return format!("{n} file{}", if n == 1 { "" } else { "s" });
+            }
+            // Grep / common: list of matches
+            if let Some(matches) = obj.get("matches").and_then(|v| v.as_array()) {
+                return format!("{} match{}", matches.len(), if matches.len() == 1 { "" } else { "es" });
+            }
+            // Read-style: files array
+            if let Some(files) = obj.get("files").and_then(|v| v.as_array()) {
+                return format!("{} file{}", files.len(), if files.len() == 1 { "" } else { "s" });
+            }
+            // Bash: {status, exit_code, output, was_truncated, elapsed_ms}
+            if let Some(output) = obj.get("output").and_then(|v| v.as_str()) {
+                let exit = obj.get("exit_code").and_then(|v| v.as_i64()).unwrap_or(0);
+                let prefix = if exit == 0 { String::new() } else { format!("exit {exit}: ") };
+                return format!("{prefix}{}", one_line(output, 110));
+            }
+            if let Some(s) = obj.get("content").and_then(|v| v.as_str()) {
+                return one_line(s, 120);
+            }
+            format!("{} fields", obj.len())
+        }
+        _ => result.to_string(),
+    }
+}
+
+fn one_line(s: &str, max: usize) -> String {
+    let flat: String = s.chars().map(|c| if c == '\n' { ' ' } else { c }).collect();
+    if flat.chars().count() > max {
+        let mut t: String = flat.chars().take(max.saturating_sub(1)).collect();
+        t.push('…');
+        t
+    } else {
+        flat
+    }
 }
 
 /// Format an error for inline rendering. Keep the message one-line-ish by

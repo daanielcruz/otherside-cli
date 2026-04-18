@@ -47,7 +47,11 @@
 //!   - Store the error string in `last_error`.
 //!   - Flip `streaming = false` so the input is editable again.
 
+use std::time::Instant;
+
 use crate::inference::{OpenAiChatMessage, OpenAiChatRole};
+
+use super::autocomplete::Autocomplete;
 
 /// A finalized message in the chat log.
 ///
@@ -89,12 +93,102 @@ pub struct ConversationState {
     /// Last error surfaced by the provider. Rendered below the log in the
     /// error color. Cleared on the next successful submit.
     pub last_error: Option<String>,
+
+    /// When the current in-flight request was dispatched. Drives the
+    /// progress line's elapsed counter (C46). `None` when idle.
+    pub request_started_at: Option<Instant>,
+
+    /// Running output-token count for the in-flight response. Reset on
+    /// each submit. Bumped from SSE usage events (once wired).
+    pub output_tokens: u64,
+
+    /// Input tokens consumed so far this session. Maps to the
+    /// context-window arithmetic on the statusline.
+    pub input_tokens: u64,
+
+    /// Effective context window size for the current model (default
+    /// 200 000 tokens — upstream's Opus 4 baseline).
+    pub context_window: u64,
+
+    /// Cumulative thinking-block duration for the in-flight response,
+    /// in ms. Reset on each submit.
+    pub thought_ms: u64,
+
+    /// Tip index for the rotating tip line. Bumped on every submit so
+    /// long sessions see a wider set of tips.
+    pub tip_rotation_index: usize,
+
+    /// Active slash-autocomplete popup, if any.
+    pub autocomplete: Option<Autocomplete>,
+
+    /// Current permission mode. Shift+Tab cycles through the four
+    /// values. `--yolo` / `permissionMode` in settings set the initial
+    /// value; mutation via the info row does NOT persist to
+    /// `settings.json` (C40 parity — session-scoped toggle).
+    pub permission_mode: crate::config::PermissionMode,
+
+    /// Model id the user is currently talking to. Kept on state so
+    /// `/model <id>` can swap it mid-session without rebuilding the
+    /// TUI. The statusline reads this; request builders clone it.
+    pub model: String,
 }
 
 impl ConversationState {
     /// Fresh state with no messages, empty input, scroll pinned to bottom.
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            context_window: 200_000,
+            ..Self::default()
+        }
+    }
+
+    /// Fresh state sized to the model's context window — 1M when the
+    /// raw model alias carries a `[1m]` suffix, 200K otherwise. Mirrors
+    /// upstream `getContextWindowForModel` (see memory entry on 1M
+    /// mechanics). The `permission_mode` argument seeds the session
+    /// mode so `--yolo` (or a policy-set mode) is respected on launch.
+    pub fn new_for_model(raw_model: &str) -> Self {
+        Self::new_for_model_with_mode(raw_model, crate::config::PermissionMode::Default)
+    }
+
+    pub fn new_for_model_with_mode(
+        raw_model: &str,
+        mode: crate::config::PermissionMode,
+    ) -> Self {
+        let has_1m = raw_model.to_ascii_lowercase().contains("[1m]");
+        Self {
+            context_window: if has_1m { 1_000_000 } else { 200_000 },
+            permission_mode: mode,
+            model: raw_model.to_string(),
+            ..Self::default()
+        }
+    }
+
+    /// Percentage of the context window currently consumed, rounded
+    /// to the nearest integer. Uses `input_tokens` as the usage
+    /// signal — matches upstream's "context remaining" math.
+    pub fn context_used_percent(&self) -> u32 {
+        if self.context_window == 0 {
+            return 0;
+        }
+        let pct = (self.input_tokens.saturating_mul(100)) / self.context_window;
+        pct.min(100) as u32
+    }
+
+    /// Tokens remaining in the context window.
+    pub fn context_available(&self) -> u64 {
+        self.context_window.saturating_sub(self.input_tokens)
+    }
+
+    /// Render the context-window total in the statusline format users
+    /// expect: `200K`, `1M`. Upstream's model-display string appends
+    /// ` (1M context)` for the 1M variant; we surface the same signal
+    /// compactly.
+    pub fn context_window_label(&self) -> String {
+        match self.context_window {
+            n if n >= 1_000_000 => format!("{}M", n / 1_000_000),
+            n => format!("{}K", n / 1_000),
+        }
     }
 
     /// Append a single character typed by the user to the input buffer.
@@ -167,8 +261,132 @@ impl ConversationState {
         self.streaming = true;
         self.current_assistant_buffer.clear();
         self.last_error = None;
+        self.request_started_at = Some(Instant::now());
+        self.output_tokens = 0;
+        self.thought_ms = 0;
+        self.tip_rotation_index = self.tip_rotation_index.wrapping_add(1);
+        self.autocomplete = None;
         self.scroll_to_bottom();
         Some(self.history_for_request())
+    }
+
+    /// Recompute the autocomplete popup from the current input. Call
+    /// after any input-buffer mutation so the popup opens/closes as
+    /// the partial after `/` changes.
+    pub fn refresh_autocomplete(&mut self) {
+        self.autocomplete = Autocomplete::from_input(&self.input);
+    }
+
+    /// Close the popup without touching the input — used on Esc and
+    /// after committing an entry.
+    pub fn close_autocomplete(&mut self) {
+        self.autocomplete = None;
+    }
+
+    /// Local handler for `/clear` — wipe messages, reset error state,
+    /// clear input. Does NOT exit the TUI. Caller re-renders and the
+    /// splash mascot comes back because `messages.is_empty()`.
+    pub fn clear_conversation(&mut self) {
+        self.messages.clear();
+        self.current_assistant_buffer.clear();
+        self.last_error = None;
+        self.input.clear();
+        self.autocomplete = None;
+        self.scroll_offset = 0;
+    }
+
+    /// Surface an inline system note in the streaming area. Used by
+    /// local slashes like `/help` and the NotYetWired stubs.
+    pub fn push_system_note(&mut self, text: impl Into<String>) {
+        self.messages.push(DisplayMessage {
+            role: OpenAiChatRole::System,
+            content: text.into(),
+        });
+        self.input.clear();
+        self.autocomplete = None;
+        self.scroll_to_bottom();
+    }
+
+    /// Switch the active model mid-session. Accepts the same raw form
+    /// the CLI takes (`claude-opus-4-7`, `claude-opus-4-7[1m]`,
+    /// `opus[1m](xhigh)`). Re-sizes the context window based on the
+    /// `[1m]` flag; the thinking suffix passes through untouched for
+    /// the next request's parser.
+    pub fn switch_model(&mut self, new_raw: &str) {
+        let has_1m = new_raw.to_ascii_lowercase().contains("[1m]");
+        self.model = new_raw.to_string();
+        self.context_window = if has_1m { 1_000_000 } else { 200_000 };
+    }
+
+    /// `/compact` — drop finalized messages and surface a short
+    /// placeholder so the user sees the session continued. Does NOT
+    /// wipe input or autocomplete state (user may be mid-slash).
+    pub fn compact_history(&mut self) {
+        let kept_count = self.messages.len();
+        self.messages.clear();
+        self.current_assistant_buffer.clear();
+        self.input.clear();
+        self.autocomplete = None;
+        self.scroll_offset = 0;
+        // Synthetic context marker so the transcript isn't mysteriously
+        // empty — matches upstream's "Conversation compacted" affordance.
+        self.messages.push(DisplayMessage {
+            role: OpenAiChatRole::System,
+            content: format!(
+                "context compacted — {kept_count} prior message{} dropped",
+                if kept_count == 1 { "" } else { "s" }
+            ),
+        });
+        self.scroll_to_bottom();
+    }
+
+    /// Elapsed wall clock since the current request started, or 0 when
+    /// idle. Convenience for the progress line render path.
+    pub fn elapsed_ms(&self) -> u64 {
+        match self.request_started_at {
+            Some(t) => t.elapsed().as_millis() as u64,
+            None => 0,
+        }
+    }
+
+    /// Permission-mode label for the info row. Returns `(glyph, text)`
+    /// mirroring upstream's two-chevron indicator. The text includes
+    /// the mode name + the "shift+tab to cycle" affordance when the
+    /// user can freely switch; yolo mode gets its own copy per C40.
+    pub fn permission_mode_label(&self) -> (&'static str, String) {
+        match self.permission_mode {
+            crate::config::PermissionMode::Default => (
+                "⏵⏵",
+                "default mode  (shift+tab to cycle)".to_string(),
+            ),
+            crate::config::PermissionMode::AcceptEdits => (
+                "⏵⏵",
+                "accept edits mode  (shift+tab to cycle)".to_string(),
+            ),
+            crate::config::PermissionMode::Plan => (
+                "⏵⏵",
+                "plan mode  (shift+tab to cycle)".to_string(),
+            ),
+            crate::config::PermissionMode::Yolo => (
+                "⏵⏵",
+                "yolo mode enabled  (shift+tab to cycle)".to_string(),
+            ),
+        }
+    }
+
+    /// Advance the permission mode to the next one in the cycle.
+    /// Order: Default → Plan → Yolo → Default. AcceptEdits is
+    /// deliberately skipped from the Shift+Tab rotation — user
+    /// directive 2026-04-18: three-mode cycle is the otherside default.
+    /// AcceptEdits remains settable via `settings.json` for users who
+    /// want it, just not reachable via the bottom-row affordance.
+    pub fn cycle_permission_mode(&mut self) {
+        use crate::config::PermissionMode as P;
+        self.permission_mode = match self.permission_mode {
+            P::Default => P::Plan,
+            P::Plan => P::Yolo,
+            P::Yolo | P::AcceptEdits => P::Default,
+        };
     }
 
     /// Snapshot `messages` as a `Vec<OpenAiChatMessage>` suitable for the
@@ -190,10 +408,13 @@ impl ConversationState {
     /// Append a chunk's content delta onto the in-flight assistant buffer.
     /// Called from the event loop on every [`crate::inference::OpenAiChunk`]
     /// whose `delta.content` is non-empty. Auto-follows the latest output
-    /// by pinning scroll to bottom.
+    /// ONLY when the user hasn't scrolled back — otherwise respect their
+    /// viewport so reading history during streaming survives deltas.
     pub fn append_stream_delta(&mut self, delta: &str) {
         self.current_assistant_buffer.push_str(delta);
-        self.scroll_to_bottom();
+        if self.scroll_offset == 0 {
+            self.scroll_to_bottom();
+        }
     }
 
     /// Finalize the current stream. Promotes the assistant buffer (if
@@ -214,6 +435,7 @@ impl ConversationState {
             self.current_assistant_buffer.clear();
         }
         self.streaming = false;
+        self.request_started_at = None;
         self.scroll_to_bottom();
     }
 
@@ -234,6 +456,7 @@ impl ConversationState {
         }
         self.last_error = Some(err);
         self.streaming = false;
+        self.request_started_at = None;
         self.scroll_to_bottom();
     }
 }
@@ -241,6 +464,26 @@ impl ConversationState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_for_model_picks_1m_when_suffix_present() {
+        let st = ConversationState::new_for_model("claude-opus-4-7[1m]");
+        assert_eq!(st.context_window, 1_000_000);
+        assert_eq!(st.context_window_label(), "1M");
+    }
+
+    #[test]
+    fn new_for_model_defaults_to_200k() {
+        let st = ConversationState::new_for_model("claude-opus-4-7");
+        assert_eq!(st.context_window, 200_000);
+        assert_eq!(st.context_window_label(), "200K");
+    }
+
+    #[test]
+    fn new_for_model_is_case_insensitive() {
+        let st = ConversationState::new_for_model("OPUS[1M]");
+        assert_eq!(st.context_window, 1_000_000);
+    }
 
     #[test]
     fn empty_input_is_not_submittable() {

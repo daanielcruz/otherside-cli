@@ -42,6 +42,29 @@ use serde_json::Value;
 use crate::error::{Error, Result};
 use crate::inference::OpenAiChatRequest;
 
+/// Strip the `[1m]` alias suffix off a model string. Returns
+/// `(stripped, has_1m)`. Mirrors upstream `has1mContext`'s regex
+/// `/\[1m\]/i` (case-insensitive). The suffix travels through alias
+/// resolution — when present, callers MUST push the
+/// `context-1m-2025-08-07` beta header on the outbound request.
+///
+/// The suffix may appear anywhere after the canonical id; in practice
+/// upstream always appends at the end (`opus[1m]`, `claude-opus-4-7[1m]`).
+/// Additional thinking suffix like `(xhigh)` remains intact: the 1m
+/// bracket is stripped first, then the paren suffix passes through to
+/// the thinking parser unchanged.
+pub fn strip_1m_suffix(raw: &str) -> (String, bool) {
+    // Case-insensitive scan — upstream regex is `i` flagged.
+    let lower = raw.to_ascii_lowercase();
+    if let Some(idx) = lower.find("[1m]") {
+        let mut stripped = String::with_capacity(raw.len() - 4);
+        stripped.push_str(&raw[..idx]);
+        stripped.push_str(&raw[idx + 4..]);
+        return (stripped, true);
+    }
+    (raw.to_string(), false)
+}
+
 /// Scrubbed template body: captured real Claude Code 2.1.113 hello
 /// request body. Embedded at compile time. Cloned and mutated per
 /// request.
@@ -54,6 +77,15 @@ const BODY_TEMPLATE_JSON: &str = include_str!(
 /// values.
 const PLACEHOLDER_EMAIL: &str = "edaanxx@gmail.com";
 const PLACEHOLDER_DATE: &str = "2026-04-17";
+/// Environment-block placeholders captured from the Docker sandbox the
+/// template was harvested in. Substituted at request-build time so the
+/// model sees the user's real session environment instead of the
+/// capture environment.
+const PLACEHOLDER_CWD: &str = "Primary working directory: /tmp";
+const PLACEHOLDER_IS_GIT: &str = "Is a git repository: false";
+const PLACEHOLDER_PLATFORM: &str = "- Platform: linux";
+const PLACEHOLDER_SHELL: &str = "- Shell: bash";
+const PLACEHOLDER_OS_VERSION: &str = "- OS Version: Linux 6.12.76-linuxkit";
 
 /// User-session context that parameterizes the template.
 #[derive(Debug, Clone)]
@@ -64,6 +96,40 @@ pub struct UserContext<'a> {
     /// Today's date in `YYYY-MM-DD` format — interpolated into the same
     /// system-reminder block.
     pub current_date: &'a str,
+    /// Absolute path of the session's current working directory.
+    /// Interpolated into the `# Environment` system block so the model
+    /// knows where it is.
+    pub cwd: &'a str,
+    /// `true` when `cwd` is inside a git repository. The env block
+    /// renders this as `Is a git repository: true|false`.
+    pub is_git_repo: bool,
+    /// Platform string as the upstream template uses it: `darwin`,
+    /// `linux`, or `win32`. Drives the `- Platform:` line.
+    pub platform: &'a str,
+    /// Shell basename, e.g. `zsh`, `bash`, `fish`. Drives the
+    /// `- Shell:` line.
+    pub shell: &'a str,
+    /// OS version string from `uname -sr` (or platform equivalent).
+    /// Drives the `- OS Version:` line.
+    pub os_version: &'a str,
+}
+
+impl UserContext<'_> {
+    /// Sensible defaults for unit tests and legacy call sites that
+    /// don't yet pass real environment. Matches the captured
+    /// placeholders byte-for-byte so `build_matches_captured_corpus…`
+    /// stays green.
+    pub fn capture_defaults() -> UserContext<'static> {
+        UserContext {
+            email: PLACEHOLDER_EMAIL,
+            current_date: PLACEHOLDER_DATE,
+            cwd: "/tmp",
+            is_git_repo: false,
+            platform: "linux",
+            shell: "bash",
+            os_version: "Linux 6.12.76-linuxkit",
+        }
+    }
 }
 
 /// Build the full `/v1/messages` request body for the Anthropic provider.
@@ -129,6 +195,37 @@ pub fn build_request_body(
         }
     }
 
+    // Substitute the captured Docker-sandbox environment lines in the
+    // system block with the user's real shell / cwd / platform so the
+    // model isn't told to look in /tmp when the repo is elsewhere.
+    if let Some(system_blocks) = body.get_mut("system").and_then(|s| s.as_array_mut()) {
+        for block in system_blocks.iter_mut() {
+            if let Some(text) = block.get_mut("text").and_then(|t| t.as_str()) {
+                let replaced = text
+                    .replace(
+                        PLACEHOLDER_CWD,
+                        &format!("Primary working directory: {}", ctx.cwd),
+                    )
+                    .replace(
+                        PLACEHOLDER_IS_GIT,
+                        &format!("Is a git repository: {}", ctx.is_git_repo),
+                    )
+                    .replace(
+                        PLACEHOLDER_PLATFORM,
+                        &format!("- Platform: {}", ctx.platform),
+                    )
+                    .replace(PLACEHOLDER_SHELL, &format!("- Shell: {}", ctx.shell))
+                    .replace(
+                        PLACEHOLDER_OS_VERSION,
+                        &format!("- OS Version: {}", ctx.os_version),
+                    );
+                if replaced != text {
+                    *block.get_mut("text").unwrap() = Value::String(replaced);
+                }
+            }
+        }
+    }
+
     // Serialize to bytes. preserve_order keeps the original key order.
     serde_json::to_vec(&body).map_err(|e| Error::Parse(format!("re-serialize failed: {e}")))
 }
@@ -158,10 +255,7 @@ mod tests {
         // the output MUST byte-match the corpus body exactly. This is
         // the C36 conformance gate.
         let req = mvp_request();
-        let ctx = UserContext {
-            email: PLACEHOLDER_EMAIL,
-            current_date: PLACEHOLDER_DATE,
-        };
+        let ctx = UserContext::capture_defaults();
         let actual = build_request_body(&req, &ctx).unwrap();
 
         // Expected = corpus JSON re-serialized compact (serde_json::to_vec
@@ -183,10 +277,7 @@ mod tests {
     fn substitutes_user_prompt() {
         let mut req = mvp_request();
         req.messages[0].content = "different prompt text".to_string();
-        let ctx = UserContext {
-            email: PLACEHOLDER_EMAIL,
-            current_date: PLACEHOLDER_DATE,
-        };
+        let ctx = UserContext::capture_defaults();
         let bytes = build_request_body(&req, &ctx).unwrap();
         let body: Value = serde_json::from_slice(&bytes).unwrap();
         let content3 = &body["messages"][0]["content"][3]["text"];
@@ -199,6 +290,7 @@ mod tests {
         let ctx = UserContext {
             email: "someone.else@example.com",
             current_date: "2027-01-01",
+            ..UserContext::capture_defaults()
         };
         let bytes = build_request_body(&req, &ctx).unwrap();
         let body: Value = serde_json::from_slice(&bytes).unwrap();
@@ -222,10 +314,7 @@ mod tests {
     #[test]
     fn preserves_top_level_key_order() {
         let req = mvp_request();
-        let ctx = UserContext {
-            email: PLACEHOLDER_EMAIL,
-            current_date: PLACEHOLDER_DATE,
-        };
+        let ctx = UserContext::capture_defaults();
         let bytes = build_request_body(&req, &ctx).unwrap();
         let body_str = std::str::from_utf8(&bytes).unwrap();
         let model_idx = body_str.find("\"model\"").unwrap();
@@ -247,8 +336,84 @@ mod tests {
         let ctx = UserContext {
             email: "e",
             current_date: "d",
+            ..UserContext::capture_defaults()
         };
         let err = build_request_body(&req, &ctx).unwrap_err();
         assert!(matches!(err, Error::Parse(_)));
+    }
+
+    #[test]
+    fn strip_1m_suffix_handles_bracket_variants() {
+        assert_eq!(
+            strip_1m_suffix("claude-opus-4-7[1m]"),
+            ("claude-opus-4-7".to_string(), true)
+        );
+        assert_eq!(strip_1m_suffix("opus[1m]"), ("opus".to_string(), true));
+        // Upstream regex is case-insensitive.
+        assert_eq!(
+            strip_1m_suffix("opus[1M]"),
+            ("opus".to_string(), true),
+            "[1M] must be recognized case-insensitively"
+        );
+        // Thinking suffix survives the strip.
+        assert_eq!(
+            strip_1m_suffix("claude-opus-4-7[1m](xhigh)"),
+            ("claude-opus-4-7(xhigh)".to_string(), true)
+        );
+        // No suffix = untouched.
+        assert_eq!(
+            strip_1m_suffix("claude-opus-4-7"),
+            ("claude-opus-4-7".to_string(), false)
+        );
+        assert_eq!(
+            strip_1m_suffix("claude-opus-4-7(xhigh)"),
+            ("claude-opus-4-7(xhigh)".to_string(), false)
+        );
+    }
+
+    #[test]
+    fn substitutes_environment_block() {
+        let req = mvp_request();
+        let ctx = UserContext {
+            email: PLACEHOLDER_EMAIL,
+            current_date: PLACEHOLDER_DATE,
+            cwd: "/Users/alice/Desktop/myproject",
+            is_git_repo: true,
+            platform: "darwin",
+            shell: "zsh",
+            os_version: "Darwin 25.3.0",
+        };
+        let bytes = build_request_body(&req, &ctx).unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        let system = body["system"].as_array().unwrap();
+        let env_text = system
+            .iter()
+            .find_map(|b| b["text"].as_str().filter(|t| t.contains("# Environment")))
+            .expect("environment block missing");
+        assert!(
+            env_text.contains("Primary working directory: /Users/alice/Desktop/myproject"),
+            "cwd not substituted:\n{env_text}"
+        );
+        assert!(
+            env_text.contains("Is a git repository: true"),
+            "git flag not substituted"
+        );
+        assert!(
+            env_text.contains("- Platform: darwin"),
+            "platform not substituted"
+        );
+        assert!(env_text.contains("- Shell: zsh"), "shell not substituted");
+        assert!(
+            env_text.contains("- OS Version: Darwin 25.3.0"),
+            "os version not substituted"
+        );
+        assert!(
+            !env_text.contains("Primary working directory: /tmp"),
+            "stale capture cwd still present"
+        );
+        assert!(
+            !env_text.contains("Linux 6.12.76-linuxkit"),
+            "stale capture os still present"
+        );
     }
 }

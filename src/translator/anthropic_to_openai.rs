@@ -43,14 +43,36 @@
 //! what OpenAI backends themselves do and matches what clients expect
 //! (approximately "when the response started").
 
+use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
 use crate::error::{Error, Result};
-use crate::inference::{OpenAiChatRole, OpenAiChoice, OpenAiChunk, OpenAiDelta};
+use crate::inference::{
+    OpenAiChatRole, OpenAiChoice, OpenAiChunk, OpenAiDelta, OpenAiToolCallDelta,
+    OpenAiToolCallFunctionDelta,
+};
 
 use super::sse::SseEvent;
+
+/// Per-block bookkeeping for tool_use content blocks. Anthropic's
+/// stream delivers a `content_block_start` (which carries `id` and
+/// `name` but NOT the input JSON), then one-or-more
+/// `content_block_delta` with `input_json_delta.partial_json`
+/// fragments, then `content_block_stop`. OpenAI's shape needs a
+/// monotonically increasing call index per tool_use — we count up
+/// from zero so the index is stable across the translated chunks.
+#[derive(Debug, Clone)]
+struct ToolBlock {
+    /// OpenAI tool-call index. Not the same as Anthropic's content
+    /// block index (which can skip past text blocks).
+    call_index: u32,
+    /// Retained for potential future use (e.g. matching tool_result
+    /// blocks back to the original id on the next request).
+    #[allow(dead_code)]
+    id: String,
+}
 
 /// Translator state threaded across successive [`SseEvent`]s.
 ///
@@ -71,6 +93,12 @@ pub struct AnthropicStreamTranslator {
     /// Prevents duplicate role chunks if the stream delivers extra
     /// `message_start` frames.
     role_emitted: bool,
+    /// tool_use blocks live in here keyed by Anthropic's `index`.
+    /// Drained on `content_block_stop`.
+    tool_blocks: HashMap<u32, ToolBlock>,
+    /// Running count used to assign OpenAI tool-call indexes in the
+    /// order the blocks opened.
+    next_tool_index: u32,
 }
 
 impl Default for AnthropicStreamTranslator {
@@ -88,6 +116,8 @@ impl AnthropicStreamTranslator {
             created: now_epoch_seconds(),
             stop_reason: None,
             role_emitted: false,
+            tool_blocks: HashMap::new(),
+            next_tool_index: 0,
         }
     }
 
@@ -121,13 +151,66 @@ impl AnthropicStreamTranslator {
 
         match event_name {
             "message_start" => self.handle_message_start(&value),
+            "content_block_start" => self.handle_content_block_start(&value),
             "content_block_delta" => self.handle_content_block_delta(&value),
+            "content_block_stop" => Ok(None),
             "message_delta" => self.handle_message_delta(&value),
             "message_stop" => self.handle_message_stop(),
-            // Everything else (ping, content_block_start, content_block_stop,
-            // and any future event types) maps to no client chunk.
+            // Everything else (ping, and any future event types) maps
+            // to no client chunk.
             _ => Ok(None),
         }
+    }
+
+    fn handle_content_block_start(&mut self, value: &Value) -> Result<Option<OpenAiChunk>> {
+        let block = value
+            .get("content_block")
+            .ok_or_else(|| Error::Sse("content_block_start missing `content_block`".into()))?;
+        let block_type = block.get("type").and_then(Value::as_str).unwrap_or("");
+        if block_type != "tool_use" {
+            // text / thinking blocks produce no immediate chunk.
+            return Ok(None);
+        }
+        let anthropic_index = value
+            .get("index")
+            .and_then(Value::as_u64)
+            .map(|i| i as u32)
+            .ok_or_else(|| Error::Sse("content_block_start missing `index`".into()))?;
+        let id = block
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| Error::Sse("tool_use block missing `id`".into()))?
+            .to_string();
+        let name = block
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or_else(|| Error::Sse("tool_use block missing `name`".into()))?
+            .to_string();
+        let call_index = self.next_tool_index;
+        self.next_tool_index = self.next_tool_index.wrapping_add(1);
+        self.tool_blocks.insert(
+            anthropic_index,
+            ToolBlock {
+                call_index,
+                id: id.clone(),
+            },
+        );
+        // Emit the call-header chunk — OpenAI clients expect `id`,
+        // `type:"function"`, and `function.name` on the first fragment.
+        let delta = OpenAiDelta {
+            role: None,
+            content: None,
+            tool_calls: vec![OpenAiToolCallDelta {
+                index: call_index,
+                id: Some(id),
+                kind: Some("function".into()),
+                function: Some(OpenAiToolCallFunctionDelta {
+                    name: Some(name),
+                    arguments: Some(String::new()),
+                }),
+            }],
+        };
+        Ok(Some(self.build_chunk(delta, None)))
     }
 
     fn handle_message_start(&mut self, value: &Value) -> Result<Option<OpenAiChunk>> {
@@ -171,33 +254,69 @@ impl AnthropicStreamTranslator {
     }
 
     fn handle_content_block_delta(&mut self, value: &Value) -> Result<Option<OpenAiChunk>> {
-        // Only `text_delta` variants produce OpenAI content. Other
-        // delta types (`thinking_delta`, `signature_delta`,
-        // `input_json_delta` for tool calls) are not surfaced on the
-        // OpenAI channel in MVP.
         let delta_obj = value
             .get("delta")
             .ok_or_else(|| Error::Sse("content_block_delta missing `delta`".into()))?;
         let delta_type = delta_obj.get("type").and_then(Value::as_str).unwrap_or("");
-        if delta_type != "text_delta" {
-            return Ok(None);
+        match delta_type {
+            "text_delta" => {
+                let text = delta_obj
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                if text.is_empty() {
+                    return Ok(None);
+                }
+                Ok(Some(self.build_chunk(
+                    OpenAiDelta {
+                        role: None,
+                        content: Some(text),
+                        tool_calls: Vec::new(),
+                    },
+                    None,
+                )))
+            }
+            "input_json_delta" => {
+                let anthropic_index = value
+                    .get("index")
+                    .and_then(Value::as_u64)
+                    .map(|i| i as u32)
+                    .ok_or_else(|| Error::Sse("content_block_delta missing `index`".into()))?;
+                let block = self.tool_blocks.get(&anthropic_index).ok_or_else(|| {
+                    Error::Sse(format!(
+                        "input_json_delta for unknown content block {anthropic_index}"
+                    ))
+                })?;
+                let partial = delta_obj
+                    .get("partial_json")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                if partial.is_empty() {
+                    return Ok(None);
+                }
+                Ok(Some(self.build_chunk(
+                    OpenAiDelta {
+                        role: None,
+                        content: None,
+                        tool_calls: vec![OpenAiToolCallDelta {
+                            index: block.call_index,
+                            id: None,
+                            kind: None,
+                            function: Some(OpenAiToolCallFunctionDelta {
+                                name: None,
+                                arguments: Some(partial),
+                            }),
+                        }],
+                    },
+                    None,
+                )))
+            }
+            // thinking_delta / signature_delta are not surfaced on the
+            // OpenAI channel in MVP.
+            _ => Ok(None),
         }
-        let text = delta_obj
-            .get("text")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
-        if text.is_empty() {
-            return Ok(None);
-        }
-        Ok(Some(self.build_chunk(
-            OpenAiDelta {
-                role: None,
-                content: Some(text),
-                tool_calls: Vec::new(),
-            },
-            None,
-        )))
     }
 
     fn handle_message_delta(&mut self, value: &Value) -> Result<Option<OpenAiChunk>> {
@@ -491,5 +610,118 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(final_chunk.choices[0].finish_reason.as_deref(), Some("stop"));
+    }
+
+    fn boot_translator() -> AnthropicStreamTranslator {
+        let mut t = AnthropicStreamTranslator::new();
+        t.on_event(&SseEvent {
+            event: "message_start".into(),
+            data: r#"{"type":"message_start","message":{"id":"m","model":"claude"}}"#.into(),
+            ..Default::default()
+        })
+        .unwrap();
+        t
+    }
+
+    #[test]
+    fn tool_use_block_emits_header_chunk() {
+        let mut t = boot_translator();
+        let ev = SseEvent {
+            event: "content_block_start".into(),
+            data: r#"{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"tu_1","name":"Read","input":{}}}"#.into(),
+            ..Default::default()
+        };
+        let chunk = t.on_event(&ev).unwrap().expect("header chunk emitted");
+        let tc = &chunk.choices[0].delta.tool_calls[0];
+        assert_eq!(tc.index, 0);
+        assert_eq!(tc.id.as_deref(), Some("tu_1"));
+        assert_eq!(tc.kind.as_deref(), Some("function"));
+        let f = tc.function.as_ref().unwrap();
+        assert_eq!(f.name.as_deref(), Some("Read"));
+        assert_eq!(f.arguments.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn input_json_delta_accumulates_per_call_index() {
+        let mut t = boot_translator();
+        // Open two tool_use blocks back-to-back.
+        t.on_event(&SseEvent {
+            event: "content_block_start".into(),
+            data: r#"{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tu_a","name":"Read","input":{}}}"#.into(),
+            ..Default::default()
+        })
+        .unwrap();
+        t.on_event(&SseEvent {
+            event: "content_block_start".into(),
+            data: r#"{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"tu_b","name":"Glob","input":{}}}"#.into(),
+            ..Default::default()
+        })
+        .unwrap();
+        let c1 = t
+            .on_event(&SseEvent {
+                event: "content_block_delta".into(),
+                data: r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"path\":\""}}"#.into(),
+                ..Default::default()
+            })
+            .unwrap()
+            .unwrap();
+        let c2 = t
+            .on_event(&SseEvent {
+                event: "content_block_delta".into(),
+                data: r#"{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"pat"}}"#.into(),
+                ..Default::default()
+            })
+            .unwrap()
+            .unwrap();
+        let tc1 = &c1.choices[0].delta.tool_calls[0];
+        let tc2 = &c2.choices[0].delta.tool_calls[0];
+        assert_eq!(tc1.index, 0);
+        assert_eq!(tc2.index, 1);
+        assert!(tc1
+            .function
+            .as_ref()
+            .unwrap()
+            .arguments
+            .as_deref()
+            .unwrap()
+            .starts_with('{'));
+    }
+
+    #[test]
+    fn input_json_delta_for_unknown_block_errors() {
+        // If a partial arrives for a content block we never saw open,
+        // surface it as an Sse error rather than silently ignore.
+        let mut t = boot_translator();
+        let err = t
+            .on_event(&SseEvent {
+                event: "content_block_delta".into(),
+                data: r#"{"type":"content_block_delta","index":9,"delta":{"type":"input_json_delta","partial_json":"{}"}}"#.into(),
+                ..Default::default()
+            })
+            .unwrap_err();
+        assert!(matches!(err, Error::Sse(_)));
+    }
+
+    #[test]
+    fn tool_use_stop_reason_maps_to_tool_calls() {
+        let mut t = boot_translator();
+        t.on_event(&SseEvent {
+            event: "message_delta".into(),
+            data: r#"{"type":"message_delta","delta":{"stop_reason":"tool_use"}}"#.into(),
+            ..Default::default()
+        })
+        .unwrap();
+        let fin = t
+            .on_event(&SseEvent {
+                event: "message_stop".into(),
+                data: r#"{"type":"message_stop"}"#.into(),
+                ..Default::default()
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            fin.choices[0].finish_reason.as_deref(),
+            Some("tool_calls")
+        );
     }
 }

@@ -1,51 +1,95 @@
 //! Drawing functions for the TUI.
 //!
-//! ratatui is immediate-mode: we re-render everything on every tick. Layout
-//! is a vertical split — a single-line header, a message log that fills the
-//! remainder, and a three-line input box. The render layer reads
-//! [`crate::tui::state::ConversationState`] but never mutates it; mutations
-//! happen in the event loop.
+//! ratatui is immediate-mode: we re-render everything on every tick.
+//! The C44 bottom-up frame is owned by `tui::layout`; this module
+//! composes the individual drawers (mascot, progress, tip, autocomplete,
+//! statusline, streaming, prompt, info row) into the slots it returns.
 //!
 //! # Theme constants
 //!
-//! All user-tunable colors live in [`theme`] below. The user hasn't
-//! finalized the palette yet, so those constants are placeholders — edit
-//! them here and every widget picks up the change on the next render.
+//! All user-tunable colors live in [`theme`] below. Every widget reads
+//! them; editing here recolors the whole interface on the next frame.
+
+use std::time::Duration;
 
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
     Frame,
 };
 
 use crate::inference::OpenAiChatRole;
+use crate::statusline;
+use crate::config::settings::PermissionMode;
 
 use super::state::ConversationState;
+use super::{autocomplete, layout as layout_mod, mascot, progress, tips};
 
-/// Visual theme. Placeholder values — user will finalize. Edit these
-/// constants (they are the only source of color in the TUI) and the whole
-/// interface recolors on the next frame.
+/// Visual theme. Edit these constants to recolor the entire TUI.
 pub mod theme {
     use ratatui::style::Color;
 
-    /// Deep violet — primary accent (borders, header background,
-    /// assistant role prefix).
-    pub const PRIMARY: Color = Color::Rgb(0x51, 0x15, 0x8C);
+    // ----- otherside-native -----
 
-    /// Hot pink — error / warning color.
-    pub const ERROR: Color = Color::Rgb(0xEC, 0x48, 0x99);
+    /// Light blue — PRIMARY accent. Reserved for the spinner glyph
+    /// and the thinking verb ONLY. Everything else mirrors upstream's
+    /// palette so the TUI reads as familiar.
+    pub const PRIMARY: Color = Color::Rgb(137, 200, 255);
 
-    /// Muted gray — ambient helper text (shortcuts hint, `context: --%`).
-    pub const MUTED: Color = Color::Rgb(0x6B, 0x72, 0x80);
+    // ----- upstream palette (mirrored for parity) -----
+
+    /// White — body text.
+    pub const TEXT: Color = Color::Rgb(255, 255, 255);
+
+    /// Light gray — ambient helper text (tip line, shortcut hints,
+    /// context chips when under threshold).
+    pub const MUTED: Color = Color::Rgb(153, 153, 153);
+
+    /// Dark gray — very dim secondary detail.
+    pub const SUBTLE: Color = Color::Rgb(80, 80, 80);
+
+    /// Medium gray — prompt-bar border.
+    pub const PROMPT_BORDER: Color = Color::Rgb(136, 136, 136);
+
+    /// Bright red — errors and the mascot's corrupted-core accent
+    /// on `/clear`.
+    pub const ERROR: Color = Color::Rgb(255, 107, 128);
+
+    /// Amber — warnings.
+    pub const WARNING: Color = Color::Rgb(255, 193, 7);
+
+    /// Green — success.
+    pub const SUCCESS: Color = Color::Rgb(78, 186, 101);
+
+    /// Light blue-purple — slash popup suggestions.
+    pub const SUGGESTION: Color = Color::Rgb(177, 185, 249);
+
+    /// User-message background fill.
+    pub const USER_BG: Color = Color::Rgb(55, 55, 55);
+
+    /// Diff coloring (word-level).
+    pub const DIFF_ADDED: Color = Color::Rgb(56, 166, 96);
+    pub const DIFF_REMOVED: Color = Color::Rgb(179, 89, 107);
+
+    /// Warm amber — assistant bullet + mascot core. Neutral name so
+    /// identity-zone widgets carry no upstream provenance.
+    pub const ACCENT_AMBER: Color = Color::Rgb(215, 119, 87);
+
+    /// Auto-accept-edits permission mode chip color.
+    pub const AUTO_ACCEPT: Color = Color::Rgb(175, 135, 255);
+
+    /// Plan mode chip.
+    pub const PLAN_MODE: Color = Color::Rgb(72, 150, 140);
+
+    /// Bash prefix (`!` prompt) border.
+    pub const BASH_BORDER: Color = Color::Rgb(253, 93, 177);
 }
 
-/// Spinner frames for the streaming indicator. Braille dots chosen because
-/// they share width (1 cell) across most monospaced fonts.
-const SPINNER: &[char] = &['\u{280B}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283C}', '\u{2834}', '\u{2826}', '\u{2827}', '\u{2807}', '\u{280F}'];
-
-/// Public entry — compose the three regions and hand each a subrect.
+/// Public entry — carves `f.area()` via `layout::split_frame` and
+/// paints every region. Mascot fills the streaming area when the
+/// session is empty; otherwise the streaming log renders.
 pub fn render(
     f: &mut Frame<'_>,
     state: &ConversationState,
@@ -54,192 +98,479 @@ pub fn render(
     spinner_tick: u64,
 ) {
     let area = f.area();
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1), // header
-            Constraint::Min(3),    // log (flexes)
-            Constraint::Length(3), // input box (3 rows w/ border)
-        ])
-        .split(area);
+    let slots = layout_mod::split_frame(area, state.streaming);
 
-    draw_header(f, chunks[0], model, provider_id, state.streaming, spinner_tick);
-    draw_log(f, chunks[1], state, spinner_tick);
-    draw_input(f, chunks[2], state);
-}
-
-/// Single-line header: `otherside | <model> | provider: <id>   context: --% used`.
-///
-/// The context indicator is a deliberate placeholder; token counting comes
-/// later with the statusline phase. Keeping the slot reserved avoids
-/// layout drift when that feature lands.
-fn draw_header(
-    f: &mut Frame<'_>,
-    area: Rect,
-    model: &str,
-    provider_id: &str,
-    streaming: bool,
-    spinner_tick: u64,
-) {
-    let spin = if streaming {
-        let ch = SPINNER[(spinner_tick as usize) % SPINNER.len()];
-        format!("  {ch} streaming")
+    // Streaming area — mascot when empty, otherwise the scrolling log.
+    if state.messages.is_empty() && !state.streaming {
+        draw_splash_centered(f, slots.streaming);
     } else {
-        String::new()
-    };
+        draw_log(f, slots.streaming, state, spinner_tick);
+    }
 
-    let left = Line::from(vec![
-        Span::styled(
-            " otherside ",
-            Style::default()
-                .bg(theme::PRIMARY)
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(" | "),
-        Span::styled(model.to_string(), Style::default().fg(theme::PRIMARY)),
-        Span::raw(" | provider: "),
-        Span::styled(provider_id.to_string(), Style::default().fg(theme::PRIMARY)),
-        Span::raw("   "),
-        Span::styled(
-            "context: --% used",
-            Style::default().fg(theme::MUTED),
-        ),
-        Span::styled(spin, Style::default().fg(theme::PRIMARY)),
-    ]);
-    f.render_widget(Paragraph::new(left), area);
+    // Progress + tip rows only exist when streaming.
+    if let (Some(pr), Some(tp)) = (slots.progress, slots.tip) {
+        progress::draw(
+            f,
+            pr,
+            spinner_tick,
+            Duration::from_millis(state.elapsed_ms()),
+            state.output_tokens,
+            state.thought_ms,
+        );
+        tips::draw(f, tp, state.tip_rotation_index);
+    }
+
+    // Prompt bar with the autocomplete popup painted above it when
+    // active — the popup goes in the streaming area bottom strip so
+    // it obscures nothing crucial (we redraw next frame anyway).
+    draw_prompt(f, slots.prompt, state);
+    if let Some(ac) = state.autocomplete.as_ref() {
+        // Popup hangs below the prompt bar, eating into the info-row
+        // chrome area if needed. Matches upstream's placement — the
+        // user reads the suggestions right above the cursor, not high
+        // up in the log.
+        let popup_h = (ac.matches.len() as u16).min(slots.streaming.height);
+        if popup_h >= 1 {
+            let popup = Rect {
+                x: slots.streaming.x,
+                y: slots.streaming.y + slots.streaming.height.saturating_sub(popup_h),
+                width: slots.streaming.width,
+                height: popup_h,
+            };
+            autocomplete::draw(f, popup, ac);
+        }
+    }
+
+    // Statusline — native path for now; subprocess override hook
+    // lands with state.settings plumbing.
+    draw_statusline(f, slots.statusline, state, model, provider_id);
+
+    // Info row — bottom chrome with permission mode + shortcut hint.
+    draw_info_row(f, slots.info, state, model);
 }
 
-/// The scrolling message log. Each finalized message is rendered as a
-/// role-prefix line followed by the content; the in-flight assistant
-/// buffer gets the same treatment while `streaming` is true.
+/// Hand `mascot::draw_splash` the full streaming area so it can own
+/// the top-pad / mascot / gap / banner / gap / tagline stack. The
+/// mascot module falls back to a short legend internally when the
+/// frame can't fit the full layout.
+fn draw_splash_centered(f: &mut Frame<'_>, area: Rect) {
+    mascot::draw_splash(f, area);
+}
+
+/// Scrolling message log. Each finalized message is rendered as a
+/// role-prefix line followed by a single blank row of padding; the
+/// in-flight assistant buffer gets the same treatment while
+/// `streaming` is true. No horizontal rules — upstream log is a
+/// plain scrolling region, the prompt bar carries the borders.
 fn draw_log(f: &mut Frame<'_>, area: Rect, state: &ConversationState, spinner_tick: u64) {
     let mut lines: Vec<Line> = Vec::new();
+    let width = area.width;
 
-    for msg in &state.messages {
-        lines.extend(render_message(msg.role, &msg.content));
-        lines.push(Line::raw(""));
+    for (i, msg) in state.messages.iter().enumerate() {
+        if i > 0 {
+            lines.push(Line::raw(""));
+        }
+        lines.extend(render_message(msg.role, &msg.content, width));
     }
 
-    // In-flight assistant turn — render only if streaming. If no content
-    // has arrived yet, show a spinner-dot placeholder so the user knows
-    // something IS happening, not that the UI is frozen.
     if state.streaming {
-        let body = if state.current_assistant_buffer.is_empty() {
-            let ch = SPINNER[(spinner_tick as usize) % SPINNER.len()];
-            format!("{ch}")
-        } else {
-            state.current_assistant_buffer.clone()
-        };
-        lines.extend(render_message(OpenAiChatRole::Assistant, &body));
-        lines.push(Line::raw(""));
+        // Only surface the assistant message once real content has
+        // started streaming — while we're still waiting for the first
+        // delta, the spinner band below the log owns the loading
+        // signal. Doubling up with a bulleted spinner up here reads
+        // like two separate states.
+        if !state.current_assistant_buffer.is_empty() {
+            if !state.messages.is_empty() {
+                lines.push(Line::raw(""));
+            }
+            lines.extend(render_message(
+                OpenAiChatRole::Assistant,
+                &state.current_assistant_buffer,
+                width,
+            ));
+        }
     }
+    let _ = spinner_tick;
 
-    // Error banner — pinned after all messages so it stays visible while
-    // the user reads context above.
     if let Some(err) = &state.last_error {
+        lines.push(Line::raw(""));
         lines.push(Line::from(Span::styled(
             format!("error: {err}"),
             Style::default().fg(theme::ERROR).add_modifier(Modifier::BOLD),
         )));
-        lines.push(Line::raw(""));
     }
 
-    let block = Block::default()
-        .borders(Borders::TOP | Borders::BOTTOM)
-        .border_style(Style::default().fg(theme::PRIMARY));
-
-    // Scroll offset: ratatui's Paragraph scroll is (y, x) lines from top.
-    // We store offset from BOTTOM, so translate: visible_lines is the
-    // widget's inner height; total lines minus visible minus user offset.
     let total_lines = lines.len() as u16;
-    let inner_h = block.inner(area).height;
+    let inner_h = area.height;
     let max_top = total_lines.saturating_sub(inner_h);
     let top = max_top.saturating_sub(state.scroll_offset as u16);
 
     let para = Paragraph::new(lines)
-        .block(block)
         .wrap(Wrap { trim: false })
         .scroll((top, 0));
     f.render_widget(para, area);
 }
 
-/// Produce one-or-more [`Line`]s for a single message. The role prefix is
-/// styled per theme; the content is rendered as plain wrapped text with
-/// inline line-breaks preserved.
-fn render_message(role: OpenAiChatRole, content: &str) -> Vec<Line<'static>> {
-    let (label, label_style) = match role {
-        OpenAiChatRole::User => (
-            "user: ",
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        ),
-        OpenAiChatRole::Assistant => (
-            "assistant: ",
-            Style::default()
-                .fg(theme::PRIMARY)
-                .add_modifier(Modifier::BOLD),
-        ),
-        OpenAiChatRole::System => (
-            "system: ",
-            Style::default().fg(theme::MUTED).add_modifier(Modifier::BOLD),
-        ),
-        OpenAiChatRole::Tool => (
-            "tool: ",
-            Style::default().fg(theme::MUTED).add_modifier(Modifier::BOLD),
-        ),
-    };
-
-    // Split the content on newlines so Paragraph's wrap keeps the author's
-    // original linebreaks intact; first line is prefixed with the role
-    // label, subsequent lines indent to the same column for readability.
-    let mut parts = content.split('\n');
-    let first = parts.next().unwrap_or("").to_string();
+/// Produce one-or-more lines for a single message. Per upstream TUI
+/// convention (no `user:` / `assistant:` text labels), visual role
+/// cues are:
+///
+/// - **User** — dark-gray background that runs the full frame width
+///   (mirrors upstream's `userMessageBackground`) with a leading `>`
+///   arrow on the first line, 2-space indent on continuation lines.
+/// - **Assistant** — plain white text, no prefix, no background.
+/// - **System** — italic muted grey prefaced by `⎿ system:`.
+/// - **Tool** — muted grey prefaced by `⎿ tool:` (legacy path; the
+///   real tool-call render moves to `tui::tool_render` once 005 wires).
+fn render_message(role: OpenAiChatRole, content: &str, width: u16) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
-    lines.push(Line::from(vec![
-        Span::styled(label, label_style),
-        Span::raw(first),
-    ]));
-    let indent = " ".repeat(label.len());
-    for rest in parts {
-        lines.push(Line::from(vec![
-            Span::raw(indent.clone()),
-            Span::raw(rest.to_string()),
-        ]));
+    for (i, raw) in content.split('\n').enumerate() {
+        match role {
+            OpenAiChatRole::User => {
+                // Upstream ships the pointer as default terminal fg
+                // (white) with no color override — gives the user's
+                // turn the same visual weight as the assistant's.
+                let _ = width;
+                let prefix = if i == 0 { "❯ " } else { "  " };
+                lines.push(Line::from(vec![
+                    Span::styled(prefix.to_string(), Style::default().fg(theme::TEXT)),
+                    Span::styled(raw.to_string(), Style::default().fg(theme::TEXT)),
+                ]));
+            }
+            OpenAiChatRole::Assistant => {
+                if i == 0 {
+                    let bullet = if cfg!(target_os = "macos") { "⏺ " } else { "● " };
+                    // Assistant bullet rides PRIMARY — the per-turn
+                    // brand beat that mirrors the spinner band.
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            bullet.to_string(),
+                            Style::default()
+                                .fg(theme::PRIMARY)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(raw.to_string(), Style::default().fg(theme::TEXT)),
+                    ]));
+                } else {
+                    lines.push(Line::from(Span::styled(
+                        raw.to_string(),
+                        Style::default().fg(theme::TEXT),
+                    )));
+                }
+            }
+            OpenAiChatRole::System => {
+                let prefix = if i == 0 { "⎿ system: " } else { "           " };
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        prefix.to_string(),
+                        Style::default()
+                            .fg(theme::MUTED)
+                            .add_modifier(Modifier::ITALIC),
+                    ),
+                    Span::styled(
+                        raw.to_string(),
+                        Style::default()
+                            .fg(theme::MUTED)
+                            .add_modifier(Modifier::ITALIC),
+                    ),
+                ]));
+            }
+            OpenAiChatRole::Tool => {
+                let prefix = if i == 0 { "⎿ tool: " } else { "         " };
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        prefix.to_string(),
+                        Style::default().fg(theme::SUGGESTION),
+                    ),
+                    Span::styled(
+                        raw.to_string(),
+                        Style::default().fg(theme::MUTED),
+                    ),
+                ]));
+            }
+        }
     }
     lines
 }
 
-/// The input box — three rows tall with a violet border. A `>` prefix
-/// marks the prompt, and a trailing `_` serves as a pseudo-cursor so the
-/// user's caret position is visible without us having to enable the real
-/// terminal cursor (which crossterm hides in raw mode by default).
-fn draw_input(f: &mut Frame<'_>, area: Rect, state: &ConversationState) {
+/// Prompt bar with upstream-style top + bottom rule lines (no left
+/// or right border box), a `❯` heavy-chevron prompt, and the live
+/// input buffer. During streaming the buffer stays visible but
+/// dimmed — upstream never substitutes copy, and swapping text flickers.
+fn draw_prompt(f: &mut Frame<'_>, area: Rect, state: &ConversationState) {
     let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme::PRIMARY))
-        .title(Span::styled(
-            " input — Enter submit · Shift+Enter newline · Ctrl+C quit ",
-            Style::default().fg(theme::MUTED),
-        ));
+        .borders(Borders::TOP | Borders::BOTTOM)
+        .border_style(Style::default().fg(theme::PROMPT_BORDER));
 
-    // Render input with a trailing `_` when we're accepting keys; a dim
-    // "…waiting for response…" placeholder when streaming so the user
-    // gets feedback that their Enter was received.
-    let text = if state.streaming {
-        Line::from(Span::styled(
-            "…waiting for response…",
-            Style::default().fg(theme::MUTED),
-        ))
+    let chevron_style = if state.streaming {
+        Style::default()
+            .fg(theme::MUTED)
+            .add_modifier(Modifier::DIM)
     } else {
-        Line::from(vec![
-            Span::styled("> ", Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD)),
-            Span::raw(state.input.clone()),
-            Span::styled("_", Style::default().add_modifier(Modifier::SLOW_BLINK)),
+        Style::default()
+            .fg(theme::TEXT)
+            .add_modifier(Modifier::BOLD)
+    };
+    let text_style = if state.streaming {
+        Style::default()
+            .fg(theme::TEXT)
+            .add_modifier(Modifier::DIM)
+    } else {
+        Style::default().fg(theme::TEXT)
+    };
+    let mut spans = vec![
+        Span::styled("❯ ", chevron_style),
+        Span::styled(state.input.clone(), text_style),
+    ];
+    if !state.streaming {
+        spans.push(Span::styled(
+            "_",
+            Style::default().add_modifier(Modifier::SLOW_BLINK),
+        ));
+    }
+
+    let para = Paragraph::new(Line::from(spans))
+        .block(block)
+        .wrap(Wrap { trim: false });
+    f.render_widget(para, area);
+}
+
+/// Statusline row — model / cwd / context summary on the left,
+/// token count on the right. Always visible (matches upstream's
+/// always-on chrome band).
+fn draw_statusline(
+    f: &mut Frame<'_>,
+    area: Rect,
+    state: &ConversationState,
+    model: &str,
+    provider_id: &str,
+) {
+    let tokens = state.output_tokens;
+    let avail = state.context_available();
+    let pct = state.context_used_percent();
+
+    // Upstream-style: `🤖 model · provider · <window> available · P% used`.
+    // Format the available figure in the same unit as the window
+    // (1M windows collapse `avail / 1_000_000` etc) so the scale
+    // reads cleanly.
+    let avail_display = if state.context_window >= 1_000_000 {
+        format!("{:.1}M", avail as f64 / 1_000_000.0)
+    } else {
+        format!("{}K", avail / 1_000)
+    };
+    let window_label = state.context_window_label();
+    let left_text = format!(
+        "🤖 {model} · {provider_id} · {avail_display}/{window_label} · {pct}% used"
+    );
+    let right_text = if tokens > 0 {
+        format!("{tokens} tokens")
+    } else {
+        String::new()
+    };
+    let right_width = (right_text.chars().count() + 2) as u16;
+
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Min(10),
+            Constraint::Length(right_width.max(1)),
         ])
+        .split(area);
+
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            left_text,
+            Style::default().fg(theme::MUTED),
+        ))),
+        chunks[0],
+    );
+    if !right_text.is_empty() {
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                right_text,
+                Style::default().fg(theme::MUTED),
+            )))
+            .alignment(Alignment::Right),
+            chunks[1],
+        );
+    }
+    return;
+    #[allow(unreachable_code)]
+    {
+    use statusline::types::{
+        ContextWindowInput, CostInput, ModelInput, OutputStyleInput, StatuslineCtx,
+        StatuslineInput, WorkspaceInput,
+    };
+    let cwd = std::env::current_dir()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let home = directories::BaseDirs::new()
+        .map(|b| b.home_dir().to_string_lossy().into_owned());
+
+    let payload = StatuslineInput {
+        session_id: String::new(),
+        transcript_path: String::new(),
+        cwd: cwd.clone(),
+        session_name: None,
+        model: ModelInput {
+            id: model.to_string(),
+            display_name: model.to_string(),
+            extra: Default::default(),
+        },
+        workspace: WorkspaceInput {
+            current_dir: cwd.clone(),
+            project_dir: cwd,
+            added_dirs: Vec::new(),
+            extra: Default::default(),
+        },
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        output_style: OutputStyleInput {
+            name: "default".to_string(),
+            extra: Default::default(),
+        },
+        cost: CostInput {
+            total_cost_usd: 0.0,
+            total_duration_ms: 0,
+            total_api_duration_ms: 0,
+            total_lines_added: 0,
+            total_lines_removed: 0,
+            extra: Default::default(),
+        },
+        context_window: ContextWindowInput {
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            context_window_size: 200_000,
+            current_usage: 0,
+            used_percentage: 0,
+            remaining_percentage: 100,
+            extra: Default::default(),
+        },
+        exceeds_200k_tokens: false,
+        rate_limits: None,
+        vim: None,
+        agent: None,
+        remote: None,
+        worktree: None,
+        extra: Default::default(),
+    };
+    let ctx = StatuslineCtx {
+        payload,
+        terminal_width: area.width,
+        home_dir: home,
+        permission_mode: PermissionMode::Default,
+        custom_env: Default::default(),
     };
 
-    let para = Paragraph::new(text).block(block).wrap(Wrap { trim: false });
+    let (line, _warn) = statusline::dispatch(&ctx, None);
+    // Paint as plain text — ratatui doesn't parse embedded ANSI, so we
+    // strip escape sequences here and let the theme color come through
+    // the fallback styling. Full ANSI-to-spans conversion lands later.
+    let stripped = strip_ansi(&line.content);
+    let para = Paragraph::new(Line::from(Span::styled(
+        stripped,
+        Style::default().fg(theme::PRIMARY),
+    )));
     f.render_widget(para, area);
+    }
+}
+
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut in_escape = false;
+    for ch in s.chars() {
+        if in_escape {
+            if ch.is_ascii_alphabetic() {
+                in_escape = false;
+            }
+            continue;
+        }
+        if ch == '\x1b' {
+            in_escape = true;
+            continue;
+        }
+        out.push(ch);
+    }
+    out
+}
+
+/// Info row — absolute bottom line. Mirrors upstream's shape:
+/// left side carries the permission-mode chip + shortcut text,
+/// right side carries token count + model. Context-driven hint
+/// flips based on state (streaming / autocomplete / idle).
+fn draw_info_row(
+    f: &mut Frame<'_>,
+    area: Rect,
+    state: &ConversationState,
+    model: &str,
+) {
+    // Left side: permission-mode chip (⏵⏵) + shortcut hint.
+    let mode_chip = match state.permission_mode_label() {
+        // The label method returns a tuple (glyph, text) — but to keep
+        // this minimal until the permission layer lands, we pick a
+        // sensible default matching upstream's "accept edits on" copy.
+        (_, text) => text,
+    };
+    let hint = if state.streaming {
+        " · esc to interrupt"
+    } else if state.autocomplete.is_some() {
+        " · enter run · esc close"
+    } else if state.input.is_empty() {
+        ""
+    } else {
+        " · enter to submit"
+    };
+    let _ = model;
+    // Right side: context hint / status — empty on idle, populated
+    // when a recognized secondary signal exists (deferred until the
+    // permission engine + MCP status are plumbed through the TUI).
+    let right_text = String::new();
+
+    let left = Line::from(vec![
+        Span::styled(
+            "⏵⏵ ",
+            Style::default()
+                .fg(theme::SUCCESS)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(mode_chip, Style::default().fg(theme::MUTED)),
+        Span::styled(hint.to_string(), Style::default().fg(theme::SUBTLE)),
+    ]);
+
+    if right_text.is_empty() {
+        f.render_widget(Paragraph::new(left), area);
+    } else {
+        let right_len = (right_text.chars().count() + 2) as u16;
+        let chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Min(10),
+                Constraint::Length(right_len.max(10)),
+            ])
+            .split(area);
+        f.render_widget(Paragraph::new(left), chunks[0]);
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                right_text,
+                Style::default().fg(theme::MUTED),
+            )))
+            .alignment(Alignment::Right),
+            chunks[1],
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strip_ansi_removes_color_escapes() {
+        let with = "\x1b[38;2;81;21;140mhello\x1b[0m";
+        assert_eq!(strip_ansi(with), "hello");
+    }
+
+    #[test]
+    fn strip_ansi_preserves_plain_text() {
+        assert_eq!(strip_ansi("plain"), "plain");
+    }
 }

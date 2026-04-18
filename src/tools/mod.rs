@@ -13,13 +13,17 @@
 //! the corpus; enforcement is a v2 task — today we accept whatever the
 //! model emits and let the tool error on malformed args).
 
+pub mod bash;
+pub mod edit;
 pub mod glob;
 pub mod grep;
 pub mod read;
+pub mod read_set;
 pub mod schemas;
 pub mod task;
+pub mod write;
 
-pub use schemas::{schema_for, tool_schemas, ToolSchema};
+pub use schemas::{openai_tools, schema_for, tool_schemas, ToolSchema};
 
 use serde_json::Value;
 
@@ -49,6 +53,11 @@ pub fn dispatch(tool_name: &str, args: &Value) -> Result<Value, ToolError> {
         "Glob" => glob::glob(args),
         "Grep" => grep::grep(args),
         "Task" => task::task(args),
+        "Bash" => bash::dispatch_bash(args),
+        "BashOutput" => bash::dispatch_bash_output(args),
+        "KillBash" => bash::dispatch_kill_bash(args),
+        "Edit" => edit::edit(args),
+        "Write" => write::write(args),
         other => Err(ToolError::Unsupported(other.to_string())),
     }
 }
@@ -65,10 +74,17 @@ mod tests {
     }
 
     #[test]
-    fn schemas_loaded_for_all_four_tools() {
-        assert!(schema_for("Read").is_some());
-        assert!(schema_for("Glob").is_some());
-        assert!(schema_for("Grep").is_some());
-        assert!(schema_for("Task").is_some());
+    fn schemas_loaded_for_all_tools() {
+        for name in [
+            "Read",
+            "Glob",
+            "Grep",
+            "Task",
+            "Bash",
+            "BashOutput",
+            "KillBash",
+        ] {
+            assert!(schema_for(name).is_some(), "schema missing for `{name}`");
+        }
     }
 }

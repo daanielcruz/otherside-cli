@@ -95,6 +95,12 @@ pub enum PermissionMode {
     Yolo,
 }
 
+impl Default for PermissionMode {
+    fn default() -> Self {
+        PermissionMode::Default
+    }
+}
+
 /// Allow / deny / ask rule lists. Rule-level leniency: a malformed
 /// individual rule does not fail the file parse; it's kept around with
 /// partial fields so the resolver (§10.4) can emit a warning and drop
@@ -146,13 +152,31 @@ pub struct HooksConfig {
 
 /// Single hook entry. `matcher` selects which tool triggers it
 /// (`"*"` = any), `command` is the shell string executed.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+///
+/// `source_tag` is populated by the config resolver so the managed-
+/// hooks gate can tell user hooks apart from policy hooks. Not
+/// serialized back out (skipped when saving).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct HookEntry {
     pub matcher: String,
     pub command: String,
+    /// Optional per-entry timeout in milliseconds. Defaults to
+    /// 60 000 ms at dispatch when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<u64>,
+    /// Provenance tag set by the config resolver. `"policy"` means a
+    /// managed (enterprise-installed) hook.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_tag: Option<String>,
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
+}
+
+impl HookEntry {
+    pub fn timeout_ms(&self) -> u64 {
+        self.timeout.unwrap_or(60_000)
+    }
 }
 
 /// Per-provider settings (all optional — user opts in per provider).

@@ -39,11 +39,15 @@ pub mod auth;
 pub mod config;
 pub mod error;
 pub mod fingerprint;
+pub mod hooks;
 pub mod inference;
+pub mod permissions;
 pub mod provider;
+pub mod sessions;
 pub mod serve;
 pub mod statusline;
 pub mod thinking;
+// keep modules ordered; sessions added above alongside permissions.
 pub mod tools;
 pub mod translator;
 pub mod tui;

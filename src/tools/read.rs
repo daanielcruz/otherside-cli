@@ -9,6 +9,7 @@ use std::path::Path;
 
 use serde_json::{json, Value};
 
+use super::read_set;
 use super::ToolError;
 
 const DEFAULT_LIMIT: usize = 2000;
@@ -53,6 +54,10 @@ pub fn read(args: &Value) -> Result<Value, ToolError> {
             format!("File does not exist: {}", path.display()),
         )));
     }
+
+    // Record the read so the Edit tool's Read-before-Edit gate is
+    // satisfied for this session.
+    read_set::global().insert(path);
 
     let offset = args
         .get("offset")

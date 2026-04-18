@@ -2,15 +2,22 @@
 //!
 //! Input is a unified-diff fragment (plus lines prefix `+`, minus
 //! lines prefix `-`, context lines no prefix). Output is a sequence
-//! of Lines with per-side coloring. Violet for additions, pink for
-//! removals, muted grey for context.
+//! of Lines with per-side coloring — green on dim-green bg for
+//! additions, rose on dim-rose bg for removals, muted grey for
+//! context. Mirrors upstream's diff palette.
 
 use ratatui::{
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
 };
 
 use super::render::theme;
+
+/// Dim background fill for `+` lines. Matches upstream's diff palette.
+const DIFF_ADDED_BG: Color = Color::Rgb(34, 92, 43);
+
+/// Dim background fill for `-` lines.
+const DIFF_REMOVED_BG: Color = Color::Rgb(122, 41, 54);
 
 /// Maximum rendered lines before collapsing into a `… N more lines …`
 /// footer. Keeps the streaming area from being overwhelmed by large
@@ -43,9 +50,9 @@ pub fn render_unified(fragment: &str) -> Vec<Line<'static>> {
 
 fn style_diff_line(raw: &str) -> Line<'static> {
     let style = if raw.starts_with('+') && !raw.starts_with("+++") {
-        Style::default().fg(theme::PRIMARY)
+        Style::default().fg(theme::DIFF_ADDED).bg(DIFF_ADDED_BG)
     } else if raw.starts_with('-') && !raw.starts_with("---") {
-        Style::default().fg(theme::ERROR)
+        Style::default().fg(theme::DIFF_REMOVED).bg(DIFF_REMOVED_BG)
     } else if raw.starts_with("@@") {
         Style::default().fg(theme::MUTED).add_modifier(Modifier::BOLD)
     } else {

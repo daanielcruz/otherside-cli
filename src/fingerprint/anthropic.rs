@@ -86,6 +86,12 @@ pub const STAINLESS_TIMEOUT: &str = "600";
 pub const ANTHROPIC_BETA_INFERENCE: &str =
     "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20,effort-2025-11-24";
 
+/// 1M context window beta flag — appended to `anthropic-beta` when the
+/// model alias carries a `[1m]` suffix. Literal byte-matches upstream's
+/// `CONTEXT_1M_BETA_HEADER` (constants/betas.ts) so Max / Team Premium
+/// subscribers see the full 1M window.
+pub const ANTHROPIC_BETA_CONTEXT_1M: &str = "context-1m-2025-08-07";
+
 /// Single flag for /v1/mcp_servers.
 pub const ANTHROPIC_BETA_MCP_SERVERS: &str = "mcp-servers-2025-12-04";
 

@@ -32,45 +32,71 @@ pub struct TodoItem {
 }
 
 impl TodoStatus {
-    /// Glyph per status. `☐` pending, `◐` in-progress, `☒` completed.
+    /// Glyph per status. `◻` pending, `◼` in-progress, `✔` completed —
+    /// cleaner strokes than the historical `☐/◐/☒` triad and easier to
+    /// scan across the streaming area.
     pub fn glyph(&self) -> char {
         match self {
-            TodoStatus::Pending => '☐',
-            TodoStatus::InProgress => '◐',
-            TodoStatus::Completed => '☒',
+            TodoStatus::Pending => '◻',
+            TodoStatus::InProgress => '◼',
+            TodoStatus::Completed => '✔',
         }
     }
 }
 
+/// Summarize the list as `"N tasks (X done, Y in progress, Z open)"`.
+pub fn summary_line(items: &[TodoItem]) -> String {
+    let mut done = 0usize;
+    let mut in_progress = 0usize;
+    let mut open = 0usize;
+    for item in items {
+        match item.status {
+            TodoStatus::Completed => done += 1,
+            TodoStatus::InProgress => in_progress += 1,
+            TodoStatus::Pending => open += 1,
+        }
+    }
+    format!(
+        "{} tasks ({done} done, {in_progress} in progress, {open} open)",
+        items.len()
+    )
+}
+
 /// Render a todo list as owned Lines for composition into the
-/// streaming area. Returning Lines (not painting a Frame directly)
+/// streaming area. Leading row is a summary header; subsequent rows
+/// are one per item. Returning Lines (not painting a Frame directly)
 /// lets the caller intersperse todos with assistant text.
 pub fn render_lines(items: &[TodoItem]) -> Vec<Line<'static>> {
-    items
-        .iter()
-        .map(|item| {
-            let (color, modifier) = match item.status {
-                TodoStatus::InProgress => (theme::PRIMARY, Modifier::BOLD),
-                TodoStatus::Completed => (theme::MUTED, Modifier::DIM),
-                TodoStatus::Pending => (theme::MUTED, Modifier::empty()),
-            };
-            let label = item
-                .active_form
-                .as_deref()
-                .filter(|_| item.status == TodoStatus::InProgress)
-                .unwrap_or(&item.content);
-            Line::from(vec![
-                Span::styled(
-                    format!("  {} ", item.status.glyph()),
-                    Style::default().fg(color).add_modifier(modifier),
-                ),
-                Span::styled(
-                    label.to_string(),
-                    Style::default().fg(color).add_modifier(modifier),
-                ),
-            ])
-        })
-        .collect()
+    let mut out: Vec<Line<'static>> = Vec::with_capacity(items.len() + 1);
+    out.push(Line::from(Span::styled(
+        summary_line(items),
+        Style::default()
+            .fg(theme::MUTED)
+            .add_modifier(Modifier::BOLD),
+    )));
+    for item in items {
+        let (color, modifier) = match item.status {
+            TodoStatus::InProgress => (theme::PRIMARY, Modifier::BOLD),
+            TodoStatus::Completed => (theme::MUTED, Modifier::DIM),
+            TodoStatus::Pending => (theme::MUTED, Modifier::empty()),
+        };
+        let label = item
+            .active_form
+            .as_deref()
+            .filter(|_| item.status == TodoStatus::InProgress)
+            .unwrap_or(&item.content);
+        out.push(Line::from(vec![
+            Span::styled(
+                format!("  {} ", item.status.glyph()),
+                Style::default().fg(color).add_modifier(modifier),
+            ),
+            Span::styled(
+                label.to_string(),
+                Style::default().fg(color).add_modifier(modifier),
+            ),
+        ]));
+    }
+    out
 }
 
 /// Convenience: paint lines into `area` using Paragraph. Caller sizes
@@ -86,13 +112,13 @@ mod tests {
 
     #[test]
     fn glyph_per_status() {
-        assert_eq!(TodoStatus::Pending.glyph(), '☐');
-        assert_eq!(TodoStatus::InProgress.glyph(), '◐');
-        assert_eq!(TodoStatus::Completed.glyph(), '☒');
+        assert_eq!(TodoStatus::Pending.glyph(), '◻');
+        assert_eq!(TodoStatus::InProgress.glyph(), '◼');
+        assert_eq!(TodoStatus::Completed.glyph(), '✔');
     }
 
     #[test]
-    fn render_lines_matches_item_count() {
+    fn render_lines_includes_summary_header() {
         let items = vec![
             TodoItem {
                 content: "alpha".into(),
@@ -111,7 +137,37 @@ mod tests {
             },
         ];
         let lines = render_lines(&items);
-        assert_eq!(lines.len(), 3);
+        assert_eq!(lines.len(), 4, "1 header + 3 item rows");
+        let header: String = lines[0]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(header.contains("3 tasks"));
+        assert!(header.contains("1 done"));
+        assert!(header.contains("1 in progress"));
+        assert!(header.contains("1 open"));
+    }
+
+    #[test]
+    fn summary_line_matches_counts() {
+        let items = vec![
+            TodoItem {
+                content: "a".into(),
+                status: TodoStatus::Pending,
+                active_form: None,
+            },
+            TodoItem {
+                content: "b".into(),
+                status: TodoStatus::Completed,
+                active_form: None,
+            },
+        ];
+        let s = summary_line(&items);
+        assert!(s.contains("2 tasks"));
+        assert!(s.contains("1 done"));
+        assert!(s.contains("0 in progress"));
+        assert!(s.contains("1 open"));
     }
 
     #[test]
@@ -122,7 +178,8 @@ mod tests {
             active_form: Some("live label".into()),
         };
         let lines = render_lines(&[item]);
-        let rendered: String = lines[0]
+        // lines[0] is the summary header; item content starts at index 1.
+        let rendered: String = lines[1]
             .spans
             .iter()
             .map(|s| s.content.as_ref())

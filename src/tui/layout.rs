@@ -2,7 +2,7 @@
 //!
 //! Stack (top → bottom as it appears on screen):
 //!
-//! ```
+//! ```text
 //! [streaming area] — flexes
 //! [prompt bar + `>` arrow] — 3 rows with borders
 //! [progress line] — 1 row, only while inference is live
@@ -18,6 +18,21 @@
 //! row above it.
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
+
+/// Shrink a rect by `pad` columns on each side — used to carve the
+/// lateral margin upstream ships on the chrome band.
+fn pad_sides(r: Rect, pad: u16) -> Rect {
+    let total = pad.saturating_mul(2);
+    if r.width <= total {
+        return r;
+    }
+    Rect {
+        x: r.x + pad,
+        y: r.y,
+        width: r.width - total,
+        height: r.height,
+    }
+}
 
 /// Composed rects for each region of the TUI frame.
 pub struct FrameSlots {
@@ -38,37 +53,38 @@ pub struct FrameSlots {
 /// Split `area` into bottom-up slots per C44/C51. `streaming_active`
 /// toggles the progress + tip rows between visible and collapsed.
 pub fn split_frame(area: Rect, streaming_active: bool) -> FrameSlots {
-    // Build constraints bottom-up but apply top-down (ratatui doesn't
-    // have a bottom-up mode; we compose constraints in display order).
+    // Display order (top → bottom) — C44:
+    //   streaming (Min), [progress (1)], [tip (1)], prompt (3),
+    //   statusline (1), info (1)
     //
-    // Display order (top → bottom):
-    //   streaming (Min), prompt (Length 3), [progress (Length 1)],
-    //   [tip (Length 1)], statusline (Length 1), info (Length 1)
-    let mut constraints: Vec<Constraint> = vec![Constraint::Min(1)]; // streaming
-    constraints.push(Constraint::Length(3)); // prompt bar
+    // Progress + tip sit ABOVE the prompt bar so the spinner + tip
+    // flow naturally from the streaming area into the input chrome;
+    // they're the bridge, not an afterthought below the input.
+    let mut constraints: Vec<Constraint> = vec![Constraint::Min(1)];
     if streaming_active {
         constraints.push(Constraint::Length(1)); // progress
         constraints.push(Constraint::Length(1)); // tip
     }
+    constraints.push(Constraint::Length(3)); // prompt bar
     constraints.push(Constraint::Length(1)); // statusline
     constraints.push(Constraint::Length(1)); // info
+    constraints.push(Constraint::Length(1)); // bottom pad
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints(constraints)
         .split(area);
 
-    // Unpack positionally so indices stay stable across the two
-    // active/inactive shapes.
     let streaming = chunks[0];
-    let prompt = chunks[1];
-    let (progress, tip, statusline_idx) = if streaming_active {
-        (Some(chunks[2]), Some(chunks[3]), 4)
+    let (progress, tip, prompt_idx) = if streaming_active {
+        (Some(chunks[1]), Some(chunks[2]), 3)
     } else {
-        (None, None, 2)
+        (None, None, 1)
     };
-    let statusline = chunks[statusline_idx];
-    let info = chunks[statusline_idx + 1];
+    let prompt = chunks[prompt_idx];
+    let statusline = pad_sides(chunks[prompt_idx + 1], 2);
+    let info = pad_sides(chunks[prompt_idx + 2], 2);
+    // chunks[prompt_idx + 3] = bottom pad, intentionally unused.
 
     FrameSlots {
         streaming,
@@ -93,8 +109,9 @@ mod tests {
         let slots = split_frame(area(20), false);
         assert!(slots.progress.is_none());
         assert!(slots.tip.is_none());
-        assert_eq!(slots.info.y, 19, "info at absolute last row");
-        assert_eq!(slots.statusline.y, 18, "statusline one above info");
+        // Bottom pad at row 19; info at 18; statusline at 17.
+        assert_eq!(slots.info.y, 18);
+        assert_eq!(slots.statusline.y, 17);
     }
 
     #[test]
@@ -102,11 +119,23 @@ mod tests {
         let slots = split_frame(area(20), true);
         assert!(slots.progress.is_some());
         assert!(slots.tip.is_some());
-        assert_eq!(slots.info.y, 19);
-        assert_eq!(slots.statusline.y, 18);
-        // Tip sits above statusline when active.
-        assert_eq!(slots.tip.unwrap().y, 17);
-        assert_eq!(slots.progress.unwrap().y, 16);
+        assert_eq!(slots.info.y, 18);
+        assert_eq!(slots.statusline.y, 17);
+        // Prompt sits above the statusline; tip + progress are above
+        // the prompt, not between it and the statusline.
+        assert_eq!(slots.prompt.y, 14);
+        assert_eq!(slots.tip.unwrap().y, 13);
+        assert_eq!(slots.progress.unwrap().y, 12);
+    }
+
+    #[test]
+    fn chrome_rows_have_lateral_padding() {
+        let slots = split_frame(Rect::new(0, 0, 100, 20), false);
+        // pad_sides(2) eats 2 cols from each side of the 100-wide frame.
+        assert_eq!(slots.statusline.x, 2);
+        assert_eq!(slots.statusline.width, 96);
+        assert_eq!(slots.info.x, 2);
+        assert_eq!(slots.info.width, 96);
     }
 
     #[test]

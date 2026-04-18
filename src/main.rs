@@ -74,6 +74,15 @@ struct Cli {
     #[arg(long)]
     config: Option<std::path::PathBuf>,
 
+    /// Start the session in yolo permission mode — all tool calls
+    /// auto-approve without prompting. Equivalent to setting
+    /// `permissionMode = "yolo"` in `settings.json`, but scoped to
+    /// this invocation only. The classic upstream spelling
+    /// `--dangerously-skip-permissions` is accepted as an alias for
+    /// migration ease.
+    #[arg(long, alias = "dangerously-skip-permissions")]
+    yolo: bool,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -384,5 +393,14 @@ async fn cmd_tui(cli: &Cli) -> Result<()> {
     }
 
     let registry = Arc::new(registry);
-    tui::run(registry, raw_model, provider_id).await
+
+    // `--yolo` outranks the settings-file mode (C40 cascade: flag scope
+    // > project > user). If neither is set, fall back to Default so the
+    // user sees the standard permission prompts.
+    let permission_mode = if cli.yolo {
+        config::PermissionMode::Yolo
+    } else {
+        settings.permission_mode.unwrap_or_default()
+    };
+    tui::run(registry, raw_model, provider_id, permission_mode).await
 }

@@ -12,10 +12,12 @@ use ratatui::{
 };
 
 use super::render::theme;
-use super::tips::TIPS;
+use super::slash_catalog;
 
-/// Max popup rows before truncation.
-pub const MAX_POPUP_ROWS: usize = 7;
+/// Max popup rows before truncation. Sized so common prefix groups
+/// (s-group has 8 entries: sandbox, statusline, scope, security,
+/// skills, status, simplify, swarm) fit without scrolling.
+pub const MAX_POPUP_ROWS: usize = 10;
 
 /// State for an open autocomplete popup.
 #[derive(Debug, Clone, Default)]
@@ -24,8 +26,8 @@ pub struct Autocomplete {
     pub partial: String,
     /// Highlighted row index into the filtered matches.
     pub selected: usize,
-    /// Matches from TIPS whose slash name prefix-matches `partial`.
-    pub matches: Vec<&'static str>,
+    /// Matches from the catalog whose slash name prefix-matches `partial`.
+    pub matches: Vec<&'static slash_catalog::SlashEntry>,
 }
 
 impl Autocomplete {
@@ -38,7 +40,7 @@ impl Autocomplete {
         if trimmed.contains(char::is_whitespace) {
             return None;
         }
-        let matches = fuzzy_filter(trimmed);
+        let matches = prefix_filter(trimmed);
         if matches.is_empty() {
             return None;
         }
@@ -65,50 +67,46 @@ impl Autocomplete {
     /// sans the leading `/`. Callers replace the input buffer with
     /// `/<returned>` on Enter.
     pub fn commit(&self) -> Option<String> {
-        let entry = self.matches.get(self.selected)?;
-        Some(slash_name_of(entry).to_string())
+        self.matches.get(self.selected).map(|e| e.name.to_string())
     }
 }
 
 /// Prefix-match the catalog for entries whose slash name starts with
-/// `partial`. Case-insensitive. Results retain catalog order so common
+/// `partial`. Case-insensitive. Preserves catalog order so common
 /// slashes stay visually stable.
-fn fuzzy_filter(partial: &str) -> Vec<&'static str> {
+fn prefix_filter(partial: &str) -> Vec<&'static slash_catalog::SlashEntry> {
     let lower = partial.to_ascii_lowercase();
-    TIPS.iter()
-        .copied()
-        .filter(|entry| {
-            let name = slash_name_of(entry).to_ascii_lowercase();
-            name.starts_with(&lower)
-        })
+    slash_catalog::prefix_matches(&lower)
         .take(MAX_POPUP_ROWS)
         .collect()
 }
 
-/// Extract the `/<slash>` name from a tip string (`/foo — brief`).
-fn slash_name_of(tip: &str) -> &str {
-    let with_leading = tip.split(' ').next().unwrap_or("");
-    with_leading.strip_prefix('/').unwrap_or(with_leading)
-}
-
-/// Paint the popup inside `area`. Caller sizes `area` to
-/// `matches.len() + 2` rows (+2 for block borders).
+/// Paint the popup inside `area`. Two-column layout mirroring upstream
+/// autocomplete: slash name left, brief right. No border — the rows
+/// ARE the popup.
 pub fn draw(f: &mut Frame<'_>, area: Rect, ac: &Autocomplete) {
+    let name_col_w: usize = 32;
+    let total_w = area.width as usize;
+    let brief_col_w = total_w.saturating_sub(name_col_w + 2);
+
     let items: Vec<ListItem> = ac
         .matches
         .iter()
         .map(|entry| {
-            let name = slash_name_of(entry);
-            let brief = entry.strip_prefix(&format!("/{name} — ")).unwrap_or("");
+            let name_str = format!("/{}", entry.name);
+            let pad = name_col_w.saturating_sub(name_str.chars().count() + 1);
+            let brief_display: String = if entry.brief.chars().count() > brief_col_w {
+                let mut s: String = entry.brief.chars().take(brief_col_w.saturating_sub(1)).collect();
+                s.push('…');
+                s
+            } else {
+                entry.brief.to_string()
+            };
             ListItem::new(Line::from(vec![
-                Span::styled(
-                    format!("/{name}"),
-                    Style::default()
-                        .fg(theme::PRIMARY)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled("  ", Style::default()),
-                Span::styled(brief.to_string(), Style::default().fg(theme::MUTED)),
+                Span::styled(" ", Style::default()),
+                Span::styled(name_str, Style::default().fg(theme::TEXT)),
+                Span::styled(" ".repeat(pad), Style::default()),
+                Span::styled(brief_display, Style::default().fg(theme::MUTED)),
             ]))
         })
         .collect();
@@ -116,23 +114,11 @@ pub fn draw(f: &mut Frame<'_>, area: Rect, ac: &Autocomplete) {
     let mut list_state = ListState::default();
     list_state.select(Some(ac.selected));
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme::PRIMARY))
-        .title(Span::styled(
-            " /slash — ↑↓ navigate · enter run · esc close ",
-            Style::default().fg(theme::MUTED),
-        ));
+    let block = Block::default().borders(Borders::NONE);
 
     let list = List::new(items)
         .block(block)
-        .highlight_style(
-            Style::default()
-                .bg(theme::PRIMARY)
-                .fg(ratatui::style::Color::White)
-                .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol("▶ ");
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
 
     f.render_stateful_widget(list, area, &mut list_state);
 }
@@ -150,26 +136,17 @@ mod tests {
     #[test]
     fn from_input_matches_multiple_prefix() {
         let ac = Autocomplete::from_input("/s").unwrap();
-        let names: Vec<&str> = ac
-            .matches
-            .iter()
-            .map(|e| slash_name_of(e))
-            .collect();
-        // `/scope`, `/security`, `/swarm`, `/status` all start with `s`.
-        assert!(names.iter().any(|n| *n == "scope"));
-        assert!(names.iter().any(|n| *n == "security"));
-        assert!(names.iter().any(|n| *n == "swarm"));
-        assert!(names.iter().any(|n| *n == "status"));
+        let names: Vec<&str> = ac.matches.iter().map(|e| e.name).collect();
+        assert!(names.contains(&"scope"));
+        assert!(names.contains(&"security"));
+        assert!(names.contains(&"swarm"));
+        assert!(names.contains(&"status"));
     }
 
     #[test]
     fn from_input_case_insensitive() {
         let ac = Autocomplete::from_input("/HE").unwrap();
-        let names: Vec<&str> = ac
-            .matches
-            .iter()
-            .map(|e| slash_name_of(e))
-            .collect();
+        let names: Vec<&str> = ac.matches.iter().map(|e| e.name).collect();
         assert!(names.contains(&"help"));
     }
 
@@ -187,10 +164,8 @@ mod tests {
     fn navigate_bounds() {
         let mut ac = Autocomplete::from_input("/s").unwrap();
         let max = ac.matches.len() - 1;
-        // Start at 0; up does nothing.
         ac.move_up();
         assert_eq!(ac.selected, 0);
-        // Down until last.
         for _ in 0..100 {
             ac.move_down();
         }
@@ -199,10 +174,34 @@ mod tests {
 
     #[test]
     fn commit_returns_selected_name() {
-        let mut ac = Autocomplete::from_input("/he").unwrap();
+        let ac = Autocomplete::from_input("/he").unwrap();
         assert_eq!(ac.commit().as_deref(), Some("help"));
-        ac.move_down();
-        // No second `he*` match typically — commit still stable if it exists.
-        let _ = ac.commit();
+    }
+
+    #[test]
+    fn catalog_surfaces_newly_added_slashes() {
+        // Regression guard: before the single-source-of-truth refactor,
+        // `config`, `model`, `login`, etc. were missing from the tips
+        // list and thus the popup. They must now appear.
+        for name in ["config", "model", "login", "logout", "init", "mcp",
+                     "effort", "plan", "permissions", "diff", "skills",
+                     "agents", "context", "keybindings", "sandbox",
+                     "simplify", "verify", "update-config", "statusline",
+                     "init-verifiers"] {
+            let prefix = &name[..1];
+            let ac = Autocomplete::from_input(&format!("/{prefix}"))
+                .unwrap_or_else(|| panic!("no matches for prefix /{prefix}"));
+            let names: Vec<&str> = ac.matches.iter().map(|e| e.name).collect();
+            // The popup caps at MAX_POPUP_ROWS so a single prefix may
+            // hide an entry; walk all letters if needed.
+            if !names.contains(&name) {
+                // Fall back to checking the catalog directly — the
+                // popup hides it due to row cap but it still exists.
+                assert!(
+                    slash_catalog::lookup(name).is_some(),
+                    "/{name} missing from catalog"
+                );
+            }
+        }
     }
 }
