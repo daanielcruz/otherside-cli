@@ -1,26 +1,21 @@
-//! Tool schema registry. Schemas are `include_str!`'d from
-//! `otherside-cli/tool_corpus/*.json` so they compile into the binary
-//! and cannot drift at runtime.
+//! Tool schema registry sourced from `harness::build_tools_array`.
+//!
+//! 010 flipped the source of truth: schemas previously lived as
+//! hand-transcribed JSON under `otherside-cli/tool_corpus/`; that
+//! directory is retired. Today every advertised schema comes from
+//! `fingerprint_corpus/harness/tools/<Name>.json` (byte-matched against
+//! capture — see change 009's `tests/harness_artifacts.rs`) and flows
+//! through the harness builder at compile time.
 
 use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::harness;
 use crate::inference::{OpenAiFunctionDef, OpenAiToolDef};
 
-const READ_SCHEMA: &str = include_str!("../../tool_corpus/read.json");
-const GLOB_SCHEMA: &str = include_str!("../../tool_corpus/glob.json");
-const GREP_SCHEMA: &str = include_str!("../../tool_corpus/grep.json");
-const TASK_SCHEMA: &str = include_str!("../../tool_corpus/task.json");
-const BASH_SCHEMA: &str = include_str!("../../tool_corpus/bash.json");
-const BASHOUTPUT_SCHEMA: &str = include_str!("../../tool_corpus/bashoutput.json");
-const KILLBASH_SCHEMA: &str = include_str!("../../tool_corpus/killbash.json");
-const EDIT_SCHEMA: &str = include_str!("../../tool_corpus/edit.json");
-const WRITE_SCHEMA: &str = include_str!("../../tool_corpus/write.json");
-
-/// Loaded tool schema. Public so the translator can serialize it into
-/// the outbound Anthropic request's `tools` field.
+/// Loaded tool schema. Deserialized from a captured `Value`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolSchema {
     pub name: String,
@@ -29,23 +24,17 @@ pub struct ToolSchema {
 }
 
 fn load_all() -> Vec<ToolSchema> {
-    [
-        READ_SCHEMA,
-        GLOB_SCHEMA,
-        GREP_SCHEMA,
-        TASK_SCHEMA,
-        BASH_SCHEMA,
-        BASHOUTPUT_SCHEMA,
-        KILLBASH_SCHEMA,
-        EDIT_SCHEMA,
-        WRITE_SCHEMA,
-    ]
-    .into_iter()
-    .map(|s| serde_json::from_str(s).expect("bundled tool_corpus JSON is well-formed"))
-    .collect()
+    harness::tools::build_tools_array()
+        .into_iter()
+        .map(|v| {
+            serde_json::from_value(v)
+                .expect("harness tool Value deserializes into ToolSchema")
+        })
+        .collect()
 }
 
-/// All known tool schemas, loaded once.
+/// All advertised tool schemas, loaded once. Canonical order:
+/// Agent, Bash, Edit, Glob, Grep, Read, Skill, ToolSearch, Write.
 pub fn tool_schemas() -> &'static [ToolSchema] {
     static SCHEMAS: OnceLock<Vec<ToolSchema>> = OnceLock::new();
     SCHEMAS.get_or_init(load_all).as_slice()
@@ -57,8 +46,7 @@ pub fn schema_for(name: &str) -> Option<&'static ToolSchema> {
 }
 
 /// Convert every registered tool schema into the OpenAI-canonical tool
-/// definition shape the inference request carries. Call once per turn
-/// when building the request; cost is negligible (9 small clones).
+/// definition shape.
 pub fn openai_tools() -> Vec<OpenAiToolDef> {
     tool_schemas()
         .iter()
@@ -78,51 +66,80 @@ mod tests {
     use super::*;
 
     #[test]
-    fn all_schemas_loaded() {
-        let all = tool_schemas();
-        assert_eq!(all.len(), 9);
+    fn exactly_nine_advertised_schemas() {
+        assert_eq!(tool_schemas().len(), 9);
     }
 
     #[test]
-    fn edit_and_write_names_preserved() {
-        assert_eq!(schema_for("Edit").unwrap().name, "Edit");
-        assert_eq!(schema_for("Write").unwrap().name, "Write");
+    fn canonical_order_matches_harness() {
+        let names: Vec<&str> = tool_schemas().iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "Agent",
+                "Bash",
+                "Edit",
+                "Glob",
+                "Grep",
+                "Read",
+                "Skill",
+                "ToolSearch",
+                "Write"
+            ]
+        );
     }
 
     #[test]
-    fn bash_family_names_preserved_verbatim() {
-        // R-20 training anchors. Renames here are catastrophic.
-        assert_eq!(schema_for("Bash").unwrap().name, "Bash");
-        assert_eq!(schema_for("BashOutput").unwrap().name, "BashOutput");
-        assert_eq!(schema_for("KillBash").unwrap().name, "KillBash");
+    fn training_anchors_present() {
+        for anchor in [
+            "Agent",
+            "Bash",
+            "Edit",
+            "Glob",
+            "Grep",
+            "Read",
+            "Skill",
+            "ToolSearch",
+            "Write",
+        ] {
+            assert!(
+                schema_for(anchor).is_some(),
+                "missing training anchor: {anchor}"
+            );
+        }
     }
 
     #[test]
-    fn bash_schema_required_fields() {
+    fn retired_tool_names_absent() {
+        // Task was the pre-010 name for Agent; BashOutput/KillBash are
+        // now internal-only helpers inside the Bash dispatch path.
+        assert!(schema_for("Task").is_none());
+        assert!(schema_for("BashOutput").is_none());
+        assert!(schema_for("KillBash").is_none());
+    }
+
+    #[test]
+    fn bash_schema_keeps_command_required() {
         let s = schema_for("Bash").unwrap();
-        let req = s.input_schema["required"].as_array().unwrap();
-        assert!(req.iter().any(|v| v == "command"));
+        let required = s.input_schema["required"].as_array().unwrap();
+        assert!(required.iter().any(|v| v == "command"));
     }
 
     #[test]
-    fn bashoutput_schema_required_fields() {
-        let s = schema_for("BashOutput").unwrap();
-        let req = s.input_schema["required"].as_array().unwrap();
-        assert!(req.iter().any(|v| v == "bash_id"));
-    }
-
-    #[test]
-    fn killbash_schema_required_fields() {
-        let s = schema_for("KillBash").unwrap();
-        let req = s.input_schema["required"].as_array().unwrap();
-        assert!(req.iter().any(|v| v == "shell_id"));
+    fn bash_schema_carries_run_in_background_property() {
+        // run_in_background subsumes what BashOutput/KillBash used to
+        // handle via separate tool names.
+        let s = schema_for("Bash").unwrap();
+        assert!(s
+            .input_schema["properties"]
+            .as_object()
+            .unwrap()
+            .contains_key("run_in_background"));
     }
 
     #[test]
     fn read_schema_has_required_file_path() {
         let s = schema_for("Read").unwrap();
-        assert_eq!(s.name, "Read");
-        assert!(s.description.contains("Reads a file"));
         let required = s.input_schema["required"].as_array().unwrap();
         assert!(required.iter().any(|v| v == "file_path"));
     }
@@ -142,12 +159,26 @@ mod tests {
     }
 
     #[test]
-    fn task_schema_requires_description_and_prompt() {
-        let s = schema_for("Task").unwrap();
+    fn agent_schema_requires_description_and_prompt() {
+        let s = schema_for("Agent").unwrap();
         let required = s.input_schema["required"].as_array().unwrap();
         let names: Vec<&str> = required.iter().filter_map(|v| v.as_str()).collect();
         assert!(names.contains(&"description"));
         assert!(names.contains(&"prompt"));
+    }
+
+    #[test]
+    fn skill_schema_requires_skill_name() {
+        let s = schema_for("Skill").unwrap();
+        let required = s.input_schema["required"].as_array().unwrap();
+        assert!(required.iter().any(|v| v == "skill"));
+    }
+
+    #[test]
+    fn tool_search_schema_requires_query() {
+        let s = schema_for("ToolSearch").unwrap();
+        let required = s.input_schema["required"].as_array().unwrap();
+        assert!(required.iter().any(|v| v == "query"));
     }
 
     #[test]
@@ -159,16 +190,6 @@ mod tests {
             assert_eq!(rhs.function.name, lhs.name);
             assert_eq!(rhs.function.description, lhs.description);
             assert_eq!(rhs.function.parameters, lhs.input_schema);
-        }
-    }
-
-    #[test]
-    fn openai_tools_preserves_training_anchors() {
-        let tools = openai_tools();
-        let names: Vec<&str> = tools.iter().map(|t| t.function.name.as_str()).collect();
-        for anchor in ["Read", "Glob", "Grep", "Bash", "BashOutput",
-                       "KillBash", "Edit", "Write", "Task"] {
-            assert!(names.contains(&anchor), "missing training anchor: {anchor}");
         }
     }
 }
