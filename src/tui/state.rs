@@ -181,6 +181,8 @@ impl ConversationState {
                 role: m.role,
                 content: m.content.clone(),
                 name: None,
+                tool_calls: Vec::new(),
+                tool_call_id: None,
             })
             .collect()
     }

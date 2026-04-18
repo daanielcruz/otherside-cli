@@ -254,12 +254,16 @@ async fn cmd_print(cli: &Cli, prompt: &str) -> Result<()> {
             role: OpenAiChatRole::User,
             content: prompt.to_string(),
             name: None,
+            tool_calls: Vec::new(),
+            tool_call_id: None,
         }],
         stream: Some(true),
         max_tokens: None,
         temperature: None,
         top_p: None,
         stop: None,
+        tools: Vec::new(),
+        tool_choice: None,
         extra: serde_json::Map::new(),
     };
 

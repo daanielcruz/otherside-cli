@@ -144,14 +144,10 @@ mod tests {
             messages: vec![OpenAiChatMessage {
                 role: OpenAiChatRole::User,
                 content: "hi".to_string(),
-                name: None,
+                ..Default::default()
             }],
             stream: Some(true),
-            max_tokens: None,
-            temperature: None,
-            top_p: None,
-            stop: None,
-            extra: serde_json::Map::new(),
+            ..Default::default()
         }
     }
 

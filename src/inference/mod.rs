@@ -11,11 +11,12 @@
 //! - OpenAI's shape is the widest-supported client format.
 //! - CLIProxyAPI uses the same approach — borrowed convention.
 //!
-//! # Canonical scope in MVP
+//! # Canonical scope
 //!
-//! Messages carry a plain `String` in `content`. Array-of-blocks content
-//! (multimodal, tool use results) is deferred to Phase 2 when we start
-//! translating tool_use round-trips.
+//! Messages carry `content: String` for text. Tool calls on the assistant
+//! side use the OpenAI-shape `tool_calls` field; tool results come back as
+//! `role: "tool"` messages with a `tool_call_id` reference. Multimodal
+//! content blocks are still deferred.
 //!
 //! # Out of scope for these types
 //!
@@ -36,7 +37,7 @@ use serde::{Deserialize, Serialize};
 /// optional field so we don't emit `null`s — matches OpenAI's documented
 /// wire format and avoids gratuitous key divergence when the agent emits
 /// only a subset.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct OpenAiChatRequest {
     pub model: String,
 
@@ -60,6 +61,16 @@ pub struct OpenAiChatRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stop: Option<Vec<String>>,
 
+    /// OpenAI-shape tool catalog the model may call. Translator maps this
+    /// onto each provider's native tools surface (Anthropic `tools` array).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<OpenAiToolDef>,
+
+    /// How the model chooses whether to call tools. `auto` / `none` / an
+    /// explicit `{type:"function", function:{name:"..."}}` forcing a call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_choice: Option<serde_json::Value>,
+
     /// Additional fields that a client may set (e.g. `reasoning.effort` from
     /// OpenAI spec). Accepted for compatibility; the router's suffix-parsed
     /// thinking config takes priority per C12.
@@ -67,9 +78,45 @@ pub struct OpenAiChatRequest {
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
-/// A chat message. Content is a `String` in MVP — structured content
-/// blocks arrive in Phase 2.
+/// OpenAI function-calling tool definition. Serialized as
+/// `{ "type": "function", "function": { "name", "description", "parameters" } }`
+/// on the wire.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OpenAiToolDef {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub function: OpenAiFunctionDef,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OpenAiFunctionDef {
+    pub name: String,
+    pub description: String,
+    pub parameters: serde_json::Value,
+}
+
+/// A single tool call emitted by the assistant. Multiple calls may be
+/// batched in one message.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OpenAiToolCall {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub function: OpenAiToolCallFunction,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OpenAiToolCallFunction {
+    pub name: String,
+    /// JSON-string payload of arguments (OpenAI's design — args are
+    /// stringified JSON on the wire, not an object).
+    pub arguments: String,
+}
+
+/// A chat message. Content is a plain String; tool-role messages carry
+/// the result payload in `content` as a stringified blob (matches OpenAI
+/// wire format).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OpenAiChatMessage {
     pub role: OpenAiChatRole,
     pub content: String,
@@ -78,13 +125,23 @@ pub struct OpenAiChatMessage {
     /// `function` roles). Rarely used by our agent; kept for parity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+
+    /// Set on assistant messages that emitted tool calls.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<OpenAiToolCall>,
+
+    /// Set on `role: "tool"` messages to reference the call this result
+    /// answers (mirrors OpenAI's wire format).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
 }
 
 /// OpenAI chat completion roles.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum OpenAiChatRole {
     System,
+    #[default]
     User,
     Assistant,
     Tool,
@@ -116,7 +173,8 @@ pub struct OpenAiChoice {
 /// The streaming delta emitted on each chunk.
 ///
 /// On the first chunk, `role` is set to `Assistant` and `content` is
-/// usually empty. Subsequent chunks carry `content` text deltas.
+/// usually empty. Subsequent chunks carry `content` text deltas OR
+/// `tool_calls` deltas (partial name / arguments-string accumulation).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OpenAiDelta {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -124,6 +182,34 @@ pub struct OpenAiDelta {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
+
+    /// Per-call streaming deltas. Each entry has `index` + whatever
+    /// fragment of `function.arguments` / `function.name` this chunk
+    /// carries — the aggregator on the consumer side concatenates.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<OpenAiToolCallDelta>,
+}
+
+/// One tool-call fragment inside a streaming delta. OpenAI's shape:
+/// every event carries `index` + partial fields; consumers accumulate
+/// by index.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OpenAiToolCallDelta {
+    pub index: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub function: Option<OpenAiToolCallFunctionDelta>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OpenAiToolCallFunctionDelta {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<String>,
 }
 
 impl OpenAiChunk {
@@ -173,20 +259,16 @@ mod tests {
 
     #[test]
     fn minimal_request_round_trip() {
-        // Build a minimal request, serialize, deserialize, assert identity.
         let req = OpenAiChatRequest {
             model: "claude-opus-4-7".to_string(),
             messages: vec![OpenAiChatMessage {
                 role: OpenAiChatRole::User,
                 content: "hi".to_string(),
-                name: None,
+                ..Default::default()
             }],
             stream: Some(true),
             max_tokens: Some(1024),
-            temperature: None,
-            top_p: None,
-            stop: None,
-            extra: serde_json::Map::new(),
+            ..Default::default()
         };
 
         let json = serde_json::to_string(&req).unwrap();
@@ -196,16 +278,9 @@ mod tests {
 
     #[test]
     fn optional_none_fields_are_omitted() {
-        // `temperature: None` should not appear in the JSON output at all.
         let req = OpenAiChatRequest {
             model: "m".to_string(),
-            messages: vec![],
-            stream: None,
-            max_tokens: None,
-            temperature: None,
-            top_p: None,
-            stop: None,
-            extra: serde_json::Map::new(),
+            ..Default::default()
         };
         let json = serde_json::to_value(&req).unwrap();
         assert!(json.get("temperature").is_none());
@@ -231,7 +306,7 @@ mod tests {
         let msg = OpenAiChatMessage {
             role: OpenAiChatRole::Assistant,
             content: "".to_string(),
-            name: None,
+            ..Default::default()
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"role\":\"assistant\""));
@@ -249,6 +324,7 @@ mod tests {
                 delta: OpenAiDelta {
                     role: Some(OpenAiChatRole::Assistant),
                     content: Some("Hi".to_string()),
+                    tool_calls: Vec::new(),
                 },
                 finish_reason: None,
             }],

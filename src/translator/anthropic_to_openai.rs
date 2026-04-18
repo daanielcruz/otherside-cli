@@ -164,6 +164,7 @@ impl AnthropicStreamTranslator {
             OpenAiDelta {
                 role: Some(OpenAiChatRole::Assistant),
                 content: None,
+                tool_calls: Vec::new(),
             },
             None,
         )))
@@ -193,6 +194,7 @@ impl AnthropicStreamTranslator {
             OpenAiDelta {
                 role: None,
                 content: Some(text),
+                tool_calls: Vec::new(),
             },
             None,
         )))
@@ -229,6 +231,7 @@ impl AnthropicStreamTranslator {
             OpenAiDelta {
                 role: None,
                 content: None,
+                tool_calls: Vec::new(),
             },
             Some(finish_reason),
         )))

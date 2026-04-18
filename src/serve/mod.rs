@@ -144,6 +144,7 @@ mod tests {
                             delta: OpenAiDelta {
                                 role: Some(OpenAiChatRole::Assistant),
                                 content: None,
+                                tool_calls: Vec::new(),
                             },
                             finish_reason: None,
                         }],
@@ -158,6 +159,7 @@ mod tests {
                             delta: OpenAiDelta {
                                 role: None,
                                 content: Some("pong".into()),
+                                tool_calls: Vec::new(),
                             },
                             finish_reason: Some("stop".into()),
                         }],

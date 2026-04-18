@@ -176,13 +176,8 @@ mod tests {
         let p = reg.get("stub").unwrap();
         let req = OpenAiChatRequest {
             model: "m".to_string(),
-            messages: vec![],
             stream: Some(true),
-            max_tokens: None,
-            temperature: None,
-            top_p: None,
-            stop: None,
-            extra: serde_json::Map::new(),
+            ..Default::default()
         };
         let mut s = p.stream(req, None).await.unwrap();
         use futures::StreamExt;

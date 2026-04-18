@@ -272,6 +272,8 @@ async fn aggregate_response(
                 role: OpenAiChatRole::Assistant,
                 content,
                 name: None,
+                tool_calls: Vec::new(),
+                tool_call_id: None,
             },
             finish_reason,
         }],
@@ -353,6 +355,7 @@ mod tests {
                         None
                     },
                     content: content.map(|s| s.to_string()),
+                    tool_calls: Vec::new(),
                 },
                 finish_reason: finish.map(|s| s.to_string()),
             }],

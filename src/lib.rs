@@ -34,6 +34,7 @@
 //! This is a conscious design choice (D6 + C33-C36): features are gated
 //! server-side by fingerprint; diverging means silent feature loss.
 
+pub mod agent;
 pub mod auth;
 pub mod config;
 pub mod error;
@@ -43,5 +44,6 @@ pub mod provider;
 pub mod serve;
 pub mod statusline;
 pub mod thinking;
+pub mod tools;
 pub mod translator;
 pub mod tui;

@@ -273,6 +273,8 @@ fn handle_key(
                     temperature: None,
                     top_p: None,
                     stop: None,
+                    tools: Vec::new(),
+                    tool_choice: None,
                     extra: serde_json::Map::new(),
                 };
                 let thinking = *thinking;

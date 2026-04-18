@@ -110,6 +110,9 @@ crossterm = { version = "0.28", features = ["event-stream"] }
 # can `use unicode_width::UnicodeWidthChar`.
 unicode-width = "0.1"
 
+# Glob pattern matching for the Glob tool.
+glob = "0.3"
+
 [dev-dependencies]
 # Deterministic diffs for golden-file conformance tests.
 pretty_assertions = "1"
