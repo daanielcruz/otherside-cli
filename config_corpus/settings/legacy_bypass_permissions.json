@@ -1,6 +1,0 @@
-{
-  "defaultProvider": "anthropic-oauth",
-  "permissionMode": "bypassPermissions",
-  "skipDangerousModePermissionPrompt": true,
-  "autoDreamEnabled": true
-}

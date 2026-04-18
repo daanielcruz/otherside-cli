@@ -1,31 +1,55 @@
-//! Configuration: `~/.otherside/settings.json` + env overlay.
+//! Configuration: file-only loaders for `~/.otherside/` and the
+//! per-project overlay at `./.otherside/`.
 //!
-//! # Settings sources (in precedence order, highest first)
+//! # Scopes
 //!
-//! 1. CLI flag (`--model`, `--provider`, `--config`) — applied in `main.rs`
-//!    after [`load`] returns, by overwriting the relevant fields.
-//! 2. Environment variables prefixed `OTHERSIDE_*`.
-//! 3. User-global `~/.otherside/settings.json`.
-//! 4. Built-in defaults.
+//! Four sources compose the effective settings, applied in the order
+//! below (lowest-precedence first):
 //!
-//! Only `OTHERSIDE_*` env is honored — no `CLAUDE_CODE_*` compat (C5).
+//! 1. User-global `~/.otherside/settings.json`.
+//! 2. Project-local `./.otherside/settings.json` (walked from CWD).
+//! 3. CLI flags (`--provider`, `--model`, `--config`).
+//! 4. Admin policy `~/.otherside/managed-settings.json` +
+//!    `~/.otherside/managed-settings.d/*.json` — always wins.
 //!
-//! Project-local `./.otherside/settings.json` is planned for Phase 2 when
-//! interactive mode lands (workspace concept).
+//! Environment variables do **not** participate in per-field overrides.
+//! The only env var the config layer reads is `OTHERSIDE_CONFIG_DIR`,
+//! which relocates the config home (bootstrap-only). Any other
+//! `OTHERSIDE_*` that looks like a settings-key shadow is ignored with
+//! a one-time warning at startup (see `paths::warn_shadow_env_vars`).
 //!
 //! # Paths
 //!
-//! All paths are resolved via the `directories` crate so we correctly honor
-//! custom HOME. We deliberately use `~/.otherside/` (a dotfile folder
-//! inside HOME) rather than XDG_CONFIG_HOME so the layout matches the
-//! user-facing documentation exactly and is portable across darwin/linux
-//! without surprises.
+//! Paths are resolved via the `directories` crate so the code honors a
+//! custom `HOME`. We deliberately use `~/.otherside/` (a dotfile
+//! folder inside HOME) rather than XDG_CONFIG_HOME so the layout
+//! matches the user-facing docs exactly and is portable across
+//! darwin/linux without surprises.
 
 use std::path::{Path, PathBuf};
+use std::sync::RwLock;
 
-use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 
 use crate::error::{Error, Result};
+
+// 003 sub-modules: schema, scope resolvers, per-file loaders, merge
+// engine, validation.
+pub mod managed;
+pub mod mcp;
+pub mod merge;
+pub mod paths;
+pub mod projects;
+pub mod settings;
+pub mod state;
+pub mod validation;
+
+pub use settings::{
+    AnthropicOauthSettings, CodexSettings, GeminiCliSettings, HookEntry, HooksConfig,
+    OpenAiCompatibleSettings, PermissionMode, PermissionRule, PermissionsConfig,
+    ProviderSettings, Settings,
+};
+pub use validation::{Scope, ValidationWarning, WarningKind};
 
 /// Default settings file name inside the config directory.
 const SETTINGS_FILENAME: &str = "settings.json";
@@ -34,9 +58,6 @@ const SETTINGS_FILENAME: &str = "settings.json";
 const CREDENTIALS_FILENAME: &str = "credentials.json";
 
 /// The otherside config home. Defaults to `$HOME/.otherside`.
-///
-/// Exists as a function (not const) so tests can shadow via
-/// `OTHERSIDE_CONFIG_DIR` without touching the real home directory.
 pub fn config_dir() -> Result<PathBuf> {
     if let Some(override_dir) = std::env::var_os("OTHERSIDE_CONFIG_DIR") {
         return Ok(PathBuf::from(override_dir));
@@ -58,148 +79,281 @@ pub fn credentials_path() -> Result<PathBuf> {
     Ok(config_dir()?.join(CREDENTIALS_FILENAME))
 }
 
-/// Top-level settings, mirrored into `~/.otherside/settings.json`.
+// ------------------------------------------------------------------
+// Five-scope resolver (§10) + public `load_all` entry point (§11)
+// ------------------------------------------------------------------
+
+/// One scope's worth of input to the resolver. All four scopes are
+/// typed as raw JSON so unknown keys survive; conversion to `Settings`
+/// happens once at the end of `resolve()`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SettingsSource {
+    UserGlobal(Value),
+    ProjectLocal(Value),
+    Flag(Value),
+    Policy(Value),
+}
+
+/// Fully-resolved config for a single process. Callers read `settings`
+/// for the merged effective view; `warnings` is informational only and
+/// never fails the startup path.
+#[derive(Debug, Default, Clone)]
+pub struct EffectiveConfig {
+    pub settings: Settings,
+    pub projects: projects::ProjectsConfig,
+    pub state: state::State,
+    pub mcp: mcp::McpJsonConfig,
+    pub warnings: Vec<ValidationWarning>,
+}
+
+/// Pure resolver — all inputs explicit, single call site, no hidden
+/// env reads. Applies precedence UserGlobal < ProjectLocal < Flag,
+/// then Policy overlays LAST (managed policy always wins).
 ///
-/// All fields are optional so an empty or missing file round-trips to
-/// `Settings::default()`. Users can add only the keys they care about.
-#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default, deny_unknown_fields)]
-pub struct Settings {
-    /// Default provider ID. One of `anthropic-oauth`, `codex`, `gemini-cli`,
-    /// `openai-compatible`.
-    pub default_provider: Option<String>,
+/// Returns the effective `Settings` plus any `ValidationWarning`s the
+/// caller should surface.
+pub fn resolve(sources: &[SettingsSource]) -> (Settings, Vec<ValidationWarning>) {
+    let empty = || Value::Object(Map::new());
+    let mut user = empty();
+    let mut project = empty();
+    let mut flag = empty();
+    let mut policy = empty();
 
-    /// Default model ID, optionally with thinking suffix
-    /// (e.g. `claude-opus-4-7(xhigh)`).
-    pub default_model: Option<String>,
+    for s in sources {
+        match s {
+            SettingsSource::UserGlobal(v) => user = v.clone(),
+            SettingsSource::ProjectLocal(v) => project = v.clone(),
+            SettingsSource::Flag(v) => flag = v.clone(),
+            SettingsSource::Policy(v) => policy = v.clone(),
+        }
+    }
 
-    /// Log level: `error` / `warn` / `info` / `debug` / `trace`.
-    /// Overridden by `--verbose`, `--debug`, or `RUST_LOG`.
-    pub log_level: Option<String>,
+    let merged = merge::deep_merge(user, project);
+    let merged = merge::deep_merge(merged, flag);
+    let merged = merge::deep_merge(merged, policy);
 
-    /// Per-provider configuration.
-    pub providers: ProviderSettings,
+    let mut warnings = Vec::new();
+    let mut settings: Settings = match serde_json::from_value(merged.clone()) {
+        Ok(s) => s,
+        Err(_) => {
+            // Malformed cross-scope result — fall back to default and
+            // warn loudly. Unlikely to hit in practice because each
+            // scope parses individually in its loader.
+            warnings.push(ValidationWarning::new(
+                Scope::UserGlobal,
+                WarningKind::UnknownTopLevelKey,
+                "merged config produced non-Settings shape; using defaults".to_string(),
+            ));
+            Settings::default()
+        }
+    };
+
+    // §13.3 — surface unknown top-level keys as warnings (once per key).
+    for (k, _) in &settings.extra {
+        warnings.push(ValidationWarning::new(
+            Scope::UserGlobal,
+            WarningKind::UnknownTopLevelKey,
+            k.clone(),
+        ));
+    }
+
+    // §10.4 / §13.2 — drop invalid permission rules with warnings.
+    if let Some(perms) = settings.permissions.as_mut() {
+        prune_invalid(&mut perms.allow, "permissions.allow", &mut warnings);
+        prune_invalid(&mut perms.deny, "permissions.deny", &mut warnings);
+        prune_invalid(&mut perms.ask, "permissions.ask", &mut warnings);
+    }
+
+    (settings, warnings)
 }
 
-/// Per-provider settings (all optional — user opts in per provider).
-#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default, deny_unknown_fields)]
-pub struct ProviderSettings {
-    pub anthropic_oauth: Option<AnthropicOauthSettings>,
-    pub codex: Option<CodexSettings>,
-    pub gemini_cli: Option<GeminiCliSettings>,
-    pub openai_compatible: Option<OpenAiCompatibleSettings>,
+fn prune_invalid(
+    rules: &mut Vec<PermissionRule>,
+    lane: &str,
+    warnings: &mut Vec<ValidationWarning>,
+) {
+    let mut i = 0;
+    while i < rules.len() {
+        if !rules[i].is_valid() {
+            let dropped = rules.remove(i);
+            warnings.push(ValidationWarning::new(
+                Scope::UserGlobal,
+                WarningKind::InvalidPermissionRule,
+                format!("{lane}: dropped rule missing required field: {dropped:?}"),
+            ));
+        } else {
+            i += 1;
+        }
+    }
 }
 
-/// Anthropic OAuth provider settings. All knobs override fingerprint
-/// defaults — usually left empty.
-#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default, deny_unknown_fields)]
-pub struct AnthropicOauthSettings {
-    /// Override OAuth client_id (corresponds to `CLAUDE_CODE_OAUTH_CLIENT_ID`
-    /// upstream).
-    pub client_id: Option<String>,
+// Session-scoped cache for `load_all`. `reset_cache()` clears it so a
+// writer can force the next read to pick up fresh disk state.
+static CACHE: RwLock<Option<EffectiveConfig>> = RwLock::new(None);
 
-    /// Override OAuth base URL (FedStart deployments only). Corresponds to
-    /// `CLAUDE_CODE_CUSTOM_OAUTH_URL` upstream.
-    pub custom_oauth_url: Option<String>,
+/// Top-level entry that does the five-scope merge in one call.
+///
+/// Reads every scope from disk (honoring `OTHERSIDE_CONFIG_DIR`),
+/// collapses with the resolver, loads `projects.json` + `state.json` +
+/// merged `.mcp.json` chain, caches the result.
+pub fn load_all(cwd: &Path, cli_flags: Value) -> Result<EffectiveConfig> {
+    if let Some(cached) = CACHE.read().ok().and_then(|g| g.clone()) {
+        return Ok(cached);
+    }
 
-    /// Refresh safety margin in seconds. Token refreshes `safety_margin`
-    /// seconds before `expires_at`.
-    pub refresh_safety_margin_seconds: Option<u64>,
+    paths::warn_shadow_env_vars();
+
+    let user_value = read_json_or_empty(&settings_path()?)?;
+    let project_value = match paths::project_settings_path(cwd) {
+        Some(p) => read_json_or_empty(&p)?,
+        None => Value::Object(Map::new()),
+    };
+    let policy_value = managed::load_effective()?;
+
+    let sources = [
+        SettingsSource::UserGlobal(user_value),
+        SettingsSource::ProjectLocal(project_value),
+        SettingsSource::Flag(cli_flags),
+        SettingsSource::Policy(policy_value),
+    ];
+
+    let (settings, warnings) = resolve(&sources);
+    let projects = projects::load().unwrap_or_default();
+    let state = state::load().unwrap_or_default();
+    let mcp = mcp::load_effective(cwd).unwrap_or_default();
+
+    let effective = EffectiveConfig {
+        settings,
+        projects,
+        state,
+        mcp,
+        warnings,
+    };
+    if let Ok(mut guard) = CACHE.write() {
+        *guard = Some(effective.clone());
+    }
+    Ok(effective)
 }
 
-/// Codex (ChatGPT OAuth) provider settings. Populated post-MVP.
-#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default, deny_unknown_fields)]
-pub struct CodexSettings {}
-
-/// Gemini CLI (Google OAuth) provider settings. Populated post-MVP.
-#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default, deny_unknown_fields)]
-pub struct GeminiCliSettings {}
-
-/// OpenAI-compatible provider settings — requires user-supplied endpoint.
-#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default, deny_unknown_fields)]
-pub struct OpenAiCompatibleSettings {
-    /// Base URL, e.g. `https://api.openai.com` or `http://localhost:8080`.
-    pub base_url: Option<String>,
-
-    /// API key. Read from env `OTHERSIDE_OPENAI_COMPATIBLE_API_KEY` if unset.
-    pub api_key: Option<String>,
+/// Drop the cached `EffectiveConfig`. Call after any `save()` so the
+/// next `load_all()` re-reads fresh disk state.
+pub fn reset_cache() {
+    if let Ok(mut guard) = CACHE.write() {
+        *guard = None;
+    }
 }
+
+fn read_json_or_empty(path: &Path) -> Result<Value> {
+    if !path.exists() {
+        return Ok(Value::Object(Map::new()));
+    }
+    let bytes = std::fs::read(path).map_err(|e| {
+        Error::Config(format!("failed to read {}: {e}", path.display()))
+    })?;
+    serde_json::from_slice(&bytes).map_err(|e| {
+        Error::Config(format!("malformed settings in {}: {e}", path.display()))
+    })
+}
+
+// ------------------------------------------------------------------
+// Back-compat shims — keep existing `load()` / `load_from()` callers
+// working until main.rs + serve migrate to `load_all()`.
+// ------------------------------------------------------------------
 
 /// Load settings from the default location (`~/.otherside/settings.json`).
-///
-/// If the file does not exist, returns `Settings::default()`. Other I/O
-/// errors surface as `Error::Config`.
 pub fn load() -> Result<Settings> {
     let path = settings_path()?;
     load_from(&path)
 }
 
 /// Load settings from a specific path (useful for `--config` flag).
-///
-/// - Missing file → `Settings::default()`
-/// - Malformed JSON or unknown keys → `Error::Config`
-///
-/// After loading the file, environment overrides are applied via
-/// [`apply_env_overrides`].
 pub fn load_from(path: &Path) -> Result<Settings> {
-    let mut settings = if path.exists() {
-        let bytes = std::fs::read(path).map_err(|e| {
-            Error::Config(format!("failed to read {}: {e}", path.display()))
-        })?;
-        serde_json::from_slice::<Settings>(&bytes).map_err(|e| {
-            Error::Config(format!("malformed settings in {}: {e}", path.display()))
-        })?
-    } else {
-        Settings::default()
-    };
+    paths::warn_shadow_env_vars();
 
-    apply_env_overrides(&mut settings);
-    Ok(settings)
+    if !path.exists() {
+        return Ok(Settings::default());
+    }
+
+    let bytes = std::fs::read(path).map_err(|e| {
+        Error::Config(format!("failed to read {}: {e}", path.display()))
+    })?;
+    serde_json::from_slice::<Settings>(&bytes).map_err(|e| {
+        Error::Config(format!("malformed settings in {}: {e}", path.display()))
+    })
 }
 
-/// Apply `OTHERSIDE_*` environment variable overrides to a settings value.
-///
-/// The env-var → field mapping is narrow on purpose — only ergonomic
-/// overrides are exposed, not every field.
-pub fn apply_env_overrides(settings: &mut Settings) {
-    if let Ok(v) = std::env::var("OTHERSIDE_PROVIDER") {
-        settings.default_provider = Some(v);
-    }
-    if let Ok(v) = std::env::var("OTHERSIDE_MODEL") {
-        settings.default_model = Some(v);
-    }
-    if let Ok(v) = std::env::var("OTHERSIDE_LOG_LEVEL") {
-        settings.log_level = Some(v);
+// ------------------------------------------------------------------
+// Atomic write helper (§12)
+// ------------------------------------------------------------------
+
+/// Write `bytes` to `path` via a temp file + rename, fsyncing before
+/// the rename so a crash mid-write leaves either the old file or the
+/// new one — never a truncated in-between state. On unix with
+/// `mode_0600 = true`, the temp file is chmodded before the rename
+/// so the final file is never world-readable.
+pub fn write_atomic(path: &Path, bytes: &[u8], mode_0600: bool) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            Error::Config(format!("failed to create {}: {e}", parent.display()))
+        })?;
     }
 
-    // Provider-specific env overrides.
-    if let Ok(v) = std::env::var("OTHERSIDE_OPENAI_COMPATIBLE_BASE_URL") {
-        let p = settings.providers.openai_compatible.get_or_insert_default();
-        p.base_url = Some(v);
+    let tmp = tmp_sibling(path);
+    {
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&tmp)
+            .map_err(|e| Error::Config(format!("failed to open {}: {e}", tmp.display())))?;
+
+        use std::io::Write;
+        file.write_all(bytes)
+            .map_err(|e| Error::Config(format!("failed to write {}: {e}", tmp.display())))?;
+        file.sync_all()
+            .map_err(|e| Error::Config(format!("failed to fsync {}: {e}", tmp.display())))?;
     }
-    if let Ok(v) = std::env::var("OTHERSIDE_OPENAI_COMPATIBLE_API_KEY") {
-        let p = settings.providers.openai_compatible.get_or_insert_default();
-        p.api_key = Some(v);
+
+    #[cfg(unix)]
+    if mode_0600 {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o600);
+        std::fs::set_permissions(&tmp, perms).map_err(|e| {
+            Error::Config(format!("failed to chmod {}: {e}", tmp.display()))
+        })?;
     }
+    #[cfg(not(unix))]
+    let _ = mode_0600;
+
+    std::fs::rename(&tmp, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        Error::Config(format!(
+            "failed to rename {} → {}: {e}",
+            tmp.display(),
+            path.display()
+        ))
+    })
+}
+
+fn tmp_sibling(path: &Path) -> PathBuf {
+    let mut buf = path.to_path_buf();
+    let name = path
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "tmp".to_string());
+    buf.set_file_name(format!(".{name}.tmp.{}", std::process::id()));
+    buf
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use std::fs;
     use std::sync::Mutex;
 
-    // Env vars are process-global. Gate tests that read/write env with a
-    // mutex so concurrent `cargo test` threads don't interleave.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
-    /// Guard that clears the env vars we touch, then restores on drop.
-    /// Keeps test isolation without leaking state between tests.
     struct EnvGuard {
         saved: Vec<(&'static str, Option<String>)>,
         _lock: std::sync::MutexGuard<'static, ()>,
@@ -213,8 +367,6 @@ mod tests {
                 .map(|&k| (k, std::env::var(k).ok()))
                 .collect::<Vec<_>>();
             for &k in vars {
-                // SAFETY: tests are single-threaded within the guard scope
-                // via the mutex.
                 unsafe { std::env::remove_var(k) };
             }
             Self { saved, _lock: lock }
@@ -236,31 +388,21 @@ mod tests {
 
     #[test]
     fn missing_file_yields_defaults() {
-        let _g = EnvGuard::new(&[
-            "OTHERSIDE_PROVIDER",
-            "OTHERSIDE_MODEL",
-            "OTHERSIDE_LOG_LEVEL",
-            "OTHERSIDE_CONFIG_DIR",
-        ]);
+        let _g = EnvGuard::new(&["OTHERSIDE_CONFIG_DIR"]);
         let tmp = std::env::temp_dir().join("otherside-test-missing");
         let _ = fs::remove_dir_all(&tmp);
         unsafe { std::env::set_var("OTHERSIDE_CONFIG_DIR", &tmp) };
-
         let settings = load().unwrap();
         assert_eq!(settings, Settings::default());
     }
 
     #[test]
     fn parses_minimal_settings_file() {
-        let _g = EnvGuard::new(&[
-            "OTHERSIDE_PROVIDER",
-            "OTHERSIDE_MODEL",
-            "OTHERSIDE_LOG_LEVEL",
-        ]);
+        let _g = EnvGuard::new(&[]);
         let tmp = std::env::temp_dir().join("otherside-test-parse.json");
         fs::write(
             &tmp,
-            r#"{"default_provider":"anthropic-oauth","default_model":"claude-opus-4-7"}"#,
+            r#"{"defaultProvider":"anthropic-oauth","defaultModel":"claude-opus-4-7"}"#,
         )
         .unwrap();
         let settings = load_from(&tmp).unwrap();
@@ -270,42 +412,20 @@ mod tests {
     }
 
     #[test]
-    fn env_override_beats_file() {
-        let _g = EnvGuard::new(&[
-            "OTHERSIDE_PROVIDER",
-            "OTHERSIDE_MODEL",
-            "OTHERSIDE_LOG_LEVEL",
-        ]);
-        let tmp = std::env::temp_dir().join("otherside-test-env.json");
-        fs::write(
-            &tmp,
-            r#"{"default_provider":"anthropic-oauth","default_model":"claude-opus-4-7"}"#,
-        )
-        .unwrap();
-        unsafe {
-            std::env::set_var("OTHERSIDE_PROVIDER", "codex");
-            std::env::set_var("OTHERSIDE_MODEL", "gpt-5-codex(high)");
-        }
-        let settings = load_from(&tmp).unwrap();
-        assert_eq!(settings.default_provider.as_deref(), Some("codex"));
-        assert_eq!(settings.default_model.as_deref(), Some("gpt-5-codex(high)"));
-        fs::remove_file(&tmp).ok();
-    }
-
-    #[test]
-    fn unknown_keys_rejected() {
+    fn unknown_keys_pass_through() {
         let _g = EnvGuard::new(&[]);
-        let tmp = std::env::temp_dir().join("otherside-test-unknown.json");
-        fs::write(&tmp, r#"{"unexpected_key":"value"}"#).unwrap();
-        let err = load_from(&tmp).unwrap_err();
-        assert!(matches!(err, Error::Config(_)), "got {err:?}");
+        let tmp = std::env::temp_dir().join("otherside-test-unknown-pt.json");
+        fs::write(&tmp, r#"{"unexpectedKey":"value","nested":{"x":1}}"#).unwrap();
+        let s = load_from(&tmp).unwrap();
+        assert!(s.extra.contains_key("unexpectedKey"));
+        assert!(s.extra.contains_key("nested"));
         fs::remove_file(&tmp).ok();
     }
 
     #[test]
     fn malformed_json_surfaces_config_error() {
         let _g = EnvGuard::new(&[]);
-        let tmp = std::env::temp_dir().join("otherside-test-malformed.json");
+        let tmp = std::env::temp_dir().join("otherside-test-malformed-mod.json");
         fs::write(&tmp, "not json at all").unwrap();
         let err = load_from(&tmp).unwrap_err();
         assert!(matches!(err, Error::Config(_)));
@@ -324,5 +444,191 @@ mod tests {
             credentials_path().unwrap(),
             PathBuf::from("/tmp/custom-otherside/credentials.json")
         );
+    }
+
+    // ---- §10 resolver tests ----
+
+    #[test]
+    fn resolve_user_only() {
+        let (s, warnings) = resolve(&[SettingsSource::UserGlobal(
+            json!({"defaultProvider":"anthropic-oauth"}),
+        )]);
+        assert_eq!(s.default_provider.as_deref(), Some("anthropic-oauth"));
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn resolve_project_overrides_user() {
+        let (s, _) = resolve(&[
+            SettingsSource::UserGlobal(json!({"defaultProvider":"anthropic-oauth"})),
+            SettingsSource::ProjectLocal(json!({"defaultProvider":"codex"})),
+        ]);
+        assert_eq!(s.default_provider.as_deref(), Some("codex"));
+    }
+
+    #[test]
+    fn resolve_flag_overrides_project() {
+        let (s, _) = resolve(&[
+            SettingsSource::UserGlobal(json!({"defaultProvider":"anthropic-oauth"})),
+            SettingsSource::ProjectLocal(json!({"defaultProvider":"codex"})),
+            SettingsSource::Flag(json!({"defaultProvider":"gemini-cli"})),
+        ]);
+        assert_eq!(s.default_provider.as_deref(), Some("gemini-cli"));
+    }
+
+    #[test]
+    fn resolve_policy_beats_everything() {
+        let (s, _) = resolve(&[
+            SettingsSource::UserGlobal(json!({"defaultProvider":"anthropic-oauth"})),
+            SettingsSource::ProjectLocal(json!({"defaultProvider":"codex"})),
+            SettingsSource::Flag(json!({"defaultProvider":"gemini-cli"})),
+            SettingsSource::Policy(json!({"defaultProvider":"openai-compatible"})),
+        ]);
+        assert_eq!(s.default_provider.as_deref(), Some("openai-compatible"));
+    }
+
+    #[test]
+    fn resolve_policy_permission_mode_wins() {
+        // §10.6: policy yolo beats user default
+        let (s, _) = resolve(&[
+            SettingsSource::UserGlobal(json!({"permissionMode":"default"})),
+            SettingsSource::Policy(json!({"permissionMode":"yolo"})),
+        ]);
+        assert_eq!(s.permission_mode, Some(PermissionMode::Yolo));
+    }
+
+    #[test]
+    fn resolve_array_concat_across_scopes() {
+        // Permissions deny list across three scopes — all three entries survive.
+        let (s, _) = resolve(&[
+            SettingsSource::UserGlobal(json!({
+                "permissions":{"deny":[{"toolName":"Bash","matchPattern":"rm -rf *"}]}
+            })),
+            SettingsSource::ProjectLocal(json!({
+                "permissions":{"deny":[{"toolName":"Bash","matchPattern":"sudo *"}]}
+            })),
+            SettingsSource::Policy(json!({
+                "permissions":{"deny":[{"toolName":"Write","matchPattern":"**/secrets/**"}]}
+            })),
+        ]);
+        let p = s.permissions.unwrap();
+        assert_eq!(p.deny.len(), 3);
+    }
+
+    #[test]
+    fn resolve_drops_invalid_rules_with_warning() {
+        // §10.4: one bad rule — dropped, warning issued, rest pass.
+        let (s, warnings) = resolve(&[SettingsSource::UserGlobal(json!({
+            "permissions":{"allow":[
+                {"toolName":"Read","matchPattern":"*"},
+                {"toolName":"Bash"}
+            ]}
+        }))]);
+        let p = s.permissions.unwrap();
+        assert_eq!(p.allow.len(), 1);
+        assert_eq!(p.allow[0].tool_name.as_deref(), Some("Read"));
+        assert!(warnings
+            .iter()
+            .any(|w| matches!(w.kind, WarningKind::InvalidPermissionRule)));
+    }
+
+    #[test]
+    fn resolve_unknown_top_level_key_warns() {
+        let (_, warnings) = resolve(&[SettingsSource::UserGlobal(json!({
+            "experimentalFutureKey": 42
+        }))]);
+        assert!(warnings
+            .iter()
+            .any(|w| matches!(w.kind, WarningKind::UnknownTopLevelKey)
+                && w.detail == "experimentalFutureKey"));
+    }
+
+    #[test]
+    fn resolve_empty_returns_default() {
+        let (s, warnings) = resolve(&[]);
+        assert_eq!(s, Settings::default());
+        assert!(warnings.is_empty());
+    }
+
+    // ---- §11 load_all cache ----
+
+    #[test]
+    fn load_all_caches_and_reset_cache_reruns() {
+        let _g = EnvGuard::new(&["OTHERSIDE_CONFIG_DIR"]);
+        let tmp = std::env::temp_dir().join("otherside-test-loadall");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        unsafe { std::env::set_var("OTHERSIDE_CONFIG_DIR", &tmp) };
+        reset_cache();
+
+        // No files yet — defaults.
+        let first = load_all(Path::new("/"), Value::Object(Map::new())).unwrap();
+        assert_eq!(first.settings.default_provider, None);
+
+        // Write a file, but don't reset — still cached.
+        fs::write(
+            tmp.join("settings.json"),
+            r#"{"defaultProvider":"anthropic-oauth"}"#,
+        )
+        .unwrap();
+        let cached = load_all(Path::new("/"), Value::Object(Map::new())).unwrap();
+        assert_eq!(cached.settings.default_provider, None, "cache still held");
+
+        // Reset — now re-read.
+        reset_cache();
+        let fresh = load_all(Path::new("/"), Value::Object(Map::new())).unwrap();
+        assert_eq!(
+            fresh.settings.default_provider.as_deref(),
+            Some("anthropic-oauth")
+        );
+
+        reset_cache();
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    // ---- §12 atomic write ----
+
+    #[test]
+    fn write_atomic_lands_file() {
+        let _g = EnvGuard::new(&[]);
+        let tmp = std::env::temp_dir().join(format!(
+            "otherside-atomic-{}.json",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&tmp);
+        write_atomic(&tmp, b"{\"x\":1}", false).unwrap();
+        let got = fs::read(&tmp).unwrap();
+        assert_eq!(&got, b"{\"x\":1}");
+        fs::remove_file(&tmp).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_atomic_chmod_0600_on_unix() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = std::env::temp_dir().join(format!(
+            "otherside-atomic-0600-{}.json",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&tmp);
+        write_atomic(&tmp, b"{}", true).unwrap();
+        let meta = fs::metadata(&tmp).unwrap();
+        assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+        fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn write_atomic_no_partial_file_on_parent_missing() {
+        // Target parent doesn't exist before the call — create_dir_all
+        // covers it; the file lands cleanly.
+        let tmp_root = std::env::temp_dir().join(format!(
+            "otherside-atomic-mkdir-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&tmp_root);
+        let target = tmp_root.join("nested/child/file.json");
+        write_atomic(&target, b"{\"ok\":true}", false).unwrap();
+        assert!(target.exists());
+        fs::remove_dir_all(&tmp_root).ok();
     }
 }

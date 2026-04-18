@@ -23,8 +23,7 @@ config_corpus/
 │   ├── with_hooks.json                    — pre/post tool hooks
 │   ├── invalid_permission_rule.json       — one good + one malformed rule
 │   ├── malformed.json                     — syntactically broken JSON
-│   ├── yolo_mode.json                     — canonical yolo permission mode
-│   └── legacy_bypass_permissions.json     — legacy bypassPermissions (migrate-on-read)
+│   └── yolo_mode.json                     — canonical yolo permission mode
 ├── projects/
 │   ├── empty.json
 │   └── with_trust.json
