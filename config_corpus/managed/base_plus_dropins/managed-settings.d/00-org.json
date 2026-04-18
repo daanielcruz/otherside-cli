@@ -1,0 +1,9 @@
+{
+  "allowManagedHooksOnly": false,
+  "allowedMcpServers": ["filesystem"],
+  "permissions": {
+    "deny": [
+      { "toolName": "Bash", "matchPattern": "curl *" }
+    ]
+  }
+}

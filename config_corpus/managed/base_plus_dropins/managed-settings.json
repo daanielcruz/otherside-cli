@@ -1,0 +1,9 @@
+{
+  "permissionMode": "default",
+  "strictPluginOnlyCustomization": true,
+  "permissions": {
+    "deny": [
+      { "toolName": "Bash", "matchPattern": "rm -rf *" }
+    ]
+  }
+}

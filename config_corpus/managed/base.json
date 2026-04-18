@@ -1,0 +1,21 @@
+{
+  "permissionMode": "default",
+  "hasAcceptedYoloDialog": false,
+  "strictPluginOnlyCustomization": true,
+  "allowManagedHooksOnly": true,
+  "allowedMcpServers": ["filesystem", "git"],
+  "disabledMcpServers": ["local-tool", "experimental"],
+  "permissions": {
+    "deny": [
+      { "toolName": "Bash", "matchPattern": "curl *" },
+      { "toolName": "Bash", "matchPattern": "wget *" },
+      { "toolName": "Write", "matchPattern": "/etc/**" },
+      { "toolName": "Write", "matchPattern": "/usr/**" }
+    ]
+  },
+  "hooks": {
+    "preToolUse": [
+      { "matcher": "Bash", "command": "/usr/local/sbin/audit-bash.sh" }
+    ]
+  }
+}

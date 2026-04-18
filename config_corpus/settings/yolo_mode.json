@@ -1,0 +1,16 @@
+{
+  "defaultProvider": "anthropic-oauth",
+  "permissionMode": "yolo",
+  "hasAcceptedYoloDialog": true,
+  "permissions": {
+    "allow": [
+      { "toolName": "Read", "matchPattern": "*" },
+      { "toolName": "Glob", "matchPattern": "*" },
+      { "toolName": "Grep", "matchPattern": "*" },
+      { "toolName": "Bash", "matchPattern": "*" },
+      { "toolName": "Edit", "matchPattern": "*" },
+      { "toolName": "Write", "matchPattern": "*" }
+    ],
+    "deny": []
+  }
+}

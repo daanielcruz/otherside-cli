@@ -1,0 +1,14 @@
+{
+  "permissionMode": "default",
+  "permissions": {
+    "allow": [
+      { "toolName": "Read", "matchPattern": "*" },
+      { "toolName": "Bash" },
+      { "matchPattern": "cargo test*" },
+      { "toolName": "Grep", "matchPattern": "*" }
+    ],
+    "deny": [
+      { "toolName": "Bash", "matchPattern": "rm -rf *" }
+    ]
+  }
+}

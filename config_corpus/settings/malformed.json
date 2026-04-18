@@ -1,0 +1,8 @@
+{
+  "defaultProvider": "anthropic-oauth",
+  "defaultModel":
+  "permissionMode": "default"
+  "providers": {
+    "anthropicOauth":
+  },,,
+}

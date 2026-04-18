@@ -1,0 +1,19 @@
+{
+  "defaultProvider": "anthropic-oauth",
+  "defaultModel": "claude-opus-4-7",
+  "permissionMode": "default",
+  "hasAcceptedYoloDialog": false,
+  "experimentalFeatureFromFutureVersion": {
+    "someKey": "someValue",
+    "nested": {
+      "arr": [1, 2, 3]
+    }
+  },
+  "customUserAnnotation": "kept across round-trips",
+  "providers": {
+    "anthropicOauth": {
+      "refreshSafetyMarginSeconds": 30,
+      "futureProviderKnob": "preserved-verbatim"
+    }
+  }
+}

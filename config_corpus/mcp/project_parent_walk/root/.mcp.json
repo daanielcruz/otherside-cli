@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "filesystem": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]
+    },
+    "git": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["mcp-server-git"]
+    },
+    "parent-only-server": {
+      "type": "stdio",
+      "command": "parent-only",
+      "args": []
+    }
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "projects": {
+    "/Users/example/Desktop/otherside": {
+      "trusted": true,
+      "lastAccessed": "2026-04-18T12:34:56Z",
+      "history": [
+        { "prompt": "fix the auth flow", "ts": "2026-04-17T10:00:00Z" },
+        { "prompt": "run cargo test", "ts": "2026-04-18T11:15:00Z" }
+      ]
+    },
+    "/Users/example/Desktop/scratch": {
+      "trusted": false,
+      "lastAccessed": "2026-03-01T09:00:00Z",
+      "history": []
+    },
+    "/tmp/one-off": {
+      "trusted": false,
+      "lastAccessed": null,
+      "history": []
+    }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "allowManagedHooksOnly": true,
+  "allowedMcpServers": ["filesystem", "git", "team-internal-mcp"],
+  "permissions": {
+    "deny": [
+      { "toolName": "Write", "matchPattern": "**/secrets/**" }
+    ]
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "mcpServers": {
+    "local-tool": {
+      "type": "stdio",
+      "command": "/usr/local/bin/my-mcp",
+      "args": []
+    },
+    "sse-endpoint": {
+      "type": "sse",
+      "url": "https://mcp.example.com/sse",
+      "headers": {
+        "Authorization": "Bearer placeholder-token",
+        "X-Client": "otherside"
+      }
+    },
+    "http-endpoint": {
+      "type": "http",
+      "url": "https://mcp.example.com/rpc",
+      "headers": {
+        "Authorization": "Bearer placeholder-token"
+      }
+    },
+    "ws-endpoint": {
+      "type": "ws",
+      "url": "wss://mcp.example.com/socket"
+    },
+    "sdk-embedded": {
+      "type": "sdk",
+      "package": "@org/some-sdk-server",
+      "config": {
+        "apiKey": "placeholder",
+        "region": "us-east-1"
+      }
+    }
+  }
+}

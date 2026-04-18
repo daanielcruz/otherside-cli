@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "git": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["mcp-server-git", "--verbose"]
+    },
+    "child-only-server": {
+      "type": "http",
+      "url": "http://localhost:9090/mcp"
+    }
+  }
+}

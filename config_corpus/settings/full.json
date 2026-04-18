@@ -1,0 +1,52 @@
+{
+  "defaultProvider": "anthropic-oauth",
+  "defaultModel": "claude-opus-4-7(xhigh)",
+  "logLevel": "info",
+  "permissionMode": "default",
+  "hasAcceptedYoloDialog": false,
+  "autoDedupMemEnabled": true,
+  "env": {
+    "GIT_AUTHOR_NAME": "Elliot",
+    "EDITOR": "nvim"
+  },
+  "permissions": {
+    "allow": [
+      { "toolName": "Read", "matchPattern": "*" },
+      { "toolName": "Glob", "matchPattern": "*" },
+      { "toolName": "Grep", "matchPattern": "*" },
+      { "toolName": "Bash", "matchPattern": "git status" },
+      { "toolName": "Bash", "matchPattern": "git diff*" }
+    ],
+    "deny": [
+      { "toolName": "Bash", "matchPattern": "rm -rf *" },
+      { "toolName": "Bash", "matchPattern": "sudo *" }
+    ]
+  },
+  "hooks": {
+    "preToolUse": [
+      { "matcher": "Bash", "command": "echo pre: $TOOL_INPUT" }
+    ],
+    "postToolUse": [
+      { "matcher": "Edit", "command": "git diff --stat" }
+    ],
+    "userPromptSubmit": [],
+    "stop": []
+  },
+  "providers": {
+    "anthropicOauth": {
+      "clientId": null,
+      "customOauthUrl": null,
+      "refreshSafetyMarginSeconds": 60
+    },
+    "codex": {},
+    "geminiCli": {},
+    "openaiCompatible": {
+      "baseUrl": "http://localhost:8080",
+      "apiKey": null
+    }
+  },
+  "strictPluginOnlyCustomization": false,
+  "allowManagedHooksOnly": false,
+  "allowedMcpServers": [],
+  "disabledMcpServers": []
+}

@@ -1,0 +1,34 @@
+{
+  "permissionMode": "default",
+  "permissions": {
+    "allow": [
+      { "toolName": "Read", "matchPattern": "*" },
+      { "toolName": "Glob", "matchPattern": "*" },
+      { "toolName": "Grep", "matchPattern": "*" },
+      { "toolName": "Bash", "matchPattern": "git status" },
+      { "toolName": "Bash", "matchPattern": "git diff*" },
+      { "toolName": "Bash", "matchPattern": "git log*" },
+      { "toolName": "Bash", "matchPattern": "cargo test*" },
+      { "toolName": "Bash", "matchPattern": "cargo build*" },
+      { "toolName": "Bash", "matchPattern": "cargo clippy*" },
+      { "toolName": "Edit", "matchPattern": "*.rs" },
+      { "toolName": "Write", "matchPattern": "*.rs" },
+      { "toolName": "Write", "matchPattern": "*.md" }
+    ],
+    "deny": [
+      { "toolName": "Bash", "matchPattern": "rm -rf *" },
+      { "toolName": "Bash", "matchPattern": "sudo *" },
+      { "toolName": "Bash", "matchPattern": "curl * | sh*" },
+      { "toolName": "Bash", "matchPattern": "wget * | sh*" },
+      { "toolName": "Bash", "matchPattern": "git push --force*" },
+      { "toolName": "Edit", "matchPattern": "**/credentials.json" },
+      { "toolName": "Write", "matchPattern": "**/credentials.json" },
+      { "toolName": "Edit", "matchPattern": "**/.env" },
+      { "toolName": "Write", "matchPattern": "**/.env" }
+    ],
+    "ask": [
+      { "toolName": "Bash", "matchPattern": "git commit*" },
+      { "toolName": "Bash", "matchPattern": "git push*" }
+    ]
+  }
+}

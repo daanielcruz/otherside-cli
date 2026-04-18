@@ -1,0 +1,42 @@
+{
+  "hooks": {
+    "preToolUse": [
+      {
+        "matcher": "Bash",
+        "command": "echo 'about to run: '$TOOL_INPUT"
+      },
+      {
+        "matcher": "Edit",
+        "command": "test -f $FILE_PATH"
+      },
+      {
+        "matcher": "Write",
+        "command": "mkdir -p $(dirname $FILE_PATH)"
+      }
+    ],
+    "postToolUse": [
+      {
+        "matcher": "Edit",
+        "command": "git diff --stat -- $FILE_PATH"
+      },
+      {
+        "matcher": "Bash",
+        "command": "echo 'exit:' $TOOL_EXIT"
+      }
+    ],
+    "userPromptSubmit": [
+      {
+        "matcher": "*",
+        "command": "echo '[prompt] '$PROMPT_TEXT >> ~/.otherside/prompt.log"
+      }
+    ],
+    "stop": [
+      {
+        "matcher": "*",
+        "command": "osascript -e 'display notification \"otherside done\"'"
+      }
+    ],
+    "subagentStop": [],
+    "preCompact": []
+  }
+}
