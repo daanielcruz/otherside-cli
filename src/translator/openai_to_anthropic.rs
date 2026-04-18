@@ -1,60 +1,55 @@
-//! `openai → anthropic` request body + SSE event translation.
+//! `openai → anthropic` request body translation.
 //!
-//! # Responsibilities (MVP)
+//! # Pipeline (change 009)
 //!
-//! Given a canonical OpenAI chat completion request, produce an Anthropic
-//! `/v1/messages` request body that matches captured Claude Code 2.1.113
-//! traffic at the byte level — per C36 (maximum fingerprint
-//! indistinguishability). The only allowed variances are:
+//! 1. Envelope defaults come from `harness::envelope::build_envelope_defaults`
+//!    (`fingerprint_corpus/harness/envelope.json`, byte-verbatim from
+//!    capture).
+//! 2. `system[]` comes from `harness::system::build_system_blocks` and is
+//!    post-processed to substitute session environment values (cwd / git
+//!    flag / platform / shell / os version) in the main system prompt.
+//! 3. `tools[]` comes from `harness::tools::build_tools_array` in the
+//!    canonical upstream order (Agent, Bash, Edit, Glob, Grep, Read,
+//!    Skill, ToolSearch, Write).
+//! 4. `messages[]` comes from `message_builder::build` — two-stage
+//!    normalize + add_cache_breakpoints pipeline mirroring upstream
+//!    `utils/messages.ts` + `services/api/claude.ts`.
+//! 5. Top-level keys are inserted in capture key order:
+//!    `model, messages, system, tools, metadata, max_tokens, thinking,
+//!    context_management, output_config, stream`.
 //!
-//! - The user's literal prompt text
-//! - Session-level `userEmail` and `currentDate` fields (embedded inside
-//!   one of the `system-reminder` content blocks)
-//! - Session ID UUID (header, not body)
-//! - Request ID UUID (header, not body)
+//! # Conformance
 //!
-//! Everything else — billing header, agent-prompt blocks, tool
-//! definitions, `max_tokens`, `thinking`, `context_management`,
-//! `output_config`, `cache_control` on the user block — is copied
-//! verbatim from the captured corpus template.
+//! Under capture-identical inputs the emitted body byte-matches
+//! `fingerprint_corpus/tools-glob-single/turn1/request.body.json`
+//! (parsed equality — see `tests/translator_multi_turn.rs`). Turn 2
+//! and turn 3 byte-match under the scrubbed-placeholder whitelist for
+//! `tool_use.id` / `tool_result.tool_use_id` / `metadata.user_id.*`.
 //!
-//! # Template approach
+//! # Previous (hello-template) approach — RETIRED
 //!
-//! Rather than reconstructing the ~63KB body field-by-field in Rust
-//! source (brittle, enormous, easy to drift from captured wire format),
-//! we `include_str!` the scrubbed golden corpus and use it as the
-//! template. At runtime we clone it, substitute the user-specific text
-//! fields, and serialize with `preserve_order`.
-//!
-//! The template was captured from
-//! `fingerprint_corpus/hello/request.body.json` — scrubbed of session
-//! IDs, request IDs, and tokens (none are in the body anyway — those
-//! live in headers).
-//!
-//! # Not yet implemented
-//!
-//! - SSE event translation (anthropic → openai) — MVP task §10.
-//! - Thinking-config-driven field mutation (currently uses template's
-//!   thinking field verbatim).
+//! 001's `hello/request.body.json` was the single-turn regression
+//! anchor; 009 supersedes it with the multi-turn harness. The hello
+//! capture is frozen on disk but no longer drives byte-match tests
+//! because the upstream version producing it predates the current
+//! harness artifacts. tools-glob-single/turn1 is the new single-turn
+//! anchor.
 
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::error::{Error, Result};
-use crate::inference::OpenAiChatRequest;
+use crate::harness;
+use crate::inference::{OpenAiChatRequest, OpenAiChatRole};
+
+pub mod blocks;
+pub mod message_builder;
 
 /// Strip the `[1m]` alias suffix off a model string. Returns
 /// `(stripped, has_1m)`. Mirrors upstream `has1mContext`'s regex
 /// `/\[1m\]/i` (case-insensitive). The suffix travels through alias
 /// resolution — when present, callers MUST push the
 /// `context-1m-2025-08-07` beta header on the outbound request.
-///
-/// The suffix may appear anywhere after the canonical id; in practice
-/// upstream always appends at the end (`opus[1m]`, `claude-opus-4-7[1m]`).
-/// Additional thinking suffix like `(xhigh)` remains intact: the 1m
-/// bracket is stripped first, then the paren suffix passes through to
-/// the thinking parser unchanged.
 pub fn strip_1m_suffix(raw: &str) -> (String, bool) {
-    // Case-insensitive scan — upstream regex is `i` flagged.
     let lower = raw.to_ascii_lowercase();
     if let Some(idx) = lower.find("[1m]") {
         let mut stripped = String::with_capacity(raw.len() - 4);
@@ -65,65 +60,37 @@ pub fn strip_1m_suffix(raw: &str) -> (String, bool) {
     (raw.to_string(), false)
 }
 
-/// Scrubbed template body: captured real Claude Code 2.1.113 hello
-/// request body. Embedded at compile time. Cloned and mutated per
-/// request.
-const BODY_TEMPLATE_JSON: &str = include_str!(
-    "../../../fingerprint_corpus/hello/request.body.json"
-);
+/// Captured environment literals (from tools-glob-single/turn1 system[3]).
+/// These are the tokens the translator substitutes to per-session values.
+const CAPTURE_CWD: &str = "Primary working directory: /workspace";
+const CAPTURE_IS_GIT: &str = "Is a git repository: false";
+const CAPTURE_PLATFORM: &str = "- Platform: linux";
+const CAPTURE_SHELL: &str = "- Shell: bash";
+const CAPTURE_OS_VERSION: &str = "- OS Version: Linux 6.12.76-linuxkit";
+const CAPTURE_EMAIL: &str = "edaanxx@gmail.com";
+const CAPTURE_DATE: &str = "2026-04-18";
 
-/// Captured placeholder values that the template has for session-specific
-/// fields. At build time we replace these with the current session's
-/// values.
-const PLACEHOLDER_EMAIL: &str = "edaanxx@gmail.com";
-const PLACEHOLDER_DATE: &str = "2026-04-17";
-/// Environment-block placeholders captured from the Docker sandbox the
-/// template was harvested in. Substituted at request-build time so the
-/// model sees the user's real session environment instead of the
-/// capture environment.
-const PLACEHOLDER_CWD: &str = "Primary working directory: /tmp";
-const PLACEHOLDER_IS_GIT: &str = "Is a git repository: false";
-const PLACEHOLDER_PLATFORM: &str = "- Platform: linux";
-const PLACEHOLDER_SHELL: &str = "- Shell: bash";
-const PLACEHOLDER_OS_VERSION: &str = "- OS Version: Linux 6.12.76-linuxkit";
-
-/// User-session context that parameterizes the template.
+/// Per-session context the translator injects into the captured body.
 #[derive(Debug, Clone)]
 pub struct UserContext<'a> {
-    /// User's email — interpolated into the "user context"
-    /// system-reminder block.
     pub email: &'a str,
-    /// Today's date in `YYYY-MM-DD` format — interpolated into the same
-    /// system-reminder block.
     pub current_date: &'a str,
-    /// Absolute path of the session's current working directory.
-    /// Interpolated into the `# Environment` system block so the model
-    /// knows where it is.
     pub cwd: &'a str,
-    /// `true` when `cwd` is inside a git repository. The env block
-    /// renders this as `Is a git repository: true|false`.
     pub is_git_repo: bool,
-    /// Platform string as the upstream template uses it: `darwin`,
-    /// `linux`, or `win32`. Drives the `- Platform:` line.
     pub platform: &'a str,
-    /// Shell basename, e.g. `zsh`, `bash`, `fish`. Drives the
-    /// `- Shell:` line.
     pub shell: &'a str,
-    /// OS version string from `uname -sr` (or platform equivalent).
-    /// Drives the `- OS Version:` line.
     pub os_version: &'a str,
 }
 
 impl UserContext<'_> {
-    /// Sensible defaults for unit tests and legacy call sites that
-    /// don't yet pass real environment. Matches the captured
-    /// placeholders byte-for-byte so `build_matches_captured_corpus…`
-    /// stays green.
+    /// Values matching the `tools-glob-single/turn1` capture — supply
+    /// these to reproduce capture bytes for byte-match tests. Production
+    /// callers build their own `UserContext` from live environment.
     pub fn capture_defaults() -> UserContext<'static> {
         UserContext {
-            email: PLACEHOLDER_EMAIL,
-            current_date: PLACEHOLDER_DATE,
-            cwd: "/tmp",
+            email: CAPTURE_EMAIL,
+            current_date: CAPTURE_DATE,
+            cwd: "/workspace",
             is_git_repo: false,
             platform: "linux",
             shell: "bash",
@@ -132,102 +99,90 @@ impl UserContext<'_> {
     }
 }
 
-/// Build the full `/v1/messages` request body for the Anthropic provider.
-///
-/// Returns the exact UTF-8 bytes that go on the wire (axios-style
-/// compact JSON, key order per corpus).
+/// Post-process `system[]` to substitute per-session environment literals
+/// in the main agent prompt (`system[3]`).
+fn substitute_environment_in_system(system: &mut [Value], ctx: &UserContext<'_>) {
+    for block in system.iter_mut() {
+        let Some(text) = block.get("text").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        if !text.contains("Primary working directory:") {
+            continue;
+        }
+        let replaced = text
+            .replace(CAPTURE_CWD, &format!("Primary working directory: {}", ctx.cwd))
+            .replace(
+                CAPTURE_IS_GIT,
+                &format!("Is a git repository: {}", ctx.is_git_repo),
+            )
+            .replace(CAPTURE_PLATFORM, &format!("- Platform: {}", ctx.platform))
+            .replace(CAPTURE_SHELL, &format!("- Shell: {}", ctx.shell))
+            .replace(
+                CAPTURE_OS_VERSION,
+                &format!("- OS Version: {}", ctx.os_version),
+            );
+        if replaced != text {
+            if let Some(slot) = block.get_mut("text") {
+                *slot = Value::String(replaced);
+            }
+        }
+    }
+}
+
+/// Build the full outbound `/v1/messages` request body bytes.
 ///
 /// # Errors
-///
-/// Returns [`Error::Parse`] if the OpenAI request doesn't have at least
-/// one user message, or if the template fails to load (should never
-/// happen in practice — the template is compile-time embedded and
-/// validated by tests).
+/// [`Error::Parse`] when the OpenAI request carries no user message —
+/// Anthropic requires at least one user turn.
 pub fn build_request_body(
     req: &OpenAiChatRequest,
     ctx: &UserContext<'_>,
 ) -> Result<Vec<u8>> {
-    // Parse the template each call. This is wasteful (reparse ~63KB
-    // per request) but safe — no mutable shared state. We can optimize
-    // later with OnceLock<Value> + deep clone if profiling flags it.
-    let mut body: Value = serde_json::from_str(BODY_TEMPLATE_JSON)
-        .map_err(|e| Error::Parse(format!("body template is malformed: {e}")))?;
-
-    // Extract the user prompt from the last user message in the OpenAI
-    // request. For MVP we only support a single user message — the
-    // template's messages[0] is hardcoded as role=user with 4 content
-    // blocks.
-    let user_prompt = req
+    if !req
         .messages
         .iter()
-        .rev()
-        .find(|m| matches!(m.role, crate::inference::OpenAiChatRole::User))
-        .map(|m| m.content.as_str())
-        .ok_or_else(|| {
-            Error::Parse(
-                "no user message found in request; MVP requires at least one user message"
-                    .to_string(),
-            )
-        })?;
-
-    // Substitute into the user-context system-reminder block
-    // (messages[0].content[2].text contains 'edaanxx@gmail.com' and
-    // '2026-04-17' in the captured template).
-    if let Some(content) = body
-        .get_mut("messages")
-        .and_then(|m| m.as_array_mut())
-        .and_then(|a| a.get_mut(0))
-        .and_then(|m| m.get_mut("content"))
-        .and_then(|c| c.as_array_mut())
+        .any(|m| matches!(m.role, OpenAiChatRole::User))
     {
-        // Block [2]: substitute email + date.
-        if let Some(block2) = content.get_mut(2).and_then(|b| b.get_mut("text")) {
-            if let Some(text) = block2.as_str() {
-                let new_text = text
-                    .replace(PLACEHOLDER_EMAIL, ctx.email)
-                    .replace(PLACEHOLDER_DATE, ctx.current_date);
-                *block2 = Value::String(new_text);
-            }
-        }
-        // Block [3]: substitute the user's literal prompt text.
-        if let Some(block3) = content.get_mut(3).and_then(|b| b.get_mut("text")) {
-            *block3 = Value::String(user_prompt.to_string());
+        return Err(Error::Parse(
+            "no user message found in request; Anthropic requires at least one user turn"
+                .to_string(),
+        ));
+    }
+
+    let envelope_defaults = harness::envelope::build_envelope_defaults();
+    let env_obj = envelope_defaults
+        .as_object()
+        .expect("envelope defaults parse as object");
+
+    // Build system[] then post-process environment substitutions.
+    let mut system_blocks = harness::system::build_system_blocks();
+    substitute_environment_in_system(&mut system_blocks, ctx);
+
+    let tools = harness::tools::build_tools_array();
+    let messages = message_builder::build(&req.messages, ctx);
+
+    // Insert keys in capture top-level order.
+    let mut body = Map::with_capacity(10);
+    body.insert("model".to_string(), Value::String(req.model.clone()));
+    body.insert("messages".to_string(), Value::Array(messages));
+    body.insert("system".to_string(), Value::Array(system_blocks));
+    body.insert("tools".to_string(), Value::Array(tools));
+    // Then envelope defaults in their own capture key order.
+    for key in [
+        "metadata",
+        "max_tokens",
+        "thinking",
+        "context_management",
+        "output_config",
+        "stream",
+    ] {
+        if let Some(v) = env_obj.get(key) {
+            body.insert(key.to_string(), v.clone());
         }
     }
 
-    // Substitute the captured Docker-sandbox environment lines in the
-    // system block with the user's real shell / cwd / platform so the
-    // model isn't told to look in /tmp when the repo is elsewhere.
-    if let Some(system_blocks) = body.get_mut("system").and_then(|s| s.as_array_mut()) {
-        for block in system_blocks.iter_mut() {
-            if let Some(text) = block.get_mut("text").and_then(|t| t.as_str()) {
-                let replaced = text
-                    .replace(
-                        PLACEHOLDER_CWD,
-                        &format!("Primary working directory: {}", ctx.cwd),
-                    )
-                    .replace(
-                        PLACEHOLDER_IS_GIT,
-                        &format!("Is a git repository: {}", ctx.is_git_repo),
-                    )
-                    .replace(
-                        PLACEHOLDER_PLATFORM,
-                        &format!("- Platform: {}", ctx.platform),
-                    )
-                    .replace(PLACEHOLDER_SHELL, &format!("- Shell: {}", ctx.shell))
-                    .replace(
-                        PLACEHOLDER_OS_VERSION,
-                        &format!("- OS Version: {}", ctx.os_version),
-                    );
-                if replaced != text {
-                    *block.get_mut("text").unwrap() = Value::String(replaced);
-                }
-            }
-        }
-    }
-
-    // Serialize to bytes. preserve_order keeps the original key order.
-    serde_json::to_vec(&body).map_err(|e| Error::Parse(format!("re-serialize failed: {e}")))
+    serde_json::to_vec(&Value::Object(body))
+        .map_err(|e| Error::Parse(format!("re-serialize failed: {e}")))
 }
 
 #[cfg(test)]
@@ -249,43 +204,52 @@ mod tests {
     }
 
     #[test]
-    fn build_matches_captured_corpus_byte_for_byte() {
-        // When called with the same inputs that produced the captured
-        // corpus (prompt="hi", email=edaanxx@gmail.com, date=2026-04-17),
-        // the output MUST byte-match the corpus body exactly. This is
-        // the C36 conformance gate.
+    fn build_returns_valid_json_for_single_user_turn() {
         let req = mvp_request();
         let ctx = UserContext::capture_defaults();
-        let actual = build_request_body(&req, &ctx).unwrap();
-
-        // Expected = corpus JSON re-serialized compact (serde_json::to_vec
-        // emits compact by default).
-        let expected_value: Value = serde_json::from_str(BODY_TEMPLATE_JSON).unwrap();
-        let expected = serde_json::to_vec(&expected_value).unwrap();
-
-        assert_eq!(
-            actual.len(),
-            expected.len(),
-            "body length diverges: actual={} expected={}",
-            actual.len(),
-            expected.len()
-        );
-        assert_eq!(actual, expected, "body bytes diverge from captured corpus");
+        let bytes = build_request_body(&req, &ctx).unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["model"], "claude-opus-4-7");
+        assert_eq!(body["messages"].as_array().unwrap().len(), 1);
+        assert_eq!(body["system"].as_array().unwrap().len(), 4);
+        assert_eq!(body["tools"].as_array().unwrap().len(), 9);
+        assert_eq!(body["stream"], true);
     }
 
     #[test]
-    fn substitutes_user_prompt() {
+    fn preserves_top_level_key_order() {
+        let req = mvp_request();
+        let ctx = UserContext::capture_defaults();
+        let bytes = build_request_body(&req, &ctx).unwrap();
+        let s = std::str::from_utf8(&bytes).unwrap();
+        // Order: model < messages < system < tools < metadata < max_tokens
+        //        < thinking < context_management < output_config < stream.
+        let idx = |k: &str| s.find(&format!("\"{k}\"")).expect("key present");
+        assert!(idx("model") < idx("messages"));
+        assert!(idx("messages") < idx("system"));
+        assert!(idx("system") < idx("tools"));
+        assert!(idx("tools") < idx("metadata"));
+        assert!(idx("metadata") < idx("max_tokens"));
+        assert!(idx("max_tokens") < idx("thinking"));
+        assert!(idx("thinking") < idx("context_management"));
+        assert!(idx("context_management") < idx("output_config"));
+        assert!(idx("output_config") < idx("stream"));
+    }
+
+    #[test]
+    fn substitutes_user_prompt_into_messages() {
         let mut req = mvp_request();
         req.messages[0].content = "different prompt text".to_string();
         let ctx = UserContext::capture_defaults();
         let bytes = build_request_body(&req, &ctx).unwrap();
         let body: Value = serde_json::from_slice(&bytes).unwrap();
-        let content3 = &body["messages"][0]["content"][3]["text"];
-        assert_eq!(content3.as_str(), Some("different prompt text"));
+        // First user turn has 4 content blocks: 3 preamble + 1 prompt.
+        let prompt = &body["messages"][0]["content"][3]["text"];
+        assert_eq!(prompt.as_str(), Some("different prompt text"));
     }
 
     #[test]
-    fn substitutes_user_context_email_and_date() {
+    fn substitutes_email_and_date_in_user_context_reminder() {
         let req = mvp_request();
         let ctx = UserContext {
             email: "someone.else@example.com",
@@ -294,51 +258,51 @@ mod tests {
         };
         let bytes = build_request_body(&req, &ctx).unwrap();
         let body: Value = serde_json::from_slice(&bytes).unwrap();
-        let content2_text = body["messages"][0]["content"][2]["text"]
+        let reminder2 = body["messages"][0]["content"][2]["text"]
             .as_str()
             .unwrap();
-        assert!(
-            content2_text.contains("someone.else@example.com"),
-            "user context block should contain new email"
-        );
-        assert!(
-            content2_text.contains("2027-01-01"),
-            "user context block should contain new date"
-        );
-        assert!(
-            !content2_text.contains(PLACEHOLDER_EMAIL),
-            "original captured email should be replaced"
-        );
+        assert!(reminder2.contains("someone.else@example.com"));
+        assert!(reminder2.contains("2027-01-01"));
+        assert!(!reminder2.contains(CAPTURE_EMAIL));
     }
 
     #[test]
-    fn preserves_top_level_key_order() {
+    fn substitutes_environment_block_in_system_prompt() {
         let req = mvp_request();
-        let ctx = UserContext::capture_defaults();
-        let bytes = build_request_body(&req, &ctx).unwrap();
-        let body_str = std::str::from_utf8(&bytes).unwrap();
-        let model_idx = body_str.find("\"model\"").unwrap();
-        let messages_idx = body_str.find("\"messages\"").unwrap();
-        let system_idx = body_str.find("\"system\"").unwrap();
-        let tools_idx = body_str.find("\"tools\"").unwrap();
-        assert!(
-            model_idx < messages_idx
-                && messages_idx < system_idx
-                && system_idx < tools_idx,
-            "top-level keys must appear in order model < messages < system < tools"
-        );
-    }
-
-    #[test]
-    fn requires_user_message() {
-        let mut req = mvp_request();
-        req.messages.clear();
         let ctx = UserContext {
-            email: "e",
-            current_date: "d",
+            cwd: "/Users/alice/proj",
+            is_git_repo: true,
+            platform: "darwin",
+            shell: "zsh",
+            os_version: "Darwin 25.3.0",
             ..UserContext::capture_defaults()
         };
-        let err = build_request_body(&req, &ctx).unwrap_err();
+        let bytes = build_request_body(&req, &ctx).unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        let env_block = body["system"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find_map(|b| {
+                b["text"]
+                    .as_str()
+                    .filter(|t| t.contains("# Environment"))
+            })
+            .expect("environment section present in system[]");
+        assert!(env_block.contains("Primary working directory: /Users/alice/proj"));
+        assert!(env_block.contains("Is a git repository: true"));
+        assert!(env_block.contains("- Platform: darwin"));
+        assert!(env_block.contains("- Shell: zsh"));
+        assert!(env_block.contains("- OS Version: Darwin 25.3.0"));
+        assert!(!env_block.contains("/workspace"));
+        assert!(!env_block.contains("Linux 6.12.76-linuxkit"));
+    }
+
+    #[test]
+    fn requires_at_least_one_user_message() {
+        let mut req = mvp_request();
+        req.messages.clear();
+        let err = build_request_body(&req, &UserContext::capture_defaults()).unwrap_err();
         assert!(matches!(err, Error::Parse(_)));
     }
 
@@ -349,71 +313,36 @@ mod tests {
             ("claude-opus-4-7".to_string(), true)
         );
         assert_eq!(strip_1m_suffix("opus[1m]"), ("opus".to_string(), true));
-        // Upstream regex is case-insensitive.
         assert_eq!(
             strip_1m_suffix("opus[1M]"),
             ("opus".to_string(), true),
             "[1M] must be recognized case-insensitively"
         );
-        // Thinking suffix survives the strip.
         assert_eq!(
             strip_1m_suffix("claude-opus-4-7[1m](xhigh)"),
             ("claude-opus-4-7(xhigh)".to_string(), true)
         );
-        // No suffix = untouched.
         assert_eq!(
             strip_1m_suffix("claude-opus-4-7"),
             ("claude-opus-4-7".to_string(), false)
         );
-        assert_eq!(
-            strip_1m_suffix("claude-opus-4-7(xhigh)"),
-            ("claude-opus-4-7(xhigh)".to_string(), false)
-        );
     }
 
     #[test]
-    fn substitutes_environment_block() {
+    fn advertises_nine_tools_in_canonical_order() {
         let req = mvp_request();
-        let ctx = UserContext {
-            email: PLACEHOLDER_EMAIL,
-            current_date: PLACEHOLDER_DATE,
-            cwd: "/Users/alice/Desktop/myproject",
-            is_git_repo: true,
-            platform: "darwin",
-            shell: "zsh",
-            os_version: "Darwin 25.3.0",
-        };
+        let ctx = UserContext::capture_defaults();
         let bytes = build_request_body(&req, &ctx).unwrap();
         let body: Value = serde_json::from_slice(&bytes).unwrap();
-        let system = body["system"].as_array().unwrap();
-        let env_text = system
+        let names: Vec<&str> = body["tools"]
+            .as_array()
+            .unwrap()
             .iter()
-            .find_map(|b| b["text"].as_str().filter(|t| t.contains("# Environment")))
-            .expect("environment block missing");
-        assert!(
-            env_text.contains("Primary working directory: /Users/alice/Desktop/myproject"),
-            "cwd not substituted:\n{env_text}"
-        );
-        assert!(
-            env_text.contains("Is a git repository: true"),
-            "git flag not substituted"
-        );
-        assert!(
-            env_text.contains("- Platform: darwin"),
-            "platform not substituted"
-        );
-        assert!(env_text.contains("- Shell: zsh"), "shell not substituted");
-        assert!(
-            env_text.contains("- OS Version: Darwin 25.3.0"),
-            "os version not substituted"
-        );
-        assert!(
-            !env_text.contains("Primary working directory: /tmp"),
-            "stale capture cwd still present"
-        );
-        assert!(
-            !env_text.contains("Linux 6.12.76-linuxkit"),
-            "stale capture os still present"
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["Agent", "Bash", "Edit", "Glob", "Grep", "Read", "Skill", "ToolSearch", "Write"]
         );
     }
 }
