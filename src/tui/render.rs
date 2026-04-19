@@ -128,6 +128,7 @@ pub fn render(
             Duration::from_millis(state.elapsed_ms()),
             state.output_tokens,
             state.thought_ms,
+            state.effort_label,
         );
         tips::draw(f, tp, state.tip_rotation_index);
     }

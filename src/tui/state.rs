@@ -146,6 +146,12 @@ pub struct ConversationState {
     /// for the turn; otherside mirrors that shape so the word stays
     /// stable under tick-indexed spinner-frame rotation.
     pub turn_verb: Option<&'static str>,
+
+    /// Effort label rendered as `thinking with <label> effort` on the
+    /// progress line. `None` suppresses the segment; labels `"none"` /
+    /// `""` are also suppressed. Set from `ThinkingLevel::as_label` at
+    /// TUI bootstrap and updated by `/effort` menu commits.
+    pub effort_label: Option<&'static str>,
 }
 
 impl ConversationState {

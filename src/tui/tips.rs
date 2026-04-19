@@ -29,7 +29,7 @@ pub fn draw(f: &mut Frame<'_>, area: Rect, rotation_index: usize) {
     let tip = tip_at(rotation_index);
     let line = Line::from(vec![
         Span::styled("⎿ Tip: ", Style::default().fg(theme::MUTED)),
-        Span::styled(tip, Style::default().fg(theme::PRIMARY)),
+        Span::styled(tip, Style::default().fg(theme::MUTED)),
     ]);
     f.render_widget(Paragraph::new(line), area);
 }

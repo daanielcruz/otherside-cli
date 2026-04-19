@@ -91,22 +91,29 @@ pub fn spinner_frame(tick: u64) -> char {
 }
 
 /// Format the progress line text (no styling) given live state + the
-/// turn-scoped verb.
+/// turn-scoped verb and optional thinking-effort label.
 pub fn format_progress_text(
     tick: u64,
     verb: &str,
     elapsed: Duration,
     output_tokens: u64,
     _thought_ms: u64,
+    effort_label: Option<&str>,
 ) -> String {
     let frame = spinner_frame(tick);
     let elapsed_s = elapsed.as_secs();
     let tokens_part = if output_tokens > 0 {
-        format!(" · ↓{output_tokens} tokens")
+        format!(" · ↓ {output_tokens} tokens")
     } else {
         String::new()
     };
-    format!("{frame} {verb}… ({elapsed_s}s{tokens_part} · esc to interrupt)")
+    let effort_part = match effort_label {
+        Some(label) if !label.is_empty() && label != "none" => {
+            format!(" · thinking with {label} effort")
+        }
+        _ => String::new(),
+    };
+    format!("{frame} {verb}… ({elapsed_s}s{tokens_part}{effort_part})")
 }
 
 /// Paint the progress line into `area` (typically a single-row Rect).
@@ -118,13 +125,20 @@ pub fn draw(
     elapsed: Duration,
     output_tokens: u64,
     _thought_ms: u64,
+    effort_label: Option<&str>,
 ) {
     let frame = spinner_frame(tick);
     let elapsed_s = elapsed.as_secs();
     let tokens_part = if output_tokens > 0 {
-        format!(" · ↓{output_tokens} tokens")
+        format!(" · ↓ {output_tokens} tokens")
     } else {
         String::new()
+    };
+    let effort_part = match effort_label {
+        Some(label) if !label.is_empty() && label != "none" => {
+            format!(" · thinking with {label} effort")
+        }
+        _ => String::new(),
     };
 
     let line = Line::from(vec![
@@ -137,7 +151,7 @@ pub fn draw(
             Style::default().fg(theme::PRIMARY),
         ),
         Span::styled(
-            format!("({elapsed_s}s{tokens_part} · esc to interrupt)"),
+            format!("({elapsed_s}s{tokens_part}{effort_part})"),
             Style::default().fg(theme::MUTED),
         ),
     ]);
@@ -191,24 +205,44 @@ mod tests {
 
     #[test]
     fn format_progress_includes_core_counters() {
-        let text = format_progress_text(0, "Thinking", Duration::from_secs(12), 345, 7_800);
+        let text = format_progress_text(
+            0,
+            "Thinking",
+            Duration::from_secs(12),
+            345,
+            7_800,
+            Some("xhigh"),
+        );
         assert!(text.contains("12s"));
-        assert!(text.contains("↓345"));
-        assert!(text.contains("esc to interrupt"));
+        assert!(text.contains("↓ 345"));
         assert!(text.contains("Thinking"));
+        assert!(text.contains("thinking with xhigh effort"));
     }
 
     #[test]
     fn format_progress_omits_tokens_when_zero() {
-        let text = format_progress_text(0, "Cogitating", Duration::from_secs(3), 0, 0);
+        let text = format_progress_text(0, "Cogitating", Duration::from_secs(3), 0, 0, None);
         assert!(text.contains("3s"));
         assert!(!text.contains("↓"));
-        assert!(text.contains("esc to interrupt"));
+        assert!(!text.contains("thinking with"));
     }
 
     #[test]
     fn format_progress_uses_supplied_verb() {
-        let text = format_progress_text(0, "Unwinding", Duration::from_secs(1), 0, 0);
+        let text = format_progress_text(0, "Unwinding", Duration::from_secs(1), 0, 0, None);
         assert!(text.contains("Unwinding"));
+    }
+
+    #[test]
+    fn format_progress_hides_effort_when_none() {
+        let text = format_progress_text(
+            0,
+            "Thinking",
+            Duration::from_secs(1),
+            0,
+            0,
+            Some("none"),
+        );
+        assert!(!text.contains("thinking with"));
     }
 }

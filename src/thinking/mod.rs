@@ -61,6 +61,24 @@ pub enum ThinkingLevel {
     Max,
 }
 
+impl ThinkingLevel {
+    /// Lowercase canonical name used by the progress-line `thinking
+    /// with <level> effort` chip. Matches the strings accepted by
+    /// `from_str` so round-trips cleanly.
+    pub fn as_label(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Auto => "auto",
+            Self::Minimal => "minimal",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::XHigh => "xhigh",
+            Self::Max => "max",
+        }
+    }
+}
+
 impl FromStr for ThinkingLevel {
     type Err = Error;
 

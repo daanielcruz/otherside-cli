@@ -149,6 +149,10 @@ async fn event_loop(
 ) -> Result<()> {
     let mut st =
         ConversationState::new_for_model_with_mode(&base_model, initial_permission_mode);
+    // Thread the session's thinking level into the progress-line
+    // `thinking with <level> effort` chip. None when no thinking
+    // config means the chip is suppressed.
+    st.effort_label = thinking.as_ref().map(|cfg| cfg.level.as_label());
     let mut key_stream = EventStream::new();
 
     // 50 ms = 20 fps — matches upstream's spinner cadence so rotation
