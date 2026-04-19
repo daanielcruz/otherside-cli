@@ -9,14 +9,28 @@ use tokio::time::timeout;
 
 use super::{truncate, GRACE_PERIOD_MS};
 
-/// Output of a single synchronous Bash invocation.
+/// Output of a single synchronous Bash invocation. stdout and stderr
+/// are surfaced separately to match upstream `BashToolResultMessage`
+/// which renders them in distinct styles (dim for stdout, error-red
+/// for stderr).
 #[derive(Debug, Clone)]
 pub struct SyncOutput {
     pub exit_code: i32,
-    pub output: String,
-    pub was_truncated: bool,
+    pub stdout: String,
+    pub stderr: String,
+    pub stdout_truncated: bool,
+    pub stderr_truncated: bool,
     pub timed_out: bool,
     pub elapsed_ms: u64,
+}
+
+impl SyncOutput {
+    /// True when either stream hit the truncation cap — kept as a
+    /// convenience so callers that don't care which stream overflowed
+    /// keep a single boolean to check.
+    pub fn was_truncated(&self) -> bool {
+        self.stdout_truncated || self.stderr_truncated
+    }
 }
 
 /// Run `command` under `sh -c`, wait up to `timeout_ms`, apply output
@@ -48,27 +62,20 @@ pub async fn run(command: &str, timeout_ms: u64) -> std::io::Result<SyncOutput> 
 
     match result {
         Ok((stdout, stderr, status)) => {
-            let mut combined = String::new();
-            if let Ok(s) = stdout {
-                combined.push_str(&s);
-            }
-            if let Ok(s) = stderr {
-                if !s.is_empty() {
-                    if !combined.is_empty() && !combined.ends_with('\n') {
-                        combined.push('\n');
-                    }
-                    combined.push_str(&s);
-                }
-            }
-            let t = truncate::apply(&combined);
+            let stdout_raw = stdout.unwrap_or_default();
+            let stderr_raw = stderr.unwrap_or_default();
+            let t_out = truncate::apply(&stdout_raw);
+            let t_err = truncate::apply(&stderr_raw);
             let exit_code = match status {
                 Ok(s) => s.code().unwrap_or(-1),
                 Err(_) => -1,
             };
             Ok(SyncOutput {
                 exit_code,
-                output: t.output,
-                was_truncated: t.was_truncated,
+                stdout: t_out.output,
+                stderr: t_err.output,
+                stdout_truncated: t_out.was_truncated,
+                stderr_truncated: t_err.was_truncated,
                 timed_out: false,
                 elapsed_ms: elapsed,
             })
@@ -80,8 +87,10 @@ pub async fn run(command: &str, timeout_ms: u64) -> std::io::Result<SyncOutput> 
             let _ = timeout(Duration::from_millis(GRACE_PERIOD_MS), child.wait()).await;
             Ok(SyncOutput {
                 exit_code: -1,
-                output: String::from("[timeout — process terminated]"),
-                was_truncated: false,
+                stdout: String::new(),
+                stderr: String::from("[timeout — process terminated]"),
+                stdout_truncated: false,
+                stderr_truncated: false,
                 timed_out: true,
                 elapsed_ms: start.elapsed().as_millis() as u64,
             })
@@ -109,7 +118,8 @@ mod tests {
     async fn echo_hi_succeeds() {
         let out = run("echo hi", 5_000).await.unwrap();
         assert_eq!(out.exit_code, 0);
-        assert!(out.output.starts_with("hi"));
+        assert!(out.stdout.starts_with("hi"));
+        assert!(out.stderr.is_empty());
         assert!(!out.timed_out);
         assert!(out.elapsed_ms < 5_000);
     }
@@ -129,9 +139,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stderr_merged_with_stdout() {
+    async fn stdout_and_stderr_surface_separately() {
         let out = run("echo hi; echo err >&2", 2_000).await.unwrap();
-        assert!(out.output.contains("hi"));
-        assert!(out.output.contains("err"));
+        assert!(out.stdout.contains("hi"), "stdout: {:?}", out.stdout);
+        assert!(!out.stdout.contains("err"), "stdout must not carry stderr text");
+        assert!(out.stderr.contains("err"), "stderr: {:?}", out.stderr);
+        assert!(!out.stderr.contains("hi"));
     }
 }

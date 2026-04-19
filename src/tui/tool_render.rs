@@ -98,6 +98,14 @@ pub enum ToolPayload {
     Todos(Vec<todos::TodoItem>),
     /// Edit/Write unified diff — render with the diff module.
     Diff(String),
+    /// Bash result — stdout rendered dim, stderr rendered in
+    /// `theme::ERROR` so error output reads as distinct from normal
+    /// program output. Matches upstream `BashToolResultMessage`.
+    Bash {
+        stdout: String,
+        stderr: String,
+        exit_code: i64,
+    },
 }
 
 /// Serializable archive shape for a finished tool call. Used by
@@ -245,6 +253,37 @@ pub fn render_tool_call(view: &ToolCallView<'_>) -> Vec<Line<'static>> {
                     ));
                     spans.extend(l.spans);
                     out.push(Line::from(spans));
+                }
+            }
+            ToolPayload::Bash {
+                stdout,
+                stderr,
+                exit_code,
+            } => {
+                let _ = exit_code;
+                for raw in stdout.lines() {
+                    out.push(Line::from(vec![
+                        Span::styled(
+                            "  ⎿ ".to_string(),
+                            Style::default().fg(theme::MUTED),
+                        ),
+                        Span::styled(
+                            raw.to_string(),
+                            Style::default().fg(theme::MUTED),
+                        ),
+                    ]));
+                }
+                for raw in stderr.lines() {
+                    out.push(Line::from(vec![
+                        Span::styled(
+                            "  ⎿ ".to_string(),
+                            Style::default().fg(theme::MUTED),
+                        ),
+                        Span::styled(
+                            raw.to_string(),
+                            Style::default().fg(theme::ERROR),
+                        ),
+                    ]));
                 }
             }
         }
@@ -430,19 +469,14 @@ fn clip_flat(s: &str, max: usize) -> String {
 /// entry) so the reader sees proof of execution without needing to
 /// scroll.
 pub fn payload_from_result(name: &str, result: &Value, verbose: bool) -> Option<ToolPayload> {
-    let _ = verbose; // reserved for per-tool verbose branches (Glob
-                     // file listings, Read line range, WebFetch
-                     // body append). Currently only a subset of
-                     // branches consume it; keep the param on the
-                     // surface so every caller threads it and future
-                     // expansions don't need a signature change.
     match name {
         "TodoWrite" => todos_payload(result),
         "Edit" => diff_payload(result).or_else(|| edit_preview(result)),
         "Write" => diff_payload(result).or_else(|| write_preview(result)),
         "Read" => read_preview(result).or_else(|| preview_payload(result)),
-        "Glob" => glob_preview(result).or_else(|| preview_payload(result)),
-        "Grep" => grep_preview(result).or_else(|| preview_payload(result)),
+        "Bash" => bash_preview(result).or_else(|| preview_payload(result)),
+        "Glob" => glob_preview(result, verbose).or_else(|| preview_payload(result)),
+        "Grep" => grep_preview(result, verbose).or_else(|| preview_payload(result)),
         "Skill" => skill_preview(result).or_else(|| preview_payload(result)),
         "ToolSearch" => tool_search_preview(result).or_else(|| preview_payload(result)),
         "Agent" => agent_preview(result).or_else(|| preview_payload(result)),
@@ -645,14 +679,64 @@ fn write_preview(result: &Value) -> Option<ToolPayload> {
     Some(ToolPayload::Preview(text))
 }
 
-/// Glob preview — `Found N files` + up to 10 filenames under the gutter.
-/// Mirrors upstream's `SearchResultSummary` when verbose lists filenames
-/// (our render always shows a short list so the reader doesn't have to
-/// re-run the search to see what matched).
-fn glob_preview(result: &Value) -> Option<ToolPayload> {
+/// Bash preview — split stdout/stderr so the render path can paint
+/// stderr in `theme::ERROR` while keeping stdout dim. Matches upstream
+/// `BashToolResultMessage` which renders `<OutputLine content=stdout>`
+/// followed by `<OutputLine content=stderr isError>`.
+///
+/// Accepts either the new separated shape (`stdout` + `stderr`) or the
+/// legacy single-`output` shape (for captured transcripts written
+/// before the split). When neither field is present returns None so
+/// the generic fallback takes over.
+fn bash_preview(result: &Value) -> Option<ToolPayload> {
+    let obj = result.as_object()?;
+    let stdout = obj.get("stdout").and_then(|v| v.as_str()).map(str::to_string);
+    let stderr = obj.get("stderr").and_then(|v| v.as_str()).map(str::to_string);
+    let legacy = obj.get("output").and_then(|v| v.as_str()).map(str::to_string);
+    if stdout.is_none() && stderr.is_none() && legacy.is_none() {
+        return None;
+    }
+    let exit = obj.get("exit_code").and_then(|v| v.as_i64()).unwrap_or(0);
+    // Legacy single-stream captures route through stderr when exit != 0
+    // so the render still reads the failure in red; otherwise they
+    // land in stdout.
+    let (stdout, stderr) = match (stdout, stderr, legacy) {
+        (so, se, _) if so.is_some() || se.is_some() => {
+            (so.unwrap_or_default(), se.unwrap_or_default())
+        }
+        (_, _, Some(legacy)) if exit != 0 => (String::new(), legacy),
+        (_, _, Some(legacy)) => (legacy, String::new()),
+        _ => unreachable!(),
+    };
+    let stdout = trim_multiline(&stdout, 20, 200);
+    let stderr = trim_multiline(&stderr, 20, 200);
+    if stdout.is_empty() && stderr.is_empty() && exit == 0 {
+        // Upstream shows `(No output)` in dim text when both streams
+        // are empty and the process succeeded. Surface the same note
+        // under the gutter so the reader doesn't think the call hung.
+        return Some(ToolPayload::Bash {
+            stdout: String::from("(No output)"),
+            stderr: String::new(),
+            exit_code: exit,
+        });
+    }
+    Some(ToolPayload::Bash {
+        stdout,
+        stderr,
+        exit_code: exit,
+    })
+}
+
+/// Glob preview — `Found N files`, with the filename list only in
+/// verbose mode. Mirrors upstream `GlobTool/UI.tsx` which hides the
+/// `SearchResultSummary` body unless the user ran with `--verbose`.
+fn glob_preview(result: &Value, verbose: bool) -> Option<ToolPayload> {
     let obj = result.as_object()?;
     let n = obj.get("numFiles").and_then(|v| v.as_u64())?;
     let head = format!("Found {n} {}", if n == 1 { "file" } else { "files" });
+    if !verbose {
+        return Some(ToolPayload::Preview(head));
+    }
     if let Some(names) = obj.get("filenames").and_then(|v| v.as_array()) {
         if !names.is_empty() {
             let list: Vec<String> = names
@@ -673,7 +757,7 @@ fn glob_preview(result: &Value) -> Option<ToolPayload> {
 /// - `count`: `Found N match(es) across M file(s)`.
 /// Our dispatcher emits `{mode, matches, truncated, exit}` — `matches`
 /// is a string list whose meaning depends on `mode`.
-fn grep_preview(result: &Value) -> Option<ToolPayload> {
+fn grep_preview(result: &Value, verbose: bool) -> Option<ToolPayload> {
     let obj = result.as_object()?;
     let matches = obj.get("matches").and_then(|v| v.as_array())?;
     let n = matches.len() as u64;
@@ -705,12 +789,12 @@ fn grep_preview(result: &Value) -> Option<ToolPayload> {
         }
         _ => format!("Found {n} {}", if n == 1 { "match" } else { "matches" }),
     };
-    if matches.is_empty() {
+    if matches.is_empty() || !verbose {
+        // Non-verbose: only the head count, matching upstream's
+        // `GrepTool/UI.tsx` default render. Body list re-emerges
+        // when `verbose` is set (`/verbose` slash or settings.json).
         return Some(ToolPayload::Preview(head));
     }
-    // Upstream hides the body list in non-verbose mode; we still
-    // show the first 10 for scanability. For count mode the body is
-    // the `path:count` rows so the user sees the distribution.
     let list: Vec<String> = matches
         .iter()
         .filter_map(|v| v.as_str().map(|s| s.to_string()))
@@ -1335,6 +1419,143 @@ mod tests {
         }
     }
 
+    fn expect_bash(p: ToolPayload) -> (String, String, i64) {
+        match p {
+            ToolPayload::Bash { stdout, stderr, exit_code } => (stdout, stderr, exit_code),
+            other => panic!("expected Bash, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn payload_from_result_bash_splits_streams() {
+        let v = serde_json::json!({
+            "status": "ok",
+            "exit_code": 0,
+            "stdout": "hello",
+            "stderr": "",
+            "elapsed_ms": 2,
+        });
+        let (stdout, stderr, exit) = expect_bash(
+            payload_from_result("Bash", &v, false).expect("bash payload"),
+        );
+        assert_eq!(stdout, "hello");
+        assert!(stderr.is_empty());
+        assert_eq!(exit, 0);
+    }
+
+    #[test]
+    fn payload_from_result_bash_surfaces_stderr_only() {
+        let v = serde_json::json!({
+            "status": "ok",
+            "exit_code": 2,
+            "stdout": "",
+            "stderr": "bad thing happened",
+        });
+        let (stdout, stderr, exit) = expect_bash(
+            payload_from_result("Bash", &v, false).expect("bash payload"),
+        );
+        assert!(stdout.is_empty());
+        assert!(stderr.contains("bad thing happened"));
+        assert_eq!(exit, 2);
+    }
+
+    #[test]
+    fn payload_from_result_bash_empty_streams_show_no_output() {
+        let v = serde_json::json!({
+            "status": "ok",
+            "exit_code": 0,
+            "stdout": "",
+            "stderr": "",
+        });
+        let (stdout, stderr, _) = expect_bash(
+            payload_from_result("Bash", &v, false).expect("bash payload"),
+        );
+        assert_eq!(stdout, "(No output)");
+        assert!(stderr.is_empty());
+    }
+
+    #[test]
+    fn payload_from_result_bash_legacy_output_on_success_maps_to_stdout() {
+        // Backward compat: transcripts written before the split only
+        // carried `output`. Dispatcher is gone but captured sessions
+        // still replay through the render path.
+        let v = serde_json::json!({
+            "status": "ok",
+            "exit_code": 0,
+            "output": "line-one\nline-two",
+        });
+        let (stdout, stderr, _) = expect_bash(
+            payload_from_result("Bash", &v, false).expect("bash payload"),
+        );
+        assert!(stdout.contains("line-one"));
+        assert!(stderr.is_empty());
+    }
+
+    #[test]
+    fn payload_from_result_bash_legacy_output_on_failure_maps_to_stderr() {
+        let v = serde_json::json!({
+            "status": "ok",
+            "exit_code": 1,
+            "output": "command not found",
+        });
+        let (stdout, stderr, exit) = expect_bash(
+            payload_from_result("Bash", &v, false).expect("bash payload"),
+        );
+        assert!(stdout.is_empty());
+        assert!(stderr.contains("command not found"));
+        assert_eq!(exit, 1);
+    }
+
+    #[test]
+    fn render_tool_call_bash_stderr_paints_error_color() {
+        let args = serde_json::json!({"command": "oops"});
+        let payload = ToolPayload::Bash {
+            stdout: String::from("ok line"),
+            stderr: String::from("err line"),
+            exit_code: 1,
+        };
+        let view = ToolCallView {
+            name: "Bash",
+            args: &args,
+            status: ToolStatus::Error,
+            elapsed_ms: Some(10),
+            payload: Some(&payload),
+            verbose: false,
+            spinner_tick: 0,
+        };
+        let lines = render_tool_call(&view);
+        // Find the stderr line and confirm its text span carries ERROR color.
+        let err_line = lines
+            .iter()
+            .find(|l| {
+                l.spans
+                    .iter()
+                    .any(|s| s.content.as_ref() == "err line")
+            })
+            .expect("stderr line rendered");
+        let text_span = err_line
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "err line")
+            .unwrap();
+        assert_eq!(text_span.style.fg, Some(theme::ERROR));
+        // And the stdout line should carry MUTED.
+        let ok_line = lines
+            .iter()
+            .find(|l| {
+                l.spans
+                    .iter()
+                    .any(|s| s.content.as_ref() == "ok line")
+            })
+            .expect("stdout line rendered");
+        let ok_span = ok_line
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "ok line")
+            .unwrap();
+        assert_eq!(ok_span.style.fg, Some(theme::MUTED));
+    }
+
     #[test]
     fn summarize_args_read_renders_file_path_and_window() {
         let a = serde_json::json!({"file_path": "/tmp/x.rs", "offset": 10, "limit": 50});
@@ -1451,7 +1672,9 @@ mod tests {
     }
 
     #[test]
-    fn payload_from_result_glob_shows_count_and_file_list() {
+    fn payload_from_result_glob_compact_is_head_only() {
+        // Non-verbose mirrors upstream GlobTool/UI.tsx — head count,
+        // no filename list. Reader uses `/verbose` to expand.
         let v = serde_json::json!({
             "numFiles": 2,
             "filenames": ["/a.rs", "/b.rs"],
@@ -1459,7 +1682,19 @@ mod tests {
             "durationMs": 12,
         });
         let s = expect_preview(payload_from_result("Glob", &v, false).unwrap());
-        assert!(s.starts_with("Found 2 files"), "got: {s}");
+        assert_eq!(s, "Found 2 files");
+    }
+
+    #[test]
+    fn payload_from_result_glob_verbose_adds_file_list() {
+        let v = serde_json::json!({
+            "numFiles": 2,
+            "filenames": ["/a.rs", "/b.rs"],
+            "truncated": false,
+            "durationMs": 12,
+        });
+        let s = expect_preview(payload_from_result("Glob", &v, true).unwrap());
+        assert!(s.starts_with("Found 2 files\n"), "got: {s}");
         assert!(s.contains("/a.rs"), "list body: {s}");
         assert!(s.contains("/b.rs"), "list body: {s}");
     }
@@ -1473,11 +1708,11 @@ mod tests {
             "durationMs": 1,
         });
         let s = expect_preview(payload_from_result("Glob", &v, false).unwrap());
-        assert!(s.starts_with("Found 1 file\n"), "got: {s}");
+        assert_eq!(s, "Found 1 file");
     }
 
     #[test]
-    fn payload_from_result_grep_default_mode_files() {
+    fn payload_from_result_grep_default_mode_files_compact() {
         let v = serde_json::json!({
             "mode": "files_with_matches",
             "matches": ["/a.rs", "/b.rs", "/c.rs"],
@@ -1485,7 +1720,19 @@ mod tests {
             "exit": 0,
         });
         let s = expect_preview(payload_from_result("Grep", &v, false).unwrap());
-        assert!(s.starts_with("Found 3 matches"), "got: {s}");
+        assert_eq!(s, "Found 3 matches");
+    }
+
+    #[test]
+    fn payload_from_result_grep_default_mode_files_verbose() {
+        let v = serde_json::json!({
+            "mode": "files_with_matches",
+            "matches": ["/a.rs", "/b.rs", "/c.rs"],
+            "truncated": false,
+            "exit": 0,
+        });
+        let s = expect_preview(payload_from_result("Grep", &v, true).unwrap());
+        assert!(s.starts_with("Found 3 matches\n"), "got: {s}");
         assert!(s.contains("/a.rs"), "paths listed: {s}");
     }
 

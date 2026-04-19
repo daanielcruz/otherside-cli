@@ -25,10 +25,14 @@ use ratatui::{
 
 use super::render::theme;
 
-/// Otherside-native Rubik's-cube-face spinner. Eight-frame rotation
-/// forward-then-reverse so the pulse reads smoother than a 4-cycle
-/// jerk. Pointedly NOT the upstream Braille-dot / asterisk cycle.
-const SPINNER_FRAMES: &[char] = &['◰', '◳', '◲', '◱', '◲', '◳', '◰', '◱'];
+/// Star-family spinner matching upstream `getDefaultCharacters()` +
+/// its reverse (`components/Spinner/SpinnerGlyph.tsx::SPINNER_FRAMES`).
+/// darwin uses `· ✢ ✳ ✶ ✻ ✽`; we keep that set across platforms since
+/// it's the visible parity target. Forward-then-reverse creates a
+/// breathing "small → large → small" pulse rather than a hard wrap.
+const SPINNER_FRAMES: &[char] = &[
+    '·', '✢', '✳', '✶', '✻', '✽', '✽', '✻', '✶', '✳', '✢', '·',
+];
 
 /// Otherside-native verb rotation. Every entry is a quiet, off-angle
 /// wink at reverse engineering — all jargon stripped. No `xrefs`,
@@ -229,20 +233,18 @@ mod tests {
     use std::collections::HashSet;
 
     #[test]
-    fn spinner_cycles_through_eight_frames() {
-        // Spinner advances once per `SPINNER_FRAME_RATIO` ticks. Walk
-        // the cycle at stride=ratio so each assertion covers one
-        // distinct frame — matches upstream's cube-face pulse shape.
+    fn spinner_cycles_through_star_frames() {
+        // Forward-then-reverse star family matches upstream darwin
+        // `getDefaultCharacters()` +  its reverse. Walk the cycle at
+        // stride=ratio so each assertion covers one distinct frame —
+        // the pulse breathes small → big → small.
         let ratio = SPINNER_FRAME_RATIO as u64;
-        assert_eq!(spinner_frame(0), '◰');
-        assert_eq!(spinner_frame(ratio), '◳');
-        assert_eq!(spinner_frame(ratio * 2), '◲');
-        assert_eq!(spinner_frame(ratio * 3), '◱');
-        assert_eq!(spinner_frame(ratio * 4), '◲');
-        assert_eq!(spinner_frame(ratio * 5), '◳');
-        assert_eq!(spinner_frame(ratio * 6), '◰');
-        assert_eq!(spinner_frame(ratio * 7), '◱');
-        assert_eq!(spinner_frame(ratio * 8), '◰');
+        let expected = ['·', '✢', '✳', '✶', '✻', '✽', '✽', '✻', '✶', '✳', '✢', '·'];
+        for (i, &c) in expected.iter().enumerate() {
+            assert_eq!(spinner_frame(ratio * i as u64), c, "frame {i}");
+        }
+        // Wrap-around: frame 12 lands back on the first glyph.
+        assert_eq!(spinner_frame(ratio * 12), '·');
     }
 
     #[test]
@@ -253,7 +255,7 @@ mod tests {
         // dropping event-loop fps.
         let ratio = SPINNER_FRAME_RATIO as u64;
         for i in 0..ratio {
-            assert_eq!(spinner_frame(i), '◰');
+            assert_eq!(spinner_frame(i), '·');
         }
     }
 

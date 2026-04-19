@@ -114,8 +114,11 @@ pub fn dispatch_bash(args: &Value) -> Result<Value, ToolError> {
     Ok(json!({
         "status": if out.timed_out { "timeout" } else { "ok" },
         "exit_code": out.exit_code,
-        "output": out.output,
-        "was_truncated": out.was_truncated,
+        "stdout": out.stdout,
+        "stderr": out.stderr,
+        "stdout_truncated": out.stdout_truncated,
+        "stderr_truncated": out.stderr_truncated,
+        "was_truncated": out.was_truncated(),
         "elapsed_ms": out.elapsed_ms,
     }))
 }
