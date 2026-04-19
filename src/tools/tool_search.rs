@@ -4,9 +4,12 @@
 //! The model uses `query = "select:<ToolName>"` for a direct fetch or a
 //! keyword for a substring search.
 //!
-//! MVP scope: search the 9 advertised tools (the canonical set from
-//! `harness::build_tools_array`). Broader deferred-tool catalogs (MCP,
-//! skills-graph-bound tools) arrive in Phase 3.
+//! 018 widened the search catalog: results now cover the 9 wire-
+//! advertised tools PLUS the deferred catalog (5 entries after wave 1).
+//! Deferred schemas are served via `schemas::all_schemas()` — wire body
+//! generation stays on `schemas::tool_schemas()` so the deferred surface
+//! never leaks into outbound requests. Broader catalogs (MCP,
+//! skills-graph-bound tools) arrive in later waves.
 
 use serde_json::{json, Value};
 
@@ -25,7 +28,7 @@ pub fn tool_search(args: &Value) -> Result<Value, ToolError> {
         .map(|n| n as usize)
         .unwrap_or(DEFAULT_MAX_RESULTS);
 
-    let all = schemas::tool_schemas();
+    let all = schemas::all_schemas();
     let matches: Vec<&schemas::ToolSchema> = if let Some(rest) = query.strip_prefix("select:") {
         let wanted: Vec<&str> = rest.split(',').map(str::trim).collect();
         all.iter().filter(|s| wanted.contains(&s.name.as_str())).collect()
@@ -73,7 +76,43 @@ mod tests {
     fn tool_search_empty_query_returns_all_up_to_max() {
         let res = tool_search(&json!({"query": "", "max_results": 100})).unwrap();
         let tools = res["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 9);
+        // 9 wire + 5 deferred after 018 first wave.
+        assert_eq!(tools.len(), 14);
+    }
+
+    #[test]
+    fn tool_search_select_deferred_task_create_resolves() {
+        let res =
+            tool_search(&json!({"query": "select:TaskCreate", "max_results": 10})).unwrap();
+        let tools = res["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["name"], "TaskCreate");
+    }
+
+    #[test]
+    fn tool_search_select_deferred_notebook_edit_resolves() {
+        let res =
+            tool_search(&json!({"query": "select:NotebookEdit", "max_results": 10})).unwrap();
+        let tools = res["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["name"], "NotebookEdit");
+    }
+
+    #[test]
+    fn tool_search_substring_match_covers_deferred_catalog() {
+        let res = tool_search(&json!({"query": "task", "max_results": 100})).unwrap();
+        let names: Vec<String> = res["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["name"].as_str().map(str::to_string))
+            .collect();
+        for wanted in ["TaskCreate", "TaskList", "TaskGet", "TaskUpdate"] {
+            assert!(
+                names.iter().any(|n| n == wanted),
+                "substring search for `task` must surface deferred `{wanted}`",
+            );
+        }
     }
 
     #[test]

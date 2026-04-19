@@ -5,6 +5,14 @@
 //! advertised 9-tool set is Agent / Bash / Edit / Glob / Grep / Read /
 //! Skill / ToolSearch / Write (change 010 — C48 anchor selection).
 //!
+//! 018 added the first wave of **deferred tools** — TaskCreate / TaskList
+//! / TaskGet / TaskUpdate / NotebookEdit. Deferred tools are NOT in the
+//! wire-advertised `tools[]` array; the model loads their schemas on
+//! demand via `ToolSearch` (matches upstream's deferred-tools reminder
+//! at `harness_corpus/system-reminders/deferred-tools.txt`). Deferred
+//! dispatchers live in `tools::task` and `tools::notebook`; schemas
+//! flow through `tools::schemas::deferred_schemas()`.
+//!
 //! # Contract
 //!
 //! Every tool is `fn(&Value) -> Result<Value, ToolError>`. Input is
@@ -24,10 +32,12 @@ pub mod bash;
 pub mod edit;
 pub mod glob;
 pub mod grep;
+pub mod notebook;
 pub mod read;
 pub mod read_set;
 pub mod schemas;
 pub mod skill;
+pub mod task;
 pub mod tool_search;
 pub mod write;
 
@@ -66,6 +76,14 @@ pub fn dispatch(tool_name: &str, args: &Value) -> Result<Value, ToolError> {
         "Skill" => skill::skill(args),
         "ToolSearch" => tool_search::tool_search(args),
         "Write" => write::write(args),
+        // Deferred tools (018 first wave). Not wire-advertised; loaded on
+        // demand via ToolSearch. Dispatch works whether or not the model
+        // went through the resolve step.
+        "TaskCreate" => task::task_create(args),
+        "TaskList" => task::task_list(args),
+        "TaskGet" => task::task_get(args),
+        "TaskUpdate" => task::task_update(args),
+        "NotebookEdit" => notebook::notebook_edit(args),
         // Affordance hints for models that hallucinate retired names.
         "Task" => Err(ToolError::Unsupported(
             "tool `Task` is retired; use `Agent` for subagent dispatch (010 anchor selection)"
@@ -159,6 +177,22 @@ mod tests {
                     panic!("advertised tool `{name}` returned Unsupported")
                 }
                 _ => {} // Any other result (Ok or other Err) is fine.
+            }
+        }
+    }
+
+    #[test]
+    fn dispatcher_covers_deferred_first_wave() {
+        // 018 deferred tools MUST route through to their dispatchers, not
+        // bounce off the default Unsupported arm. Empty args are fine —
+        // per-tool validation handles missing fields.
+        for name in ["TaskCreate", "TaskList", "TaskGet", "TaskUpdate", "NotebookEdit"] {
+            let res = dispatch(name, &json!({}));
+            match res {
+                Err(ToolError::Unsupported(_)) => {
+                    panic!("deferred tool `{name}` returned Unsupported")
+                }
+                _ => {}
             }
         }
     }

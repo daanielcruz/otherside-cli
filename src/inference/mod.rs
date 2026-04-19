@@ -154,6 +154,14 @@ pub enum OpenAiChatRole {
 /// Wire format matches OpenAI's `chat.completion.chunk`. The translator
 /// produces these from Anthropic's (or any other provider's) native SSE
 /// events.
+///
+/// `usage` rides the chunk envelope when the upstream provider sends a
+/// running token count (OpenAI's `stream_options: {include_usage: true}`
+/// shape; Anthropic's `message_start.usage` + `message_delta.usage`
+/// folded onto the matching chunk by the translator). `None` on every
+/// chunk that carries no usage delta — serde skips the field so the
+/// wire output stays byte-identical for providers that don't surface
+/// usage on streamed chunks.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct OpenAiChunk {
     pub id: String,
@@ -161,6 +169,21 @@ pub struct OpenAiChunk {
     pub created: u64,
     pub model: String,
     pub choices: Vec<OpenAiChoice>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<OpenAiUsage>,
+}
+
+/// Running token counts folded onto a chunk. Either field may be
+/// populated independently — Anthropic's `message_start` reports
+/// `input_tokens`, subsequent `message_delta` events report
+/// `output_tokens`. Consumers overwrite whichever side is `Some` and
+/// leave the other untouched so the latest-seen count wins per side.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OpenAiUsage {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -330,6 +353,7 @@ mod tests {
                 },
                 finish_reason: None,
             }],
+            usage: None,
         };
         let json = serde_json::to_string(&chunk).unwrap();
         // Validate wire-format markers that downstream OpenAI clients will

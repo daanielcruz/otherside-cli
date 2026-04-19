@@ -628,7 +628,11 @@ mod tests {
             chunks.push(item.expect("translation must not error"));
         }
 
-        assert_eq!(chunks.len(), 4, "expected 4 chunks, got {}", chunks.len());
+        // 5 chunks: role+usage, two text deltas, usage-only from
+        // message_delta, terminator. See the translator's
+        // `hello_corpus_produces_expected_chunk_sequence` conformance
+        // test for the full-shape breakdown.
+        assert_eq!(chunks.len(), 5, "expected 5 chunks, got {}", chunks.len());
         assert_eq!(chunks[0].id, "XXX_MESSAGE_ID_XXX");
         assert_eq!(chunks[0].model, "claude-opus-4-7");
         assert_eq!(
@@ -639,8 +643,10 @@ mod tests {
             chunks[2].choices[0].delta.content.as_deref(),
             Some(" can I help?")
         );
+        // Chunk 3: usage-only envelope from message_delta.
+        assert!(chunks[3].usage.is_some());
         assert_eq!(
-            chunks[3].choices[0].finish_reason.as_deref(),
+            chunks[4].choices[0].finish_reason.as_deref(),
             Some("stop")
         );
     }

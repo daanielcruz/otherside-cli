@@ -65,6 +65,12 @@ pub struct Turn {
     /// Final `finish_reason` once the stream closes. `None` while
     /// streaming.
     pub finish_reason: Option<String>,
+    /// Latest pending usage surfaced by a chunk this turn. Set when a
+    /// chunk arrived with `usage: Some(_)`, drained by
+    /// [`Turn::take_usage`]. Follows the "latest-wins per side"
+    /// semantic — `input_tokens` updates overwrite, `output_tokens`
+    /// updates overwrite, missing sides stay as they were.
+    pub pending_usage: Option<crate::inference::OpenAiUsage>,
 }
 
 /// Accumulator for a single tool call across streaming deltas.
@@ -118,6 +124,15 @@ impl Turn {
     /// delta (if any) so the caller can stream it to the UI — the
     /// accumulators themselves are internal state.
     pub fn fold_chunk(&mut self, chunk: OpenAiChunk) -> Option<String> {
+        if let Some(usage) = chunk.usage {
+            let slot = self.pending_usage.get_or_insert_with(Default::default);
+            if usage.input_tokens.is_some() {
+                slot.input_tokens = usage.input_tokens;
+            }
+            if usage.output_tokens.is_some() {
+                slot.output_tokens = usage.output_tokens;
+            }
+        }
         let choice = chunk.choices.into_iter().next()?;
         if let Some(reason) = choice.finish_reason {
             self.finish_reason = Some(reason);
@@ -135,6 +150,14 @@ impl Turn {
             entry.merge(&tc);
         }
         emitted
+    }
+
+    /// Drain the latest pending usage, returning it to the caller and
+    /// clearing the slot. Used by the TUI loop to forward usage into
+    /// a `StreamEvent::Usage` after each chunk. Returns `None` when
+    /// no new usage has been folded since the previous drain.
+    pub fn take_usage(&mut self) -> Option<crate::inference::OpenAiUsage> {
+        self.pending_usage.take()
     }
 
     /// Drain tool calls in ascending index order. Non-finalizable
@@ -338,6 +361,7 @@ mod tests {
                 },
                 finish_reason: finish.map(|s| s.to_string()),
             }],
+            usage: None,
         }
     }
 
@@ -356,6 +380,7 @@ mod tests {
                 },
                 finish_reason: finish.map(|s| s.to_string()),
             }],
+            usage: None,
         }
     }
 
@@ -403,6 +428,52 @@ mod tests {
         assert_eq!(calls[0].id, "tu_1");
         assert_eq!(calls[0].function.name, "Read");
         assert_eq!(calls[0].function.arguments, "{\"path\":\"/tmp/x\"}");
+    }
+
+    #[test]
+    fn fold_chunk_accumulates_usage_latest_wins_per_side() {
+        // Feed an input-only usage chunk, then an output-only usage
+        // chunk — both must survive the drain because the update
+        // protocol is "overwrite the Some side, leave the None side
+        // alone." Mirrors how Anthropic ships input_tokens on
+        // message_start and cumulative output_tokens on message_delta.
+        use crate::inference::{OpenAiChoice, OpenAiDelta, OpenAiUsage};
+        let mut t = Turn::new();
+        t.fold_chunk(OpenAiChunk {
+            id: "x".into(),
+            object: OpenAiChunk::OBJECT.into(),
+            created: 0,
+            model: "m".into(),
+            choices: vec![OpenAiChoice {
+                index: 0,
+                delta: OpenAiDelta::default(),
+                finish_reason: None,
+            }],
+            usage: Some(OpenAiUsage {
+                input_tokens: Some(1234),
+                output_tokens: None,
+            }),
+        });
+        t.fold_chunk(OpenAiChunk {
+            id: "x".into(),
+            object: OpenAiChunk::OBJECT.into(),
+            created: 0,
+            model: "m".into(),
+            choices: vec![OpenAiChoice {
+                index: 0,
+                delta: OpenAiDelta::default(),
+                finish_reason: None,
+            }],
+            usage: Some(OpenAiUsage {
+                input_tokens: None,
+                output_tokens: Some(56),
+            }),
+        });
+        let drained = t.take_usage().expect("pending usage drained");
+        assert_eq!(drained.input_tokens, Some(1234));
+        assert_eq!(drained.output_tokens, Some(56));
+        // Second drain after a take() returns None — the slot resets.
+        assert!(t.take_usage().is_none());
     }
 
     #[derive(Default)]

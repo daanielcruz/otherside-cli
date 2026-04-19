@@ -27,6 +27,18 @@
 //! user's shell in raw mode if anything went wrong, which is a terrible
 //! experience to inflict.
 //!
+//! # Message queue (017 §4)
+//!
+//! Enter-while-streaming and submit-during-streaming both redirect
+//! the input onto [`ConversationState::queued_messages`] instead of
+//! dispatching a concurrent request. When the in-flight turn finishes
+//! (via `Done`, `Error`, or the sender-drop fallback) the event loop
+//! calls [`ConversationState::consume_queue_head_into_input`], and
+//! if a head was consumed, re-enters the SendToLlm dispatch path so
+//! the queued turn auto-fires. This is inline in the `rx.recv` arm —
+//! no background poll, no `queue_head_pending` intermediate field.
+//! Up-arrow at empty input pops the queue TAIL for editing (C70).
+//!
 //! # Open items for future pick-up
 //!
 //! TODO(hand-off): token accounting for the `context: --%` header slot is
@@ -124,6 +136,16 @@ enum StreamEvent {
         result: std::result::Result<serde_json::Value, String>,
         elapsed_ms: u64,
     },
+    /// Running token counts folded out of the provider stream
+    /// (`message_start` / `message_delta` in the Anthropic dialect).
+    /// Either side may be `None` — the consumer overwrites whichever
+    /// field is `Some` so the most-recent count for each side wins.
+    /// Lets the TUI progress line paint `↑ N tokens` in real time
+    /// without waiting for the turn to finalize.
+    Usage {
+        input_tokens: Option<u64>,
+        output_tokens: Option<u64>,
+    },
 }
 
 /// Entry point — boot the TUI and run until the user exits.
@@ -212,15 +234,27 @@ async fn event_loop(
                     }
                     Some(StreamEvent::Done) => {
                         st.finish_stream();
+                        // 017 §4 — if the user queued messages while
+                        // streaming, pop the head and fire it as the
+                        // next turn. No-op when queue empty.
+                        drain_queue_head_if_any(
+                            &mut st, &provider, &base_model, &thinking, &provider_id, &tx,
+                        );
                     }
                     Some(StreamEvent::Error(e)) => {
                         st.fail_stream(e);
+                        drain_queue_head_if_any(
+                            &mut st, &provider, &base_model, &thinking, &provider_id, &tx,
+                        );
                     }
                     Some(StreamEvent::ToolCallStart { id, name, args }) => {
                         st.begin_tool_call(id, name, args);
                     }
                     Some(StreamEvent::ToolCallFinish { id, result, elapsed_ms }) => {
                         st.finish_tool_call(&id, result, elapsed_ms);
+                    }
+                    Some(StreamEvent::Usage { input_tokens, output_tokens }) => {
+                        st.update_usage(input_tokens, output_tokens);
                     }
                     None => {
                         // Channel closed without a terminal event — the
@@ -229,6 +263,9 @@ async fn event_loop(
                         // streaming mode forever.
                         if st.streaming {
                             st.finish_stream();
+                            drain_queue_head_if_any(
+                                &mut st, &provider, &base_model, &thinking, &provider_id, &tx,
+                            );
                         }
                     }
                 }
@@ -351,9 +388,22 @@ fn handle_key(
         KeyCode::PageDown => st.scroll_down(10),
 
         // Up / Down — navigate the autocomplete popup when it's open.
+        // When the popup is closed, Up at an empty input restores the
+        // most-recent queued message for editing (017 §4 — queue-tail
+        // restore, design.md "Decision: Up-arrow restores the queue
+        // TAIL"). Up at a non-empty input or with an empty queue is a
+        // no-op — leaves room for a future history-recall binding.
         KeyCode::Up => {
             if let Some(ac) = st.autocomplete.as_mut() {
                 ac.move_up();
+            } else if !st.streaming
+                && st.input.is_empty()
+                && st.has_queued_messages()
+            {
+                if let Some(tail) = st.pop_queue_tail() {
+                    st.input = tail;
+                    st.refresh_autocomplete();
+                }
             }
         }
         KeyCode::Down => {
@@ -392,10 +442,26 @@ fn handle_key(
         // popup is open, Enter commits the selection and submits the
         // completed slash command. Slash classifier runs before the
         // provider dispatch so local handlers never hit the network.
+        //
+        // While a stream is in flight, Enter redirects the trimmed
+        // input onto `queued_messages` per 017 §4 — we bypass the
+        // slash classifier entirely because a local slash handler
+        // (e.g. `/clear`) firing mid-turn would mutate state the
+        // streaming render path is actively reading. The queue's
+        // auto-pop on finish re-runs the Enter path cleanly with
+        // streaming == false, which routes the queued text back
+        // through classify() at the right moment.
         KeyCode::Enter => {
             if shift {
                 st.input_push_newline();
                 st.refresh_autocomplete();
+            } else if st.streaming {
+                let trimmed = st.input.trim();
+                if !trimmed.is_empty() {
+                    st.push_to_queue(st.input.clone());
+                }
+                st.input.clear();
+                st.autocomplete = None;
             } else {
                 if let Some(ac) = st.autocomplete.as_ref() {
                     if let Some(name) = ac.commit() {
@@ -476,27 +542,14 @@ fn handle_key(
                     slashes::SlashAction::SendToLlm(_)
                     | slashes::SlashAction::Passthrough => {
                         if let Some(history) = st.submit() {
-                            let thinking = *thinking;
-                            let tx = tx.clone();
-                            let model = base_model.to_string();
-                            // Lifetime dance: `provider.stream(req, thinking)`
-                            // yields a future bound to `&self`. Cloning the
-                            // Arc gives the spawned task its own owned handle
-                            // so the borrow lives on the task stack, not here.
-                            let provider_for_task = provider.clone();
-                            let handle = tokio::spawn(async move {
-                                run_agent_turns(
-                                    provider_for_task,
-                                    model,
-                                    thinking,
-                                    history,
-                                    tx,
-                                )
-                                .await;
-                            });
-                            // Store the handle so Esc/Ctrl+C can
-                            // abort the inflight turn from handle_key.
-                            st.turn_task = Some(handle);
+                            spawn_agent_turn(
+                                st,
+                                provider,
+                                base_model,
+                                thinking,
+                                tx,
+                                history,
+                            );
                         }
                     }
                 }
@@ -515,20 +568,144 @@ fn handle_key(
             st.refresh_autocomplete();
         }
 
-        // Plain character — append to input buffer. We reject chars while
-        // streaming so the user doesn't build up a partial prompt they
-        // then accidentally submit on the next Enter.
+        // Plain character — append to input buffer. Accepted while
+        // streaming so the user can type the next turn into the queue
+        // (017 §4). `refresh_autocomplete` is a no-op while streaming
+        // per 011 fidelity, so the popup stays suppressed.
         KeyCode::Char(c) if !ctrl => {
-            if !st.streaming {
-                st.input_push_char(c);
-                st.refresh_autocomplete();
-            }
+            st.input_push_char(c);
+            st.refresh_autocomplete();
         }
 
         _ => {}
     }
 
     false
+}
+
+/// Spawn the provider's streaming turn task and pin the resulting
+/// `JoinHandle` onto state so Esc / Ctrl+C can abort it. Shared by
+/// the Enter dispatch and the queue auto-pop path in the event loop.
+fn spawn_agent_turn(
+    st: &mut ConversationState,
+    provider: &Arc<dyn Provider>,
+    base_model: &str,
+    thinking: &Option<ThinkingConfig>,
+    tx: &mpsc::Sender<StreamEvent>,
+    history: Vec<crate::inference::OpenAiChatMessage>,
+) {
+    let thinking = *thinking;
+    let tx = tx.clone();
+    let model = base_model.to_string();
+    // Lifetime dance: `provider.stream(req, thinking)` yields a
+    // future bound to `&self`. Cloning the Arc gives the spawned
+    // task its own owned handle so the borrow lives on the task
+    // stack, not here.
+    let provider_for_task = provider.clone();
+    let handle = tokio::spawn(async move {
+        run_agent_turns(provider_for_task, model, thinking, history, tx).await;
+    });
+    st.turn_task = Some(handle);
+}
+
+/// If the queue has a head pending, pop it into `st.input` and fire
+/// a fresh turn through the same spawn path as Enter. Called from
+/// the event loop right after `finish_stream` / `fail_stream` /
+/// channel-drop so a queued message gets its turn without the user
+/// having to press Enter again. No-op when the queue is empty.
+///
+/// The queued content bypasses the slash classifier — it's raw
+/// user text that was classified at push time (which is the same
+/// conservative stance the Enter-while-streaming path takes:
+/// queue storage is verbatim, re-classification on drain). A slash
+/// typed during streaming gets its handler fired now, on drain,
+/// which is upstream's behavior for queued slashes.
+fn drain_queue_head_if_any(
+    st: &mut ConversationState,
+    provider: &Arc<dyn Provider>,
+    base_model: &str,
+    thinking: &Option<ThinkingConfig>,
+    provider_id: &str,
+    tx: &mpsc::Sender<StreamEvent>,
+) -> bool {
+    if !st.consume_queue_head_into_input() {
+        return false;
+    }
+    // Run the queued text through the same slash classifier the
+    // Enter path uses — preserves local-handler semantics for
+    // queued slashes (`/clear`, `/help`, etc.). A SendToLlm /
+    // Passthrough result routes to the provider via submit().
+    match slashes::classify(&st.input) {
+        slashes::SlashAction::Clear => {
+            st.clear_conversation();
+        }
+        slashes::SlashAction::Exit => {
+            // Queued /exit is honored — drop input but signal
+            // the caller so the outer loop can break. Since we're
+            // in the rx.recv arm (no direct return), stash the
+            // intent via push_system_note and let the next key
+            // pick it up. In practice /exit in the queue is edge;
+            // users clear the queue via Esc before firing it.
+            st.push_system_note("queued /exit — press Ctrl+C twice to quit");
+            st.input.clear();
+        }
+        slashes::SlashAction::ShowHelp => {
+            st.push_system_note(slashes::help_text());
+        }
+        slashes::SlashAction::Compact => {
+            st.compact_history();
+        }
+        slashes::SlashAction::Login(provider_hint) => {
+            let provider_hint = if provider_hint.is_empty() {
+                provider_id.to_string()
+            } else {
+                provider_hint
+            };
+            st.push_system_note(format!(
+                "/login needs stdin interaction — exit the TUI and run:\n    otherside login --provider {provider_hint}"
+            ));
+        }
+        slashes::SlashAction::Logout(provider_hint) => {
+            let provider_hint = if provider_hint.is_empty() {
+                provider_id.to_string()
+            } else {
+                provider_hint
+            };
+            st.push_system_note(format!(
+                "to log out: exit the TUI and run:\n    otherside logout --provider {provider_hint}"
+            ));
+        }
+        slashes::SlashAction::MenuPending(kind) => {
+            st.push_system_note(format!(
+                "/{}: menu UI landing in 012b",
+                kind.slash_name()
+            ));
+        }
+        slashes::SlashAction::Rewind => {
+            st.push_system_note(
+                "/rewind: session-history reset lands in 012c".to_string(),
+            );
+        }
+        slashes::SlashAction::ShowKeybindings => {
+            st.push_system_note(
+                "keybindings: Enter submit · Shift+Enter newline · Tab autocomplete · Shift+Tab mode · Esc cancel · Ctrl+C exit".to_string(),
+            );
+        }
+        slashes::SlashAction::ShowModel
+        | slashes::SlashAction::SwitchModel(_)
+        | slashes::SlashAction::ShowStatus
+        | slashes::SlashAction::ShowContext
+        | slashes::SlashAction::ShowSettingsHint(_) => {
+            st.input.clear();
+            st.autocomplete = None;
+        }
+        slashes::SlashAction::SendToLlm(_) | slashes::SlashAction::Passthrough => {
+            if let Some(history) = st.submit() {
+                spawn_agent_turn(st, provider, base_model, thinking, tx, history);
+            }
+        }
+    }
+    true
 }
 
 /// Drive the agent loop for one user submission end-to-end. Multi-turn:
@@ -582,7 +759,24 @@ async fn run_agent_turns(
         while let Some(item) = stream.next().await {
             match item {
                 Ok(chunk) => {
-                    if let Some(delta) = turn.fold_chunk(chunk) {
+                    let emitted = turn.fold_chunk(chunk);
+                    // Drain any usage folded off this chunk BEFORE the
+                    // content delta — small guarantee: the progress
+                    // line sees the new token count before the user
+                    // perceives the matching text arrive.
+                    if let Some(usage) = turn.take_usage() {
+                        if tx
+                            .send(StreamEvent::Usage {
+                                input_tokens: usage.input_tokens,
+                                output_tokens: usage.output_tokens,
+                            })
+                            .await
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+                    if let Some(delta) = emitted {
                         if !delta.is_empty() {
                             tracing::trace!(
                                 target: "otherside::stream",

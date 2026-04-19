@@ -148,6 +148,7 @@ mod tests {
                             },
                             finish_reason: None,
                         }],
+                        usage: None,
                     }),
                     Ok(OpenAiChunk {
                         id: "chatcmpl-test".into(),
@@ -163,6 +164,7 @@ mod tests {
                             },
                             finish_reason: Some("stop".into()),
                         }],
+                        usage: None,
                     }),
                 ];
                 let s: ChunkStream = Box::pin(stream::iter(chunks));

@@ -1,11 +1,26 @@
-//! Tool schema registry sourced from `harness::build_tools_array`.
+//! Tool schema registry — two catalogs:
 //!
-//! 010 flipped the source of truth: schemas previously lived as
-//! hand-transcribed JSON under `otherside-cli/tool_corpus/`; that
-//! directory is retired. Today every advertised schema comes from
-//! `fingerprint_corpus/harness/tools/<Name>.json` (byte-matched against
-//! capture — see change 009's `tests/harness_artifacts.rs`) and flows
-//! through the harness builder at compile time.
+//! - **Wire catalog** (`tool_schemas`): the 9 tools advertised on the
+//!   outbound `tools[]` body. Byte-locked to capture via
+//!   `harness::tools::build_tools_array()` → `fingerprint_corpus/harness/
+//!   tools/<Name>.json`. Only `openai_tools()` reads this surface so the
+//!   byte-match chain (`tests/harness_artifacts.rs`) stays frozen.
+//! - **Deferred catalog** (`deferred_schemas`): tools the model loads on
+//!   demand through `ToolSearch` (matches upstream's deferred-tools
+//!   reminder at `harness_corpus/system-reminders/deferred-tools.txt`).
+//!   Schemas are otherside-native — synthesized from upstream Zod shapes
+//!   since our live capture did not exercise `ToolSearch`. Swap to
+//!   byte-verbatim when a real capture lands.
+//!
+//! `all_schemas()` concatenates the two in wire-first order. `ToolSearch`
+//! reads `all_schemas()`; `openai_tools()` reads `tool_schemas()`. The
+//! split is load-bearing: deferred schemas MUST NOT leak into the wire
+//! body or the capture-anchor conformance suite breaks.
+//!
+//! 010 flipped the source of truth for the wire catalog: schemas used to
+//! live as hand-transcribed JSON under `otherside-cli/tool_corpus/`; that
+//! directory is retired. 018 added the deferred catalog on top without
+//! disturbing the wire chain.
 
 use std::sync::OnceLock;
 
@@ -27,22 +42,65 @@ fn load_all() -> Vec<ToolSchema> {
     harness::tools::build_tools_array()
         .into_iter()
         .map(|v| {
-            serde_json::from_value(v)
-                .expect("harness tool Value deserializes into ToolSchema")
+            serde_json::from_value(v).expect("harness tool Value deserializes into ToolSchema")
         })
         .collect()
 }
 
-/// All advertised tool schemas, loaded once. Canonical order:
-/// Agent, Bash, Edit, Glob, Grep, Read, Skill, ToolSearch, Write.
+/// All WIRE-advertised tool schemas, loaded once. Canonical order:
+/// Agent, Bash, Edit, Glob, Grep, Read, Skill, ToolSearch, Write. This
+/// is the list `openai_tools()` serializes into the outbound `tools[]`
+/// body — deferred schemas MUST NOT land here.
 pub fn tool_schemas() -> &'static [ToolSchema] {
     static SCHEMAS: OnceLock<Vec<ToolSchema>> = OnceLock::new();
     SCHEMAS.get_or_init(load_all).as_slice()
 }
 
-/// Look up a schema by tool name.
+fn load_deferred() -> Vec<ToolSchema> {
+    // Deferred schemas are otherside-native (see module docstring).
+    // When live capture records a real `ToolSearch` response for any
+    // of these names, swap the backing const in its source module.
+    let raws: &[&str] = &[
+        crate::tools::task::TOOL_TASK_CREATE_JSON,
+        crate::tools::task::TOOL_TASK_LIST_JSON,
+        crate::tools::task::TOOL_TASK_GET_JSON,
+        crate::tools::task::TOOL_TASK_UPDATE_JSON,
+        crate::tools::notebook::TOOL_NOTEBOOK_EDIT_JSON,
+    ];
+    raws.iter()
+        .map(|raw| {
+            serde_json::from_str::<ToolSchema>(raw)
+                .expect("bundled deferred tool schema is well-formed JSON")
+        })
+        .collect()
+}
+
+/// Deferred-tool schemas — surfaced only through `ToolSearch`, never on
+/// the wire `tools[]` body. 018 first wave: TaskCreate, TaskList,
+/// TaskGet, TaskUpdate, NotebookEdit.
+pub fn deferred_schemas() -> &'static [ToolSchema] {
+    static SCHEMAS: OnceLock<Vec<ToolSchema>> = OnceLock::new();
+    SCHEMAS.get_or_init(load_deferred).as_slice()
+}
+
+/// Combined wire + deferred catalog, wire-first. Only `ToolSearch`
+/// should read this surface — callers that feed the outbound body
+/// must stay on `tool_schemas()`.
+pub fn all_schemas() -> &'static [ToolSchema] {
+    static SCHEMAS: OnceLock<Vec<ToolSchema>> = OnceLock::new();
+    SCHEMAS
+        .get_or_init(|| {
+            let mut v: Vec<ToolSchema> = tool_schemas().to_vec();
+            v.extend(deferred_schemas().iter().cloned());
+            v
+        })
+        .as_slice()
+}
+
+/// Look up a schema by tool name — searches the combined catalog so
+/// deferred tools resolve too.
 pub fn schema_for(name: &str) -> Option<&'static ToolSchema> {
-    tool_schemas().iter().find(|s| s.name == name)
+    all_schemas().iter().find(|s| s.name == name)
 }
 
 /// Convert every registered tool schema into the OpenAI-canonical tool
@@ -75,17 +133,7 @@ mod tests {
         let names: Vec<&str> = tool_schemas().iter().map(|s| s.name.as_str()).collect();
         assert_eq!(
             names,
-            vec![
-                "Agent",
-                "Bash",
-                "Edit",
-                "Glob",
-                "Grep",
-                "Read",
-                "Skill",
-                "ToolSearch",
-                "Write"
-            ]
+            vec!["Agent", "Bash", "Edit", "Glob", "Grep", "Read", "Skill", "ToolSearch", "Write"]
         );
     }
 
@@ -130,8 +178,7 @@ mod tests {
         // run_in_background subsumes what BashOutput/KillBash used to
         // handle via separate tool names.
         let s = schema_for("Bash").unwrap();
-        assert!(s
-            .input_schema["properties"]
+        assert!(s.input_schema["properties"]
             .as_object()
             .unwrap()
             .contains_key("run_in_background"));
@@ -190,6 +237,68 @@ mod tests {
             assert_eq!(rhs.function.name, lhs.name);
             assert_eq!(rhs.function.description, lhs.description);
             assert_eq!(rhs.function.parameters, lhs.input_schema);
+        }
+    }
+
+    #[test]
+    fn wire_schemas_remain_exactly_nine() {
+        // Guardrail: if this count ever drifts, the capture-anchored
+        // byte-match chain at `tests/harness_artifacts.rs` breaks.
+        assert_eq!(tool_schemas().len(), 9);
+    }
+
+    #[test]
+    fn deferred_schemas_contain_five_after_018() {
+        assert_eq!(deferred_schemas().len(), 5);
+    }
+
+    #[test]
+    fn deferred_schema_names_match_first_wave() {
+        let names: Vec<&str> = deferred_schemas().iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["TaskCreate", "TaskList", "TaskGet", "TaskUpdate", "NotebookEdit"]
+        );
+    }
+
+    #[test]
+    fn all_schemas_total_fourteen() {
+        assert_eq!(all_schemas().len(), 14);
+    }
+
+    #[test]
+    fn all_schemas_wire_first_ordering() {
+        let names: Vec<&str> = all_schemas().iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(
+            &names[..9],
+            &["Agent", "Bash", "Edit", "Glob", "Grep", "Read", "Skill", "ToolSearch", "Write"]
+        );
+        assert_eq!(
+            &names[9..],
+            &["TaskCreate", "TaskList", "TaskGet", "TaskUpdate", "NotebookEdit"]
+        );
+    }
+
+    #[test]
+    fn schema_for_resolves_deferred_names() {
+        assert!(schema_for("TaskCreate").is_some());
+        assert!(schema_for("TaskList").is_some());
+        assert!(schema_for("TaskGet").is_some());
+        assert!(schema_for("TaskUpdate").is_some());
+        assert!(schema_for("NotebookEdit").is_some());
+    }
+
+    #[test]
+    fn openai_tools_excludes_deferred_schemas() {
+        let names: Vec<String> = openai_tools()
+            .iter()
+            .map(|t| t.function.name.clone())
+            .collect();
+        for deferred in ["TaskCreate", "TaskList", "TaskGet", "TaskUpdate", "NotebookEdit"] {
+            assert!(
+                !names.iter().any(|n| n == deferred),
+                "deferred tool `{deferred}` must NOT appear in the wire `openai_tools()` list"
+            );
         }
     }
 }

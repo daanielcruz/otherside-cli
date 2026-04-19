@@ -51,7 +51,7 @@ use serde_json::Value;
 use crate::error::{Error, Result};
 use crate::inference::{
     OpenAiChatRole, OpenAiChoice, OpenAiChunk, OpenAiDelta, OpenAiToolCallDelta,
-    OpenAiToolCallFunctionDelta,
+    OpenAiToolCallFunctionDelta, OpenAiUsage,
 };
 
 use super::sse::SseEvent;
@@ -245,20 +245,39 @@ impl AnthropicStreamTranslator {
         // at the moment the first chunk is emitted.
         self.created = now_epoch_seconds();
 
+        // `message.usage.input_tokens` is the canonical prompt-size
+        // anchor. Anthropic also ships `cache_read_input_tokens` /
+        // `cache_creation_input_tokens` as separate ledger buckets;
+        // fold them into the same total so the progress line's `↑ N
+        // tokens` reflects what actually counted against the context
+        // window, not just the "uncached" slice.
+        let usage = extract_input_usage(message.get("usage"));
+
         // Emit the standard OpenAI "role announcement" chunk — empty
         // content, role=assistant. Many OpenAI clients rely on seeing
         // this before any content deltas.
         if self.role_emitted {
+            // Already emitted the role once — a later message_start
+            // (rare; real streams send one) still needs to surface
+            // usage, so emit a usage-only chunk with empty delta.
+            if usage.is_some() {
+                return Ok(Some(self.build_chunk_with_usage(
+                    OpenAiDelta::default(),
+                    None,
+                    usage,
+                )));
+            }
             return Ok(None);
         }
         self.role_emitted = true;
-        Ok(Some(self.build_chunk(
+        Ok(Some(self.build_chunk_with_usage(
             OpenAiDelta {
                 role: Some(OpenAiChatRole::Assistant),
                 content: None,
                 tool_calls: Vec::new(),
             },
             None,
+            usage,
         )))
     }
 
@@ -339,9 +358,29 @@ impl AnthropicStreamTranslator {
         {
             self.stop_reason = Some(reason.to_string());
         }
-        // `message_delta` does not itself yield a client-visible chunk
-        // — the finish_reason rides the final chunk emitted on
-        // `message_stop`.
+        // `message_delta.usage.output_tokens` is a running counter —
+        // every delta arrives with the cumulative total (not an
+        // increment). Surface it as a usage-only chunk so the TUI's
+        // progress line can paint `↑ Nk tokens` while the response
+        // streams. Empty delta keeps the content channel untouched.
+        let output_tokens = value
+            .get("usage")
+            .and_then(|u| u.get("output_tokens"))
+            .and_then(Value::as_u64);
+        if let Some(out) = output_tokens {
+            let usage = OpenAiUsage {
+                input_tokens: None,
+                output_tokens: Some(out),
+            };
+            return Ok(Some(self.build_chunk_with_usage(
+                OpenAiDelta::default(),
+                None,
+                Some(usage),
+            )));
+        }
+        // No output_tokens surfaced yet — `message_delta` does not
+        // itself yield a client-visible chunk. The finish_reason rides
+        // the final chunk emitted on `message_stop`.
         Ok(None)
     }
 
@@ -368,6 +407,19 @@ impl AnthropicStreamTranslator {
     /// Assemble an [`OpenAiChunk`] from the translator's current id /
     /// model / created state plus a per-event delta.
     fn build_chunk(&self, delta: OpenAiDelta, finish_reason: Option<String>) -> OpenAiChunk {
+        self.build_chunk_with_usage(delta, finish_reason, None)
+    }
+
+    /// Variant of [`build_chunk`] that folds a usage envelope onto the
+    /// emitted chunk. Only called from `handle_message_start` and
+    /// `handle_message_delta` — every other emit path passes `None`
+    /// through the bare `build_chunk` wrapper.
+    fn build_chunk_with_usage(
+        &self,
+        delta: OpenAiDelta,
+        finish_reason: Option<String>,
+        usage: Option<OpenAiUsage>,
+    ) -> OpenAiChunk {
         OpenAiChunk {
             id: self.id.clone().unwrap_or_default(),
             object: OpenAiChunk::OBJECT.to_string(),
@@ -378,8 +430,32 @@ impl AnthropicStreamTranslator {
                 delta,
                 finish_reason,
             }],
+            usage,
         }
     }
+}
+
+/// Fold Anthropic's three input-token buckets
+/// (`input_tokens` + `cache_read_input_tokens` +
+/// `cache_creation_input_tokens`) into a single
+/// [`OpenAiUsage`] carrying the sum as `input_tokens`. Returns `None`
+/// when no bucket is present — callers skip emitting a usage chunk in
+/// that case.
+fn extract_input_usage(usage: Option<&Value>) -> Option<OpenAiUsage> {
+    let usage = usage?;
+    let base = usage.get("input_tokens").and_then(Value::as_u64);
+    let cache_read = usage.get("cache_read_input_tokens").and_then(Value::as_u64);
+    let cache_creation = usage
+        .get("cache_creation_input_tokens")
+        .and_then(Value::as_u64);
+    let total = base
+        .or(cache_read)
+        .or(cache_creation)
+        .map(|_| base.unwrap_or(0) + cache_read.unwrap_or(0) + cache_creation.unwrap_or(0))?;
+    Some(OpenAiUsage {
+        input_tokens: Some(total),
+        output_tokens: None,
+    })
 }
 
 /// Map an Anthropic `stop_reason` string to OpenAI's `finish_reason`
@@ -440,15 +516,18 @@ mod tests {
     #[test]
     fn hello_corpus_produces_expected_chunk_sequence() {
         // Golden-file style test: the captured 8-event stream must map
-        // to a deterministic chunk sequence — role announcement, two
-        // text deltas, terminator.
+        // to a deterministic chunk sequence — role announcement +
+        // usage, two text deltas, usage-only chunk from
+        // message_delta, terminator.
         let events = parse_corpus_events();
         let chunks = stream_events(&events).expect("translation must succeed");
 
-        // Expected: 1 role chunk + 2 text deltas + 1 final = 4 chunks.
-        assert_eq!(chunks.len(), 4, "chunk count diverged from corpus");
+        // Expected: 1 role chunk (with usage folded in) + 2 text
+        // deltas + 1 usage-only chunk from message_delta + 1
+        // terminator = 5 chunks.
+        assert_eq!(chunks.len(), 5, "chunk count diverged from corpus");
 
-        // Chunk 0: role announcement.
+        // Chunk 0: role announcement with input usage folded in.
         assert_eq!(chunks[0].choices[0].delta.role, Some(OpenAiChatRole::Assistant));
         assert_eq!(chunks[0].choices[0].delta.content, None);
         assert!(chunks[0].choices[0].finish_reason.is_none());
@@ -456,6 +535,10 @@ mod tests {
         assert_eq!(chunks[0].id, "XXX_MESSAGE_ID_XXX");
         assert_eq!(chunks[0].model, "claude-opus-4-7");
         assert_eq!(chunks[0].object, "chat.completion.chunk");
+        // Usage folded from message_start.message.usage — sum of
+        // input_tokens + cache_read + cache_creation buckets.
+        let start_usage = chunks[0].usage.as_ref().expect("usage on role chunk");
+        assert_eq!(start_usage.input_tokens, Some(6 + 14847 + 6732));
 
         // Chunk 1: first text delta.
         assert_eq!(chunks[1].choices[0].delta.role, None);
@@ -465,10 +548,17 @@ mod tests {
         // Chunk 2: second text delta.
         assert_eq!(chunks[2].choices[0].delta.content.as_deref(), Some(" can I help?"));
 
-        // Chunk 3: terminator with finish_reason stop (end_turn → stop).
-        assert_eq!(chunks[3].choices[0].delta.role, None);
+        // Chunk 3: usage-only from message_delta — no content, no
+        // finish_reason, just the running output_tokens count.
         assert_eq!(chunks[3].choices[0].delta.content, None);
-        assert_eq!(chunks[3].choices[0].finish_reason.as_deref(), Some("stop"));
+        assert!(chunks[3].choices[0].finish_reason.is_none());
+        let delta_usage = chunks[3].usage.as_ref().expect("usage on delta chunk");
+        assert_eq!(delta_usage.output_tokens, Some(13));
+
+        // Chunk 4: terminator with finish_reason stop (end_turn → stop).
+        assert_eq!(chunks[4].choices[0].delta.role, None);
+        assert_eq!(chunks[4].choices[0].delta.content, None);
+        assert_eq!(chunks[4].choices[0].finish_reason.as_deref(), Some("stop"));
 
         // All chunks share the same id and model.
         for c in &chunks {
@@ -732,5 +822,78 @@ mod tests {
             fin.choices[0].finish_reason.as_deref(),
             Some("tool_calls")
         );
+    }
+
+    #[test]
+    fn message_start_with_usage_rides_role_chunk() {
+        // Regression anchor for the token-counter plumbing: the
+        // first emitted chunk must carry the usage envelope
+        // extracted from `message.usage` so the TUI progress line
+        // paints `↑ N tokens` on the first frame after submit.
+        let mut t = AnthropicStreamTranslator::new();
+        let chunk = t
+            .on_event(&SseEvent {
+                event: "message_start".into(),
+                data: r#"{"type":"message_start","message":{"id":"m","model":"x","usage":{"input_tokens":1234}}}"#.into(),
+                ..Default::default()
+            })
+            .unwrap()
+            .expect("role chunk emitted");
+        let usage = chunk.usage.expect("usage rides role chunk");
+        assert_eq!(usage.input_tokens, Some(1234));
+        assert_eq!(usage.output_tokens, None);
+    }
+
+    #[test]
+    fn message_start_usage_sums_cache_buckets() {
+        // Cache-read + cache-creation tokens are part of the
+        // effective prompt size. Roll them into `input_tokens`
+        // so the context-window arithmetic doesn't underreport.
+        let mut t = AnthropicStreamTranslator::new();
+        let chunk = t
+            .on_event(&SseEvent {
+                event: "message_start".into(),
+                data: r#"{"type":"message_start","message":{"id":"m","model":"x","usage":{"input_tokens":100,"cache_read_input_tokens":900,"cache_creation_input_tokens":50}}}"#.into(),
+                ..Default::default()
+            })
+            .unwrap()
+            .expect("role chunk emitted");
+        let usage = chunk.usage.expect("usage rides role chunk");
+        assert_eq!(usage.input_tokens, Some(1050));
+    }
+
+    #[test]
+    fn message_delta_emits_output_tokens_usage() {
+        // `message_delta.usage.output_tokens` is a running cumulative
+        // counter — every event MUST surface it to the TUI so the
+        // progress line's output count grows as the stream drains.
+        let mut t = boot_translator();
+        let chunk = t
+            .on_event(&SseEvent {
+                event: "message_delta".into(),
+                data: r#"{"type":"message_delta","delta":{"stop_reason":null},"usage":{"output_tokens":56}}"#.into(),
+                ..Default::default()
+            })
+            .unwrap()
+            .expect("usage-bearing message_delta emits a chunk");
+        let usage = chunk.usage.expect("usage present");
+        assert_eq!(usage.output_tokens, Some(56));
+        assert_eq!(usage.input_tokens, None);
+    }
+
+    #[test]
+    fn message_delta_without_usage_remains_silent() {
+        // Defensive: without a usage envelope the message_delta
+        // path stays chunk-less so we don't spam the TUI with
+        // empty frames every 50ms.
+        let mut t = boot_translator();
+        let out = t
+            .on_event(&SseEvent {
+                event: "message_delta".into(),
+                data: r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"}}"#.into(),
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(out.is_none());
     }
 }

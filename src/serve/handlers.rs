@@ -359,6 +359,7 @@ mod tests {
                 },
                 finish_reason: finish.map(|s| s.to_string()),
             }],
+            usage: None,
         }
     }
 

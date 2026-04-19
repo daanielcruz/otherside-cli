@@ -66,6 +66,7 @@ mod tests {
                 },
                 finish_reason: None,
             }],
+            usage: None,
         }
     }
 

@@ -59,6 +59,28 @@
 //! [`ConversationState::submit`] clears the vector so each turn starts
 //! fresh; an orphan Finish (no matching Start) emits a `tracing::warn!`
 //! and is dropped without mutating state.
+//!
+//! # Message queue (017 §4)
+//!
+//! Upstream lets the user type while a stream is in flight —
+//! Enter pushes to a queue instead of submitting. When the
+//! current turn finishes (cleanly or with an error), the queue head
+//! is auto-popped as the next turn's input and re-submitted. The
+//! queue surfaces in the prompt bar as a muted chip `⏸ N queued ·
+//! press up to edit`, and Up at empty input restores the most-recent
+//! queued entry for editing (tail, not head — see
+//! `openspec/changes/017-cancel-keys-and-queue/design.md` "Decision:
+//! Up-arrow restores the queue TAIL"). Methods:
+//! [`ConversationState::push_to_queue`] (tail push from Enter-while-
+//! streaming), [`ConversationState::pop_queue_head`] (FIFO drain on
+//! finish), [`ConversationState::pop_queue_tail`] (LIFO restore on
+//! Up), [`ConversationState::has_queued_messages`]. The event loop
+//! owns the auto-submit — `finish_stream` / `fail_stream` leave the
+//! queue intact; the loop's `Done` / `Error` / channel-closed arms
+//! invoke [`ConversationState::consume_queue_head_into_input`] and
+//! call [`ConversationState::submit`] to fire the next turn. Mirror
+//! on fail matches the symmetry in upstream's turn-finish path
+//! (design.md §4.10 open question resolved here per user scope brief).
 
 use std::time::Instant;
 
@@ -275,6 +297,17 @@ pub struct ConversationState {
     /// [`tool_render::render_tool_call`]. Order = insertion order =
     /// upstream's transcript ordering.
     pub active_tool_calls: Vec<ToolCallEntry>,
+
+    /// Messages the user typed + hit Enter on while a prior turn was
+    /// streaming (017 §4). Enter-while-streaming pushes the input to
+    /// the tail here instead of submitting; [`finish_stream`] /
+    /// [`fail_stream`] leave the queue untouched so the event loop
+    /// can pop the head and synthesize the next turn. Up-arrow at
+    /// empty input pops the TAIL (most-recent) for editing; idle
+    /// cancel (future §2) pops the HEAD. Vec (not VecDeque) because
+    /// N is human-typed and stays small — see design.md "Decision:
+    /// Queue lives on ConversationState as Vec<String>".
+    pub queued_messages: Vec<String>,
 }
 
 /// Double-press-to-exit window — must match upstream's
@@ -392,15 +425,31 @@ impl ConversationState {
     ///
     /// Returns `Some(history)` — the full message list that should be sent
     /// to the provider — when the submission was accepted. Returns `None`
-    /// when the input was empty or a stream is already in flight; the
-    /// caller should ignore the keypress in that case.
+    /// when the input was empty, OR when a stream is already in flight
+    /// (in which case the trimmed input is redirected onto
+    /// [`queued_messages`] for auto-pop on turn finish per 017 §4). The
+    /// caller should ignore the keypress either way — the queue path is
+    /// a silent side-channel.
     ///
     /// Side effects on success:
     ///   - Pushes the user's [`DisplayMessage`] onto `messages`.
     ///   - Clears `input`, flips `streaming = true`, clears the assistant
     ///     buffer, drops any previous error, scrolls to bottom.
+    ///
+    /// Side effects when streaming (queue redirect, 017 §4):
+    ///   - Trimmed input appended to `queued_messages`.
+    ///   - `input` cleared, `autocomplete` dropped.
+    ///   - `streaming` stays true; no provider dispatch.
+    ///   - Empty / whitespace-only input is dropped silently (no queue
+    ///     entry, matches idle submit's empty-input short-circuit).
     pub fn submit(&mut self) -> Option<Vec<OpenAiChatMessage>> {
         if self.streaming {
+            let trimmed = self.input.trim();
+            if !trimmed.is_empty() {
+                self.queued_messages.push(self.input.clone());
+            }
+            self.input.clear();
+            self.autocomplete = None;
             return None;
         }
         let trimmed = self.input.trim();
@@ -654,6 +703,23 @@ impl ConversationState {
             .collect()
     }
 
+    /// Overwrite whichever of `input_tokens` / `output_tokens` is
+    /// `Some` in the argument, leaving the other field untouched.
+    /// Called from the event loop when a usage-carrying chunk folds
+    /// onto the in-flight turn — Anthropic's stream ships
+    /// `input_tokens` exactly once on `message_start` and a running
+    /// cumulative `output_tokens` on every `message_delta`, so the
+    /// two sides arrive independently and the latest-wins semantic
+    /// matches the wire.
+    pub fn update_usage(&mut self, input_tokens: Option<u64>, output_tokens: Option<u64>) {
+        if let Some(v) = input_tokens {
+            self.input_tokens = v;
+        }
+        if let Some(v) = output_tokens {
+            self.output_tokens = v;
+        }
+    }
+
     /// Append a chunk's content delta onto the in-flight assistant buffer.
     /// Called from the event loop on every [`crate::inference::OpenAiChunk`]
     /// whose `delta.content` is non-empty. Auto-follows the latest output
@@ -798,6 +864,62 @@ impl ConversationState {
     pub fn clear_input(&mut self) {
         self.input.clear();
         self.autocomplete = None;
+    }
+
+    // ----- 017 §4 message queue ---------------------------------------
+
+    /// Append `msg` to the tail of [`queued_messages`]. Called from
+    /// `handle_key`'s Enter arm when the stream is live; also
+    /// invoked indirectly via [`submit`] when called during streaming
+    /// (the dual entry point keeps the direct push available for
+    /// tests that bypass submit's streaming guard).
+    pub fn push_to_queue(&mut self, msg: String) {
+        self.queued_messages.push(msg);
+    }
+
+    /// Pop the FIFO head of [`queued_messages`]. Used by the event
+    /// loop's auto-submit path on `finish_stream` / `fail_stream` —
+    /// upstream's `popCommandFromQueue` semantic (head-first drain).
+    /// `None` when empty. O(N) removal is unmeasurable at the
+    /// human-typed queue sizes we expect (design.md §4.3).
+    pub fn pop_queue_head(&mut self) -> Option<String> {
+        if self.queued_messages.is_empty() {
+            None
+        } else {
+            Some(self.queued_messages.remove(0))
+        }
+    }
+
+    /// Pop the LIFO tail of [`queued_messages`]. Used by the Up-arrow
+    /// "edit most-recent queued message" affordance — the user's
+    /// intent is "fix what I just typed," so the tail is the right
+    /// end (design.md "Decision: Up-arrow restores the queue TAIL").
+    /// `None` when empty.
+    pub fn pop_queue_tail(&mut self) -> Option<String> {
+        self.queued_messages.pop()
+    }
+
+    /// `true` when the queue has at least one entry. Drives the
+    /// prompt-bar chip's visibility in the render layer.
+    pub fn has_queued_messages(&self) -> bool {
+        !self.queued_messages.is_empty()
+    }
+
+    /// Pop the head of the queue into [`input`]. Returns `true` when
+    /// a head was consumed (so the caller can proceed to [`submit`]),
+    /// `false` when the queue was empty. Pure state helper — the
+    /// event loop calls this inside its `Done` / `Error` / channel-
+    /// closed arms, after `finish_stream` / `fail_stream` flipped
+    /// `streaming` off, so that the subsequent `submit()` re-enters
+    /// the streaming path with the queued content.
+    pub fn consume_queue_head_into_input(&mut self) -> bool {
+        match self.pop_queue_head() {
+            Some(head) => {
+                self.input = head;
+                true
+            }
+            None => false,
+        }
     }
 }
 
@@ -1093,6 +1215,38 @@ mod tests {
     }
 
     #[test]
+    fn update_usage_overwrites_input_side_only() {
+        // Latest-wins per side: passing `input_tokens=Some` and
+        // `output_tokens=None` must NOT zero the previously-set
+        // output count. Anthropic's stream ships the two values on
+        // different events so they arrive independently.
+        let mut st = ConversationState::new();
+        st.output_tokens = 42;
+        st.update_usage(Some(1234), None);
+        assert_eq!(st.input_tokens, 1234);
+        assert_eq!(st.output_tokens, 42, "output side must be untouched");
+    }
+
+    #[test]
+    fn update_usage_overwrites_output_side_only() {
+        let mut st = ConversationState::new();
+        st.input_tokens = 555;
+        st.update_usage(None, Some(77));
+        assert_eq!(st.output_tokens, 77);
+        assert_eq!(st.input_tokens, 555, "input side must be untouched");
+    }
+
+    #[test]
+    fn update_usage_no_op_when_both_none() {
+        let mut st = ConversationState::new();
+        st.input_tokens = 100;
+        st.output_tokens = 200;
+        st.update_usage(None, None);
+        assert_eq!(st.input_tokens, 100);
+        assert_eq!(st.output_tokens, 200);
+    }
+
+    #[test]
     fn turn_verb_cleared_on_fail_stream() {
         let mut st = ConversationState::new();
         st.input = "ask".to_string();
@@ -1292,5 +1446,184 @@ mod tests {
         assert_eq!(st.active_tool_calls[0].status, ToolStatus::Running);
         assert_eq!(st.active_tool_calls[1].id, "b");
         assert_eq!(st.active_tool_calls[1].status, ToolStatus::Ok);
+    }
+
+    // ----- 017 §4 message queue ---------------------------------------
+
+    #[test]
+    fn queued_messages_default_empty() {
+        let st = ConversationState::new();
+        assert!(st.queued_messages.is_empty());
+        assert!(!st.has_queued_messages());
+    }
+
+    #[test]
+    fn push_to_queue_while_streaming_keeps_streaming_true() {
+        let mut st = ConversationState::new();
+        st.input = "first".into();
+        st.submit().expect("first submit fires");
+        assert!(st.streaming);
+        st.push_to_queue("queued-a".into());
+        // Direct push must not flip streaming off; the prior turn
+        // owns the streaming lifecycle.
+        assert!(st.streaming);
+        assert_eq!(st.queued_messages, vec!["queued-a".to_string()]);
+    }
+
+    #[test]
+    fn submit_during_streaming_pushes_to_queue_not_history() {
+        let mut st = ConversationState::new();
+        st.input = "first".into();
+        st.submit().unwrap();
+        assert_eq!(st.messages.len(), 1);
+        // Second submit during the stream redirects onto the queue.
+        st.input = "queued-a".into();
+        let ret = st.submit();
+        assert!(ret.is_none());
+        assert_eq!(st.messages.len(), 1, "queued submits must not land in history");
+        assert_eq!(st.queued_messages, vec!["queued-a".to_string()]);
+        assert_eq!(st.input, "", "input cleared after queue push");
+        assert!(st.streaming, "streaming flag must stay true on queue push");
+    }
+
+    #[test]
+    fn submit_during_streaming_drops_whitespace_only_input() {
+        let mut st = ConversationState::new();
+        st.input = "first".into();
+        st.submit().unwrap();
+        st.input = "   \n  ".into();
+        assert!(st.submit().is_none());
+        assert!(st.queued_messages.is_empty(), "whitespace must not enter queue");
+        assert_eq!(st.input, "", "empty input cleared even when not queued");
+    }
+
+    #[test]
+    fn pop_queue_head_fifo_order() {
+        let mut st = ConversationState::new();
+        st.push_to_queue("A".into());
+        st.push_to_queue("B".into());
+        st.push_to_queue("C".into());
+        assert_eq!(st.pop_queue_head().as_deref(), Some("A"));
+        assert_eq!(st.pop_queue_head().as_deref(), Some("B"));
+        assert_eq!(st.pop_queue_head().as_deref(), Some("C"));
+        assert_eq!(st.pop_queue_head(), None);
+    }
+
+    #[test]
+    fn pop_queue_tail_removes_from_queue() {
+        let mut st = ConversationState::new();
+        st.push_to_queue("A".into());
+        st.push_to_queue("B".into());
+        assert_eq!(st.pop_queue_tail().as_deref(), Some("B"));
+        assert_eq!(st.queued_messages, vec!["A".to_string()]);
+        assert_eq!(st.pop_queue_tail().as_deref(), Some("A"));
+        assert!(st.queued_messages.is_empty());
+        assert_eq!(st.pop_queue_tail(), None);
+    }
+
+    #[test]
+    fn consume_queue_head_into_input_transitions_state() {
+        // Simulates the event loop's post-finish auto-submit arm.
+        let mut st = ConversationState::new();
+        st.input = "first".into();
+        st.submit().unwrap();
+        st.push_to_queue("queued-a".into());
+        st.push_to_queue("queued-b".into());
+        st.append_stream_delta("reply-one");
+        st.finish_stream();
+        assert!(!st.streaming);
+        let consumed = st.consume_queue_head_into_input();
+        assert!(consumed);
+        assert_eq!(st.input, "queued-a");
+        assert_eq!(st.queued_messages, vec!["queued-b".to_string()]);
+        // Now re-submit to simulate the event loop's next step.
+        let hist = st.submit().expect("queued head submits as new turn");
+        // History must include first user turn, assistant reply,
+        // and the newly-submitted queued-a.
+        assert!(st.streaming);
+        assert_eq!(hist.last().unwrap().content, "queued-a");
+    }
+
+    #[test]
+    fn finish_stream_auto_pops_multi_turn_queue_drain() {
+        // Verify the event-loop pattern: finish → consume_head →
+        // submit → finish → consume_head → submit → drain empty.
+        let mut st = ConversationState::new();
+        st.input = "first".into();
+        st.submit().unwrap();
+        st.push_to_queue("A".into());
+        st.push_to_queue("B".into());
+        st.finish_stream();
+
+        assert!(st.consume_queue_head_into_input());
+        assert_eq!(st.input, "A");
+        st.submit().unwrap();
+        st.finish_stream();
+
+        assert!(st.consume_queue_head_into_input());
+        assert_eq!(st.input, "B");
+        st.submit().unwrap();
+        st.finish_stream();
+
+        assert!(!st.consume_queue_head_into_input(), "queue drained");
+        assert_eq!(st.input, "");
+    }
+
+    #[test]
+    fn fail_stream_leaves_queue_for_auto_pop() {
+        // Mirror of finish_stream — the event-loop handles both
+        // symmetrically (design.md §4.10 resolved to on-both).
+        let mut st = ConversationState::new();
+        st.input = "first".into();
+        st.submit().unwrap();
+        st.push_to_queue("retry".into());
+        st.fail_stream("network".into());
+        assert!(!st.streaming);
+        assert_eq!(st.queued_messages, vec!["retry".to_string()]);
+        assert!(st.consume_queue_head_into_input());
+        assert_eq!(st.input, "retry");
+    }
+
+    #[test]
+    fn up_arrow_restores_last_queued_message() {
+        // State-level unit: input empty + queue non-empty → pop
+        // tail into input. (The handle_key binding lives in
+        // tui::mod; this test exercises the pure method.)
+        let mut st = ConversationState::new();
+        st.input = "first".into();
+        st.submit().unwrap();
+        st.push_to_queue("early".into());
+        st.push_to_queue("most-recent".into());
+        // Simulate handle_key's guard + call.
+        assert!(st.input.is_empty());
+        assert!(st.has_queued_messages());
+        let restored = st.pop_queue_tail().unwrap();
+        st.input = restored;
+        assert_eq!(st.input, "most-recent");
+        assert_eq!(st.queued_messages, vec!["early".to_string()]);
+    }
+
+    #[test]
+    fn consume_queue_head_into_input_noop_on_empty_queue() {
+        let mut st = ConversationState::new();
+        assert!(!st.consume_queue_head_into_input());
+        assert_eq!(st.input, "");
+    }
+
+    #[test]
+    fn submit_clears_input_on_queue_push_even_with_leading_whitespace() {
+        // Idempotent: whether the trimmed input queued or dropped,
+        // st.input ends empty so the next keystroke starts fresh.
+        let mut st = ConversationState::new();
+        st.input = "first".into();
+        st.submit().unwrap();
+        st.input = "   padded   ".into();
+        st.submit();
+        assert_eq!(st.input, "");
+        assert_eq!(
+            st.queued_messages,
+            vec!["   padded   ".to_string()],
+            "padding preserved verbatim — the user typed it intentionally"
+        );
     }
 }

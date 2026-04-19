@@ -175,6 +175,20 @@ pub fn render(
         tips::draw(f, tp, state.tip_rotation_index);
     }
 
+    // Queue chip (017 §4) — rendered in the always-reserved 1-row
+    // prompt top-pad gap so it hugs the prompt bar without shifting
+    // layout. Visible only while streaming and the queue is non-empty;
+    // otherwise the gap stays blank (its original purpose).
+    if state.streaming && state.has_queued_messages() && slots.prompt.y > 0 {
+        let chip_area = Rect {
+            x: slots.prompt.x,
+            y: slots.prompt.y - 1,
+            width: slots.prompt.width,
+            height: 1,
+        };
+        draw_queue_chip(f, chip_area, state);
+    }
+
     // Prompt bar with the autocomplete popup painted above it when
     // active — the popup goes in the streaming area bottom strip so
     // it obscures nothing crucial (we redraw next frame anyway).
@@ -463,6 +477,19 @@ fn render_message(role: OpenAiChatRole, content: &str, width: u16) -> Vec<Line<'
         }
     }
     lines
+}
+
+/// Paint the 017 §4 queue chip: `⏸ N queued · press up to edit`.
+/// Single MUTED line, no border. Caller confirms queue non-empty +
+/// stream active + at least one pixel of top-pad to render into.
+fn draw_queue_chip(f: &mut Frame<'_>, area: Rect, state: &ConversationState) {
+    let count = state.queued_messages.len();
+    let text = format!("⏸ {count} queued · press up to edit");
+    let para = Paragraph::new(Line::from(Span::styled(
+        text,
+        Style::default().fg(theme::MUTED),
+    )));
+    f.render_widget(para, area);
 }
 
 /// Prompt bar with upstream-style top + bottom rule lines (no left
@@ -1042,6 +1069,141 @@ mod tests {
         assert!(
             !rendered.contains("(shift+tab to cycle)"),
             "rendered: {rendered:?}"
+        );
+    }
+
+    // --- 017 §4 queue chip -----------------------------------------------
+
+    fn render_queue_chip_to_string(state: &ConversationState, width: u16) -> String {
+        use ratatui::backend::TestBackend;
+        use ratatui::layout::Rect;
+        use ratatui::Terminal;
+        let backend = TestBackend::new(width, 1);
+        let mut term = Terminal::new(backend).expect("terminal");
+        term.draw(|f| {
+            let area = Rect::new(0, 0, width, 1);
+            draw_queue_chip(f, area, state);
+        })
+        .unwrap();
+        let buf = term.backend().buffer().clone();
+        let mut out = String::new();
+        for x in 0..width {
+            out.push_str(buf[(x, 0)].symbol());
+        }
+        out.trim_end().to_string()
+    }
+
+    #[test]
+    fn queue_chip_renders_count_and_hint() {
+        use super::super::state::ConversationState;
+        let mut st = ConversationState::new();
+        st.queued_messages.push("A".into());
+        st.queued_messages.push("B".into());
+        let s = render_queue_chip_to_string(&st, 80);
+        assert!(s.contains("2 queued"), "rendered: {s:?}");
+        assert!(s.contains("press up to edit"), "rendered: {s:?}");
+        assert!(s.starts_with('⏸') || s.starts_with('\u{23f8}'), "rendered: {s:?}");
+    }
+
+    #[test]
+    fn queue_chip_count_updates_with_queue_size() {
+        use super::super::state::ConversationState;
+        let mut st = ConversationState::new();
+        st.queued_messages.push("A".into());
+        let s1 = render_queue_chip_to_string(&st, 80);
+        assert!(s1.contains("1 queued"), "rendered: {s1:?}");
+        st.queued_messages.push("B".into());
+        st.queued_messages.push("C".into());
+        let s2 = render_queue_chip_to_string(&st, 80);
+        assert!(s2.contains("3 queued"), "rendered: {s2:?}");
+    }
+
+    #[test]
+    fn queue_chip_not_painted_when_queue_empty_in_full_render() {
+        // Full frame render — chip must NOT appear in the top-pad row
+        // when the queue is empty.
+        use super::super::state::ConversationState;
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let mut st = ConversationState::new();
+        // Kick state into streaming so the render path with the chip
+        // guard is live — ensures the `has_queued_messages` gate is
+        // what blocks the paint, not the streaming check.
+        st.input = "hi".into();
+        st.submit().unwrap();
+        let backend = TestBackend::new(80, 30);
+        let mut term = Terminal::new(backend).expect("terminal");
+        term.draw(|f| render(f, &st, "claude-opus-4-7", "anthropic", 0))
+            .unwrap();
+        let buf = term.backend().buffer().clone();
+        let mut joined = String::new();
+        for y in 0..30 {
+            for x in 0..80 {
+                joined.push_str(buf[(x, y)].symbol());
+            }
+            joined.push('\n');
+        }
+        assert!(
+            !joined.contains("queued · press up to edit"),
+            "chip leaked into empty-queue render: {joined:?}"
+        );
+    }
+
+    #[test]
+    fn queue_chip_painted_in_top_pad_when_streaming_and_nonempty() {
+        use super::super::state::ConversationState;
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let mut st = ConversationState::new();
+        st.input = "hi".into();
+        st.submit().unwrap();
+        st.push_to_queue("queued-a".into());
+        st.push_to_queue("queued-b".into());
+        let backend = TestBackend::new(80, 30);
+        let mut term = Terminal::new(backend).expect("terminal");
+        term.draw(|f| render(f, &st, "claude-opus-4-7", "anthropic", 0))
+            .unwrap();
+        let buf = term.backend().buffer().clone();
+        let mut joined = String::new();
+        for y in 0..30 {
+            for x in 0..80 {
+                joined.push_str(buf[(x, y)].symbol());
+            }
+            joined.push('\n');
+        }
+        assert!(
+            joined.contains("2 queued · press up to edit"),
+            "chip missing from render: {joined:?}"
+        );
+    }
+
+    #[test]
+    fn queue_chip_suppressed_when_idle_even_with_queue() {
+        // Defensive: if the queue somehow has entries while streaming
+        // is false (shouldn't happen during normal use — finish_stream
+        // drains), the chip must still suppress because it signals a
+        // mid-turn waiting state, not a finalized inbox.
+        use super::super::state::ConversationState;
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let mut st = ConversationState::new();
+        st.queued_messages.push("stranded".into());
+        assert!(!st.streaming);
+        let backend = TestBackend::new(80, 30);
+        let mut term = Terminal::new(backend).expect("terminal");
+        term.draw(|f| render(f, &st, "claude-opus-4-7", "anthropic", 0))
+            .unwrap();
+        let buf = term.backend().buffer().clone();
+        let mut joined = String::new();
+        for y in 0..30 {
+            for x in 0..80 {
+                joined.push_str(buf[(x, y)].symbol());
+            }
+            joined.push('\n');
+        }
+        assert!(
+            !joined.contains("queued · press up to edit"),
+            "chip painted during idle: {joined:?}"
         );
     }
 }
