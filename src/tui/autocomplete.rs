@@ -12,7 +12,7 @@ use ratatui::{
 };
 
 use super::render::theme;
-use super::slash_catalog;
+use super::slash::catalog;
 
 /// Maximum popup rows rendered at once. The matches vector carries
 /// EVERY entry that prefix-matches the partial (up to the whole
@@ -29,7 +29,7 @@ pub struct Autocomplete {
     /// Highlighted row index into the filtered matches.
     pub selected: usize,
     /// Matches from the catalog whose slash name prefix-matches `partial`.
-    pub matches: Vec<&'static slash_catalog::SlashEntry>,
+    pub matches: Vec<&'static catalog::SlashEntry>,
 }
 
 impl Autocomplete {
@@ -76,12 +76,12 @@ impl Autocomplete {
 /// Prefix-match the catalog for entries whose slash name starts with
 /// `partial`. Case-insensitive. Preserves catalog order so common
 /// slashes stay visually stable.
-fn prefix_filter(partial: &str) -> Vec<&'static slash_catalog::SlashEntry> {
+fn prefix_filter(partial: &str) -> Vec<&'static catalog::SlashEntry> {
     let lower = partial.to_ascii_lowercase();
     // NO `.take(MAX_POPUP_ROWS)` cap — popup must surface every match
     // or users with 41 catalog entries think slashes are "missing". The
     // render path windows the visible rows via `ListState::offset`.
-    slash_catalog::prefix_matches(&lower).collect()
+    catalog::prefix_matches(&lower).collect()
 }
 
 /// Popup name-column width in columns. 40% of the rect width clamped
@@ -242,7 +242,7 @@ mod tests {
                 // Fall back to checking the catalog directly — the
                 // popup hides it due to row cap but it still exists.
                 assert!(
-                    slash_catalog::lookup(name).is_some(),
+                    catalog::lookup(name).is_some(),
                     "/{name} missing from catalog"
                 );
             }

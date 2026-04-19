@@ -1,6 +1,5 @@
-//! Overlay-menu primitive — the reusable widget that powers `/effort`
-//! today and every upstream `local-jsx` slash (`/help`, `/model`,
-//! `/permissions`, ExitConfirm, …) as they land.
+//! Overlay-menu primitive — the reusable widget that powers the 13
+//! Panel slashes (`/model`, `/effort`, `/permissions`, `/help`, …).
 //!
 //! # Shape
 //!
@@ -11,7 +10,7 @@
 //!
 //! - [`OverlayMenu`] — modal state: title, option list, cursor, result.
 //! - [`OverlayMenuOutcome`] — what the event loop does after a commit:
-//!   `SetEffort` flips thinking config, `ExitApp` terminates, etc.
+//!   `SetEffort` flips thinking config, `SetModel` switches model, …
 //! - [`draw_overlay`] — paints the widget above the prompt bar.
 //!
 //! # Event loop contract
@@ -29,18 +28,6 @@
 //!
 //! Other UI surfaces (input, autocomplete, permission cycle, streaming
 //! keys) are suppressed until the menu resolves.
-//!
-//! # Why a single primitive
-//!
-//! 21 `MenuKind` variants all share the same shape (title + selectable
-//! options + commit string). The only per-variant logic is:
-//! 1. How to populate `options` from current state.
-//! 2. How to translate the committed option into a session-state
-//!    mutation (`OverlayMenuOutcome`).
-//!
-//! Keeping both inside [`OverlayMenu`] via constructor fns + outcome
-//! plumbing means new menus (`/help` next wave, etc.) are one
-//! constructor + one outcome arm, not a fresh widget implementation.
 
 use ratatui::{
     layout::Rect,
@@ -51,7 +38,7 @@ use ratatui::{
 };
 
 use super::render::theme;
-use super::slash_catalog::MenuKind;
+use super::slash::catalog::PanelKind;
 
 /// One selectable row inside an [`OverlayMenu`].
 #[derive(Debug, Clone)]
@@ -69,7 +56,7 @@ pub struct MenuOption {
 /// in `Option` so `Some` ≡ "a menu is capturing focus".
 #[derive(Debug, Clone)]
 pub struct OverlayMenu {
-    pub kind: MenuKind,
+    pub kind: PanelKind,
     pub title: String,
     pub options: Vec<MenuOption>,
     pub cursor: usize,
@@ -79,11 +66,10 @@ impl OverlayMenu {
     /// Build a generic information overlay — a single
     /// `Acknowledge` row that dismisses the menu on Enter. Multi-row
     /// hint text supplied via `hints` renders above the ack row.
-    /// Used by `/status`, `/context`, `/skills`, `/agents`, `/mcp`,
-    /// `/config`, `/login`, `/logout`, `/help`, `/plan`, `/hooks`,
-    /// `/sandbox`, `/diff`, `/resume`, `/branch`, `/copy`, `/export`
-    /// where the upstream flow is "show something, wait for dismissal".
-    pub fn new_info(kind: MenuKind, title: String, hints: Vec<String>) -> Self {
+    /// Used by `/status`, `/config`, `/help`, `/hooks`, `/diff`,
+    /// `/resume`, `/rewind`, `/skills`, `/agents`, `/mcp` where the
+    /// upstream flow is "show something, wait for dismissal".
+    pub fn new_info(kind: PanelKind, title: String, hints: Vec<String>) -> Self {
         let options = vec![MenuOption {
             label: "Close".into(),
             action_id: "__close__".into(),
@@ -111,28 +97,6 @@ impl OverlayMenu {
             title,
             options: options_with_hints,
             cursor,
-        }
-    }
-
-    /// Build the `/exit` confirmation — two rows (`Stay in session`,
-    /// `Exit otherside`) mirroring upstream's two-choice picker.
-    pub fn new_exit_confirm() -> Self {
-        Self {
-            kind: MenuKind::ExitConfirm,
-            title: "Exit otherside?".into(),
-            options: vec![
-                MenuOption {
-                    label: "Stay in session".into(),
-                    action_id: "stay".into(),
-                    hint: None,
-                },
-                MenuOption {
-                    label: "Exit otherside".into(),
-                    action_id: "exit".into(),
-                    hint: Some("Ctrl+C twice also exits".into()),
-                },
-            ],
-            cursor: 0,
         }
     }
 
@@ -168,7 +132,7 @@ impl OverlayMenu {
             crate::config::settings::PermissionMode::Yolo => 3,
         };
         Self {
-            kind: MenuKind::Permissions,
+            kind: PanelKind::Permissions,
             title: "Set permission mode".into(),
             options,
             cursor,
@@ -199,7 +163,7 @@ impl OverlayMenu {
             .position(|o| o.action_id == current)
             .unwrap_or(0);
         Self {
-            kind: MenuKind::Model,
+            kind: PanelKind::Model,
             title: "Switch model".into(),
             options,
             cursor,
@@ -248,7 +212,7 @@ impl OverlayMenu {
             .and_then(|c| options.iter().position(|o| o.action_id == c))
             .unwrap_or(0);
         Self {
-            kind: MenuKind::Effort,
+            kind: PanelKind::Effort,
             title: "Set effort level".into(),
             options,
             cursor,
@@ -323,30 +287,23 @@ impl OverlayMenu {
             return None;
         }
         match self.kind {
-            MenuKind::Effort => Some(OverlayMenuOutcome::SetEffort {
+            PanelKind::Effort => Some(OverlayMenuOutcome::SetEffort {
                 action_id: selected.action_id.clone(),
                 label: selected.label.clone(),
             }),
-            MenuKind::Permissions => Some(OverlayMenuOutcome::SetPermissionMode {
+            PanelKind::Permissions => Some(OverlayMenuOutcome::SetPermissionMode {
                 action_id: selected.action_id.clone(),
             }),
-            MenuKind::Model => Some(OverlayMenuOutcome::SetModel {
+            PanelKind::Model => Some(OverlayMenuOutcome::SetModel {
                 model_id: selected.action_id.clone(),
             }),
-            MenuKind::ExitConfirm => {
-                if selected.action_id == "exit" {
-                    Some(OverlayMenuOutcome::ExitApp)
-                } else {
-                    None
-                }
-            }
             _ => None,
         }
     }
 }
 
 /// What the event loop does after the user hits Enter inside the
-/// overlay. One variant per outcome class; per-MenuKind commits map
+/// overlay. One variant per outcome class; per-PanelKind commits map
 /// into these during [`OverlayMenu::commit_outcome`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OverlayMenuOutcome {
@@ -359,8 +316,6 @@ pub enum OverlayMenuOutcome {
     SetPermissionMode { action_id: String },
     /// `/model` — switch model for subsequent turns.
     SetModel { model_id: String },
-    /// `/exit` — request the event loop to terminate.
-    ExitApp,
 }
 
 /// Active modal permission prompt — owns the one-shot reply channel
@@ -827,21 +782,9 @@ mod tests {
     }
 
     #[test]
-    fn commit_exit_confirm_yields_exit_when_exit_chosen() {
-        let mut m = OverlayMenu::new_exit_confirm();
-        m.cursor = 1; // Exit otherside
-        assert!(matches!(
-            m.commit_outcome(),
-            Some(OverlayMenuOutcome::ExitApp)
-        ));
-        m.cursor = 0; // Stay — no outcome
-        assert!(m.commit_outcome().is_none());
-    }
-
-    #[test]
     fn info_menu_skips_placeholder_rows() {
         let m = OverlayMenu::new_info(
-            MenuKind::Status,
+            PanelKind::Status,
             "Status".into(),
             vec!["line1".into(), "line2".into()],
         );
@@ -854,7 +797,7 @@ mod tests {
     #[test]
     fn info_menu_cursor_skips_placeholder_on_move() {
         let mut m = OverlayMenu::new_info(
-            MenuKind::Status,
+            PanelKind::Status,
             "Status".into(),
             vec!["line1".into(), "line2".into()],
         );

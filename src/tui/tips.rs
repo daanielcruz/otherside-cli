@@ -1,5 +1,5 @@
 //! Rotating tip line below the progress row. Per C47, tips come from
-//! otherside's slash catalog (the same `slash_catalog::CATALOG` the
+//! otherside's slash catalog (the same `slash::catalog::CATALOG` the
 //! classifier and autocomplete popup walk). Random rotation per
 //! render, no persistence across sessions.
 
@@ -12,7 +12,7 @@ use ratatui::{
 };
 
 use super::render::theme;
-use super::slash_catalog::{self, CATALOG};
+use super::slash::catalog::{self, CATALOG};
 
 /// Pick a tip by rotation index. Stable across same index so callers
 /// control the rotation cadence (typically bump the index on new
@@ -21,7 +21,7 @@ pub fn tip_at(index: usize) -> String {
     if CATALOG.is_empty() {
         return String::new();
     }
-    slash_catalog::display_line(&CATALOG[index % CATALOG.len()])
+    catalog::display_line(&CATALOG[index % CATALOG.len()])
 }
 
 /// Paint the tip line into `area`. Format: `⎿ Tip: /<slash> — <brief>`.

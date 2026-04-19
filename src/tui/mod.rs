@@ -90,8 +90,7 @@ pub mod mascot;
 pub mod menu;
 pub mod progress;
 pub mod render;
-pub mod slash_catalog;
-pub mod slashes;
+pub mod slash;
 pub mod state;
 pub mod tips;
 pub mod todos;
@@ -450,7 +449,7 @@ fn handle_key(
     provider: &Arc<dyn Provider>,
     base_model: &str,
     thinking: &mut Option<ThinkingConfig>,
-    provider_id: &str,
+    _provider_id: &str,
     tx: &mpsc::Sender<StreamEvent>,
 ) -> bool {
     // crossterm emits KeyEventKind::Release on some terminals; we only
@@ -478,9 +477,7 @@ fn handle_key(
 
     // An active overlay menu captures focus first. Every key is
     // routed through the menu handler until it resolves (Enter /
-    // Esc). Mirrors upstream `local-jsx` mount shape. A menu can
-    // request quit via `ExitConfirm` — propagate the bool so the
-    // event loop breaks cleanly.
+    // Esc). Mirrors upstream `local-jsx` mount shape.
     if st.active_menu.is_some() {
         return handle_menu_key(k, st, thinking);
     }
@@ -629,100 +626,14 @@ fn handle_key(
                     }
                     st.close_autocomplete();
                 }
-                match slashes::classify(&st.input) {
-                    slashes::SlashAction::Clear => {
-                        st.clear_conversation();
-                    }
-                    slashes::SlashAction::Exit => {
-                        return true;
-                    }
-                    slashes::SlashAction::ShowHelp => {
-                        st.push_system_note(slashes::help_text());
-                    }
-                    // `ShowModel`, `SwitchModel`, `ShowStatus`,
-                    // `ShowContext`, `ShowSettingsHint` dispatch arms
-                    // retired by 015. Post-012a reclass the catalog no
-                    // longer routes `/model`, `/status`, `/context`,
-                    // `/config`, `/keybindings`, `/statusline` to those
-                    // variants — the synthetic system notes had no
-                    // upstream analogue per Sector D §B.2. Enum
-                    // variants remain in `slashes.rs` for 012c
-                    // menu-confirm paths; exhaustive match below uses
-                    // a catch-all so dead classify() results are no-ops
-                    // rather than panics.
-                    slashes::SlashAction::Compact => {
-                        let kept = st.messages.len() as u64;
-                        st.append_record(crate::sessions::Record::CompactionMark {
-                            ts: crate::sessions::record::now_iso(),
-                            summary_ref: format!("kept={kept}"),
-                        });
-                        st.compact_history();
-                    }
-                    slashes::SlashAction::Login(provider) => {
-                        let provider = if provider.is_empty() { provider_id.to_string() } else { provider };
-                        st.push_system_note(format!(
-                            "/login needs stdin interaction — exit the TUI and run:\n    otherside login --provider {provider}"
-                        ));
-                    }
-                    slashes::SlashAction::Logout(provider) => {
-                        let provider = if provider.is_empty() { provider_id.to_string() } else { provider };
-                        st.push_system_note(format!(
-                            "to log out: exit the TUI and run:\n    otherside logout --provider {provider}"
-                        ));
-                    }
-                    slashes::SlashAction::MenuPending(kind) => {
-                        open_menu_for(st, kind);
-                    }
-                    slashes::SlashAction::Rewind => {
-                        // 012c wires the real session-history rewind.
-                        st.push_system_note(
-                            "/rewind: session-history reset lands in 012c".to_string(),
-                        );
-                    }
-                    slashes::SlashAction::ShowKeybindings => {
-                        st.push_system_note(
-                            "keybindings: Enter submit · Shift+Enter newline · Tab autocomplete · Shift+Tab mode · Esc cancel · Ctrl+C exit".to_string(),
-                        );
-                    }
-                    slashes::SlashAction::ToggleVerbose => {
-                        let now_on = st.toggle_render_verbose();
-                        st.push_system_note(format!(
-                            "verbose render: {}",
-                            if now_on { "on" } else { "off" }
-                        ));
-                    }
-                    // Retired dispatch arms (015) — no-op. Post-012a
-                    // classify() never returns these for user input;
-                    // they survive as enum variants so 012c's menu
-                    // confirm paths can construct them directly. The
-                    // no-op drops the input silently so an accidental
-                    // internal caller doesn't leak a slash to the LLM.
-                    slashes::SlashAction::ShowModel
-                    | slashes::SlashAction::SwitchModel(_)
-                    | slashes::SlashAction::ShowStatus
-                    | slashes::SlashAction::ShowContext
-                    | slashes::SlashAction::ShowSettingsHint(_) => {
-                        st.input.clear();
-                        st.autocomplete = None;
-                    }
-                    slashes::SlashAction::SendToLlm(_)
-                    | slashes::SlashAction::Passthrough => {
-                        let submitted_text = st.input.clone();
-                        if let Some(history) = st.submit() {
-                            st.append_record(crate::sessions::Record::UserMessage {
-                                ts: crate::sessions::record::now_iso(),
-                                content: submitted_text,
-                            });
-                            spawn_agent_turn(
-                                st,
-                                provider,
-                                base_model,
-                                thinking,
-                                tx,
-                                history,
-                            );
-                        }
-                    }
+                if dispatch_slash(
+                    st,
+                    provider,
+                    base_model,
+                    thinking,
+                    tx,
+                ) {
+                    return true;
                 }
             }
         }
@@ -754,251 +665,7 @@ fn handle_key(
     false
 }
 
-/// Spawn the provider's streaming turn task and pin the resulting
-/// Open the overlay matching `kind`. When the variant isn't wired
-/// yet, fall back to the legacy "landing in 012b" inline note so the
-/// user still sees that the slash fired. Shared by the Enter-dispatch
-/// and queue-drain arms.
-fn open_menu_for(st: &mut ConversationState, kind: slash_catalog::MenuKind) {
-    // Clear input + autocomplete when the overlay takes focus —
-    // otherwise the `/effort` text stays in the prompt bar under the
-    // overlay and reads as a half-canceled command.
-    st.input.clear();
-    st.autocomplete = None;
-    use slash_catalog::MenuKind as K;
-    let overlay = match kind {
-        K::Effort => menu::OverlayMenu::new_effort(st.effort_label),
-        K::ExitConfirm => menu::OverlayMenu::new_exit_confirm(),
-        K::Permissions => menu::OverlayMenu::new_permissions(st.permission_mode),
-        K::Model => menu::OverlayMenu::new_model(&st.model),
-        K::Help => menu::OverlayMenu::new_info(
-            K::Help,
-            "Slash commands".into(),
-            help_menu_hints(),
-        ),
-        K::Status => menu::OverlayMenu::new_info(
-            K::Status,
-            "Session status".into(),
-            status_menu_hints(st),
-        ),
-        K::Context => menu::OverlayMenu::new_info(
-            K::Context,
-            "Context window".into(),
-            context_menu_hints(st),
-        ),
-        K::Config => menu::OverlayMenu::new_info(
-            K::Config,
-            "Settings snapshot".into(),
-            config_menu_hints(st),
-        ),
-        K::Skills => menu::OverlayMenu::new_info(
-            K::Skills,
-            "Skills".into(),
-            vec![
-                "Skills are bundled under otherside-cli/skills/.".into(),
-                "Use the Skill tool to load one mid-turn.".into(),
-            ],
-        ),
-        K::Agents => menu::OverlayMenu::new_info(
-            K::Agents,
-            "Subagents".into(),
-            vec![
-                "Subagents live at otherside-cli/agents/.".into(),
-                "Invoke via the Agent tool with `subagent_type`.".into(),
-            ],
-        ),
-        K::Mcp => menu::OverlayMenu::new_info(
-            K::Mcp,
-            "MCP servers".into(),
-            vec![
-                "MCP JSON-RPC client lands in the Phase 3 tier.".into(),
-                "No servers active this session.".into(),
-            ],
-        ),
-        K::Login => menu::OverlayMenu::new_info(
-            K::Login,
-            "Log in".into(),
-            vec![
-                "login needs stdin interaction.".into(),
-                "Exit and run: otherside login --provider <id>".into(),
-            ],
-        ),
-        K::Logout => menu::OverlayMenu::new_info(
-            K::Logout,
-            "Log out".into(),
-            vec![
-                "Exit and run: otherside logout --provider <id>".into(),
-            ],
-        ),
-        K::Plan => menu::OverlayMenu::new_info(
-            K::Plan,
-            "Plan mode".into(),
-            vec![
-                "Toggle plan mode with Shift+Tab.".into(),
-                "All mutating tools are denied while plan is on.".into(),
-            ],
-        ),
-        K::Hooks => menu::OverlayMenu::new_info(
-            K::Hooks,
-            "Hooks".into(),
-            hooks_menu_hints(st),
-        ),
-        K::Sandbox => menu::OverlayMenu::new_info(
-            K::Sandbox,
-            "Sandbox".into(),
-            vec![
-                "Sandbox isolation is not yet wired.".into(),
-                "Tracked in the Phase 3 tier.".into(),
-            ],
-        ),
-        K::Diff => menu::OverlayMenu::new_info(
-            K::Diff,
-            "Diff".into(),
-            vec![
-                "Diff picker lands with session history (spec 008).".into(),
-            ],
-        ),
-        K::Resume => menu::OverlayMenu::new_info(
-            K::Resume,
-            "Resume".into(),
-            vec![
-                "Session resume lands with persistence (spec 008).".into(),
-            ],
-        ),
-        K::Branch => menu::OverlayMenu::new_info(
-            K::Branch,
-            "Branch".into(),
-            vec![
-                "Session branch picker lands with persistence (spec 008).".into(),
-            ],
-        ),
-        K::Copy => menu::OverlayMenu::new_info(
-            K::Copy,
-            "Copy".into(),
-            vec![
-                "Copy-to-clipboard lands with persistence (spec 008).".into(),
-            ],
-        ),
-        K::Export => menu::OverlayMenu::new_info(
-            K::Export,
-            "Export".into(),
-            vec![
-                "Transcript export lands with persistence (spec 008).".into(),
-            ],
-        ),
-    };
-    st.active_menu = Some(overlay);
-}
-
-fn help_menu_hints() -> Vec<String> {
-    // Upstream's /help dialog is a tight card: one-line intro, a
-    // shortcuts block, a link to the slash catalog. Dumping the whole
-    // CATALOG via hints overflows the overlay and reads as a popup
-    // still-open bug — users who want the catalog type partial `/`
-    // and tab through the autocomplete instead.
-    vec![
-        "otherside cli — offensive-sec operator TUI".into(),
-        String::new(),
-        "Keys".into(),
-        "  Enter      submit turn".into(),
-        "  Shift+Enter insert newline".into(),
-        "  Tab        autocomplete slash".into(),
-        "  Shift+Tab  cycle permission mode".into(),
-        "  Esc        cancel current overlay / stream".into(),
-        "  Ctrl+C     exit".into(),
-        String::new(),
-        "Slashes".into(),
-        "  type `/` to open the autocomplete popup.".into(),
-        "  / then <prefix> filters the catalog.".into(),
-    ]
-}
-
-fn status_menu_hints(st: &ConversationState) -> Vec<String> {
-    vec![
-        format!("model: {}", st.model),
-        format!("permission: {:?}", st.permission_mode),
-        format!(
-            "context: {}/{}",
-            st.input_tokens,
-            st.context_window_label()
-        ),
-        format!(
-            "effort: {}",
-            st.effort_label.unwrap_or("auto")
-        ),
-        format!("verbose: {}", if st.render_verbose { "on" } else { "off" }),
-    ]
-}
-
-fn context_menu_hints(st: &ConversationState) -> Vec<String> {
-    let used = st.input_tokens + st.total_output_tokens();
-    let pct = if st.context_window == 0 {
-        0
-    } else {
-        (used.saturating_mul(100) / st.context_window).min(100)
-    };
-    vec![
-        format!("window: {}", st.context_window_label()),
-        format!("used: ~{} tokens", used),
-        format!("fill: {}%", pct),
-    ]
-}
-
-fn config_menu_hints(st: &ConversationState) -> Vec<String> {
-    let mut lines = vec![
-        format!(
-            "default provider: {}",
-            st.settings
-                .default_provider
-                .clone()
-                .unwrap_or_else(|| "(unset)".into())
-        ),
-        format!(
-            "default model: {}",
-            st.settings
-                .default_model
-                .clone()
-                .unwrap_or_else(|| "(unset)".into())
-        ),
-        format!(
-            "log level: {}",
-            st.settings
-                .log_level
-                .clone()
-                .unwrap_or_else(|| "(unset)".into())
-        ),
-        format!(
-            "effort: {}",
-            st.settings
-                .effort_level
-                .clone()
-                .unwrap_or_else(|| "(unset)".into())
-        ),
-        format!(
-            "verbose: {}",
-            st.settings
-                .verbose
-                .map(|b| if b { "true".to_string() } else { "false".to_string() })
-                .unwrap_or_else(|| "(unset)".into())
-        ),
-    ];
-    if let Some(sl) = st.settings.statusline.as_ref() {
-        lines.push(format!("statusline: {:?}", sl));
-    }
-    lines
-}
-
-fn hooks_menu_hints(st: &ConversationState) -> Vec<String> {
-    let Some(h) = st.settings.hooks.as_ref() else {
-        return vec!["no hooks configured".into()];
-    };
-    vec![
-        format!("pre_tool_use: {}", h.pre_tool_use.len()),
-        format!("post_tool_use: {}", h.post_tool_use.len()),
-        format!("user_prompt_submit: {}", h.user_prompt_submit.len()),
-        format!("stop: {}", h.stop.len()),
-    ]
-}
+// Panel overlay construction moved to `slash::panel::handle` (openspec 001).
 
 /// Route a key event through the active overlay menu. Consumes
 /// Enter / Esc to resolve the overlay and the arrow keys to move the
@@ -1114,9 +781,9 @@ fn session_rule_for(tool_name: &str, args_preview: &str) -> String {
 
 /// Apply the overlay's commit outcome to session state. Each variant
 /// is side-effectful: `SetEffort` flips the active thinking config,
-/// `SetPermissionMode` swaps the posture, `SetModel` switches model,
-/// `ExitApp` propagates a quit request. Returns `true` when the caller
-/// should break out of the event loop (only `ExitApp` sets that).
+/// `SetPermissionMode` swaps the posture, `SetModel` switches model.
+/// Always returns `false` — app exit is handled by the Instant slash
+/// handler, not the overlay path.
 fn apply_menu_outcome(
     st: &mut ConversationState,
     thinking: &mut Option<ThinkingConfig>,
@@ -1125,18 +792,15 @@ fn apply_menu_outcome(
     match outcome {
         menu::OverlayMenuOutcome::SetEffort { action_id, label } => {
             apply_effort_outcome(st, thinking, &action_id, &label);
-            false
         }
         menu::OverlayMenuOutcome::SetPermissionMode { action_id } => {
             apply_permission_outcome(st, &action_id);
-            false
         }
         menu::OverlayMenuOutcome::SetModel { model_id } => {
             apply_model_outcome(st, &model_id);
-            false
         }
-        menu::OverlayMenuOutcome::ExitApp => true,
     }
+    false
 }
 
 fn apply_permission_outcome(st: &mut ConversationState, action_id: &str) {
@@ -1272,93 +936,88 @@ fn drain_queue_head_if_any(
     }
     // Run the queued text through the same slash classifier the
     // Enter path uses — preserves local-handler semantics for
-    // queued slashes (`/clear`, `/help`, etc.). A SendToLlm /
-    // Passthrough result routes to the provider via submit().
-    match slashes::classify(&st.input) {
-        slashes::SlashAction::Clear => {
-            st.clear_conversation();
+    // queued slashes (`/clear`, `/help`, etc.). A queued `/exit`
+    // does NOT terminate immediately here; it gets noted so the
+    // user can confirm with Ctrl+C instead of losing the queue.
+    let exit_signal = dispatch_slash(st, provider, base_model, thinking, tx);
+    if exit_signal {
+        st.push_system_note("queued /exit — press Ctrl+C twice to quit");
+    }
+    // Silence the unused-parameter warning; the queue-drain path
+    // no longer interpolates a default provider id into login/out
+    // hints because the auth handler threads its own placeholder.
+    let _ = provider_id;
+    true
+}
+
+/// Classify `st.input` and dispatch it through the per-category slash
+/// handlers. Returns `true` when the handler signals app-wide exit
+/// (`/exit`, `/bye`). Handlers that produce a user turn route it
+/// through `submit` + `spawn_agent_turn` so the provider streams it
+/// the same way regular chat does.
+fn dispatch_slash(
+    st: &mut ConversationState,
+    provider: &Arc<dyn Provider>,
+    base_model: &str,
+    thinking: &Option<ThinkingConfig>,
+    tx: &mpsc::Sender<StreamEvent>,
+) -> bool {
+    let action = slash::classify(&st.input);
+    let outcome = match action {
+        slash::SlashAction::Instant { name, args } => {
+            slash::instant::handle(&name, &args, st)
         }
-        slashes::SlashAction::Exit => {
-            // Queued /exit is honored — drop input but signal
-            // the caller so the outer loop can break. Since we're
-            // in the rx.recv arm (no direct return), stash the
-            // intent via push_system_note and let the next key
-            // pick it up. In practice /exit in the queue is edge;
-            // users clear the queue via Esc before firing it.
-            st.push_system_note("queued /exit — press Ctrl+C twice to quit");
-            st.input.clear();
+        slash::SlashAction::Toggle { name, args } => {
+            slash::toggle::handle(&name, &args, st)
         }
-        slashes::SlashAction::ShowHelp => {
-            st.push_system_note(slashes::help_text());
+        slash::SlashAction::Skill { name, args } => {
+            slash::skill::handle(&name, &args, st)
         }
-        slashes::SlashAction::Compact => {
-            let kept = st.messages.len() as u64;
-            st.append_record(crate::sessions::Record::CompactionMark {
-                ts: crate::sessions::record::now_iso(),
-                summary_ref: format!("kept={kept}"),
-            });
-            st.compact_history();
+        slash::SlashAction::Anchor { name, args } => {
+            slash::anchor::handle(&name, &args, st)
         }
-        slashes::SlashAction::Login(provider_hint) => {
-            let provider_hint = if provider_hint.is_empty() {
-                provider_id.to_string()
-            } else {
-                provider_hint
-            };
-            st.push_system_note(format!(
-                "/login needs stdin interaction — exit the TUI and run:\n    otherside login --provider {provider_hint}"
-            ));
+        slash::SlashAction::Panel(pk) => slash::panel::handle(pk, st),
+        slash::SlashAction::Auth { name, args } => {
+            slash::auth::handle(&name, &args, st)
         }
-        slashes::SlashAction::Logout(provider_hint) => {
-            let provider_hint = if provider_hint.is_empty() {
-                provider_id.to_string()
-            } else {
-                provider_hint
-            };
-            st.push_system_note(format!(
-                "to log out: exit the TUI and run:\n    otherside logout --provider {provider_hint}"
-            ));
+        slash::SlashAction::Passthrough => {
+            submit_current_input(st, provider, base_model, thinking, tx);
+            return false;
         }
-        slashes::SlashAction::MenuPending(kind) => {
-            open_menu_for(st, kind);
-        }
-        slashes::SlashAction::Rewind => {
-            st.push_system_note(
-                "/rewind: session-history reset lands in 012c".to_string(),
-            );
-        }
-        slashes::SlashAction::ShowKeybindings => {
-            st.push_system_note(
-                "keybindings: Enter submit · Shift+Enter newline · Tab autocomplete · Shift+Tab mode · Esc cancel · Ctrl+C exit".to_string(),
-            );
-        }
-        slashes::SlashAction::ToggleVerbose => {
-            let now_on = st.toggle_render_verbose();
-            st.push_system_note(format!(
-                "verbose render: {}",
-                if now_on { "on" } else { "off" }
-            ));
-        }
-        slashes::SlashAction::ShowModel
-        | slashes::SlashAction::SwitchModel(_)
-        | slashes::SlashAction::ShowStatus
-        | slashes::SlashAction::ShowContext
-        | slashes::SlashAction::ShowSettingsHint(_) => {
+    };
+    match outcome {
+        slash::SlashOutcome::Handled => {
             st.input.clear();
             st.autocomplete = None;
+            false
         }
-        slashes::SlashAction::SendToLlm(_) | slashes::SlashAction::Passthrough => {
-            let submitted_text = st.input.clone();
-            if let Some(history) = st.submit() {
-                st.append_record(crate::sessions::Record::UserMessage {
-                    ts: crate::sessions::record::now_iso(),
-                    content: submitted_text,
-                });
-                spawn_agent_turn(st, provider, base_model, thinking, tx, history);
-            }
+        slash::SlashOutcome::ExitApp => true,
+        slash::SlashOutcome::SendTurn(body) => {
+            st.input = body;
+            submit_current_input(st, provider, base_model, thinking, tx);
+            false
         }
     }
-    true
+}
+
+/// Submit whatever is in `st.input` as a user turn. Shared tail of
+/// the Passthrough / SendTurn paths so both route through the same
+/// session-record append + agent spawn.
+fn submit_current_input(
+    st: &mut ConversationState,
+    provider: &Arc<dyn Provider>,
+    base_model: &str,
+    thinking: &Option<ThinkingConfig>,
+    tx: &mpsc::Sender<StreamEvent>,
+) {
+    let submitted_text = st.input.clone();
+    if let Some(history) = st.submit() {
+        st.append_record(crate::sessions::Record::UserMessage {
+            ts: crate::sessions::record::now_iso(),
+            content: submitted_text,
+        });
+        spawn_agent_turn(st, provider, base_model, thinking, tx, history);
+    }
 }
 
 /// Drive the agent loop for one user submission end-to-end. Multi-turn:
