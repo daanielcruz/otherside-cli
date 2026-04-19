@@ -207,15 +207,32 @@ fn draw_log(f: &mut Frame<'_>, area: Rect, state: &ConversationState, spinner_ti
         )));
     }
 
+    // Bottom-anchor the conversation: when the log is shorter than
+    // the streaming area, paint it in the BOTTOM portion of the rect
+    // so empty space sits ABOVE the messages — mirrors upstream
+    // ScrollBox which anchors to the newest turn next to the prompt
+    // bar. When the log overflows, scroll so the latest line is on
+    // the bottom edge; a user-scrolled `scroll_offset` walks back up.
     let total_lines = lines.len() as u16;
     let inner_h = area.height;
-    let max_top = total_lines.saturating_sub(inner_h);
-    let top = max_top.saturating_sub(state.scroll_offset as u16);
+    let para = Paragraph::new(lines).wrap(Wrap { trim: false });
 
-    let para = Paragraph::new(lines)
-        .wrap(Wrap { trim: false })
-        .scroll((top, 0));
-    f.render_widget(para, area);
+    if total_lines <= inner_h {
+        // Fits entirely — render in a bottom-aligned sub-rect.
+        let render_area = Rect {
+            x: area.x,
+            y: area.y + inner_h.saturating_sub(total_lines),
+            width: area.width,
+            height: total_lines,
+        };
+        f.render_widget(para, render_area);
+    } else {
+        // Overflow — scroll so the newest line sits on the bottom edge.
+        // scroll_offset walks the view upward from there.
+        let max_top = total_lines.saturating_sub(inner_h);
+        let top = max_top.saturating_sub(state.scroll_offset as u16);
+        f.render_widget(para.scroll((top, 0)), area);
+    }
 }
 
 /// Produce one-or-more lines for a single message. Per upstream TUI
