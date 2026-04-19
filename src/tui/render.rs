@@ -361,21 +361,29 @@ fn draw_prompt(f: &mut Frame<'_>, area: Rect, state: &ConversationState) {
     } else {
         Style::default().fg(theme::TEXT)
     };
-    let mut spans = vec![
+    let spans = vec![
         Span::styled("❯ ", chevron_style),
         Span::styled(state.input.clone(), text_style),
     ];
-    if !state.streaming {
-        spans.push(Span::styled(
-            "_",
-            Style::default().add_modifier(Modifier::SLOW_BLINK),
-        ));
-    }
 
     let para = Paragraph::new(Line::from(spans))
         .block(block)
         .wrap(Wrap { trim: false });
     f.render_widget(para, area);
+
+    // Let the terminal paint its native block cursor at the input
+    // tail — upstream relies on the terminal caret shape (block by
+    // default) rather than a drawn `_` glyph. Skip while streaming
+    // so the inflight dimmed input doesn't show an active cursor.
+    if !state.streaming {
+        // Chevron "❯ " is 2 columns wide; input flows from column 2.
+        // `.block(TOP|BOTTOM)` eats one row at top + bottom — the
+        // input sits on area.y + 1.
+        let cx = area.x + 2 + state.input.chars().count() as u16;
+        let cy = area.y + 1;
+        let max_x = area.x + area.width.saturating_sub(1);
+        f.set_cursor_position((cx.min(max_x), cy));
+    }
 }
 
 /// Statusline row — single muted line painted bottom-of-band.
