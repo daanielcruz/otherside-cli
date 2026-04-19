@@ -647,10 +647,13 @@ fn draw_info_row(
     let primary_item_count: usize = if chip_opt.is_some() { 1 } else { 0 };
     let show_cycle_hint = primary_item_count < 2;
 
+    // Hint text WITHOUT a leading separator — we only inject " · "
+    // below when there's chip content to its left. Default mode has no
+    // chip, so the hint must not render with a leading bullet.
     let hint = if state.streaming {
-        " · esc to interrupt"
+        "esc to interrupt"
     } else if state.autocomplete.is_some() {
-        " · enter run · esc close"
+        "enter run · esc close"
     } else {
         ""
     };
@@ -681,10 +684,18 @@ fn draw_info_row(
             ));
         }
     }
-    spans.push(Span::styled(
-        hint.to_string(),
-        Style::default().fg(theme::SUBTLE),
-    ));
+    // Prefix the hint with " · " only when there is chip content to
+    // its left. Default mode (no chip) renders the hint alone without
+    // a leading bullet.
+    if !hint.is_empty() {
+        let needs_separator = chip_opt.is_some();
+        let text = if needs_separator {
+            format!(" · {hint}")
+        } else {
+            hint.to_string()
+        };
+        spans.push(Span::styled(text, Style::default().fg(theme::SUBTLE)));
+    }
 
     let left = Line::from(spans);
 
