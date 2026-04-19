@@ -16,9 +16,11 @@ pub enum SlashKind {
     /// Local handler wired today. The paired `SlashAction` describes
     /// what the event loop should do on Enter.
     Local(LocalAction),
-    /// Recognized but not yet wired — classify yields `NotYetWired`
-    /// and the TUI emits an inline "coming soon" note.
-    Stubbed,
+    /// Recognized and shipped — routes to the LLM as a normal prompt
+    /// with the `/` prefix intact. The model treats the slash as a
+    /// skill / prompt-macro trigger. This replaces the earlier
+    /// `Stubbed` classification ("no stubs" directive, 2026-04-18).
+    AiRouted,
 }
 
 /// Concrete local actions. Enum-of-enums wiring is painful in const
@@ -121,32 +123,32 @@ pub const CATALOG: &[SlashEntry] = &[
     SlashEntry {
         name: "resume",
         brief: "pick a past session to continue",
-        kind: SlashKind::Stubbed,
+        kind: SlashKind::AiRouted,
     },
     SlashEntry {
         name: "rewind",
         brief: "jump back to an earlier turn",
-        kind: SlashKind::Stubbed,
+        kind: SlashKind::AiRouted,
     },
     SlashEntry {
         name: "branch",
         brief: "fork the conversation from here",
-        kind: SlashKind::Stubbed,
+        kind: SlashKind::AiRouted,
     },
     SlashEntry {
         name: "copy",
         brief: "export the session to clipboard",
-        kind: SlashKind::Stubbed,
+        kind: SlashKind::AiRouted,
     },
     SlashEntry {
         name: "export",
         brief: "write the session to a file",
-        kind: SlashKind::Stubbed,
+        kind: SlashKind::AiRouted,
     },
     SlashEntry {
         name: "checkpoint",
         brief: "tag this spot for /rewind",
-        kind: SlashKind::Stubbed,
+        kind: SlashKind::AiRouted,
     },
     // Config surface.
     SlashEntry {
@@ -162,22 +164,22 @@ pub const CATALOG: &[SlashEntry] = &[
     SlashEntry {
         name: "effort",
         brief: "tune reasoning effort (low/med/high/max/auto)",
-        kind: SlashKind::Stubbed,
+        kind: SlashKind::AiRouted,
     },
     SlashEntry {
         name: "plan",
         brief: "enable plan mode",
-        kind: SlashKind::Stubbed,
+        kind: SlashKind::AiRouted,
     },
     SlashEntry {
         name: "permissions",
         brief: "manage tool permission rules",
-        kind: SlashKind::Stubbed,
+        kind: SlashKind::AiRouted,
     },
     SlashEntry {
         name: "hooks",
         brief: "view or edit hooks for tool events",
-        kind: SlashKind::Stubbed,
+        kind: SlashKind::AiRouted,
     },
     SlashEntry {
         name: "keybindings",
@@ -187,7 +189,7 @@ pub const CATALOG: &[SlashEntry] = &[
     SlashEntry {
         name: "sandbox",
         brief: "toggle sandbox mode",
-        kind: SlashKind::Stubbed,
+        kind: SlashKind::AiRouted,
     },
     SlashEntry {
         name: "statusline",
@@ -198,47 +200,47 @@ pub const CATALOG: &[SlashEntry] = &[
     SlashEntry {
         name: "diff",
         brief: "view uncommitted or per-turn diffs",
-        kind: SlashKind::Stubbed,
+        kind: SlashKind::AiRouted,
     },
     SlashEntry {
         name: "scope",
         brief: "add or remove directories from the workspace",
-        kind: SlashKind::Stubbed,
+        kind: SlashKind::AiRouted,
     },
     SlashEntry {
         name: "security",
         brief: "run the security review skill",
-        kind: SlashKind::Stubbed,
+        kind: SlashKind::AiRouted,
     },
     SlashEntry {
         name: "pr-review",
         brief: "review a pull request",
-        kind: SlashKind::Stubbed,
+        kind: SlashKind::AiRouted,
     },
     SlashEntry {
         name: "deepreview",
         brief: "exhaustive review pass",
-        kind: SlashKind::Stubbed,
+        kind: SlashKind::AiRouted,
     },
     SlashEntry {
         name: "init",
         brief: "initialize project OTHERSIDE.md",
-        kind: SlashKind::Stubbed,
+        kind: SlashKind::AiRouted,
     },
     SlashEntry {
         name: "skills",
         brief: "list available skills",
-        kind: SlashKind::Stubbed,
+        kind: SlashKind::AiRouted,
     },
     SlashEntry {
         name: "agents",
         brief: "manage agent configurations",
-        kind: SlashKind::Stubbed,
+        kind: SlashKind::AiRouted,
     },
     SlashEntry {
         name: "init-verifiers",
         brief: "create verifier skill(s)",
-        kind: SlashKind::Stubbed,
+        kind: SlashKind::AiRouted,
     },
     // Diagnostic.
     SlashEntry {
@@ -255,7 +257,7 @@ pub const CATALOG: &[SlashEntry] = &[
     SlashEntry {
         name: "mcp",
         brief: "manage MCP servers",
-        kind: SlashKind::Stubbed,
+        kind: SlashKind::AiRouted,
     },
     // Auth.
     SlashEntry {
@@ -272,45 +274,45 @@ pub const CATALOG: &[SlashEntry] = &[
     SlashEntry {
         name: "dedup-mem",
         brief: "consolidate memory files",
-        kind: SlashKind::Stubbed,
+        kind: SlashKind::AiRouted,
     },
     SlashEntry {
         name: "learn",
         brief: "alias of /dedup-mem",
-        kind: SlashKind::Stubbed,
+        kind: SlashKind::AiRouted,
     },
     SlashEntry {
         name: "cron",
         brief: "schedule recurring tasks",
-        kind: SlashKind::Stubbed,
+        kind: SlashKind::AiRouted,
     },
     // Bundled skills kept verbatim.
     SlashEntry {
         name: "simplify",
         brief: "review for reuse/quality, then fix",
-        kind: SlashKind::Stubbed,
+        kind: SlashKind::AiRouted,
     },
     SlashEntry {
         name: "verify",
         brief: "run verification checks",
-        kind: SlashKind::Stubbed,
+        kind: SlashKind::AiRouted,
     },
     SlashEntry {
         name: "update-config",
         brief: "interactive settings.json editor",
-        kind: SlashKind::Stubbed,
+        kind: SlashKind::AiRouted,
     },
     // ANT-promoted to external surface.
     SlashEntry {
         name: "redteam",
         brief: "adversarial probe on the current target",
-        kind: SlashKind::Stubbed,
+        kind: SlashKind::AiRouted,
     },
     // otherside-native.
     SlashEntry {
         name: "swarm",
         brief: "list, create, or kill swarm agents",
-        kind: SlashKind::Stubbed,
+        kind: SlashKind::AiRouted,
     },
 ];
 

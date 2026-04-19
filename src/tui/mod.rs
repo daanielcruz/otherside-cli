@@ -418,11 +418,6 @@ fn handle_key(
                             "to log out: exit the TUI and run:\n    otherside logout --provider {provider}"
                         ));
                     }
-                    slashes::SlashAction::NotYetWired(name) => {
-                        st.push_system_note(format!(
-                            "/{name} — recognized but not yet wired; the local handler lands in a later change."
-                        ));
-                    }
                     slashes::SlashAction::SendToLlm(_)
                     | slashes::SlashAction::Passthrough => {
                         if let Some(history) = st.submit() {

@@ -40,10 +40,6 @@ pub enum SlashAction {
     Login(String),
     /// `/logout <provider>` — ditto.
     Logout(String),
-    /// Placeholder for slashes whose local handler hasn't landed yet;
-    /// renders an inline system note so the user knows it's queued
-    /// rather than silently no-op.
-    NotYetWired(&'static str),
     /// Pass this raw text through to the LLM as a normal user prompt
     /// — the `/` prefix is part of the message.
     SendToLlm(String),
@@ -64,7 +60,12 @@ pub fn classify(input: &str) -> SlashAction {
     if let Some(entry) = slash_catalog::lookup(name) {
         return match entry.kind {
             SlashKind::Local(action) => action.as_action(rest),
-            SlashKind::Stubbed => SlashAction::NotYetWired(entry.name),
+            // AiRouted — pass the full input through to the LLM so the
+            // model expands the slash as a prompt / skill trigger.
+            // Per the "no stubs" directive the previous `Stubbed` variant
+            // is gone; every catalog entry either has a local handler
+            // or rides AI routing.
+            SlashKind::AiRouted => SlashAction::SendToLlm(input.to_string()),
         };
     }
 
@@ -131,10 +132,24 @@ mod tests {
     }
 
     #[test]
-    fn stubbed_slash_returns_not_yet_wired() {
+    fn ai_routed_slash_passes_through_to_llm() {
+        // `/resume` used to return NotYetWired; the "no stubs" refactor
+        // (2026-04-18) flips it to AiRouted → SendToLlm with the
+        // slash prefix intact so the model handles it.
         match classify("/resume") {
-            SlashAction::NotYetWired(name) => assert_eq!(name, "resume"),
-            other => panic!("expected NotYetWired, got {other:?}"),
+            SlashAction::SendToLlm(s) => assert_eq!(s, "/resume"),
+            other => panic!("expected SendToLlm, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ai_routed_slash_with_args_preserves_args() {
+        match classify("/security check the auth module") {
+            SlashAction::SendToLlm(s) => {
+                assert!(s.starts_with("/security"));
+                assert!(s.contains("check the auth module"));
+            }
+            other => panic!("expected SendToLlm, got {other:?}"),
         }
     }
 
@@ -219,31 +234,31 @@ mod tests {
     }
 
     #[test]
-    fn newly_added_slashes_route_to_a_local_action() {
-        // After the catalog refactor, every named slash resolves to
-        // *some* local or stubbed action — none should fall through
-        // to SendToLlm as an "unknown" command.
-        for name in ["config", "model", "effort", "plan", "permissions", "mcp",
-                     "login", "logout", "init", "simplify", "verify",
-                     "update-config", "statusline", "diff", "skills",
-                     "agents", "context", "keybindings", "sandbox"] {
-            let action = classify(&format!("/{name}"));
-            let is_ok = matches!(
-                action,
-                SlashAction::NotYetWired(_)
-                    | SlashAction::ShowModel
-                    | SlashAction::SwitchModel(_)
-                    | SlashAction::Compact
-                    | SlashAction::ShowStatus
-                    | SlashAction::ShowContext
-                    | SlashAction::ShowSettingsHint(_)
-                    | SlashAction::Login(_)
-                    | SlashAction::Logout(_)
-            );
+    fn every_catalog_slash_resolves_to_local_or_ai() {
+        // After the "no stubs" refactor, every CATALOG entry resolves
+        // EITHER to a Local action OR to SendToLlm (AiRouted). Nothing
+        // falls back to Passthrough — that's reserved for non-slash
+        // input.
+        for entry in slash_catalog::CATALOG {
+            let action = classify(&format!("/{}", entry.name));
+            let is_ok = !matches!(action, SlashAction::Passthrough);
             assert!(
                 is_ok,
-                "/{name} must resolve to a recognized action, got {action:?}"
+                "/{} must resolve to a recognized action, got {action:?}",
+                entry.name
             );
+        }
+    }
+
+    #[test]
+    fn no_not_yet_wired_variant_leaked() {
+        // Smoke: /resume / /security / /skills — all three had the
+        // NotYetWired treatment before; now they must be SendToLlm.
+        for name in ["resume", "security", "skills", "diff", "mcp", "cron"] {
+            match classify(&format!("/{name}")) {
+                SlashAction::SendToLlm(_) => {}
+                other => panic!("/{name} still stubbed: {other:?}"),
+            }
         }
     }
 }
