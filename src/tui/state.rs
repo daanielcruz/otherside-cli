@@ -102,6 +102,37 @@ pub struct ToolCallEntry {
     pub elapsed_ms: u64,
 }
 
+/// Render a finalized ToolCallEntry as a one-line history entry that
+/// the Role::Tool render branch can reinflate. Format:
+/// `<status_glyph>|<name>|<elapsed_ms>|<short-args>` — pipe-delimited
+/// so render can split cheaply. Prefix glyph lets a grep disambiguate
+/// tool entries from other system notes without deserializing.
+pub fn format_tool_history_entry(entry: &ToolCallEntry) -> String {
+    let status_glyph = match entry.status {
+        ToolStatus::Running => "·", // shouldn't happen post-finish, but safe
+        ToolStatus::Ok => "ok",
+        ToolStatus::Error => "err",
+    };
+    let short_args = entry
+        .args
+        .as_object()
+        .and_then(|o| {
+            o.iter().next().map(|(k, v)| {
+                let v_str = match v {
+                    Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                };
+                let clipped: String = v_str.chars().take(60).collect();
+                format!("{k}={clipped}")
+            })
+        })
+        .unwrap_or_default();
+    format!(
+        "{}|{}|{}|{}",
+        status_glyph, entry.name, entry.elapsed_ms, short_args
+    )
+}
+
 /// Color-token discriminant for the info-row permission chip. Names
 /// describe the chip's role, not a specific hue — the render layer
 /// resolves each variant through `tui::render::theme` so no inline
@@ -608,6 +639,11 @@ impl ConversationState {
     pub fn history_for_request(&self) -> Vec<OpenAiChatMessage> {
         self.messages
             .iter()
+            // Skip Role::Tool entries — those are TUI-only history
+            // records of tool dispatches (rendered via render_message).
+            // The actual tool-use / tool-result blocks ride the
+            // translator's Block path, not here.
+            .filter(|m| m.role != OpenAiChatRole::Tool)
             .map(|m| OpenAiChatMessage {
                 role: m.role,
                 content: m.content.clone(),
@@ -640,6 +676,20 @@ impl ConversationState {
     /// content (e.g. a 200 with only tool-use blocks, which the MVP
     /// doesn't surface yet).
     pub fn finish_stream(&mut self) {
+        // Archive this turn's tool calls into the message log BEFORE
+        // the assistant-text promotion. Order = insertion = upstream
+        // transcript order (tool calls precede the summary reply).
+        // Without this the active_tool_calls render band paints AFTER
+        // the promoted assistant message, inverting the flow, and the
+        // entries vanish on the next submit (when active_tool_calls
+        // clears). Serialized as Role::Tool so history_for_request
+        // can filter them back out before hitting the API.
+        for entry in std::mem::take(&mut self.active_tool_calls) {
+            self.messages.push(DisplayMessage {
+                role: OpenAiChatRole::Tool,
+                content: format_tool_history_entry(&entry),
+            });
+        }
         if !self.current_assistant_buffer.is_empty() {
             let content = std::mem::take(&mut self.current_assistant_buffer);
             self.messages.push(DisplayMessage {
@@ -666,6 +716,14 @@ impl ConversationState {
     /// render layer to show inline. `streaming` flips back to false so the
     /// input box accepts keys again.
     pub fn fail_stream(&mut self, err: String) {
+        // Same archival as finish_stream — preserve tool-call history
+        // across the failure boundary.
+        for entry in std::mem::take(&mut self.active_tool_calls) {
+            self.messages.push(DisplayMessage {
+                role: OpenAiChatRole::Tool,
+                content: format_tool_history_entry(&entry),
+            });
+        }
         if !self.current_assistant_buffer.is_empty() {
             let content = std::mem::take(&mut self.current_assistant_buffer);
             self.messages.push(DisplayMessage {

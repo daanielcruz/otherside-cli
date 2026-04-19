@@ -394,17 +394,54 @@ fn render_message(role: OpenAiChatRole, content: &str, width: u16) -> Vec<Line<'
                 ]));
             }
             OpenAiChatRole::Tool => {
-                let prefix = if i == 0 { "⎿ tool: " } else { "         " };
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        prefix.to_string(),
-                        Style::default().fg(theme::SUGGESTION),
-                    ),
-                    Span::styled(
-                        raw.to_string(),
+                // Role::Tool carries a `format_tool_history_entry`
+                // pipe-delimited summary: `status|name|elapsed|args`.
+                // Paint compact: ● <name>(<args>) · <elapsed>ms. Bullet
+                // green on ok, red on err, muted otherwise.
+                if i > 0 {
+                    continue;
+                }
+                let parts: Vec<&str> = raw.splitn(4, '|').collect();
+                let (status, name, elapsed_ms, args) = match parts.as_slice() {
+                    [s, n, e, a] => (*s, *n, *e, *a),
+                    _ => ("", raw, "0", ""),
+                };
+                let bullet_color = match status {
+                    "ok" => theme::SUCCESS,
+                    "err" => theme::ERROR,
+                    _ => theme::MUTED,
+                };
+                let bullet = if cfg!(target_os = "macos") { "⏺ " } else { "● " };
+                let elapsed_chip = elapsed_ms
+                    .parse::<u64>()
+                    .ok()
+                    .filter(|&n| n > 0)
+                    .map(|n| format!(" · {n}ms"))
+                    .unwrap_or_default();
+                let mut spans: Vec<Span<'static>> = Vec::with_capacity(4);
+                spans.push(Span::styled(
+                    bullet.to_string(),
+                    Style::default()
+                        .fg(bullet_color)
+                        .add_modifier(Modifier::BOLD),
+                ));
+                spans.push(Span::styled(
+                    name.to_string(),
+                    Style::default().fg(theme::TEXT).add_modifier(Modifier::BOLD),
+                ));
+                if !args.is_empty() {
+                    spans.push(Span::styled(
+                        format!("({args})"),
                         Style::default().fg(theme::MUTED),
-                    ),
-                ]));
+                    ));
+                }
+                if !elapsed_chip.is_empty() {
+                    spans.push(Span::styled(
+                        elapsed_chip,
+                        Style::default().fg(theme::MUTED),
+                    ));
+                }
+                lines.push(Line::from(spans));
             }
         }
     }
