@@ -1,8 +1,8 @@
-//! Splash mascot — the Braille-density corrupted-Rubik's-cube ASCII
-//! plus the "otherside" block-art banner and the multiverse tagline.
-//! Canonical source is `docs/design/mascot.md` in the outer repo;
-//! this constant is the embedded copy. Both mascot and banner render
-//! in white for contrast; tagline uses the muted theme color.
+//! Splash mascot — rendered centered over the streaming area with a
+//! tagline, crate name + version, and working-directory line stacked
+//! below. No border, no banner — just the mascot composition.
+//! Canonical source for the ASCII is `docs/design/mascot.md` in the
+//! outer repo; the constant below is the embedded copy.
 
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -17,81 +17,63 @@ use super::render::theme;
 /// Canonical ASCII mascot — 15 rows tall, 30 columns wide at full size.
 /// Uses Braille-density characters so every cell renders at width 1 in
 /// a monospaced terminal.
-pub const MASCOT: &str = "\
-⠀⠀⠀⠀⠀⠀⠀⢸⡇⠀⣸⡆⠀⣾⡆⠀⣿⠀⠀⣿⠀⢰⣷⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⢸⡇⠀⣹⡇⠀⣿⡇⠀⣿⠀⠀⣿⠀⢸⣿⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⣰⡿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⢿⣦⠀⠀⠀⠀
-⠶⠶⠶⠶⣿⡇⢠⣶⣶⡄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⣿⠶⠶⠶⠶
-⣠⣤⣤⣤⣿⡇⠀⠙⠋⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⣿⣤⣤⣤⣄
-⠀⠀⠀⠈⣿⡇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⣿⠁⠀⠈⠁
-⠛⠛⠛⠛⣿⡇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⣿⠛⠛⠛⠛
-⠶⠶⠶⠶⣿⡇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⣿⠶⠶⠶⠶
-⣀⣤⣤⣤⣿⡇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⣿⣤⣤⣤⣀
-⠈⠉⠉⠉⣿⡇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⣿⠉⠉⠉⠁
-⠛⠛⠛⠛⣿⡇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⣿⠛⠛⠛⠛
-⠴⠶⠶⠶⣿⡇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⣿⠶⠶⠶⠦
-⠀⠀⠀⠀⠹⣷⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣾⠟⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⢸⡇⠀⣽⡇⠀⣿⡇⠀⣿⠀⠈⣿⠀⢸⣿⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⢸⡇⠀⢿⡇⠀⢿⠇⠀⣿⠀⠀⣿⠀⠸⡿⠀⠀⠀⠀⠀⠀⠀";
+pub const MASCOT: &str = "
+                               +++++++++                              
+                          +++++==-----=-==++++                        
+                        +++-::---:::...:------++                      
+                      ++=:--::.:..:::...:-:..--==+++                  
+                     ++---::..:==++ ++*=:...:::..-==++ +++            
+                   ++=-=-:.-+            *=-..:--:::-=-+++            
+                 +++-==:.:+                #=:....:----=====+*##      
+                ++=-=-:.=+                  ##+-:..::.....:+==+*#     
+              +++-+=-:.=*                    ##*+-..:::...:-=-+*#     
+           +++====-:..=##                     #*:.......::-++*##      
+         +=---::....-+*##                   +*=..::..::=++*###        
+       +=--:::..:..:-+##               ++=-::...::--=+*####           
+      ++-=-:.....:...::=++*###**====--:...::---=+*####                
+      #*+=-==-..:::::::..........::..:-==++**#######                  
+       ###***++==--=---------++******######  #+--++                   
+          %%###***####***#########        ##*-.:++                    
+               **##**+=:.:=*##          ##+-.:-++                     
+                    +++-::...:=+******+-:..:-++                       
+                       +++=::..........::-=++                         
+                           +++---:----+++*                            
+                                +++++                                  
+";
 
-/// Block-art banner spelling "otherside". Rendered in white below
-/// the mascot on splash. 7 rows tall.
-pub const BANNER: &str = "\
-░▒▓██████▓▒░▒▓████████▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓████████▓▒░▒▓███████▓▒░ ░▒▓███████▓▒░▒▓█▓▒░▒▓███████▓▒░░▒▓████████▓▒░
-░▒▓█▓▒░░▒▓█▓▒░ ░▒▓█▓▒░   ░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░      ░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░      ░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░
-░▒▓█▓▒░░▒▓█▓▒░ ░▒▓█▓▒░   ░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░      ░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░      ░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░
-░▒▓█▓▒░░▒▓█▓▒░ ░▒▓█▓▒░   ░▒▓████████▓▒░▒▓██████▓▒░ ░▒▓███████▓▒░ ░▒▓██████▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓██████▓▒░
-░▒▓█▓▒░░▒▓█▓▒░ ░▒▓█▓▒░   ░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░      ░▒▓█▓▒░░▒▓█▓▒░      ░▒▓█▓▒░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░
-░▒▓█▓▒░░▒▓█▓▒░ ░▒▓█▓▒░   ░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░      ░▒▓█▓▒░░▒▓█▓▒░      ░▒▓█▓▒░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░
- ░▒▓██████▓▒░  ░▒▓█▓▒░   ░▒▓█▓▒░░▒▓█▓▒░▒▓████████▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓███████▓▒░░▒▓█▓▒░▒▓███████▓▒░░▒▓████████▓▒░";
-
-/// Tagline below the banner. Intentional multiverse / reversed-world
-/// framing — the RE reference stays indirect. Alternates kept for
-/// future rotation without hunting the git history.
+/// Tagline below the mascot — black-hole flavored RE pun. Every
+/// black hole swallows light; in otherside, the stack collapses the
+/// other way and return values escape anyway.
 ///
 /// Rotation set (pick any; edit `TAGLINE` to swap):
-/// - "every call has a return — this is where the return speaks first"
-/// - "a shell from the side the debugger can't see"
-/// - "walks the wire backwards"
-/// - "otherside · where the stack unwinds on its own terms"
-pub const TAGLINE: &str = "the inverted pass · where shadows hold state";
+/// - "past the event horizon · where even returns escape"
+/// - "singularity where the stack unwinds backwards"
+/// - "no light escapes — but every return does"
+/// - "where the call graph folds into the accretion disk"
+pub const TAGLINE: &str = "past the event horizon · where even returns escape";
 
-/// Mascot dimensions.
-pub const MASCOT_COLS: u16 = 30;
-pub const MASCOT_ROWS: u16 = 15;
+/// Mascot dimensions — 21 content rows × 70 columns. The literal
+/// above starts with a newline for indentation; [`mascot_rows`]
+/// strips the empty leading line so consumers see the 21 visual
+/// rows only.
+pub const MASCOT_COLS: u16 = 70;
+pub const MASCOT_ROWS: u16 = 21;
 
-/// Banner dimensions. Width derived at runtime (it's wide).
-pub const BANNER_ROWS: u16 = 7;
-
-/// Compute the widest banner line in display columns (char count).
-pub fn banner_cols() -> u16 {
-    BANNER
-        .lines()
-        .map(|l| l.chars().count() as u16)
-        .max()
-        .unwrap_or(0)
+/// Return the visible mascot rows — drops the leading empty line
+/// that the raw string literal carries. Renderers and tests both
+/// go through this so layout math lines up with what paints.
+pub fn mascot_rows() -> Vec<&'static str> {
+    MASCOT.lines().filter(|l| !l.is_empty()).collect()
 }
 
-/// Preferred inner width for the splash box (content width, border
-/// rendering will add 2 columns on each side).
-const BOX_INNER_WIDTH: u16 = 70;
-
-/// Preferred inner height — mascot + gaps + tagline + cwd.
-const BOX_INNER_HEIGHT: u16 = 20;
-
-/// Paint the splash — a centered rounded box styled after upstream's
-/// welcome card. Inside: the Rubik's-cube mascot stacked over the
-/// tagline and the working-directory line.
+/// Paint the splash — mascot centered over the streaming area with
+/// tagline, `otherside cli vX.Y.Z`, and the working-directory line
+/// stacked below. No border, no banner.
 ///
-/// Falls back to a single-line legend when the terminal can't fit
-/// the box.
+/// Falls back to a single-line legend when the terminal is too
+/// narrow / short to host the mascot.
 pub fn draw_splash(f: &mut Frame<'_>, area: Rect) {
-    use ratatui::widgets::{Block, BorderType, Borders};
-
-    let box_w = BOX_INNER_WIDTH.min(area.width.saturating_sub(4));
-    let box_h = BOX_INNER_HEIGHT.min(area.height.saturating_sub(2));
-
-    if box_w < MASCOT_COLS + 4 || box_h < MASCOT_ROWS + 4 {
+    if area.width < MASCOT_COLS + 2 || area.height < MASCOT_ROWS + 6 {
         let line = Line::from(vec![
             Span::styled(
                 "otherside",
@@ -106,62 +88,69 @@ pub fn draw_splash(f: &mut Frame<'_>, area: Rect) {
         return;
     }
 
-    let top_pad = (area.height.saturating_sub(box_h)) / 3;
-    let left_pad = (area.width.saturating_sub(box_w)) / 2;
-    let outer = Rect {
-        x: area.x + left_pad,
+    // Stack (top → bottom): mascot · gap · tagline · gap ·
+    // "otherside cli vX.Y.Z" · gap · cwd. Top third of remaining
+    // vertical space acts as breathing room so the block rides the
+    // upper half of the streaming area.
+    let content_h: u16 = MASCOT_ROWS + 1 + 1 + 1 + 1 + 1 + 1;
+    let top_pad = area.height.saturating_sub(content_h) / 3;
+    let padded = Rect {
+        x: area.x,
         y: area.y + top_pad,
-        width: box_w,
-        height: box_h,
+        width: area.width,
+        height: area.height.saturating_sub(top_pad),
     };
-
-    let title = Line::from(vec![
-        Span::styled(" otherside ", Style::default().fg(theme::MUTED)),
-        Span::styled(
-            concat!("v", env!("CARGO_PKG_VERSION")),
-            Style::default().fg(theme::SUBTLE),
-        ),
-        Span::raw(" "),
-    ]);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme::MUTED))
-        .title(title);
-    let inner = block.inner(outer);
-    f.render_widget(block, outer);
-
-    // Inner layout: top gap · mascot · gap · tagline · gap · cwd.
     let slots = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),
-            Constraint::Length(MASCOT_ROWS),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
+            Constraint::Length(MASCOT_ROWS), // 0 — mascot
+            Constraint::Length(1),           // 1 — gap
+            Constraint::Length(1),           // 2 — tagline
+            Constraint::Length(1),           // 3 — gap
+            Constraint::Length(1),           // 4 — otherside cli vX.Y.Z
+            Constraint::Length(1),           // 5 — gap
+            Constraint::Length(1),           // 6 — cwd
             Constraint::Min(0),
         ])
-        .split(inner);
+        .split(padded);
 
-    draw_mascot_block(f, slots[1]);
-    draw_tagline(f, slots[3]);
-    draw_cwd(f, slots[5]);
+    draw_mascot_block(f, slots[0]);
+    draw_tagline(f, slots[2]);
+    draw_name_and_version(f, slots[4]);
+    draw_cwd(f, slots[6]);
 }
 
 fn draw_mascot_block(f: &mut Frame<'_>, area: Rect) {
-    let lines: Vec<Line<'_>> = MASCOT
-        .lines()
+    let lines: Vec<Line<'_>> = mascot_rows()
+        .into_iter()
         .map(|row| {
             Line::from(Span::styled(
                 row.to_string(),
-                Style::default().fg(theme::TEXT),
+                Style::default().fg(theme::PRIMARY),
             ))
         })
         .collect();
     let para = Paragraph::new(lines).alignment(Alignment::Center);
     f.render_widget(para, area);
+}
+
+fn draw_name_and_version(f: &mut Frame<'_>, area: Rect) {
+    // Bold crate name + dim version, centered. Sits between tagline
+    // and cwd in the splash stack.
+    let line = Line::from(vec![
+        Span::styled(
+            "otherside cli",
+            Style::default()
+                .fg(theme::TEXT)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" "),
+        Span::styled(
+            concat!("v", env!("CARGO_PKG_VERSION")),
+            Style::default().fg(theme::SUBTLE),
+        ),
+    ]);
+    f.render_widget(Paragraph::new(line).alignment(Alignment::Center), area);
 }
 
 fn draw_cwd(f: &mut Frame<'_>, area: Rect) {
@@ -181,21 +170,6 @@ fn draw_cwd(f: &mut Frame<'_>, area: Rect) {
     f.render_widget(Paragraph::new(line).alignment(Alignment::Center), area);
 }
 
-#[allow(dead_code)]
-fn draw_banner_block(f: &mut Frame<'_>, area: Rect) {
-    let lines: Vec<Line<'_>> = BANNER
-        .lines()
-        .map(|row| {
-            Line::from(Span::styled(
-                row.to_string(),
-                Style::default().fg(theme::TEXT),
-            ))
-        })
-        .collect();
-    let para = Paragraph::new(lines).alignment(Alignment::Center);
-    f.render_widget(para, area);
-}
-
 fn draw_tagline(f: &mut Frame<'_>, area: Rect) {
     let line = Line::from(Span::styled(
         TAGLINE,
@@ -204,16 +178,11 @@ fn draw_tagline(f: &mut Frame<'_>, area: Rect) {
     f.render_widget(Paragraph::new(line).alignment(Alignment::Center), area);
 }
 
-/// Variant with the central cube-face rows tinted pink — used on
-/// `/clear` to reinforce the fresh-session visual. Banner + tagline
-/// render the same as the default splash.
+/// `/clear` variant — same composition as [`draw_splash`] but tints
+/// the mascot core rows with the accent color to reinforce the fresh
+/// session visual.
 pub fn draw_splash_with_core_accent(f: &mut Frame<'_>, area: Rect) {
-    // For the /clear variant we still want the full composition; the
-    // pink-core mascot only affects the mascot block itself.
-    let can_banner = area.width >= banner_cols();
-    let can_mascot = area.height >= MASCOT_ROWS && area.width >= MASCOT_COLS;
-
-    if !can_mascot {
+    if area.width < MASCOT_COLS + 2 || area.height < MASCOT_ROWS + 6 {
         let line = Line::from(vec![
             Span::styled(
                 "otherside",
@@ -228,49 +197,50 @@ pub fn draw_splash_with_core_accent(f: &mut Frame<'_>, area: Rect) {
         return;
     }
 
-    let top_pad: u16 = 1;
-    let gap_after_mascot: u16 = 1;
-    let gap_after_banner: u16 = if can_banner { 1 } else { 0 };
-    let tagline_h: u16 = 1;
-
-    let mut constraints: Vec<Constraint> = vec![
-        Constraint::Length(top_pad),
-        Constraint::Length(MASCOT_ROWS),
-        Constraint::Length(gap_after_mascot),
-    ];
-    if can_banner {
-        constraints.push(Constraint::Length(BANNER_ROWS));
-        constraints.push(Constraint::Length(gap_after_banner));
-    }
-    constraints.push(Constraint::Length(tagline_h));
-    constraints.push(Constraint::Min(0));
-
+    let content_h: u16 = MASCOT_ROWS + 1 + 1 + 1 + 1 + 1 + 1;
+    let top_pad = area.height.saturating_sub(content_h) / 3;
+    let padded = Rect {
+        x: area.x,
+        y: area.y + top_pad,
+        width: area.width,
+        height: area.height.saturating_sub(top_pad),
+    };
     let slots = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(constraints)
-        .split(area);
+        .constraints([
+            Constraint::Length(MASCOT_ROWS),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ])
+        .split(padded);
 
-    let mut idx = 1;
-    draw_mascot_with_core_accent(f, slots[idx]);
-    idx += 2;
-
-    if can_banner {
-        draw_banner_block(f, slots[idx]);
-        idx += 2;
-    }
-
-    draw_tagline(f, slots[idx]);
+    draw_mascot_with_core_accent(f, slots[0]);
+    draw_tagline(f, slots[2]);
+    draw_name_and_version(f, slots[4]);
+    draw_cwd(f, slots[6]);
 }
 
 fn draw_mascot_with_core_accent(f: &mut Frame<'_>, area: Rect) {
-    let lines: Vec<Line<'_>> = MASCOT
-        .lines()
+    let rows = mascot_rows();
+    let total = rows.len();
+    let band_start = total / 3;
+    let band_end = total.saturating_sub(total / 3);
+    let lines: Vec<Line<'_>> = rows
+        .into_iter()
         .enumerate()
         .map(|(idx, row)| {
-            let color = if (3..=5).contains(&idx) {
-                theme::ERROR
+            // Middle third of the mascot gets the accent tint on
+            // /clear — reinforces the fresh-session signal without
+            // swapping the whole glyph color.
+            let color = if (band_start..band_end).contains(&idx) {
+                theme::ACCENT_AMBER
             } else {
-                theme::TEXT
+                theme::PRIMARY
             };
             Line::from(Span::styled(row.to_string(), Style::default().fg(color)))
         })
@@ -285,7 +255,7 @@ mod tests {
 
     #[test]
     fn mascot_dimensions_match_constants() {
-        let rows: Vec<&str> = MASCOT.lines().collect();
+        let rows = mascot_rows();
         assert_eq!(rows.len(), MASCOT_ROWS as usize);
         for (i, row) in rows.iter().enumerate() {
             let col_count = row.chars().count();
@@ -297,42 +267,25 @@ mod tests {
     }
 
     #[test]
-    fn mascot_uses_braille_only() {
-        for ch in MASCOT.chars() {
-            let in_braille = (0x2800..=0x28FF).contains(&(ch as u32));
-            let is_newline = ch == '\n';
-            assert!(
-                in_braille || is_newline,
-                "unexpected non-Braille char: {ch:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn banner_is_seven_rows() {
-        let rows: Vec<&str> = BANNER.lines().collect();
-        assert_eq!(rows.len(), BANNER_ROWS as usize);
-    }
-
-    #[test]
-    fn banner_cols_matches_widest_line() {
-        let widest = BANNER
-            .lines()
-            .map(|l| l.chars().count() as u16)
-            .max()
-            .unwrap();
-        assert_eq!(banner_cols(), widest);
-    }
-
-    #[test]
-    fn tagline_hints_at_inversion() {
+    fn tagline_carries_black_hole_framing() {
         let lower = TAGLINE.to_lowercase();
-        // Any of these hint-words is enough; the rotation set all carry at
-        // least one. Lock the semantic field, not the exact copy.
-        let hits = ["invert", "shadow", "return", "unwind", "back", "side"]
-            .iter()
-            .filter(|w| lower.contains(*w))
-            .count();
-        assert!(hits >= 1, "tagline lost its multiverse / RE framing: {TAGLINE:?}");
+        // Any of these hint-words is enough; the rotation set all
+        // carry at least one. Lock the semantic field, not the copy.
+        let hits = [
+            "horizon",
+            "singularity",
+            "light",
+            "accretion",
+            "return",
+            "escape",
+            "unwind",
+        ]
+        .iter()
+        .filter(|w| lower.contains(*w))
+        .count();
+        assert!(
+            hits >= 1,
+            "tagline lost its black-hole framing: {TAGLINE:?}"
+        );
     }
 }
