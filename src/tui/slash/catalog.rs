@@ -85,10 +85,11 @@ pub struct SlashEntry {
     pub kind: SlashKind,
 }
 
-/// Full catalog. Order here is the display order (help, autocomplete,
-/// tips rotation all walk this slice as-is).
+/// Full catalog — strict subset of `docs/slashes.md` (R-114). 34 rows
+/// across 6 categories. Order here is the display order (help,
+/// autocomplete, tips rotation all walk this slice as-is).
 pub const CATALOG: &[SlashEntry] = &[
-    // ── instant ─────────────────────────────────────────────────
+    // ── instant (3) ─────────────────────────────────────────────
     SlashEntry {
         name: "bye",
         brief: "exit the TUI",
@@ -105,10 +106,15 @@ pub const CATALOG: &[SlashEntry] = &[
         kind: SlashKind::Instant,
     },
 
-    // ── toggle ──────────────────────────────────────────────────
+    // ── toggle (5) ──────────────────────────────────────────────
     SlashEntry {
         name: "plan",
         brief: "enable plan mode",
+        kind: SlashKind::Toggle,
+    },
+    SlashEntry {
+        name: "tag",
+        brief: "tag the current turn for later recall",
         kind: SlashKind::Toggle,
     },
     SlashEntry {
@@ -126,28 +132,16 @@ pub const CATALOG: &[SlashEntry] = &[
         brief: "show the active keybindings",
         kind: SlashKind::Toggle,
     },
-    // cut in phase 2 — not in docs/slashes.md
-    SlashEntry {
-        name: "verbose",
-        brief: "toggle verbose tool-use render",
-        kind: SlashKind::Toggle,
-    },
-    // cut in phase 2 — not in docs/slashes.md
-    SlashEntry {
-        name: "sandbox",
-        brief: "toggle sandbox mode",
-        kind: SlashKind::Toggle,
-    },
 
-    // ── skill ───────────────────────────────────────────────────
+    // ── skill (7) ───────────────────────────────────────────────
     SlashEntry {
-        name: "statusline",
-        brief: "generate a statusline config with AI",
+        name: "dream",
+        brief: "reflective memory consolidation",
         kind: SlashKind::Skill,
     },
     SlashEntry {
-        name: "init",
-        brief: "initialize project OTHERSIDE.md",
+        name: "statusline",
+        brief: "generate a statusline config with AI",
         kind: SlashKind::Skill,
     },
     SlashEntry {
@@ -156,54 +150,27 @@ pub const CATALOG: &[SlashEntry] = &[
         kind: SlashKind::Skill,
     },
     SlashEntry {
+        name: "review",
+        brief: "code review a pull request",
+        kind: SlashKind::Skill,
+    },
+    SlashEntry {
+        name: "init",
+        brief: "initialize project OTHERSIDE.md",
+        kind: SlashKind::Skill,
+    },
+    SlashEntry {
         name: "swarm",
-        brief: "list, create, or kill swarm agents",
+        brief: "spin up a multi-agent team",
         kind: SlashKind::Skill,
     },
-    // cut in phase 2
     SlashEntry {
-        name: "scope",
-        brief: "add or remove directories from the workspace",
-        kind: SlashKind::Skill,
-    },
-    // cut in phase 2
-    SlashEntry {
-        name: "security",
-        brief: "run the security review skill",
-        kind: SlashKind::Skill,
-    },
-    // cut in phase 2
-    SlashEntry {
-        name: "pr-review",
-        brief: "review a pull request",
-        kind: SlashKind::Skill,
-    },
-    // cut in phase 2
-    SlashEntry {
-        name: "deepreview",
-        brief: "exhaustive review pass",
-        kind: SlashKind::Skill,
-    },
-    // cut in phase 2
-    SlashEntry {
-        name: "dedup-mem",
-        brief: "consolidate memory files",
-        kind: SlashKind::Skill,
-    },
-    // cut in phase 2
-    SlashEntry {
-        name: "cron",
-        brief: "schedule recurring tasks",
-        kind: SlashKind::Skill,
-    },
-    // cut in phase 2
-    SlashEntry {
-        name: "redteam",
-        brief: "adversarial probe on the current target",
+        name: "security-review",
+        brief: "review pending changes for security issues",
         kind: SlashKind::Skill,
     },
 
-    // ── anchor ──────────────────────────────────────────────────
+    // ── anchor (4) ──────────────────────────────────────────────
     SlashEntry {
         name: "branch",
         brief: "fork the conversation from here",
@@ -215,12 +182,17 @@ pub const CATALOG: &[SlashEntry] = &[
         kind: SlashKind::Anchor,
     },
     SlashEntry {
+        name: "loop",
+        brief: "toggle loop mode for recurring prompts",
+        kind: SlashKind::Anchor,
+    },
+    SlashEntry {
         name: "context",
         brief: "visualize current context usage",
         kind: SlashKind::Anchor,
     },
 
-    // ── panel ───────────────────────────────────────────────────
+    // ── panel (13) ──────────────────────────────────────────────
     SlashEntry {
         name: "help",
         brief: "show slash command catalog",
@@ -234,12 +206,6 @@ pub const CATALOG: &[SlashEntry] = &[
     SlashEntry {
         name: "rewind",
         brief: "jump back to an earlier turn",
-        kind: SlashKind::Panel(PanelKind::Rewind),
-    },
-    // cut in phase 2 — alias of /rewind
-    SlashEntry {
-        name: "checkpoint",
-        brief: "tag this spot for /rewind",
         kind: SlashKind::Panel(PanelKind::Rewind),
     },
     SlashEntry {
@@ -293,7 +259,7 @@ pub const CATALOG: &[SlashEntry] = &[
         kind: SlashKind::Panel(PanelKind::Mcp),
     },
 
-    // ── auth ────────────────────────────────────────────────────
+    // ── auth (2) ────────────────────────────────────────────────
     SlashEntry {
         name: "login",
         brief: "sign in to a provider",
@@ -436,15 +402,114 @@ mod tests {
         // same slash name as the entry that carries it.
         for entry in CATALOG {
             if let SlashKind::Panel(kind) = entry.kind {
-                // /checkpoint is an alias for /rewind; accept both.
-                let accepted =
-                    entry.name == kind.slash_name() || (entry.name == "checkpoint" && kind == PanelKind::Rewind);
-                assert!(
-                    accepted,
+                assert_eq!(
+                    entry.name,
+                    kind.slash_name(),
                     "PanelKind::{:?} drift vs /{}",
-                    kind, entry.name
+                    kind,
+                    entry.name
                 );
             }
+        }
+    }
+
+    #[test]
+    fn catalog_has_exactly_thirty_four_rows() {
+        assert_eq!(
+            CATALOG.len(),
+            34,
+            "CATALOG must be a strict subset of docs/slashes.md (34 rows)"
+        );
+    }
+
+    #[test]
+    fn catalog_contains_no_cut_slashes() {
+        // Cut slashes live in RULES.md §15 — they must NEVER ship in
+        // the autocomplete catalog. Also guards against legacy names
+        // from the pre-marco-zero era coming back by accident.
+        let cuts = [
+            "verbose",
+            "sandbox",
+            "scope",
+            "security",
+            "pr-review",
+            "deepreview",
+            "ultrareview",
+            "dedup-mem",
+            "cron",
+            "redteam",
+            "checkpoint",
+            "bughunter",
+            "files",
+        ];
+        for cut in cuts {
+            assert!(
+                lookup(cut).is_none(),
+                "cut slash /{} must not appear in CATALOG",
+                cut
+            );
+        }
+    }
+
+    #[test]
+    fn catalog_category_assignment_lock() {
+        // Table-driven lock: every CATALOG row maps to its expected
+        // SlashKind. Drift in either the name OR the kind names the
+        // offender. Mirror of `docs/slashes.md`.
+        let expected: &[(&str, SlashKind)] = &[
+            // instant
+            ("bye", SlashKind::Instant),
+            ("exit", SlashKind::Instant),
+            ("clear", SlashKind::Instant),
+            // toggle
+            ("plan", SlashKind::Toggle),
+            ("tag", SlashKind::Toggle),
+            ("copy", SlashKind::Toggle),
+            ("export", SlashKind::Toggle),
+            ("keybindings", SlashKind::Toggle),
+            // skill
+            ("dream", SlashKind::Skill),
+            ("statusline", SlashKind::Skill),
+            ("init-verifiers", SlashKind::Skill),
+            ("review", SlashKind::Skill),
+            ("init", SlashKind::Skill),
+            ("swarm", SlashKind::Skill),
+            ("security-review", SlashKind::Skill),
+            // anchor
+            ("branch", SlashKind::Anchor),
+            ("compact", SlashKind::Anchor),
+            ("loop", SlashKind::Anchor),
+            ("context", SlashKind::Anchor),
+            // panel
+            ("help", SlashKind::Panel(PanelKind::Help)),
+            ("resume", SlashKind::Panel(PanelKind::Resume)),
+            ("rewind", SlashKind::Panel(PanelKind::Rewind)),
+            ("config", SlashKind::Panel(PanelKind::Config)),
+            ("model", SlashKind::Panel(PanelKind::Model)),
+            ("effort", SlashKind::Panel(PanelKind::Effort)),
+            ("permissions", SlashKind::Panel(PanelKind::Permissions)),
+            ("hooks", SlashKind::Panel(PanelKind::Hooks)),
+            ("diff", SlashKind::Panel(PanelKind::Diff)),
+            ("skills", SlashKind::Panel(PanelKind::Skills)),
+            ("agents", SlashKind::Panel(PanelKind::Agents)),
+            ("status", SlashKind::Panel(PanelKind::Status)),
+            ("mcp", SlashKind::Panel(PanelKind::Mcp)),
+            // auth
+            ("login", SlashKind::Auth),
+            ("logout", SlashKind::Auth),
+        ];
+        assert_eq!(
+            expected.len(),
+            CATALOG.len(),
+            "expected table must cover every CATALOG row"
+        );
+        for (name, kind) in expected {
+            let entry = lookup(name).unwrap_or_else(|| panic!("/{name} missing from CATALOG"));
+            assert_eq!(
+                entry.kind, *kind,
+                "/{name} category drift: got {:?}, expected {:?}",
+                entry.kind, kind
+            );
         }
     }
 }

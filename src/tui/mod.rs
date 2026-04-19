@@ -285,6 +285,7 @@ async fn event_loop(
     let (tx, mut rx) = mpsc::channel::<StreamEvent>(1024);
 
     // Initial paint so the box appears immediately.
+    st.prune_feedback();
     terminal
         .draw(|f| render::render(f, &st, &base_model, &provider_id, spinner_tick))
         .map_err(|e| Error::Other(format!("tui draw: {e}")))?;
@@ -432,6 +433,7 @@ async fn event_loop(
             }
         }
 
+        st.prune_feedback();
         terminal
             .draw(|f| render::render(f, &st, &base_model, &provider_id, spinner_tick))
             .map_err(|e| Error::Other(format!("tui draw: {e}")))?;

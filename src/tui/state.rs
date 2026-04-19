@@ -359,6 +359,13 @@ pub struct ConversationState {
 
     /// Session id — `None` when `session_writer` is `None`.
     pub session_id: Option<crate::sessions::SessionId>,
+
+    /// Ephemeral toggle feedback shown in the bottom-left info slot
+    /// (openspec 001 phase 4). Present only for FEEDBACK_TTL after a
+    /// toggle-category slash fires; the prune_feedback helper clears
+    /// it at frame start once the TTL elapses. Mirrors upstream's
+    /// "plan mode on" / "copied 42 turns" confirmation line.
+    pub toggle_feedback: Option<(String, Instant)>,
 }
 
 impl ConversationState {
@@ -371,6 +378,66 @@ impl ConversationState {
                 tracing::warn!(?e, "failed to append session record");
             }
         }
+    }
+
+    /// Stamp an ephemeral toggle confirmation into the info-row left
+    /// slot. Replaces any prior feedback. The TTL timer restarts.
+    pub fn set_feedback(&mut self, msg: impl Into<String>) {
+        self.toggle_feedback = Some((msg.into(), Instant::now()));
+    }
+
+    /// Drop expired feedback so the info row returns to chip-only.
+    /// Called at frame start by the render path.
+    pub fn prune_feedback(&mut self) {
+        if let Some((_, stamped)) = &self.toggle_feedback {
+            if stamped.elapsed() >= FEEDBACK_TTL {
+                self.toggle_feedback = None;
+            }
+        }
+    }
+}
+
+/// How long an ephemeral toggle confirmation stays pinned in the info
+/// row before the prune pass clears it. Matches upstream's observed
+/// feedback duration from the tmux-parity captures (~3s).
+pub const FEEDBACK_TTL: std::time::Duration = std::time::Duration::from_secs(3);
+
+#[cfg(test)]
+mod feedback_tests {
+    use super::*;
+
+    #[test]
+    fn feedback_is_none_by_default() {
+        let st = ConversationState::default();
+        assert!(st.toggle_feedback.is_none());
+    }
+
+    #[test]
+    fn set_feedback_stamps_now() {
+        let mut st = ConversationState::default();
+        st.set_feedback("plan mode on");
+        let (msg, _) = st.toggle_feedback.as_ref().unwrap();
+        assert_eq!(msg, "plan mode on");
+    }
+
+    #[test]
+    fn prune_feedback_keeps_fresh_entries() {
+        let mut st = ConversationState::default();
+        st.set_feedback("fresh");
+        st.prune_feedback();
+        assert!(st.toggle_feedback.is_some());
+    }
+
+    #[test]
+    fn prune_feedback_drops_expired_entries() {
+        let mut st = ConversationState::default();
+        // Stamp a feedback in the past beyond TTL.
+        st.toggle_feedback = Some((
+            "stale".to_string(),
+            Instant::now() - FEEDBACK_TTL - std::time::Duration::from_millis(100),
+        ));
+        st.prune_feedback();
+        assert!(st.toggle_feedback.is_none());
     }
 }
 

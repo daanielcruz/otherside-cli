@@ -26,7 +26,7 @@
 //! When the caller passes `popup_rows > 0`, the statusline + info +
 //! bottom-pad rows are suppressed and a single `popup` slot of exactly
 //! `popup_rows` rows is reserved directly below the prompt bar. This
-//! mirrors upstream claude-code where the slash autocomplete overlays
+//! mirrors the reference TUI where the slash autocomplete overlays
 //! the bottom chrome entirely while suggestions are visible. Streaming
 //! area shrinks accordingly; chrome returns the next frame.
 
@@ -64,7 +64,7 @@ pub struct FrameSlots {
     pub prompt: Rect,
     /// Slash-autocomplete popup slot — sits directly below the prompt
     /// bar when the caller requests a non-zero `popup_rows`, mirroring
-    /// upstream claude-code where suggestions render below the `/`
+    /// the reference TUI where suggestions render below the `/`
     /// input rather than floating above the log. `None` when no popup
     /// is active. Streaming area shrinks by `popup_rows` to open the
     /// space.
@@ -97,17 +97,28 @@ pub const QUEUE_CHROME_ROWS: u16 = 2;
 ///   Message rows capped at [`QUEUE_ROWS_CAP`]; total slot height is
 ///   `visible_messages + QUEUE_CHROME_ROWS`. Counts above the cap
 ///   still render the cap rows (renderer summarizes overflow in-line).
-pub fn split_frame(area: Rect, streaming_active: bool, queue_count: usize) -> FrameSlots {
+/// - `popup_rows > 0` triggers popup takeover: the statusline, info
+///   row, and bottom pad are all suppressed (height 0) and a single
+///   `popup` slot of exactly `popup_rows` rows sits directly below
+///   the prompt bar. Mirrors the reference TUI — while slash
+///   autocomplete is open, the bottom chrome disappears and the
+///   popup fills that strip.
+pub fn split_frame(
+    area: Rect,
+    streaming_active: bool,
+    queue_count: usize,
+    popup_rows: u16,
+) -> FrameSlots {
     // Display order (top → bottom):
     //   streaming (Min), [progress (1)], [tip (1)],
     //   [queue (margin-top + N messages + hint)],
-    //   prompt top-pad (1), prompt (3), statusline (1), info (1),
-    //   bottom pad (1)
+    //   prompt top-pad (1), prompt (3),
+    //   [popup (N) OR statusline (1), info (1), bottom pad (1)]
     //
     // prompt top-pad is an always-on 1-row gap so the last streaming
     // line / tip never hugs the prompt bar. The queue slot sits above
     // that top-pad with its own margin-top so the queued message reads
-    // as a sibling of the prompt — matches upstream claude-code's
+    // as a sibling of the prompt — matches the reference TUI's
     // queued-bubble placement.
     let message_rows: u16 = (queue_count as u16)
         .min(QUEUE_ROWS_CAP)
@@ -117,6 +128,8 @@ pub fn split_frame(area: Rect, streaming_active: bool, queue_count: usize) -> Fr
     } else {
         0
     };
+
+    let popup_active = popup_rows > 0;
 
     let mut constraints: Vec<Constraint> = vec![Constraint::Min(1)];
     if streaming_active {
@@ -129,9 +142,13 @@ pub fn split_frame(area: Rect, streaming_active: bool, queue_count: usize) -> Fr
     }
     constraints.push(Constraint::Length(1)); // prompt top-pad (always)
     constraints.push(Constraint::Length(3)); // prompt bar
-    constraints.push(Constraint::Length(1)); // statusline
-    constraints.push(Constraint::Length(1)); // info
-    constraints.push(Constraint::Length(1)); // bottom pad
+    if popup_active {
+        constraints.push(Constraint::Length(popup_rows)); // popup
+    } else {
+        constraints.push(Constraint::Length(1)); // statusline
+        constraints.push(Constraint::Length(1)); // info
+        constraints.push(Constraint::Length(1)); // bottom pad
+    }
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -150,8 +167,16 @@ pub fn split_frame(area: Rect, streaming_active: bool, queue_count: usize) -> Fr
         (None, after_tip_idx + 1)
     };
     let prompt = chunks[prompt_idx];
-    let statusline = pad_sides(chunks[prompt_idx + 1], 2);
-    let info = pad_sides(chunks[prompt_idx + 2], 2);
+
+    let (popup, statusline, info) = if popup_active {
+        (Some(chunks[prompt_idx + 1]), Rect::default(), Rect::default())
+    } else {
+        (
+            None,
+            pad_sides(chunks[prompt_idx + 1], 2),
+            pad_sides(chunks[prompt_idx + 2], 2),
+        )
+    };
 
     FrameSlots {
         streaming,
@@ -159,7 +184,7 @@ pub fn split_frame(area: Rect, streaming_active: bool, queue_count: usize) -> Fr
         tip,
         queue,
         prompt,
-        popup: None,
+        popup,
         statusline,
         info,
     }
@@ -175,7 +200,7 @@ mod tests {
 
     #[test]
     fn idle_layout_omits_progress_and_tip() {
-        let slots = split_frame(area(20), false, 0);
+        let slots = split_frame(area(20), false, 0, 0);
         assert!(slots.progress.is_none());
         assert!(slots.tip.is_none());
         assert!(slots.queue.is_none());
@@ -185,7 +210,7 @@ mod tests {
 
     #[test]
     fn streaming_layout_includes_progress_and_tip() {
-        let slots = split_frame(area(20), true, 0);
+        let slots = split_frame(area(20), true, 0, 0);
         assert!(slots.progress.is_some());
         assert!(slots.tip.is_some());
         assert!(slots.queue.is_none());
@@ -198,7 +223,7 @@ mod tests {
 
     #[test]
     fn chrome_rows_have_lateral_padding() {
-        let slots = split_frame(Rect::new(0, 0, 100, 20), false, 0);
+        let slots = split_frame(Rect::new(0, 0, 100, 20), false, 0, 0);
         assert_eq!(slots.statusline.x, 2);
         assert_eq!(slots.statusline.width, 96);
         assert_eq!(slots.info.x, 2);
@@ -207,54 +232,45 @@ mod tests {
 
     #[test]
     fn prompt_bar_always_three_rows() {
-        let slots = split_frame(area(30), false, 0);
+        let slots = split_frame(area(30), false, 0, 0);
         assert_eq!(slots.prompt.height, 3);
-        let slots = split_frame(area(30), true, 0);
+        let slots = split_frame(area(30), true, 0, 0);
         assert_eq!(slots.prompt.height, 3);
     }
 
     #[test]
     fn streaming_area_flexes_to_remaining_height() {
-        let h_idle = split_frame(area(20), false, 0).streaming.height;
-        let h_stream = split_frame(area(20), true, 0).streaming.height;
+        let h_idle = split_frame(area(20), false, 0, 0).streaming.height;
+        let h_stream = split_frame(area(20), true, 0, 0).streaming.height;
         assert!(h_idle >= h_stream);
         assert_eq!(h_idle - h_stream, 3);
     }
 
     #[test]
     fn prompt_top_pad_always_reserved() {
-        let slots = split_frame(area(20), false, 0);
+        let slots = split_frame(area(20), false, 0, 0);
         assert_eq!(slots.prompt.y, 14);
         assert_eq!(slots.streaming.height + 1, slots.prompt.y);
     }
 
     #[test]
     fn queue_slot_absent_when_idle_even_with_queue() {
-        // Queue is a streaming-only affordance — idle never renders it
-        // even if the queue carries entries (defensive; drain on finish
-        // is expected).
-        let slots = split_frame(area(30), false, 3);
+        let slots = split_frame(area(30), false, 3, 0);
         assert!(slots.queue.is_none());
     }
 
     #[test]
     fn queue_slot_grows_with_queue_count() {
-        // Total slot height = message_rows + QUEUE_CHROME_ROWS (2:
-        // margin-top + hint).
-        let s1 = split_frame(area(30), true, 1);
-        let s2 = split_frame(area(30), true, 3);
+        let s1 = split_frame(area(30), true, 1, 0);
+        let s2 = split_frame(area(30), true, 3, 0);
         assert_eq!(s1.queue.unwrap().height, 1 + QUEUE_CHROME_ROWS);
         assert_eq!(s2.queue.unwrap().height, 3 + QUEUE_CHROME_ROWS);
-        // Queue takes rows from the streaming Min(1) area, not from
-        // the fixed rows.
         assert!(s1.streaming.height > s2.streaming.height);
     }
 
     #[test]
     fn queue_message_rows_cap_at_five() {
-        // Anything past 5 queued still yields at most 5 message rows
-        // (+ chrome); the streaming area keeps breathing room.
-        let slots = split_frame(area(40), true, 12);
+        let slots = split_frame(area(40), true, 12, 0);
         assert_eq!(
             slots.queue.unwrap().height,
             QUEUE_ROWS_CAP + QUEUE_CHROME_ROWS
@@ -263,9 +279,34 @@ mod tests {
 
     #[test]
     fn queue_slot_sits_directly_above_prompt_top_pad() {
-        let slots = split_frame(area(30), true, 2);
+        let slots = split_frame(area(30), true, 2, 0);
         let queue = slots.queue.unwrap();
-        // Queue row ends exactly at prompt_top_pad row start.
         assert_eq!(queue.y + queue.height + 1, slots.prompt.y);
+    }
+
+    #[test]
+    fn popup_takeover_suppresses_chrome() {
+        // With popup_rows > 0 the statusline + info + bottom pad
+        // collapse to zero height and slots.popup carries the reserved
+        // strip. This is the upstream-parity behavior: while slash
+        // autocomplete is open, the bottom chrome disappears entirely.
+        let slots = split_frame(area(20), false, 0, 5);
+        assert!(slots.popup.is_some());
+        assert_eq!(slots.statusline.height, 0);
+        assert_eq!(slots.info.height, 0);
+    }
+
+    #[test]
+    fn popup_sits_directly_below_prompt() {
+        let slots = split_frame(area(20), false, 0, 4);
+        let popup = slots.popup.unwrap();
+        assert_eq!(popup.y, slots.prompt.y + slots.prompt.height);
+        assert_eq!(popup.height, 4);
+    }
+
+    #[test]
+    fn popup_idle_no_popup() {
+        let slots = split_frame(area(20), false, 0, 0);
+        assert!(slots.popup.is_none());
     }
 }

@@ -152,8 +152,39 @@ pub fn render(
     spinner_tick: u64,
 ) {
     let area = f.area();
-    let slots =
-        layout_mod::split_frame(area, state.streaming, state.queued_messages.len());
+
+    // Ephemeral feedback has a TTL; clear expired entries at frame
+    // start so the info-row left slot returns to chrome once the
+    // window elapses. render() takes &ConversationState, so we thread
+    // through an explicit &mut via the interior-mutability choice
+    // below… actually it doesn't — prune_feedback mutates. We'd need
+    // &mut state here to call it from the renderer. For now prune is
+    // invoked by the event loop before each draw; see the Tick arm.
+
+    // Popup-takeover math — when the autocomplete is open, the caller
+    // reserves an exact `popup_rows` strip below the prompt bar and the
+    // bottom chrome collapses. We clamp the row count to
+    // MAX_POPUP_ROWS and to the remaining height so short terminals
+    // still leave breathing room for the streaming area.
+    let popup_rows: u16 = state
+        .autocomplete
+        .as_ref()
+        .map(|ac| {
+            let matches_rows = ac.matches.len() as u16;
+            let cap = autocomplete::MAX_POPUP_ROWS as u16;
+            // Reserve at least 4 rows (prompt + top-pad) so the popup
+            // doesn't starve the prompt bar on tiny terminals.
+            let remaining = area.height.saturating_sub(4 + 1 + 3 + 1);
+            matches_rows.min(cap).min(remaining)
+        })
+        .unwrap_or(0);
+
+    let slots = layout_mod::split_frame(
+        area,
+        state.streaming,
+        state.queued_messages.len(),
+        popup_rows,
+    );
 
     // Streaming area — mascot when empty, otherwise the scrolling log.
     // Suppress the mascot while any overlay is active so the inline
@@ -253,34 +284,22 @@ pub fn render(
             height: overlay_h,
         };
         super::menu::draw_overlay(f, overlay, menu_state);
-    } else if let Some(ac) = state.autocomplete.as_ref() {
-        // Popup hangs below the prompt bar, eating into the info-row
-        // chrome area if needed. Matches upstream's placement — the
-        // user reads the suggestions right above the cursor, not high
-        // up in the log. Height capped by MAX_POPUP_ROWS (10) so the
-        // overlay never eats the full log; scroll handled in-widget.
-        let popup_h = (ac.matches.len() as u16)
-            .min(autocomplete::MAX_POPUP_ROWS as u16)
-            .min(slots.streaming.height);
-        if popup_h >= 1 {
-            let popup = Rect {
-                x: slots.streaming.x,
-                y: slots.streaming.y + slots.streaming.height.saturating_sub(popup_h),
-                width: slots.streaming.width,
-                height: popup_h,
-            };
-            autocomplete::draw(f, popup, ac);
-        }
+    } else if let (Some(ac), Some(popup_rect)) = (state.autocomplete.as_ref(), slots.popup) {
+        // Popup sits directly below the prompt bar in the dedicated
+        // `slots.popup` strip (openspec 001 phase 3). Chrome is
+        // already suppressed by the layout when popup_rows > 0.
+        autocomplete::draw(f, popup_rect, ac);
     }
 
-    // Statusline — native path for now; subprocess override hook
-    // lands with state.settings plumbing. No provider_id — the locked
-    // emoji fallback drops it per C67.
+    // Statusline + info row — suppressed while the popup is active
+    // (slots.*.height == 0 per layout::split_frame popup-takeover).
     let _ = provider_id;
-    draw_statusline(f, slots.statusline, state, model);
-
-    // Info row — bottom chrome with permission mode + shortcut hint.
-    draw_info_row(f, slots.info, state, model);
+    if slots.statusline.height > 0 {
+        draw_statusline(f, slots.statusline, state, model);
+    }
+    if slots.info.height > 0 {
+        draw_info_row(f, slots.info, state, model);
+    }
 }
 
 /// Hand `mascot::draw_splash` the full streaming area so it can own
@@ -828,65 +847,18 @@ fn draw_info_row(
 ) {
     let _ = model;
 
-    // Primary chip counter — 016 MVP only tallies the permission
-    // chip. Future pillars will extend this as they add their own
-    // primary chips (tool state, PR status, tasks). Cycle hint
-    // mirrors upstream `primaryItemCount < 2` gate.
-    let chip_opt = state.permission_mode_label();
-    let has_chip = chip_opt.is_some();
-    let primary_item_count: usize = if has_chip { 1 } else { 0 };
-    let show_cycle_hint = primary_item_count < 2;
-
-    // Hint text WITHOUT a leading separator — we only inject " · "
-    // below when there's chip content to its left. Default mode has no
-    // chip, so the hint must not render with a leading bullet.
-    let hint = if state.streaming {
-        "esc to interrupt"
-    } else if state.autocomplete.is_some() {
-        "enter run · esc close"
+    // Feedback slot takes precedence over the permission chip while
+    // it's active (openspec 001 phase 4). "plan mode on", "copied 42
+    // turns", etc. render dim in the bottom-left until the TTL
+    // elapses.
+    let left = if let Some((msg, _stamped)) = state.toggle_feedback.as_ref() {
+        Line::from(Span::styled(
+            msg.clone(),
+            Style::default().fg(theme::MUTED),
+        ))
     } else {
-        ""
+        build_info_chip_line(state)
     };
-
-    // Left side: permission chip (symbol + label) when active, then
-    // the context hint. Default mode collapses the chip entirely —
-    // matches upstream's absent `modePart`.
-    let mut spans: Vec<Span<'static>> = Vec::new();
-    if let Some(chip) = chip_opt {
-        let chip_color = theme::color_for(chip.color);
-        // Symbol is bold and carries the chip's color; single space
-        // separates symbol from label (matches upstream format).
-        spans.push(Span::styled(
-            format!("{} ", chip.symbol),
-            Style::default().fg(chip_color).add_modifier(Modifier::BOLD),
-        ));
-        spans.push(Span::styled(
-            chip.text.clone(),
-            Style::default().fg(chip_color),
-        ));
-        if show_cycle_hint {
-            // Cycle hint stays MUTED per user decision — only the
-            // chip symbol + label carry the mode color; the
-            // parenthetical is ambient chrome, not state.
-            spans.push(Span::styled(
-                " (shift+tab to cycle)".to_string(),
-                Style::default().fg(theme::MUTED),
-            ));
-        }
-    }
-    // Prefix the hint with " · " only when there is chip content to
-    // its left. Default mode (no chip) renders the hint alone without
-    // a leading bullet.
-    if !hint.is_empty() {
-        let text = if has_chip {
-            format!(" · {hint}")
-        } else {
-            hint.to_string()
-        };
-        spans.push(Span::styled(text, Style::default().fg(theme::SUBTLE)));
-    }
-
-    let left = Line::from(spans);
 
     // Right side: per-session token accounting. Upstream surfaces a
     // `↑ N · ↓ N` pair so the user sees the running footprint without
@@ -925,6 +897,53 @@ fn draw_info_row(
             chunks[1],
         );
     }
+}
+
+/// Build the default (non-feedback) info-row left line: permission
+/// chip + optional cycle hint + context hint. Factored out so the
+/// feedback slot can take over the left column without duplicating
+/// the chip assembly.
+fn build_info_chip_line(state: &ConversationState) -> Line<'static> {
+    let chip_opt = state.permission_mode_label();
+    let has_chip = chip_opt.is_some();
+    let primary_item_count: usize = if has_chip { 1 } else { 0 };
+    let show_cycle_hint = primary_item_count < 2;
+
+    let hint = if state.streaming {
+        "esc to interrupt"
+    } else if state.autocomplete.is_some() {
+        "enter run · esc close"
+    } else {
+        ""
+    };
+
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    if let Some(chip) = chip_opt {
+        let chip_color = theme::color_for(chip.color);
+        spans.push(Span::styled(
+            format!("{} ", chip.symbol),
+            Style::default().fg(chip_color).add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(
+            chip.text.clone(),
+            Style::default().fg(chip_color),
+        ));
+        if show_cycle_hint {
+            spans.push(Span::styled(
+                " (shift+tab to cycle)".to_string(),
+                Style::default().fg(theme::MUTED),
+            ));
+        }
+    }
+    if !hint.is_empty() {
+        let text = if has_chip {
+            format!(" · {hint}")
+        } else {
+            hint.to_string()
+        };
+        spans.push(Span::styled(text, Style::default().fg(theme::SUBTLE)));
+    }
+    Line::from(spans)
 }
 
 #[cfg(test)]

@@ -182,10 +182,10 @@ mod tests {
     fn from_input_matches_multiple_prefix() {
         let ac = Autocomplete::from_input("/s").unwrap();
         let names: Vec<&str> = ac.matches.iter().map(|e| e.name).collect();
-        assert!(names.contains(&"scope"));
-        assert!(names.contains(&"security"));
         assert!(names.contains(&"swarm"));
         assert!(names.contains(&"status"));
+        assert!(names.contains(&"statusline"));
+        assert!(names.contains(&"skills"));
     }
 
     #[test]
@@ -227,11 +227,13 @@ mod tests {
     fn catalog_surfaces_newly_added_slashes() {
         // Regression guard: before the single-source-of-truth refactor,
         // `config`, `model`, `login`, etc. were missing from the tips
-        // list and thus the popup. They must now appear.
+        // list and thus the popup. They must now appear. Names below
+        // are the docs/slashes.md 34-row subset (R-114).
         for name in ["config", "model", "login", "logout", "init", "mcp",
                      "effort", "plan", "permissions", "diff", "skills",
-                     "agents", "context", "keybindings", "sandbox",
-                     "statusline", "init-verifiers"] {
+                     "agents", "context", "keybindings",
+                     "statusline", "init-verifiers", "swarm", "dream",
+                     "review", "security-review", "loop", "tag"] {
             let prefix = &name[..1];
             let ac = Autocomplete::from_input(&format!("/{prefix}"))
                 .unwrap_or_else(|| panic!("no matches for prefix /{prefix}"));
