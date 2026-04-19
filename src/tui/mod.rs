@@ -541,6 +541,16 @@ fn handle_key(
         // redraws after every event. (Cheap clear-screen equivalent.)
         KeyCode::Char('l') if ctrl => {}
 
+        // Ctrl+U — kill the whole input line. Standard readline
+        // binding; without it users expect Ctrl+U to wipe the
+        // buffer and a later Enter submits stale content (bug #76
+        // surfaced via parity-tmux: Tab-inserted slash + Ctrl+U +
+        // fresh slash concatenated and leaked to the provider).
+        KeyCode::Char('u') if ctrl => {
+            st.input.clear();
+            st.refresh_autocomplete();
+        }
+
         // PgUp / PgDn — scroll the log by a chunk. 10 lines is the
         // de-facto standard across pagers.
         KeyCode::PageUp => st.scroll_up(10),

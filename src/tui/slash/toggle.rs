@@ -5,6 +5,8 @@
 //! bottom-left without cluttering the transcript. The inline system
 //! note is gone.
 
+use crate::config::settings::PermissionMode;
+
 use super::super::state::ConversationState;
 use super::SlashOutcome;
 
@@ -12,10 +14,17 @@ use super::SlashOutcome;
 pub fn handle(name: &str, _args: &str, state: &mut ConversationState) -> SlashOutcome {
     match name.to_ascii_lowercase().as_str() {
         "plan" => {
-            // Plan mode is authoritatively cycled via Shift+Tab
-            // (R-104); `/plan` surfaces a hint pointing at the chip
-            // cycle until a dedicated in-slash toggle lands.
-            state.set_feedback("plan mode — cycle with Shift+Tab");
+            // Flip in/out of plan mode. Shift+Tab still cycles all four
+            // permission modes (R-104); /plan is a direct toggle between
+            // the current mode and Plan, same as upstream.
+            let msg = if matches!(state.permission_mode, PermissionMode::Plan) {
+                state.permission_mode = PermissionMode::Default;
+                "plan mode off"
+            } else {
+                state.permission_mode = PermissionMode::Plan;
+                "plan mode on"
+            };
+            state.set_feedback(msg);
         }
         "tag" => {
             state.set_feedback("/tag: turn tagging lands with persistence (spec 008)");

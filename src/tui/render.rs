@@ -490,21 +490,40 @@ fn render_message(role: OpenAiChatRole, content: &str, width: u16) -> Vec<Line<'
                 unreachable!("Assistant role handled via markdown path");
             }
             OpenAiChatRole::System => {
-                let prefix = if i == 0 { "⎿ system: " } else { "           " };
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        prefix.to_string(),
-                        Style::default()
-                            .fg(theme::MUTED)
-                            .add_modifier(Modifier::ITALIC),
-                    ),
-                    Span::styled(
-                        raw.to_string(),
-                        Style::default()
-                            .fg(theme::MUTED)
-                            .add_modifier(Modifier::ITALIC),
-                    ),
-                ]));
+                // Anchor pair: push_anchor stamps the result line with a
+                // leading `⎿ `. Paint it dim + italic on its own, 2-space
+                // left pad, no `system:` label — matches upstream's
+                // command-result shape.
+                if raw.starts_with("⎿ ") && i == 0 {
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            "  ".to_string(),
+                            Style::default().fg(theme::MUTED),
+                        ),
+                        Span::styled(
+                            raw.to_string(),
+                            Style::default()
+                                .fg(theme::MUTED)
+                                .add_modifier(Modifier::ITALIC),
+                        ),
+                    ]));
+                } else {
+                    let prefix = if i == 0 { "⎿ system: " } else { "           " };
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            prefix.to_string(),
+                            Style::default()
+                                .fg(theme::MUTED)
+                                .add_modifier(Modifier::ITALIC),
+                        ),
+                        Span::styled(
+                            raw.to_string(),
+                            Style::default()
+                                .fg(theme::MUTED)
+                                .add_modifier(Modifier::ITALIC),
+                        ),
+                    ]));
+                }
             }
             OpenAiChatRole::Tool => {
                 // Role::Tool carries a JSON-serialized `ToolCallArchive`
@@ -551,7 +570,7 @@ fn render_message(role: OpenAiChatRole, content: &str, width: u16) -> Vec<Line<'
 /// Paint the 017 §4 queue — each queued message rendered as a
 /// user-message bubble (same `❯ ` chevron + USER_BG fill as a live
 /// user row) with a 1-row margin above and a `↑ Press up to edit
-/// queued messages` hint below. Mirrors upstream claude-code's queued
+/// queued messages` hint below. Mirrors the reference TUI's queued
 /// bubble placement: the entry looks like any other user message, it
 /// just sits directly above the prompt bar with a margin-top.
 fn draw_queue_lines(f: &mut Frame<'_>, area: Rect, state: &ConversationState) {

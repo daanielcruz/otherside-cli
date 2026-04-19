@@ -439,6 +439,44 @@ mod feedback_tests {
         st.prune_feedback();
         assert!(st.toggle_feedback.is_none());
     }
+
+    #[test]
+    fn push_anchor_emits_echo_plus_result_line() {
+        let mut st = ConversationState::default();
+        st.push_anchor("compact", "", "42 msgs dropped");
+        assert_eq!(st.messages.len(), 2);
+        assert_eq!(st.messages[0].role, super::OpenAiChatRole::User);
+        assert_eq!(st.messages[0].content, "/compact");
+        assert_eq!(st.messages[1].role, super::OpenAiChatRole::System);
+        assert!(st.messages[1].content.starts_with("⎿ "));
+        assert!(st.messages[1].content.contains("42 msgs dropped"));
+    }
+
+    #[test]
+    fn push_anchor_with_args_echoes_them() {
+        let mut st = ConversationState::default();
+        st.push_anchor("compact", "trim-to 3", "ok");
+        assert_eq!(st.messages[0].content, "/compact trim-to 3");
+    }
+
+    #[test]
+    fn clear_conversation_zeros_token_counters() {
+        let mut st = ConversationState::default();
+        st.input_tokens = 21_000;
+        st.output_tokens = 120;
+        st.cumulative_output_tokens = 500;
+        st.thought_ms = 999;
+        st.messages.push(DisplayMessage {
+            role: super::OpenAiChatRole::User,
+            content: "hi".into(),
+        });
+        st.clear_conversation();
+        assert_eq!(st.input_tokens, 0);
+        assert_eq!(st.output_tokens, 0);
+        assert_eq!(st.cumulative_output_tokens, 0);
+        assert_eq!(st.thought_ms, 0);
+        assert!(st.messages.is_empty());
+    }
 }
 
 /// Double-press-to-exit window — must match upstream's
@@ -720,16 +758,49 @@ impl ConversationState {
         self.input.clear();
         self.autocomplete = None;
         self.scroll_offset = 0;
+        // Zero the session-scoped token accounting so the info-row chip
+        // matches the fresh-session state. Without this the chip stays
+        // pinned at the pre-/clear cumulative total (bug #77).
+        self.input_tokens = 0;
+        self.output_tokens = 0;
+        self.cumulative_output_tokens = 0;
+        self.thought_ms = 0;
     }
 
     /// Surface an inline system note in the streaming area. Used by
-    /// local slash dispatch (MenuPending fallback, Rewind stub,
-    /// ShowKeybindings, Login/Logout hints, Compact placeholder) and
-    /// by the streaming error surface.
+    /// local slash dispatch (Rewind stub, Login/Logout hints, etc.)
+    /// and by the streaming error surface.
     pub fn push_system_note(&mut self, text: impl Into<String>) {
         self.messages.push(DisplayMessage {
             role: OpenAiChatRole::System,
             content: text.into(),
+        });
+        self.input.clear();
+        self.autocomplete = None;
+        self.scroll_to_bottom();
+    }
+
+    /// Append an anchor pair for the Anchor-category slashes
+    /// (`/compact`, `/branch`, `/loop`, `/context`). Emits two
+    /// messages:
+    ///
+    /// 1. a User turn `/<name> <args>` — renders with the `❯` chevron.
+    /// 2. a System turn prefixed with `⎿ ` — the render layer spots
+    ///    the prefix and paints the line dim + italic WITHOUT the
+    ///    usual `system:` label, giving the upstream anchor shape.
+    pub fn push_anchor(&mut self, slash_name: &str, args: &str, result: impl Into<String>) {
+        let echo = if args.is_empty() {
+            format!("/{slash_name}")
+        } else {
+            format!("/{slash_name} {args}")
+        };
+        self.messages.push(DisplayMessage {
+            role: OpenAiChatRole::User,
+            content: echo,
+        });
+        self.messages.push(DisplayMessage {
+            role: OpenAiChatRole::System,
+            content: format!("⎿ {}", result.into()),
         });
         self.input.clear();
         self.autocomplete = None;
