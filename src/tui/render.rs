@@ -868,10 +868,21 @@ fn draw_info_row(
 
     let left = Line::from(spans);
 
-    // Right side: context hint / status — empty on idle, populated
-    // when a recognized secondary signal exists (deferred until the
-    // permission engine + MCP status are plumbed through the TUI).
-    let right_text = String::new();
+    // Right side: per-session token accounting. Upstream surfaces a
+    // `↑ N · ↓ N` pair so the user sees the running footprint without
+    // waiting for a `/status` dispatch. We skip the chip entirely when
+    // both counts are zero (fresh session, no turn taken yet).
+    let up = state.input_tokens;
+    let down = state.total_output_tokens();
+    let right_text = if up == 0 && down == 0 {
+        String::new()
+    } else {
+        format!(
+            "↑ {} · ↓ {}",
+            progress::format_tokens_compact(up),
+            progress::format_tokens_compact(down)
+        )
+    };
 
     if right_text.is_empty() {
         f.render_widget(Paragraph::new(left), area);

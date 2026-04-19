@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use super::record::Record;
 use crate::error::{Error, Result};
 
+#[derive(Debug)]
 pub struct Writer {
     path: PathBuf,
     file: File,

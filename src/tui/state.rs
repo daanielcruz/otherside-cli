@@ -350,6 +350,28 @@ pub struct ConversationState {
     /// user picks "Allow and don't ask again" we push the rule here;
     /// every subsequent dispatch consults the snapshot in-line.
     pub session_allowlist: crate::permissions::SessionAllowlist,
+
+    /// JSONL transcript writer — set at TUI bootstrap when sessions
+    /// persistence is enabled (spec 008). `None` for tests or when
+    /// the config dir isn't available. Every user / assistant /
+    /// tool event fsyncs one record.
+    pub session_writer: Option<crate::sessions::transcript::Writer>,
+
+    /// Session id — `None` when `session_writer` is `None`.
+    pub session_id: Option<crate::sessions::SessionId>,
+}
+
+impl ConversationState {
+    /// Append a transcript record to the session writer, if one is
+    /// configured. Never errors — persistence failures are logged
+    /// via tracing and swallowed so the TUI stays interactive.
+    pub fn append_record(&mut self, record: crate::sessions::Record) {
+        if let Some(w) = self.session_writer.as_mut() {
+            if let Err(e) = w.append(&record) {
+                tracing::warn!(?e, "failed to append session record");
+            }
+        }
+    }
 }
 
 /// Double-press-to-exit window — must match upstream's

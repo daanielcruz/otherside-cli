@@ -223,6 +223,27 @@ async fn event_loop(
     // toggles the flag in memory; settings-file writeback is
     // scheduled for spec 007.
     st.render_verbose = settings.verbose.unwrap_or(false);
+    // Open a fresh session transcript — fsync'd append-only JSONL per
+    // spec 008. Every user / assistant / tool event lands here; the
+    // user can replay via `otherside tui --resume <id>` (future). A
+    // failure to open (read-only filesystem, missing config dir) drops
+    // persistence silently so the TUI stays interactive.
+    match crate::config::config_dir() {
+        Ok(cfg_dir) => {
+            match crate::sessions::open_new(&cfg_dir) {
+                Ok(handle) => {
+                    st.session_id = Some(handle.id.clone());
+                    st.session_writer = Some(handle.writer);
+                }
+                Err(e) => {
+                    tracing::warn!(?e, "session transcript unavailable");
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!(?e, "config dir unavailable; sessions disabled");
+        }
+    }
     // Seed `thinking` from settings.json::effort_level when the model
     // suffix didn't already pin a level. The suffix wins (per R-105 /
     // R-106 parity) so passing `--model claude-opus-4-7(high)` still
@@ -290,6 +311,26 @@ async fn event_loop(
                         st.append_stream_delta(&s);
                     }
                     Some(StreamEvent::Done) => {
+                        // Persist the assistant's final buffer before
+                        // finish_stream clears it. Usage is captured
+                        // via a lightweight view so the record carries
+                        // the real numbers even if the stream didn't
+                        // ship them inline.
+                        let content = st.current_assistant_buffer.clone();
+                        let usage = Some(serde_json::json!({
+                            "input_tokens": st.input_tokens,
+                            "output_tokens": st.output_tokens,
+                            "cumulative_output_tokens": st.cumulative_output_tokens,
+                            "thought_ms": st.thought_ms,
+                        }));
+                        if !content.is_empty() {
+                            st.append_record(crate::sessions::Record::AssistantMessage {
+                                ts: crate::sessions::record::now_iso(),
+                                content,
+                                thinking: None,
+                                usage,
+                            });
+                        }
                         st.finish_stream();
                         // 017 §4 — if the user queued messages while
                         // streaming, pop the head and fire it as the
@@ -305,9 +346,25 @@ async fn event_loop(
                         );
                     }
                     Some(StreamEvent::ToolCallStart { id, name, args }) => {
+                        st.append_record(crate::sessions::Record::ToolCall {
+                            ts: crate::sessions::record::now_iso(),
+                            tool_name: name.clone(),
+                            args: args.clone(),
+                            call_id: id.clone(),
+                        });
                         st.begin_tool_call(id, name, args);
                     }
                     Some(StreamEvent::ToolCallFinish { id, result, elapsed_ms }) => {
+                        let (record_result, is_error) = match &result {
+                            Ok(v) => (v.clone(), false),
+                            Err(s) => (serde_json::Value::String(s.clone()), true),
+                        };
+                        st.append_record(crate::sessions::Record::ToolResult {
+                            ts: crate::sessions::record::now_iso(),
+                            call_id: id.clone(),
+                            result: record_result,
+                            is_error,
+                        });
                         st.finish_tool_call(&id, result, elapsed_ms);
                     }
                     Some(StreamEvent::Usage { input_tokens, output_tokens }) => {
@@ -594,6 +651,11 @@ fn handle_key(
                     // a catch-all so dead classify() results are no-ops
                     // rather than panics.
                     slashes::SlashAction::Compact => {
+                        let kept = st.messages.len() as u64;
+                        st.append_record(crate::sessions::Record::CompactionMark {
+                            ts: crate::sessions::record::now_iso(),
+                            summary_ref: format!("kept={kept}"),
+                        });
                         st.compact_history();
                     }
                     slashes::SlashAction::Login(provider) => {
@@ -645,7 +707,12 @@ fn handle_key(
                     }
                     slashes::SlashAction::SendToLlm(_)
                     | slashes::SlashAction::Passthrough => {
+                        let submitted_text = st.input.clone();
                         if let Some(history) = st.submit() {
+                            st.append_record(crate::sessions::Record::UserMessage {
+                                ts: crate::sessions::record::now_iso(),
+                                content: submitted_text,
+                            });
                             spawn_agent_turn(
                                 st,
                                 provider,
@@ -1210,6 +1277,11 @@ fn drain_queue_head_if_any(
             st.push_system_note(slashes::help_text());
         }
         slashes::SlashAction::Compact => {
+            let kept = st.messages.len() as u64;
+            st.append_record(crate::sessions::Record::CompactionMark {
+                ts: crate::sessions::record::now_iso(),
+                summary_ref: format!("kept={kept}"),
+            });
             st.compact_history();
         }
         slashes::SlashAction::Login(provider_hint) => {
@@ -1261,7 +1333,12 @@ fn drain_queue_head_if_any(
             st.autocomplete = None;
         }
         slashes::SlashAction::SendToLlm(_) | slashes::SlashAction::Passthrough => {
+            let submitted_text = st.input.clone();
             if let Some(history) = st.submit() {
+                st.append_record(crate::sessions::Record::UserMessage {
+                    ts: crate::sessions::record::now_iso(),
+                    content: submitted_text,
+                });
                 spawn_agent_turn(st, provider, base_model, thinking, tx, history);
             }
         }
