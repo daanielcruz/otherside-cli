@@ -264,7 +264,7 @@ fn render_message(role: OpenAiChatRole, content: &str, width: u16) -> Vec<Line<'
                 // chevron matches the prompt-bar rule color so the user
                 // turn reads as a continuation of the input band.
                 let _ = width;
-                let prefix = if i == 0 { ") " } else { "  " };
+                let prefix = if i == 0 { "❯ " } else { "  " };
                 let bg = Style::default()
                     .bg(theme::USER_MSG_BG)
                     .fg(theme::TEXT);
