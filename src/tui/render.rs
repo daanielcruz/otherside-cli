@@ -156,10 +156,24 @@ pub fn render(
         layout_mod::split_frame(area, state.streaming, state.queued_messages.len());
 
     // Streaming area — mascot when empty, otherwise the scrolling log.
-    if state.messages.is_empty() && !state.streaming {
+    // Suppress the mascot while any overlay is active so the inline
+    // menu takes the full streaming area without splash ascii peeking
+    // through above it. Upstream renders menus as appended scroll-log
+    // lines; we reserve the area instead to keep the renderer simple.
+    let overlay_active = state.pending_question.is_some()
+        || state.pending_permission.is_some()
+        || state.active_menu.is_some();
+    if state.messages.is_empty() && !state.streaming && !overlay_active {
         draw_splash_centered(f, slots.streaming);
-    } else {
+    } else if !overlay_active {
         draw_log(f, slots.streaming, state, spinner_tick);
+    } else {
+        // Overlay active + history present: keep the log visible above
+        // the overlay by drawing it into the top portion only. When the
+        // overlay eats the bottom strip, the log stays readable.
+        if !state.messages.is_empty() || state.streaming {
+            draw_log(f, slots.streaming, state, spinner_tick);
+        }
     }
 
     // Progress + tip rows only exist when streaming.
@@ -198,7 +212,12 @@ pub fn render(
     // Pending agent question (AskUserQuestion) outranks everything
     // except a permission prompt — it also blocks the turn.
     if let Some(q) = state.pending_question.as_ref() {
-        let overlay_h = 10u16.min(slots.streaming.height);
+        // Question overlay height: title + question lines + optional hint
+        // + blank + input + blank + footer. Exact row count matches the
+        // borderless render so the surface hugs the prompt bar.
+        let question_rows = q.question.lines().count() as u16;
+        let hint_rows = if q.hint.is_some() { 1 } else { 0 };
+        let overlay_h = (1 + question_rows + hint_rows + 4).min(slots.streaming.height);
         let overlay = Rect {
             x: slots.streaming.x,
             y: slots.streaming.y + slots.streaming.height.saturating_sub(overlay_h),
@@ -211,9 +230,11 @@ pub fn render(
     // driven and blocks the turn until the user resolves it. Autocomplete
     // stays suppressed.
     if let Some(prompt) = state.pending_permission.as_ref() {
-        let overlay_h = (super::menu::PERMISSION_CHOICES.len() as u16 * 2 + 8)
-            .max(super::menu::MIN_HEIGHT)
-            .min(slots.streaming.height);
+        // title + tool + optional args + optional rule + blank + choices*(label+hint) + blank + footer
+        let mut rows: u16 = 2 + (super::menu::PERMISSION_CHOICES.len() as u16) * 2 + 2;
+        if !prompt.args_preview.is_empty() { rows += 1; }
+        if prompt.rule.is_some() { rows += 1; }
+        let overlay_h = rows.min(slots.streaming.height);
         let overlay = Rect {
             x: slots.streaming.x,
             y: slots.streaming.y + slots.streaming.height.saturating_sub(overlay_h),
@@ -222,13 +243,9 @@ pub fn render(
         };
         super::menu::draw_permission_prompt(f, overlay, prompt);
     } else if let Some(menu_state) = state.active_menu.as_ref() {
-        // Overlay menu — when active, paint above the prompt bar so the
-        // option list is visible without clipping the statusline. Takes
-        // priority over autocomplete (autocomplete is suppressed while a
-        // menu captures focus). Mirrors upstream's `local-jsx` mount shape.
-        let overlay_h = (menu_state.options.len() as u16 * 2 + 4)
-            .max(super::menu::MIN_HEIGHT)
-            .min(slots.streaming.height);
+        // Overlay menu — inline render hugs the prompt bar. Exact row
+        // count from `overlay_rows` so we never paint a floating modal.
+        let overlay_h = super::menu::overlay_rows(menu_state).min(slots.streaming.height);
         let overlay = Rect {
             x: slots.streaming.x,
             y: slots.streaming.y + slots.streaming.height.saturating_sub(overlay_h),

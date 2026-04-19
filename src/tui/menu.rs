@@ -46,7 +46,7 @@ use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Clear, Paragraph},
     Frame,
 };
 
@@ -506,11 +506,23 @@ impl PendingQuestion {
 
 /// Paint the AskUserQuestion overlay — question prose, optional hint
 /// below, a live input row, and the Enter/Esc footer.
+///
+/// Rendered borderless-inline so the surface sits flush above the
+/// prompt bar the way upstream's ink widgets do. `Clear` is rendered
+/// first so retained cells (mascot / prior log content) never bleed.
 pub fn draw_question_prompt(f: &mut Frame<'_>, area: Rect, prompt: &PendingQuestion) {
-    if area.height < MIN_HEIGHT {
+    if area.height == 0 {
         return;
     }
+    f.render_widget(Clear, area);
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(6);
+
+    lines.push(Line::from(Span::styled(
+        "  Question".to_string(),
+        Style::default()
+            .fg(theme::PRIMARY)
+            .add_modifier(Modifier::BOLD),
+    )));
 
     for wrapped in prompt.question.lines() {
         lines.push(Line::from(Span::styled(
@@ -529,7 +541,7 @@ pub fn draw_question_prompt(f: &mut Frame<'_>, area: Rect, prompt: &PendingQuest
     lines.push(Line::raw(""));
     lines.push(Line::from(vec![
         Span::styled(
-            "❯ ".to_string(),
+            "  ❯ ".to_string(),
             Style::default()
                 .fg(theme::PRIMARY)
                 .add_modifier(Modifier::BOLD),
@@ -541,36 +553,32 @@ pub fn draw_question_prompt(f: &mut Frame<'_>, area: Rect, prompt: &PendingQuest
     ]));
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
-        "  Enter send  ·  Esc cancel".to_string(),
+        "  Enter to send · Esc to cancel".to_string(),
         Style::default().fg(theme::MUTED),
     )));
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(Span::styled(
-            " Question ".to_string(),
-            Style::default()
-                .fg(theme::PRIMARY)
-                .add_modifier(Modifier::BOLD),
-        ))
-        .border_style(Style::default().fg(theme::MUTED));
-
-    let paragraph = Paragraph::new(lines).block(block);
-    f.render_widget(paragraph, area);
+    f.render_widget(Paragraph::new(lines), area);
 }
 
-/// Draw the permission overlay. Same shell as [`draw_overlay`] but
-/// with the tool name + args preview + ruleline above the choices.
+/// Draw the permission overlay. Borderless-inline shape matches
+/// upstream's ink mount — title line, tool identity, choices, footer.
 pub fn draw_permission_prompt(f: &mut Frame<'_>, area: Rect, prompt: &PendingPermissionPrompt) {
-    if area.height < MIN_HEIGHT {
+    if area.height == 0 {
         return;
     }
+    f.render_widget(Clear, area);
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(PERMISSION_CHOICES.len() * 2 + 6);
 
     lines.push(Line::from(Span::styled(
-        format!("  {}", prompt.tool_name),
+        "  Permission required".to_string(),
         Style::default()
             .fg(theme::PRIMARY)
+            .add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(Span::styled(
+        format!("  {}", prompt.tool_name),
+        Style::default()
+            .fg(theme::TEXT)
             .add_modifier(Modifier::BOLD),
     )));
     if !prompt.args_preview.is_empty() {
@@ -589,7 +597,7 @@ pub fn draw_permission_prompt(f: &mut Frame<'_>, area: Rect, prompt: &PendingPer
 
     for (i, (label, hint)) in PERMISSION_CHOICES.iter().enumerate() {
         let is_cursor = i == prompt.cursor;
-        let marker = if is_cursor { "❯ " } else { "  " };
+        let marker = if is_cursor { "  ❯ " } else { "    " };
         let marker_style = if is_cursor {
             Style::default()
                 .fg(theme::PRIMARY)
@@ -609,49 +617,59 @@ pub fn draw_permission_prompt(f: &mut Frame<'_>, area: Rect, prompt: &PendingPer
             Span::styled((*label).to_string(), label_style),
         ]));
         lines.push(Line::from(vec![
-            Span::styled("    ".to_string(), Style::default().fg(theme::MUTED)),
+            Span::styled("      ".to_string(), Style::default().fg(theme::MUTED)),
             Span::styled((*hint).to_string(), Style::default().fg(theme::MUTED)),
         ]));
     }
 
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
-        "  ↑/↓ select  ·  Enter confirm  ·  Esc denies".to_string(),
+        "  Enter to confirm · Esc to deny".to_string(),
         Style::default().fg(theme::MUTED),
     )));
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(Span::styled(
-            " Permission required ".to_string(),
-            Style::default()
-                .fg(theme::PRIMARY)
-                .add_modifier(Modifier::BOLD),
-        ))
-        .border_style(Style::default().fg(theme::MUTED));
-
-    let paragraph = Paragraph::new(lines).block(block);
-    f.render_widget(paragraph, area);
+    f.render_widget(Paragraph::new(lines), area);
 }
 
 /// Minimum height the overlay widget needs to render cleanly (title +
-/// border padding + at least one option row). Layout callers short-
-/// circuit to an inline note when the prompt area is smaller than this.
-pub const MIN_HEIGHT: u16 = 5;
+/// at least one option row). Layout callers short-circuit to an inline
+/// note when the prompt area is smaller than this.
+pub const MIN_HEIGHT: u16 = 3;
 
-/// Paint the overlay into `area`. Call site: `render.rs` when
-/// `state.active_menu.is_some()` — the widget owns its frame.
+/// Return the exact row count the overlay will emit. Used by the
+/// render path to shrink-wrap the overlay Rect so the surface sits
+/// flush above the prompt bar instead of floating halfway up the log.
+pub fn overlay_rows(menu: &OverlayMenu) -> u16 {
+    // title + blank + per-option(label + optional hint) + blank + footer
+    let mut rows: u16 = 2; // title + blank
+    for opt in &menu.options {
+        rows = rows.saturating_add(1);
+        if opt.action_id != "__line__" && opt.hint.is_some() {
+            rows = rows.saturating_add(1);
+        }
+    }
+    rows = rows.saturating_add(2); // blank + footer
+    rows
+}
+
+/// Paint the overlay into `area`. Borderless inline shape — title line,
+/// option rows, footer hint — mirroring upstream's `local-jsx` mounts.
+/// `Clear` is rendered first so retained cells (mascot / log content)
+/// never bleed through.
 pub fn draw_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
-    if area.height < MIN_HEIGHT {
+    if area.height == 0 {
         return;
     }
-    let mut lines: Vec<Line<'static>> = Vec::with_capacity(menu.options.len() * 2 + 2);
+    f.render_widget(Clear, area);
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(menu.options.len() * 2 + 4);
 
-    // Hint header: arrow keys + enter + esc. Dim so the list beneath
-    // remains visually dominant.
+    // Title line — replaces upstream's bordered title. Bold primary
+    // color, two-space left pad for inline rhythm.
     lines.push(Line::from(Span::styled(
-        "  ↑/↓ select  ·  Enter confirm  ·  Esc cancel".to_string(),
-        Style::default().fg(theme::MUTED),
+        format!("  {}", menu.title),
+        Style::default()
+            .fg(theme::PRIMARY)
+            .add_modifier(Modifier::BOLD),
     )));
     lines.push(Line::raw(""));
 
@@ -666,7 +684,7 @@ pub fn draw_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
             continue;
         }
         let is_cursor = i == menu.cursor;
-        let marker = if is_cursor { "❯ " } else { "  " };
+        let marker = if is_cursor { "  ❯ " } else { "    " };
         let marker_style = if is_cursor {
             Style::default()
                 .fg(theme::PRIMARY)
@@ -687,24 +705,19 @@ pub fn draw_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
         ]));
         if let Some(hint) = opt.hint.as_ref() {
             lines.push(Line::from(vec![
-                Span::styled("    ".to_string(), Style::default().fg(theme::MUTED)),
+                Span::styled("      ".to_string(), Style::default().fg(theme::MUTED)),
                 Span::styled(hint.clone(), Style::default().fg(theme::MUTED)),
             ]));
         }
     }
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(Span::styled(
-            format!(" {} ", menu.title),
-            Style::default()
-                .fg(theme::PRIMARY)
-                .add_modifier(Modifier::BOLD),
-        ))
-        .border_style(Style::default().fg(theme::MUTED));
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(
+        "  Enter to confirm · Esc to cancel".to_string(),
+        Style::default().fg(theme::MUTED),
+    )));
 
-    let paragraph = Paragraph::new(lines).block(block);
-    f.render_widget(paragraph, area);
+    f.render_widget(Paragraph::new(lines), area);
 }
 
 #[cfg(test)]
