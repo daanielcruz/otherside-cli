@@ -89,6 +89,13 @@ use state::ConversationState;
 /// Event payloads coming from the inference task, pushed onto the mpsc
 /// channel. Key events are consumed directly from `EventStream` in the
 /// main loop — they don't ride this enum.
+///
+/// Tool-call lifecycle rides typed `ToolCallStart` / `ToolCallFinish`
+/// variants (015). The pair always arrives in order — Start before the
+/// dispatcher blocks, Finish after it returns — because
+/// [`run_agent_turns`] dispatches tools sequentially. The render layer
+/// relies on this ordering to drive the `Running → Ok / Error` state
+/// machine.
 #[derive(Debug)]
 enum StreamEvent {
     /// A chunk from the provider with a non-empty `delta.content`. We
@@ -100,6 +107,23 @@ enum StreamEvent {
     Done,
     /// Something failed. Carries the formatted message.
     Error(String),
+    /// A tool call is about to be dispatched. Arrives BEFORE the
+    /// synchronous dispatcher runs so the TUI paints the Running
+    /// bullet immediately. Paired with a later `ToolCallFinish`
+    /// carrying the same `id`.
+    ToolCallStart {
+        id: String,
+        name: String,
+        args: serde_json::Value,
+    },
+    /// A tool call finished. `result` carries the dispatcher's `Ok`
+    /// value or a dispatcher-side `Err` string. `elapsed_ms` is wall
+    /// clock between the `Start` send and this `Finish` send.
+    ToolCallFinish {
+        id: String,
+        result: std::result::Result<serde_json::Value, String>,
+        elapsed_ms: u64,
+    },
 }
 
 /// Entry point — boot the TUI and run until the user exits.
@@ -192,6 +216,12 @@ async fn event_loop(
                     Some(StreamEvent::Error(e)) => {
                         st.fail_stream(e);
                     }
+                    Some(StreamEvent::ToolCallStart { id, name, args }) => {
+                        st.begin_tool_call(id, name, args);
+                    }
+                    Some(StreamEvent::ToolCallFinish { id, result, elapsed_ms }) => {
+                        st.finish_tool_call(&id, result, elapsed_ms);
+                    }
                     None => {
                         // Channel closed without a terminal event — the
                         // task dropped its sender unexpectedly. Treat as
@@ -261,24 +291,55 @@ fn handle_key(
     let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
     let shift = k.modifiers.contains(KeyModifiers::SHIFT);
 
-    match k.code {
-        // Ctrl+C — always exit, regardless of popup state.
-        KeyCode::Char('c') if ctrl => return true,
+    // Any keypress that isn't one of the exit-arming keys disarms the
+    // double-press window. Upstream behavior: the hint disappears as
+    // soon as the user does anything else.
+    let is_exit_arming_key = ctrl
+        && matches!(k.code, KeyCode::Char('c') | KeyCode::Char('d'));
+    if !is_exit_arming_key {
+        st.clear_exit_armed();
+    }
 
-        // Esc — close the autocomplete popup if one is open; otherwise
-        // exit. Lets the user dismiss a /-suggestion without losing the
-        // session.
-        KeyCode::Esc => {
-            if st.autocomplete.is_some() {
-                st.close_autocomplete();
-            } else {
+    match k.code {
+        // Ctrl+C — upstream priority order:
+        //   1. if a turn is running, cancel it (do NOT exit);
+        //   2. if no turn running and exit arm is active within
+        //      the 800ms window, exit;
+        //   3. otherwise arm the double-press window so a second
+        //      Ctrl+C within 800ms exits.
+        KeyCode::Char('c') if ctrl => {
+            if st.cancel_stream() {
+                // Cancel landed; don't escalate to exit.
+            } else if st.exit_confirmed() {
                 return true;
+            } else {
+                st.arm_exit_confirmation("Ctrl+C");
             }
         }
 
-        // Ctrl+D — only quit when the input is empty (classic shell
-        // semantics). A non-empty input means "don't quit, user is typing".
-        KeyCode::Char('d') if ctrl && st.input.is_empty() => return true,
+        // Esc — NEVER exits. Dismisses autocomplete, then cancels a
+        // running turn, then clears the input buffer. Matches upstream
+        // `chat:cancel` semantics at hooks/useCancelRequest.ts.
+        KeyCode::Esc => {
+            if st.autocomplete.is_some() {
+                st.close_autocomplete();
+            } else if st.streaming {
+                st.cancel_stream();
+            } else {
+                st.clear_input();
+            }
+            st.clear_exit_armed();
+        }
+
+        // Ctrl+D — same double-press semantics as Ctrl+C, but only
+        // engages when the input is empty (classic shell behavior).
+        KeyCode::Char('d') if ctrl && st.input.is_empty() => {
+            if st.exit_confirmed() && st.exit_armed_key == Some("Ctrl+D") {
+                return true;
+            } else {
+                st.arm_exit_confirmation("Ctrl+D");
+            }
+        }
 
         // Ctrl+L — force a redraw by doing nothing; the outer loop
         // redraws after every event. (Cheap clear-screen equivalent.)
@@ -352,63 +413,19 @@ fn handle_key(
                     slashes::SlashAction::ShowHelp => {
                         st.push_system_note(slashes::help_text());
                     }
-                    slashes::SlashAction::ShowModel => {
-                        st.push_system_note(format!(
-                            "model: {}  ·  context window: {}  ·  provider: {provider_id}",
-                            st.model,
-                            st.context_window_label()
-                        ));
-                    }
-                    slashes::SlashAction::SwitchModel(new_id) => {
-                        st.switch_model(&new_id);
-                        st.push_system_note(format!(
-                            "model switched to {}  ·  context window now: {}",
-                            st.model,
-                            st.context_window_label()
-                        ));
-                    }
+                    // `ShowModel`, `SwitchModel`, `ShowStatus`,
+                    // `ShowContext`, `ShowSettingsHint` dispatch arms
+                    // retired by 015. Post-012a reclass the catalog no
+                    // longer routes `/model`, `/status`, `/context`,
+                    // `/config`, `/keybindings`, `/statusline` to those
+                    // variants — the synthetic system notes had no
+                    // upstream analogue per Sector D §B.2. Enum
+                    // variants remain in `slashes.rs` for 012c
+                    // menu-confirm paths; exhaustive match below uses
+                    // a catch-all so dead classify() results are no-ops
+                    // rather than panics.
                     slashes::SlashAction::Compact => {
                         st.compact_history();
-                    }
-                    slashes::SlashAction::ShowStatus => {
-                        let avail = st.context_available();
-                        let pct = st.context_used_percent();
-                        st.push_system_note(format!(
-                            "🤖 {}  ·  {}  ·  {}/{} ({}% used)",
-                            st.model,
-                            provider_id,
-                            format_tokens(avail),
-                            st.context_window_label(),
-                            pct
-                        ));
-                    }
-                    slashes::SlashAction::ShowContext => {
-                        let used = st.context_window.saturating_sub(st.context_available());
-                        st.push_system_note(format!(
-                            "context: {} / {} tokens used ({}%)  ·  output: {} tokens  ·  thought: {} ms",
-                            format_tokens(used),
-                            st.context_window_label(),
-                            st.context_used_percent(),
-                            st.output_tokens,
-                            st.thought_ms
-                        ));
-                    }
-                    slashes::SlashAction::ShowSettingsHint(slash_name) => {
-                        let hint = match slash_name.as_str() {
-                            "config" | "" => {
-                                "settings live at ~/.otherside/settings.json  —  edit with your shell editor"
-                            }
-                            "keybindings" => {
-                                "keybindings live under the `keybindings` key in ~/.otherside/settings.json"
-                            }
-                            "statusline" => {
-                                "statusline: set settings.statusline.type = \"native\" or \"command\" in ~/.otherside/settings.json"
-                            }
-                            _ => {
-                                "configuration lives at ~/.otherside/settings.json"
-                            }
-                        };
-                        st.push_system_note(hint.to_string());
                     }
                     slashes::SlashAction::Login(provider) => {
                         let provider = if provider.is_empty() { provider_id.to_string() } else { provider };
@@ -442,6 +459,20 @@ fn handle_key(
                             "keybindings: Enter submit · Shift+Enter newline · Tab autocomplete · Shift+Tab mode · Esc cancel · Ctrl+C exit".to_string(),
                         );
                     }
+                    // Retired dispatch arms (015) — no-op. Post-012a
+                    // classify() never returns these for user input;
+                    // they survive as enum variants so 012c's menu
+                    // confirm paths can construct them directly. The
+                    // no-op drops the input silently so an accidental
+                    // internal caller doesn't leak a slash to the LLM.
+                    slashes::SlashAction::ShowModel
+                    | slashes::SlashAction::SwitchModel(_)
+                    | slashes::SlashAction::ShowStatus
+                    | slashes::SlashAction::ShowContext
+                    | slashes::SlashAction::ShowSettingsHint(_) => {
+                        st.input.clear();
+                        st.autocomplete = None;
+                    }
                     slashes::SlashAction::SendToLlm(_)
                     | slashes::SlashAction::Passthrough => {
                         if let Some(history) = st.submit() {
@@ -453,7 +484,7 @@ fn handle_key(
                             // Arc gives the spawned task its own owned handle
                             // so the borrow lives on the task stack, not here.
                             let provider_for_task = provider.clone();
-                            tokio::spawn(async move {
+                            let handle = tokio::spawn(async move {
                                 run_agent_turns(
                                     provider_for_task,
                                     model,
@@ -463,6 +494,9 @@ fn handle_key(
                                 )
                                 .await;
                             });
+                            // Store the handle so Esc/Ctrl+C can
+                            // abort the inflight turn from handle_key.
+                            st.turn_task = Some(handle);
                         }
                     }
                 }
@@ -497,15 +531,17 @@ fn handle_key(
     false
 }
 
-/// Drive the agent loop for one user submission end-to-end, pushing
-/// intermediate text + tool-call markers onto the channel. Multi-turn:
-/// text stream → if the model asks for tools, dispatch them inline,
-/// emit inline markers, then feed the results back and run another
-/// turn, until the model stops asking or the turn cap is hit.
+/// Drive the agent loop for one user submission end-to-end. Multi-turn:
+/// text stream → if the model asks for tools, dispatch them inline and
+/// emit typed `ToolCallStart` / `ToolCallFinish` events so the render
+/// layer drives the bullet state machine through `tool_render`; feed
+/// the tool results back into history and run another turn, until the
+/// model stops asking or the turn cap is hit.
 ///
-/// Tool markers are rendered as plain-text deltas (`⏺ Tool(args)` and
-/// `⎿ result`) so the existing streaming-area renderer shows them
-/// inline with the assistant reply, no new event variants needed.
+/// Tool events are NOT fabricated as `Delta(String)` text — the
+/// assistant buffer is strictly assistant-text; tool calls are
+/// siblings routed into `ConversationState::active_tool_calls` by
+/// the outer event loop (015).
 async fn run_agent_turns(
     provider: Arc<dyn Provider>,
     model: String,
@@ -581,23 +617,46 @@ async fn run_agent_turns(
                 let args_value: serde_json::Value =
                     serde_json::from_str(&call.function.arguments)
                         .unwrap_or_else(|_| serde_json::Value::String(call.function.arguments.clone()));
-                let marker = format!(
-                    "\n⏺ {}({})\n",
-                    call.function.name,
-                    summarize_tool_args(&args_value)
-                );
-                if tx.send(StreamEvent::Delta(marker)).await.is_err() {
+                let started = std::time::Instant::now();
+                if tx
+                    .send(StreamEvent::ToolCallStart {
+                        id: call.id.clone(),
+                        name: call.function.name.clone(),
+                        args: args_value.clone(),
+                    })
+                    .await
+                    .is_err()
+                {
                     return;
                 }
-                let result = match tools::dispatch(&call.function.name, &args_value) {
-                    Ok(v) => v,
-                    Err(e) => serde_json::Value::String(format!("tool error: {e}")),
+                let dispatch_outcome = tools::dispatch(&call.function.name, &args_value);
+                let elapsed_ms = started.elapsed().as_millis() as u64;
+                // The tool-result history entry always carries a JSON
+                // value — on error, fold the message into a string so
+                // the next provider turn sees `{"error": "..."}`-style
+                // context instead of a missing block.
+                let (history_value, finish_result) = match dispatch_outcome {
+                    Ok(v) => (v.clone(), Ok(v)),
+                    Err(e) => {
+                        let err_string = format!("tool error: {e}");
+                        (
+                            serde_json::Value::String(err_string.clone()),
+                            Err(err_string),
+                        )
+                    }
                 };
-                let result_note = format!("⎿  {}\n", summarize_tool_result(&result));
-                if tx.send(StreamEvent::Delta(result_note)).await.is_err() {
+                if tx
+                    .send(StreamEvent::ToolCallFinish {
+                        id: call.id.clone(),
+                        result: finish_result,
+                        elapsed_ms,
+                    })
+                    .await
+                    .is_err()
+                {
                     return;
                 }
-                history.push(tool_result_message(&call.id, &result));
+                history.push(tool_result_message(&call.id, &history_value));
             }
             continue;
         }
@@ -613,88 +672,6 @@ async fn run_agent_turns(
             .await;
     }
     let _ = tx.send(StreamEvent::Done).await;
-}
-
-/// Render a token count using the same K/M scale the statusline uses,
-/// so `/status` and `/context` read consistently with the bottom bar.
-fn format_tokens(n: u64) -> String {
-    match n {
-        n if n >= 1_000_000 => format!("{:.1}M", n as f64 / 1_000_000.0),
-        n => format!("{}K", n / 1_000),
-    }
-}
-
-/// Produce a short one-line summary of tool arguments for inline
-/// rendering. Keeps the marker compact and readable.
-fn summarize_tool_args(args: &serde_json::Value) -> String {
-    let obj = match args.as_object() {
-        Some(o) => o,
-        None => return args.to_string(),
-    };
-    let mut parts: Vec<String> = Vec::new();
-    for (key, value) in obj {
-        let short_value = match value {
-            serde_json::Value::String(s) => {
-                if s.chars().count() > 60 {
-                    let mut trimmed: String = s.chars().take(57).collect();
-                    trimmed.push('…');
-                    format!("\"{trimmed}\"")
-                } else {
-                    format!("\"{s}\"")
-                }
-            }
-            other => other.to_string(),
-        };
-        parts.push(format!("{key}={short_value}"));
-    }
-    parts.join(", ")
-}
-
-/// Render a tool result as a one-liner. Checks known tool-specific
-/// shapes first (Glob's `filenames`, Read's `content`, Bash's `output`,
-/// Grep's `matches`), then falls back to generic counts. Stay terse —
-/// the streaming area already shows the full model reply below.
-fn summarize_tool_result(result: &serde_json::Value) -> String {
-    match result {
-        serde_json::Value::String(s) => one_line(s, 120),
-        serde_json::Value::Array(items) => format!("{} items", items.len()),
-        serde_json::Value::Object(obj) => {
-            // Glob: {durationMs, numFiles, filenames, truncated}
-            if let Some(n) = obj.get("numFiles").and_then(|v| v.as_u64()) {
-                return format!("{n} file{}", if n == 1 { "" } else { "s" });
-            }
-            // Grep / common: list of matches
-            if let Some(matches) = obj.get("matches").and_then(|v| v.as_array()) {
-                return format!("{} match{}", matches.len(), if matches.len() == 1 { "" } else { "es" });
-            }
-            // Read-style: files array
-            if let Some(files) = obj.get("files").and_then(|v| v.as_array()) {
-                return format!("{} file{}", files.len(), if files.len() == 1 { "" } else { "s" });
-            }
-            // Bash: {status, exit_code, output, was_truncated, elapsed_ms}
-            if let Some(output) = obj.get("output").and_then(|v| v.as_str()) {
-                let exit = obj.get("exit_code").and_then(|v| v.as_i64()).unwrap_or(0);
-                let prefix = if exit == 0 { String::new() } else { format!("exit {exit}: ") };
-                return format!("{prefix}{}", one_line(output, 110));
-            }
-            if let Some(s) = obj.get("content").and_then(|v| v.as_str()) {
-                return one_line(s, 120);
-            }
-            format!("{} fields", obj.len())
-        }
-        _ => result.to_string(),
-    }
-}
-
-fn one_line(s: &str, max: usize) -> String {
-    let flat: String = s.chars().map(|c| if c == '\n' { ' ' } else { c }).collect();
-    if flat.chars().count() > max {
-        let mut t: String = flat.chars().take(max.saturating_sub(1)).collect();
-        t.push('…');
-        t
-    } else {
-        flat
-    }
 }
 
 /// Format an error for inline rendering. Keep the message one-line-ish by

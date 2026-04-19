@@ -9,6 +9,24 @@
 //!
 //! All user-tunable colors live in [`theme`] below. Every widget reads
 //! them; editing here recolors the whole interface on the next frame.
+//!
+//! # Tool-call interleave (015)
+//!
+//! [`draw_log`] splices [`tool_render::render_tool_call`] output for
+//! every entry in `state.active_tool_calls` after the finalized
+//! message paint and before the in-flight `current_assistant_buffer`
+//! paint. Ordering mirrors upstream's transcript: user → assistant
+//! text → tool calls for this turn → assistant text after tool results.
+//! The entries clear on [`ConversationState::submit`], so prior-turn
+//! tool calls don't leak into a new turn's render.
+//!
+//! # User message background (015)
+//!
+//! [`render_message`] for role `User` emits every span with
+//! `Style::bg(theme::USER_BG)` plus a trailing filler span sized to
+//! `width - used` so the fill extends to the frame edge. The first
+//! line carries a muted `)` chevron; continuation lines indent with
+//! two spaces on the same background.
 
 use std::time::Duration;
 
@@ -84,14 +102,38 @@ pub mod theme {
     /// identity-zone widgets carry no upstream provenance.
     pub const ACCENT_AMBER: Color = Color::Rgb(215, 119, 87);
 
-    /// Auto-accept-edits permission mode chip color.
-    pub const AUTO_ACCEPT: Color = Color::Rgb(175, 135, 255);
+    /// Auto-accept-edits permission mode chip color — teal-leaning
+    /// cyan. Upstream `autoAccept` ships violet `rgb(175,135,255)` but
+    /// that collides with otherside PRIMARY (blue-violet) and the
+    /// `#51158C` brand; C69 picked a distinct hue to keep the three
+    /// accents visually separable on the info row.
+    pub const AUTO_ACCEPT: Color = Color::Rgb(72, 170, 170);
 
-    /// Plan mode chip.
+    /// Plan mode chip — sage, mirrors upstream `planMode`
+    /// `rgb(72,150,140)` with no color collision against PRIMARY.
     pub const PLAN_MODE: Color = Color::Rgb(72, 150, 140);
+
+    /// Dark-theme error red for high-risk permission chips (yolo /
+    /// bypass). Upstream `theme.ts:137` dark-theme `error`
+    /// `rgb(171,43,63)`. Distinct from `ERROR` above (which is the
+    /// brighter inline-error copy color) so the chip reads as a
+    /// standing state rather than a transient error string.
+    pub const CHIP_ERROR: Color = Color::Rgb(171, 43, 63);
 
     /// Bash prefix (`!` prompt) border.
     pub const BASH_BORDER: Color = Color::Rgb(253, 93, 177);
+
+    /// Resolve a [`super::super::state::ChipColor`] discriminant to a
+    /// concrete ratatui color. Single lookup point so the permission
+    /// chip render path never embeds inline RGB (C46).
+    pub fn color_for(chip: super::super::state::ChipColor) -> Color {
+        use super::super::state::ChipColor;
+        match chip {
+            ChipColor::PlanMode => PLAN_MODE,
+            ChipColor::AutoAccept => AUTO_ACCEPT,
+            ChipColor::Error => CHIP_ERROR,
+        }
+    }
 }
 
 /// Public entry — carves `f.area()` via `layout::split_frame` and
@@ -188,6 +230,30 @@ fn draw_log(f: &mut Frame<'_>, area: Rect, state: &ConversationState, spinner_ti
         lines.extend(render_message(msg.role, &msg.content, width));
     }
 
+    // Tool-call splice (015) — paint in-flight + finalized tool calls
+    // for the current turn BETWEEN finalized messages and the in-flight
+    // assistant buffer. Each entry's bullet color reflects its status:
+    // MUTED + SLOW_BLINK while Running, SUCCESS solid on Ok, ERROR
+    // solid on Error. Order = insertion order = upstream transcript
+    // ordering. active_tool_calls clears on submit so prior turns
+    // never double-paint.
+    if !state.active_tool_calls.is_empty() {
+        for entry in &state.active_tool_calls {
+            lines.push(Line::raw(""));
+            let view = super::tool_render::ToolCallView {
+                name: &entry.name,
+                status: entry.status,
+                elapsed_ms: if entry.elapsed_ms > 0 {
+                    Some(entry.elapsed_ms)
+                } else {
+                    None
+                },
+                payload: entry.payload.as_ref(),
+            };
+            lines.extend(super::tool_render::render_tool_call(&view));
+        }
+    }
+
     if state.streaming {
         // Only surface the assistant message once real content has
         // started streaming — while we're still waiting for the first
@@ -195,7 +261,7 @@ fn draw_log(f: &mut Frame<'_>, area: Rect, state: &ConversationState, spinner_ti
         // signal. Doubling up with a bulleted spinner up here reads
         // like two separate states.
         if !state.current_assistant_buffer.is_empty() {
-            if !state.messages.is_empty() {
+            if !state.messages.is_empty() || !state.active_tool_calls.is_empty() {
                 lines.push(Line::raw(""));
             }
             lines.extend(render_message(
@@ -248,34 +314,45 @@ fn draw_log(f: &mut Frame<'_>, area: Rect, state: &ConversationState, spinner_ti
 /// cues are:
 ///
 /// - **User** — dark-gray background that runs the full frame width
-///   (mirrors upstream's `userMessageBackground`) with a leading `>`
-///   arrow on the first line, 2-space indent on continuation lines.
+///   (mirrors upstream's `userMessageBackground`) with a leading
+///   muted `)` chevron on the first line, 2-space indent on
+///   continuation lines. Every line carries a trailing filler span
+///   sized to `width - used` so the background reaches the frame
+///   edge (ratatui's `Wrap` does not pad to width by default).
 /// - **Assistant** — plain white text, no prefix, no background.
 /// - **System** — italic muted grey prefaced by `⎿ system:`.
 /// - **Tool** — muted grey prefaced by `⎿ tool:` (legacy path; the
-///   real tool-call render moves to `tui::tool_render` once 005 wires).
+///   real tool-call render lives at `tui::tool_render`, wired via
+///   `ConversationState::active_tool_calls` per 015).
 fn render_message(role: OpenAiChatRole, content: &str, width: u16) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
     for (i, raw) in content.split('\n').enumerate() {
         match role {
             OpenAiChatRole::User => {
-                // Upstream `components/messages/UserCommandMessage.tsx`
-                // ships the user turn with a `userMessageBackground`
-                // fill — dark slate `rgb(55,55,55)` on dark themes. The
-                // chevron matches the prompt-bar rule color so the user
-                // turn reads as a continuation of the input band.
-                let _ = width;
-                let prefix = if i == 0 { "❯ " } else { "  " };
-                let bg = Style::default()
-                    .bg(theme::USER_MSG_BG)
-                    .fg(theme::TEXT);
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        prefix.to_string(),
-                        bg.fg(theme::PROMPT_BORDER),
-                    ),
-                    Span::styled(raw.to_string(), bg),
-                ]));
+                // 015 Bug B — match upstream's `userMessageBackground`
+                // fill with a muted `)` chevron. The background spans
+                // every span on every line via `Style::bg(USER_BG)`;
+                // a trailing filler extends the fill to the frame
+                // edge because ratatui's `Wrap` doesn't pad to width.
+                let prefix = if i == 0 { ") " } else { "  " };
+                let prefix_style = if i == 0 {
+                    Style::default().fg(theme::MUTED).bg(theme::USER_BG)
+                } else {
+                    Style::default().bg(theme::USER_BG)
+                };
+                let body_style = Style::default().fg(theme::TEXT).bg(theme::USER_BG);
+                let used = prefix.chars().count() + raw.chars().count();
+                let filler_len = (width as usize).saturating_sub(used);
+                let mut spans: Vec<Span<'static>> = Vec::with_capacity(3);
+                spans.push(Span::styled(prefix.to_string(), prefix_style));
+                spans.push(Span::styled(raw.to_string(), body_style));
+                if filler_len > 0 {
+                    spans.push(Span::styled(
+                        " ".repeat(filler_len),
+                        Style::default().bg(theme::USER_BG),
+                    ));
+                }
+                lines.push(Line::from(spans));
             }
             OpenAiChatRole::Assistant => {
                 if i == 0 {
@@ -506,19 +583,33 @@ fn strip_ansi(s: &str) -> String {
 /// left side carries the permission-mode chip + shortcut text,
 /// right side carries token count + model. Context-driven hint
 /// flips based on state (streaming / autocomplete / idle).
+///
+/// Permission chip rendering follows upstream
+/// `components/PromptInput/PromptInputFooterLeftSide.tsx:348-367`:
+/// Default mode hides the chip entirely (upstream `hasActiveMode`
+/// gate); every other mode emits `<symbol> <label> on` in a
+/// mode-specific color token. The `(shift+tab to cycle)` hint is
+/// suffixed when `primaryItemCount < 2` (line 349). For 016 MVP the
+/// mode chip is the only "primary" chip, so the gate is effectively
+/// always-show — the counter is wired so future chips (tool-state /
+/// PR-status / tasks) automatically activate the hide-hint branch
+/// when they land. See 016 design.md §"Cycle hint visibility gate".
 fn draw_info_row(
     f: &mut Frame<'_>,
     area: Rect,
     state: &ConversationState,
     model: &str,
 ) {
-    // Left side: permission-mode chip (⏵⏵) + shortcut hint.
-    let mode_chip = match state.permission_mode_label() {
-        // The label method returns a tuple (glyph, text) — but to keep
-        // this minimal until the permission layer lands, we pick a
-        // sensible default matching upstream's "accept edits on" copy.
-        (_, text) => text,
-    };
+    let _ = model;
+
+    // Primary chip counter — 016 MVP only tallies the permission
+    // chip. Future pillars will extend this as they add their own
+    // primary chips (tool state, PR status, tasks). Cycle hint
+    // mirrors upstream `primaryItemCount < 2` gate.
+    let chip_opt = state.permission_mode_label();
+    let primary_item_count: usize = if chip_opt.is_some() { 1 } else { 0 };
+    let show_cycle_hint = primary_item_count < 2;
+
     let hint = if state.streaming {
         " · esc to interrupt"
     } else if state.autocomplete.is_some() {
@@ -528,22 +619,41 @@ fn draw_info_row(
     } else {
         " · enter to submit"
     };
-    let _ = model;
+
+    // Left side: permission chip (symbol + label) when active, then
+    // the context hint. Default mode collapses the chip entirely —
+    // matches upstream's absent `modePart`.
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    if let Some(chip) = chip_opt {
+        let chip_color = theme::color_for(chip.color);
+        // Symbol is bold and carries the chip's color; single space
+        // separates symbol from label (matches upstream format).
+        spans.push(Span::styled(
+            format!("{} ", chip.symbol),
+            Style::default().fg(chip_color).add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(
+            chip.text.clone(),
+            Style::default().fg(chip_color),
+        ));
+        if show_cycle_hint {
+            spans.push(Span::styled(
+                " (shift+tab to cycle)".to_string(),
+                Style::default().fg(chip_color).add_modifier(Modifier::DIM),
+            ));
+        }
+    }
+    spans.push(Span::styled(
+        hint.to_string(),
+        Style::default().fg(theme::SUBTLE),
+    ));
+
+    let left = Line::from(spans);
+
     // Right side: context hint / status — empty on idle, populated
     // when a recognized secondary signal exists (deferred until the
     // permission engine + MCP status are plumbed through the TUI).
     let right_text = String::new();
-
-    let left = Line::from(vec![
-        Span::styled(
-            "⏵⏵ ",
-            Style::default()
-                .fg(theme::SUCCESS)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(mode_chip, Style::default().fg(theme::MUTED)),
-        Span::styled(hint.to_string(), Style::default().fg(theme::SUBTLE)),
-    ]);
 
     if right_text.is_empty() {
         f.render_widget(Paragraph::new(left), area);
@@ -581,5 +691,286 @@ mod tests {
     #[test]
     fn strip_ansi_preserves_plain_text() {
         assert_eq!(strip_ansi("plain"), "plain");
+    }
+
+    // --- 015 user-message background + chevron ---------------------------
+
+    fn line_width(line: &Line<'_>) -> usize {
+        line.spans.iter().map(|s| s.content.chars().count()).sum()
+    }
+
+    #[test]
+    fn render_message_user_has_userbg_on_every_span() {
+        let lines = render_message(OpenAiChatRole::User, "hello", 80);
+        assert_eq!(lines.len(), 1);
+        for span in &lines[0].spans {
+            assert_eq!(
+                span.style.bg,
+                Some(theme::USER_BG),
+                "span {:?} missing USER_BG",
+                span.content
+            );
+        }
+    }
+
+    #[test]
+    fn render_message_user_chevron_is_paren_in_muted() {
+        let lines = render_message(OpenAiChatRole::User, "hello", 80);
+        let first = &lines[0].spans[0];
+        assert_eq!(first.content, ") ");
+        assert_eq!(first.style.fg, Some(theme::MUTED));
+        assert_eq!(first.style.bg, Some(theme::USER_BG));
+    }
+
+    #[test]
+    fn render_message_user_background_extends_to_width() {
+        let lines = render_message(OpenAiChatRole::User, "hi", 80);
+        assert_eq!(line_width(&lines[0]), 80);
+    }
+
+    #[test]
+    fn render_message_user_continuation_lines_indent_with_bg() {
+        let lines = render_message(OpenAiChatRole::User, "line1\nline2", 80);
+        assert_eq!(lines.len(), 2);
+        // First line carries the chevron.
+        assert_eq!(lines[0].spans[0].content, ") ");
+        // Continuation line indents with two spaces — no chevron.
+        assert_eq!(lines[1].spans[0].content, "  ");
+        assert_eq!(lines[1].spans[0].style.bg, Some(theme::USER_BG));
+        // Both lines fill to the width.
+        assert_eq!(line_width(&lines[0]), 80);
+        assert_eq!(line_width(&lines[1]), 80);
+    }
+
+    #[test]
+    fn render_message_user_wraps_under_width_still_fills() {
+        // Short message at narrow width — filler span handles the
+        // remaining cells so the bg covers every column.
+        let lines = render_message(OpenAiChatRole::User, "x", 12);
+        assert_eq!(line_width(&lines[0]), 12);
+        for span in &lines[0].spans {
+            assert_eq!(span.style.bg, Some(theme::USER_BG));
+        }
+    }
+
+    #[test]
+    fn render_log_splices_tool_call_lines_between_messages_and_buffer() {
+        // Integration-level spot check — draw against a TestBackend
+        // and inspect the cell grid for the Running bullet.
+        use crate::tui::state::{ConversationState, DisplayMessage};
+        use crate::tui::tool_render::ToolStatus;
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut st = ConversationState::new();
+        st.messages.push(DisplayMessage {
+            role: OpenAiChatRole::User,
+            content: "list files".into(),
+        });
+        st.begin_tool_call(
+            "t1".into(),
+            "Glob".into(),
+            serde_json::json!({ "pattern": "*.rs" }),
+        );
+        // Running state expected.
+        let backend = TestBackend::new(80, 20);
+        let mut term = Terminal::new(backend).expect("terminal");
+        term.draw(|f| {
+            let area = f.area();
+            draw_log(f, area, &st, 0);
+        })
+        .expect("draw");
+        let buf = term.backend().buffer().clone();
+        let content: String = buf
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>();
+        assert!(content.contains("Glob"), "tool name absent: {content:?}");
+        assert!(
+            content.contains("running"),
+            "running marker absent: {content:?}"
+        );
+
+        // Transition to Ok — bullet color + status text flips.
+        st.finish_tool_call("t1", Ok(serde_json::json!({ "numFiles": 5 })), 77);
+        term.draw(|f| {
+            let area = f.area();
+            draw_log(f, area, &st, 1);
+        })
+        .expect("draw 2");
+        let buf = term.backend().buffer().clone();
+        let content: String = buf
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>();
+        assert!(content.contains("ok"));
+        assert!(content.contains("77ms"));
+        assert!(content.contains("5 file"));
+
+        // Sanity — status enum actually transitioned.
+        assert_eq!(st.active_tool_calls[0].status, ToolStatus::Ok);
+    }
+
+    #[test]
+    fn render_message_assistant_has_no_user_bg() {
+        // Guardrail: Bug B changes must NOT bleed into the Assistant
+        // branch. Assistant keeps a PRIMARY bullet + plain TEXT body
+        // with no background fill.
+        let lines = render_message(OpenAiChatRole::Assistant, "reply", 80);
+        for line in &lines {
+            for span in &line.spans {
+                assert_ne!(
+                    span.style.bg,
+                    Some(theme::USER_BG),
+                    "assistant span {:?} leaked USER_BG",
+                    span.content
+                );
+            }
+        }
+        let bullet = &lines[0].spans[0].content;
+        assert!(
+            bullet == "⏺ " || bullet == "● ",
+            "bullet glyph unexpected: {bullet:?}"
+        );
+    }
+
+    // ----- 016: permission chip render wiring -----
+
+    #[test]
+    fn theme_color_for_plan_mode_is_sage() {
+        use super::super::state::ChipColor;
+        use ratatui::style::Color;
+        // Upstream `theme.ts:441` dark-theme `planMode` sage mirror.
+        assert_eq!(theme::color_for(ChipColor::PlanMode), Color::Rgb(72, 150, 140));
+    }
+
+    #[test]
+    fn theme_color_for_auto_accept_is_teal_cyan_distinct_from_primary() {
+        use super::super::state::ChipColor;
+        use ratatui::style::Color;
+        // C69 distinct-hue — MUST NOT equal PRIMARY to keep the
+        // blue-violet family from collapsing into one visual cluster.
+        let color = theme::color_for(ChipColor::AutoAccept);
+        assert_eq!(color, Color::Rgb(72, 170, 170));
+        assert_ne!(color, theme::PRIMARY);
+    }
+
+    #[test]
+    fn theme_color_for_error_chip_is_dark_red() {
+        use super::super::state::ChipColor;
+        use ratatui::style::Color;
+        assert_eq!(theme::color_for(ChipColor::Error), Color::Rgb(171, 43, 63));
+    }
+
+    /// Render just the info-row rect into a `TestBackend`, then collect
+    /// the cells as a plain string so test asserts can grep the output.
+    fn render_info_row_to_string(
+        state: &super::super::state::ConversationState,
+        width: u16,
+    ) -> String {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let backend = TestBackend::new(width, 1);
+        let mut term = Terminal::new(backend).expect("terminal");
+        term.draw(|f| {
+            let area = f.area();
+            draw_info_row(f, area, state, "test-model");
+        })
+        .expect("draw");
+        let buf = term.backend().buffer().clone();
+        let mut out = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                out.push_str(buf.cell((x, y)).expect("cell").symbol());
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    #[test]
+    fn default_mode_renders_no_chip() {
+        // Per upstream `hasActiveMode` gate, Default mode's info row
+        // must not carry any chip glyph or label.
+        use super::super::state::ConversationState;
+        use crate::config::PermissionMode;
+        let mut st = ConversationState::new();
+        st.permission_mode = PermissionMode::Default;
+        let rendered = render_info_row_to_string(&st, 80);
+        assert!(!rendered.contains("⏸"), "rendered: {rendered:?}");
+        assert!(!rendered.contains("⏵⏵"), "rendered: {rendered:?}");
+        assert!(!rendered.contains("plan mode"), "rendered: {rendered:?}");
+        assert!(!rendered.contains("accept edits"), "rendered: {rendered:?}");
+        assert!(!rendered.contains("yolo"), "rendered: {rendered:?}");
+    }
+
+    #[test]
+    fn plan_mode_info_row_renders_pause_glyph_and_label() {
+        use super::super::state::ConversationState;
+        use crate::config::PermissionMode;
+        let mut st = ConversationState::new();
+        st.permission_mode = PermissionMode::Plan;
+        let rendered = render_info_row_to_string(&st, 80);
+        assert!(rendered.contains("⏸"), "rendered: {rendered:?}");
+        assert!(rendered.contains("plan mode on"), "rendered: {rendered:?}");
+    }
+
+    #[test]
+    fn accept_edits_mode_info_row_renders_chevron_glyph_and_label() {
+        use super::super::state::ConversationState;
+        use crate::config::PermissionMode;
+        let mut st = ConversationState::new();
+        st.permission_mode = PermissionMode::AcceptEdits;
+        let rendered = render_info_row_to_string(&st, 80);
+        assert!(rendered.contains("⏵⏵"), "rendered: {rendered:?}");
+        assert!(rendered.contains("accept edits on"), "rendered: {rendered:?}");
+    }
+
+    #[test]
+    fn yolo_mode_info_row_renders_chevron_glyph_and_yolo_label() {
+        use super::super::state::ConversationState;
+        use crate::config::PermissionMode;
+        let mut st = ConversationState::new();
+        st.permission_mode = PermissionMode::Yolo;
+        let rendered = render_info_row_to_string(&st, 80);
+        assert!(rendered.contains("⏵⏵"), "rendered: {rendered:?}");
+        // Identity-zone brand: `yolo on`, not `bypass permissions on`.
+        assert!(rendered.contains("yolo on"), "rendered: {rendered:?}");
+        assert!(
+            !rendered.contains("bypass permissions"),
+            "rendered: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn cycle_hint_shown_when_only_mode_chip_is_primary() {
+        // 016 MVP: mode chip is the only primary item, so the hint is
+        // always shown for any non-Default mode.
+        use super::super::state::ConversationState;
+        use crate::config::PermissionMode;
+        let mut st = ConversationState::new();
+        st.permission_mode = PermissionMode::Plan;
+        let rendered = render_info_row_to_string(&st, 120);
+        assert!(
+            rendered.contains("(shift+tab to cycle)"),
+            "rendered: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn cycle_hint_absent_in_default_mode() {
+        // No chip at all means no hint either — Default mode renders
+        // a truly empty info row (ignoring stream/input hints).
+        use super::super::state::ConversationState;
+        use crate::config::PermissionMode;
+        let mut st = ConversationState::new();
+        st.permission_mode = PermissionMode::Default;
+        let rendered = render_info_row_to_string(&st, 80);
+        assert!(
+            !rendered.contains("(shift+tab to cycle)"),
+            "rendered: {rendered:?}"
+        );
     }
 }

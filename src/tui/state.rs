@@ -46,12 +46,28 @@
 //!   - Keep any partial assistant text (so the user sees what arrived).
 //!   - Store the error string in `last_error`.
 //!   - Flip `streaming = false` so the input is editable again.
+//!
+//! # Tool-call surface (015)
+//!
+//! [`ConversationState::active_tool_calls`] holds the in-flight and
+//! finalized tool-call entries for the current turn. The agent loop
+//! emits typed `StreamEvent::ToolCallStart` / `ToolCallFinish` events
+//! which route into [`ConversationState::begin_tool_call`] /
+//! [`ConversationState::finish_tool_call`]. Begin-Finish pairs by `id`
+//! and transition the entry through
+//! [`tool_render::ToolStatus`] `Running` → `Ok` / `Error`.
+//! [`ConversationState::submit`] clears the vector so each turn starts
+//! fresh; an orphan Finish (no matching Start) emits a `tracing::warn!`
+//! and is dropped without mutating state.
 
 use std::time::Instant;
+
+use serde_json::Value;
 
 use crate::inference::{OpenAiChatMessage, OpenAiChatRole};
 
 use super::autocomplete::Autocomplete;
+use super::tool_render::{self, ToolPayload, ToolStatus};
 
 /// A finalized message in the chat log.
 ///
@@ -62,6 +78,58 @@ use super::autocomplete::Autocomplete;
 pub struct DisplayMessage {
     pub role: OpenAiChatRole,
     pub content: String,
+}
+
+/// One tool-call entry on the active list.
+///
+/// Created by [`ConversationState::begin_tool_call`] with
+/// `status = Running` and `payload = None`; transitioned by
+/// [`ConversationState::finish_tool_call`] to `Ok` or `Error` with a
+/// payload picked by [`tool_render::payload_from_result`] /
+/// [`tool_render::payload_from_error`].
+///
+/// The render path builds a
+/// [`tool_render::ToolCallView`] from each entry on every frame, so
+/// field access is intentionally public.
+#[derive(Debug, Clone)]
+pub struct ToolCallEntry {
+    pub id: String,
+    pub name: String,
+    pub args: Value,
+    pub status: ToolStatus,
+    pub payload: Option<ToolPayload>,
+    pub started_at: Instant,
+    pub elapsed_ms: u64,
+}
+
+/// Color-token discriminant for the info-row permission chip. Names
+/// describe the chip's role, not a specific hue — the render layer
+/// resolves each variant through `tui::render::theme` so no inline
+/// RGB literals live in the permission-chip render path (C46).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChipColor {
+    /// Sage — plan mode (read-only exploration).
+    PlanMode,
+    /// Distinct teal-cyan — accept-edits mode. Deliberately chosen to
+    /// avoid the three-way blue-violet collision between upstream's
+    /// `autoAccept` violet, otherside PRIMARY, and brand deep violet
+    /// (016 §TODO-3 resolution, C69).
+    AutoAccept,
+    /// Dark red — high-risk modes (yolo / bypass).
+    Error,
+}
+
+/// Info-row permission-mode chip spec. `symbol` is the leading glyph
+/// (`⏸` for plan, `⏵⏵` for the chevron-variants). `text` is the
+/// lowercase body ending in ` on`. `color` is the theme token the
+/// render layer resolves. The `(shift+tab to cycle)` suffix is NOT
+/// included here — it's a render-site concern gated on how many
+/// other chips crowd the info row (upstream `primaryItemCount < 2`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PermissionChip {
+    pub symbol: &'static str,
+    pub text: String,
+    pub color: ChipColor,
 }
 
 /// Everything the TUI needs to render + drive the next request.
@@ -152,7 +220,35 @@ pub struct ConversationState {
     /// `""` are also suppressed. Set from `ThinkingLevel::as_label` at
     /// TUI bootstrap and updated by `/effort` menu commits.
     pub effort_label: Option<&'static str>,
+
+    /// JoinHandle of the currently-running turn task. `Some` while
+    /// streaming; abort()ed by Esc / Ctrl+C to cancel the in-flight
+    /// turn. Cleared when the stream completes.
+    #[allow(clippy::type_complexity)]
+    pub turn_task: Option<tokio::task::JoinHandle<()>>,
+
+    /// Timestamp of the first Ctrl+C / Ctrl+D press when no turn is
+    /// running — arms the double-press-to-exit window. Cleared by
+    /// any other key or by the window elapsing. See upstream
+    /// `useExitOnCtrlCD` + `useDoublePress` (800ms).
+    pub exit_armed_at: Option<Instant>,
+
+    /// Which key armed the exit confirmation. Presented in the info-row
+    /// hint so the user sees the matching label (`Ctrl+C` or `Ctrl+D`).
+    pub exit_armed_key: Option<&'static str>,
+
+    /// In-flight + finalized tool calls for the current turn. Cleared
+    /// on [`submit`](Self::submit) so a new user turn starts fresh.
+    /// The render path interleaves these between finalized messages
+    /// and the in-flight assistant buffer via
+    /// [`tool_render::render_tool_call`]. Order = insertion order =
+    /// upstream's transcript ordering.
+    pub active_tool_calls: Vec<ToolCallEntry>,
 }
+
+/// Double-press-to-exit window — must match upstream's
+/// `DOUBLE_PRESS_TIMEOUT_MS` exactly (800ms).
+pub const EXIT_DOUBLE_PRESS_MS: u64 = 800;
 
 impl ConversationState {
     /// Fresh state with no messages, empty input, scroll pinned to bottom.
@@ -298,7 +394,66 @@ impl ConversationState {
         self.turn_verb = Some(super::progress::pick_verb_for_turn(
             super::progress::next_turn_seed(),
         ));
+        // Fresh turn, fresh tool-call list. Prior-turn tool calls live
+        // on in the finalized assistant message that cited them; the
+        // active vector is a per-turn scratch pad.
+        self.active_tool_calls.clear();
         Some(self.history_for_request())
+    }
+
+    /// Register a new tool-call dispatch. Pushes a `Running` entry
+    /// onto [`ConversationState::active_tool_calls`]. Called from the
+    /// event loop when the agent task sends
+    /// `StreamEvent::ToolCallStart`.
+    pub fn begin_tool_call(&mut self, id: String, name: String, args: Value) {
+        self.active_tool_calls.push(ToolCallEntry {
+            id,
+            name,
+            args,
+            status: ToolStatus::Running,
+            payload: None,
+            started_at: Instant::now(),
+            elapsed_ms: 0,
+        });
+    }
+
+    /// Transition a Running entry to `Ok` / `Error` per `result`, stash
+    /// the render payload, record `elapsed_ms`. Orphan `Finish` (no
+    /// matching `Start` id) warns and drops the event — defensive
+    /// against a race between cancellation and dispatch that shouldn't
+    /// fire in practice but must never panic.
+    pub fn finish_tool_call(
+        &mut self,
+        id: &str,
+        result: Result<Value, String>,
+        elapsed_ms: u64,
+    ) {
+        let entry = match self
+            .active_tool_calls
+            .iter_mut()
+            .find(|e| e.id == id)
+        {
+            Some(e) => e,
+            None => {
+                tracing::warn!(
+                    target: "otherside::tui",
+                    id,
+                    "finish_tool_call for unknown id — no matching Start"
+                );
+                return;
+            }
+        };
+        entry.elapsed_ms = elapsed_ms;
+        match result {
+            Ok(value) => {
+                entry.status = ToolStatus::Ok;
+                entry.payload = tool_render::payload_from_result(&entry.name, &value);
+            }
+            Err(err) => {
+                entry.status = ToolStatus::Error;
+                entry.payload = Some(tool_render::payload_from_error(&err));
+            }
+        }
     }
 
     /// Suppress the autocomplete popup while a request is in flight.
@@ -390,43 +545,60 @@ impl ConversationState {
         }
     }
 
-    /// Permission-mode label for the info row. Returns `(glyph, text)`
-    /// mirroring upstream's two-chevron indicator. The text includes
-    /// the mode name + the "shift+tab to cycle" affordance when the
-    /// user can freely switch; yolo mode gets its own copy per C40.
-    pub fn permission_mode_label(&self) -> (&'static str, String) {
+    /// Permission-mode chip spec for the info row. Returns `None` for
+    /// `Default` because upstream gates the whole chip through
+    /// `hasActiveMode` — an empty chip IS the correct state (see
+    /// `components/PromptInput/PromptInputFooterLeftSide.tsx:360`).
+    /// For every non-Default mode we emit the symbol glyph + lowercase
+    /// label ("on" suffix) + a color-token discriminant the render
+    /// layer resolves through the theme module. The `(shift+tab to
+    /// cycle)` affordance is NOT appended here — render-site owns that
+    /// suffix because visibility depends on competing chip count
+    /// (upstream `primaryItemCount < 2` gate, same file line 349).
+    ///
+    /// Mode labels mirror `utils/permissions/PermissionMode.ts:41-86`
+    /// with one otherside divergence: `Yolo` reads `yolo on` rather
+    /// than `bypass permissions on`. Identity zone carries otherside's
+    /// own vocabulary (R-01 / R-11) and `--yolo` is the canonical CLI
+    /// flag per R-106; rendering upstream's literal string would be a
+    /// gratuitous deviation from our own brand.
+    pub fn permission_mode_label(&self) -> Option<PermissionChip> {
+        use crate::config::PermissionMode as P;
         match self.permission_mode {
-            crate::config::PermissionMode::Default => (
-                "⏵⏵",
-                "default mode  (shift+tab to cycle)".to_string(),
-            ),
-            crate::config::PermissionMode::AcceptEdits => (
-                "⏵⏵",
-                "accept edits mode  (shift+tab to cycle)".to_string(),
-            ),
-            crate::config::PermissionMode::Plan => (
-                "⏵⏵",
-                "plan mode  (shift+tab to cycle)".to_string(),
-            ),
-            crate::config::PermissionMode::Yolo => (
-                "⏵⏵",
-                "yolo mode enabled  (shift+tab to cycle)".to_string(),
-            ),
+            P::Default => None,
+            P::Plan => Some(PermissionChip {
+                symbol: "⏸",
+                text: "plan mode on".to_string(),
+                color: ChipColor::PlanMode,
+            }),
+            P::AcceptEdits => Some(PermissionChip {
+                symbol: "⏵⏵",
+                text: "accept edits on".to_string(),
+                color: ChipColor::AutoAccept,
+            }),
+            P::Yolo => Some(PermissionChip {
+                symbol: "⏵⏵",
+                text: "yolo on".to_string(),
+                color: ChipColor::Error,
+            }),
         }
     }
 
     /// Advance the permission mode to the next one in the cycle.
-    /// Order: Default → Plan → Yolo → Default. AcceptEdits is
-    /// deliberately skipped from the Shift+Tab rotation — user
-    /// directive 2026-04-18: three-mode cycle is the otherside default.
-    /// AcceptEdits remains settable via `settings.json` for users who
-    /// want it, just not reachable via the bottom-row affordance.
+    /// Order: `Default → AcceptEdits → Plan → Yolo → Default`. Matches
+    /// upstream `utils/permissions/getNextPermissionMode.ts:27-59`
+    /// (external build, `bypassPermissions` after `plan`, no `auto` /
+    /// `dontAsk`). Four-arm exhaustive match — compiler flags any new
+    /// `PermissionMode` variant so the transition table can't silently
+    /// regress back to the 3-mode collapse the audit caught (see
+    /// `openspec/changes/016-permission-cycle-4-mode/` + R-104).
     pub fn cycle_permission_mode(&mut self) {
         use crate::config::PermissionMode as P;
         self.permission_mode = match self.permission_mode {
-            P::Default => P::Plan,
+            P::Default => P::AcceptEdits,
+            P::AcceptEdits => P::Plan,
             P::Plan => P::Yolo,
-            P::Yolo | P::AcceptEdits => P::Default,
+            P::Yolo => P::Default,
         };
     }
 
@@ -480,6 +652,7 @@ impl ConversationState {
         self.streaming = false;
         self.request_started_at = None;
         self.turn_verb = None;
+        self.turn_task = None;
         // Do NOT yank the viewport — honor the user's scroll intent
         // across turn boundaries. Upstream REPL.tsx:1284-1301 leaves
         // scroll position untouched on completion.
@@ -504,7 +677,69 @@ impl ConversationState {
         self.streaming = false;
         self.request_started_at = None;
         self.turn_verb = None;
+        self.turn_task = None;
         // See finish_stream — scroll position is user intent.
+    }
+
+    /// Cancel an in-flight turn. Aborts the spawn task, promotes any
+    /// partial assistant content so the user sees what landed before
+    /// the interrupt, flips streaming off, and appends an inline
+    /// muted note. No-op when idle.
+    ///
+    /// Returns `true` when a running turn was actually cancelled —
+    /// callers use this to decide between "cancel was enough" and
+    /// "escalate to exit handling".
+    pub fn cancel_stream(&mut self) -> bool {
+        if !self.streaming {
+            return false;
+        }
+        if let Some(handle) = self.turn_task.take() {
+            handle.abort();
+        }
+        if !self.current_assistant_buffer.is_empty() {
+            let content = std::mem::take(&mut self.current_assistant_buffer);
+            self.messages.push(DisplayMessage {
+                role: OpenAiChatRole::Assistant,
+                content,
+            });
+        }
+        self.streaming = false;
+        self.request_started_at = None;
+        self.turn_verb = None;
+        self.push_system_note("cancelled");
+        true
+    }
+
+    /// Arm the double-press-to-exit window. `key_label` is the human
+    /// name of the triggering key (`"Ctrl+C"` / `"Ctrl+D"`). On the
+    /// second press within `EXIT_DOUBLE_PRESS_MS`, `exit_confirmed`
+    /// returns true and the caller exits.
+    pub fn arm_exit_confirmation(&mut self, key_label: &'static str) {
+        self.exit_armed_at = Some(Instant::now());
+        self.exit_armed_key = Some(key_label);
+    }
+
+    /// True when a prior `arm_exit_confirmation` is still inside the
+    /// double-press window. The caller should exit immediately.
+    pub fn exit_confirmed(&self) -> bool {
+        self.exit_armed_at
+            .map(|t| t.elapsed().as_millis() < EXIT_DOUBLE_PRESS_MS as u128)
+            .unwrap_or(false)
+    }
+
+    /// Clear the arm timer — called on any non-exit key so stray
+    /// Ctrl+C presses don't leak past their window.
+    pub fn clear_exit_armed(&mut self) {
+        self.exit_armed_at = None;
+        self.exit_armed_key = None;
+    }
+
+    /// Drop the input buffer — used by Esc when no stream is running
+    /// + no autocomplete popup is open. Upstream `PromptInput`
+    /// clears on Esc even without an active turn.
+    pub fn clear_input(&mut self) {
+        self.input.clear();
+        self.autocomplete = None;
     }
 }
 
@@ -822,5 +1057,182 @@ mod tests {
             st.append_stream_delta("x");
         }
         assert_eq!(st.turn_verb, v0);
+    }
+
+    // ----- Permission mode cycle (016) -----
+
+    #[test]
+    fn cycle_permission_mode_four_stops() {
+        // Primary conformance anchor for R-104 — four Shift+Tab presses
+        // from Default must tour AcceptEdits → Plan → Yolo and return
+        // to Default on the 4th press. Matches upstream external-build
+        // cycle at `getNextPermissionMode.ts:27-59`.
+        use crate::config::PermissionMode as P;
+        let mut st = ConversationState::new();
+        assert_eq!(st.permission_mode, P::Default);
+        st.cycle_permission_mode();
+        assert_eq!(st.permission_mode, P::AcceptEdits);
+        st.cycle_permission_mode();
+        assert_eq!(st.permission_mode, P::Plan);
+        st.cycle_permission_mode();
+        assert_eq!(st.permission_mode, P::Yolo);
+        st.cycle_permission_mode();
+        assert_eq!(st.permission_mode, P::Default);
+    }
+
+    #[test]
+    fn cycle_permission_mode_from_default_goes_to_accept_edits() {
+        use crate::config::PermissionMode as P;
+        let mut st = ConversationState::new();
+        st.permission_mode = P::Default;
+        st.cycle_permission_mode();
+        assert_eq!(st.permission_mode, P::AcceptEdits);
+    }
+
+    #[test]
+    fn cycle_permission_mode_from_accept_edits_goes_to_plan() {
+        use crate::config::PermissionMode as P;
+        let mut st = ConversationState::new();
+        st.permission_mode = P::AcceptEdits;
+        st.cycle_permission_mode();
+        assert_eq!(st.permission_mode, P::Plan);
+    }
+
+    #[test]
+    fn cycle_permission_mode_from_plan_goes_to_yolo() {
+        use crate::config::PermissionMode as P;
+        let mut st = ConversationState::new();
+        st.permission_mode = P::Plan;
+        st.cycle_permission_mode();
+        assert_eq!(st.permission_mode, P::Yolo);
+    }
+
+    #[test]
+    fn cycle_permission_mode_from_yolo_returns_to_default() {
+        use crate::config::PermissionMode as P;
+        let mut st = ConversationState::new();
+        st.permission_mode = P::Yolo;
+        st.cycle_permission_mode();
+        assert_eq!(st.permission_mode, P::Default);
+    }
+
+    #[test]
+    fn permission_mode_label_default_returns_none() {
+        // Upstream `hasActiveMode` gate collapses the chip for Default —
+        // absence is the correct render state.
+        let st = ConversationState::new();
+        assert_eq!(st.permission_mode, crate::config::PermissionMode::Default);
+        assert!(st.permission_mode_label().is_none());
+    }
+
+    #[test]
+    fn permission_mode_label_plan_returns_pause_chip() {
+        use crate::config::PermissionMode as P;
+        let mut st = ConversationState::new();
+        st.permission_mode = P::Plan;
+        let chip = st.permission_mode_label().expect("plan chip");
+        assert_eq!(chip.symbol, "⏸");
+        assert_eq!(chip.text, "plan mode on");
+        assert_eq!(chip.color, ChipColor::PlanMode);
+    }
+
+    #[test]
+    fn permission_mode_label_accept_edits_returns_chevron_chip() {
+        use crate::config::PermissionMode as P;
+        let mut st = ConversationState::new();
+        st.permission_mode = P::AcceptEdits;
+        let chip = st.permission_mode_label().expect("accept edits chip");
+        assert_eq!(chip.symbol, "⏵⏵");
+        assert_eq!(chip.text, "accept edits on");
+        assert_eq!(chip.color, ChipColor::AutoAccept);
+    }
+
+    #[test]
+    fn permission_mode_label_yolo_returns_chevron_chip() {
+        use crate::config::PermissionMode as P;
+        let mut st = ConversationState::new();
+        st.permission_mode = P::Yolo;
+        let chip = st.permission_mode_label().expect("yolo chip");
+        assert_eq!(chip.symbol, "⏵⏵");
+        // Identity-zone brand wins over upstream literal `bypass
+        // permissions on` — matches R-106 + C69.
+        assert_eq!(chip.text, "yolo on");
+        assert_eq!(chip.color, ChipColor::Error);
+    }
+
+    // --- 015 tool-call surface -------------------------------------------
+
+    #[test]
+    fn begin_tool_call_pushes_running_entry() {
+        let mut st = ConversationState::new();
+        st.begin_tool_call(
+            "tc1".into(),
+            "Read".into(),
+            serde_json::json!({ "file": "x.rs" }),
+        );
+        assert_eq!(st.active_tool_calls.len(), 1);
+        let entry = &st.active_tool_calls[0];
+        assert_eq!(entry.id, "tc1");
+        assert_eq!(entry.name, "Read");
+        assert_eq!(entry.status, ToolStatus::Running);
+        assert!(entry.payload.is_none());
+        assert_eq!(entry.elapsed_ms, 0);
+    }
+
+    #[test]
+    fn finish_tool_call_ok_transitions_status() {
+        let mut st = ConversationState::new();
+        st.begin_tool_call("tc1".into(), "Read".into(), serde_json::json!({}));
+        st.finish_tool_call("tc1", Ok(serde_json::json!({"content": "hi"})), 42);
+        let entry = &st.active_tool_calls[0];
+        assert_eq!(entry.status, ToolStatus::Ok);
+        assert_eq!(entry.elapsed_ms, 42);
+        assert!(entry.payload.is_some());
+    }
+
+    #[test]
+    fn finish_tool_call_error_transitions_status() {
+        let mut st = ConversationState::new();
+        st.begin_tool_call("tc1".into(), "Bash".into(), serde_json::json!({}));
+        st.finish_tool_call("tc1", Err("permission denied".into()), 12);
+        let entry = &st.active_tool_calls[0];
+        assert_eq!(entry.status, ToolStatus::Error);
+        assert_eq!(entry.elapsed_ms, 12);
+        match entry.payload.as_ref().expect("error payload") {
+            ToolPayload::Preview(s) => assert!(s.contains("permission denied")),
+            other => panic!("expected Preview, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn finish_tool_call_unknown_id_is_silent() {
+        let mut st = ConversationState::new();
+        // No begin — orphan Finish. Must not panic, must not mutate.
+        st.finish_tool_call("bogus", Ok(serde_json::json!({})), 1);
+        assert!(st.active_tool_calls.is_empty());
+    }
+
+    #[test]
+    fn submit_clears_active_tool_calls() {
+        let mut st = ConversationState::new();
+        st.begin_tool_call("a".into(), "Read".into(), serde_json::json!({}));
+        st.begin_tool_call("b".into(), "Glob".into(), serde_json::json!({}));
+        assert_eq!(st.active_tool_calls.len(), 2);
+        st.input = "next turn".into();
+        st.submit().expect("submit");
+        assert!(st.active_tool_calls.is_empty());
+    }
+
+    #[test]
+    fn finish_tool_call_preserves_insertion_order() {
+        // Out-of-order Finish must find entries by id, not by position.
+        let mut st = ConversationState::new();
+        st.begin_tool_call("a".into(), "Read".into(), serde_json::json!({}));
+        st.begin_tool_call("b".into(), "Glob".into(), serde_json::json!({}));
+        st.finish_tool_call("b", Ok(serde_json::json!({"numFiles": 2})), 10);
+        assert_eq!(st.active_tool_calls[0].id, "a");
+        assert_eq!(st.active_tool_calls[0].status, ToolStatus::Running);
+        assert_eq!(st.active_tool_calls[1].id, "b");
+        assert_eq!(st.active_tool_calls[1].status, ToolStatus::Ok);
     }
 }
