@@ -120,9 +120,6 @@ pub fn format_progress_text(
     thought_ms: u64,
     effort_label: Option<&str>,
 ) -> String {
-    let _ = effort_label; // upstream shape shows `thought for Xs`
-                          // instead of an effort chip; kept on the
-                          // signature for future use without churn.
     let frame = spinner_frame(tick);
     let elapsed_str = format_elapsed(elapsed);
     // Upstream shows EITHER ↑ (upload-wait phase) OR ↓ (response
@@ -130,7 +127,7 @@ pub fn format_progress_text(
     // tokens have arrived; before that, surface the ↑ input total
     // so the user sees what's being sent. Matches observed live
     // claude-code output:
-    //   ✽ Vibing… (53s · ↑ 255 tokens · thought for 7s)
+    //   ✽ Vibing… (53s · ↑ 255 tokens · thinking with high effort)
     //   ✻ Vibing… (1m 5s · ↓ 383 tokens · thought for 7s)
     let tokens_part = if tokens_down > 0 {
         format!(" · ↓ {} tokens", format_tokens_compact(tokens_down))
@@ -139,11 +136,16 @@ pub fn format_progress_text(
     } else {
         String::new()
     };
+    // Upstream `SpinnerAnimationRow` paints `thinking with <level>
+    // effort` while the model is still thinking, flipping to
+    // `thought for Xs` once the thinking block finalizes. We drive
+    // the same shape: effort chip during thought_ms == 0, then
+    // switch to the elapsed-seconds pill once the first delta lands.
     let thought_part = if thought_ms > 0 {
-        // Upstream's `thought for Xs` — seconds rounded. Matches
-        // `components/AssistantThinkingBlock.tsx` chip copy.
         let secs = (thought_ms + 500) / 1000;
         format!(" · thought for {secs}s")
+    } else if let Some(level) = effort_label {
+        format!(" · thinking with {level} effort")
     } else {
         String::new()
     };
@@ -190,7 +192,6 @@ pub fn draw(
     thought_ms: u64,
     effort_label: Option<&str>,
 ) {
-    let _ = effort_label; // upstream shows `thought for Xs` instead
     let frame = spinner_frame(tick);
     let elapsed_str = format_elapsed(elapsed);
     // ↓ once the assistant starts emitting, ↑ before that. Never
@@ -203,9 +204,14 @@ pub fn draw(
     } else {
         String::new()
     };
+    // `thinking with <level> effort` while thought_ms == 0; flip to
+    // `thought for Xs` once the thinking block finishes. Same shape
+    // as upstream SpinnerAnimationRow.
     let thought_part = if thought_ms > 0 {
         let secs = (thought_ms + 500) / 1000;
         format!(" · thought for {secs}s")
+    } else if let Some(level) = effort_label {
+        format!(" · thinking with {level} effort")
     } else {
         String::new()
     };
@@ -336,9 +342,10 @@ mod tests {
     }
 
     #[test]
-    fn format_progress_no_effort_chip() {
-        // Upstream shows `thought for Xs`, NOT an effort chip — we
-        // dropped the effort segment in favor of parity.
+    fn format_progress_effort_chip_while_thinking() {
+        // Upstream `SpinnerAnimationRow` paints `thinking with <level>
+        // effort` while the thinking block is live (thought_ms == 0),
+        // then flips to `thought for Xs` once the block closes.
         let text = format_progress_text(
             0,
             "Thinking",
@@ -348,8 +355,24 @@ mod tests {
             0,
             Some("xhigh"),
         );
-        assert!(!text.contains("effort"));
-        assert!(!text.contains("xhigh"));
+        assert!(text.contains("thinking with xhigh effort"), "got: {text}");
+    }
+
+    #[test]
+    fn format_progress_drops_effort_chip_once_thought_lands() {
+        // Once thought_ms > 0 the `thought for Xs` pill takes over —
+        // the effort chip goes away so the UI stays single-segment.
+        let text = format_progress_text(
+            0,
+            "Thinking",
+            Duration::from_secs(1),
+            0,
+            0,
+            1_200,
+            Some("xhigh"),
+        );
+        assert!(text.contains("thought for 1s"), "got: {text}");
+        assert!(!text.contains("thinking with"), "got: {text}");
     }
 
     #[test]
