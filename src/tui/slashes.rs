@@ -1,10 +1,22 @@
-//! Slash-command dispatch. Some slashes run locally (wipe history,
-//! exit, show inline help) and never reach the LLM; others are
-//! passthrough prompts the model handles as normal text. The full
-//! catalog — names, briefs, and dispatch classification — lives in
-//! `slash_catalog`; this module is just the classifier front door.
+//! Slash-command dispatch — the classifier front door.
+//!
+//! The full catalog (names, briefs, kinds) lives in `slash_catalog`; this
+//! module maps each `SlashKind` into a concrete `SlashAction` the event
+//! loop can dispatch. Three kinds map as follows:
+//!
+//! - `SlashKind::Local(action)` → the action's specific variant
+//!   (immediate side-effect).
+//! - `SlashKind::InteractiveMenu(kind)` → `SlashAction::MenuPending(kind)`
+//!   — a temporary fallback shipped by 012a. The event loop renders a
+//!   muted inline note identifying the pending slash; the overlay state
+//!   machine + menu widgets land in 012b/012c.
+//! - `SlashKind::AiRouted` → `SlashAction::SendToLlm(raw_input)` — the
+//!   slash plus args flows to the provider as a normal user turn.
+//!
+//! Non-slash input always returns `Passthrough` so regular chat keeps
+//! flowing.
 
-use super::slash_catalog::{self, CATALOG, SlashKind};
+use super::slash_catalog::{self, CATALOG, MenuKind, SlashKind};
 
 /// What the event loop should do after the user presses Enter on a
 /// `/slash-form` input.
@@ -15,33 +27,40 @@ pub enum SlashAction {
     Clear,
     /// Exit the TUI gracefully. Covers both `/exit` and `/bye`.
     Exit,
-    /// Show the slash catalog inline in the streaming area as a
-    /// `system`-role message.
+    /// Show the slash catalog inline. Retained for 012c menu handlers
+    /// that may want to render the old inline help text; CATALOG no
+    /// longer emits this directly (`/help` is `InteractiveMenu(Help)`).
     ShowHelp,
-    /// `/model` with no argument — show the active model + 1M flag
-    /// inline.
+    /// `/model` with no argument. Retained for 012c menu commit path.
     ShowModel,
-    /// `/model <id>` — switch the active model. The event loop
-    /// validates the id shape and re-sizes the context window.
+    /// `/model <id>` — switch the active model. Retained for 012c menu
+    /// commit path.
     SwitchModel(String),
-    /// `/compact` — drop prior messages but push a short placeholder
-    /// so the user can see the session continued (C46).
+    /// `/compact` — drop prior messages.
     Compact,
-    /// `/status` — inline render of the statusline state.
+    /// `/status` — inline render of statusline state. Retained for 012c.
     ShowStatus,
-    /// `/context` — inline context-usage breakdown.
+    /// `/context` — inline context-usage breakdown. Retained for 012c.
     ShowContext,
-    /// `/config`, `/keybindings`, `/statusline` — pass the slash name
-    /// so the event loop can emit the right hint text.
+    /// `/config`, `/keybindings`, `/statusline` — hint-file surface.
+    /// Retained for 012c.
     ShowSettingsHint(String),
-    /// `/login <provider>` — the loop emits instructions to exit + run
-    /// `otherside login --provider <provider>` since auth flow needs
-    /// stdin interaction outside the TUI.
+    /// `/login <provider>` — loop emits instructions to run auth CLI.
     Login(String),
     /// `/logout <provider>` — ditto.
     Logout(String),
-    /// Pass this raw text through to the LLM as a normal user prompt
-    /// — the `/` prefix is part of the message.
+    /// `/rewind` / `/checkpoint` — upstream `type: 'local'`; 012a stubs
+    /// with a muted inline note, 012c wires the real session-history
+    /// reset.
+    Rewind,
+    /// `/keybindings` — inline text listing active bindings.
+    ShowKeybindings,
+    /// Overlay menu is pending — 012a fallback. The event loop renders
+    /// a muted inline note identifying the slash by name. 012b replaces
+    /// this variant with real `ActiveMenu` state + modal key handler.
+    MenuPending(MenuKind),
+    /// Pass this raw text through to the LLM as a normal user prompt —
+    /// the `/` prefix is part of the message.
     SendToLlm(String),
     /// Empty input or not a slash. Caller submits as-is.
     Passthrough,
@@ -60,11 +79,7 @@ pub fn classify(input: &str) -> SlashAction {
     if let Some(entry) = slash_catalog::lookup(name) {
         return match entry.kind {
             SlashKind::Local(action) => action.as_action(rest),
-            // AiRouted — pass the full input through to the LLM so the
-            // model expands the slash as a prompt / skill trigger.
-            // Per the "no stubs" directive the previous `Stubbed` variant
-            // is gone; every catalog entry either has a local handler
-            // or rides AI routing.
+            SlashKind::InteractiveMenu(kind) => SlashAction::MenuPending(kind),
             SlashKind::AiRouted => SlashAction::SendToLlm(input.to_string()),
         };
     }
@@ -121,36 +136,19 @@ mod tests {
     }
 
     #[test]
-    fn exit_and_bye_both_exit() {
-        assert_eq!(classify("/exit"), SlashAction::Exit);
+    fn bye_stays_local_exit() {
+        // User decision 2026-04-18 — `/bye` is an otherside-native local
+        // alias of `/exit`, NOT promoted to `AiRouted` or routed through
+        // the ExitConfirm menu. Provides immediate-effect UX.
         assert_eq!(classify("/bye"), SlashAction::Exit);
     }
 
     #[test]
-    fn help_shows_catalog() {
-        assert_eq!(classify("/help"), SlashAction::ShowHelp);
-    }
-
-    #[test]
-    fn ai_routed_slash_passes_through_to_llm() {
-        // `/resume` used to return NotYetWired; the "no stubs" refactor
-        // (2026-04-18) flips it to AiRouted → SendToLlm with the
-        // slash prefix intact so the model handles it.
-        match classify("/resume") {
-            SlashAction::SendToLlm(s) => assert_eq!(s, "/resume"),
-            other => panic!("expected SendToLlm, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn ai_routed_slash_with_args_preserves_args() {
-        match classify("/security check the auth module") {
-            SlashAction::SendToLlm(s) => {
-                assert!(s.starts_with("/security"));
-                assert!(s.contains("check the auth module"));
-            }
-            other => panic!("expected SendToLlm, got {other:?}"),
-        }
+    fn exit_is_confirm_menu() {
+        assert_eq!(
+            classify("/exit"),
+            SlashAction::MenuPending(MenuKind::ExitConfirm)
+        );
     }
 
     #[test]
@@ -159,35 +157,79 @@ mod tests {
     }
 
     #[test]
-    fn model_without_args_shows_current() {
-        assert_eq!(classify("/model"), SlashAction::ShowModel);
+    fn help_is_menu_not_plain_text() {
+        assert_eq!(
+            classify("/help"),
+            SlashAction::MenuPending(MenuKind::Help)
+        );
     }
 
     #[test]
-    fn model_with_arg_switches() {
-        match classify("/model claude-opus-4-7[1m]") {
-            SlashAction::SwitchModel(id) => {
-                assert_eq!(id, "claude-opus-4-7[1m]");
+    fn model_does_not_leak_to_llm() {
+        // Regression guard — previous session routed `/model` to
+        // AiRouted which echoed the literal slash at the provider. The
+        // three-taxonomy mirror restores the correct menu routing.
+        assert_eq!(
+            classify("/model"),
+            SlashAction::MenuPending(MenuKind::Model)
+        );
+        // Args do NOT flip the routing. `/model claude-opus-4-7[1m]`
+        // still opens the picker; selection happens in the menu.
+        assert_eq!(
+            classify("/model claude-opus-4-7[1m]"),
+            SlashAction::MenuPending(MenuKind::Model)
+        );
+    }
+
+    #[test]
+    fn permissions_does_not_leak_to_llm() {
+        assert_eq!(
+            classify("/permissions"),
+            SlashAction::MenuPending(MenuKind::Permissions)
+        );
+    }
+
+    #[test]
+    fn rewind_is_local_not_ai() {
+        assert_eq!(classify("/rewind"), SlashAction::Rewind);
+    }
+
+    #[test]
+    fn checkpoint_aliases_rewind() {
+        assert_eq!(classify("/checkpoint"), SlashAction::Rewind);
+        assert_eq!(classify("/checkpoint"), classify("/rewind"));
+    }
+
+    #[test]
+    fn keybindings_is_local_emit_text() {
+        assert_eq!(classify("/keybindings"), SlashAction::ShowKeybindings);
+    }
+
+    #[test]
+    fn statusline_is_ai_routed() {
+        // Upstream `commands/statusline.tsx` is `type: 'prompt'` — it
+        // generates a statusline config via the model. Preserve that
+        // routing.
+        match classify("/statusline") {
+            SlashAction::SendToLlm(s) => assert_eq!(s, "/statusline"),
+            other => panic!("expected SendToLlm, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ai_routed_slash_passes_through_to_llm() {
+        // `/security` is upstream `type: 'prompt'`; `/cron` is
+        // otherside-native AiRouted. Both preserve the `/` prefix.
+        match classify("/security check the auth module") {
+            SlashAction::SendToLlm(s) => {
+                assert!(s.starts_with("/security"));
+                assert!(s.contains("check the auth module"));
             }
-            other => panic!("expected SwitchModel, got {other:?}"),
+            other => panic!("expected SendToLlm, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn status_and_context_are_local() {
-        assert_eq!(classify("/status"), SlashAction::ShowStatus);
-        assert_eq!(classify("/context"), SlashAction::ShowContext);
-    }
-
-    #[test]
-    fn login_and_logout_carry_provider() {
-        match classify("/login anthropic-oauth") {
-            SlashAction::Login(p) => assert_eq!(p, "anthropic-oauth"),
-            other => panic!("expected Login, got {other:?}"),
-        }
-        match classify("/logout") {
-            SlashAction::Logout(p) => assert_eq!(p, ""),
-            other => panic!("expected Logout, got {other:?}"),
+        match classify("/cron daily") {
+            SlashAction::SendToLlm(s) => assert!(s.starts_with("/cron")),
+            other => panic!("expected SendToLlm, got {other:?}"),
         }
     }
 
@@ -200,20 +242,12 @@ mod tests {
     }
 
     #[test]
-    fn slash_with_args_keeps_args() {
-        // Args after the slash go to the LLM in passthrough mode.
-        match classify("/this-slash-does-not-exist with some args") {
-            SlashAction::SendToLlm(s) => {
-                assert!(s.contains("with some args"));
-            }
-            other => panic!("expected SendToLlm, got {other:?}"),
-        }
-    }
-
-    #[test]
     fn slash_case_insensitive() {
         assert_eq!(classify("/CLEAR"), SlashAction::Clear);
-        assert_eq!(classify("/Help"), SlashAction::ShowHelp);
+        assert_eq!(
+            classify("/Help"),
+            SlashAction::MenuPending(MenuKind::Help)
+        );
     }
 
     #[test]
@@ -234,31 +268,107 @@ mod tests {
     }
 
     #[test]
-    fn every_catalog_slash_resolves_to_local_or_ai() {
-        // After the "no stubs" refactor, every CATALOG entry resolves
-        // EITHER to a Local action OR to SendToLlm (AiRouted). Nothing
-        // falls back to Passthrough — that's reserved for non-slash
-        // input.
+    fn no_catalog_row_returns_passthrough() {
+        // Passthrough is reserved for non-slash input. Every CATALOG
+        // row MUST classify to one of: Local variant, MenuPending, or
+        // SendToLlm.
         for entry in slash_catalog::CATALOG {
             let action = classify(&format!("/{}", entry.name));
-            let is_ok = !matches!(action, SlashAction::Passthrough);
             assert!(
-                is_ok,
-                "/{} must resolve to a recognized action, got {action:?}",
+                !matches!(action, SlashAction::Passthrough),
+                "/{} leaked to Passthrough: {action:?}",
                 entry.name
             );
         }
     }
 
     #[test]
-    fn no_not_yet_wired_variant_leaked() {
-        // Smoke: /resume / /security / /skills — all three had the
-        // NotYetWired treatment before; now they must be SendToLlm.
-        for name in ["resume", "security", "skills", "diff", "mcp", "cron"] {
-            match classify(&format!("/{name}")) {
-                SlashAction::SendToLlm(_) => {}
-                other => panic!("/{name} still stubbed: {other:?}"),
+    fn every_interactive_menu_row_produces_menu_pending() {
+        // Every SlashKind::InteractiveMenu(kind) row classifies to
+        // SlashAction::MenuPending(kind) with the matching MenuKind —
+        // no drift between catalog and classifier.
+        for entry in slash_catalog::CATALOG {
+            if let SlashKind::InteractiveMenu(expected_kind) = entry.kind {
+                match classify(&format!("/{}", entry.name)) {
+                    SlashAction::MenuPending(got_kind) => {
+                        assert_eq!(
+                            got_kind, expected_kind,
+                            "MenuKind drift for /{}: got {got_kind:?}, expected {expected_kind:?}",
+                            entry.name
+                        );
+                    }
+                    other => panic!(
+                        "/{} expected MenuPending({expected_kind:?}), got {other:?}",
+                        entry.name
+                    ),
+                }
             }
         }
+    }
+
+    #[test]
+    fn classification_table_locks_every_row() {
+        // Per-entry classification lock. If a CATALOG row's expected
+        // action drifts, this test names the offender.
+        //
+        // Discriminant = name of the SlashAction variant. Where a
+        // variant carries data, we pin the data only when it's
+        // deterministic (MenuPending carries a MenuKind).
+        use SlashAction as A;
+        let expected: &[(&str, A)] = &[
+            ("help", A::MenuPending(MenuKind::Help)),
+            ("clear", A::Clear),
+            ("exit", A::MenuPending(MenuKind::ExitConfirm)),
+            ("bye", A::Exit),
+            ("compact", A::Compact),
+            ("resume", A::MenuPending(MenuKind::Resume)),
+            ("rewind", A::Rewind),
+            ("branch", A::MenuPending(MenuKind::Branch)),
+            ("copy", A::MenuPending(MenuKind::Copy)),
+            ("export", A::MenuPending(MenuKind::Export)),
+            ("checkpoint", A::Rewind),
+            ("config", A::MenuPending(MenuKind::Config)),
+            ("model", A::MenuPending(MenuKind::Model)),
+            ("effort", A::MenuPending(MenuKind::Effort)),
+            ("plan", A::MenuPending(MenuKind::Plan)),
+            ("permissions", A::MenuPending(MenuKind::Permissions)),
+            ("hooks", A::MenuPending(MenuKind::Hooks)),
+            ("keybindings", A::ShowKeybindings),
+            ("sandbox", A::MenuPending(MenuKind::Sandbox)),
+            ("statusline", A::SendToLlm("/statusline".into())),
+            ("diff", A::MenuPending(MenuKind::Diff)),
+            ("scope", A::SendToLlm("/scope".into())),
+            ("security", A::SendToLlm("/security".into())),
+            ("pr-review", A::SendToLlm("/pr-review".into())),
+            ("deepreview", A::SendToLlm("/deepreview".into())),
+            ("init", A::SendToLlm("/init".into())),
+            ("skills", A::MenuPending(MenuKind::Skills)),
+            ("agents", A::MenuPending(MenuKind::Agents)),
+            ("init-verifiers", A::SendToLlm("/init-verifiers".into())),
+            ("context", A::MenuPending(MenuKind::Context)),
+            ("status", A::MenuPending(MenuKind::Status)),
+            ("mcp", A::MenuPending(MenuKind::Mcp)),
+            ("login", A::MenuPending(MenuKind::Login)),
+            ("logout", A::MenuPending(MenuKind::Logout)),
+            ("dedup-mem", A::SendToLlm("/dedup-mem".into())),
+            ("cron", A::SendToLlm("/cron".into())),
+            ("redteam", A::SendToLlm("/redteam".into())),
+            ("swarm", A::SendToLlm("/swarm".into())),
+        ];
+        for (name, expected_action) in expected {
+            let got = classify(&format!("/{name}"));
+            assert_eq!(
+                got, *expected_action,
+                "/{name} classification drift: got {got:?}, expected {expected_action:?}"
+            );
+        }
+        // Sanity: every CATALOG row is covered.
+        assert_eq!(
+            expected.len(),
+            slash_catalog::CATALOG.len(),
+            "classification table missing rows vs CATALOG ({} vs {})",
+            expected.len(),
+            slash_catalog::CATALOG.len()
+        );
     }
 }

@@ -186,8 +186,7 @@ mod tests {
         for name in ["config", "model", "login", "logout", "init", "mcp",
                      "effort", "plan", "permissions", "diff", "skills",
                      "agents", "context", "keybindings", "sandbox",
-                     "simplify", "verify", "update-config", "statusline",
-                     "init-verifiers"] {
+                     "statusline", "init-verifiers"] {
             let prefix = &name[..1];
             let ac = Autocomplete::from_input(&format!("/{prefix}"))
                 .unwrap_or_else(|| panic!("no matches for prefix /{prefix}"));

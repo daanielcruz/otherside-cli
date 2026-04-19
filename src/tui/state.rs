@@ -304,7 +304,9 @@ impl ConversationState {
     }
 
     /// Surface an inline system note in the streaming area. Used by
-    /// local slashes like `/help` and the NotYetWired stubs.
+    /// local slash dispatch (MenuPending fallback, Rewind stub,
+    /// ShowKeybindings, Login/Logout hints, Compact placeholder) and
+    /// by the streaming error surface.
     pub fn push_system_note(&mut self, text: impl Into<String>) {
         self.messages.push(DisplayMessage {
             role: OpenAiChatRole::System,

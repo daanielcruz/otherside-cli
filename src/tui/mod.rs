@@ -418,6 +418,26 @@ fn handle_key(
                             "to log out: exit the TUI and run:\n    otherside logout --provider {provider}"
                         ));
                     }
+                    slashes::SlashAction::MenuPending(kind) => {
+                        // 012a fallback — overlay menu widget lands in
+                        // 012b. Muted inline note so the slash does not
+                        // leak to the provider. Zero network.
+                        st.push_system_note(format!(
+                            "/{}: menu UI landing in 012b",
+                            kind.slash_name()
+                        ));
+                    }
+                    slashes::SlashAction::Rewind => {
+                        // 012c wires the real session-history rewind.
+                        st.push_system_note(
+                            "/rewind: session-history reset lands in 012c".to_string(),
+                        );
+                    }
+                    slashes::SlashAction::ShowKeybindings => {
+                        st.push_system_note(
+                            "keybindings: Enter submit · Shift+Enter newline · Tab autocomplete · Shift+Tab mode · Esc cancel · Ctrl+C exit".to_string(),
+                        );
+                    }
                     slashes::SlashAction::SendToLlm(_)
                     | slashes::SlashAction::Passthrough => {
                         if let Some(history) = st.submit() {
