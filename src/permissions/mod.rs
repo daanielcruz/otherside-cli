@@ -75,22 +75,43 @@ pub fn resolve(
 
     let empty = PermissionsConfig::default();
     let perms = settings.permissions.as_ref().unwrap_or(&empty);
+    // Explicit deny rules outrank everything else — even Yolo was
+    // already short-circuited above, so here Default/AcceptEdits are
+    // the live modes.
     if let Some(rule) = best_match(tool, tool_input, &perms.deny) {
         return Decision::Deny { rule };
     }
+    // Explicit allow rule → allow regardless of mutating/non-mutating
+    // classification. Matches upstream's `alwaysAllowRules` behavior.
     if let Some(rule) = best_match(tool, tool_input, &perms.allow) {
-        // acceptEdits: pre-approve Edit/Write without a rule — matches
-        // upstream's "accept edits on" mode.
         let _ = rule;
         return Decision::Allow;
     }
+    // acceptEdits: Edit/Write pre-approved without needing a rule,
+    // mirroring upstream "accept edits on" mode.
     if mode == PermissionMode::AcceptEdits && matches!(tool, "Edit" | "Write") {
         return Decision::Allow;
     }
+    // Non-mutating tools (Read/Glob/Grep/ToolSearch/Skill/Agent/
+    // WebFetch/WebSearch/Task*) are allowed by default in every mode
+    // that didn't already short-circuit. Upstream's tool objects
+    // declare `canUseTool` as unconditional allow for read-only
+    // surfaces; only mutating tools flow through the ask path. This
+    // matches `services/tools/toolExecution.ts:608` behavior where
+    // most tools never reach the interactive prompt dialog.
+    if !is_mutating(tool) {
+        return Decision::Allow;
+    }
+    // Explicit ask rule takes precedence over the generic fallthrough
+    // so the user can point the resolver at a specific rule surface.
     if let Some(rule) = best_match(tool, tool_input, &perms.ask) {
         return Decision::Ask { rule: Some(rule) };
     }
 
+    // Mutating tool, no matching rule, no AcceptEdits short-circuit →
+    // user approval required. The interactive modal lives behind
+    // spec 007; until it ships, `dispatch_gated` degrades Ask to
+    // `PermissionDenied` with a modal-pending note.
     Decision::Ask { rule: None }
 }
 

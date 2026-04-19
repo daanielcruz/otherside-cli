@@ -59,34 +59,48 @@ pub struct FrameSlots {
     pub info: Rect,
 }
 
-/// Upper bound on queued rows rendered on-screen. Anything past this
-/// is summarized in the last visible row. 5 matches upstream's
-/// observed soft cap — the prompt queue rarely exceeds it and letting
-/// it grow unbounded would squeeze the streaming area.
+/// Upper bound on queued MESSAGE rows rendered on-screen. Anything
+/// past this is summarized in the last visible row. 5 matches
+/// upstream's observed soft cap — the prompt queue rarely exceeds it
+/// and letting it grow unbounded would squeeze the streaming area.
 pub const QUEUE_ROWS_CAP: u16 = 5;
+
+/// Fixed overhead rows around the queued-message block: 1 row
+/// margin-top (separates from thinking/tip) + 1 row hint below
+/// (`↑ Press up to edit queued messages`). The message rows are
+/// additive on top of this.
+pub const QUEUE_CHROME_ROWS: u16 = 2;
 
 /// Split `area` into bottom-up slots per C44/C51.
 ///
 /// - `streaming_active` toggles the progress + tip rows between
 ///   visible and collapsed.
 /// - `queue_count` grows a queue-slot between the tip line and the
-///   prompt top-pad so upstream's `> <queued message>` trail can
-///   render inline. Capped at [`QUEUE_ROWS_CAP`]; counts above that
-///   still render the cap rows (renderer truncates / summarizes).
+///   prompt top-pad so upstream's queued messages render as
+///   user-style rows above the prompt with a margin-top + hint row.
+///   Message rows capped at [`QUEUE_ROWS_CAP`]; total slot height is
+///   `visible_messages + QUEUE_CHROME_ROWS`. Counts above the cap
+///   still render the cap rows (renderer summarizes overflow in-line).
 pub fn split_frame(area: Rect, streaming_active: bool, queue_count: usize) -> FrameSlots {
     // Display order (top → bottom):
-    //   streaming (Min), [progress (1)], [tip (1)], [queue (N)],
+    //   streaming (Min), [progress (1)], [tip (1)],
+    //   [queue (margin-top + N messages + hint)],
     //   prompt top-pad (1), prompt (3), statusline (1), info (1),
     //   bottom pad (1)
     //
     // prompt top-pad is an always-on 1-row gap so the last streaming
-    // line / tip never hugs the prompt bar — mirrors upstream
-    // ScrollBox spacing above the PromptInput band. Queue rows sit
-    // above the top-pad, not inside it, so each queued message reads
-    // as its own dim `>` bubble matching upstream's transcript style.
-    let queue_rows: u16 = (queue_count as u16)
+    // line / tip never hugs the prompt bar. The queue slot sits above
+    // that top-pad with its own margin-top so the queued message reads
+    // as a sibling of the prompt — matches upstream claude-code's
+    // queued-bubble placement.
+    let message_rows: u16 = (queue_count as u16)
         .min(QUEUE_ROWS_CAP)
         .saturating_mul(u16::from(streaming_active));
+    let queue_rows: u16 = if message_rows > 0 {
+        message_rows + QUEUE_CHROME_ROWS
+    } else {
+        0
+    };
 
     let mut constraints: Vec<Constraint> = vec![Constraint::Min(1)];
     if streaming_active {
@@ -208,21 +222,26 @@ mod tests {
 
     #[test]
     fn queue_slot_grows_with_queue_count() {
+        // Total slot height = message_rows + QUEUE_CHROME_ROWS (2:
+        // margin-top + hint).
         let s1 = split_frame(area(30), true, 1);
         let s2 = split_frame(area(30), true, 3);
-        assert_eq!(s1.queue.unwrap().height, 1);
-        assert_eq!(s2.queue.unwrap().height, 3);
+        assert_eq!(s1.queue.unwrap().height, 1 + QUEUE_CHROME_ROWS);
+        assert_eq!(s2.queue.unwrap().height, 3 + QUEUE_CHROME_ROWS);
         // Queue takes rows from the streaming Min(1) area, not from
         // the fixed rows.
         assert!(s1.streaming.height > s2.streaming.height);
     }
 
     #[test]
-    fn queue_rows_cap_at_five() {
-        // Anything past 5 queued still yields at most 5 rows so the
-        // streaming area keeps breathing room.
+    fn queue_message_rows_cap_at_five() {
+        // Anything past 5 queued still yields at most 5 message rows
+        // (+ chrome); the streaming area keeps breathing room.
         let slots = split_frame(area(40), true, 12);
-        assert_eq!(slots.queue.unwrap().height, 5);
+        assert_eq!(
+            slots.queue.unwrap().height,
+            QUEUE_ROWS_CAP + QUEUE_CHROME_ROWS
+        );
     }
 
     #[test]

@@ -462,48 +462,94 @@ fn render_message(role: OpenAiChatRole, content: &str, width: u16) -> Vec<Line<'
     lines
 }
 
-/// Paint the 017 §4 queue — one `> <preview>` row per queued message,
-/// rendered in the dedicated queue slot above the prompt top-pad. When
-/// the queue exceeds the slot height (see [`layout::QUEUE_ROWS_CAP`]),
-/// the last rendered row collapses into a `… N more` summary so the
-/// total still fits. Mirrors upstream's inline queue trail — each
-/// queued bubble shows up as its own dim line, not a collapsed chip.
+/// Paint the 017 §4 queue — each queued message rendered as a
+/// user-message bubble (same `❯ ` chevron + USER_BG fill as a live
+/// user row) with a 1-row margin above and a `↑ Press up to edit
+/// queued messages` hint below. Mirrors upstream claude-code's queued
+/// bubble placement: the entry looks like any other user message, it
+/// just sits directly above the prompt bar with a margin-top.
 fn draw_queue_lines(f: &mut Frame<'_>, area: Rect, state: &ConversationState) {
-    if area.height == 0 || state.queued_messages.is_empty() {
+    if area.height < 3 || state.queued_messages.is_empty() {
         return;
     }
-    let visible_rows = area.height as usize;
+    // Slot layout: [margin-top (1)] [messages (N)] [hint (1)].
+    let total_rows = area.height as usize;
+    let message_rows = total_rows.saturating_sub(2);
+    if message_rows == 0 {
+        return;
+    }
+
     let total = state.queued_messages.len();
-    let overflow = total.saturating_sub(visible_rows);
-    let reserve_summary = overflow > 0;
-    let body_rows = if reserve_summary {
-        visible_rows.saturating_sub(1)
+    let needs_summary = total > message_rows;
+    let body_slots = if needs_summary {
+        message_rows.saturating_sub(1)
     } else {
-        visible_rows
+        message_rows
     };
 
-    let muted = Style::default().fg(theme::MUTED);
-    let prefix = "> ";
-    let available_cols = (area.width as usize).saturating_sub(prefix.len());
+    let mut lines: Vec<Line<'_>> = Vec::with_capacity(total_rows);
+    // Margin-top — single blank USER_BG row. Separates the queue
+    // bubble from the thinking / tip block above and reads as the
+    // same cohesive block visually.
+    lines.push(blank_user_bg_line(area.width));
 
-    let mut lines: Vec<Line<'_>> = Vec::with_capacity(visible_rows);
-    for msg in state.queued_messages.iter().take(body_rows) {
+    // Each queued message renders exactly like a live user row.
+    for msg in state.queued_messages.iter().take(body_slots) {
         let first_line = msg.lines().next().unwrap_or("");
-        let preview = truncate_for_width(first_line, available_cols);
-        let mut row = String::with_capacity(prefix.len() + preview.len());
-        row.push_str(prefix);
-        row.push_str(&preview);
-        lines.push(Line::from(Span::styled(row, muted)));
+        lines.push(user_bubble_row(first_line, area.width));
     }
-    if reserve_summary {
-        let shown = body_rows;
-        let remaining = total.saturating_sub(shown);
-        let summary = format!("{prefix}… {remaining} more queued");
-        lines.push(Line::from(Span::styled(summary, muted)));
+    if needs_summary {
+        let remaining = total.saturating_sub(body_slots);
+        let summary = format!("… {remaining} more queued");
+        lines.push(user_bubble_row(&summary, area.width));
     }
+
+    // Hint row outside the bubble — MUTED only, no bg fill so it
+    // reads as a separate affordance rather than part of the message.
+    let hint = "↑ Press up to edit queued messages";
+    let hint_row = Line::from(Span::styled(
+        hint.to_string(),
+        Style::default().fg(theme::MUTED),
+    ));
+    lines.push(hint_row);
 
     let para = Paragraph::new(lines);
     f.render_widget(para, area);
+}
+
+/// Build a user-style row (chevron + body + trailing filler) for the
+/// queue slot. Shape matches `render_message`'s User branch so the
+/// queued bubble is indistinguishable from a live user row at the
+/// pixel level.
+fn user_bubble_row(body: &str, width: u16) -> Line<'static> {
+    let prefix = "❯ ";
+    let prefix_style = Style::default().fg(theme::MUTED).bg(theme::USER_BG);
+    let body_style = Style::default().fg(theme::TEXT).bg(theme::USER_BG);
+    let prefix_cols = prefix.chars().count();
+    let max_body_cols = (width as usize).saturating_sub(prefix_cols);
+    let preview = truncate_for_width(body, max_body_cols);
+    let used = prefix_cols + preview.chars().count();
+    let filler_len = (width as usize).saturating_sub(used);
+
+    let mut spans: Vec<Span<'static>> = Vec::with_capacity(3);
+    spans.push(Span::styled(prefix.to_string(), prefix_style));
+    spans.push(Span::styled(preview, body_style));
+    if filler_len > 0 {
+        spans.push(Span::styled(
+            " ".repeat(filler_len),
+            Style::default().bg(theme::USER_BG),
+        ));
+    }
+    Line::from(spans)
+}
+
+/// Full-width blank line with USER_BG fill — the margin-top row of
+/// the queue bubble.
+fn blank_user_bg_line(width: u16) -> Line<'static> {
+    Line::from(Span::styled(
+        " ".repeat(width as usize),
+        Style::default().bg(theme::USER_BG),
+    ))
 }
 
 /// Truncate `s` to fit `max_cols` terminal columns. Char-aware (not
@@ -1138,9 +1184,14 @@ mod tests {
         let mut st = ConversationState::new();
         st.queued_messages.push("first queued".into());
         st.queued_messages.push("second queued".into());
-        let s = render_queue_lines_to_string(&st, 80, 2);
-        assert!(s.contains("> first queued"), "rendered: {s:?}");
-        assert!(s.contains("> second queued"), "rendered: {s:?}");
+        // 2 messages + 2 chrome rows = 4.
+        let s = render_queue_lines_to_string(&st, 80, 4);
+        assert!(s.contains("❯ first queued"), "rendered: {s:?}");
+        assert!(s.contains("❯ second queued"), "rendered: {s:?}");
+        assert!(
+            s.contains("↑ Press up to edit queued messages"),
+            "hint missing: {s:?}"
+        );
     }
 
     #[test]
@@ -1150,10 +1201,10 @@ mod tests {
         for i in 0..7 {
             st.queued_messages.push(format!("msg-{i}"));
         }
-        // 3 rows available → show 2 messages + summary row.
-        let s = render_queue_lines_to_string(&st, 80, 3);
-        assert!(s.contains("> msg-0"), "rendered: {s:?}");
-        assert!(s.contains("> msg-1"), "rendered: {s:?}");
+        // Height 5 → 3 message rows (margin + 3 + hint). Show 2 msgs + summary.
+        let s = render_queue_lines_to_string(&st, 80, 5);
+        assert!(s.contains("❯ msg-0"), "rendered: {s:?}");
+        assert!(s.contains("❯ msg-1"), "rendered: {s:?}");
         assert!(s.contains("… 5 more queued"), "rendered: {s:?}");
     }
 
@@ -1163,12 +1214,10 @@ mod tests {
         let mut st = ConversationState::new();
         let long: String = "x".repeat(200);
         st.queued_messages.push(long);
-        let s = render_queue_lines_to_string(&st, 40, 1);
-        assert!(s.starts_with("> "), "rendered: {s:?}");
+        // 1 message + 2 chrome = 3 rows.
+        let s = render_queue_lines_to_string(&st, 40, 3);
+        assert!(s.contains("❯ "), "chevron missing: {s:?}");
         assert!(s.contains('…'), "ellipsis missing: {s:?}");
-        // Width cap — the first rendered line fits inside 40 cols.
-        let first = s.lines().next().unwrap_or("");
-        assert!(first.chars().count() <= 40, "too wide: {first:?}");
     }
 
     #[test]
@@ -1192,7 +1241,7 @@ mod tests {
             joined.push('\n');
         }
         // No leading `> ` line between tip and prompt when queue empty.
-        assert!(!joined.contains("> queued-"), "stray queue row: {joined:?}");
+        assert!(!joined.contains("❯ queued-"), "stray queue row: {joined:?}");
     }
 
     #[test]
@@ -1217,8 +1266,12 @@ mod tests {
             }
             joined.push('\n');
         }
-        assert!(joined.contains("> queued-alpha"), "rendered: {joined:?}");
-        assert!(joined.contains("> queued-beta"), "rendered: {joined:?}");
+        assert!(joined.contains("❯ queued-alpha"), "rendered: {joined:?}");
+        assert!(joined.contains("❯ queued-beta"), "rendered: {joined:?}");
+        assert!(
+            joined.contains("↑ Press up to edit queued messages"),
+            "hint missing: {joined:?}"
+        );
     }
 
     #[test]
@@ -1241,6 +1294,6 @@ mod tests {
             }
             joined.push('\n');
         }
-        assert!(!joined.contains("> stranded"), "painted during idle: {joined:?}");
+        assert!(!joined.contains("❯ stranded"), "painted during idle: {joined:?}");
     }
 }
