@@ -334,7 +334,7 @@ fn render_message(role: OpenAiChatRole, content: &str, width: u16) -> Vec<Line<'
                 // every span on every line via `Style::bg(USER_BG)`;
                 // a trailing filler extends the fill to the frame
                 // edge because ratatui's `Wrap` doesn't pad to width.
-                let prefix = if i == 0 { ") " } else { "  " };
+                let prefix = if i == 0 { "❯ " } else { "  " };
                 let prefix_style = if i == 0 {
                     Style::default().fg(theme::MUTED).bg(theme::USER_BG)
                 } else {
@@ -637,9 +637,12 @@ fn draw_info_row(
             Style::default().fg(chip_color),
         ));
         if show_cycle_hint {
+            // Cycle hint stays MUTED per user decision — only the
+            // chip symbol + label carry the mode color; the
+            // parenthetical is ambient chrome, not state.
             spans.push(Span::styled(
                 " (shift+tab to cycle)".to_string(),
-                Style::default().fg(chip_color).add_modifier(Modifier::DIM),
+                Style::default().fg(theme::MUTED),
             ));
         }
     }
@@ -714,10 +717,10 @@ mod tests {
     }
 
     #[test]
-    fn render_message_user_chevron_is_paren_in_muted() {
+    fn render_message_user_chevron_is_muted() {
         let lines = render_message(OpenAiChatRole::User, "hello", 80);
         let first = &lines[0].spans[0];
-        assert_eq!(first.content, ") ");
+        assert_eq!(first.content, "❯ ");
         assert_eq!(first.style.fg, Some(theme::MUTED));
         assert_eq!(first.style.bg, Some(theme::USER_BG));
     }
@@ -733,7 +736,7 @@ mod tests {
         let lines = render_message(OpenAiChatRole::User, "line1\nline2", 80);
         assert_eq!(lines.len(), 2);
         // First line carries the chevron.
-        assert_eq!(lines[0].spans[0].content, ") ");
+        assert_eq!(lines[0].spans[0].content, "❯ ");
         // Continuation line indents with two spaces — no chevron.
         assert_eq!(lines[1].spans[0].content, "  ");
         assert_eq!(lines[1].spans[0].style.bg, Some(theme::USER_BG));
