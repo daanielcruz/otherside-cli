@@ -198,7 +198,7 @@ pub fn render_tool_call(view: &ToolCallView<'_>) -> Vec<Line<'static>> {
 ///
 /// Clips long strings, flattens newlines. Empty / non-object → empty
 /// string.
-fn summarize_args(name: &str, args: &Value) -> String {
+pub fn summarize_args(name: &str, args: &Value) -> String {
     let obj = match args.as_object() {
         Some(o) => o,
         None => return String::new(),

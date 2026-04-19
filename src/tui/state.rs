@@ -135,20 +135,12 @@ pub fn format_tool_history_entry(entry: &ToolCallEntry) -> String {
         ToolStatus::Ok => "ok",
         ToolStatus::Error => "err",
     };
-    let short_args = entry
-        .args
-        .as_object()
-        .and_then(|o| {
-            o.iter().next().map(|(k, v)| {
-                let v_str = match v {
-                    Value::String(s) => s.clone(),
-                    other => other.to_string(),
-                };
-                let clipped: String = v_str.chars().take(60).collect();
-                format!("{k}={clipped}")
-            })
-        })
-        .unwrap_or_default();
+    // Archive using the same per-tool header the live render uses, so
+    // archived tool calls don't regress to the raw `key=value` shape
+    // the first-KV heuristic used to emit. Elapsed stays in the pipe
+    // for consumers but the archived header renderer no longer paints
+    // it — upstream shape is `⏺ Name(args)`, no elapsed chip.
+    let short_args = crate::tui::tool_render::summarize_args(&entry.name, &entry.args);
     format!(
         "{}|{}|{}|{}",
         status_glyph, entry.name, entry.elapsed_ms, short_args

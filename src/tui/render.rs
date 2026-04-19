@@ -427,13 +427,15 @@ fn render_message(role: OpenAiChatRole, content: &str, width: u16) -> Vec<Line<'
             OpenAiChatRole::Tool => {
                 // Role::Tool carries a `format_tool_history_entry`
                 // pipe-delimited summary: `status|name|elapsed|args`.
-                // Paint compact: ● <name>(<args>) · <elapsed>ms. Bullet
-                // green on ok, red on err, muted otherwise.
+                // Upstream header shape is `⏺ Name(args)` — no elapsed
+                // chip, no status text. `args` already carries the
+                // per-tool summary from `summarize_args` (via
+                // format_tool_history_entry), so paint it verbatim.
                 if i > 0 {
                     continue;
                 }
                 let parts: Vec<&str> = raw.splitn(4, '|').collect();
-                let (status, name, elapsed_ms, args) = match parts.as_slice() {
+                let (status, name, _elapsed_ms, args) = match parts.as_slice() {
                     [s, n, e, a] => (*s, *n, *e, *a),
                     _ => ("", raw, "0", ""),
                 };
@@ -443,13 +445,7 @@ fn render_message(role: OpenAiChatRole, content: &str, width: u16) -> Vec<Line<'
                     _ => theme::MUTED,
                 };
                 let bullet = if cfg!(target_os = "macos") { "⏺ " } else { "● " };
-                let elapsed_chip = elapsed_ms
-                    .parse::<u64>()
-                    .ok()
-                    .filter(|&n| n > 0)
-                    .map(|n| format!(" · {n}ms"))
-                    .unwrap_or_default();
-                let mut spans: Vec<Span<'static>> = Vec::with_capacity(4);
+                let mut spans: Vec<Span<'static>> = Vec::with_capacity(3);
                 spans.push(Span::styled(
                     bullet.to_string(),
                     Style::default()
@@ -463,12 +459,6 @@ fn render_message(role: OpenAiChatRole, content: &str, width: u16) -> Vec<Line<'
                 if !args.is_empty() {
                     spans.push(Span::styled(
                         format!("({args})"),
-                        Style::default().fg(theme::MUTED),
-                    ));
-                }
-                if !elapsed_chip.is_empty() {
-                    spans.push(Span::styled(
-                        elapsed_chip,
                         Style::default().fg(theme::MUTED),
                     ));
                 }

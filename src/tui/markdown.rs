@@ -44,30 +44,33 @@ const STRIPPED_XML_TAGS: &[&str] = &[
 /// inline XML the model might emit (e.g. code samples demonstrating
 /// HTML) still renders. Mirrors upstream `stripPromptXMLTags`.
 pub fn strip_prompt_xml_tags(src: &str) -> String {
+    // Iterate by UTF-8 char boundaries, not bytes. `bytes[i] as char`
+    // silently mangles any multi-byte codepoint into two Latin-1 chars
+    // (`á` → `Ã¡`) — the source of long-standing mojibake on accented
+    // prose and emoji in the assistant transcript.
     let mut out = String::with_capacity(src.len());
-    let bytes = src.as_bytes();
     let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'<' {
-            if let Some(after_open) = find_open_tag(&src[i..]) {
-                let tag_name = &src[i + 1..i + after_open - 1];
+    while i < src.len() {
+        let rest = &src[i..];
+        if rest.starts_with('<') {
+            if let Some(after_open) = find_open_tag(rest) {
+                let tag_name = &rest[1..after_open - 1];
                 if STRIPPED_XML_TAGS.iter().any(|t| t.eq_ignore_ascii_case(tag_name)) {
-                    // Locate the matching close — case-insensitive.
                     let close_marker = format!("</{}>", tag_name);
-                    let rest = &src[i + after_open..];
-                    if let Some(close_rel) = find_close_tag_ci(rest, &close_marker) {
+                    let body = &rest[after_open..];
+                    if let Some(close_rel) = find_close_tag_ci(body, &close_marker) {
                         i += after_open + close_rel + close_marker.len();
                         continue;
                     }
-                    // Unmatched open tag — bail out conservatively:
-                    // drop the rest so the raw reminder text doesn't
-                    // leak into the transcript.
+                    // Unmatched open tag — bail out conservatively: drop
+                    // the rest so the raw reminder text doesn't leak.
                     break;
                 }
             }
         }
-        out.push(bytes[i] as char);
-        i += 1;
+        let ch = rest.chars().next().expect("non-empty remainder");
+        out.push(ch);
+        i += ch.len_utf8();
     }
     out
 }
@@ -252,14 +255,13 @@ pub fn render(src: &str) -> Vec<Line<'static>> {
                 }
             }
             Event::Code(t) => {
-                // Upstream renders inline code as a styled pill WITHOUT
-                // the literal backtick markers — the background + color
-                // combination carries the "this is code" signal.
+                // Upstream renders inline code as a color swap ONLY —
+                // NO background pill. Color carries the "this is code"
+                // signal; the background was otherside's own idea and
+                // mismatched the upstream terminal rendering.
                 current_spans.push(Span::styled(
                     t.to_string(),
-                    Style::default()
-                        .fg(theme::SUGGESTION)
-                        .bg(theme::SUBTLE),
+                    Style::default().fg(theme::SUGGESTION),
                 ));
             }
             Event::SoftBreak => {
