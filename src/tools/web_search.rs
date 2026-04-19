@@ -61,29 +61,53 @@ const REQUEST_TIMEOUT_SECS: u64 = 30;
 /// 10; asking for more errors out.
 const DEFAULT_RESULT_COUNT: u8 = 10;
 
-/// Single result row. Upstream's Zod shape is `{title, url}`; we add
-/// `snippet` because Google CSE returns it and it's cheap context for
-/// the model. Field order matches the wire JSON (preserve_order).
+/// A single hit inside a `SearchResult.content` list. Matches
+/// upstream's `searchHitSchema` at
+/// `tools/WebSearchTool/WebSearchTool.ts:43-46`: strictly `{title,
+/// url}` — no snippet, no rank. Field order matches the wire JSON
+/// (preserve_order).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SearchResult {
+pub struct SearchHit {
     pub title: String,
     pub url: String,
-    pub snippet: String,
+}
+
+impl SearchHit {
+    fn to_json(&self) -> Value {
+        json!({
+            "title": self.title,
+            "url": self.url,
+        })
+    }
+}
+
+/// A grouped block of hits from one server-side search. Matches
+/// upstream's `searchResultSchema` at
+/// `tools/WebSearchTool/WebSearchTool.ts:48-52`: `{tool_use_id,
+/// content: [{title, url}]}`. Upstream emits one of these per
+/// `server_tool_use` block; with Google CSE we do a single call and
+/// wrap the entire hit list into ONE `SearchResult` with a
+/// synthetic `tool_use_id`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchResult {
+    pub tool_use_id: String,
+    pub content: Vec<SearchHit>,
 }
 
 impl SearchResult {
     fn to_json(&self) -> Value {
         json!({
-            "title": self.title,
-            "url": self.url,
-            "snippet": self.snippet,
+            "tool_use_id": self.tool_use_id,
+            "content": self.content.iter().map(SearchHit::to_json).collect::<Vec<_>>(),
         })
     }
 }
 
 /// Pluggable search backend. Runtime-selected per call; see module docs.
+/// Backends return a flat list of hits; the dispatcher wraps them into
+/// one or more `SearchResult` blocks before serializing.
 trait WebSearchBackend {
-    fn search(&self, query: &str) -> Result<Vec<SearchResult>, ToolError>;
+    fn search(&self, query: &str) -> Result<Vec<SearchHit>, ToolError>;
 }
 
 /// Default backend when the Google CSE env vars are not set. Returns a
@@ -92,7 +116,7 @@ trait WebSearchBackend {
 struct UnavailableBackend;
 
 impl WebSearchBackend for UnavailableBackend {
-    fn search(&self, _query: &str) -> Result<Vec<SearchResult>, ToolError> {
+    fn search(&self, _query: &str) -> Result<Vec<SearchHit>, ToolError> {
         // Intentionally empty — the dispatcher materializes the stub
         // marker string into the `results` array so the model sees the
         // same `{query, results, durationSeconds}` contract regardless
@@ -152,12 +176,17 @@ struct CseItem {
     title: String,
     #[serde(default)]
     link: String,
+    // Deserialized but dropped on the wire — upstream's `SearchHit`
+    // schema is strictly `{title, url}`. Keeping the field here
+    // tolerates Google CSE responses without requiring a separate
+    // type; we just don't surface the data.
     #[serde(default)]
+    #[allow(dead_code)]
     snippet: String,
 }
 
 impl WebSearchBackend for GoogleCseBackend {
-    fn search(&self, query: &str) -> Result<Vec<SearchResult>, ToolError> {
+    fn search(&self, query: &str) -> Result<Vec<SearchHit>, ToolError> {
         let url = self.build_url(query)?;
 
         // reqwest is async; dispatcher is sync. Reuse the WebFetch
@@ -199,15 +228,15 @@ impl WebSearchBackend for GoogleCseBackend {
     }
 }
 
-/// Convert a parsed CSE response into `SearchResult`s. Extracted so the
-/// parser can be unit-tested without any async plumbing.
-fn parse_cse_items(resp: CseResponse) -> Vec<SearchResult> {
+/// Convert a parsed CSE response into `SearchHit`s. Extracted so the
+/// parser can be unit-tested without any async plumbing. Snippet is
+/// dropped — upstream's `SearchHit` schema is `{title, url}` only.
+fn parse_cse_items(resp: CseResponse) -> Vec<SearchHit> {
     resp.items
         .into_iter()
-        .map(|it| SearchResult {
+        .map(|it| SearchHit {
             title: it.title,
             url: it.link,
-            snippet: it.snippet,
         })
         .collect()
 }
@@ -232,16 +261,15 @@ fn parse_domain_list(args: &Value, field: &str) -> Result<Vec<String>, ToolError
     }
 }
 
-/// Drop results that fail the allow-list or match the block-list.
+/// Drop hits that fail the allow-list or match the block-list.
 /// Filtering is host-based — subdomain matches count (e.g. allow
 /// `wikipedia.org` keeps `en.wikipedia.org`). Both lists empty → no-op.
 fn filter_by_domain(
-    results: Vec<SearchResult>,
+    hits: Vec<SearchHit>,
     allowed: &[String],
     blocked: &[String],
-) -> Vec<SearchResult> {
-    results
-        .into_iter()
+) -> Vec<SearchHit> {
+    hits.into_iter()
         .filter(|r| {
             let Ok(parsed) = url::Url::parse(&r.url) else {
                 // Malformed URL — conservatively drop it.
@@ -306,47 +334,85 @@ pub fn web_search(args: &Value) -> Result<Value, ToolError> {
     let query = args
         .get("query")
         .and_then(Value::as_str)
-        .ok_or_else(|| ToolError::InvalidArgs("query is required".into()))?
+        .ok_or_else(|| ToolError::InvalidArgs("Error: Missing query".into()))?
         .to_string();
     if query.trim().is_empty() {
-        return Err(ToolError::InvalidArgs("query must not be empty".into()));
+        return Err(ToolError::InvalidArgs("Error: Missing query".into()));
+    }
+    // Upstream `inputSchema` enforces `z.string().min(2)`.
+    if query.chars().count() < 2 {
+        return Err(ToolError::InvalidArgs(
+            "Error: query must be at least 2 characters".into(),
+        ));
     }
 
     let allowed = parse_domain_list(args, "allowed_domains")?;
     let blocked = parse_domain_list(args, "blocked_domains")?;
     if !allowed.is_empty() && !blocked.is_empty() {
-        // Mirrors upstream's `validateInput` — both lists together are
-        // ambiguous. Forcing the caller to pick one prevents the "why
-        // did my allow-list drop results that weren't on my block-list"
-        // support surface.
+        // Upstream `validateInput` errorCode 2 — the ambiguity is
+        // rejected at input-validation time so the caller sees a
+        // clear message instead of silently odd filtering.
         return Err(ToolError::InvalidArgs(
-            "cannot specify both allowed_domains and blocked_domains in the same call".into(),
+            "Error: Cannot specify both allowed_domains and blocked_domains in the same request"
+                .into(),
         ));
     }
 
     let backend = select_backend();
     let started = Instant::now();
-    let raw = backend.search(&query)?;
+    let raw_hits = backend.search(&query)?;
     let duration_seconds = started.elapsed().as_secs_f64();
 
-    // Unavailable-backend path: surface the marker as a string entry so
-    // the results array matches upstream's `SearchResult | string` shape.
-    // Any empty-hits return from a real backend also falls here, but
-    // only when the backend really is UnavailableBackend — we detect by
-    // presence of env vars rather than downcasting the trait object.
+    // Unavailable-backend path: surface the marker as a string entry
+    // so the results array matches upstream's `SearchResult | string`
+    // shape (`mapToolResultToToolResultBlockParam` treats string
+    // entries as text summaries).
     let is_unavailable = GoogleCseBackend::from_env().is_none();
     let results_json: Vec<Value> = if is_unavailable {
         vec![Value::String(UNAVAILABLE_MARKER.to_string())]
     } else {
-        let filtered = filter_by_domain(raw, &allowed, &blocked);
-        filtered.iter().map(SearchResult::to_json).collect()
+        let filtered = filter_by_domain(raw_hits, &allowed, &blocked);
+        // Wrap all hits from the single backend call into ONE
+        // `SearchResult` block — upstream emits one block per
+        // `server_tool_use` and our Google-CSE backend performs
+        // exactly one search per invocation, so the grouping is
+        // 1:1. Synthetic `tool_use_id` stays stable per call so
+        // callers that key off it (like `getSearchSummary`) still
+        // see a distinct block per dispatch.
+        if filtered.is_empty() {
+            // Empty hits + real backend → upstream would emit no
+            // `SearchResult` blocks. Leave `results: []` so the
+            // preview renders `Did 0 searches in Xs` honestly.
+            Vec::new()
+        } else {
+            let group = SearchResult {
+                tool_use_id: format!("search_{}", started.elapsed().as_nanos()),
+                content: filtered,
+            };
+            vec![group.to_json()]
+        }
     };
 
-    Ok(json!({
+    let mut out = json!({
         "query": query,
         "results": results_json,
         "durationSeconds": duration_seconds,
-    }))
+    });
+    // Upstream `maxResultSizeChars: 100_000`: tool-results beyond the
+    // cap are persisted instead of inlined. We enforce the soft cap
+    // by truncating `results` to a string marker if the serialized
+    // JSON blows past the budget. Matches upstream's "oversized
+    // result" semantics without the disk-persist path (not yet wired).
+    const MAX_RESULT_SIZE_CHARS: usize = 100_000;
+    let serialized_len = serde_json::to_string(&out["results"])
+        .map(|s| s.len())
+        .unwrap_or(0);
+    if serialized_len > MAX_RESULT_SIZE_CHARS {
+        out["results"] = Value::Array(vec![Value::String(format!(
+            "web_search_result_truncated - payload exceeded {MAX_RESULT_SIZE_CHARS} chars"
+        ))]);
+    }
+    Ok(out)
 }
 
 /// `WebSearch` schema — otherside-native synthesis of upstream's Zod at
@@ -441,8 +507,25 @@ mod tests {
         let saved = clear_cse_env();
         let err = web_search(&json!({"query": "   "})).unwrap_err();
         restore_cse_env(saved);
+        // Upstream `validateInput` errorCode 1 message shape.
         match err {
-            ToolError::InvalidArgs(msg) => assert!(msg.contains("empty")),
+            ToolError::InvalidArgs(msg) => {
+                assert!(msg.contains("Missing query"), "actual: {msg}");
+            }
+            _ => panic!("expected InvalidArgs"),
+        }
+    }
+
+    #[test]
+    fn web_search_rejects_one_char_query() {
+        // Upstream schema: `z.string().min(2)`.
+        let saved = clear_cse_env();
+        let err = web_search(&json!({"query": "a"})).unwrap_err();
+        restore_cse_env(saved);
+        match err {
+            ToolError::InvalidArgs(msg) => {
+                assert!(msg.contains("2 characters"), "actual: {msg}");
+            }
             _ => panic!("expected InvalidArgs"),
         }
     }
@@ -560,21 +643,19 @@ mod tests {
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].title, "A");
         assert_eq!(hits[0].url, "https://a.example/x");
-        assert_eq!(hits[0].snippet, "aa");
         assert_eq!(hits[1].url, "https://b.example/y");
     }
 
     #[test]
     fn parse_cse_items_tolerates_missing_fields() {
-        // Google occasionally omits `snippet` on very-short results.
-        // Default to empty strings rather than erroring.
+        // Google occasionally omits optional fields on very-short
+        // results. Default to empty strings rather than erroring.
         let raw = json!({"items": [{"title": "T"}]});
         let parsed: CseResponse = serde_json::from_value(raw).unwrap();
         let hits = parse_cse_items(parsed);
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].title, "T");
         assert_eq!(hits[0].url, "");
-        assert_eq!(hits[0].snippet, "");
     }
 
     #[test]
@@ -585,22 +666,19 @@ mod tests {
         assert!(hits.is_empty());
     }
 
-    fn hits() -> Vec<SearchResult> {
+    fn hits() -> Vec<SearchHit> {
         vec![
-            SearchResult {
+            SearchHit {
                 title: "Wiki".into(),
                 url: "https://en.wikipedia.org/wiki/Rust".into(),
-                snippet: "".into(),
             },
-            SearchResult {
+            SearchHit {
                 title: "FB".into(),
                 url: "https://facebook.com/page".into(),
-                snippet: "".into(),
             },
-            SearchResult {
+            SearchHit {
                 title: "Gh".into(),
                 url: "https://github.com/rust-lang/rust".into(),
-                snippet: "".into(),
             },
         ]
     }
@@ -635,10 +713,9 @@ mod tests {
     #[test]
     fn filter_drops_malformed_url() {
         let mut h = hits();
-        h.push(SearchResult {
+        h.push(SearchHit {
             title: "bad".into(),
             url: "not-a-url".into(),
-            snippet: "".into(),
         });
         let out = filter_by_domain(h, &[], &[]);
         // Malformed URL conservatively dropped even with empty lists.

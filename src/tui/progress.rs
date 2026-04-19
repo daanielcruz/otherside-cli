@@ -30,41 +30,44 @@ use super::render::theme;
 /// jerk. Pointedly NOT the upstream Braille-dot / asterisk cycle.
 const SPINNER_FRAMES: &[char] = &['◰', '◳', '◲', '◱', '◲', '◳', '◰', '◱'];
 
-/// Otherside-native verb rotation. Every entry is a sideways wink at
-/// reverse engineering — unwinding, chasing xrefs, walking the call
-/// stack, patching flow, reading past the symbols — without saying
-/// the words out loud. Playful, slightly surreal, never corporate.
+/// Otherside-native verb rotation. Every entry is a quiet, off-angle
+/// wink at reverse engineering — all jargon stripped. No `xrefs`,
+/// `symbols`, `frames`, `wire`, `polarity`, `intent`, `context`. Each
+/// verb should read like a harmless everyday motion and still carry
+/// the feeling of walking something backwards, listening to something
+/// hidden, or watching what was supposed to stay off-screen. Playful,
+/// slightly surreal, never corporate.
 const VERBS: &[&str] = &[
     "Thinking",
     "Cogitating",
     "Unwinding",
-    "Chasing xrefs",
-    "Stepping through",
-    "Patching the flow",
-    "Peeking offsets",
-    "Tracing the call",
-    "Walking the wire",
-    "Reading the headers",
-    "Mapping shadows",
-    "Inverting the path",
+    "Squinting",
+    "Eavesdropping",
     "Folding the loop",
-    "Shadowing the state",
-    "Echoing the return",
-    "Unpacking intent",
-    "Resolving symbols",
-    "Pulling the thread",
+    "Chasing echoes",
+    "Checking mirrors",
+    "Walking widdershins",
+    "Reading sideways",
+    "Echo-locating",
+    "Unbuttoning",
+    "Thumbing through",
+    "Measuring drift",
+    "Counting hops",
+    "Pacing backwards",
+    "Tiptoeing",
+    "Listening for clicks",
+    "Tracing whispers",
+    "Parsing silences",
+    "Humming",
+    "Stacking mirrors",
+    "Rewiring nerves",
     "Drifting upstream",
-    "Untangling jumps",
-    "Humming the entropy",
-    "Reading between frames",
-    "Reconstructing context",
-    "Sniffing the wire",
-    "Walking backwards",
-    "Flipping polarity",
-    "Peeling layers",
-    "Reversing the passage",
-    "Observing the drift",
-    "Decoding intent",
+    "Reading marginalia",
+    "Consulting the auguries",
+    "Nudging the dial",
+    "Unraveling stitches",
+    "Minding the gaps",
+    "Cracking knuckles",
 ];
 
 /// Monotonic turn counter seeded from an AtomicU64. Each call to
