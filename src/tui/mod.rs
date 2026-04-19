@@ -390,11 +390,11 @@ fn handle_key(
 
     // An active overlay menu captures focus first. Every key is
     // routed through the menu handler until it resolves (Enter /
-    // Esc). Mirrors upstream `local-jsx` mount shape. Return false
-    // so the event loop keeps running — menus never request exit.
+    // Esc). Mirrors upstream `local-jsx` mount shape. A menu can
+    // request quit via `ExitConfirm` — propagate the bool so the
+    // event loop breaks cleanly.
     if st.active_menu.is_some() {
-        handle_menu_key(k, st, thinking);
-        return false;
+        return handle_menu_key(k, st, thinking);
     }
 
     let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
@@ -667,37 +667,244 @@ fn open_menu_for(st: &mut ConversationState, kind: slash_catalog::MenuKind) {
     // overlay and reads as a half-canceled command.
     st.input.clear();
     st.autocomplete = None;
-    match kind {
-        slash_catalog::MenuKind::Effort => {
-            let current = st.effort_label;
-            st.active_menu = Some(menu::OverlayMenu::new_effort(current));
-        }
-        other => {
-            st.push_system_note(format!(
-                "/{}: menu UI landing in 012b",
-                other.slash_name()
-            ));
-        }
+    use slash_catalog::MenuKind as K;
+    let overlay = match kind {
+        K::Effort => menu::OverlayMenu::new_effort(st.effort_label),
+        K::ExitConfirm => menu::OverlayMenu::new_exit_confirm(),
+        K::Permissions => menu::OverlayMenu::new_permissions(st.permission_mode),
+        K::Model => menu::OverlayMenu::new_model(&st.model),
+        K::Help => menu::OverlayMenu::new_info(
+            K::Help,
+            "Slash commands".into(),
+            help_menu_hints(),
+        ),
+        K::Status => menu::OverlayMenu::new_info(
+            K::Status,
+            "Session status".into(),
+            status_menu_hints(st),
+        ),
+        K::Context => menu::OverlayMenu::new_info(
+            K::Context,
+            "Context window".into(),
+            context_menu_hints(st),
+        ),
+        K::Config => menu::OverlayMenu::new_info(
+            K::Config,
+            "Settings snapshot".into(),
+            config_menu_hints(st),
+        ),
+        K::Skills => menu::OverlayMenu::new_info(
+            K::Skills,
+            "Skills".into(),
+            vec![
+                "Skills are bundled under otherside-cli/skills/.".into(),
+                "Use the Skill tool to load one mid-turn.".into(),
+            ],
+        ),
+        K::Agents => menu::OverlayMenu::new_info(
+            K::Agents,
+            "Subagents".into(),
+            vec![
+                "Subagents live at otherside-cli/agents/.".into(),
+                "Invoke via the Agent tool with `subagent_type`.".into(),
+            ],
+        ),
+        K::Mcp => menu::OverlayMenu::new_info(
+            K::Mcp,
+            "MCP servers".into(),
+            vec![
+                "MCP JSON-RPC client lands in the Phase 3 tier.".into(),
+                "No servers active this session.".into(),
+            ],
+        ),
+        K::Login => menu::OverlayMenu::new_info(
+            K::Login,
+            "Log in".into(),
+            vec![
+                "login needs stdin interaction.".into(),
+                "Exit and run: otherside login --provider <id>".into(),
+            ],
+        ),
+        K::Logout => menu::OverlayMenu::new_info(
+            K::Logout,
+            "Log out".into(),
+            vec![
+                "Exit and run: otherside logout --provider <id>".into(),
+            ],
+        ),
+        K::Plan => menu::OverlayMenu::new_info(
+            K::Plan,
+            "Plan mode".into(),
+            vec![
+                "Toggle plan mode with Shift+Tab.".into(),
+                "All mutating tools are denied while plan is on.".into(),
+            ],
+        ),
+        K::Hooks => menu::OverlayMenu::new_info(
+            K::Hooks,
+            "Hooks".into(),
+            hooks_menu_hints(st),
+        ),
+        K::Sandbox => menu::OverlayMenu::new_info(
+            K::Sandbox,
+            "Sandbox".into(),
+            vec![
+                "Sandbox isolation is not yet wired.".into(),
+                "Tracked in the Phase 3 tier.".into(),
+            ],
+        ),
+        K::Diff => menu::OverlayMenu::new_info(
+            K::Diff,
+            "Diff".into(),
+            vec![
+                "Diff picker lands with session history (spec 008).".into(),
+            ],
+        ),
+        K::Resume => menu::OverlayMenu::new_info(
+            K::Resume,
+            "Resume".into(),
+            vec![
+                "Session resume lands with persistence (spec 008).".into(),
+            ],
+        ),
+        K::Branch => menu::OverlayMenu::new_info(
+            K::Branch,
+            "Branch".into(),
+            vec![
+                "Session branch picker lands with persistence (spec 008).".into(),
+            ],
+        ),
+        K::Copy => menu::OverlayMenu::new_info(
+            K::Copy,
+            "Copy".into(),
+            vec![
+                "Copy-to-clipboard lands with persistence (spec 008).".into(),
+            ],
+        ),
+        K::Export => menu::OverlayMenu::new_info(
+            K::Export,
+            "Export".into(),
+            vec![
+                "Transcript export lands with persistence (spec 008).".into(),
+            ],
+        ),
+    };
+    st.active_menu = Some(overlay);
+}
+
+fn help_menu_hints() -> Vec<String> {
+    use super::tui::slash_catalog::CATALOG;
+    CATALOG
+        .iter()
+        .map(|e| format!("/{}  —  {}", e.name, e.brief))
+        .collect()
+}
+
+fn status_menu_hints(st: &ConversationState) -> Vec<String> {
+    vec![
+        format!("model: {}", st.model),
+        format!("permission: {:?}", st.permission_mode),
+        format!(
+            "context: {}/{}",
+            st.input_tokens,
+            st.context_window_label()
+        ),
+        format!(
+            "effort: {}",
+            st.effort_label.unwrap_or("auto")
+        ),
+        format!("verbose: {}", if st.render_verbose { "on" } else { "off" }),
+    ]
+}
+
+fn context_menu_hints(st: &ConversationState) -> Vec<String> {
+    let used = st.input_tokens + st.total_output_tokens();
+    let pct = if st.context_window == 0 {
+        0
+    } else {
+        (used.saturating_mul(100) / st.context_window).min(100)
+    };
+    vec![
+        format!("window: {}", st.context_window_label()),
+        format!("used: ~{} tokens", used),
+        format!("fill: {}%", pct),
+    ]
+}
+
+fn config_menu_hints(st: &ConversationState) -> Vec<String> {
+    let mut lines = vec![
+        format!(
+            "default provider: {}",
+            st.settings
+                .default_provider
+                .clone()
+                .unwrap_or_else(|| "(unset)".into())
+        ),
+        format!(
+            "default model: {}",
+            st.settings
+                .default_model
+                .clone()
+                .unwrap_or_else(|| "(unset)".into())
+        ),
+        format!(
+            "log level: {}",
+            st.settings
+                .log_level
+                .clone()
+                .unwrap_or_else(|| "(unset)".into())
+        ),
+        format!(
+            "effort: {}",
+            st.settings
+                .effort_level
+                .clone()
+                .unwrap_or_else(|| "(unset)".into())
+        ),
+        format!(
+            "verbose: {}",
+            st.settings
+                .verbose
+                .map(|b| if b { "true".to_string() } else { "false".to_string() })
+                .unwrap_or_else(|| "(unset)".into())
+        ),
+    ];
+    if let Some(sl) = st.settings.statusline.as_ref() {
+        lines.push(format!("statusline: {:?}", sl));
     }
+    lines
+}
+
+fn hooks_menu_hints(st: &ConversationState) -> Vec<String> {
+    let Some(h) = st.settings.hooks.as_ref() else {
+        return vec!["no hooks configured".into()];
+    };
+    vec![
+        format!("pre_tool_use: {}", h.pre_tool_use.len()),
+        format!("post_tool_use: {}", h.post_tool_use.len()),
+        format!("user_prompt_submit: {}", h.user_prompt_submit.len()),
+        format!("stop: {}", h.stop.len()),
+    ]
 }
 
 /// Route a key event through the active overlay menu. Consumes
 /// Enter / Esc to resolve the overlay and the arrow keys to move the
-/// cursor. Everything else is swallowed — menus are modal.
+/// cursor. Everything else is swallowed — menus are modal. Returns
+/// `true` when the overlay requested an app-wide exit.
 fn handle_menu_key(
     k: KeyEvent,
     st: &mut ConversationState,
     thinking: &mut Option<ThinkingConfig>,
-) {
+) -> bool {
     // Esc cancels the overlay without a side effect. Explicit
     // `st.active_menu = None` so a future user-configurable close
     // hook has a single mutation point to intercept.
     if matches!(k.code, KeyCode::Esc) {
         st.active_menu = None;
-        return;
+        return false;
     }
     let Some(menu_state) = st.active_menu.as_mut() else {
-        return;
+        return false;
     };
     match k.code {
         KeyCode::Up => menu_state.move_up(),
@@ -708,11 +915,12 @@ fn handle_menu_key(
             let outcome = menu_state.commit_outcome();
             st.active_menu = None;
             if let Some(outcome) = outcome {
-                apply_menu_outcome(st, thinking, outcome);
+                return apply_menu_outcome(st, thinking, outcome);
             }
         }
         _ => {} // modal — swallow everything else
     }
+    false
 }
 
 /// Route a key event through the active permission prompt. Esc
@@ -766,17 +974,60 @@ fn session_rule_for(tool_name: &str, args_preview: &str) -> String {
 
 /// Apply the overlay's commit outcome to session state. Each variant
 /// is side-effectful: `SetEffort` flips the active thinking config,
-/// updates the progress-line chip, and writes back to settings.json.
+/// `SetPermissionMode` swaps the posture, `SetModel` switches model,
+/// `ExitApp` propagates a quit request. Returns `true` when the caller
+/// should break out of the event loop (only `ExitApp` sets that).
 fn apply_menu_outcome(
     st: &mut ConversationState,
     thinking: &mut Option<ThinkingConfig>,
     outcome: menu::OverlayMenuOutcome,
-) {
+) -> bool {
     match outcome {
         menu::OverlayMenuOutcome::SetEffort { action_id, label } => {
             apply_effort_outcome(st, thinking, &action_id, &label);
+            false
         }
+        menu::OverlayMenuOutcome::SetPermissionMode { action_id } => {
+            apply_permission_outcome(st, &action_id);
+            false
+        }
+        menu::OverlayMenuOutcome::SetModel { model_id } => {
+            apply_model_outcome(st, &model_id);
+            false
+        }
+        menu::OverlayMenuOutcome::ExitApp => true,
     }
+}
+
+fn apply_permission_outcome(st: &mut ConversationState, action_id: &str) {
+    use crate::config::settings::PermissionMode;
+    let mode = match action_id {
+        "default" => PermissionMode::Default,
+        "acceptEdits" => PermissionMode::AcceptEdits,
+        "plan" => PermissionMode::Plan,
+        "yolo" => PermissionMode::Yolo,
+        _ => {
+            st.push_system_note(format!("unknown permission mode: {action_id}"));
+            return;
+        }
+    };
+    st.permission_mode = mode;
+    st.push_system_note(format!("permission mode set to {action_id}"));
+}
+
+fn apply_model_outcome(st: &mut ConversationState, model_id: &str) {
+    // Re-run the 1M-suffix detector so switching to `claude-opus-4-7[1m]`
+    // re-expands the context-window budget.
+    let (_base, _thinking) = crate::thinking::parse_suffix(model_id)
+        .map(|(m, t)| (m, t))
+        .unwrap_or_else(|_| (model_id.to_string(), None));
+    st.model = model_id.to_string();
+    if model_id.to_lowercase().contains("[1m]") {
+        st.context_window = 1_000_000;
+    } else {
+        st.context_window = 200_000;
+    }
+    st.push_system_note(format!("model set to {model_id}"));
 }
 
 /// Translate a committed effort action-id into a new

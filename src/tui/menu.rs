@@ -76,6 +76,136 @@ pub struct OverlayMenu {
 }
 
 impl OverlayMenu {
+    /// Build a generic information overlay — a single
+    /// `Acknowledge` row that dismisses the menu on Enter. Multi-row
+    /// hint text supplied via `hints` renders above the ack row.
+    /// Used by `/status`, `/context`, `/skills`, `/agents`, `/mcp`,
+    /// `/config`, `/login`, `/logout`, `/help`, `/plan`, `/hooks`,
+    /// `/sandbox`, `/diff`, `/resume`, `/branch`, `/copy`, `/export`
+    /// where the upstream flow is "show something, wait for dismissal".
+    pub fn new_info(kind: MenuKind, title: String, hints: Vec<String>) -> Self {
+        let options = vec![MenuOption {
+            label: "Close".into(),
+            action_id: "__close__".into(),
+            hint: Some("press Enter or Esc to dismiss".into()),
+        }];
+        // Hints ride as prefix-lines via `MenuOption.hint` on a
+        // virtual header option — cheapest way to reuse the renderer.
+        // Each hint becomes a dimmed row above the `Close` action.
+        let mut options_with_hints = Vec::with_capacity(hints.len() + 1);
+        for h in hints {
+            options_with_hints.push(MenuOption {
+                label: h,
+                action_id: "__line__".into(),
+                hint: None,
+            });
+        }
+        options_with_hints.extend(options);
+        // Cursor snaps past the hint lines to the first actionable row.
+        let cursor = options_with_hints
+            .iter()
+            .position(|o| o.action_id != "__line__")
+            .unwrap_or(0);
+        Self {
+            kind,
+            title,
+            options: options_with_hints,
+            cursor,
+        }
+    }
+
+    /// Build the `/exit` confirmation — two rows (`Stay in session`,
+    /// `Exit otherside`) mirroring upstream's two-choice picker.
+    pub fn new_exit_confirm() -> Self {
+        Self {
+            kind: MenuKind::ExitConfirm,
+            title: "Exit otherside?".into(),
+            options: vec![
+                MenuOption {
+                    label: "Stay in session".into(),
+                    action_id: "stay".into(),
+                    hint: None,
+                },
+                MenuOption {
+                    label: "Exit otherside".into(),
+                    action_id: "exit".into(),
+                    hint: Some("Ctrl+C twice also exits".into()),
+                },
+            ],
+            cursor: 0,
+        }
+    }
+
+    /// Build the `/permissions` picker — select one of the four
+    /// permission modes. Current mode is preselected.
+    pub fn new_permissions(current: crate::config::settings::PermissionMode) -> Self {
+        let options = vec![
+            MenuOption {
+                label: "default".into(),
+                action_id: "default".into(),
+                hint: Some("ask before mutating tools".into()),
+            },
+            MenuOption {
+                label: "acceptEdits".into(),
+                action_id: "acceptEdits".into(),
+                hint: Some("auto-approve Edit / Write / NotebookEdit in safe paths".into()),
+            },
+            MenuOption {
+                label: "plan".into(),
+                action_id: "plan".into(),
+                hint: Some("read-only exploration — all mutations denied".into()),
+            },
+            MenuOption {
+                label: "yolo".into(),
+                action_id: "yolo".into(),
+                hint: Some("no prompts, every tool allowed (dangerous)".into()),
+            },
+        ];
+        let cursor = match current {
+            crate::config::settings::PermissionMode::Default => 0,
+            crate::config::settings::PermissionMode::AcceptEdits => 1,
+            crate::config::settings::PermissionMode::Plan => 2,
+            crate::config::settings::PermissionMode::Yolo => 3,
+        };
+        Self {
+            kind: MenuKind::Permissions,
+            title: "Set permission mode".into(),
+            options,
+            cursor,
+        }
+    }
+
+    /// Build the `/model` picker — list known aliases with the current
+    /// id preselected. Reads a bundled static list since otherside does
+    /// not (yet) query the provider for `/v1/models`.
+    pub fn new_model(current: &str) -> Self {
+        const MODELS: &[(&str, &str)] = &[
+            ("claude-opus-4-7", "Opus 4.7 — newest top-tier"),
+            ("claude-opus-4-7[1m]", "Opus 4.7 with 1M context window"),
+            ("claude-opus-4-6", "Opus 4.6 — prior top-tier"),
+            ("claude-sonnet-4-6", "Sonnet 4.6 — balanced"),
+            ("claude-haiku-4-5", "Haiku 4.5 — fastest / cheapest"),
+        ];
+        let options: Vec<MenuOption> = MODELS
+            .iter()
+            .map(|(id, desc)| MenuOption {
+                label: (*id).to_string(),
+                action_id: (*id).to_string(),
+                hint: Some((*desc).to_string()),
+            })
+            .collect();
+        let cursor = options
+            .iter()
+            .position(|o| o.action_id == current)
+            .unwrap_or(0);
+        Self {
+            kind: MenuKind::Model,
+            title: "Switch model".into(),
+            options,
+            cursor,
+        }
+    }
+
     /// Build the `/effort` overlay — 6 rows matching upstream's
     /// `executeEffort` arg grammar: `auto, low, medium, high, xhigh, max`.
     /// When `current` matches one of the rows, that row is preselected
@@ -126,23 +256,46 @@ impl OverlayMenu {
     }
 
     /// Move the cursor up; wraps to the last row when at the top.
+    /// `__line__` placeholder rows (info hints) are skipped so the
+    /// cursor never lands on a non-actionable line.
     pub fn move_up(&mut self) {
         if self.options.is_empty() {
             return;
         }
-        if self.cursor == 0 {
-            self.cursor = self.options.len() - 1;
-        } else {
-            self.cursor -= 1;
+        let n = self.options.len();
+        for _ in 0..n {
+            self.cursor = if self.cursor == 0 {
+                n - 1
+            } else {
+                self.cursor - 1
+            };
+            if !self.cursor_is_placeholder() {
+                return;
+            }
         }
     }
 
     /// Move the cursor down; wraps to the first row when at the bottom.
+    /// `__line__` placeholder rows are skipped the same way move_up
+    /// handles them so info menus stay on their `Close` action.
     pub fn move_down(&mut self) {
         if self.options.is_empty() {
             return;
         }
-        self.cursor = (self.cursor + 1) % self.options.len();
+        let n = self.options.len();
+        for _ in 0..n {
+            self.cursor = (self.cursor + 1) % n;
+            if !self.cursor_is_placeholder() {
+                return;
+            }
+        }
+    }
+
+    fn cursor_is_placeholder(&self) -> bool {
+        self.options
+            .get(self.cursor)
+            .map(|o| o.action_id == "__line__")
+            .unwrap_or(false)
     }
 
     pub fn jump_to_first(&mut self) {
@@ -166,11 +319,27 @@ impl OverlayMenu {
     /// without a side effect (help / status variants do this).
     pub fn commit_outcome(&self) -> Option<OverlayMenuOutcome> {
         let selected = self.selected()?;
+        if selected.action_id == "__close__" || selected.action_id == "__line__" {
+            return None;
+        }
         match self.kind {
             MenuKind::Effort => Some(OverlayMenuOutcome::SetEffort {
                 action_id: selected.action_id.clone(),
                 label: selected.label.clone(),
             }),
+            MenuKind::Permissions => Some(OverlayMenuOutcome::SetPermissionMode {
+                action_id: selected.action_id.clone(),
+            }),
+            MenuKind::Model => Some(OverlayMenuOutcome::SetModel {
+                model_id: selected.action_id.clone(),
+            }),
+            MenuKind::ExitConfirm => {
+                if selected.action_id == "exit" {
+                    Some(OverlayMenuOutcome::ExitApp)
+                } else {
+                    None
+                }
+            }
             _ => None,
         }
     }
@@ -185,6 +354,13 @@ pub enum OverlayMenuOutcome {
     /// the lowercase canonical name accepted by
     /// [`crate::thinking::ThinkingLevel::from_str`] plus `"auto"`.
     SetEffort { action_id: String, label: String },
+    /// `/permissions` — swap the active permission mode.
+    /// `action_id` is one of `default`, `acceptEdits`, `plan`, `yolo`.
+    SetPermissionMode { action_id: String },
+    /// `/model` — switch model for subsequent turns.
+    SetModel { model_id: String },
+    /// `/exit` — request the event loop to terminate.
+    ExitApp,
 }
 
 /// Active modal permission prompt — owns the one-shot reply channel
@@ -373,6 +549,15 @@ pub fn draw_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
     lines.push(Line::raw(""));
 
     for (i, opt) in menu.options.iter().enumerate() {
+        // `__line__` placeholder: dim prose, no marker, no cursor — used
+        // to lift info text above the action rows on info-style menus.
+        if opt.action_id == "__line__" {
+            lines.push(Line::from(Span::styled(
+                format!("  {}", opt.label),
+                Style::default().fg(theme::MUTED),
+            )));
+            continue;
+        }
         let is_cursor = i == menu.cursor;
         let marker = if is_cursor { "❯ " } else { "  " };
         let marker_style = if is_cursor {
@@ -490,6 +675,73 @@ mod tests {
                 assert_eq!(action_id, "high");
                 assert_eq!(label, "high");
             }
+            other => panic!("unexpected outcome: {other:?}"),
         }
+    }
+
+    #[test]
+    fn commit_permissions_yields_set_permission_mode() {
+        use crate::config::settings::PermissionMode;
+        let mut m = OverlayMenu::new_permissions(PermissionMode::Default);
+        m.cursor = 2; // plan
+        let outcome = m.commit_outcome().expect("permissions yields outcome");
+        match outcome {
+            OverlayMenuOutcome::SetPermissionMode { action_id } => {
+                assert_eq!(action_id, "plan");
+            }
+            other => panic!("unexpected outcome: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn commit_model_yields_set_model() {
+        let mut m = OverlayMenu::new_model("claude-opus-4-7");
+        m.cursor = 1; // opus 1m
+        let outcome = m.commit_outcome().expect("model yields outcome");
+        match outcome {
+            OverlayMenuOutcome::SetModel { model_id } => {
+                assert_eq!(model_id, "claude-opus-4-7[1m]");
+            }
+            other => panic!("unexpected outcome: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn commit_exit_confirm_yields_exit_when_exit_chosen() {
+        let mut m = OverlayMenu::new_exit_confirm();
+        m.cursor = 1; // Exit otherside
+        assert!(matches!(
+            m.commit_outcome(),
+            Some(OverlayMenuOutcome::ExitApp)
+        ));
+        m.cursor = 0; // Stay — no outcome
+        assert!(m.commit_outcome().is_none());
+    }
+
+    #[test]
+    fn info_menu_skips_placeholder_rows() {
+        let m = OverlayMenu::new_info(
+            MenuKind::Status,
+            "Status".into(),
+            vec!["line1".into(), "line2".into()],
+        );
+        // Cursor should land on the Close row, past the two placeholders.
+        assert_eq!(m.options[m.cursor].action_id, "__close__");
+        // commit_outcome on __close__ returns None.
+        assert!(m.commit_outcome().is_none());
+    }
+
+    #[test]
+    fn info_menu_cursor_skips_placeholder_on_move() {
+        let mut m = OverlayMenu::new_info(
+            MenuKind::Status,
+            "Status".into(),
+            vec!["line1".into(), "line2".into()],
+        );
+        let close_idx = m.cursor;
+        m.move_down(); // should wrap, land back on close
+        assert_eq!(m.cursor, close_idx);
+        m.move_up(); // still close — only one action row
+        assert_eq!(m.cursor, close_idx);
     }
 }
