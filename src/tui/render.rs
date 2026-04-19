@@ -240,8 +240,11 @@ pub fn render(
         // Popup hangs below the prompt bar, eating into the info-row
         // chrome area if needed. Matches upstream's placement — the
         // user reads the suggestions right above the cursor, not high
-        // up in the log.
-        let popup_h = (ac.matches.len() as u16).min(slots.streaming.height);
+        // up in the log. Height capped by MAX_POPUP_ROWS (10) so the
+        // overlay never eats the full log; scroll handled in-widget.
+        let popup_h = (ac.matches.len() as u16)
+            .min(autocomplete::MAX_POPUP_ROWS as u16)
+            .min(slots.streaming.height);
         if popup_h >= 1 {
             let popup = Rect {
                 x: slots.streaming.x,

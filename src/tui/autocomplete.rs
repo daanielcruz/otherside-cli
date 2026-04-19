@@ -14,9 +14,11 @@ use ratatui::{
 use super::render::theme;
 use super::slash_catalog;
 
-/// Max popup rows before truncation. Sized so common prefix groups
-/// (s-group has 8 entries: sandbox, statusline, scope, security,
-/// skills, status, simplify, swarm) fit without scrolling.
+/// Maximum popup rows rendered at once. The matches vector carries
+/// EVERY entry that prefix-matches the partial (up to the whole
+/// catalog when the partial is empty) — this constant only caps the
+/// visible window so the overlay doesn't dwarf the log. Movement past
+/// the window scrolls via `ListState::offset`.
 pub const MAX_POPUP_ROWS: usize = 10;
 
 /// State for an open autocomplete popup.
@@ -76,9 +78,10 @@ impl Autocomplete {
 /// slashes stay visually stable.
 fn prefix_filter(partial: &str) -> Vec<&'static slash_catalog::SlashEntry> {
     let lower = partial.to_ascii_lowercase();
-    slash_catalog::prefix_matches(&lower)
-        .take(MAX_POPUP_ROWS)
-        .collect()
+    // NO `.take(MAX_POPUP_ROWS)` cap — popup must surface every match
+    // or users with 41 catalog entries think slashes are "missing". The
+    // render path windows the visible rows via `ListState::offset`.
+    slash_catalog::prefix_matches(&lower).collect()
 }
 
 /// Popup name-column width in columns. 40% of the rect width clamped
@@ -127,6 +130,19 @@ pub fn draw(f: &mut Frame<'_>, area: Rect, ac: &Autocomplete) {
 
     let mut list_state = ListState::default();
     list_state.select(Some(ac.selected));
+    // Keep the highlighted row visible inside the fixed MAX_POPUP_ROWS
+    // window. ratatui's `ListState::offset` sets the first visible
+    // index; without it, scrolling past row 10 hides the cursor off
+    // the bottom while the match vector still grows underneath.
+    let area_rows = area.height as usize;
+    let window = area_rows.min(MAX_POPUP_ROWS).max(1);
+    let total = ac.matches.len();
+    let offset = if ac.selected + 1 <= window {
+        0
+    } else {
+        (ac.selected + 1 - window).min(total.saturating_sub(window))
+    };
+    *list_state.offset_mut() = offset;
 
     let block = Block::default().borders(Borders::NONE);
 

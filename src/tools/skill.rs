@@ -21,6 +21,28 @@ fn skill_path(name: &str) -> PathBuf {
     PathBuf::from("skills").join(name).join("SKILL.md")
 }
 
+/// Enumerate the bundled skills under `./skills/`. Used to compose a
+/// helpful error when the model asks for an unknown skill name.
+/// Returns an empty vec when the directory is missing (CWD not at the
+/// crate root) — unknown is unknown either way.
+fn list_bundled_skills() -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let root = PathBuf::from("skills");
+    if let Ok(entries) = std::fs::read_dir(&root) {
+        for entry in entries.flatten() {
+            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                if entry.path().join("SKILL.md").exists() {
+                    if let Some(name) = entry.file_name().to_str() {
+                        out.push(name.to_string());
+                    }
+                }
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
 pub fn skill(args: &Value) -> Result<Value, ToolError> {
     let name = args
         .get("skill")
@@ -34,7 +56,19 @@ pub fn skill(args: &Value) -> Result<Value, ToolError> {
     let path = skill_path(name);
     let content = std::fs::read_to_string(&path).map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
-            ToolError::InvalidArgs(format!("unknown skill: {name}"))
+            // Enumerate bundled skills so the model (or the user
+            // reading the transcript) knows the actual surface. Upstream
+            // ships ~9 skills; otherside bundles a subset, so an
+            // unrecognized name most commonly means "not ported yet".
+            let available = list_bundled_skills();
+            let hint = if available.is_empty() {
+                "no skills bundled in this build".to_string()
+            } else {
+                format!("available: {}", available.join(", "))
+            };
+            ToolError::InvalidArgs(format!(
+                "unknown skill: {name} ({hint})"
+            ))
         } else {
             ToolError::Io(e)
         }
