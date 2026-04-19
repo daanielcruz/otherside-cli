@@ -270,10 +270,18 @@ impl ConversationState {
         Some(self.history_for_request())
     }
 
+    /// Suppress the autocomplete popup while a request is in flight.
+    /// 011 fidelity rule: no slash popup while tools are dispatching —
+    /// the popup would flash over the streaming output and mislead the
+    /// user into thinking the input is still focused for slash entry.
     /// Recompute the autocomplete popup from the current input. Call
     /// after any input-buffer mutation so the popup opens/closes as
     /// the partial after `/` changes.
     pub fn refresh_autocomplete(&mut self) {
+        if self.streaming {
+            self.autocomplete = None;
+            return;
+        }
         self.autocomplete = Autocomplete::from_input(&self.input);
     }
 
@@ -624,5 +632,40 @@ mod tests {
         st.input_push_newline();
         st.input_push_char('b');
         assert_eq!(st.input, "a\nb");
+    }
+
+    #[test]
+    fn autocomplete_refresh_is_no_op_while_streaming() {
+        // 011 fidelity: no popup while a request is in flight. Prevents
+        // the slash catalog from flashing over streaming output and
+        // misleading the user about input focus.
+        let mut st = ConversationState::new();
+        st.input = "/cle".to_string();
+        st.refresh_autocomplete();
+        assert!(
+            st.autocomplete.is_some(),
+            "autocomplete should be present when idle"
+        );
+        st.input = "hi".to_string();
+        st.submit().unwrap();
+        assert!(st.streaming);
+        st.input = "/cle".to_string();
+        st.refresh_autocomplete();
+        assert!(
+            st.autocomplete.is_none(),
+            "autocomplete must be suppressed while streaming"
+        );
+    }
+
+    #[test]
+    fn autocomplete_returns_when_stream_finishes() {
+        let mut st = ConversationState::new();
+        st.input = "hi".to_string();
+        st.submit().unwrap();
+        st.append_stream_delta("ok");
+        st.finish_stream();
+        st.input = "/cle".to_string();
+        st.refresh_autocomplete();
+        assert!(st.autocomplete.is_some());
     }
 }

@@ -35,9 +35,24 @@ pub enum ToolStatus {
 impl ToolStatus {
     fn color(self) -> ratatui::style::Color {
         match self {
-            ToolStatus::Running => theme::SUGGESTION,
+            // 011 fidelity: gray-blinking bullet during dispatch,
+            // solid green on tool_result, solid red on error. Matches
+            // upstream's semantic color assignment (palette differs
+            // deliberately — only roles line up).
+            ToolStatus::Running => theme::MUTED,
             ToolStatus::Ok => theme::SUCCESS,
             ToolStatus::Error => theme::ERROR,
+        }
+    }
+
+    /// Extra text modifiers layered on top of the color. `Running`
+    /// gets `SLOW_BLINK` so the bullet pulses while the tool hasn't
+    /// returned; `Ok` / `Error` render solid.
+    fn modifier(self) -> ratatui::style::Modifier {
+        use ratatui::style::Modifier;
+        match self {
+            ToolStatus::Running => Modifier::BOLD | Modifier::SLOW_BLINK,
+            ToolStatus::Ok | ToolStatus::Error => Modifier::BOLD,
         }
     }
 }
@@ -74,7 +89,7 @@ pub fn render_tool_call(view: &ToolCallView<'_>) -> Vec<Line<'static>> {
         format!("{BULLET} "),
         Style::default()
             .fg(view.status.color())
-            .add_modifier(Modifier::BOLD),
+            .add_modifier(view.status.modifier()),
     ));
     header_spans.push(Span::styled(
         view.name.to_string(),
