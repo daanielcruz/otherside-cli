@@ -142,8 +142,10 @@ pub fn render(
     }
 
     // Statusline — native path for now; subprocess override hook
-    // lands with state.settings plumbing.
-    draw_statusline(f, slots.statusline, state, model, provider_id);
+    // lands with state.settings plumbing. No provider_id — the locked
+    // emoji fallback drops it per C67.
+    let _ = provider_id;
+    draw_statusline(f, slots.statusline, state, model);
 
     // Info row — bottom chrome with permission mode + shortcut hint.
     draw_info_row(f, slots.info, state, model);
@@ -335,77 +337,36 @@ fn draw_prompt(f: &mut Frame<'_>, area: Rect, state: &ConversationState) {
     f.render_widget(para, area);
 }
 
-/// Statusline row — model / cwd / context summary on the left,
-/// token count on the right. Always visible (matches upstream's
-/// always-on chrome band).
+/// Statusline row — single muted line painted bottom-of-band.
+/// Dispatches through the statusline subsystem so a user-supplied
+/// `settings.statusline.command` can replace the native fallback.
 fn draw_statusline(
     f: &mut Frame<'_>,
     area: Rect,
     state: &ConversationState,
     model: &str,
-    provider_id: &str,
 ) {
-    let tokens = state.output_tokens;
-    let avail = state.context_available();
-    let pct = state.context_used_percent();
-
-    // Upstream-style: `🤖 model · provider · <window> available · P% used`.
-    // Format the available figure in the same unit as the window
-    // (1M windows collapse `avail / 1_000_000` etc) so the scale
-    // reads cleanly.
-    let avail_display = if state.context_window >= 1_000_000 {
-        format!("{:.1}M", avail as f64 / 1_000_000.0)
-    } else {
-        format!("{}K", avail / 1_000)
-    };
-    let window_label = state.context_window_label();
-    let left_text = format!(
-        "🤖 {model} · {provider_id} · {avail_display}/{window_label} · {pct}% used"
-    );
-    let right_text = if tokens > 0 {
-        format!("{tokens} tokens")
-    } else {
-        String::new()
-    };
-    let right_width = (right_text.chars().count() + 2) as u16;
-
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Min(10),
-            Constraint::Length(right_width.max(1)),
-        ])
-        .split(area);
-
-    f.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            left_text,
-            Style::default().fg(theme::MUTED),
-        ))),
-        chunks[0],
-    );
-    if !right_text.is_empty() {
-        f.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                right_text,
-                Style::default().fg(theme::MUTED),
-            )))
-            .alignment(Alignment::Right),
-            chunks[1],
-        );
-    }
-    return;
-    #[allow(unreachable_code)]
-    {
     use statusline::types::{
         ContextWindowInput, CostInput, ModelInput, OutputStyleInput, StatuslineCtx,
         StatuslineInput, WorkspaceInput,
     };
+
     let cwd = std::env::current_dir()
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_default();
     let home = directories::BaseDirs::new()
         .map(|b| b.home_dir().to_string_lossy().into_owned());
+
+    // Reuse the canonical stripper so display-layer matches wire-layer
+    // semantics (case-insensitive `[1m]` anywhere in the string).
+    let (canonical, has_1m) =
+        crate::translator::openai_to_anthropic::strip_1m_suffix(model);
+    let display_name =
+        crate::inference::model_display::render_model_name(&canonical, has_1m);
+
+    let window = state.context_window;
+    let used = window.saturating_sub(state.context_available());
+    let pct = state.context_used_percent();
 
     let payload = StatuslineInput {
         session_id: String::new(),
@@ -413,8 +374,8 @@ fn draw_statusline(
         cwd: cwd.clone(),
         session_name: None,
         model: ModelInput {
-            id: model.to_string(),
-            display_name: model.to_string(),
+            id: canonical.to_string(),
+            display_name,
             extra: Default::default(),
         },
         workspace: WorkspaceInput {
@@ -438,14 +399,14 @@ fn draw_statusline(
         },
         context_window: ContextWindowInput {
             total_input_tokens: 0,
-            total_output_tokens: 0,
-            context_window_size: 200_000,
-            current_usage: 0,
-            used_percentage: 0,
-            remaining_percentage: 100,
+            total_output_tokens: state.output_tokens,
+            context_window_size: window,
+            current_usage: used,
+            used_percentage: pct as u64,
+            remaining_percentage: (100u32.saturating_sub(pct)) as u64,
             extra: Default::default(),
         },
-        exceeds_200k_tokens: false,
+        exceeds_200k_tokens: used > 200_000,
         rate_limits: None,
         vim: None,
         agent: None,
@@ -461,17 +422,16 @@ fn draw_statusline(
         custom_env: Default::default(),
     };
 
+    // TODO(012b/014b): thread the actual `settings.statusline` config
+    // through here once settings is wired into render state. For now the
+    // None path triggers the native emoji-prefixed fallback.
     let (line, _warn) = statusline::dispatch(&ctx, None);
-    // Paint as plain text — ratatui doesn't parse embedded ANSI, so we
-    // strip escape sequences here and let the theme color come through
-    // the fallback styling. Full ANSI-to-spans conversion lands later.
     let stripped = strip_ansi(&line.content);
     let para = Paragraph::new(Line::from(Span::styled(
         stripped,
-        Style::default().fg(theme::PRIMARY),
+        Style::default().fg(theme::MUTED),
     )));
     f.render_widget(para, area);
-    }
 }
 
 fn strip_ansi(s: &str) -> String {

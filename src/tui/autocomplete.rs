@@ -7,7 +7,7 @@ use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState},
     Frame,
 };
 
@@ -81,11 +81,25 @@ fn prefix_filter(partial: &str) -> Vec<&'static slash_catalog::SlashEntry> {
         .collect()
 }
 
+/// Popup name-column width in columns. 40% of the rect width clamped
+/// to `[20, 40]` so narrow and ultra-wide terminals still read cleanly.
+pub fn name_col_width(area_width: u16) -> u16 {
+    ((area_width as u32 * 4 / 10) as u16).clamp(20, 40)
+}
+
 /// Paint the popup inside `area`. Two-column layout mirroring upstream
-/// autocomplete: slash name left, brief right. No border — the rows
-/// ARE the popup.
+/// autocomplete: slash name left, brief right. `Clear` is rendered
+/// first so the rect is opaque — without it the retained-cell buffer
+/// bleeds prior log content through empty rows beyond the last
+/// suggestion.
 pub fn draw(f: &mut Frame<'_>, area: Rect, ac: &Autocomplete) {
-    let name_col_w: usize = 32;
+    // Zero the rect before painting so underlying streaming content
+    // never bleeds through popup rows or row tails. Ratatui is
+    // retained-cell; unlike Ink's full-row blit it does NOT clear
+    // cells for widgets that render shorter than their area.
+    f.render_widget(Clear, area);
+
+    let name_col_w = name_col_width(area.width) as usize;
     let total_w = area.width as usize;
     let brief_col_w = total_w.saturating_sub(name_col_w + 2);
 
@@ -118,7 +132,11 @@ pub fn draw(f: &mut Frame<'_>, area: Rect, ac: &Autocomplete) {
 
     let list = List::new(items)
         .block(block)
-        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        .highlight_style(
+            Style::default()
+                .fg(theme::SUGGESTION)
+                .add_modifier(Modifier::BOLD),
+        );
 
     f.render_stateful_widget(list, area, &mut list_state);
 }
@@ -131,6 +149,17 @@ mod tests {
     fn from_input_rejects_non_slash() {
         assert!(Autocomplete::from_input("hello").is_none());
         assert!(Autocomplete::from_input("").is_none());
+    }
+
+    #[test]
+    fn name_col_width_follows_40_percent_rule() {
+        // Upstream `Math.floor(columns * 0.4)` with clamp [20, 40].
+        assert_eq!(name_col_width(80), 32);
+        assert_eq!(name_col_width(100), 40);
+        assert_eq!(name_col_width(200), 40, "upper clamp hit");
+        assert_eq!(name_col_width(40), 20, "lower clamp hit at exact boundary (16 < 20)");
+        assert_eq!(name_col_width(10), 20, "lower clamp hit");
+        assert_eq!(name_col_width(60), 24);
     }
 
     #[test]

@@ -25,6 +25,8 @@
 //!   into a [`crate::thinking::ThinkingConfig`] that travels alongside the
 //!   request through the translator.
 
+pub mod model_display;
+
 use serde::{Deserialize, Serialize};
 
 /// Canonical OpenAI chat completions request.

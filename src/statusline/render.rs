@@ -1,74 +1,42 @@
-//! Native statusline renderer. Composes segments into a single
-//! ANSI-escape-embedded line and returns a `StatuslineLine` ready to
-//! paint on the bottom band.
+//! Native statusline renderer. Composes the fallback line painted when
+//! `settings.statusline` is unset or set to `type: "native"`. Shape is
+//! locked per user decision 2026-04-18 (C67):
 //!
-//! Segment order (reversed-world cue, right-weighted to subvert the
-//! upstream left-anchored layout): model | cwd | context usage |
-//! [yolo chip when active] | reversed-world glyph accent.
+//! ```text
+//! 🤖 {display_name} · 📉 {avail} available · 🧠 {pct}% used
+//! ```
 //!
-//! Colors via truecolor ANSI escapes keyed off the mascot palette —
-//! `#51158C` deep violet (primary) and `#EC4899` hot pink (accent).
-
-use std::path::Path;
+//! Semantic glyphs only — robot = model, chart-decreasing = available
+//! tokens, brain = usage. Middle-dot separator. No upstream product
+//! identifier appears (R-01/R-11). Output is plain text (no ANSI); the
+//! TUI paints the final line using `theme::MUTED`. The yolo indicator
+//! lives in the info row per C44 — it is NOT a statusline chip.
 
 use unicode_width::UnicodeWidthChar;
 
-use crate::config::settings::PermissionMode;
-
 use super::types::{display_width, StatuslineCtx, StatuslineLine};
-
-// Theme palette — truecolor RGB. Mirrors `tui::render::theme::PRIMARY`
-// but as raw RGB so this module stays independent of ratatui.
-const VIOLET_R: u8 = 0x51;
-const VIOLET_G: u8 = 0x15;
-const VIOLET_B: u8 = 0x8C;
-
-const PINK_R: u8 = 0xEC;
-const PINK_G: u8 = 0x48;
-const PINK_B: u8 = 0x98;
-
-// Soft grey for dim separators — readable but deferential.
-const DIM_R: u8 = 0x80;
-const DIM_G: u8 = 0x80;
-const DIM_B: u8 = 0x80;
 
 // Mascot-family truncation glyph (C48-adjacent / mascot aesthetic).
 const TRUNCATE_GLYPH: &str = "·••";
 
-const SEPARATOR: &str = " · ";
-
-/// Build the statusline output for the given ctx.
+/// Build the statusline output for the given ctx. Locked shape:
+/// `🤖 {display_name} · 📉 {avail} available · 🧠 {pct}% used`.
 pub fn native(ctx: &StatuslineCtx) -> StatuslineLine {
-    let mut segments: Vec<String> = Vec::new();
+    let display_name = if ctx.payload.model.display_name.is_empty() {
+        ctx.payload.model.id.as_str()
+    } else {
+        ctx.payload.model.display_name.as_str()
+    };
 
-    if !ctx.payload.model.display_name.is_empty() {
-        segments.push(paint(
-            &ctx.payload.model.display_name,
-            VIOLET_R,
-            VIOLET_G,
-            VIOLET_B,
-        ));
-    }
+    let window = ctx.payload.context_window.context_window_size;
+    let used = ctx.payload.context_window.current_usage;
+    let avail = window.saturating_sub(used);
+    let avail_fmt = format_tokens(avail, window);
+    let pct = ctx.payload.context_window.used_percentage;
 
-    let cwd_short = collapse_cwd(
-        Path::new(&ctx.payload.workspace.current_dir),
-        ctx.home_dir.as_deref().map(Path::new),
-    );
-    if !cwd_short.is_empty() {
-        segments.push(paint(&cwd_short, DIM_R, DIM_G, DIM_B));
-    }
-
-    segments.push(context_chip(ctx));
-
-    if matches!(ctx.permission_mode, PermissionMode::Yolo) {
-        segments.push(paint("yolo", PINK_R, PINK_G, PINK_B));
-    }
-
-    // Reversed-world accent character on the far right — mascot-family.
-    segments.push(paint("·", PINK_R, PINK_G, PINK_B));
-
-    let joined = join_segments(&segments);
-    let truncated = truncate_to_width(&joined, ctx.terminal_width);
+    let content =
+        format!("🤖 {display_name} · 📉 {avail_fmt} available · 🧠 {pct}% used");
+    let truncated = truncate_to_width(&content, ctx.terminal_width);
     let width_cols = display_width(&truncated);
     StatuslineLine {
         content: truncated,
@@ -76,54 +44,14 @@ pub fn native(ctx: &StatuslineCtx) -> StatuslineLine {
     }
 }
 
-fn paint(text: &str, r: u8, g: u8, b: u8) -> String {
-    format!("\x1b[38;2;{r};{g};{b}m{text}\x1b[0m")
-}
-
-fn join_segments(segments: &[String]) -> String {
-    let mut out = String::new();
-    for (i, seg) in segments.iter().enumerate() {
-        if seg.is_empty() {
-            continue;
-        }
-        if i > 0 {
-            out.push(' ');
-            out.push_str(&paint(SEPARATOR.trim_matches(' '), DIM_R, DIM_G, DIM_B));
-            out.push(' ');
-        }
-        out.push_str(seg);
-    }
-    out
-}
-
-/// Collapse a cwd against the home dir: `/Users/foo/projects/demo` under
-/// home `/Users/foo` becomes `~/projects/demo`. Falls back to the raw
-/// path if cwd is outside home.
-pub fn collapse_cwd(cwd: &Path, home: Option<&Path>) -> String {
-    let cwd_s = cwd.to_string_lossy();
-    if let Some(h) = home {
-        let h_s = h.to_string_lossy();
-        if cwd == h {
-            return "~".to_string();
-        }
-        if let Some(rest) = cwd_s.strip_prefix(h_s.as_ref()) {
-            if rest.starts_with('/') {
-                return format!("~{rest}");
-            }
-        }
-    }
-    cwd_s.into_owned()
-}
-
-fn context_chip(ctx: &StatuslineCtx) -> String {
-    let used = ctx.payload.context_window.used_percentage;
-    let label = format!("{used}%");
-    if ctx.payload.exceeds_200k_tokens {
-        paint(&format!("▲ {label}"), PINK_R, PINK_G, PINK_B)
-    } else if used >= 80 {
-        paint(&label, PINK_R, PINK_G, PINK_B)
+/// Format a token count matching the scale of the window — 1M windows
+/// render `x.xM`, anything else renders `xxxK`. Mirrors the old
+/// hardcoded statusline's formatting so the number reads cleanly.
+fn format_tokens(tokens: u64, window: u64) -> String {
+    if window >= 1_000_000 {
+        format!("{:.1}M", tokens as f64 / 1_000_000.0)
     } else {
-        paint(&label, VIOLET_R, VIOLET_G, VIOLET_B)
+        format!("{}K", tokens / 1_000)
     }
 }
 
@@ -176,63 +104,55 @@ mod tests {
     use crate::statusline::types::StatuslineCtx;
 
     #[test]
-    fn native_minimal_ctx_renders_non_empty_line() {
+    fn native_minimal_ctx_renders_locked_emoji_shape() {
         let ctx = StatuslineCtx::minimal_for_test();
         let line = native(&ctx);
-        assert!(line.content.contains("Opus 4.7"));
-        assert!(line.content.contains("0%") || line.content.contains("0 %"));
+        assert!(
+            line.content.starts_with("🤖 "),
+            "missing robot prefix: {}",
+            line.content
+        );
+        assert!(
+            line.content.contains(" · 📉 "),
+            "missing chart-decreasing segment: {}",
+            line.content
+        );
+        assert!(
+            line.content.contains(" · 🧠 "),
+            "missing brain segment: {}",
+            line.content
+        );
+        assert!(line.content.contains("available"));
+        assert!(line.content.contains("% used"));
     }
 
     #[test]
-    fn native_includes_yolo_chip_when_mode_is_yolo() {
-        let mut ctx = StatuslineCtx::minimal_for_test();
-        ctx.permission_mode = PermissionMode::Yolo;
-        let line = native(&ctx);
-        assert!(line.content.contains("yolo"));
-    }
-
-    #[test]
-    fn native_omits_yolo_chip_in_default_mode() {
+    fn native_includes_display_name_from_payload() {
         let ctx = StatuslineCtx::minimal_for_test();
         let line = native(&ctx);
-        assert!(!line.content.contains("yolo"));
+        assert!(line.content.contains(&ctx.payload.model.display_name));
     }
 
     #[test]
-    fn native_over_200k_uses_pink_warning() {
-        let mut ctx = StatuslineCtx::minimal_for_test();
-        ctx.payload.exceeds_200k_tokens = true;
-        ctx.payload.context_window.used_percentage = 105;
+    fn native_contains_no_provider_identifier() {
+        let ctx = StatuslineCtx::minimal_for_test();
         let line = native(&ctx);
-        assert!(line.content.contains("▲"));
-        // Pink truecolor escape.
-        assert!(line.content.contains("236;72;152"));
+        for banned in ["provider:", "anthropic-oauth", "openai-api", "provider_id"] {
+            assert!(
+                !line.content.contains(banned),
+                "banned substring {banned} in: {}",
+                line.content
+            );
+        }
     }
 
     #[test]
-    fn collapse_cwd_under_home() {
-        let home = Path::new("/Users/example");
-        let cwd = Path::new("/Users/example/projects/demo");
-        assert_eq!(collapse_cwd(cwd, Some(home)), "~/projects/demo");
-    }
-
-    #[test]
-    fn collapse_cwd_equals_home() {
-        let home = Path::new("/Users/example");
-        assert_eq!(collapse_cwd(home, Some(home)), "~");
-    }
-
-    #[test]
-    fn collapse_cwd_outside_home() {
-        let home = Path::new("/Users/example");
-        let cwd = Path::new("/tmp/other");
-        assert_eq!(collapse_cwd(cwd, Some(home)), "/tmp/other");
-    }
-
-    #[test]
-    fn collapse_cwd_with_no_home() {
-        let cwd = Path::new("/tmp/demo");
-        assert_eq!(collapse_cwd(cwd, None), "/tmp/demo");
+    fn native_contains_no_upstream_product_name() {
+        let ctx = StatuslineCtx::minimal_for_test();
+        let line = native(&ctx);
+        let lower = line.content.to_lowercase();
+        assert!(!lower.contains("claude code"));
+        assert!(!lower.contains("claude-code"));
     }
 
     #[test]
@@ -256,22 +176,5 @@ mod tests {
         // Must still contain the opening escape.
         assert!(out.contains("\x1b[38;2;255;0;0m"));
         assert!(out.ends_with(TRUNCATE_GLYPH));
-    }
-
-    #[test]
-    fn context_chip_under_80_is_violet() {
-        let mut ctx = StatuslineCtx::minimal_for_test();
-        ctx.payload.context_window.used_percentage = 40;
-        let chip = context_chip(&ctx);
-        assert!(chip.contains("81;21;140"));
-        assert!(chip.contains("40%"));
-    }
-
-    #[test]
-    fn context_chip_at_warning_threshold_is_pink() {
-        let mut ctx = StatuslineCtx::minimal_for_test();
-        ctx.payload.context_window.used_percentage = 85;
-        let chip = context_chip(&ctx);
-        assert!(chip.contains("236;72;152"));
     }
 }
