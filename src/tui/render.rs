@@ -147,7 +147,8 @@ pub fn render(
     spinner_tick: u64,
 ) {
     let area = f.area();
-    let slots = layout_mod::split_frame(area, state.streaming);
+    let slots =
+        layout_mod::split_frame(area, state.streaming, state.queued_messages.len());
 
     // Streaming area — mascot when empty, otherwise the scrolling log.
     if state.messages.is_empty() && !state.streaming {
@@ -175,18 +176,13 @@ pub fn render(
         tips::draw(f, tp, state.tip_rotation_index);
     }
 
-    // Queue chip (017 §4) — rendered in the always-reserved 1-row
-    // prompt top-pad gap so it hugs the prompt bar without shifting
-    // layout. Visible only while streaming and the queue is non-empty;
-    // otherwise the gap stays blank (its original purpose).
-    if state.streaming && state.has_queued_messages() && slots.prompt.y > 0 {
-        let chip_area = Rect {
-            x: slots.prompt.x,
-            y: slots.prompt.y - 1,
-            width: slots.prompt.width,
-            height: 1,
-        };
-        draw_queue_chip(f, chip_area, state);
+    // Queued messages (017 §4) — one dim `> <preview>` row per entry,
+    // rendered directly above the prompt top-pad so they read as the
+    // transcript bubble they represent. Matches upstream's trailing
+    // queue display (previously we collapsed the whole queue into a
+    // single counter chip — cosmetic regression, now fixed).
+    if let Some(queue_area) = slots.queue {
+        draw_queue_lines(f, queue_area, state);
     }
 
     // Prompt bar with the autocomplete popup painted above it when
@@ -466,17 +462,66 @@ fn render_message(role: OpenAiChatRole, content: &str, width: u16) -> Vec<Line<'
     lines
 }
 
-/// Paint the 017 §4 queue chip: `⏸ N queued · press up to edit`.
-/// Single MUTED line, no border. Caller confirms queue non-empty +
-/// stream active + at least one pixel of top-pad to render into.
-fn draw_queue_chip(f: &mut Frame<'_>, area: Rect, state: &ConversationState) {
-    let count = state.queued_messages.len();
-    let text = format!("⏸ {count} queued · press up to edit");
-    let para = Paragraph::new(Line::from(Span::styled(
-        text,
-        Style::default().fg(theme::MUTED),
-    )));
+/// Paint the 017 §4 queue — one `> <preview>` row per queued message,
+/// rendered in the dedicated queue slot above the prompt top-pad. When
+/// the queue exceeds the slot height (see [`layout::QUEUE_ROWS_CAP`]),
+/// the last rendered row collapses into a `… N more` summary so the
+/// total still fits. Mirrors upstream's inline queue trail — each
+/// queued bubble shows up as its own dim line, not a collapsed chip.
+fn draw_queue_lines(f: &mut Frame<'_>, area: Rect, state: &ConversationState) {
+    if area.height == 0 || state.queued_messages.is_empty() {
+        return;
+    }
+    let visible_rows = area.height as usize;
+    let total = state.queued_messages.len();
+    let overflow = total.saturating_sub(visible_rows);
+    let reserve_summary = overflow > 0;
+    let body_rows = if reserve_summary {
+        visible_rows.saturating_sub(1)
+    } else {
+        visible_rows
+    };
+
+    let muted = Style::default().fg(theme::MUTED);
+    let prefix = "> ";
+    let available_cols = (area.width as usize).saturating_sub(prefix.len());
+
+    let mut lines: Vec<Line<'_>> = Vec::with_capacity(visible_rows);
+    for msg in state.queued_messages.iter().take(body_rows) {
+        let first_line = msg.lines().next().unwrap_or("");
+        let preview = truncate_for_width(first_line, available_cols);
+        let mut row = String::with_capacity(prefix.len() + preview.len());
+        row.push_str(prefix);
+        row.push_str(&preview);
+        lines.push(Line::from(Span::styled(row, muted)));
+    }
+    if reserve_summary {
+        let shown = body_rows;
+        let remaining = total.saturating_sub(shown);
+        let summary = format!("{prefix}… {remaining} more queued");
+        lines.push(Line::from(Span::styled(summary, muted)));
+    }
+
+    let para = Paragraph::new(lines);
     f.render_widget(para, area);
+}
+
+/// Truncate `s` to fit `max_cols` terminal columns. Char-aware (not
+/// byte-aware) so multi-byte codepoints never land half-sliced. Appends
+/// `…` when truncation occurs; shrinks the visible prefix by one char
+/// to preserve the width budget.
+fn truncate_for_width(s: &str, max_cols: usize) -> String {
+    if max_cols == 0 {
+        return String::new();
+    }
+    let char_count = s.chars().count();
+    if char_count <= max_cols {
+        return s.to_string();
+    }
+    let keep = max_cols.saturating_sub(1);
+    let mut out: String = s.chars().take(keep).collect();
+    out.push('…');
+    out
 }
 
 /// Prompt bar with upstream-style top + bottom rule lines (no left
@@ -1059,63 +1104,79 @@ mod tests {
         );
     }
 
-    // --- 017 §4 queue chip -----------------------------------------------
+    // --- 017 §4 queue lines ---------------------------------------------
 
-    fn render_queue_chip_to_string(state: &ConversationState, width: u16) -> String {
+    fn render_queue_lines_to_string(
+        state: &ConversationState,
+        width: u16,
+        height: u16,
+    ) -> String {
         use ratatui::backend::TestBackend;
         use ratatui::layout::Rect;
         use ratatui::Terminal;
-        let backend = TestBackend::new(width, 1);
+        let backend = TestBackend::new(width, height);
         let mut term = Terminal::new(backend).expect("terminal");
         term.draw(|f| {
-            let area = Rect::new(0, 0, width, 1);
-            draw_queue_chip(f, area, state);
+            let area = Rect::new(0, 0, width, height);
+            draw_queue_lines(f, area, state);
         })
         .unwrap();
         let buf = term.backend().buffer().clone();
         let mut out = String::new();
-        for x in 0..width {
-            out.push_str(buf[(x, 0)].symbol());
+        for y in 0..height {
+            for x in 0..width {
+                out.push_str(buf[(x, y)].symbol());
+            }
+            out.push('\n');
         }
-        out.trim_end().to_string()
+        out
     }
 
     #[test]
-    fn queue_chip_renders_count_and_hint() {
+    fn queue_renders_one_row_per_message() {
         use super::super::state::ConversationState;
         let mut st = ConversationState::new();
-        st.queued_messages.push("A".into());
-        st.queued_messages.push("B".into());
-        let s = render_queue_chip_to_string(&st, 80);
-        assert!(s.contains("2 queued"), "rendered: {s:?}");
-        assert!(s.contains("press up to edit"), "rendered: {s:?}");
-        assert!(s.starts_with('⏸') || s.starts_with('\u{23f8}'), "rendered: {s:?}");
+        st.queued_messages.push("first queued".into());
+        st.queued_messages.push("second queued".into());
+        let s = render_queue_lines_to_string(&st, 80, 2);
+        assert!(s.contains("> first queued"), "rendered: {s:?}");
+        assert!(s.contains("> second queued"), "rendered: {s:?}");
     }
 
     #[test]
-    fn queue_chip_count_updates_with_queue_size() {
+    fn queue_summarizes_overflow() {
         use super::super::state::ConversationState;
         let mut st = ConversationState::new();
-        st.queued_messages.push("A".into());
-        let s1 = render_queue_chip_to_string(&st, 80);
-        assert!(s1.contains("1 queued"), "rendered: {s1:?}");
-        st.queued_messages.push("B".into());
-        st.queued_messages.push("C".into());
-        let s2 = render_queue_chip_to_string(&st, 80);
-        assert!(s2.contains("3 queued"), "rendered: {s2:?}");
+        for i in 0..7 {
+            st.queued_messages.push(format!("msg-{i}"));
+        }
+        // 3 rows available → show 2 messages + summary row.
+        let s = render_queue_lines_to_string(&st, 80, 3);
+        assert!(s.contains("> msg-0"), "rendered: {s:?}");
+        assert!(s.contains("> msg-1"), "rendered: {s:?}");
+        assert!(s.contains("… 5 more queued"), "rendered: {s:?}");
     }
 
     #[test]
-    fn queue_chip_not_painted_when_queue_empty_in_full_render() {
-        // Full frame render — chip must NOT appear in the top-pad row
-        // when the queue is empty.
+    fn queue_truncates_long_messages() {
+        use super::super::state::ConversationState;
+        let mut st = ConversationState::new();
+        let long: String = "x".repeat(200);
+        st.queued_messages.push(long);
+        let s = render_queue_lines_to_string(&st, 40, 1);
+        assert!(s.starts_with("> "), "rendered: {s:?}");
+        assert!(s.contains('…'), "ellipsis missing: {s:?}");
+        // Width cap — the first rendered line fits inside 40 cols.
+        let first = s.lines().next().unwrap_or("");
+        assert!(first.chars().count() <= 40, "too wide: {first:?}");
+    }
+
+    #[test]
+    fn queue_not_painted_when_empty_in_full_render() {
         use super::super::state::ConversationState;
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
         let mut st = ConversationState::new();
-        // Kick state into streaming so the render path with the chip
-        // guard is live — ensures the `has_queued_messages` gate is
-        // what blocks the paint, not the streaming check.
         st.input = "hi".into();
         st.submit().unwrap();
         let backend = TestBackend::new(80, 30);
@@ -1130,22 +1191,20 @@ mod tests {
             }
             joined.push('\n');
         }
-        assert!(
-            !joined.contains("queued · press up to edit"),
-            "chip leaked into empty-queue render: {joined:?}"
-        );
+        // No leading `> ` line between tip and prompt when queue empty.
+        assert!(!joined.contains("> queued-"), "stray queue row: {joined:?}");
     }
 
     #[test]
-    fn queue_chip_painted_in_top_pad_when_streaming_and_nonempty() {
+    fn queue_lines_painted_when_streaming_and_nonempty() {
         use super::super::state::ConversationState;
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
         let mut st = ConversationState::new();
         st.input = "hi".into();
         st.submit().unwrap();
-        st.push_to_queue("queued-a".into());
-        st.push_to_queue("queued-b".into());
+        st.push_to_queue("queued-alpha".into());
+        st.push_to_queue("queued-beta".into());
         let backend = TestBackend::new(80, 30);
         let mut term = Terminal::new(backend).expect("terminal");
         term.draw(|f| render(f, &st, "claude-opus-4-7", "anthropic", 0))
@@ -1158,18 +1217,12 @@ mod tests {
             }
             joined.push('\n');
         }
-        assert!(
-            joined.contains("2 queued · press up to edit"),
-            "chip missing from render: {joined:?}"
-        );
+        assert!(joined.contains("> queued-alpha"), "rendered: {joined:?}");
+        assert!(joined.contains("> queued-beta"), "rendered: {joined:?}");
     }
 
     #[test]
-    fn queue_chip_suppressed_when_idle_even_with_queue() {
-        // Defensive: if the queue somehow has entries while streaming
-        // is false (shouldn't happen during normal use — finish_stream
-        // drains), the chip must still suppress because it signals a
-        // mid-turn waiting state, not a finalized inbox.
+    fn queue_suppressed_when_idle_even_with_entries() {
         use super::super::state::ConversationState;
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
@@ -1188,9 +1241,6 @@ mod tests {
             }
             joined.push('\n');
         }
-        assert!(
-            !joined.contains("queued · press up to edit"),
-            "chip painted during idle: {joined:?}"
-        );
+        assert!(!joined.contains("> stranded"), "painted during idle: {joined:?}");
     }
 }
