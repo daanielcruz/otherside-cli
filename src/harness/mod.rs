@@ -32,8 +32,55 @@
 //! stuff the provider could match to ban users). Raw end-to-end
 //! captures (request/response bodies scrubbed from live sessions)
 //! live in outer `fingerprint_corpus/` as reference material only —
-//! no code compiles against them. See `docs/design/harness-vs-
-//! fingerprint.md` for the full split.
+//! no code compiles against them.
+//!
+//! # Corpus layout
+//!
+//! ```text
+//! harness_corpus/
+//! ├── envelope.json              body envelope (metadata, max_tokens,
+//! │                              thinking, context_management,
+//! │                              output_config, stream) — capture key order
+//! ├── system-prompt.md           main ~16 KB agent system prompt
+//! ├── system-preamble.json       billing header + two pre-prompt blocks
+//! ├── system-reminders/          three <system-reminder> blocks for turn 1
+//! │   ├── deferred-tools.txt
+//! │   ├── skills.txt             bundled skills catalog (distinct from
+//! │                              the TUI slash catalog in docs/slashes.md)
+//! │   └── user-context.tmpl      {{email}} + {{current_date}} template
+//! └── tools/                     9 tool schemas, canonical order
+//!     ├── Agent.json     Bash.json     Edit.json    Glob.json
+//!     ├── Grep.json      Read.json     Skill.json   ToolSearch.json
+//!     └── Write.json
+//! ```
+//!
+//! # Inspection map
+//!
+//! | question                                          | inspect                                       |
+//! |---------------------------------------------------|-----------------------------------------------|
+//! | what agent instructions does the model receive?   | `system-prompt.md`                            |
+//! | which billing + pre-prompt headers ride the body? | `system-preamble.json`                        |
+//! | what `system-reminder` blocks prepend turn 1?     | `system-reminders/*.{txt,tmpl}`               |
+//! | which tools are advertised on the wire?           | `tools/*.json` (9 files; order locked)        |
+//! | what are the body envelope defaults?              | `envelope.json`                               |
+//! | which TUI slashes does the binary handle?         | `docs/slashes.md` + `src/tui/slash/catalog.rs`|
+//! | which SSE events does the stream emit?            | `src/translator/anthropic_to_openai.rs`       |
+//!
+//! # Refresh procedure
+//!
+//! When upstream ships a new release and the capture shape changes:
+//!
+//! 1. Capture a fresh `/v1/messages` request body per `capture/protocol.md`.
+//! 2. Re-extract the artifacts from the scrubbed body:
+//!    - `body["system"][3]["text"]` → `system-prompt.md`
+//!    - `body["system"][0..3]` → `system-preamble.json` (preserve order)
+//!    - Each `<system-reminder>` block from turn 1 → a file under
+//!      `system-reminders/`
+//!    - Each entry in `body["tools"]` → a separate `.json` under `tools/`
+//!    - Remaining top-level body → `envelope.json`
+//! 3. Rerun `cargo test --test harness_artifacts` — 18 byte-match tests
+//!    must stay green or be updated in the same commit.
+//! 4. Bump the version reference in this module's header.
 //!
 //! # Zone
 //!

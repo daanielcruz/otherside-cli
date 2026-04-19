@@ -20,6 +20,15 @@
 //!
 //! Per C51, info row is the absolute last line, statusline sits one
 //! row above it.
+//!
+//! # Popup takeover
+//!
+//! When the caller passes `popup_rows > 0`, the statusline + info +
+//! bottom-pad rows are suppressed and a single `popup` slot of exactly
+//! `popup_rows` rows is reserved directly below the prompt bar. This
+//! mirrors upstream claude-code where the slash autocomplete overlays
+//! the bottom chrome entirely while suggestions are visible. Streaming
+//! area shrinks accordingly; chrome returns the next frame.
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
@@ -53,6 +62,13 @@ pub struct FrameSlots {
     pub queue: Option<Rect>,
     /// Bordered prompt bar with `>` arrow.
     pub prompt: Rect,
+    /// Slash-autocomplete popup slot — sits directly below the prompt
+    /// bar when the caller requests a non-zero `popup_rows`, mirroring
+    /// upstream claude-code where suggestions render below the `/`
+    /// input rather than floating above the log. `None` when no popup
+    /// is active. Streaming area shrinks by `popup_rows` to open the
+    /// space.
+    pub popup: Option<Rect>,
     /// Statusline row (one above the info row).
     pub statusline: Rect,
     /// Info row — absolute bottom.
@@ -143,6 +159,7 @@ pub fn split_frame(area: Rect, streaming_active: bool, queue_count: usize) -> Fr
         tip,
         queue,
         prompt,
+        popup: None,
         statusline,
         info,
     }

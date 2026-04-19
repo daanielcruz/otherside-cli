@@ -25,6 +25,30 @@
 //! folder inside HOME) rather than XDG_CONFIG_HOME so the layout
 //! matches the user-facing docs exactly and is portable across
 //! darwin/linux without surprises.
+//!
+//! # `config_corpus/` — schema fixtures
+//!
+//! Hand-authored JSON fixtures under `otherside-cli/config_corpus/`
+//! define the target shape of the config layer. Distinct from
+//! `fingerprint_corpus/` (captured upstream traffic, byte-match
+//! anchors). Fixtures set the bar for what this module must parse,
+//! merge, and round-trip. Edit freely; when the schema changes, update
+//! the fixture AND the parser in the same commit.
+//!
+//! Fixture groups:
+//! - `settings/` — `minimal.json`, `full.json`, `with_unknown_keys.json`,
+//!   `with_permission_rules.json`, `with_hooks.json`,
+//!   `invalid_permission_rule.json`, `malformed.json`, `yolo_mode.json`.
+//! - `projects/` — `empty.json`, `with_trust.json`.
+//! - `mcp/` — `stdio.json`, `sse_http_mix.json`, `project_parent_walk/`.
+//! - `managed/` — `base.json`, `base_plus_dropins/` (admin policy drop-ins).
+//!
+//! Conventions: top-level field names camelCase (`permissionMode`,
+//! `hasAcceptedYoloDialog`). String values exact canonical (`"yolo"`,
+//! provider IDs lowercase with hyphens). Legacy values migrate on read.
+//! `malformed.json` is the ONLY fixture that MUST fail to parse — all
+//! others MUST parse even when semantically invalid at a deeper level
+//! (invalid rules drop with a warning, not a hard fail).
 
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;

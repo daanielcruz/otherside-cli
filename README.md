@@ -1,25 +1,11 @@
-> _the cli from the other side of the stack frame_
-> _a shell for the reversed world — where every call is also a return_
+<div align="center">
 
-```
-⠀⠀⠀⠀⠀⠀⠀⢸⡇⠀⣸⡆⠀⣾⡆⠀⣿⠀⠀⣿⠀⢰⣷⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⢸⡇⠀⣹⡇⠀⣿⡇⠀⣿⠀⠀⣿⠀⢸⣿⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⣰⡿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⢿⣦⠀⠀⠀⠀
-⠶⠶⠶⠶⣿⡇⢠⣶⣶⡄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⣿⠶⠶⠶⠶
-⣠⣤⣤⣤⣿⡇⠀⠙⠋⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⣿⣤⣤⣤⣄
-⠀⠀⠀⠈⣿⡇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⣿⠁⠀⠈⠁
-⠛⠛⠛⠛⣿⡇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⣿⠛⠛⠛⠛
-⠶⠶⠶⠶⣿⡇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⣿⠶⠶⠶⠶
-⣀⣤⣤⣤⣿⡇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⣿⣤⣤⣤⣀
-⠈⠉⠉⠉⣿⡇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⣿⠉⠉⠉⠁
-⠛⠛⠛⠛⣿⡇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⣿⠛⠛⠛⠛
-⠴⠶⠶⠶⣿⡇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⣿⠶⠶⠶⠦
-⠀⠀⠀⠀⠹⣷⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣾⠟⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⢸⡇⠀⣽⡇⠀⣿⡇⠀⣿⠀⠈⣿⠀⢸⣿⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⢸⡇⠀⢿⡇⠀⢿⠇⠀⣿⠀⠀⣿⠀⠸⡿⠀⠀⠀⠀⠀⠀⠀
-```
+<img src="images/black-hole.png" alt="the mascot, a black hole" width="200">
 
-<sub>a cube with one face pulled, insides spilling out — the mascot glitches because state leaks across boundaries. that is the feature.</sub>
+_the cli from the other side of the stack frame_
+_a shell for the reversed world — where every call is also a return_
+
+</div>
 
 ---
 

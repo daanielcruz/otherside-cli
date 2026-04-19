@@ -891,11 +891,26 @@ fn open_menu_for(st: &mut ConversationState, kind: slash_catalog::MenuKind) {
 }
 
 fn help_menu_hints() -> Vec<String> {
-    use super::tui::slash_catalog::CATALOG;
-    CATALOG
-        .iter()
-        .map(|e| format!("/{}  —  {}", e.name, e.brief))
-        .collect()
+    // Upstream's /help dialog is a tight card: one-line intro, a
+    // shortcuts block, a link to the slash catalog. Dumping the whole
+    // CATALOG via hints overflows the overlay and reads as a popup
+    // still-open bug — users who want the catalog type partial `/`
+    // and tab through the autocomplete instead.
+    vec![
+        "otherside cli — offensive-sec operator TUI".into(),
+        String::new(),
+        "Keys".into(),
+        "  Enter      submit turn".into(),
+        "  Shift+Enter insert newline".into(),
+        "  Tab        autocomplete slash".into(),
+        "  Shift+Tab  cycle permission mode".into(),
+        "  Esc        cancel current overlay / stream".into(),
+        "  Ctrl+C     exit".into(),
+        String::new(),
+        "Slashes".into(),
+        "  type `/` to open the autocomplete popup.".into(),
+        "  / then <prefix> filters the catalog.".into(),
+    ]
 }
 
 fn status_menu_hints(st: &ConversationState) -> Vec<String> {
