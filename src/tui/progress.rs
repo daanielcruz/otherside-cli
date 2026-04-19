@@ -91,19 +91,23 @@ pub fn spinner_frame(tick: u64) -> char {
 }
 
 /// Format the progress line text (no styling) given live state + the
-/// turn-scoped verb and optional thinking-effort label.
+/// turn-scoped verb and optional thinking-effort label. Upstream shape:
+///
+/// ```text
+/// ✽ Concocting… (12m 40s · ↑ 8.9k tokens · thinking with xhigh effort)
+/// ```
 pub fn format_progress_text(
     tick: u64,
     verb: &str,
     elapsed: Duration,
-    output_tokens: u64,
+    tokens_up: u64,
     _thought_ms: u64,
     effort_label: Option<&str>,
 ) -> String {
     let frame = spinner_frame(tick);
-    let elapsed_s = elapsed.as_secs();
-    let tokens_part = if output_tokens > 0 {
-        format!(" · ↓ {output_tokens} tokens")
+    let elapsed_str = format_elapsed(elapsed);
+    let tokens_part = if tokens_up > 0 {
+        format!(" · ↑ {} tokens", format_tokens_compact(tokens_up))
     } else {
         String::new()
     };
@@ -113,24 +117,52 @@ pub fn format_progress_text(
         }
         _ => String::new(),
     };
-    format!("{frame} {verb}… ({elapsed_s}s{tokens_part}{effort_part})")
+    format!("{frame} {verb}… ({elapsed_str}{tokens_part}{effort_part})")
+}
+
+/// Upstream-style elapsed format: `Ns` under a minute, `Nm Ns`
+/// otherwise. Keeps the progress line compact and readable.
+pub fn format_elapsed(elapsed: Duration) -> String {
+    let secs = elapsed.as_secs();
+    if secs < 60 {
+        format!("{secs}s")
+    } else {
+        let m = secs / 60;
+        let s = secs % 60;
+        format!("{m}m {s}s")
+    }
+}
+
+/// Upstream-style token count: `N` under 1000, `N.Nk` otherwise,
+/// rounded to one decimal when sub-10k. `8873 → 8.9k`, `123 → 123`,
+/// `12_345 → 12k`.
+pub fn format_tokens_compact(n: u64) -> String {
+    if n < 1_000 {
+        n.to_string()
+    } else if n < 10_000 {
+        format!("{:.1}k", n as f64 / 1_000.0)
+    } else {
+        format!("{}k", n / 1_000)
+    }
 }
 
 /// Paint the progress line into `area` (typically a single-row Rect).
+/// Shape mirrors `format_progress_text` — `↑ Nk tokens` for input,
+/// `Nm Ns` elapsed, `thinking with <level> effort` when set.
 pub fn draw(
     f: &mut Frame<'_>,
     area: Rect,
     tick: u64,
     verb: &str,
     elapsed: Duration,
-    output_tokens: u64,
+    tokens_up: u64,
     _thought_ms: u64,
     effort_label: Option<&str>,
 ) {
     let frame = spinner_frame(tick);
-    let elapsed_s = elapsed.as_secs();
-    let tokens_part = if output_tokens > 0 {
-        format!(" · ↓ {output_tokens} tokens")
+    let elapsed_str = format_elapsed(elapsed);
+    let tokens_part = if tokens_up > 0 {
+        format!(" · ↑ {} tokens", format_tokens_compact(tokens_up))
     } else {
         String::new()
     };
@@ -151,7 +183,7 @@ pub fn draw(
             Style::default().fg(theme::PRIMARY),
         ),
         Span::styled(
-            format!("({elapsed_s}s{tokens_part}{effort_part})"),
+            format!("({elapsed_str}{tokens_part}{effort_part})"),
             Style::default().fg(theme::MUTED),
         ),
     ]);
@@ -204,18 +236,18 @@ mod tests {
     }
 
     #[test]
-    fn format_progress_includes_core_counters() {
+    fn format_progress_upstream_shape() {
         let text = format_progress_text(
             0,
-            "Thinking",
-            Duration::from_secs(12),
-            345,
-            7_800,
+            "Concocting",
+            Duration::from_secs(760), // 12m 40s
+            8_873,                    // renders as 8.9k
+            0,
             Some("xhigh"),
         );
-        assert!(text.contains("12s"));
-        assert!(text.contains("↓ 345"));
-        assert!(text.contains("Thinking"));
+        assert!(text.contains("12m 40s"), "elapsed: {text}");
+        assert!(text.contains("↑ 8.9k tokens"), "tokens: {text}");
+        assert!(text.contains("Concocting"));
         assert!(text.contains("thinking with xhigh effort"));
     }
 
@@ -223,7 +255,7 @@ mod tests {
     fn format_progress_omits_tokens_when_zero() {
         let text = format_progress_text(0, "Cogitating", Duration::from_secs(3), 0, 0, None);
         assert!(text.contains("3s"));
-        assert!(!text.contains("↓"));
+        assert!(!text.contains("↑"));
         assert!(!text.contains("thinking with"));
     }
 
@@ -244,5 +276,21 @@ mod tests {
             Some("none"),
         );
         assert!(!text.contains("thinking with"));
+    }
+
+    #[test]
+    fn format_elapsed_splits_at_minute() {
+        assert_eq!(format_elapsed(Duration::from_secs(45)), "45s");
+        assert_eq!(format_elapsed(Duration::from_secs(60)), "1m 0s");
+        assert_eq!(format_elapsed(Duration::from_secs(760)), "12m 40s");
+    }
+
+    #[test]
+    fn format_tokens_compact_matches_upstream() {
+        assert_eq!(format_tokens_compact(999), "999");
+        assert_eq!(format_tokens_compact(1_000), "1.0k");
+        assert_eq!(format_tokens_compact(8_873), "8.9k");
+        assert_eq!(format_tokens_compact(12_345), "12k");
+        assert_eq!(format_tokens_compact(0), "0");
     }
 }

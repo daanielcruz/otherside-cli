@@ -168,7 +168,7 @@ pub fn render(
             spinner_tick,
             verb,
             Duration::from_millis(state.elapsed_ms()),
-            state.output_tokens,
+            state.input_tokens,
             state.thought_ms,
             state.effort_label,
         );
