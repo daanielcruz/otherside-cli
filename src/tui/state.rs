@@ -822,22 +822,16 @@ impl ConversationState {
     /// placeholder so the user sees the session continued. Does NOT
     /// wipe input or autocomplete state (user may be mid-slash).
     pub fn compact_history(&mut self) {
-        let kept_count = self.messages.len();
         self.messages.clear();
         self.current_assistant_buffer.clear();
         self.input.clear();
         self.autocomplete = None;
         self.scroll_offset = 0;
-        // Synthetic context marker so the transcript isn't mysteriously
-        // empty — matches upstream's "Conversation compacted" affordance.
-        self.messages.push(DisplayMessage {
-            role: OpenAiChatRole::System,
-            content: format!(
-                "context compacted — {kept_count} prior message{} dropped",
-                if kept_count == 1 { "" } else { "s" }
-            ),
-        });
-        self.scroll_to_bottom();
+        // Post-compact markers (the `✻ Conversation compacted …` header
+        // and the `❯ /compact` + `⎿ Compacted …` anchor pair) are now
+        // pushed by the slash handler in `slash::anchor::handle`,
+        // openspec 002. `compact_history` just wipes — the caller owns
+        // what the transcript looks like after the wipe.
     }
 
     /// Elapsed wall clock since the current request started, or 0 when

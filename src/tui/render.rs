@@ -507,6 +507,19 @@ fn render_message(role: OpenAiChatRole, content: &str, width: u16) -> Vec<Line<'
                                 .add_modifier(Modifier::ITALIC),
                         ),
                     ]));
+                } else if raw.starts_with("✻ ") && i == 0 {
+                    // `✻ ` sentinel: upstream's header line that rides
+                    // above an anchor (`✻ Conversation compacted (ctrl+o
+                    // for history)`). Same dim+italic treatment as the
+                    // `⎿ ` branch, but flush-left with no `system:`
+                    // prefix and no 2-space indent — the header reads
+                    // as a distinct event marker, not a command result.
+                    lines.push(Line::from(Span::styled(
+                        raw.to_string(),
+                        Style::default()
+                            .fg(theme::MUTED)
+                            .add_modifier(Modifier::ITALIC),
+                    )));
                 } else {
                     let prefix = if i == 0 { "⎿ system: " } else { "           " };
                     lines.push(Line::from(vec![

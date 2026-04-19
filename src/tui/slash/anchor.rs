@@ -29,8 +29,21 @@ use super::SlashOutcome;
 /// lines to the transcript).
 pub fn handle(name: &str, args: &str, state: &mut ConversationState) -> SlashOutcome {
     let lower = name.to_ascii_lowercase();
+    // `/compact` emits a 3-line block (upstream parity, openspec 002):
+    //   ✻ Conversation compacted (ctrl+o for history)
+    //   ❯ /compact
+    //     ⎿ Compacted (ctrl+o to see full summary)
+    // Order is strict: header push, then compact side-effect, then
+    // anchor pair. The header lands as a pre-existing message that
+    // survives the `compact_history` wipe — it's pushed AFTER the
+    // wipe so the user sees it at the top of the new transcript.
+    if lower.as_str() == "compact" {
+        run_compact(state);
+        state.push_system_note("✻ Conversation compacted (ctrl+o for history)");
+        state.push_anchor(&lower, args, "Compacted (ctrl+o to see full summary)");
+        return SlashOutcome::Handled;
+    }
     let result = match lower.as_str() {
-        "compact" => compact_result(state),
         "branch" => {
             "session branch lands with persistence (spec 008)".to_string()
         }
@@ -44,17 +57,13 @@ pub fn handle(name: &str, args: &str, state: &mut ConversationState) -> SlashOut
     SlashOutcome::Handled
 }
 
-fn compact_result(state: &mut ConversationState) -> String {
+fn run_compact(state: &mut ConversationState) {
     let kept = state.messages.len() as u64;
     state.append_record(crate::sessions::Record::CompactionMark {
         ts: crate::sessions::record::now_iso(),
         summary_ref: format!("kept={kept}"),
     });
-    // compact_history clears the transcript; we want the anchor to
-    // land AFTER, so capture the count first and let push_anchor
-    // append to the now-empty history.
     state.compact_history();
-    format!("compacted: {kept} prior message{} dropped", if kept == 1 { "" } else { "s" })
 }
 
 fn context_result(state: &ConversationState) -> String {
@@ -65,4 +74,37 @@ fn context_result(state: &ConversationState) -> String {
         (used.saturating_mul(100) / state.context_window).min(100)
     };
     format!("{} / {} ({}%)", used, state.context_window_label(), pct)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compact_emits_star_header_before_anchor() {
+        let mut st = ConversationState::default();
+        handle("compact", "", &mut st);
+        // After compact_history wipes the transcript, the handler
+        // pushes: [✻ header, /compact echo, ⎿ anchor] → 3 messages.
+        assert_eq!(st.messages.len(), 3);
+        assert_eq!(
+            st.messages[0].content,
+            "✻ Conversation compacted (ctrl+o for history)"
+        );
+        assert_eq!(st.messages[1].content, "/compact");
+        assert_eq!(
+            st.messages[2].content,
+            "⎿ Compacted (ctrl+o to see full summary)"
+        );
+    }
+
+    #[test]
+    fn compact_anchor_body_matches_upstream() {
+        let mut st = ConversationState::default();
+        handle("compact", "", &mut st);
+        let last = st.messages.last().unwrap();
+        assert_eq!(last.content, "⎿ Compacted (ctrl+o to see full summary)");
+        assert!(!last.content.contains("dropped"));
+        assert!(!last.content.contains("prior message"));
+    }
 }
