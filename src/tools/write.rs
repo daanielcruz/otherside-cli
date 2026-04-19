@@ -39,11 +39,22 @@ pub fn write(args: &Value) -> Result<Value, ToolError> {
     let existed = path.exists();
     write_with_mode(&path, content.as_bytes(), existed)?;
 
+    // Upstream `WriteTool` render prefers line count (`numLines`) over
+    // raw bytes. Count lines the same way `wc -l` does: each `\n`
+    // separator increments the count, and a trailing newline-less
+    // segment contributes the final line. Empty content → 0 lines.
+    let num_lines = if content.is_empty() {
+        0
+    } else {
+        content.lines().count() as u64
+    };
+
     Ok(json!({
         "status": "ok",
         "file_path": file_path,
         "created": !existed,
         "bytes_written": content.len(),
+        "numLines": num_lines,
     }))
 }
 
