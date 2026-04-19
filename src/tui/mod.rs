@@ -158,6 +158,7 @@ pub async fn run(
     raw_model: String,
     provider_id: String,
     initial_permission_mode: crate::config::PermissionMode,
+    settings: crate::config::settings::Settings,
 ) -> Result<()> {
     let provider = registry
         .get(&provider_id)
@@ -177,6 +178,7 @@ pub async fn run(
         thinking,
         provider_id,
         initial_permission_mode,
+        settings,
     )
     .await;
     guard.restore();
@@ -192,9 +194,11 @@ async fn event_loop(
     thinking: Option<ThinkingConfig>,
     provider_id: String,
     initial_permission_mode: crate::config::PermissionMode,
+    settings: crate::config::settings::Settings,
 ) -> Result<()> {
     let mut st =
         ConversationState::new_for_model_with_mode(&base_model, initial_permission_mode);
+    st.settings = settings;
     // Thread the session's thinking level into the progress-line
     // `thinking with <level> effort` chip. None when no thinking
     // config means the chip is suppressed.
@@ -597,13 +601,18 @@ fn spawn_agent_turn(
     let thinking = *thinking;
     let tx = tx.clone();
     let model = base_model.to_string();
+    // Snapshot settings + mode at spawn so mid-turn Shift+Tab toggles
+    // take effect on the NEXT turn rather than silently mutating an
+    // in-flight one. Matches upstream's per-turn permissionMode read.
+    let settings = st.settings.clone();
+    let mode = st.permission_mode;
     // Lifetime dance: `provider.stream(req, thinking)` yields a
     // future bound to `&self`. Cloning the Arc gives the spawned
     // task its own owned handle so the borrow lives on the task
     // stack, not here.
     let provider_for_task = provider.clone();
     let handle = tokio::spawn(async move {
-        run_agent_turns(provider_for_task, model, thinking, history, tx).await;
+        run_agent_turns(provider_for_task, model, thinking, history, tx, settings, mode).await;
     });
     st.turn_task = Some(handle);
 }
@@ -725,6 +734,8 @@ async fn run_agent_turns(
     thinking: Option<ThinkingConfig>,
     initial_history: Vec<crate::inference::OpenAiChatMessage>,
     tx: mpsc::Sender<StreamEvent>,
+    settings: crate::config::settings::Settings,
+    mode: crate::config::settings::PermissionMode,
 ) {
     use crate::agent::{tool_result_message, Turn, MAX_AUTO_TURNS};
     use crate::inference::{OpenAiChatMessage, OpenAiChatRole};
@@ -823,7 +834,8 @@ async fn run_agent_turns(
                 {
                     return;
                 }
-                let dispatch_outcome = tools::dispatch(&call.function.name, &args_value);
+                let dispatch_outcome =
+                    tools::dispatch_gated(&call.function.name, &args_value, &settings, mode);
                 let elapsed_ms = started.elapsed().as_millis() as u64;
                 // The tool-result history entry always carries a JSON
                 // value — on error, fold the message into a string so

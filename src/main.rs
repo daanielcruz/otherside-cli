@@ -402,5 +402,5 @@ async fn cmd_tui(cli: &Cli) -> Result<()> {
     } else {
         settings.permission_mode.unwrap_or_default()
     };
-    tui::run(registry, raw_model, provider_id, permission_mode).await
+    tui::run(registry, raw_model, provider_id, permission_mode, settings).await
 }

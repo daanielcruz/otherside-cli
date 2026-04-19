@@ -246,4 +246,121 @@ mod tests {
             _ => {}
         }
     }
+
+    mod gated {
+        use super::*;
+        use crate::config::settings::{PermissionMode, Settings};
+
+        #[test]
+        fn yolo_short_circuits_deny_rules() {
+            // Deny rule present but Yolo outranks everything.
+            let mut s = Settings::default();
+            s.permissions = Some(crate::config::settings::PermissionsConfig {
+                deny: vec![crate::config::settings::PermissionRule {
+                    tool_name: Some("*".into()),
+                    match_pattern: None,
+                    extra: Default::default(),
+                }],
+                ..Default::default()
+            });
+            // Bash with a runnable command — just exercise the gate, not the
+            // dispatcher's output path.
+            let res = dispatch_gated(
+                "Glob",
+                &json!({"pattern": "*.md"}),
+                &s,
+                PermissionMode::Yolo,
+            );
+            // Allow reached — Glob runs and returns Ok (empty or populated).
+            assert!(res.is_ok(), "Yolo should bypass deny rule, got {res:?}");
+        }
+
+        #[test]
+        fn plan_mode_blocks_mutating_tools() {
+            let s = Settings::default();
+            for tool in ["Edit", "Write", "Bash"] {
+                let res = dispatch_gated(tool, &json!({}), &s, PermissionMode::Plan);
+                match res {
+                    Err(ToolError::PermissionDenied(msg)) => {
+                        assert!(
+                            msg.contains("plan"),
+                            "plan-mode deny rule message missing 'plan': {msg}"
+                        );
+                    }
+                    other => panic!("plan mode must deny `{tool}`, got {other:?}"),
+                }
+            }
+        }
+
+        #[test]
+        fn plan_mode_allows_read_tools() {
+            let s = Settings::default();
+            // Read without args → InvalidArgs, but NOT PermissionDenied —
+            // gate allowed, dispatcher validated.
+            let res = dispatch_gated("Read", &json!({}), &s, PermissionMode::Plan);
+            match res {
+                Err(ToolError::PermissionDenied(_)) => {
+                    panic!("plan mode denied a read-only tool")
+                }
+                _ => {}
+            }
+        }
+
+        #[test]
+        fn default_mode_asks_without_rule_maps_to_denied() {
+            let s = Settings::default();
+            // No rules configured → resolve returns Ask{None} →
+            // dispatch_gated maps to PermissionDenied with the
+            // modal-pending note.
+            let res = dispatch_gated(
+                "Bash",
+                &json!({"command": "ls"}),
+                &s,
+                PermissionMode::Default,
+            );
+            match res {
+                Err(ToolError::PermissionDenied(msg)) => {
+                    assert!(
+                        msg.contains("interactive approval"),
+                        "default-mode Ask must surface modal-pending note: {msg}"
+                    );
+                }
+                other => panic!("expected PermissionDenied, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn accept_edits_mode_allows_edit_and_write() {
+            let s = Settings::default();
+            // Edit/Write should pass the gate; dispatcher will then hit
+            // InvalidArgs on empty input — that's the expected non-gate
+            // outcome.
+            for tool in ["Edit", "Write"] {
+                let res = dispatch_gated(tool, &json!({}), &s, PermissionMode::AcceptEdits);
+                match res {
+                    Err(ToolError::PermissionDenied(_)) => {
+                        panic!("accept-edits must allow `{tool}`")
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        #[test]
+        fn accept_edits_mode_still_asks_on_bash() {
+            let s = Settings::default();
+            let res = dispatch_gated(
+                "Bash",
+                &json!({"command": "ls"}),
+                &s,
+                PermissionMode::AcceptEdits,
+            );
+            match res {
+                Err(ToolError::PermissionDenied(msg)) => {
+                    assert!(msg.contains("interactive approval"));
+                }
+                other => panic!("accept-edits must still gate Bash, got {other:?}"),
+            }
+        }
+    }
 }

@@ -295,6 +295,13 @@ pub struct ConversationState {
     /// N is human-typed and stays small — see design.md "Decision:
     /// Queue lives on ConversationState as Vec<String>".
     pub queued_messages: Vec<String>,
+
+    /// Resolved user-scope settings loaded at TUI bootstrap. The
+    /// permission gate (`tools::dispatch_gated`) reads the allow /
+    /// deny / ask rule lists from here; Default gives an empty
+    /// PermissionsConfig so tests and legacy construction paths stay
+    /// green without explicit wiring.
+    pub settings: crate::config::settings::Settings,
 }
 
 /// Double-press-to-exit window — must match upstream's
