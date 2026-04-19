@@ -58,14 +58,13 @@ pub mod theme {
 
     // ----- upstream palette (mirrored for parity) -----
 
-    /// Body text — terminal-palette white. Upstream uses
-    /// `ansi:whiteBright` (`utils/theme.ts:291`) which resolves to the
-    /// user's terminal theme off-white, NOT pure `rgb(255,255,255)`.
-    /// Using ratatui `Color::White` maps onto ANSI 37 so terminals
-    /// render it at whatever softness the user's color scheme
-    /// specifies (typically ~`#CDCDCD` on dark themes), matching the
-    /// softer feel upstream has.
-    pub const TEXT: Color = Color::White;
+    /// Body text — explicit off-white RGB. Upstream's rendered output
+    /// reads markedly softer than pure `#FFFFFF`; `Color::White`
+    /// (ANSI 37) is terminal-theme-dependent and still too bright on
+    /// typical darwin profiles. `#D4D4D4` sits in the middle of the
+    /// observed upstream brightness — stays readable on dark
+    /// backgrounds without burning through like pure white.
+    pub const TEXT: Color = Color::Rgb(0xD4, 0xD4, 0xD4);
 
     /// Light gray — ambient helper text (tip line, shortcut hints,
     /// context chips when under threshold).
