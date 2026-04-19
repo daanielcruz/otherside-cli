@@ -29,6 +29,7 @@
 
 pub mod agent;
 pub mod bash;
+pub mod codex_native;
 pub mod deferred;
 pub mod edit;
 pub mod glob;
@@ -158,6 +159,11 @@ pub fn dispatch(tool_name: &str, args: &Value) -> Result<Value, ToolError> {
         "AskUserQuestion" => Err(ToolError::Unsupported(
             "AskUserQuestion requires the async agent dispatch path".into(),
         )),
+        // Codex-native tools — surface when the codex provider is
+        // driving the session. Independent from the 9-tool claude
+        // harness. Do NOT advertise on the anthropic wire body.
+        "shell" => codex_native::shell(args),
+        "apply_patch" => codex_native::apply_patch(args),
         // Affordance hints for models that hallucinate retired names.
         "Task" => Err(ToolError::Unsupported(
             "tool `Task` is retired; use `Agent` for subagent dispatch (010 anchor selection)"

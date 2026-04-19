@@ -36,4 +36,5 @@
 //! - `gemini` — Google OAuth flow (post-MVP).
 
 pub mod anthropic;
+pub mod codex;
 pub mod pkce;

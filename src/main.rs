@@ -32,7 +32,7 @@ use otherside::auth;
 use otherside::config;
 use otherside::error::{Error, Result};
 use otherside::inference::{OpenAiChatMessage, OpenAiChatRequest, OpenAiChatRole};
-use otherside::provider::{anthropic::AnthropicProvider, Registry};
+use otherside::provider::{anthropic::AnthropicProvider, codex::CodexProvider, Registry};
 use otherside::serve;
 use otherside::thinking::parse_suffix;
 use otherside::tui;
@@ -197,8 +197,18 @@ async fn cmd_login(provider: &str) -> Result<()> {
             println!("  expires_at (epoch ms): {}", creds.expires_at);
             Ok(())
         }
+        "codex" => {
+            let creds = auth::codex::login_interactive().await?;
+            println!("\nLogged in to codex (ChatGPT OAuth).");
+            if let Some(acct) = creds.account_id.as_ref() {
+                println!("  account_id: {acct}");
+            }
+            println!("  scopes: {}", creds.scopes.join(", "));
+            println!("  expires_at (epoch ms): {}", creds.expires_at);
+            Ok(())
+        }
         other => Err(Error::Other(format!(
-            "provider {other:?} has no login flow implemented in MVP — only `anthropic-oauth`"
+            "provider {other:?} has no login flow — try `anthropic-oauth` or `codex`"
         ))),
     }
 }
@@ -209,6 +219,11 @@ fn cmd_logout(provider: &str) -> Result<()> {
         "anthropic-oauth" => {
             auth::anthropic::clear_credentials()?;
             println!("Cleared cached credentials for anthropic-oauth.");
+            Ok(())
+        }
+        "codex" => {
+            auth::codex::clear_credentials()?;
+            println!("Cleared cached credentials for codex.");
             Ok(())
         }
         other => Err(Error::Other(format!(
@@ -280,6 +295,7 @@ async fn cmd_print(cli: &Cli, prompt: &str) -> Result<()> {
     // wired; other providers produce a clear error up front.
     let registry = Registry::builder()
         .with(AnthropicProvider::arc()?)
+        .with(CodexProvider::arc()?)
         .build();
     let provider = registry.get(&provider_id).ok_or_else(|| {
         Error::Other(format!(
@@ -345,6 +361,7 @@ async fn cmd_serve(cli: &Cli, host: IpAddr, port: u16) -> Result<()> {
     // to both CLI paths.
     let registry = Registry::builder()
         .with(AnthropicProvider::arc()?)
+        .with(CodexProvider::arc()?)
         .build();
 
     if registry.get(&provider_id).is_none() {
@@ -384,6 +401,7 @@ async fn cmd_tui(cli: &Cli) -> Result<()> {
 
     let registry = Registry::builder()
         .with(AnthropicProvider::arc()?)
+        .with(CodexProvider::arc()?)
         .build();
 
     if registry.get(&provider_id).is_none() {

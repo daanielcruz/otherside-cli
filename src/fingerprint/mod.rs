@@ -38,3 +38,4 @@
 //! capture updates it.
 
 pub mod anthropic;
+pub mod codex;

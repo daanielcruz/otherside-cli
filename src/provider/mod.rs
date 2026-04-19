@@ -40,6 +40,7 @@ use crate::inference::{OpenAiChatRequest, OpenAiChunk};
 use crate::thinking::ThinkingConfig;
 
 pub mod anthropic;
+pub mod codex;
 
 /// Inference streaming is a stream of either a chunk or an error. An
 /// error mid-stream terminates the stream.
