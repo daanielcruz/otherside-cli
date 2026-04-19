@@ -36,7 +36,7 @@ const BULLET: &str = "⏺";
 const BULLET: &str = "●";
 
 /// Tool call status. Drives the badge color on the bullet.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ToolStatus {
     Running,
     Ok,
@@ -74,7 +74,7 @@ impl ToolStatus {
 /// Opaque payload attached to a tool call so the render path can pick
 /// a specialized sub-renderer (todos, diff, plain text) without
 /// parsing the JSON twice.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum ToolPayload {
     /// Raw text preview (first N chars of stdout / first line of the
     /// result JSON). Also used to surface a tool-dispatch error
@@ -86,6 +86,36 @@ pub enum ToolPayload {
     Todos(Vec<todos::TodoItem>),
     /// Edit/Write unified diff — render with the diff module.
     Diff(String),
+}
+
+/// Serializable archive shape for a finished tool call. Used by
+/// [`super::state::format_tool_history_entry`] to serialize a
+/// [`super::state::ToolCallEntry`] into the `Role::Tool` message body
+/// so the archived render path can reconstruct the full header +
+/// payload via [`render_tool_call`], matching the live render.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ToolCallArchive {
+    pub status: ToolStatus,
+    pub name: String,
+    pub elapsed_ms: u64,
+    pub args: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload: Option<ToolPayload>,
+}
+
+impl ToolCallArchive {
+    /// Rebuild a [`ToolCallView`] pointing into `self`. Lifetime is
+    /// tied to the archive so the caller keeps the archive alive while
+    /// rendering.
+    pub fn view(&self) -> ToolCallView<'_> {
+        ToolCallView {
+            name: &self.name,
+            args: &self.args,
+            status: self.status,
+            elapsed_ms: Some(self.elapsed_ms),
+            payload: self.payload.as_ref(),
+        }
+    }
 }
 
 /// Compact view the caller hands this module.

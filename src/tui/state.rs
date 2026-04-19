@@ -124,27 +124,22 @@ pub struct ToolCallEntry {
     pub elapsed_ms: u64,
 }
 
-/// Render a finalized ToolCallEntry as a one-line history entry that
-/// the Role::Tool render branch can reinflate. Format:
-/// `<status_glyph>|<name>|<elapsed_ms>|<short-args>` — pipe-delimited
-/// so render can split cheaply. Prefix glyph lets a grep disambiguate
-/// tool entries from other system notes without deserializing.
+/// Serialize a finalized ToolCallEntry into a JSON string the
+/// `Role::Tool` archived render path can deserialize and feed through
+/// [`tool_render::render_tool_call`] — same code path as the live
+/// render. Previously emitted a pipe-delimited summary that lost the
+/// payload preview on archival; JSON preserves the full shape (args,
+/// status, elapsed, payload) so archived tool calls show the `⎿`
+/// preview body just like live ones.
 pub fn format_tool_history_entry(entry: &ToolCallEntry) -> String {
-    let status_glyph = match entry.status {
-        ToolStatus::Running => "·", // shouldn't happen post-finish, but safe
-        ToolStatus::Ok => "ok",
-        ToolStatus::Error => "err",
+    let archive = tool_render::ToolCallArchive {
+        status: entry.status,
+        name: entry.name.clone(),
+        elapsed_ms: entry.elapsed_ms,
+        args: entry.args.clone(),
+        payload: entry.payload.clone(),
     };
-    // Archive using the same per-tool header the live render uses, so
-    // archived tool calls don't regress to the raw `key=value` shape
-    // the first-KV heuristic used to emit. Elapsed stays in the pipe
-    // for consumers but the archived header renderer no longer paints
-    // it — upstream shape is `⏺ Name(args)`, no elapsed chip.
-    let short_args = crate::tui::tool_render::summarize_args(&entry.name, &entry.args);
-    format!(
-        "{}|{}|{}|{}",
-        status_glyph, entry.name, entry.elapsed_ms, short_args
-    )
+    serde_json::to_string(&archive).unwrap_or_default()
 }
 
 /// Color-token discriminant for the info-row permission chip. Names

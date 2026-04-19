@@ -425,44 +425,41 @@ fn render_message(role: OpenAiChatRole, content: &str, width: u16) -> Vec<Line<'
                 ]));
             }
             OpenAiChatRole::Tool => {
-                // Role::Tool carries a `format_tool_history_entry`
-                // pipe-delimited summary: `status|name|elapsed|args`.
-                // Upstream header shape is `⏺ Name(args)` — no elapsed
-                // chip, no status text. `args` already carries the
-                // per-tool summary from `summarize_args` (via
-                // format_tool_history_entry), so paint it verbatim.
+                // Role::Tool carries a JSON-serialized `ToolCallArchive`
+                // (see `state::format_tool_history_entry`). Deserialize
+                // and run through the same `render_tool_call` path the
+                // live stream uses, so archived tool calls keep the
+                // full `⎿` preview body (previously the pipe-delimited
+                // summary dropped the payload on archival).
                 if i > 0 {
                     continue;
                 }
-                let parts: Vec<&str> = raw.splitn(4, '|').collect();
-                let (status, name, _elapsed_ms, args) = match parts.as_slice() {
-                    [s, n, e, a] => (*s, *n, *e, *a),
-                    _ => ("", raw, "0", ""),
-                };
-                let bullet_color = match status {
-                    "ok" => theme::SUCCESS,
-                    "err" => theme::ERROR,
-                    _ => theme::MUTED,
-                };
-                let bullet = if cfg!(target_os = "macos") { "⏺ " } else { "● " };
-                let mut spans: Vec<Span<'static>> = Vec::with_capacity(3);
-                spans.push(Span::styled(
-                    bullet.to_string(),
-                    Style::default()
-                        .fg(bullet_color)
-                        .add_modifier(Modifier::BOLD),
-                ));
-                spans.push(Span::styled(
-                    name.to_string(),
-                    Style::default().fg(theme::TEXT).add_modifier(Modifier::BOLD),
-                ));
-                if !args.is_empty() {
-                    spans.push(Span::styled(
-                        format!("({args})"),
-                        Style::default().fg(theme::MUTED),
-                    ));
+                match serde_json::from_str::<super::tool_render::ToolCallArchive>(raw) {
+                    Ok(archive) => {
+                        let view = archive.view();
+                        for line in super::tool_render::render_tool_call(&view) {
+                            lines.push(line);
+                        }
+                    }
+                    Err(_) => {
+                        // Legacy pre-JSON archived entries: fall back to
+                        // a bare header render so pre-upgrade sessions
+                        // still show something.
+                        let bullet = if cfg!(target_os = "macos") { "⏺ " } else { "● " };
+                        lines.push(Line::from(vec![
+                            Span::styled(
+                                bullet.to_string(),
+                                Style::default()
+                                    .fg(theme::MUTED)
+                                    .add_modifier(Modifier::BOLD),
+                            ),
+                            Span::styled(
+                                raw.to_string(),
+                                Style::default().fg(theme::MUTED),
+                            ),
+                        ]));
+                    }
                 }
-                lines.push(Line::from(spans));
             }
         }
     }
