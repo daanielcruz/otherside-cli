@@ -644,7 +644,8 @@ fn draw_info_row(
     // primary chips (tool state, PR status, tasks). Cycle hint
     // mirrors upstream `primaryItemCount < 2` gate.
     let chip_opt = state.permission_mode_label();
-    let primary_item_count: usize = if chip_opt.is_some() { 1 } else { 0 };
+    let has_chip = chip_opt.is_some();
+    let primary_item_count: usize = if has_chip { 1 } else { 0 };
     let show_cycle_hint = primary_item_count < 2;
 
     // Hint text WITHOUT a leading separator — we only inject " · "
@@ -688,8 +689,7 @@ fn draw_info_row(
     // its left. Default mode (no chip) renders the hint alone without
     // a leading bullet.
     if !hint.is_empty() {
-        let needs_separator = chip_opt.is_some();
-        let text = if needs_separator {
+        let text = if has_chip {
             format!(" · {hint}")
         } else {
             hint.to_string()
