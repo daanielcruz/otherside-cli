@@ -88,10 +88,18 @@ pub fn pick_verb_for_turn(seed: u64) -> &'static str {
     VERBS[(seed as usize) % VERBS.len()]
 }
 
-/// Return the frame character for a given tick count.
+/// Return the frame character for a given tick count. The event
+/// loop ticks at ~20 fps (50 ms); dividing the index by
+/// [`SPINNER_FRAME_RATIO`] slows the rotation so the cube faces
+/// read as a breathing pulse rather than a dizzy strobe.
 pub fn spinner_frame(tick: u64) -> char {
-    SPINNER_FRAMES[(tick as usize) % SPINNER_FRAMES.len()]
+    SPINNER_FRAMES[(tick as usize / SPINNER_FRAME_RATIO) % SPINNER_FRAMES.len()]
 }
+
+/// Ticks per spinner frame. Event loop runs at ~50 ms/tick;
+/// `3` → one frame every 150 ms, full 8-frame cycle every 1.2 s.
+/// Tune higher for a slower pulse, lower for snappier motion.
+const SPINNER_FRAME_RATIO: usize = 3;
 
 /// Format the progress line text (no styling) given live state + the
 /// turn-scoped verb and optional thinking-effort label. Upstream shape:
@@ -200,15 +208,31 @@ mod tests {
 
     #[test]
     fn spinner_cycles_through_eight_frames() {
+        // Spinner advances once per `SPINNER_FRAME_RATIO` ticks. Walk
+        // the cycle at stride=ratio so each assertion covers one
+        // distinct frame — matches upstream's cube-face pulse shape.
+        let ratio = SPINNER_FRAME_RATIO as u64;
         assert_eq!(spinner_frame(0), '◰');
-        assert_eq!(spinner_frame(1), '◳');
-        assert_eq!(spinner_frame(2), '◲');
-        assert_eq!(spinner_frame(3), '◱');
-        assert_eq!(spinner_frame(4), '◲');
-        assert_eq!(spinner_frame(5), '◳');
-        assert_eq!(spinner_frame(6), '◰');
-        assert_eq!(spinner_frame(7), '◱');
-        assert_eq!(spinner_frame(8), '◰');
+        assert_eq!(spinner_frame(ratio), '◳');
+        assert_eq!(spinner_frame(ratio * 2), '◲');
+        assert_eq!(spinner_frame(ratio * 3), '◱');
+        assert_eq!(spinner_frame(ratio * 4), '◲');
+        assert_eq!(spinner_frame(ratio * 5), '◳');
+        assert_eq!(spinner_frame(ratio * 6), '◰');
+        assert_eq!(spinner_frame(ratio * 7), '◱');
+        assert_eq!(spinner_frame(ratio * 8), '◰');
+    }
+
+    #[test]
+    fn spinner_holds_frame_between_ticks() {
+        // Within a single `SPINNER_FRAME_RATIO` window, consecutive
+        // ticks should render the SAME frame — that's the whole
+        // point of the ratio: slow the visible rotation without
+        // dropping event-loop fps.
+        let ratio = SPINNER_FRAME_RATIO as u64;
+        for i in 0..ratio {
+            assert_eq!(spinner_frame(i), '◰');
+        }
     }
 
     #[test]
