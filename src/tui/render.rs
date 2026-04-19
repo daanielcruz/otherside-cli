@@ -651,10 +651,8 @@ fn draw_info_row(
         " · esc to interrupt"
     } else if state.autocomplete.is_some() {
         " · enter run · esc close"
-    } else if state.input.is_empty() {
-        ""
     } else {
-        " · enter to submit"
+        ""
     };
 
     // Left side: permission chip (symbol + label) when active, then
