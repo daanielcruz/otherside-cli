@@ -267,6 +267,7 @@ fn draw_log(f: &mut Frame<'_>, area: Rect, state: &ConversationState, spinner_ti
                 },
                 payload: entry.payload.as_ref(),
                 verbose: state.render_verbose,
+                spinner_tick,
             };
             lines.extend(super::tool_render::render_tool_call(&view));
         }
@@ -289,8 +290,6 @@ fn draw_log(f: &mut Frame<'_>, area: Rect, state: &ConversationState, spinner_ti
             ));
         }
     }
-    let _ = spinner_tick;
-
     if let Some(err) = &state.last_error {
         lines.push(Line::raw(""));
         lines.push(Line::from(Span::styled(

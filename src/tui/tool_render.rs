@@ -6,10 +6,12 @@
 //! painter iterates that vector each frame and calls
 //! [`render_tool_call`] for every in-flight / finalized entry.
 //!
-//! The `Running` bullet renders in `theme::MUTED` with `SLOW_BLINK`
-//! (terminal-native `ESC[5m`) so the status reads as animated until
-//! the dispatch returns. `Ok` transitions to solid `theme::SUCCESS`,
-//! `Error` to solid `theme::ERROR`.
+//! The `Running` bullet animates by toggling the glyph on/off every
+//! [`BLINK_INTERVAL_TICKS`] frames (600ms @ 20fps ticker), mirroring
+//! upstream's `useBlink(600ms)` hook. Terminal `SLOW_BLINK` was
+//! unreliable (xterm/iTerm strip `ESC[5m`); glyph alternation is
+//! portable. `Ok` transitions to solid `theme::SUCCESS`, `Error` to
+//! solid `theme::ERROR`.
 //!
 //! [`payload_from_result`] picks a specialized sub-renderer based on
 //! tool name + result shape — Todos for TodoWrite, Diff for Edit/Write
@@ -35,6 +37,16 @@ const BULLET: &str = "⏺";
 #[cfg(not(target_os = "macos"))]
 const BULLET: &str = "●";
 
+/// Space glyph used in place of the bullet on the "off" half of the
+/// blink cycle while Running. Matches upstream `ToolUseLoader` which
+/// substitutes `' '` for `BLACK_CIRCLE` when `isBlinking` is false.
+const BULLET_HIDDEN: &str = " ";
+
+/// How many spinner ticks make up one half of the blink cycle.
+/// Spinner ticker runs at 50ms, so 12 ticks = 600ms — the same
+/// interval upstream uses (`useBlink.ts::BLINK_INTERVAL_MS`).
+const BLINK_INTERVAL_TICKS: u64 = 12;
+
 /// Tool call status. Drives the badge color on the bullet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ToolStatus {
@@ -59,15 +71,15 @@ impl ToolStatus {
         }
     }
 
-    /// Extra text modifiers layered on top of the color. `Running`
-    /// gets `SLOW_BLINK` so the bullet pulses while the tool hasn't
-    /// returned; `Ok` / `Error` render solid.
+    /// Extra text modifiers layered on top of the color. All three
+    /// states render BOLD. Blinking during `Running` is handled by
+    /// tick-driven glyph alternation in [`render_tool_call`] rather
+    /// than the terminal-native `SLOW_BLINK` (stripped by most
+    /// modern terminals).
     pub(crate) fn modifier(self) -> ratatui::style::Modifier {
         use ratatui::style::Modifier;
-        match self {
-            ToolStatus::Running => Modifier::BOLD | Modifier::SLOW_BLINK,
-            ToolStatus::Ok | ToolStatus::Error => Modifier::BOLD,
-        }
+        let _ = self;
+        Modifier::BOLD
     }
 }
 
@@ -118,6 +130,9 @@ impl ToolCallArchive {
             // (non-verbose) layout — we don't preserve per-entry
             // verbose state across transcript serialization.
             verbose: false,
+            // Archived entries render solid (no blink); the call is
+            // already resolved.
+            spinner_tick: 0,
         }
     }
 }
@@ -135,6 +150,12 @@ pub struct ToolCallView<'a> {
     /// qualifier, WebFetch appended body, Bash full output). Default
     /// `false` keeps the compact render.
     pub verbose: bool,
+    /// Global animation clock — the 20fps spinner ticker threaded in
+    /// from `render::render`. Only consumed on `Running` status, where
+    /// even-indexed blink halves show the bullet glyph and odd halves
+    /// show a space. For finalized calls the value is irrelevant
+    /// (bullet renders solid).
+    pub spinner_tick: u64,
 }
 
 /// Render a single tool call into owned Lines ready to splice into
@@ -155,9 +176,19 @@ pub fn render_tool_call(view: &ToolCallView<'_>) -> Vec<Line<'static>> {
     } else {
         format!("({arg_summary})")
     };
+    // Running status alternates glyph to simulate blink — even
+    // 600ms windows show the bullet, odd windows show a space.
+    // Finalized calls (Ok/Error) render the bullet solid.
+    let bullet_glyph = if matches!(view.status, ToolStatus::Running)
+        && (view.spinner_tick / BLINK_INTERVAL_TICKS) % 2 == 1
+    {
+        BULLET_HIDDEN
+    } else {
+        BULLET
+    };
     let mut header_spans: Vec<Span<'static>> = Vec::with_capacity(3);
     header_spans.push(Span::styled(
-        format!("{BULLET} "),
+        format!("{bullet_glyph} "),
         Style::default()
             .fg(view.status.color())
             .add_modifier(view.status.modifier()),
@@ -1082,6 +1113,7 @@ mod tests {
             elapsed_ms: Some(1500),
             payload: None,
                     verbose: false,
+                    spinner_tick: 0,
         };
         let lines = render_tool_call(&view);
         let text = collect_text(&lines);
@@ -1095,6 +1127,64 @@ mod tests {
     }
 
     #[test]
+    fn running_bullet_alternates_with_spinner_tick() {
+        // 50ms ticker × BLINK_INTERVAL_TICKS(12) = 600ms per half —
+        // mirrors upstream `useBlink`. Ticks 0..=11 show the bullet,
+        // 12..=23 show the blank, 24..=35 show the bullet again.
+        let args = serde_json::json!({});
+        let mk_view = |tick: u64| ToolCallView {
+            name: "Bash",
+            args: &args,
+            status: ToolStatus::Running,
+            elapsed_ms: None,
+            payload: None,
+            verbose: false,
+            spinner_tick: tick,
+        };
+        let on_text = collect_text(&render_tool_call(&mk_view(0)));
+        let off_text = collect_text(&render_tool_call(&mk_view(BLINK_INTERVAL_TICKS)));
+        let on_again_text = collect_text(&render_tool_call(&mk_view(BLINK_INTERVAL_TICKS * 2)));
+        assert!(on_text.starts_with(BULLET), "tick 0 should show bullet");
+        assert!(
+            !off_text.starts_with(BULLET),
+            "tick {} should hide bullet (got {off_text:?})",
+            BLINK_INTERVAL_TICKS
+        );
+        assert!(
+            off_text.starts_with(BULLET_HIDDEN),
+            "tick {} should show blank bullet (got {off_text:?})",
+            BLINK_INTERVAL_TICKS
+        );
+        assert!(
+            on_again_text.starts_with(BULLET),
+            "tick {} should show bullet again",
+            BLINK_INTERVAL_TICKS * 2
+        );
+    }
+
+    #[test]
+    fn resolved_bullet_ignores_spinner_tick() {
+        // Ok / Error render solid regardless of the animation clock.
+        let args = serde_json::json!({});
+        for status in [ToolStatus::Ok, ToolStatus::Error] {
+            let view = ToolCallView {
+                name: "Bash",
+                args: &args,
+                status,
+                elapsed_ms: Some(10),
+                payload: None,
+                verbose: false,
+                spinner_tick: BLINK_INTERVAL_TICKS, // would blink if Running
+            };
+            let text = collect_text(&render_tool_call(&view));
+            assert!(
+                text.starts_with(BULLET),
+                "{status:?} must render solid bullet at any tick"
+            );
+        }
+    }
+
+    #[test]
     fn preview_payload_renders_under_gutter() {
         let args = serde_json::json!({});
         let preview = ToolPayload::Preview("first line\nsecond line".into());
@@ -1105,6 +1195,7 @@ mod tests {
             elapsed_ms: None,
             payload: Some(&preview),
                     verbose: false,
+                    spinner_tick: 0,
         };
         let lines = render_tool_call(&view);
         let text = collect_text(&lines);
@@ -1136,6 +1227,7 @@ mod tests {
             elapsed_ms: Some(12),
             payload: Some(&payload),
                     verbose: false,
+                    spinner_tick: 0,
         };
         let lines = render_tool_call(&view);
         let text = collect_text(&lines);
@@ -1156,6 +1248,7 @@ mod tests {
             elapsed_ms: Some(4),
             payload: Some(&payload),
                     verbose: false,
+                    spinner_tick: 0,
         };
         let lines = render_tool_call(&view);
         let text = collect_text(&lines);
