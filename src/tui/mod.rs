@@ -147,6 +147,17 @@ enum StreamEvent {
         input_tokens: Option<u64>,
         output_tokens: Option<u64>,
     },
+    /// Agent task needs interactive permission approval before it can
+    /// dispatch a tool call. The event loop opens a modal overlay and
+    /// fires the reply once the user resolves it; the agent task awaits
+    /// the oneshot's recv side. Mirrors upstream's `checkPermissions`
+    /// modal dialog shape.
+    PermissionAsk {
+        tool_name: String,
+        args_preview: String,
+        rule: Option<String>,
+        reply: tokio::sync::oneshot::Sender<crate::permissions::PermissionResponse>,
+    },
 }
 
 /// Entry point — boot the TUI and run until the user exits.
@@ -287,6 +298,19 @@ async fn event_loop(
                     Some(StreamEvent::Usage { input_tokens, output_tokens }) => {
                         st.update_usage(input_tokens, output_tokens);
                     }
+                    Some(StreamEvent::PermissionAsk { tool_name, args_preview, rule, reply }) => {
+                        // Surface the modal overlay — the agent task is
+                        // awaiting the reply oneshot. Any existing menu
+                        // is forced shut so the permission prompt owns
+                        // the screen until the user resolves it.
+                        st.active_menu = None;
+                        st.pending_permission = Some(menu::PendingPermissionPrompt::new(
+                            tool_name,
+                            args_preview,
+                            rule,
+                            reply,
+                        ));
+                    }
                     None => {
                         // Channel closed without a terminal event — the
                         // task dropped its sender unexpectedly. Treat as
@@ -353,6 +377,14 @@ fn handle_key(
     // care about presses. Without this check, every key fires twice on
     // Kitty / Wezterm.
     if k.kind != KeyEventKind::Press {
+        return false;
+    }
+
+    // A pending permission prompt outranks every other overlay —
+    // the agent task is awaiting the oneshot reply, so we gate all
+    // keys through the permission handler until it resolves.
+    if st.pending_permission.is_some() {
+        handle_permission_key(k, st);
         return false;
     }
 
@@ -683,6 +715,55 @@ fn handle_menu_key(
     }
 }
 
+/// Route a key event through the active permission prompt. Esc
+/// resolves as `Deny` (safe default — the agent sees a refusal and
+/// reports it to the model). Enter fires the currently-selected choice.
+fn handle_permission_key(k: KeyEvent, st: &mut ConversationState) {
+    use crate::permissions::PermissionResponse;
+    let Some(prompt) = st.pending_permission.as_mut() else {
+        return;
+    };
+    match k.code {
+        KeyCode::Esc => {
+            prompt.resolve(PermissionResponse::Deny);
+            st.pending_permission = None;
+        }
+        KeyCode::Up => prompt.move_up(),
+        KeyCode::Down => prompt.move_down(),
+        KeyCode::Enter => {
+            let response = prompt.selected_response();
+            // Record the session-scoped rule BEFORE firing the reply
+            // so re-entrant dispatches from the agent task see the
+            // new allowlist entry.
+            if response == PermissionResponse::AllowSession {
+                let rule = session_rule_for(&prompt.tool_name, &prompt.args_preview);
+                st.session_allowlist.push_rule(rule);
+            }
+            prompt.resolve(response);
+            st.pending_permission = None;
+        }
+        _ => {}
+    }
+}
+
+/// Derive a session-allowlist rule string from `(tool, args_preview)`.
+/// For Bash we keep the command prefix up to the first whitespace;
+/// for other tools we accept any args (`ToolName(*)`). Mirrors
+/// upstream's `buildSessionAllowRule`.
+fn session_rule_for(tool_name: &str, args_preview: &str) -> String {
+    if tool_name == "Bash" {
+        let cmd = args_preview.trim();
+        let prefix = cmd.split_whitespace().next().unwrap_or(cmd);
+        if prefix.is_empty() {
+            format!("{tool_name}(*)")
+        } else {
+            format!("{tool_name}({prefix}:*)")
+        }
+    } else {
+        format!("{tool_name}(*)")
+    }
+}
+
 /// Apply the overlay's commit outcome to session state. Each variant
 /// is side-effectful: `SetEffort` flips the active thinking config,
 /// updates the progress-line chip, and writes back to settings.json.
@@ -753,13 +834,24 @@ fn spawn_agent_turn(
     // in-flight one. Matches upstream's per-turn permissionMode read.
     let settings = st.settings.clone();
     let mode = st.permission_mode;
+    let session_allowlist = st.session_allowlist.clone();
     // Lifetime dance: `provider.stream(req, thinking)` yields a
     // future bound to `&self`. Cloning the Arc gives the spawned
     // task its own owned handle so the borrow lives on the task
     // stack, not here.
     let provider_for_task = provider.clone();
     let handle = tokio::spawn(async move {
-        run_agent_turns(provider_for_task, model, thinking, history, tx, settings, mode).await;
+        run_agent_turns(
+            provider_for_task,
+            model,
+            thinking,
+            history,
+            tx,
+            settings,
+            mode,
+            session_allowlist,
+        )
+        .await;
     });
     st.turn_task = Some(handle);
 }
@@ -885,8 +977,9 @@ async fn run_agent_turns(
     thinking: Option<ThinkingConfig>,
     initial_history: Vec<crate::inference::OpenAiChatMessage>,
     tx: mpsc::Sender<StreamEvent>,
-    settings: crate::config::settings::Settings,
+    mut settings: crate::config::settings::Settings,
     mode: crate::config::settings::PermissionMode,
+    session_allowlist: crate::permissions::SessionAllowlist,
 ) {
     use crate::agent::{tool_result_message, Turn, MAX_AUTO_TURNS};
     use crate::inference::{OpenAiChatMessage, OpenAiChatRole};
@@ -985,8 +1078,15 @@ async fn run_agent_turns(
                 {
                     return;
                 }
-                let dispatch_outcome =
-                    tools::dispatch_gated(&call.function.name, &args_value, &settings, mode);
+                let dispatch_outcome = dispatch_with_prompt(
+                    &call.function.name,
+                    &args_value,
+                    &mut settings,
+                    mode,
+                    &session_allowlist,
+                    &tx,
+                )
+                .await;
                 let elapsed_ms = started.elapsed().as_millis() as u64;
                 // The tool-result history entry always carries a JSON
                 // value — on error, fold the message into a string so
@@ -1029,6 +1129,144 @@ async fn run_agent_turns(
             .await;
     }
     let _ = tx.send(StreamEvent::Done).await;
+}
+
+/// Permission-aware tool dispatch. Mirrors `tools::dispatch_gated` but
+/// resolves `Decision::Ask` via an async round-trip through the event
+/// loop's modal overlay rather than degrading it to a refusal.
+///
+/// Flow:
+/// 1. Build a session-overlay `Settings` (user perms + session allowlist).
+/// 2. `permissions::resolve` → Allow / Deny / Ask.
+/// 3. Allow → sync dispatch.
+/// 4. Deny → PermissionDenied.
+/// 5. Ask → send [`StreamEvent::PermissionAsk`] with a oneshot, await the
+///    reply, then dispatch (or refuse) based on the user's choice.
+///    `AllowSession` pushes a rule into the session allowlist BEFORE
+///    dispatching so subsequent calls in the same turn auto-allow.
+async fn dispatch_with_prompt(
+    tool_name: &str,
+    args: &serde_json::Value,
+    settings: &mut crate::config::settings::Settings,
+    mode: crate::config::settings::PermissionMode,
+    session_allowlist: &crate::permissions::SessionAllowlist,
+    tx: &mpsc::Sender<StreamEvent>,
+) -> std::result::Result<serde_json::Value, crate::tools::ToolError> {
+    use crate::permissions::{self, Decision, PermissionResponse};
+    use crate::tools::ToolError;
+
+    let input_str = serde_json::to_string(args).unwrap_or_default();
+    // Fold the session allowlist into the settings snapshot so
+    // `permissions::resolve` sees it via the normal `permissions.allow`
+    // path. Clone the settings locally — we only need the composite
+    // for this one resolve call.
+    let mut composed = settings.clone();
+    overlay_session_allowlist(&mut composed, session_allowlist);
+    match permissions::resolve(tool_name, &input_str, &composed, mode) {
+        Decision::Allow => crate::tools::dispatch(tool_name, args),
+        Decision::Deny { rule } => Err(ToolError::PermissionDenied(rule)),
+        Decision::Ask { rule } => {
+            let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+            let args_preview = preview_args_for_prompt(tool_name, args);
+            if tx
+                .send(StreamEvent::PermissionAsk {
+                    tool_name: tool_name.to_string(),
+                    args_preview,
+                    rule: rule.clone(),
+                    reply: reply_tx,
+                })
+                .await
+                .is_err()
+            {
+                return Err(ToolError::PermissionDenied(
+                    "user interface gone — aborting call".into(),
+                ));
+            }
+            match reply_rx.await {
+                Ok(PermissionResponse::Allow) => crate::tools::dispatch(tool_name, args),
+                Ok(PermissionResponse::AllowSession) => {
+                    // Rule was already pushed to the allowlist by the
+                    // event loop's Enter handler. Dispatch immediately.
+                    crate::tools::dispatch(tool_name, args)
+                }
+                Ok(PermissionResponse::Deny) => Err(ToolError::PermissionDenied(
+                    rule.unwrap_or_else(|| "user declined".into()),
+                )),
+                Err(_) => Err(ToolError::PermissionDenied(
+                    "permission prompt cancelled".into(),
+                )),
+            }
+        }
+    }
+}
+
+/// Fold the session-scoped allowlist into a settings clone so the
+/// shared `permissions::resolve` function treats it like normal
+/// allow rules. Kept separate from the settings struct because
+/// session rules never write back to disk.
+fn overlay_session_allowlist(
+    settings: &mut crate::config::settings::Settings,
+    session: &crate::permissions::SessionAllowlist,
+) {
+    use crate::config::settings::{PermissionRule, PermissionsConfig};
+    use crate::permissions::{matcher, MatcherTool};
+    let rules = session.snapshot();
+    if rules.is_empty() {
+        return;
+    }
+    let mut existing = settings.permissions.take().unwrap_or_else(PermissionsConfig::default);
+    for raw in rules {
+        // Build a PermissionRule from the raw rule string the same
+        // way `tests::parse_rule` does — reuse the matcher parser so
+        // bad session strings fail identically to bad settings ones.
+        let parsed = match matcher::parse(&raw) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        let tool_name = match parsed.tool {
+            MatcherTool::Any => "*".to_string(),
+            MatcherTool::Named(n) => n,
+        };
+        let rule = PermissionRule {
+            tool_name: Some(tool_name),
+            match_pattern: parsed.pattern.clone(),
+            extra: Default::default(),
+        };
+        existing.allow.push(rule);
+    }
+    settings.permissions = Some(existing);
+}
+
+/// Build the dim args preview shown on the permission overlay. Mirrors
+/// the tool-header convention: Bash surfaces the raw command; others
+/// show the primary field. Falls back to a compact JSON stringification.
+fn preview_args_for_prompt(tool_name: &str, args: &serde_json::Value) -> String {
+    let obj = match args.as_object() {
+        Some(o) => o,
+        None => return String::new(),
+    };
+    if tool_name == "Bash" {
+        if let Some(cmd) = obj.get("command").and_then(|v| v.as_str()) {
+            return truncate_preview(cmd, 200);
+        }
+    }
+    for key in ["file_path", "path", "command", "description", "query", "url"] {
+        if let Some(v) = obj.get(key).and_then(|v| v.as_str()) {
+            return truncate_preview(v, 200);
+        }
+    }
+    truncate_preview(&serde_json::to_string(args).unwrap_or_default(), 200)
+}
+
+fn truncate_preview(s: &str, cap: usize) -> String {
+    let collapsed = s.replace('\n', " ");
+    if collapsed.chars().count() <= cap {
+        collapsed
+    } else {
+        let mut out: String = collapsed.chars().take(cap).collect();
+        out.push('…');
+        out
+    }
 }
 
 /// Format an error for inline rendering. Keep the message one-line-ish by

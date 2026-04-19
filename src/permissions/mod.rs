@@ -15,9 +15,40 @@ pub mod matcher;
 pub mod prompt;
 
 pub use matcher::{MatcherRule, MatcherTool, MatcherParseError};
-pub use prompt::{PromptChoice, AllowScope};
+pub use prompt::{AllowScope, PermissionResponse, PromptChoice};
+
+use std::sync::{Arc, RwLock};
 
 use crate::config::settings::{PermissionMode, PermissionRule, PermissionsConfig, Settings};
+
+/// Session-scoped allowlist — rules the user picked "allow, and don't
+/// ask again" for. Shared between the event loop (mutator on overlay
+/// commit) and the agent task (reader on every dispatch) via `Arc`.
+///
+/// Each entry is a raw matcher rule string (same grammar as
+/// `settings.json::permissions.allow`). The permission gate OR's
+/// these rules into the resolve step so a session allow trumps a
+/// settings-file ask.
+#[derive(Debug, Clone, Default)]
+pub struct SessionAllowlist(Arc<RwLock<Vec<String>>>);
+
+impl SessionAllowlist {
+    pub fn new() -> Self {
+        Self(Arc::new(RwLock::new(Vec::new())))
+    }
+
+    pub fn push_rule(&self, rule: String) {
+        let mut w = self.0.write().expect("SessionAllowlist lock poisoned");
+        if !w.contains(&rule) {
+            w.push(rule);
+        }
+    }
+
+    pub fn snapshot(&self) -> Vec<String> {
+        let r = self.0.read().expect("SessionAllowlist lock poisoned");
+        r.clone()
+    }
+}
 
 /// Outcome of a permission query.
 #[derive(Debug, Clone, PartialEq, Eq)]

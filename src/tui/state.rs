@@ -334,6 +334,17 @@ pub struct ConversationState {
     /// the render path paints the overlay over the prompt bar. Clears
     /// on commit or cancel. Mirrors upstream's `local-jsx` mount shape.
     pub active_menu: Option<super::menu::OverlayMenu>,
+
+    /// Pending permission prompt — set when the agent task surfaces a
+    /// `Decision::Ask` and the user has not yet chosen. Owns the
+    /// one-shot reply channel so the agent unblocks on commit / Esc.
+    /// Takes precedence over `active_menu` for focus capture.
+    pub pending_permission: Option<super::menu::PendingPermissionPrompt>,
+
+    /// Session-scoped allowlist shared with the agent task. When the
+    /// user picks "Allow and don't ask again" we push the rule here;
+    /// every subsequent dispatch consults the snapshot in-line.
+    pub session_allowlist: crate::permissions::SessionAllowlist,
 }
 
 /// Double-press-to-exit window — must match upstream's

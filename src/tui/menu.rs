@@ -187,6 +187,170 @@ pub enum OverlayMenuOutcome {
     SetEffort { action_id: String, label: String },
 }
 
+/// Active modal permission prompt — owns the one-shot reply channel
+/// so the agent task unblocks when the user resolves the overlay.
+/// Distinct from [`OverlayMenu`] because the `Sender` isn't Clone +
+/// the render path shows tool-specific context (name, args preview)
+/// above the three choices.
+pub struct PendingPermissionPrompt {
+    pub tool_name: String,
+    pub args_preview: String,
+    /// Rule text surfaced by `permissions::resolve` when the Ask
+    /// policy fired via a specific matcher rule (rather than the
+    /// default mutating-tool fallthrough). `None` → "manual approval".
+    pub rule: Option<String>,
+    /// Cursor index across the three choices — `Allow`, `AllowSession`,
+    /// `Deny`.
+    pub cursor: usize,
+    pub reply: Option<tokio::sync::oneshot::Sender<crate::permissions::PermissionResponse>>,
+}
+
+impl std::fmt::Debug for PendingPermissionPrompt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PendingPermissionPrompt")
+            .field("tool_name", &self.tool_name)
+            .field("args_preview", &self.args_preview)
+            .field("rule", &self.rule)
+            .field("cursor", &self.cursor)
+            .field("reply_present", &self.reply.is_some())
+            .finish()
+    }
+}
+
+/// Fixed choice list for the permission overlay. Index matches the
+/// `cursor` field on [`PendingPermissionPrompt`]. Mirrors upstream's
+/// three-row "approve this call" dialog.
+pub const PERMISSION_CHOICES: &[(&str, &str)] = &[
+    ("Allow", "run this call"),
+    (
+        "Allow and don't ask again this session",
+        "add a rule to the session allowlist",
+    ),
+    ("Deny", "refuse this call; let the model know"),
+];
+
+impl PendingPermissionPrompt {
+    pub fn new(
+        tool_name: String,
+        args_preview: String,
+        rule: Option<String>,
+        reply: tokio::sync::oneshot::Sender<crate::permissions::PermissionResponse>,
+    ) -> Self {
+        Self {
+            tool_name,
+            args_preview,
+            rule,
+            cursor: 0,
+            reply: Some(reply),
+        }
+    }
+
+    pub fn move_up(&mut self) {
+        if self.cursor == 0 {
+            self.cursor = PERMISSION_CHOICES.len() - 1;
+        } else {
+            self.cursor -= 1;
+        }
+    }
+
+    pub fn move_down(&mut self) {
+        self.cursor = (self.cursor + 1) % PERMISSION_CHOICES.len();
+    }
+
+    /// Fire the reply oneshot for the current cursor and consume the
+    /// sender so a double-commit can't happen. Called from the event
+    /// loop's Enter / Esc handlers (Esc implicitly denies).
+    pub fn resolve(&mut self, response: crate::permissions::PermissionResponse) {
+        if let Some(tx) = self.reply.take() {
+            let _ = tx.send(response); // agent task may have gone away
+        }
+    }
+
+    pub fn selected_response(&self) -> crate::permissions::PermissionResponse {
+        use crate::permissions::PermissionResponse as R;
+        match self.cursor {
+            0 => R::Allow,
+            1 => R::AllowSession,
+            _ => R::Deny,
+        }
+    }
+}
+
+/// Draw the permission overlay. Same shell as [`draw_overlay`] but
+/// with the tool name + args preview + ruleline above the choices.
+pub fn draw_permission_prompt(f: &mut Frame<'_>, area: Rect, prompt: &PendingPermissionPrompt) {
+    if area.height < MIN_HEIGHT {
+        return;
+    }
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(PERMISSION_CHOICES.len() * 2 + 6);
+
+    lines.push(Line::from(Span::styled(
+        format!("  {}", prompt.tool_name),
+        Style::default()
+            .fg(theme::PRIMARY)
+            .add_modifier(Modifier::BOLD),
+    )));
+    if !prompt.args_preview.is_empty() {
+        lines.push(Line::from(Span::styled(
+            format!("    {}", prompt.args_preview),
+            Style::default().fg(theme::MUTED),
+        )));
+    }
+    if let Some(rule) = prompt.rule.as_ref() {
+        lines.push(Line::from(Span::styled(
+            format!("  rule: {rule}"),
+            Style::default().fg(theme::MUTED),
+        )));
+    }
+    lines.push(Line::raw(""));
+
+    for (i, (label, hint)) in PERMISSION_CHOICES.iter().enumerate() {
+        let is_cursor = i == prompt.cursor;
+        let marker = if is_cursor { "❯ " } else { "  " };
+        let marker_style = if is_cursor {
+            Style::default()
+                .fg(theme::PRIMARY)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme::MUTED)
+        };
+        let label_style = if is_cursor {
+            Style::default()
+                .fg(theme::TEXT)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme::TEXT)
+        };
+        lines.push(Line::from(vec![
+            Span::styled(marker.to_string(), marker_style),
+            Span::styled((*label).to_string(), label_style),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("    ".to_string(), Style::default().fg(theme::MUTED)),
+            Span::styled((*hint).to_string(), Style::default().fg(theme::MUTED)),
+        ]));
+    }
+
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(
+        "  ↑/↓ select  ·  Enter confirm  ·  Esc denies".to_string(),
+        Style::default().fg(theme::MUTED),
+    )));
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(Span::styled(
+            " Permission required ".to_string(),
+            Style::default()
+                .fg(theme::PRIMARY)
+                .add_modifier(Modifier::BOLD),
+        ))
+        .border_style(Style::default().fg(theme::MUTED));
+
+    let paragraph = Paragraph::new(lines).block(block);
+    f.render_widget(paragraph, area);
+}
+
 /// Minimum height the overlay widget needs to render cleanly (title +
 /// border padding + at least one option row). Layout callers short-
 /// circuit to an inline note when the prompt area is smaller than this.
@@ -287,6 +451,33 @@ mod tests {
         m.jump_to_last();
         m.move_down();
         assert_eq!(m.cursor, 0);
+    }
+
+    #[test]
+    fn permission_prompt_cursor_wraps_and_resolves() {
+        use crate::permissions::PermissionResponse;
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let mut p = PendingPermissionPrompt::new(
+            "Bash".into(),
+            "rm -rf /tmp/foo".into(),
+            Some("Bash(rm:*)".into()),
+            tx,
+        );
+        assert_eq!(p.cursor, 0);
+        assert_eq!(p.selected_response(), PermissionResponse::Allow);
+        p.move_down();
+        assert_eq!(p.selected_response(), PermissionResponse::AllowSession);
+        p.move_down();
+        assert_eq!(p.selected_response(), PermissionResponse::Deny);
+        p.move_down();
+        assert_eq!(p.cursor, 0);
+        p.move_up();
+        assert_eq!(p.cursor, PERMISSION_CHOICES.len() - 1);
+        p.resolve(PermissionResponse::Allow);
+        // Second resolve is a no-op — sender already consumed.
+        p.resolve(PermissionResponse::Deny);
+        let got = futures::executor::block_on(rx).expect("sender fired");
+        assert_eq!(got, PermissionResponse::Allow);
     }
 
     #[test]
