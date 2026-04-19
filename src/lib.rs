@@ -41,6 +41,7 @@ pub mod error;
 pub mod fingerprint;
 pub mod harness;
 pub mod hooks;
+pub mod internal;
 pub mod inference;
 pub mod permissions;
 pub mod provider;
