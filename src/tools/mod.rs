@@ -84,7 +84,7 @@ pub fn dispatch_gated(
     mode: crate::config::settings::PermissionMode,
 ) -> Result<Value, ToolError> {
     use crate::permissions::{resolve, Decision};
-    let input_str = serde_json::to_string(args).unwrap_or_default();
+    let input_str = matcher_input_for(tool_name, args);
     match resolve(tool_name, &input_str, settings, mode) {
         Decision::Allow => dispatch(tool_name, args),
         Decision::Deny { rule } => Err(ToolError::PermissionDenied(rule)),
@@ -97,6 +97,19 @@ pub fn dispatch_gated(
             )))
         }
     }
+}
+
+/// Project `args` into the string shape the permission matcher
+/// compares against. Bash rules target the raw `command` (so
+/// `Bash(ls:*)` matches `ls -la`); every other tool matcher uses the
+/// stringified JSON. Mirrors upstream's `getToolInputForMatcher`.
+pub fn matcher_input_for(tool_name: &str, args: &Value) -> String {
+    if tool_name == "Bash" {
+        if let Some(cmd) = args.get("command").and_then(Value::as_str) {
+            return cmd.to_string();
+        }
+    }
+    serde_json::to_string(args).unwrap_or_default()
 }
 
 /// Dispatch a tool call by name. The agent loop calls this after the

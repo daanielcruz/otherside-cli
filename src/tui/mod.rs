@@ -1548,7 +1548,11 @@ async fn dispatch_with_prompt(
         return ask_user_question_async(args, tx).await;
     }
 
-    let input_str = serde_json::to_string(args).unwrap_or_default();
+    // Project args into matcher-shaped input — Bash uses the raw
+    // command, every other tool uses the stringified JSON. Without
+    // this the session allowlist rule `Bash(ls:*)` never matches
+    // the JSON `{"command":"ls /usr"}` the second dispatch sees.
+    let input_str = crate::tools::matcher_input_for(tool_name, args);
     // Fold the session allowlist into the settings snapshot so
     // `permissions::resolve` sees it via the normal `permissions.allow`
     // path. Clone the settings locally — we only need the composite
