@@ -76,8 +76,8 @@ mod tests {
     fn tool_search_empty_query_returns_all_up_to_max() {
         let res = tool_search(&json!({"query": "", "max_results": 100})).unwrap();
         let tools = res["tools"].as_array().unwrap();
-        // 9 wire + 5 deferred after 018 first wave.
-        assert_eq!(tools.len(), 14);
+        // 9 wire + 6 deferred (018 first wave + 019 WebFetch).
+        assert_eq!(tools.len(), 15);
     }
 
     #[test]

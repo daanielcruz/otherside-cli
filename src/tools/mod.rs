@@ -39,6 +39,7 @@ pub mod schemas;
 pub mod skill;
 pub mod task;
 pub mod tool_search;
+pub mod web_fetch;
 pub mod write;
 
 pub use schemas::{openai_tools, schema_for, tool_schemas, ToolSchema};
@@ -84,6 +85,8 @@ pub fn dispatch(tool_name: &str, args: &Value) -> Result<Value, ToolError> {
         "TaskGet" => task::task_get(args),
         "TaskUpdate" => task::task_update(args),
         "NotebookEdit" => notebook::notebook_edit(args),
+        // 019 second wave — HTTP GET + HTML→markdown deferred tool.
+        "WebFetch" => web_fetch::web_fetch(args),
         // Affordance hints for models that hallucinate retired names.
         "Task" => Err(ToolError::Unsupported(
             "tool `Task` is retired; use `Agent` for subagent dispatch (010 anchor selection)"
@@ -194,6 +197,20 @@ mod tests {
                 }
                 _ => {}
             }
+        }
+    }
+
+    #[test]
+    fn dispatcher_covers_web_fetch() {
+        // 019 WebFetch deferred tool. Empty args hit InvalidArgs (url
+        // missing) — the invariant is that the arm routes, not that it
+        // succeeds without inputs.
+        let res = dispatch("WebFetch", &json!({}));
+        match res {
+            Err(ToolError::Unsupported(_)) => {
+                panic!("deferred tool `WebFetch` returned Unsupported")
+            }
+            _ => {}
         }
     }
 }

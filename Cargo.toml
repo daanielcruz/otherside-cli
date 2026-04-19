@@ -117,6 +117,10 @@ glob = "0.3"
 # Event-based so we keep full control of the styling mapping.
 pulldown-cmark = { version = "0.12", default-features = false }
 
+# HTML → markdown conversion for the WebFetch deferred tool (019). Small
+# crate, pure-Rust, well-maintained — avoids hand-rolling a tag stripper.
+html2md = "0.2"
+
 [dev-dependencies]
 # Deterministic diffs for golden-file conformance tests.
 pretty_assertions = "1"

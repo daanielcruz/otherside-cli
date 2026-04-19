@@ -144,18 +144,25 @@ fn wire_catalog_stays_at_nine_after_deferred_dispatch() {
         vec!["Agent", "Bash", "Edit", "Glob", "Grep", "Read", "Skill", "ToolSearch", "Write"]
     );
 
-    // Deferred catalog is exactly the 018 first wave.
+    // Deferred catalog = 018 first wave + 019 WebFetch.
     let deferred: Vec<&str> = schemas::deferred_schemas()
         .iter()
         .map(|s| s.name.as_str())
         .collect();
     assert_eq!(
         deferred,
-        vec!["TaskCreate", "TaskList", "TaskGet", "TaskUpdate", "NotebookEdit"]
+        vec![
+            "TaskCreate",
+            "TaskList",
+            "TaskGet",
+            "TaskUpdate",
+            "NotebookEdit",
+            "WebFetch",
+        ]
     );
 
     // Combined catalog equals wire + deferred in that order.
-    assert_eq!(schemas::all_schemas().len(), 14);
+    assert_eq!(schemas::all_schemas().len(), 15);
 }
 
 #[test]
@@ -173,12 +180,42 @@ fn tool_search_substring_query_covers_deferred_tools() {
 
 #[test]
 fn dispatch_unknown_deferred_name_still_errors() {
-    // Sanity guardrail: only the five 018 names route. A made-up
-    // deferred name like `WebFetch` still hits the default Unsupported
-    // arm since it hasn't been implemented in this wave.
-    let err = tools::dispatch("WebFetch", &json!({})).unwrap_err();
+    // Sanity guardrail: only wired deferred tools route. A name that
+    // hasn't been implemented yet (e.g. `EnterWorktree`) still hits the
+    // default Unsupported arm.
+    let err = tools::dispatch("EnterWorktree", &json!({})).unwrap_err();
     assert!(matches!(
         err,
         otherside::tools::ToolError::Unsupported(_)
+    ));
+}
+
+#[test]
+fn web_fetch_schema_resolves_through_tool_search() {
+    // 019 deferred tool — schema must be loadable via ToolSearch so the
+    // model can validate inputs before calling WebFetch.
+    let search = tools::dispatch(
+        "ToolSearch",
+        &json!({"query": "select:WebFetch", "max_results": 5}),
+    )
+    .unwrap();
+    let search_tools = search["tools"].as_array().unwrap();
+    assert_eq!(search_tools.len(), 1);
+    assert_eq!(search_tools[0]["name"], "WebFetch");
+    let required = search_tools[0]["input_schema"]["required"]
+        .as_array()
+        .unwrap();
+    assert!(required.iter().any(|v| v == "url"));
+    assert!(required.iter().any(|v| v == "prompt"));
+}
+
+#[test]
+fn web_fetch_dispatch_rejects_missing_url() {
+    // Per-tool validation: missing `url` returns InvalidArgs (NOT
+    // Unsupported) — proves the arm routes to `web_fetch::web_fetch`.
+    let err = tools::dispatch("WebFetch", &json!({})).unwrap_err();
+    assert!(matches!(
+        err,
+        otherside::tools::ToolError::InvalidArgs(_)
     ));
 }

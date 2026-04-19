@@ -66,6 +66,7 @@ fn load_deferred() -> Vec<ToolSchema> {
         crate::tools::task::TOOL_TASK_GET_JSON,
         crate::tools::task::TOOL_TASK_UPDATE_JSON,
         crate::tools::notebook::TOOL_NOTEBOOK_EDIT_JSON,
+        crate::tools::web_fetch::TOOL_WEB_FETCH_JSON,
     ];
     raws.iter()
         .map(|raw| {
@@ -77,7 +78,7 @@ fn load_deferred() -> Vec<ToolSchema> {
 
 /// Deferred-tool schemas — surfaced only through `ToolSearch`, never on
 /// the wire `tools[]` body. 018 first wave: TaskCreate, TaskList,
-/// TaskGet, TaskUpdate, NotebookEdit.
+/// TaskGet, TaskUpdate, NotebookEdit. 019 second wave adds WebFetch.
 pub fn deferred_schemas() -> &'static [ToolSchema] {
     static SCHEMAS: OnceLock<Vec<ToolSchema>> = OnceLock::new();
     SCHEMAS.get_or_init(load_deferred).as_slice()
@@ -248,22 +249,31 @@ mod tests {
     }
 
     #[test]
-    fn deferred_schemas_contain_five_after_018() {
-        assert_eq!(deferred_schemas().len(), 5);
+    fn deferred_schemas_contain_six_after_019() {
+        // 018 seeded 5 (Task* + NotebookEdit); 019 added WebFetch.
+        assert_eq!(deferred_schemas().len(), 6);
     }
 
     #[test]
-    fn deferred_schema_names_match_first_wave() {
+    fn deferred_schema_names_match_current_waves() {
         let names: Vec<&str> = deferred_schemas().iter().map(|s| s.name.as_str()).collect();
         assert_eq!(
             names,
-            vec!["TaskCreate", "TaskList", "TaskGet", "TaskUpdate", "NotebookEdit"]
+            vec![
+                "TaskCreate",
+                "TaskList",
+                "TaskGet",
+                "TaskUpdate",
+                "NotebookEdit",
+                "WebFetch",
+            ]
         );
     }
 
     #[test]
-    fn all_schemas_total_fourteen() {
-        assert_eq!(all_schemas().len(), 14);
+    fn all_schemas_total_fifteen() {
+        // 9 wire + 6 deferred (018 first wave + 019 WebFetch).
+        assert_eq!(all_schemas().len(), 15);
     }
 
     #[test]
@@ -275,7 +285,14 @@ mod tests {
         );
         assert_eq!(
             &names[9..],
-            &["TaskCreate", "TaskList", "TaskGet", "TaskUpdate", "NotebookEdit"]
+            &[
+                "TaskCreate",
+                "TaskList",
+                "TaskGet",
+                "TaskUpdate",
+                "NotebookEdit",
+                "WebFetch",
+            ]
         );
     }
 
@@ -286,6 +303,16 @@ mod tests {
         assert!(schema_for("TaskGet").is_some());
         assert!(schema_for("TaskUpdate").is_some());
         assert!(schema_for("NotebookEdit").is_some());
+        assert!(schema_for("WebFetch").is_some());
+    }
+
+    #[test]
+    fn web_fetch_schema_requires_url_and_prompt() {
+        let s = schema_for("WebFetch").unwrap();
+        let required = s.input_schema["required"].as_array().unwrap();
+        let names: Vec<&str> = required.iter().filter_map(|v| v.as_str()).collect();
+        assert!(names.contains(&"url"));
+        assert!(names.contains(&"prompt"));
     }
 
     #[test]
@@ -294,7 +321,14 @@ mod tests {
             .iter()
             .map(|t| t.function.name.clone())
             .collect();
-        for deferred in ["TaskCreate", "TaskList", "TaskGet", "TaskUpdate", "NotebookEdit"] {
+        for deferred in [
+            "TaskCreate",
+            "TaskList",
+            "TaskGet",
+            "TaskUpdate",
+            "NotebookEdit",
+            "WebFetch",
+        ] {
             assert!(
                 !names.iter().any(|n| n == deferred),
                 "deferred tool `{deferred}` must NOT appear in the wire `openai_tools()` list"
