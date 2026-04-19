@@ -36,7 +36,7 @@ pub mod theme {
     /// Light blue — PRIMARY accent. Reserved for the spinner glyph
     /// and the thinking verb ONLY. Everything else mirrors upstream's
     /// palette so the TUI reads as familiar.
-    pub const PRIMARY: Color = Color::Rgb(137, 200, 255);
+    pub const PRIMARY: Color = Color::Rgb(0x3E, 0xA0, 0xC3);
 
     // ----- upstream palette (mirrored for parity) -----
 
@@ -49,6 +49,13 @@ pub mod theme {
 
     /// Dark gray — very dim secondary detail.
     pub const SUBTLE: Color = Color::Rgb(80, 80, 80);
+
+    /// User message background — upstream `theme.ts:488` dark-theme
+    /// `userMessageBackground: rgb(55, 55, 55)`. Darker grey strip
+    /// that spans the user turn's full width so the chevron + text
+    /// read as one continuous element distinct from the assistant
+    /// bullet band.
+    pub const USER_MSG_BG: Color = Color::Rgb(55, 55, 55);
 
     /// Medium gray — prompt-bar border.
     pub const PROMPT_BORDER: Color = Color::Rgb(136, 136, 136);
@@ -251,26 +258,35 @@ fn render_message(role: OpenAiChatRole, content: &str, width: u16) -> Vec<Line<'
     for (i, raw) in content.split('\n').enumerate() {
         match role {
             OpenAiChatRole::User => {
-                // Upstream ships the pointer as default terminal fg
-                // (white) with no color override — gives the user's
-                // turn the same visual weight as the assistant's.
+                // Upstream `components/messages/UserCommandMessage.tsx`
+                // ships the user turn with a `userMessageBackground`
+                // fill — dark slate `rgb(55,55,55)` on dark themes. The
+                // chevron matches the prompt-bar rule color so the user
+                // turn reads as a continuation of the input band.
                 let _ = width;
-                let prefix = if i == 0 { "❯ " } else { "  " };
+                let prefix = if i == 0 { ") " } else { "  " };
+                let bg = Style::default()
+                    .bg(theme::USER_MSG_BG)
+                    .fg(theme::TEXT);
                 lines.push(Line::from(vec![
-                    Span::styled(prefix.to_string(), Style::default().fg(theme::TEXT)),
-                    Span::styled(raw.to_string(), Style::default().fg(theme::TEXT)),
+                    Span::styled(
+                        prefix.to_string(),
+                        bg.fg(theme::PROMPT_BORDER),
+                    ),
+                    Span::styled(raw.to_string(), bg),
                 ]));
             }
             OpenAiChatRole::Assistant => {
                 if i == 0 {
                     let bullet = if cfg!(target_os = "macos") { "⏺ " } else { "● " };
-                    // Assistant bullet rides PRIMARY — the per-turn
-                    // brand beat that mirrors the spinner band.
+                    // Assistant bullet is WHITE per upstream — the
+                    // PRIMARY accent is reserved for tool-call state
+                    // (gray blink while running, green on success).
                     lines.push(Line::from(vec![
                         Span::styled(
                             bullet.to_string(),
                             Style::default()
-                                .fg(theme::PRIMARY)
+                                .fg(theme::TEXT)
                                 .add_modifier(Modifier::BOLD),
                         ),
                         Span::styled(raw.to_string(), Style::default().fg(theme::TEXT)),
@@ -326,14 +342,16 @@ fn draw_prompt(f: &mut Frame<'_>, area: Rect, state: &ConversationState) {
         .borders(Borders::TOP | Borders::BOTTOM)
         .border_style(Style::default().fg(theme::PROMPT_BORDER));
 
+    // Chevron + cursor share the prompt-bar rule color so the
+    // input band reads as one continuous element. Dim while the
+    // request is inflight — upstream keeps the input visible but
+    // muted so the user knows it's locked.
     let chevron_style = if state.streaming {
         Style::default()
-            .fg(theme::MUTED)
+            .fg(theme::PROMPT_BORDER)
             .add_modifier(Modifier::DIM)
     } else {
-        Style::default()
-            .fg(theme::TEXT)
-            .add_modifier(Modifier::BOLD)
+        Style::default().fg(theme::PROMPT_BORDER)
     };
     let text_style = if state.streaming {
         Style::default()

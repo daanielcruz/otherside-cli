@@ -4,15 +4,19 @@
 //!
 //! ```text
 //! [streaming area] — flexes
-//! [prompt bar + `>` arrow] — 3 rows with borders
 //! [progress line] — 1 row, only while inference is live
 //! [tip line] — 1 row, only while inference is live
+//! [prompt top-pad] — 1 row, always (breathing room above prompt)
+//! [prompt bar + `>` arrow] — 3 rows with borders
 //! [statusline] — 1 row
 //! [info row] — 1 row, absolute last row
 //! ```
 //!
 //! When not streaming, progress + tip rows collapse and the streaming
-//! area flexes down to fill them.
+//! area flexes down to fill them. The prompt top-pad ALWAYS renders
+//! so the last message / tip line does not hug the prompt bar —
+//! matches upstream ScrollBox which leaves vertical space above the
+//! input band.
 //!
 //! Per C51, info row is the absolute last line, statusline sits one
 //! row above it.
@@ -53,18 +57,22 @@ pub struct FrameSlots {
 /// Split `area` into bottom-up slots per C44/C51. `streaming_active`
 /// toggles the progress + tip rows between visible and collapsed.
 pub fn split_frame(area: Rect, streaming_active: bool) -> FrameSlots {
-    // Display order (top → bottom) — C44:
-    //   streaming (Min), [progress (1)], [tip (1)], prompt (3),
-    //   statusline (1), info (1)
+    // Display order (top → bottom):
+    //   streaming (Min), [progress (1)], [tip (1)], prompt top-pad (1),
+    //   prompt (3), statusline (1), info (1), bottom pad (1)
     //
-    // Progress + tip sit ABOVE the prompt bar so the spinner + tip
-    // flow naturally from the streaming area into the input chrome;
-    // they're the bridge, not an afterthought below the input.
+    // prompt top-pad is an always-on 1-row gap so the last streaming
+    // line / tip never hugs the prompt bar — mirrors upstream
+    // ScrollBox spacing above the PromptInput band. Queued-message
+    // area (future 017) will render INSIDE this gap to intentionally
+    // sit close to the prompt — everything else respects it.
     let mut constraints: Vec<Constraint> = vec![Constraint::Min(1)];
     if streaming_active {
+        constraints.push(Constraint::Length(1)); // progress top-pad
         constraints.push(Constraint::Length(1)); // progress
         constraints.push(Constraint::Length(1)); // tip
     }
+    constraints.push(Constraint::Length(1)); // prompt top-pad (always)
     constraints.push(Constraint::Length(3)); // prompt bar
     constraints.push(Constraint::Length(1)); // statusline
     constraints.push(Constraint::Length(1)); // info
@@ -77,9 +85,11 @@ pub fn split_frame(area: Rect, streaming_active: bool) -> FrameSlots {
 
     let streaming = chunks[0];
     let (progress, tip, prompt_idx) = if streaming_active {
-        (Some(chunks[1]), Some(chunks[2]), 3)
+        // chunks[1] = progress top-pad (blank), chunks[2] = progress,
+        // chunks[3] = tip, chunks[4] = prompt top-pad, chunks[5] = prompt.
+        (Some(chunks[2]), Some(chunks[3]), 5)
     } else {
-        (None, None, 1)
+        (None, None, 2)
     };
     let prompt = chunks[prompt_idx];
     let statusline = pad_sides(chunks[prompt_idx + 1], 2);
@@ -121,11 +131,15 @@ mod tests {
         assert!(slots.tip.is_some());
         assert_eq!(slots.info.y, 18);
         assert_eq!(slots.statusline.y, 17);
-        // Prompt sits above the statusline; tip + progress are above
-        // the prompt, not between it and the statusline.
+        // Prompt sits above the statusline; one row of top-pad sits
+        // between prompt and the tip line; another row of top-pad
+        // sits between the streaming area and the progress spinner
+        // so the last turn doesn't hug the thinking block.
         assert_eq!(slots.prompt.y, 14);
-        assert_eq!(slots.tip.unwrap().y, 13);
-        assert_eq!(slots.progress.unwrap().y, 12);
+        // Row 13 is the always-on prompt top-pad (breathing room).
+        assert_eq!(slots.tip.unwrap().y, 12);
+        assert_eq!(slots.progress.unwrap().y, 11);
+        // Row 10 is the progress top-pad.
     }
 
     #[test]
@@ -150,8 +164,21 @@ mod tests {
     fn streaming_area_flexes_to_remaining_height() {
         let h_idle = split_frame(area(20), false).streaming.height;
         let h_stream = split_frame(area(20), true).streaming.height;
-        // Idle recovers the progress + tip rows.
+        // Idle recovers the 3 streaming-only rows (progress top-pad +
+        // progress + tip); prompt top-pad is always reserved so it
+        // cancels out of the delta.
         assert!(h_idle >= h_stream);
-        assert_eq!(h_idle - h_stream, 2);
+        assert_eq!(h_idle - h_stream, 3);
+    }
+
+    #[test]
+    fn prompt_top_pad_always_reserved() {
+        // Even when idle, there is a 1-row gap above the prompt bar
+        // so the last assistant/user line never hugs the input.
+        let slots = split_frame(area(20), false);
+        // With 20 rows: info=18, statusline=17, prompt rows=14..16,
+        // top-pad=13. Streaming area fills 0..12 inclusive (13 rows).
+        assert_eq!(slots.prompt.y, 14);
+        assert_eq!(slots.streaming.height + 1, slots.prompt.y);
     }
 }
