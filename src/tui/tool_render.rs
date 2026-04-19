@@ -237,9 +237,14 @@ pub fn summarize_args(name: &str, args: &Value) -> String {
         return String::new();
     }
 
-    // ToolSearch upstream returns `null` from renderToolUseMessage so
-    // the header shows just `⏺ ToolSearch`. Mirror the hide.
-    if name == "ToolSearch" {
+    // Tools whose upstream `renderToolUseMessage` returns `null` —
+    // the header shows just `⏺ <Name>`, no args. Mirror the hide so
+    // TaskCreate/List/Get/Update + ToolSearch don't leak args into
+    // the transcript. See each tool's `UI.tsx`.
+    if matches!(
+        name,
+        "ToolSearch" | "TaskCreate" | "TaskList" | "TaskGet" | "TaskUpdate"
+    ) {
         return String::new();
     }
 
@@ -262,42 +267,49 @@ pub fn summarize_args(name: &str, args: &Value) -> String {
         }
     }
 
-    // File-centric tools: show `file_path=<path>` first, then add
-    // optional qualifiers upstream surfaces inline (pages, offset,
-    // limit for Read).
+    // Read upstream header: bare displayPath, optionally followed by
+    // ` · pages <X>` or ` · from line <N>` / ` · lines <a>-<b>`.
+    // See `tools/FileReadTool/UI.tsx`.
     if name == "Read" {
-        let mut parts: Vec<String> = Vec::with_capacity(3);
         if let Some(fp) = obj.get("file_path").and_then(|v| v.as_str()) {
-            parts.push(format!("file_path={}", clip_flat(fp, 80)));
-        }
-        if let Some(pages) = obj.get("pages").and_then(|v| v.as_str()) {
-            parts.push(format!("pages={}", clip_flat(pages, 20)));
-        } else {
-            if let Some(offset) = obj.get("offset").and_then(|v| v.as_u64()) {
-                parts.push(format!("offset={offset}"));
+            let mut header = clip_flat(fp, 80);
+            if let Some(pages) = obj.get("pages").and_then(|v| v.as_str()) {
+                header.push_str(&format!(" · pages {}", clip_flat(pages, 20)));
+            } else {
+                let offset = obj.get("offset").and_then(|v| v.as_u64());
+                let limit = obj.get("limit").and_then(|v| v.as_u64());
+                match (offset, limit) {
+                    (Some(o), Some(l)) => {
+                        let end = o + l.saturating_sub(1);
+                        header.push_str(&format!(" · lines {o}-{end}"));
+                    }
+                    (Some(o), None) => header.push_str(&format!(" · from line {o}")),
+                    (None, Some(l)) => header.push_str(&format!(" · lines 1-{l}")),
+                    (None, None) => {}
+                }
             }
-            if let Some(limit) = obj.get("limit").and_then(|v| v.as_u64()) {
-                parts.push(format!("limit={limit}"));
-            }
-        }
-        if !parts.is_empty() {
-            return parts.join(", ");
+            return header;
         }
     }
+    // Edit / Write upstream headers emit the bare `getDisplayPath` —
+    // no `file_path=` prefix. See `tools/FileEditTool/UI.tsx` and
+    // `tools/FileWriteTool/UI.tsx`.
     if name == "Edit" || name == "Write" {
         if let Some(fp) = obj.get("file_path").and_then(|v| v.as_str()) {
-            return format!("file_path={}", clip_flat(fp, 80));
+            return clip_flat(fp, 80);
         }
     }
 
-    // Search tools: `pattern=<pat>` with optional `path=<p>`.
+    // Glob / Grep upstream headers quote both values:
+    //   `pattern: "<pat>", path: "<path>"`
+    // Matches `tools/GlobTool/UI.tsx` + `tools/GrepTool/UI.tsx`.
     if name == "Glob" || name == "Grep" {
         let mut parts: Vec<String> = Vec::with_capacity(2);
         if let Some(pat) = obj.get("pattern").and_then(|v| v.as_str()) {
-            parts.push(format!("pattern={}", clip_flat(pat, 60)));
+            parts.push(format!("pattern: \"{}\"", clip_flat(pat, 60)));
         }
         if let Some(p) = obj.get("path").and_then(|v| v.as_str()) {
-            parts.push(format!("path={}", clip_flat(p, 60)));
+            parts.push(format!("path: \"{}\"", clip_flat(p, 60)));
         }
         if !parts.is_empty() {
             return parts.join(", ");
@@ -318,6 +330,22 @@ pub fn summarize_args(name: &str, args: &Value) -> String {
     if name == "WebSearch" {
         if let Some(q) = obj.get("query").and_then(|v| v.as_str()) {
             return format!("\"{}\"", clip_flat(q, 100));
+        }
+    }
+
+    // NotebookEdit upstream header = `<displayPath>@<cell_id>` (no
+    // prefix, no quotes). See `tools/NotebookEditTool/UI.tsx`.
+    if name == "NotebookEdit" {
+        let path = obj
+            .get("notebook_path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let cell = obj.get("cell_id").and_then(|v| v.as_str()).unwrap_or("");
+        match (path.is_empty(), cell.is_empty()) {
+            (false, false) => return format!("{}@{}", clip_flat(path, 70), clip_flat(cell, 40)),
+            (false, true) => return clip_flat(path, 80),
+            (true, false) => return format!("@{}", clip_flat(cell, 40)),
+            _ => {}
         }
     }
 
@@ -368,6 +396,7 @@ pub fn payload_from_result(name: &str, result: &Value) -> Option<ToolPayload> {
         "Agent" => agent_preview(result).or_else(|| preview_payload(result)),
         "WebFetch" => web_fetch_preview(result).or_else(|| preview_payload(result)),
         "WebSearch" => web_search_preview(result).or_else(|| preview_payload(result)),
+        "NotebookEdit" => notebook_edit_preview(result).or_else(|| preview_payload(result)),
         _ => preview_payload(result),
     }
 }
@@ -420,10 +449,58 @@ fn diff_payload(result: &Value) -> Option<ToolPayload> {
 /// so we surface the line count plus a short body excerpt.
 fn read_preview(result: &Value) -> Option<ToolPayload> {
     let obj = result.as_object()?;
+    // Type-aware dispatch — upstream's `FileReadTool` UI picks one of
+    // `Read <N> lines|cells|pages`, `Read image (<size>)`,
+    // `Read PDF (<size>)`, or `Unchanged since last read` based on
+    // the result discriminant. See `tools/FileReadTool/UI.tsx`.
+    if obj
+        .get("unchanged")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        return Some(ToolPayload::Preview(
+            "Unchanged since last read".to_string(),
+        ));
+    }
+    let kind = obj
+        .get("type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let size_bytes = obj.get("bytes").and_then(|v| v.as_u64());
+    let size_label = size_bytes.map(format_byte_size);
+    match kind {
+        "image" => {
+            let suffix = size_label.map(|s| format!(" ({s})")).unwrap_or_default();
+            return Some(ToolPayload::Preview(format!("Read image{suffix}")));
+        }
+        "pdf" => {
+            let suffix = size_label.map(|s| format!(" ({s})")).unwrap_or_default();
+            return Some(ToolPayload::Preview(format!("Read PDF{suffix}")));
+        }
+        "notebook" => {
+            if let Some(n) = obj.get("numCells").and_then(|v| v.as_u64()) {
+                return Some(ToolPayload::Preview(format!(
+                    "Read {n} {}",
+                    if n == 1 { "cell" } else { "cells" }
+                )));
+            }
+        }
+        "pdfPages" => {
+            if let Some(n) = obj.get("numPages").and_then(|v| v.as_u64()) {
+                let suffix = size_label
+                    .map(|s| format!(" ({s})"))
+                    .unwrap_or_default();
+                return Some(ToolPayload::Preview(format!(
+                    "Read {n} {}{suffix}",
+                    if n == 1 { "page" } else { "pages" }
+                )));
+            }
+        }
+        _ => {}
+    }
+
     let num = obj.get("numLines").and_then(|v| v.as_u64())?;
     let head = format!("Read {num} {}", if num == 1 { "line" } else { "lines" });
-    // Pair the summary with a short body excerpt so the reader sees
-    // what got read, not just the count.
     if let Some(content) = obj.get("content").and_then(|v| v.as_str()) {
         if !content.is_empty() {
             let body = trim_multiline(content, 5, 180);
@@ -431,6 +508,23 @@ fn read_preview(result: &Value) -> Option<ToolPayload> {
         }
     }
     Some(ToolPayload::Preview(head))
+}
+
+/// Format a byte count — same shape as `web_fetch_preview::format_file_size`
+/// so the UI reads consistently.
+fn format_byte_size(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = 1024 * KB;
+    const GB: u64 = 1024 * MB;
+    if bytes < KB {
+        format!("{bytes} B")
+    } else if bytes < MB {
+        format!("{:.1} KB", bytes as f64 / KB as f64)
+    } else if bytes < GB {
+        format!("{:.1} MB", bytes as f64 / MB as f64)
+    } else {
+        format!("{:.1} GB", bytes as f64 / GB as f64)
+    }
 }
 
 /// Edit fallback (non-diff) preview. Our dispatcher returns
@@ -536,20 +630,36 @@ fn grep_preview(result: &Value) -> Option<ToolPayload> {
 /// tool count + model. Our dispatcher returns `{skill, args, content}`
 /// where `content` is the skill's SKILL.md body. Surface the first few
 /// lines so the reader sees what the skill actually does.
+/// Skill preview — upstream's `Byline` emits middot-joined segments:
+/// `Successfully loaded skill · <N> tools allowed · <model>`.
+/// Matches `tools/SkillTool/UI.tsx`. We stop surfacing the SKILL.md
+/// body excerpt — upstream never shows it, and it noisily duplicates
+/// content the skill itself will produce on its own.
 fn skill_preview(result: &Value) -> Option<ToolPayload> {
     let obj = result.as_object()?;
-    let skill = obj.get("skill").and_then(|v| v.as_str()).unwrap_or("");
-    let content = obj.get("content").and_then(|v| v.as_str()).unwrap_or("");
-    let head = if skill.is_empty() {
-        "Loaded skill".to_string()
-    } else {
-        format!("Loaded skill {skill}")
-    };
-    if content.is_empty() {
-        return Some(ToolPayload::Preview(head));
+    if obj.get("forked").and_then(|v| v.as_bool()).unwrap_or(false) {
+        return Some(ToolPayload::Preview("Done".to_string()));
     }
-    let body = trim_multiline(content, 5, 200);
-    Some(ToolPayload::Preview(format!("{head}\n{body}")))
+    let mut parts: Vec<String> = Vec::with_capacity(3);
+    parts.push("Successfully loaded skill".to_string());
+    if let Some(tools) = obj.get("tools").and_then(|v| v.as_array()) {
+        let n = tools.len();
+        parts.push(format!(
+            "{n} {} allowed",
+            if n == 1 { "tool" } else { "tools" }
+        ));
+    } else if let Some(n) = obj.get("tool_count").and_then(|v| v.as_u64()) {
+        parts.push(format!(
+            "{n} {} allowed",
+            if n == 1 { "tool" } else { "tools" }
+        ));
+    }
+    if let Some(model) = obj.get("model").and_then(|v| v.as_str()) {
+        if !model.is_empty() {
+            parts.push(model.to_string());
+        }
+    }
+    Some(ToolPayload::Preview(parts.join(" · ")))
 }
 
 /// ToolSearch preview — upstream renders tool_reference blocks. Our
@@ -676,6 +786,35 @@ fn web_search_preview(result: &Value) -> Option<ToolPayload> {
     Some(ToolPayload::Preview(format!(
         "Did {search_count} search{plural} in {time_display}"
     )))
+}
+
+/// Preview for NotebookEdit — matches upstream's
+/// `Updated cell <cell_id>:` header followed by a peek at the new
+/// source. See `tools/NotebookEditTool/UI.tsx`. Falls through to the
+/// generic `preview_payload` when the dispatcher returned an error.
+fn notebook_edit_preview(result: &Value) -> Option<ToolPayload> {
+    let obj = result.as_object()?;
+    if let Some(err) = obj.get("error").and_then(|v| v.as_str()) {
+        return Some(ToolPayload::Preview(one_line_preview(err, 240)));
+    }
+    let cell = obj.get("cell_id").and_then(|v| v.as_str()).unwrap_or("");
+    let new_source = obj
+        .get("new_source")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if cell.is_empty() && new_source.is_empty() {
+        return None;
+    }
+    let header = if cell.is_empty() {
+        "Updated cell".to_string()
+    } else {
+        format!("Updated cell {cell}")
+    };
+    if new_source.is_empty() {
+        return Some(ToolPayload::Preview(header));
+    }
+    let body = trim_multiline(new_source, 5, 180);
+    Some(ToolPayload::Preview(format!("{header}\n{body}")))
 }
 
 fn agent_preview(result: &Value) -> Option<ToolPayload> {
@@ -841,10 +980,11 @@ mod tests {
         };
         let lines = render_tool_call(&view);
         let text = collect_text(&lines);
-        // Upstream shape: `⏺ Read(file_path=/tmp/x.rs)` — no status
-        // text, no elapsed chip on the header row.
+        // Upstream shape: `⏺ Read(/tmp/x.rs)` — bare displayPath, no
+        // key=value prefix, no status text, no elapsed chip.
         assert!(text.contains("Read"));
-        assert!(text.contains("file_path=/tmp/x.rs"));
+        assert!(text.contains("/tmp/x.rs"));
+        assert!(!text.contains("file_path="));
         assert!(!text.contains(" ok "));
         assert!(!text.contains("1s"));
     }
@@ -998,17 +1138,22 @@ mod tests {
     fn summarize_args_read_renders_file_path_and_window() {
         let a = serde_json::json!({"file_path": "/tmp/x.rs", "offset": 10, "limit": 50});
         let out = summarize_args("Read", &a);
-        assert!(out.contains("file_path=/tmp/x.rs"), "got: {out}");
-        assert!(out.contains("offset=10"), "got: {out}");
-        assert!(out.contains("limit=50"), "got: {out}");
+        // Upstream shape: `<displayPath> · lines <a>-<b>` —
+        // middot-joined qualifier, bare path.
+        assert!(out.starts_with("/tmp/x.rs"), "got: {out}");
+        assert!(out.contains(" · lines 10-59"), "got: {out}");
     }
 
     #[test]
     fn summarize_args_read_pages_supersedes_window() {
         let a = serde_json::json!({"file_path": "/tmp/doc.pdf", "pages": "1-5", "offset": 10});
         let out = summarize_args("Read", &a);
-        assert!(out.contains("pages=1-5"), "got: {out}");
-        assert!(!out.contains("offset"), "pages should suppress offset: {out}");
+        assert!(out.starts_with("/tmp/doc.pdf"), "got: {out}");
+        assert!(out.contains(" · pages 1-5"), "got: {out}");
+        assert!(
+            !out.contains("line") && !out.contains("offset"),
+            "pages should suppress offset/lines: {out}"
+        );
     }
 
     #[test]
@@ -1034,10 +1179,11 @@ mod tests {
 
     #[test]
     fn summarize_args_glob_grep_emit_pattern_and_path() {
+        // Upstream quotes both values and uses `: ` separator.
         let a = serde_json::json!({"pattern": "*.rs", "path": "/tmp"});
-        assert!(summarize_args("Glob", &a).contains("pattern=*.rs"));
-        assert!(summarize_args("Glob", &a).contains("path=/tmp"));
-        assert!(summarize_args("Grep", &a).contains("pattern=*.rs"));
+        assert!(summarize_args("Glob", &a).contains(r#"pattern: "*.rs""#));
+        assert!(summarize_args("Glob", &a).contains(r#"path: "/tmp""#));
+        assert!(summarize_args("Grep", &a).contains(r#"pattern: "*.rs""#));
     }
 
     #[test]
@@ -1155,15 +1301,21 @@ mod tests {
     }
 
     #[test]
-    fn payload_from_result_skill_shows_name_and_excerpt() {
+    fn payload_from_result_skill_shows_byline() {
+        // Upstream `Successfully loaded skill · N tools allowed · model`.
         let v = serde_json::json!({
             "skill": "verifier-tui",
-            "args": "",
-            "content": "# Skill: verifier-tui\nDoes tmux capture checks.",
+            "tools": ["Read", "Glob", "Bash"],
+            "model": "claude-sonnet-4-6",
         });
         let s = expect_preview(payload_from_result("Skill", &v).unwrap());
-        assert!(s.starts_with("Loaded skill verifier-tui"), "got: {s}");
-        assert!(s.contains("tmux"), "content excerpt: {s}");
+        assert!(
+            s.starts_with("Successfully loaded skill"),
+            "got: {s}"
+        );
+        assert!(s.contains("3 tools allowed"), "got: {s}");
+        assert!(s.contains("claude-sonnet-4-6"), "got: {s}");
+        assert!(s.contains(" · "), "segments must middot-join: {s}");
     }
 
     #[test]
