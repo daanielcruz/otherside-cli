@@ -48,7 +48,7 @@ use std::sync::Arc;
 
 use serde_json::{json, Value};
 
-use crate::subagents::{registry, DepthGuard, RunnerError, SubagentRunner};
+use crate::subagents::{registry, AgentInvocation, DepthGuard, RunnerError, SubagentRunner};
 
 use super::ToolError;
 
@@ -69,6 +69,25 @@ pub fn agent(args: &Value) -> Result<Value, ToolError> {
         .get("subagent_type")
         .and_then(Value::as_str)
         .unwrap_or("general-purpose");
+
+    // Per-call overrides the schema advertises (openspec 003 A1):
+    // model / run_in_background / isolation. Plumb them into the
+    // runner via `AgentInvocation` so future runners can honor them
+    // without every dispatcher call-site changing. Today's lone fake
+    // runner ignores them — that's fine, the fields ride through.
+    let invocation = AgentInvocation {
+        model: args
+            .get("model")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        run_in_background: args
+            .get("run_in_background")
+            .and_then(Value::as_bool),
+        isolation: args
+            .get("isolation")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    };
 
     // Resolve the definition — unknown types surface as InvalidArgs with a
     // hint listing registered names so the model can recover mid-turn.
@@ -92,18 +111,23 @@ pub fn agent(args: &Value) -> Result<Value, ToolError> {
 
     // If no runner is installed, fall back to the historical stub shape
     // so older call sites (and unit tests that hit the dispatcher without
-    // wiring a runner) keep their existing behavior.
+    // wiring a runner) keep their existing behavior. Echo the invocation
+    // overrides back so the model sees its intent was recognized even
+    // when the runner can't honor it yet.
     let Some(runner) = crate::subagents::current_runner() else {
         return Ok(json!({
             "status": "unavailable",
             "subagent_type_requested": subagent_type,
             "description": description,
             "prompt_preview": prompt.chars().take(120).collect::<String>(),
+            "model_requested": invocation.model,
+            "run_in_background_requested": invocation.run_in_background,
+            "isolation_requested": invocation.isolation,
             "reason": "subagents runner not installed — the binary did not wire a runner before dispatch",
         }));
     };
 
-    dispatch_with_runner(runner.as_ref(), definition, prompt, depth_at_entry)
+    dispatch_with_runner(runner.as_ref(), definition, prompt, depth_at_entry, &invocation)
 }
 
 /// Internal dispatch once the runner is resolved. Split out so tests can
@@ -114,8 +138,9 @@ fn dispatch_with_runner(
     definition: &registry::AgentDefinition,
     prompt: &str,
     depth_at_entry: u32,
+    invocation: &AgentInvocation,
 ) -> Result<Value, ToolError> {
-    match runner.run(definition, prompt, depth_at_entry) {
+    match runner.run(definition, prompt, depth_at_entry, invocation) {
         Ok(v) => Ok(v),
         Err(RunnerError::NotInstalled) => Ok(json!({
             "status": "unavailable",

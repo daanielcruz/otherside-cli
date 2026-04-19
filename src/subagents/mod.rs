@@ -70,13 +70,35 @@ pub enum RunnerError {
     Internal(String),
 }
 
+/// Optional per-call overrides the upstream schema advertises on the
+/// `Agent` tool: the model string, whether to run detached, and the
+/// isolation mode (worktree vs cwd). Runners may honor or ignore each
+/// field — they are wire-schema advertised so ignoring them silently
+/// is fine, but the dispatcher must PASS them through so future
+/// runners can pick them up without every call-site changing.
+#[derive(Debug, Default, Clone)]
+pub struct AgentInvocation {
+    /// Model override (e.g. `"sonnet"`, `"haiku"`). None = inherit
+    /// caller's active model.
+    pub model: Option<String>,
+    /// Run detached — caller gets back an agent id immediately instead
+    /// of the final result. None = synchronous (upstream default).
+    pub run_in_background: Option<bool>,
+    /// Isolation mode. Upstream accepts `"worktree"`; everything else
+    /// runs in the caller's cwd. None = caller's cwd.
+    pub isolation: Option<String>,
+}
+
 /// Trait the binary implements at startup to wire the real subagent loop.
 /// Tests provide a deterministic fake (see [`InlineFakeRunner`] below).
 pub trait SubagentRunner: Send + Sync {
     /// Dispatch a resolved subagent. `definition` is the registry entry
     /// (tools allowlist + model override + system prompt body); `prompt` is
     /// the `prompt` arg from the tool call; `depth` is the current recursion
-    /// depth BEFORE this subagent runs (0 at the top level).
+    /// depth BEFORE this subagent runs (0 at the top level). `invocation`
+    /// carries per-call overrides (model, isolation, background) that
+    /// upstream advertises on the tool schema — runners that don't
+    /// implement those features yet may ignore the field.
     ///
     /// Returns the upstream-shape result map (see module docstring) or a
     /// [`RunnerError`].
@@ -85,6 +107,7 @@ pub trait SubagentRunner: Send + Sync {
         definition: &registry::AgentDefinition,
         prompt: &str,
         depth: u32,
+        invocation: &AgentInvocation,
     ) -> Result<Value, RunnerError>;
 }
 
@@ -231,6 +254,7 @@ impl SubagentRunner for InlineFakeRunner {
         definition: &registry::AgentDefinition,
         prompt: &str,
         depth: u32,
+        _invocation: &AgentInvocation,
     ) -> Result<Value, RunnerError> {
         *self.last_prompt.lock().unwrap() = Some(prompt.to_string());
         *self.last_type.lock().unwrap() = Some(definition.name.clone());

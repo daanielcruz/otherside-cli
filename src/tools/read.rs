@@ -14,6 +14,40 @@ use super::ToolError;
 
 const DEFAULT_LIMIT: usize = 2000;
 const MAX_LINE_CHARS: usize = 2000;
+/// Hard cap on file size we'll read into memory before truncation.
+/// Matches upstream's MAX_OUTPUT_SIZE guard so a rogue `file_path`
+/// cannot blow the model's context window or OOM the agent process.
+const MAX_FILE_SIZE: u64 = 256 * 1024;
+
+/// Paths that hang the reader on Unix-likes — opening them blocks
+/// indefinitely or feeds terminal state into the agent loop.
+const BLOCKED_DEVICE_PATHS: &[&str] = &[
+    "/dev/zero",
+    "/dev/random",
+    "/dev/urandom",
+    "/dev/tty",
+    "/dev/console",
+    "/dev/stdin",
+    "/dev/stdout",
+    "/dev/stderr",
+    "/dev/full",
+    "/proc/self/fd/0",
+    "/proc/self/fd/1",
+    "/proc/self/fd/2",
+];
+
+/// File extensions that are almost always binary and have no useful
+/// text content — rejecting pre-I/O avoids flooding the model with
+/// gibberish. Text-like extensions the reader IS expected to handle
+/// are absent from this list.
+const BLOCKED_EXTENSIONS: &[&str] = &[
+    "exe", "dll", "so", "dylib", "a", "lib", "o",
+    "bin", "dat", "class", "jar", "war",
+    "pyc", "pyo", "pyd",
+    "zip", "tar", "gz", "bz2", "xz", "7z", "rar", "zst",
+    "mp3", "mp4", "mov", "avi", "mkv", "wav", "flac", "ogg", "webm",
+    "wasm",
+];
 
 pub fn read(args: &Value) -> Result<Value, ToolError> {
     let file_path = args
@@ -26,6 +60,16 @@ pub fn read(args: &Value) -> Result<Value, ToolError> {
         return Err(ToolError::InvalidArgs(
             "file_path must be absolute".into(),
         ));
+    }
+
+    // Blocked-device guard. Opening `/dev/zero` or `/dev/tty` hangs
+    // the agent loop waiting for bytes that never arrive; refuse
+    // the read before we touch the kernel.
+    let canonical = path.to_string_lossy();
+    if BLOCKED_DEVICE_PATHS.iter().any(|d| canonical == *d) {
+        return Err(ToolError::InvalidArgs(format!(
+            "blocked device path: {canonical}"
+        )));
     }
 
     // MVP: punt on images / PDFs / notebooks with an informative error.
@@ -46,6 +90,14 @@ pub fn read(args: &Value) -> Result<Value, ToolError> {
                 "notebook read not yet wired in this build".into(),
             ));
         }
+        // Binary-extension rejection. Reading an executable as text
+        // floods the model with mojibake and burns tokens. Upstream
+        // has the same gate.
+        if BLOCKED_EXTENSIONS.iter().any(|b| *b == ext) {
+            return Err(ToolError::InvalidArgs(format!(
+                "binary extension .{ext} cannot be read as text"
+            )));
+        }
     }
 
     if !path.exists() {
@@ -53,6 +105,18 @@ pub fn read(args: &Value) -> Result<Value, ToolError> {
             std::io::ErrorKind::NotFound,
             format!("File does not exist: {}", path.display()),
         )));
+    }
+
+    // Size gate — refuse files larger than MAX_FILE_SIZE so a rogue
+    // `file_path` cannot OOM the agent or flood the model context.
+    if let Ok(meta) = fs::metadata(path) {
+        if meta.len() > MAX_FILE_SIZE {
+            return Err(ToolError::InvalidArgs(format!(
+                "file too large: {} bytes (max {})",
+                meta.len(),
+                MAX_FILE_SIZE
+            )));
+        }
     }
 
     // Record the read so the Edit tool's Read-before-Edit gate is
@@ -193,6 +257,39 @@ mod tests {
         fs::write(&tmp, b"fake").unwrap();
         let err = read(&json!({ "file_path": tmp.to_str().unwrap() })).unwrap_err();
         assert!(matches!(err, ToolError::Unsupported(_)));
+        fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn read_rejects_blocked_device_path() {
+        // /dev/zero would otherwise hang indefinitely — refuse pre-I/O.
+        let err = read(&json!({ "file_path": "/dev/zero" })).unwrap_err();
+        assert!(matches!(err, ToolError::InvalidArgs(_)));
+    }
+
+    #[test]
+    fn read_rejects_binary_extension() {
+        let tmp = std::env::temp_dir().join(format!(
+            "otherside-fake-{}.exe",
+            std::process::id()
+        ));
+        fs::write(&tmp, b"MZ\0\0").unwrap();
+        let err = read(&json!({ "file_path": tmp.to_str().unwrap() })).unwrap_err();
+        assert!(matches!(err, ToolError::InvalidArgs(_)));
+        fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn read_rejects_oversized_file() {
+        let tmp = std::env::temp_dir().join(format!(
+            "otherside-fake-big-{}.txt",
+            std::process::id()
+        ));
+        // Write just over the 256 KB cap.
+        let blob = vec![b'a'; (MAX_FILE_SIZE as usize) + 1];
+        fs::write(&tmp, &blob).unwrap();
+        let err = read(&json!({ "file_path": tmp.to_str().unwrap() })).unwrap_err();
+        assert!(matches!(err, ToolError::InvalidArgs(_)));
         fs::remove_file(&tmp).ok();
     }
 }
