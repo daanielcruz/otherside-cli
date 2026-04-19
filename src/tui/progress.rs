@@ -116,15 +116,22 @@ pub fn format_progress_text(
     thought_ms: u64,
     effort_label: Option<&str>,
 ) -> String {
+    let _ = effort_label; // upstream shape shows `thought for Xs`
+                          // instead of an effort chip; kept on the
+                          // signature for future use without churn.
     let frame = spinner_frame(tick);
     let elapsed_str = format_elapsed(elapsed);
-    let up_part = if tokens_up > 0 {
-        format!(" · ↑ {} tokens", format_tokens_compact(tokens_up))
-    } else {
-        String::new()
-    };
-    let down_part = if tokens_down > 0 {
+    // Upstream shows EITHER ↑ (upload-wait phase) OR ↓ (response
+    // streaming) — never both at once. Switch to ↓ once any output
+    // tokens have arrived; before that, surface the ↑ input total
+    // so the user sees what's being sent. Matches observed live
+    // claude-code output:
+    //   ✽ Vibing… (53s · ↑ 255 tokens · thought for 7s)
+    //   ✻ Vibing… (1m 5s · ↓ 383 tokens · thought for 7s)
+    let tokens_part = if tokens_down > 0 {
         format!(" · ↓ {} tokens", format_tokens_compact(tokens_down))
+    } else if tokens_up > 0 {
+        format!(" · ↑ {} tokens", format_tokens_compact(tokens_up))
     } else {
         String::new()
     };
@@ -136,15 +143,7 @@ pub fn format_progress_text(
     } else {
         String::new()
     };
-    let effort_part = match effort_label {
-        Some(label) if !label.is_empty() && label != "none" => {
-            format!(" · {label} effort")
-        }
-        _ => String::new(),
-    };
-    format!(
-        "{frame} {verb}… ({elapsed_str}{up_part}{down_part}{thought_part}{effort_part})"
-    )
+    format!("{frame} {verb}… ({elapsed_str}{tokens_part}{thought_part})")
 }
 
 /// Upstream-style elapsed format: `Ns` under a minute, `Nm Ns`
@@ -187,15 +186,16 @@ pub fn draw(
     thought_ms: u64,
     effort_label: Option<&str>,
 ) {
+    let _ = effort_label; // upstream shows `thought for Xs` instead
     let frame = spinner_frame(tick);
     let elapsed_str = format_elapsed(elapsed);
-    let up_part = if tokens_up > 0 {
-        format!(" · ↑ {} tokens", format_tokens_compact(tokens_up))
-    } else {
-        String::new()
-    };
-    let down_part = if tokens_down > 0 {
+    // ↓ once the assistant starts emitting, ↑ before that. Never
+    // both at once — transitions from upload-wait to
+    // response-streaming as the turn progresses.
+    let tokens_part = if tokens_down > 0 {
         format!(" · ↓ {} tokens", format_tokens_compact(tokens_down))
+    } else if tokens_up > 0 {
+        format!(" · ↑ {} tokens", format_tokens_compact(tokens_up))
     } else {
         String::new()
     };
@@ -204,12 +204,6 @@ pub fn draw(
         format!(" · thought for {secs}s")
     } else {
         String::new()
-    };
-    let effort_part = match effort_label {
-        Some(label) if !label.is_empty() && label != "none" => {
-            format!(" · {label} effort")
-        }
-        _ => String::new(),
     };
 
     let line = Line::from(vec![
@@ -222,7 +216,7 @@ pub fn draw(
             Style::default().fg(theme::PRIMARY),
         ),
         Span::styled(
-            format!("({elapsed_str}{up_part}{down_part}{thought_part}{effort_part})"),
+            format!("({elapsed_str}{tokens_part}{thought_part})"),
             Style::default().fg(theme::MUTED),
         ),
     ]);
@@ -291,21 +285,38 @@ mod tests {
     }
 
     #[test]
-    fn format_progress_upstream_shape() {
+    fn format_progress_upload_phase_shows_up_arrow() {
+        // Before any output tokens arrive, surface the ↑ input count
+        // so the user knows the request is inflight.
         let text = format_progress_text(
             0,
             "Concocting",
             Duration::from_secs(760), // 12m 40s
             8_873,                    // renders as 8.9k
-            2_450,                    // ↓ 2.5k tokens
             0,
-            Some("xhigh"),
+            0,
+            None,
         );
         assert!(text.contains("12m 40s"), "elapsed: {text}");
-        assert!(text.contains("↑ 8.9k tokens"), "tokens: {text}");
-        assert!(text.contains("↓ 2.5k tokens"), "tokens_down: {text}");
-        assert!(text.contains("Concocting"));
-        assert!(text.contains("xhigh effort"));
+        assert!(text.contains("↑ 8.9k tokens"), "up phase: {text}");
+        assert!(!text.contains("↓"), "must not show down before output: {text}");
+    }
+
+    #[test]
+    fn format_progress_streaming_phase_transitions_to_down_arrow() {
+        // Once output tokens start flowing, the progress line switches
+        // to ↓ — upstream never shows both at once.
+        let text = format_progress_text(
+            0,
+            "Vibing",
+            Duration::from_secs(65),
+            8_873, // still has input count available
+            383,   // ↓ 383 tokens now
+            0,
+            None,
+        );
+        assert!(text.contains("↓ 383 tokens"), "down phase: {text}");
+        assert!(!text.contains("↑"), "must drop up once down arrives: {text}");
     }
 
     #[test]
@@ -314,7 +325,6 @@ mod tests {
         assert!(text.contains("3s"));
         assert!(!text.contains("↑"));
         assert!(!text.contains("↓"));
-        assert!(!text.contains("effort"));
     }
 
     #[test]
@@ -324,7 +334,9 @@ mod tests {
     }
 
     #[test]
-    fn format_progress_hides_effort_when_none() {
+    fn format_progress_no_effort_chip() {
+        // Upstream shows `thought for Xs`, NOT an effort chip — we
+        // dropped the effort segment in favor of parity.
         let text = format_progress_text(
             0,
             "Thinking",
@@ -332,9 +344,10 @@ mod tests {
             0,
             0,
             0,
-            Some("none"),
+            Some("xhigh"),
         );
         assert!(!text.contains("effort"));
+        assert!(!text.contains("xhigh"));
     }
 
     #[test]

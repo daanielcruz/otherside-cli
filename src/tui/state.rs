@@ -798,6 +798,19 @@ impl ConversationState {
     /// ONLY when the user hasn't scrolled back — otherwise respect their
     /// viewport so reading history during streaming survives deltas.
     pub fn append_stream_delta(&mut self, delta: &str) {
+        // The first visible text delta marks the end of any
+        // upstream-side thinking phase — wall clock between turn
+        // start and this moment is the thinking time the progress
+        // line surfaces as "thought for Xs". Freeze on first delta
+        // so later deltas don't keep bumping the count.
+        if self.thought_ms == 0 {
+            if let Some(started) = self.request_started_at {
+                let elapsed = started.elapsed().as_millis() as u64;
+                if elapsed > 0 {
+                    self.thought_ms = elapsed;
+                }
+            }
+        }
         self.current_assistant_buffer.push_str(delta);
         // Tail-follow honors the user's scroll intent — only pin the
         // newest delta into view when sticky_bottom is still true.
