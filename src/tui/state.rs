@@ -328,6 +328,12 @@ pub struct ConversationState {
     /// controls what lands on the transcript. See
     /// `tools/*Tool/UI.tsx` `verbose: boolean` param.
     pub render_verbose: bool,
+
+    /// Currently-active overlay menu, if any. `Some` ≡ modal focus
+    /// capture — the event loop routes keys to the menu handler and
+    /// the render path paints the overlay over the prompt bar. Clears
+    /// on commit or cancel. Mirrors upstream's `local-jsx` mount shape.
+    pub active_menu: Option<super::menu::OverlayMenu>,
 }
 
 /// Double-press-to-exit window — must match upstream's

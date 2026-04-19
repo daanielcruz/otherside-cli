@@ -78,6 +78,14 @@ pub struct Settings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verbose: Option<bool>,
 
+    /// Persisted thinking-effort level — one of `auto`, `low`, `medium`,
+    /// `high`, `xhigh`, `max`. When set, the TUI seeds its inference
+    /// config from this value on startup and `/effort <level>` writes
+    /// the chosen value back. Matches upstream's
+    /// `settings.json::effortLevel` field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort_level: Option<String>,
+
     // ----- Enterprise locks (read-only to users when set via policy) -----
     /// Block non-plugin customization paths (stricter than user-set).
     pub strict_plugin_only_customization: Option<bool>,

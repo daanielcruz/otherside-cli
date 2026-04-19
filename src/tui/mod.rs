@@ -87,6 +87,7 @@ pub mod diff;
 pub mod layout;
 pub mod markdown;
 pub mod mascot;
+pub mod menu;
 pub mod progress;
 pub mod render;
 pub mod slash_catalog;
@@ -191,7 +192,7 @@ async fn event_loop(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     provider: Arc<dyn Provider>,
     base_model: String,
-    thinking: Option<ThinkingConfig>,
+    mut thinking: Option<ThinkingConfig>,
     provider_id: String,
     initial_permission_mode: crate::config::PermissionMode,
     settings: crate::config::settings::Settings,
@@ -203,11 +204,32 @@ async fn event_loop(
     // toggles the flag in memory; settings-file writeback is
     // scheduled for spec 007.
     st.render_verbose = settings.verbose.unwrap_or(false);
+    // Seed `thinking` from settings.json::effort_level when the model
+    // suffix didn't already pin a level. The suffix wins (per R-105 /
+    // R-106 parity) so passing `--model claude-opus-4-7(high)` still
+    // trumps settings. Matches upstream precedence: suffix > settings
+    // > default.
+    if thinking.is_none() {
+        if let Some(level_str) = settings.effort_level.as_deref() {
+            use crate::thinking::{ThinkingConfig, ThinkingLevel};
+            use std::str::FromStr;
+            if level_str.eq_ignore_ascii_case("auto") {
+                thinking = Some(ThinkingConfig::auto());
+            } else if let Ok(level) = ThinkingLevel::from_str(level_str) {
+                thinking = Some(ThinkingConfig::level(level));
+            }
+        }
+    }
     st.settings = settings;
     // Thread the session's thinking level into the progress-line
     // `thinking with <level> effort` chip. None when no thinking
     // config means the chip is suppressed.
-    st.effort_label = thinking.as_ref().map(|cfg| cfg.level.as_label());
+    st.effort_label = thinking
+        .as_ref()
+        .and_then(|cfg| match cfg.level {
+            crate::thinking::ThinkingLevel::Auto | crate::thinking::ThinkingLevel::None => None,
+            other => Some(other.as_label()),
+        });
     let mut key_stream = EventStream::new();
 
     // 50 ms = 20 fps — matches upstream's spinner cadence so rotation
@@ -284,7 +306,7 @@ async fn event_loop(
             maybe = key_stream.next() => {
                 match maybe {
                     Some(Ok(CtEvent::Key(k))) => {
-                        if handle_key(k, &mut st, &provider, &base_model, &thinking, &provider_id, &tx) {
+                        if handle_key(k, &mut st, &provider, &base_model, &mut thinking, &provider_id, &tx) {
                             break;
                         }
                     }
@@ -323,7 +345,7 @@ fn handle_key(
     st: &mut ConversationState,
     provider: &Arc<dyn Provider>,
     base_model: &str,
-    thinking: &Option<ThinkingConfig>,
+    thinking: &mut Option<ThinkingConfig>,
     provider_id: &str,
     tx: &mpsc::Sender<StreamEvent>,
 ) -> bool {
@@ -331,6 +353,15 @@ fn handle_key(
     // care about presses. Without this check, every key fires twice on
     // Kitty / Wezterm.
     if k.kind != KeyEventKind::Press {
+        return false;
+    }
+
+    // An active overlay menu captures focus first. Every key is
+    // routed through the menu handler until it resolves (Enter /
+    // Esc). Mirrors upstream `local-jsx` mount shape. Return false
+    // so the event loop keeps running — menus never request exit.
+    if st.active_menu.is_some() {
+        handle_menu_key(k, st, thinking);
         return false;
     }
 
@@ -515,13 +546,7 @@ fn handle_key(
                         ));
                     }
                     slashes::SlashAction::MenuPending(kind) => {
-                        // 012a fallback — overlay menu widget lands in
-                        // 012b. Muted inline note so the slash does not
-                        // leak to the provider. Zero network.
-                        st.push_system_note(format!(
-                            "/{}: menu UI landing in 012b",
-                            kind.slash_name()
-                        ));
+                        open_menu_for(st, kind);
                     }
                     slashes::SlashAction::Rewind => {
                         // 012c wires the real session-history rewind.
@@ -600,6 +625,116 @@ fn handle_key(
 }
 
 /// Spawn the provider's streaming turn task and pin the resulting
+/// Open the overlay matching `kind`. When the variant isn't wired
+/// yet, fall back to the legacy "landing in 012b" inline note so the
+/// user still sees that the slash fired. Shared by the Enter-dispatch
+/// and queue-drain arms.
+fn open_menu_for(st: &mut ConversationState, kind: slash_catalog::MenuKind) {
+    // Clear input + autocomplete when the overlay takes focus —
+    // otherwise the `/effort` text stays in the prompt bar under the
+    // overlay and reads as a half-canceled command.
+    st.input.clear();
+    st.autocomplete = None;
+    match kind {
+        slash_catalog::MenuKind::Effort => {
+            let current = st.effort_label;
+            st.active_menu = Some(menu::OverlayMenu::new_effort(current));
+        }
+        other => {
+            st.push_system_note(format!(
+                "/{}: menu UI landing in 012b",
+                other.slash_name()
+            ));
+        }
+    }
+}
+
+/// Route a key event through the active overlay menu. Consumes
+/// Enter / Esc to resolve the overlay and the arrow keys to move the
+/// cursor. Everything else is swallowed — menus are modal.
+fn handle_menu_key(
+    k: KeyEvent,
+    st: &mut ConversationState,
+    thinking: &mut Option<ThinkingConfig>,
+) {
+    // Esc cancels the overlay without a side effect. Explicit
+    // `st.active_menu = None` so a future user-configurable close
+    // hook has a single mutation point to intercept.
+    if matches!(k.code, KeyCode::Esc) {
+        st.active_menu = None;
+        return;
+    }
+    let Some(menu_state) = st.active_menu.as_mut() else {
+        return;
+    };
+    match k.code {
+        KeyCode::Up => menu_state.move_up(),
+        KeyCode::Down => menu_state.move_down(),
+        KeyCode::Home => menu_state.jump_to_first(),
+        KeyCode::End => menu_state.jump_to_last(),
+        KeyCode::Enter => {
+            let outcome = menu_state.commit_outcome();
+            st.active_menu = None;
+            if let Some(outcome) = outcome {
+                apply_menu_outcome(st, thinking, outcome);
+            }
+        }
+        _ => {} // modal — swallow everything else
+    }
+}
+
+/// Apply the overlay's commit outcome to session state. Each variant
+/// is side-effectful: `SetEffort` flips the active thinking config,
+/// updates the progress-line chip, and writes back to settings.json.
+fn apply_menu_outcome(
+    st: &mut ConversationState,
+    thinking: &mut Option<ThinkingConfig>,
+    outcome: menu::OverlayMenuOutcome,
+) {
+    match outcome {
+        menu::OverlayMenuOutcome::SetEffort { action_id, label } => {
+            apply_effort_outcome(st, thinking, &action_id, &label);
+        }
+    }
+}
+
+/// Translate a committed effort action-id into a new
+/// `ThinkingConfig` + progress-line label, persist it to the session,
+/// and surface an inline confirmation. `"auto"` disables the explicit
+/// level (upstream's `unsetEffortLevel` path).
+fn apply_effort_outcome(
+    st: &mut ConversationState,
+    thinking: &mut Option<ThinkingConfig>,
+    action_id: &str,
+    label: &str,
+) {
+    use crate::thinking::ThinkingLevel;
+    use std::str::FromStr;
+    if action_id.eq_ignore_ascii_case("auto") {
+        // Disable the explicit level — next request uses the model's
+        // default thinking budget.
+        *thinking = Some(ThinkingConfig::auto());
+        st.effort_label = None;
+        st.settings.effort_level = Some("auto".to_string());
+        st.push_system_note("effort level set to auto");
+        return;
+    }
+    match ThinkingLevel::from_str(action_id) {
+        Ok(level) => {
+            *thinking = Some(ThinkingConfig::level(level));
+            st.effort_label = Some(level.as_label());
+            st.settings.effort_level = Some(action_id.to_string());
+            st.push_system_note(format!("effort level set to {label}"));
+        }
+        Err(_) => {
+            // Shouldn't happen: every overlay action_id is a valid
+            // level string. Surface a diagnostic instead of silently
+            // swallowing the mismatch.
+            st.push_system_note(format!("unknown effort level: {action_id}"));
+        }
+    }
+}
+
 /// `JoinHandle` onto state so Esc / Ctrl+C can abort it. Shared by
 /// the Enter dispatch and the queue auto-pop path in the event loop.
 fn spawn_agent_turn(
@@ -697,10 +832,7 @@ fn drain_queue_head_if_any(
             ));
         }
         slashes::SlashAction::MenuPending(kind) => {
-            st.push_system_note(format!(
-                "/{}: menu UI landing in 012b",
-                kind.slash_name()
-            ));
+            open_menu_for(st, kind);
         }
         slashes::SlashAction::Rewind => {
             st.push_system_note(

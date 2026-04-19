@@ -195,7 +195,22 @@ pub fn render(
     // active — the popup goes in the streaming area bottom strip so
     // it obscures nothing crucial (we redraw next frame anyway).
     draw_prompt(f, slots.prompt, state);
-    if let Some(ac) = state.autocomplete.as_ref() {
+    // Overlay menu — when active, paint above the prompt bar so the
+    // option list is visible without clipping the statusline. Takes
+    // priority over autocomplete (autocomplete is suppressed while a
+    // menu captures focus). Mirrors upstream's `local-jsx` mount shape.
+    if let Some(menu_state) = state.active_menu.as_ref() {
+        let overlay_h = (menu_state.options.len() as u16 * 2 + 4)
+            .max(super::menu::MIN_HEIGHT)
+            .min(slots.streaming.height);
+        let overlay = Rect {
+            x: slots.streaming.x,
+            y: slots.streaming.y + slots.streaming.height.saturating_sub(overlay_h),
+            width: slots.streaming.width,
+            height: overlay_h,
+        };
+        super::menu::draw_overlay(f, overlay, menu_state);
+    } else if let Some(ac) = state.autocomplete.as_ref() {
         // Popup hangs below the prompt bar, eating into the info-row
         // chrome area if needed. Matches upstream's placement — the
         // user reads the suggestions right above the cursor, not high
