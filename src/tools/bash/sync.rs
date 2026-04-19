@@ -34,17 +34,23 @@ impl SyncOutput {
 }
 
 /// Run `command` under `sh -c`, wait up to `timeout_ms`, apply output
-/// truncation, and return. Returns Err only on spawn failure.
+/// truncation, and return. Returns Err only on spawn failure. Honors
+/// the session worktree stack — if `EnterWorktree` has been fired,
+/// the command runs inside the topmost cwd.
 pub async fn run(command: &str, timeout_ms: u64) -> std::io::Result<SyncOutput> {
     let start = Instant::now();
-    let mut child = Command::new("sh")
+    let mut builder = Command::new("sh");
+    builder
         .arg("-c")
         .arg(command)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()?;
+        .kill_on_drop(true);
+    if let Some(cwd) = crate::tools::deferred::worktree::effective_cwd() {
+        builder.current_dir(cwd);
+    }
+    let mut child = builder.spawn()?;
 
     let wait_future = async {
         let stdout = child.stdout.take();

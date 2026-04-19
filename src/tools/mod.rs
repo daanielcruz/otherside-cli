@@ -29,6 +29,7 @@
 
 pub mod agent;
 pub mod bash;
+pub mod deferred;
 pub mod edit;
 pub mod glob;
 pub mod grep;
@@ -125,6 +126,18 @@ pub fn dispatch(tool_name: &str, args: &Value) -> Result<Value, ToolError> {
         // backend: Google CSE when env vars present, else unavailable
         // stub so the tool stays resolvable via ToolSearch.
         "WebSearch" => web_search::web_search(args),
+        // Wave 3 deferred tools (2026-04-19): plan-mode toggle,
+        // worktree cwd stack, task lifecycle extras, cron + wakeup.
+        "EnterPlanMode" => deferred::enter_plan_mode(args),
+        "ExitPlanMode" => deferred::exit_plan_mode(args),
+        "EnterWorktree" => deferred::enter_worktree(args),
+        "ExitWorktree" => deferred::exit_worktree(args),
+        "TaskOutput" => deferred::task_output(args),
+        "TaskStop" => deferred::task_stop(args),
+        "CronCreate" => deferred::cron_create(args),
+        "CronDelete" => deferred::cron_delete(args),
+        "CronList" => deferred::cron_list(args),
+        "ScheduleWakeup" => deferred::schedule_wakeup(args),
         // Affordance hints for models that hallucinate retired names.
         "Task" => Err(ToolError::Unsupported(
             "tool `Task` is retired; use `Agent` for subagent dispatch (010 anchor selection)"

@@ -144,7 +144,7 @@ fn wire_catalog_stays_at_nine_after_deferred_dispatch() {
         vec!["Agent", "Bash", "Edit", "Glob", "Grep", "Read", "Skill", "ToolSearch", "Write"]
     );
 
-    // Deferred catalog = 018 first wave + 019 WebFetch + WebSearch.
+    // Deferred catalog = 018 first wave + 019 web + wave 3.
     let deferred: Vec<&str> = schemas::deferred_schemas()
         .iter()
         .map(|s| s.name.as_str())
@@ -159,11 +159,21 @@ fn wire_catalog_stays_at_nine_after_deferred_dispatch() {
             "NotebookEdit",
             "WebFetch",
             "WebSearch",
+            "EnterPlanMode",
+            "ExitPlanMode",
+            "EnterWorktree",
+            "ExitWorktree",
+            "TaskOutput",
+            "TaskStop",
+            "CronCreate",
+            "CronDelete",
+            "CronList",
+            "ScheduleWakeup",
         ]
     );
 
     // Combined catalog equals wire + deferred in that order.
-    assert_eq!(schemas::all_schemas().len(), 16);
+    assert_eq!(schemas::all_schemas().len(), 26);
 }
 
 #[test]
@@ -182,9 +192,9 @@ fn tool_search_substring_query_covers_deferred_tools() {
 #[test]
 fn dispatch_unknown_deferred_name_still_errors() {
     // Sanity guardrail: only wired deferred tools route. A name that
-    // hasn't been implemented yet (e.g. `EnterWorktree`) still hits the
-    // default Unsupported arm.
-    let err = tools::dispatch("EnterWorktree", &json!({})).unwrap_err();
+    // is NOT in any wave (AskUserQuestion still lands later) still
+    // hits the default Unsupported arm.
+    let err = tools::dispatch("AskUserQuestion", &json!({})).unwrap_err();
     assert!(matches!(
         err,
         otherside::tools::ToolError::Unsupported(_)

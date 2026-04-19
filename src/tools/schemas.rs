@@ -68,6 +68,16 @@ fn load_deferred() -> Vec<ToolSchema> {
         crate::tools::notebook::TOOL_NOTEBOOK_EDIT_JSON,
         crate::tools::web_fetch::TOOL_WEB_FETCH_JSON,
         crate::tools::web_search::TOOL_WEB_SEARCH_JSON,
+        crate::tools::deferred::TOOL_ENTER_PLAN_MODE_JSON,
+        crate::tools::deferred::TOOL_EXIT_PLAN_MODE_JSON,
+        crate::tools::deferred::TOOL_ENTER_WORKTREE_JSON,
+        crate::tools::deferred::TOOL_EXIT_WORKTREE_JSON,
+        crate::tools::deferred::TOOL_TASK_OUTPUT_JSON,
+        crate::tools::deferred::TOOL_TASK_STOP_JSON,
+        crate::tools::deferred::TOOL_CRON_CREATE_JSON,
+        crate::tools::deferred::TOOL_CRON_DELETE_JSON,
+        crate::tools::deferred::TOOL_CRON_LIST_JSON,
+        crate::tools::deferred::TOOL_SCHEDULE_WAKEUP_JSON,
     ];
     raws.iter()
         .map(|raw| {
@@ -251,9 +261,11 @@ mod tests {
     }
 
     #[test]
-    fn deferred_schemas_contain_seven_after_019() {
-        // 018 seeded 5 (Task* + NotebookEdit); 019 added WebFetch + WebSearch.
-        assert_eq!(deferred_schemas().len(), 7);
+    fn deferred_schemas_contain_wave_3_set() {
+        // 018 seeded 5 (Task* + NotebookEdit), 019 added 2 web tools,
+        // wave 3 adds 10 deferred tools (plan + worktree + task extras
+        // + cron + wakeup). Total = 17 deferred shapes.
+        assert_eq!(deferred_schemas().len(), 17);
     }
 
     #[test]
@@ -269,14 +281,24 @@ mod tests {
                 "NotebookEdit",
                 "WebFetch",
                 "WebSearch",
+                "EnterPlanMode",
+                "ExitPlanMode",
+                "EnterWorktree",
+                "ExitWorktree",
+                "TaskOutput",
+                "TaskStop",
+                "CronCreate",
+                "CronDelete",
+                "CronList",
+                "ScheduleWakeup",
             ]
         );
     }
 
     #[test]
-    fn all_schemas_total_sixteen() {
-        // 9 wire + 7 deferred (018 first wave + 019 WebFetch + WebSearch).
-        assert_eq!(all_schemas().len(), 16);
+    fn all_schemas_total_reflects_every_wave() {
+        // 9 wire + 17 deferred (018 + 019 + wave 3).
+        assert_eq!(all_schemas().len(), 26);
     }
 
     #[test]
@@ -296,6 +318,16 @@ mod tests {
                 "NotebookEdit",
                 "WebFetch",
                 "WebSearch",
+                "EnterPlanMode",
+                "ExitPlanMode",
+                "EnterWorktree",
+                "ExitWorktree",
+                "TaskOutput",
+                "TaskStop",
+                "CronCreate",
+                "CronDelete",
+                "CronList",
+                "ScheduleWakeup",
             ]
         );
     }

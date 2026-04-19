@@ -88,14 +88,23 @@ pub fn resolve(
     settings: &Settings,
     mode: PermissionMode,
 ) -> Decision {
+    // EnterPlanMode pin — the model-driven plan flag out-ranks the
+    // session permission mode. Equivalent to flipping to
+    // `PermissionMode::Plan`: mutating tools deny, read-only tools
+    // allow. ExitPlanMode clears the flag.
+    let effective_mode = if crate::tools::deferred::plan_mode_active() {
+        PermissionMode::Plan
+    } else {
+        mode
+    };
     // yolo — caller already verified this isn't blocked at a higher
     // tier; treat as carte blanche.
-    if mode == PermissionMode::Yolo {
+    if effective_mode == PermissionMode::Yolo {
         return Decision::Allow;
     }
 
     // plan — block every mutating tool; read-only tools pass.
-    if mode == PermissionMode::Plan {
+    if effective_mode == PermissionMode::Plan {
         if is_mutating(tool) {
             return Decision::Deny {
                 rule: "plan-mode blocks mutating tools".into(),
@@ -126,7 +135,7 @@ pub fn resolve(
     // Mirrors upstream's `checkPathSafetyForAutoEdit` at
     // `utils/permissions/filesystem.ts:629` feeding into the
     // AcceptEdits fast-path at `permissions.ts:604-654`.
-    if mode == PermissionMode::AcceptEdits
+    if effective_mode == PermissionMode::AcceptEdits
         && matches!(tool, "Edit" | "Write" | "NotebookEdit")
     {
         if !is_dangerous_edit_path(tool_input) {
