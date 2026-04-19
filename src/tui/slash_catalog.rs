@@ -136,6 +136,10 @@ pub enum LocalAction {
     /// `/keybindings` — upstream `type: 'local'`; emits inline text
     /// listing the active bindings.
     Keybindings,
+    /// `/verbose` — toggle render verbosity for tool-use messages.
+    /// Upstream `type: 'local'` — matches the boolean setting
+    /// `tools/*Tool/UI.tsx` reads as `verbose`.
+    ToggleVerbose,
 }
 
 impl LocalAction {
@@ -163,6 +167,7 @@ impl LocalAction {
             LocalAction::Logout => A::Logout(arg.trim().to_string()),
             LocalAction::Rewind => A::Rewind,
             LocalAction::Keybindings => A::ShowKeybindings,
+            LocalAction::ToggleVerbose => A::ToggleVerbose,
         }
     }
 }
@@ -272,6 +277,11 @@ pub const CATALOG: &[SlashEntry] = &[
         name: "keybindings",
         brief: "show the active keybindings",
         kind: SlashKind::Local(LocalAction::Keybindings),
+    },
+    SlashEntry {
+        name: "verbose",
+        brief: "toggle verbose tool-use render",
+        kind: SlashKind::Local(LocalAction::ToggleVerbose),
     },
     SlashEntry {
         name: "sandbox",

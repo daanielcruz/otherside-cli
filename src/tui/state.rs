@@ -122,6 +122,11 @@ pub struct ToolCallEntry {
     pub payload: Option<ToolPayload>,
     pub started_at: Instant,
     pub elapsed_ms: u64,
+    /// Raw dispatcher output, kept so the render layer can recompute
+    /// `payload` when `/verbose` toggles mid-session. `None` for
+    /// error paths and legacy entries deserialized from the
+    /// transcript archive.
+    pub raw_result: Option<Value>,
 }
 
 /// Serialize a finalized ToolCallEntry into a JSON string the
@@ -302,6 +307,16 @@ pub struct ConversationState {
     /// PermissionsConfig so tests and legacy construction paths stay
     /// green without explicit wiring.
     pub settings: crate::config::settings::Settings,
+
+    /// Render-verbosity flag — toggled via `/verbose`. When `true`,
+    /// tool-use headers and result previews expand to match
+    /// upstream's verbose branches (full bash output, Glob / Grep
+    /// file listings inline, Read `lines a-b` qualifier, WebFetch
+    /// result body appended). Independent from the logging-level
+    /// `--verbose` CLI flag — that one controls tracing, this one
+    /// controls what lands on the transcript. See
+    /// `tools/*Tool/UI.tsx` `verbose: boolean` param.
+    pub render_verbose: bool,
 }
 
 /// Double-press-to-exit window — must match upstream's
@@ -488,6 +503,7 @@ impl ConversationState {
             payload: None,
             started_at: Instant::now(),
             elapsed_ms: 0,
+            raw_result: None,
         });
     }
 
@@ -518,16 +534,36 @@ impl ConversationState {
             }
         };
         entry.elapsed_ms = elapsed_ms;
+        let verbose = self.render_verbose;
         match result {
             Ok(value) => {
                 entry.status = ToolStatus::Ok;
-                entry.payload = tool_render::payload_from_result(&entry.name, &value);
+                entry.payload = tool_render::payload_from_result(&entry.name, &value, verbose);
+                entry.raw_result = Some(value);
             }
             Err(err) => {
                 entry.status = ToolStatus::Error;
                 entry.payload = Some(tool_render::payload_from_error(&err));
+                entry.raw_result = None;
             }
         }
+    }
+
+    /// Toggle the verbose render flag. Walks `active_tool_calls` and
+    /// recomputes each entry's `payload` from `raw_result` so the new
+    /// verbosity applies to both new AND existing in-flight entries.
+    /// Called from the `/verbose` slash handler. Archived tool calls
+    /// rendered from `Role::Tool` history are not touched — only live
+    /// entries have a `raw_result` to recompute from.
+    pub fn toggle_render_verbose(&mut self) -> bool {
+        self.render_verbose = !self.render_verbose;
+        for entry in self.active_tool_calls.iter_mut() {
+            if let Some(raw) = &entry.raw_result {
+                entry.payload =
+                    tool_render::payload_from_result(&entry.name, raw, self.render_verbose);
+            }
+        }
+        self.render_verbose
     }
 
     /// Suppress the autocomplete popup while a request is in flight.

@@ -67,6 +67,17 @@ pub struct Settings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub statusline: Option<crate::statusline::types::StatuslineConfig>,
 
+    /// Render-verbose flag — persists across sessions. When `true`,
+    /// tool-use headers and result previews expand to upstream's
+    /// verbose branches (full bash output, Glob / Grep file listings
+    /// inline, Read `lines a-b` qualifier, WebFetch result body
+    /// appended). `/verbose` toggles this at runtime; the flipped
+    /// value writes back to settings.json so it sticks across
+    /// restarts. Independent from the `--verbose` CLI logging flag.
+    /// Matches upstream's `settings.json::verbose` boolean.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verbose: Option<bool>,
+
     // ----- Enterprise locks (read-only to users when set via policy) -----
     /// Block non-plugin customization paths (stricter than user-set).
     pub strict_plugin_only_customization: Option<bool>,

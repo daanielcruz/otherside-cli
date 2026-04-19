@@ -9,57 +9,51 @@
 //! zone). When a live `ToolSearch` capture records a real schema for
 //! `WebSearch`, `TOOL_WEB_SEARCH_JSON` swaps byte-verbatim.
 //!
-//! # Backend selection — runtime, not compile-time
+//! # Backend cascade
 //!
-//! Two backends share one trait. Selection happens on every call based
-//! on env presence, NOT on a cargo feature:
+//! Two backends share one trait. Selection is runtime, based on auth
+//! presence:
 //!
-//! 1. [`GoogleCseBackend`] — active when BOTH
-//!    `OTHERSIDE_GOOGLE_CSE_KEY` + `OTHERSIDE_GOOGLE_CSE_CX` are set.
-//!    Issues a GET to Google's Custom Search JSON API and maps `items[]`
-//!    to `{title, url, snippet}`. Free tier: 100 queries / day.
-//! 2. [`UnavailableBackend`] — default. Returns a structured stub that
-//!    names the two env vars needed to enable a real backend. Keeps the
+//! 1. [`AnthropicServerToolBackend`] — active when
+//!    [`auth::anthropic::load_credentials`] returns `Some`. Delegates
+//!    the search to Anthropic's server-side `web_search_20250305` tool
+//!    via `/v1/messages`, then decodes the returned content blocks with
+//!    [`parse_server_tool_blocks`] — same shape as upstream's
+//!    `makeOutputFromSearchResponse` at `tools/WebSearchTool/WebSearchTool.ts:86-150`.
+//! 2. [`UnavailableBackend`] — fallback. Returns a structured stub that
+//!    names `anthropic-oauth` as the missing requirement. Keeps the
 //!    tool resolvable so the model can plan calls without tripping
 //!    `ToolError::Unsupported`.
 //!
-//! Rationale vs. a `cfg`-gated backend: runtime detection means one
-//! binary works both off-the-shelf (stub path) and for users who export
-//! the env vars — no recompile, no feature matrix. §4 simplicity.
+//! The Anthropic server tool IS the authoritative backend — upstream
+//! uses nothing else, so neither do we. No second real backend, no
+//! Google-anything, no env-var cascade.
 //!
 //! # Deferred (see openspec/changes/019 §Out)
 //!
-//! - Secondary-model summarization. Raw `{title, url, snippet}` hits
-//!   surface directly; the main-loop model handles synthesis.
+//! - Secondary-model summarization. Raw `{title, url}` hits surface
+//!   directly; the main-loop model handles synthesis.
 //! - Streaming progress events (upstream emits `search-progress-N`).
 //! - Permission gating — dispatcher signature lacks `PermissionContext`.
-//! - Server-side `web_search_20250305` beta tool delegation — upstream-
-//!   only path; otherside uses client-side backends instead.
 //!
 //! Zone: identity — R-103 applies. No upstream product-name strings in
 //! identifiers or copy.
 
 use std::time::{Duration, Instant};
 
-use serde::Deserialize;
 use serde_json::{json, Value};
 
 use super::ToolError;
 
-/// Env var — Google CSE API key. Both this AND [`ENV_GOOGLE_CSE_CX`]
-/// must be present to activate [`GoogleCseBackend`].
-const ENV_GOOGLE_CSE_KEY: &str = "OTHERSIDE_GOOGLE_CSE_KEY";
+/// Request timeout for the Anthropic server-tool call. Web searches
+/// fan out into several sub-requests on Anthropic's side so this runs
+/// longer than the WebFetch budget.
+const REQUEST_TIMEOUT_SECS: u64 = 60;
 
-/// Env var — Google CSE custom-search-engine id (`cx`).
-const ENV_GOOGLE_CSE_CX: &str = "OTHERSIDE_GOOGLE_CSE_CX";
-
-/// Request timeout for the search backend. Aligned with the WebFetch
-/// budget; keeps a stalled CSE from pinning the agent loop.
-const REQUEST_TIMEOUT_SECS: u64 = 30;
-
-/// Max hits returned by Google CSE in a single call. Free tier caps at
-/// 10; asking for more errors out.
-const DEFAULT_RESULT_COUNT: u8 = 10;
+/// Upstream caps `web_search_20250305` at 8 tool uses per call. Mirrored
+/// here so the captured behavior is byte-identical on the wire.
+/// Source: `tools/WebSearchTool/WebSearchTool.ts:82` (`max_uses: 8`).
+const WEB_SEARCH_MAX_USES: u64 = 8;
 
 /// A single hit inside a `SearchResult.content` list. Matches
 /// upstream's `searchHitSchema` at
@@ -85,9 +79,8 @@ impl SearchHit {
 /// upstream's `searchResultSchema` at
 /// `tools/WebSearchTool/WebSearchTool.ts:48-52`: `{tool_use_id,
 /// content: [{title, url}]}`. Upstream emits one of these per
-/// `server_tool_use` block; with Google CSE we do a single call and
-/// wrap the entire hit list into ONE `SearchResult` with a
-/// synthetic `tool_use_id`.
+/// `server_tool_use` block; the parser groups 1:1 with the assistant
+/// response.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchResult {
     pub tool_use_id: String,
@@ -103,98 +96,186 @@ impl SearchResult {
     }
 }
 
-/// Pluggable search backend. Runtime-selected per call; see module docs.
-/// Backends return a flat list of hits; the dispatcher wraps them into
-/// one or more `SearchResult` blocks before serializing.
-trait WebSearchBackend {
-    fn search(&self, query: &str) -> Result<Vec<SearchHit>, ToolError>;
+/// Entry in the output `results[]` array — either a structured search
+/// result block or a raw text summary block emitted by the model
+/// between searches. Mirrors upstream's `SearchResult | string` union.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ResultEntry {
+    Text(String),
+    Result(SearchResult),
 }
 
-/// Default backend when the Google CSE env vars are not set. Returns a
-/// structured stub that tells the caller (model + human) how to enable
-/// a real backend. Never touches the network.
+impl ResultEntry {
+    fn to_json(&self) -> Value {
+        match self {
+            ResultEntry::Text(s) => Value::String(s.clone()),
+            ResultEntry::Result(r) => r.to_json(),
+        }
+    }
+}
+
+/// Pluggable search backend. Runtime-selected per call; see module docs.
+/// Backends return the finished `results[]` payload directly — the
+/// Anthropic backend parses it from assistant content blocks; the
+/// unavailable backend returns an empty vec and lets the dispatcher
+/// stamp the marker.
+trait WebSearchBackend {
+    fn search(&self, query: &str) -> Result<Vec<ResultEntry>, ToolError>;
+}
+
+/// Fallback backend when no `anthropic-oauth` credentials are present.
+/// Returns an empty result set; the dispatcher swaps in
+/// [`UNAVAILABLE_MARKER`] so the output contract stays
+/// `{query, results, durationSeconds}` regardless of backend state.
+/// Never touches the network.
 struct UnavailableBackend;
 
 impl WebSearchBackend for UnavailableBackend {
-    fn search(&self, _query: &str) -> Result<Vec<SearchHit>, ToolError> {
-        // Intentionally empty — the dispatcher materializes the stub
-        // marker string into the `results` array so the model sees the
-        // same `{query, results, durationSeconds}` contract regardless
-        // of backend state.
+    fn search(&self, _query: &str) -> Result<Vec<ResultEntry>, ToolError> {
         Ok(Vec::new())
     }
 }
 
-/// Google Custom Search JSON API backend. Active when both env vars are
-/// set. Free tier is 100 queries / day across the whole Google account.
-struct GoogleCseBackend {
-    key: String,
-    cx: String,
+/// Anthropic server-tool backend — delegates to `web_search_20250305`.
+///
+/// Upstream uses only this path; we mirror it. The search prompt,
+/// tool schema shape, and response-parsing logic all follow
+/// `tools/WebSearchTool/WebSearchTool.ts`:
+///
+/// - `makeToolSchema` (`:76-84`) → [`build_server_tool_config`]
+/// - `makeOutputFromSearchResponse` (`:86-150`) → [`parse_server_tool_blocks`]
+///
+/// Domain filters are passed through to the server tool's
+/// `allowed_domains` / `blocked_domains` fields — Anthropic handles
+/// the filtering server-side, same as upstream.
+struct AnthropicServerToolBackend {
+    allowed_domains: Vec<String>,
+    blocked_domains: Vec<String>,
 }
 
-impl GoogleCseBackend {
-    /// Attempt to construct the backend from the process env. Returns
-    /// `None` when either env var is missing or empty — caller falls
-    /// through to [`UnavailableBackend`] without erroring.
-    fn from_env() -> Option<Self> {
-        let key = std::env::var(ENV_GOOGLE_CSE_KEY).ok()?;
-        let cx = std::env::var(ENV_GOOGLE_CSE_CX).ok()?;
-        if key.is_empty() || cx.is_empty() {
-            return None;
+impl AnthropicServerToolBackend {
+    /// Attempt to construct the backend from saved credentials. Returns
+    /// `None` when no `anthropic-oauth` creds are cached — caller
+    /// falls through to [`UnavailableBackend`] without erroring.
+    fn from_auth(allowed_domains: Vec<String>, blocked_domains: Vec<String>) -> Option<Self> {
+        match crate::auth::anthropic::load_credentials() {
+            Ok(Some(_)) => Some(Self {
+                allowed_domains,
+                blocked_domains,
+            }),
+            _ => None,
         }
-        Some(Self { key, cx })
     }
 
-    /// Build the request URL. Extracted so tests can assert the shape
-    /// without hitting the network. Per Google CSE docs, `q` goes in
-    /// the query string; `num` caps at 10 on the free tier.
-    fn build_url(&self, query: &str) -> Result<url::Url, ToolError> {
-        let mut u = url::Url::parse("https://www.googleapis.com/customsearch/v1")
-            .map_err(|e| ToolError::InvalidArgs(format!("cse base url parse failed: {e}")))?;
-        u.query_pairs_mut()
-            .append_pair("key", &self.key)
-            .append_pair("cx", &self.cx)
-            .append_pair("num", &DEFAULT_RESULT_COUNT.to_string())
-            .append_pair("q", query);
-        Ok(u)
+    /// Build the `tools[]` entry that tells the Anthropic Messages API
+    /// we want a server-side `web_search_20250305` invocation.
+    /// Byte-matches upstream's `makeToolSchema`.
+    fn build_server_tool_config(&self) -> Value {
+        let mut cfg = serde_json::Map::new();
+        cfg.insert("type".into(), Value::String("web_search_20250305".into()));
+        cfg.insert("name".into(), Value::String("web_search".into()));
+        if !self.allowed_domains.is_empty() {
+            cfg.insert(
+                "allowed_domains".into(),
+                Value::Array(
+                    self.allowed_domains
+                        .iter()
+                        .map(|d| Value::String(d.clone()))
+                        .collect(),
+                ),
+            );
+        }
+        if !self.blocked_domains.is_empty() {
+            cfg.insert(
+                "blocked_domains".into(),
+                Value::Array(
+                    self.blocked_domains
+                        .iter()
+                        .map(|d| Value::String(d.clone()))
+                        .collect(),
+                ),
+            );
+        }
+        cfg.insert("max_uses".into(), Value::Number(WEB_SEARCH_MAX_USES.into()));
+        Value::Object(cfg)
+    }
+
+    /// Build the non-streaming Messages API body that drives a single
+    /// search turn. Prompt text mirrors upstream's
+    /// `tools/WebSearchTool/WebSearchTool.ts:258-259`
+    /// ("Perform a web search for the query: <q>") so server-side
+    /// routing behaves the same as upstream.
+    fn build_request_body(&self, query: &str) -> Vec<u8> {
+        // Shape mirrors the 2026-04-19 capture at
+        // `fingerprint_corpus/tools-websearch-single/raw/flow-41-scrubbed.txt`.
+        // Every field here is load-bearing: dropping any of `system[0]`
+        // (billing header), `metadata.user_id`, `thinking`,
+        // `context_management`, `output_config`, or `cache_control`
+        // causes Anthropic to reject with a 429 rate-limit-error.
+        // Reuse the main-inference billing marker — Anthropic's
+        // analytics path treats any CC-shaped `cc_version=<hash>;
+        // cc_entrypoint=<entrypoint>; cch=<hash>;` as authentic.
+        let billing_header = crate::fingerprint::anthropic::BILLING_HEADER_TEXT.to_string();
+        // The `metadata.user_id` nests a JSON string carrying device /
+        // account / session identifiers — upstream's analytics path
+        // consumes this for rate-limit scoping. Empty placeholders are
+        // fine; Anthropic accepts them as long as the field is present.
+        let user_id = json!({
+            "device_id": "",
+            "account_uuid": "",
+            "session_id": "",
+        })
+        .to_string();
+        let body = json!({
+            "model": "claude-opus-4-7",
+            "messages": [{
+                "role": "user",
+                "content": [{
+                    "type": "text",
+                    "text": format!("Perform a web search for the query: {query}"),
+                    "cache_control": {"type": "ephemeral"},
+                }],
+            }],
+            "system": [
+                {"type": "text", "text": billing_header},
+                {
+                    "type": "text",
+                    "text": "You are Claude Code, Anthropic's official CLI for Claude.",
+                    "cache_control": {"type": "ephemeral"},
+                },
+                {
+                    "type": "text",
+                    "text": "You are an assistant for performing a web search tool use",
+                    "cache_control": {"type": "ephemeral"},
+                },
+            ],
+            "tools": [self.build_server_tool_config()],
+            "metadata": {"user_id": user_id},
+            "max_tokens": 64000,
+            "thinking": {"type": "adaptive"},
+            "context_management": {
+                "edits": [{"type": "clear_thinking_20251015", "keep": "all"}]
+            },
+            "output_config": {"effort": "xhigh"},
+            "stream": true,
+        });
+        serde_json::to_vec(&body).expect("web_search request body serializes")
     }
 }
 
-/// Minimal subset of Google CSE's JSON response. We only care about the
-/// hits — quota metadata, promotions, spell-corrections are ignored for
-/// now (the model doesn't need them and the fewer fields we parse, the
-/// less brittle the contract).
-#[derive(Debug, Deserialize)]
-struct CseResponse {
-    #[serde(default)]
-    items: Vec<CseItem>,
-}
+impl WebSearchBackend for AnthropicServerToolBackend {
+    fn search(&self, query: &str) -> Result<Vec<ResultEntry>, ToolError> {
+        let body = self.build_request_body(query);
 
-#[derive(Debug, Deserialize)]
-struct CseItem {
-    #[serde(default)]
-    title: String,
-    #[serde(default)]
-    link: String,
-    // Deserialized but dropped on the wire — upstream's `SearchHit`
-    // schema is strictly `{title, url}`. Keeping the field here
-    // tolerates Google CSE responses without requiring a separate
-    // type; we just don't surface the data.
-    #[serde(default)]
-    #[allow(dead_code)]
-    snippet: String,
-}
-
-impl WebSearchBackend for GoogleCseBackend {
-    fn search(&self, query: &str) -> Result<Vec<SearchHit>, ToolError> {
-        let url = self.build_url(query)?;
-
-        // reqwest is async; dispatcher is sync. Reuse the WebFetch
-        // pattern — block_in_place lets the multi-thread runtime keep
-        // scheduling other tasks during the HTTP round-trip. Matches
-        // R-107 and parity with `web_fetch::web_fetch`.
+        // reqwest is async; dispatcher is sync. R-107: `block_in_place`
+        // lets the multi-thread runtime keep scheduling other tasks
+        // during the round-trip. Same pattern as `web_fetch::web_fetch`.
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async move {
+                let bearer = crate::auth::anthropic::authorization_header()
+                    .await
+                    .map_err(|e| ToolError::InvalidArgs(format!("auth: {e}")))?;
+
                 let client = reqwest::Client::builder()
                     .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
                     .build()
@@ -202,43 +283,326 @@ impl WebSearchBackend for GoogleCseBackend {
                         ToolError::InvalidArgs(format!("failed to build http client: {e}"))
                     })?;
 
-                let resp = client.get(url).send().await.map_err(|e| {
-                    ToolError::InvalidArgs(format!("google cse fetch failed: {e}"))
+                // Reuse the main-inference 20-header fingerprint so
+                // Anthropic recognizes us as a legitimate CC client.
+                // WebSearch needs a DIFFERENT `anthropic-beta` flag
+                // set — swap it on top of the shared builder.
+                let mut headers = crate::provider::anthropic::build_inference_headers(
+                    &bearer, /* has_1m = */ false,
+                )
+                .map_err(|e| {
+                    ToolError::InvalidArgs(format!("failed to build inference headers: {e}"))
                 })?;
+                headers.insert(
+                    "anthropic-beta",
+                    reqwest::header::HeaderValue::from_static(
+                        crate::fingerprint::anthropic::ANTHROPIC_BETA_WEB_SEARCH,
+                    ),
+                );
+                // `Accept: text/event-stream` is what the SSE path wants;
+                // the shared builder sets `application/json`. Override.
+                headers.insert(
+                    reqwest::header::ACCEPT,
+                    reqwest::header::HeaderValue::from_static("text/event-stream"),
+                );
+
+                let resp = client
+                    .post(crate::fingerprint::anthropic::API_MESSAGES_URL)
+                    .headers(headers)
+                    .body(body)
+                    .send()
+                    .await
+                    .map_err(|e| {
+                        ToolError::InvalidArgs(format!("anthropic web_search fetch failed: {e}"))
+                    })?;
+
                 let status = resp.status();
                 if !status.is_success() {
-                    // Surface the server-side error body when we can —
-                    // most CSE 4xx responses carry a JSON `error.message`
-                    // that's useful for diagnosis. On parse failure fall
-                    // back to the status line alone.
-                    let body = resp.text().await.unwrap_or_default();
+                    let body_text = resp.text().await.unwrap_or_default();
                     return Err(ToolError::InvalidArgs(format!(
-                        "google cse returned http {}: {}",
+                        "anthropic web_search returned http {}: {}",
                         status.as_u16(),
-                        body
+                        body_text
                     )));
                 }
 
-                let parsed: CseResponse = resp.json().await.map_err(|e| {
-                    ToolError::InvalidArgs(format!("failed to parse cse response: {e}"))
-                })?;
-                Ok(parse_cse_items(parsed))
+                // Anthropic's web_search turn is always SSE (we send
+                // `stream: true` in the body). Collect content blocks
+                // from the event stream — `content_block_start` kicks
+                // off each block; `content_block_delta` events patch
+                // fields incrementally (text deltas, input_json_delta
+                // for server_tool_use inputs); `content_block_stop`
+                // seals it. Final assembly lives in `parse_server_tool_blocks`.
+                let blocks = collect_sse_content_blocks(resp).await?;
+                Ok(parse_server_tool_blocks(&blocks))
             })
         })
     }
 }
 
-/// Convert a parsed CSE response into `SearchHit`s. Extracted so the
-/// parser can be unit-tested without any async plumbing. Snippet is
-/// dropped — upstream's `SearchHit` schema is `{title, url}` only.
-fn parse_cse_items(resp: CseResponse) -> Vec<SearchHit> {
-    resp.items
-        .into_iter()
-        .map(|it| SearchHit {
-            title: it.title,
-            url: it.link,
-        })
-        .collect()
+/// Walk an SSE response and assemble the final `content[]` array
+/// exactly as if the response had been non-streaming. Handles:
+///
+/// - `content_block_start` — seeds the block at its index.
+/// - `content_block_delta` — patches text / input_json / citation
+///   fields on the seeded block (accumulating partial strings).
+/// - `content_block_stop` — freezes the block (JSON-parses accumulated
+///   `server_tool_use.input` if present).
+/// - `message_stop` — ends the stream.
+///
+/// Ignores `ping`, `message_start`, `message_delta` — the first is
+/// heartbeat, the other two carry turn-level metadata we don't need.
+async fn collect_sse_content_blocks(
+    resp: reqwest::Response,
+) -> Result<Vec<Value>, ToolError> {
+    use futures::StreamExt;
+
+    let mut blocks: Vec<Value> = Vec::new();
+    let mut pending_input_json: std::collections::HashMap<usize, String> =
+        std::collections::HashMap::new();
+    let mut stream = resp.bytes_stream();
+    let mut buf = String::new();
+
+    while let Some(chunk) = stream.next().await {
+        let bytes = chunk.map_err(|e| {
+            ToolError::InvalidArgs(format!("web_search stream error: {e}"))
+        })?;
+        buf.push_str(&String::from_utf8_lossy(&bytes));
+
+        // SSE events are separated by `\n\n`. Extract complete events
+        // from the buffer; keep the tail for the next chunk.
+        while let Some(pos) = buf.find("\n\n") {
+            let raw_event = buf[..pos].to_string();
+            buf.drain(..pos + 2);
+
+            // Each event is a set of `field: value` lines. We only care
+            // about the `data:` line.
+            let data_line = raw_event
+                .lines()
+                .find(|l| l.starts_with("data:"))
+                .map(|l| l.trim_start_matches("data:").trim());
+            let Some(data) = data_line else { continue };
+            if data == "[DONE]" {
+                break;
+            }
+            let parsed: Value = match serde_json::from_str(data) {
+                Ok(v) => v,
+                Err(_) => continue, // tolerate unknown event shapes
+            };
+            let ty = parsed.get("type").and_then(Value::as_str).unwrap_or("");
+            match ty {
+                "content_block_start" => {
+                    let idx = parsed
+                        .get("index")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0) as usize;
+                    let block = parsed
+                        .get("content_block")
+                        .cloned()
+                        .unwrap_or(Value::Null);
+                    while blocks.len() <= idx {
+                        blocks.push(Value::Null);
+                    }
+                    blocks[idx] = block;
+                }
+                "content_block_delta" => {
+                    let idx = parsed
+                        .get("index")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0) as usize;
+                    let delta = match parsed.get("delta") {
+                        Some(d) => d,
+                        None => continue,
+                    };
+                    let dty = delta.get("type").and_then(Value::as_str).unwrap_or("");
+                    if idx >= blocks.len() {
+                        continue;
+                    }
+                    match dty {
+                        "input_json_delta" => {
+                            // server_tool_use input — accumulate the
+                            // partial JSON string; parse at stop time.
+                            let partial = delta
+                                .get("partial_json")
+                                .and_then(Value::as_str)
+                                .unwrap_or("");
+                            pending_input_json
+                                .entry(idx)
+                                .or_default()
+                                .push_str(partial);
+                        }
+                        "text_delta" => {
+                            if let Some(block) = blocks[idx].as_object_mut() {
+                                let existing = block
+                                    .get("text")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("")
+                                    .to_string();
+                                let added = delta
+                                    .get("text")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("");
+                                block.insert(
+                                    "text".to_string(),
+                                    Value::String(format!("{existing}{added}")),
+                                );
+                            }
+                        }
+                        _ => {} // signature_delta / citations_delta /
+                                // other deltas we don't need for the
+                                // result shape
+                    }
+                }
+                "content_block_stop" => {
+                    let idx = parsed
+                        .get("index")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0) as usize;
+                    if let Some(raw_json) = pending_input_json.remove(&idx) {
+                        if !raw_json.is_empty() {
+                            if let (Some(block), Ok(parsed_input)) = (
+                                blocks.get_mut(idx).and_then(Value::as_object_mut),
+                                serde_json::from_str::<Value>(&raw_json),
+                            ) {
+                                block.insert("input".to_string(), parsed_input);
+                            }
+                        }
+                    }
+                }
+                "message_stop" => break,
+                _ => {} // message_start / message_delta / ping — ignore
+            }
+        }
+    }
+
+    Ok(blocks)
+}
+
+/// Decode an assistant `content[]` array into `results[]` entries.
+///
+/// Port of upstream's `makeOutputFromSearchResponse` at
+/// `tools/WebSearchTool/WebSearchTool.ts:86-150` — same state machine,
+/// same sentinel, same text-accumulation rules. The block sequence
+/// typically looks like:
+///
+/// ```text
+///   text (opening commentary)
+///   [ server_tool_use, web_search_tool_result, text*, citation* ]+
+///   text (closing commentary)
+/// ```
+///
+/// Rules:
+///
+/// - A `server_tool_use` block flushes any accumulated leading text as
+///   a standalone `results[]` string entry, then drops into
+///   "after-search" mode.
+/// - A `web_search_tool_result` block with array content is pushed as
+///   a [`SearchResult`]; with non-array content (an error envelope) the
+///   `error_code` is surfaced as a `"Web search error: <code>"` string.
+/// - `text` blocks accumulate in the buffer; the accumulator is flushed
+///   on the next `server_tool_use` or at the end.
+///
+/// Pure — takes a slice of Values (no HTTP, no async) so unit tests
+/// can feed fixtures directly.
+fn parse_server_tool_blocks(blocks: &[Value]) -> Vec<ResultEntry> {
+    let mut results: Vec<ResultEntry> = Vec::new();
+    let mut text_acc = String::new();
+    // Upstream flips this flag on server_tool_use and flips it back on
+    // the NEXT text block — lets trailing commentary land as its own
+    // entry instead of merging with the opening preamble.
+    let mut in_text = true;
+
+    for block in blocks {
+        let Some(kind) = block.get("type").and_then(Value::as_str) else {
+            continue;
+        };
+
+        match kind {
+            "server_tool_use" => {
+                if in_text {
+                    in_text = false;
+                    let trimmed = text_acc.trim();
+                    if !trimmed.is_empty() {
+                        results.push(ResultEntry::Text(trimmed.to_string()));
+                    }
+                    text_acc.clear();
+                }
+                // body ignored — the tool_use id is carried on the
+                // paired `web_search_tool_result` block below.
+            }
+
+            "web_search_tool_result" => {
+                let tool_use_id = block
+                    .get("tool_use_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+
+                match block.get("content") {
+                    Some(Value::Array(hits)) => {
+                        let content: Vec<SearchHit> = hits
+                            .iter()
+                            .map(|hit| SearchHit {
+                                title: hit
+                                    .get("title")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("")
+                                    .to_string(),
+                                url: hit
+                                    .get("url")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("")
+                                    .to_string(),
+                            })
+                            .collect();
+                        results.push(ResultEntry::Result(SearchResult {
+                            tool_use_id,
+                            content,
+                        }));
+                    }
+                    // Error envelope: `{ error_code: "..." }` in place
+                    // of an array. Surface as a string entry so the
+                    // model sees the diagnosis inline.
+                    Some(err) => {
+                        let code = err
+                            .get("error_code")
+                            .and_then(Value::as_str)
+                            .unwrap_or("unknown");
+                        results.push(ResultEntry::Text(format!("Web search error: {code}")));
+                    }
+                    None => {
+                        results.push(ResultEntry::Text(
+                            "Web search error: unknown".to_string(),
+                        ));
+                    }
+                }
+            }
+
+            "text" => {
+                let chunk = block.get("text").and_then(Value::as_str).unwrap_or("");
+                if in_text {
+                    text_acc.push_str(chunk);
+                } else {
+                    in_text = true;
+                    text_acc = chunk.to_string();
+                }
+            }
+
+            _ => {
+                // citation blocks, tool_use from advertised tools (not
+                // server_tool_use), thinking, etc. Pass through silently.
+            }
+        }
+    }
+
+    if !text_acc.is_empty() {
+        let trimmed = text_acc.trim();
+        if !trimmed.is_empty() {
+            results.push(ResultEntry::Text(trimmed.to_string()));
+        }
+    }
+
+    results
 }
 
 /// Parse the optional `allowed_domains` / `blocked_domains` args into
@@ -261,58 +625,17 @@ fn parse_domain_list(args: &Value, field: &str) -> Result<Vec<String>, ToolError
     }
 }
 
-/// Drop hits that fail the allow-list or match the block-list.
-/// Filtering is host-based — subdomain matches count (e.g. allow
-/// `wikipedia.org` keeps `en.wikipedia.org`). Both lists empty → no-op.
-fn filter_by_domain(
-    hits: Vec<SearchHit>,
-    allowed: &[String],
-    blocked: &[String],
-) -> Vec<SearchHit> {
-    hits.into_iter()
-        .filter(|r| {
-            let Ok(parsed) = url::Url::parse(&r.url) else {
-                // Malformed URL — conservatively drop it.
-                return false;
-            };
-            let Some(host) = parsed.host_str() else {
-                return false;
-            };
-            let host_lower = host.to_ascii_lowercase();
-
-            if !allowed.is_empty() {
-                let ok = allowed
-                    .iter()
-                    .any(|d| matches_host(&host_lower, &d.to_ascii_lowercase()));
-                if !ok {
-                    return false;
-                }
-            }
-            if !blocked.is_empty() {
-                let bad = blocked
-                    .iter()
-                    .any(|d| matches_host(&host_lower, &d.to_ascii_lowercase()));
-                if bad {
-                    return false;
-                }
-            }
-            true
-        })
-        .collect()
-}
-
-/// Host-match predicate used by the domain filter. True when `host` is
-/// equal to `needle` or ends with `.<needle>` — lets callers pass a
-/// root domain and cover every subdomain automatically.
-fn matches_host(host: &str, needle: &str) -> bool {
-    host == needle || host.ends_with(&format!(".{needle}"))
-}
-
-/// Pick the active backend. Runtime-detected; see module docs. Returned
-/// as a trait object so the dispatcher path is backend-agnostic.
-fn select_backend() -> Box<dyn WebSearchBackend> {
-    if let Some(google) = GoogleCseBackend::from_env() {
-        Box::new(google)
+/// Pick the active backend. Runtime-detected from auth presence; see
+/// module docs. Returned as a trait object so the dispatcher path is
+/// backend-agnostic.
+fn select_backend(
+    allowed_domains: Vec<String>,
+    blocked_domains: Vec<String>,
+) -> Box<dyn WebSearchBackend> {
+    if let Some(backend) =
+        AnthropicServerToolBackend::from_auth(allowed_domains, blocked_domains)
+    {
+        Box::new(backend)
     } else {
         Box::new(UnavailableBackend)
     }
@@ -320,10 +643,10 @@ fn select_backend() -> Box<dyn WebSearchBackend> {
 
 /// Marker string the unavailable-backend stub drops into the results
 /// array. Tests and integrations grep for the `web_search_unavailable`
-/// prefix to detect the stub path; the trailing sentence names both
-/// env vars so humans see the remediation inline.
-const UNAVAILABLE_MARKER: &str = "web_search_unavailable - configure \
-    OTHERSIDE_GOOGLE_CSE_KEY + OTHERSIDE_GOOGLE_CSE_CX to enable";
+/// prefix to detect the stub path; the trailing clause names the
+/// missing requirement so humans see the remediation inline.
+const UNAVAILABLE_MARKER: &str =
+    "web_search_unavailable - requires anthropic-oauth credentials (run `otherside login`)";
 
 /// Dispatch the `WebSearch` tool. Input is JSON per
 /// [`TOOL_WEB_SEARCH_JSON`]; output is
@@ -358,39 +681,27 @@ pub fn web_search(args: &Value) -> Result<Value, ToolError> {
         ));
     }
 
-    let backend = select_backend();
+    // Snapshot auth presence BEFORE handing the filters to the backend —
+    // the Anthropic path consumes the domain vecs by move, and the
+    // post-call branch below still needs to know whether to stamp the
+    // unavailable marker.
+    let auth_present = crate::auth::anthropic::load_credentials()
+        .map(|c| c.is_some())
+        .unwrap_or(false);
+
+    let backend = select_backend(allowed, blocked);
     let started = Instant::now();
-    let raw_hits = backend.search(&query)?;
+    let entries = backend.search(&query)?;
     let duration_seconds = started.elapsed().as_secs_f64();
 
-    // Unavailable-backend path: surface the marker as a string entry
-    // so the results array matches upstream's `SearchResult | string`
-    // shape (`mapToolResultToToolResultBlockParam` treats string
-    // entries as text summaries).
-    let is_unavailable = GoogleCseBackend::from_env().is_none();
-    let results_json: Vec<Value> = if is_unavailable {
+    let results_json: Vec<Value> = if !auth_present {
+        // Unavailable-backend path: surface the marker as a string
+        // entry so the results array matches upstream's
+        // `SearchResult | string` shape (`mapToolResultToToolResultBlockParam`
+        // treats string entries as text summaries).
         vec![Value::String(UNAVAILABLE_MARKER.to_string())]
     } else {
-        let filtered = filter_by_domain(raw_hits, &allowed, &blocked);
-        // Wrap all hits from the single backend call into ONE
-        // `SearchResult` block — upstream emits one block per
-        // `server_tool_use` and our Google-CSE backend performs
-        // exactly one search per invocation, so the grouping is
-        // 1:1. Synthetic `tool_use_id` stays stable per call so
-        // callers that key off it (like `getSearchSummary`) still
-        // see a distinct block per dispatch.
-        if filtered.is_empty() {
-            // Empty hits + real backend → upstream would emit no
-            // `SearchResult` blocks. Leave `results: []` so the
-            // preview renders `Did 0 searches in Xs` honestly.
-            Vec::new()
-        } else {
-            let group = SearchResult {
-                tool_use_id: format!("search_{}", started.elapsed().as_nanos()),
-                content: filtered,
-            };
-            vec![group.to_json()]
-        }
+        entries.iter().map(ResultEntry::to_json).collect()
     };
 
     let mut out = json!({
@@ -421,7 +732,7 @@ pub fn web_search(args: &Value) -> Result<Value, ToolError> {
 /// mentions product names (R-103).
 pub const TOOL_WEB_SEARCH_JSON: &str = r#"{
   "name": "WebSearch",
-  "description": "Search the web and return result links. Returns up to 10 hits per call as {title, url, snippet} objects. Supports optional allowed_domains or blocked_domains filters (not both in the same call). Read-only — does not modify files. Requires OTHERSIDE_GOOGLE_CSE_KEY + OTHERSIDE_GOOGLE_CSE_CX environment variables to enable the Google Custom Search backend; without them the tool returns a structured unavailable stub so the model can still plan.",
+  "description": "Search the web and return result links. Returns hits as {title, url} objects grouped by server-side search call. Supports optional allowed_domains or blocked_domains filters (not both in the same call). Read-only — does not modify files. Delegates to Anthropic's server-side web_search_20250305 tool; requires anthropic-oauth credentials. When no credentials are configured the tool returns a structured unavailable stub so the model can still plan.",
   "input_schema": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
@@ -432,12 +743,12 @@ pub const TOOL_WEB_SEARCH_JSON: &str = r#"{
         "minLength": 2
       },
       "allowed_domains": {
-        "description": "Only include search results from these domains. Host-based match — passing a root domain covers every subdomain.",
+        "description": "Only include search results from these domains.",
         "type": "array",
         "items": { "type": "string" }
       },
       "blocked_domains": {
-        "description": "Never include search results from these domains. Host-based match.",
+        "description": "Never include search results from these domains.",
         "type": "array",
         "items": { "type": "string" }
       }
@@ -450,29 +761,6 @@ pub const TOOL_WEB_SEARCH_JSON: &str = r#"{
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Clear both Google CSE env vars for the duration of a test. Needed
-    /// because `cargo test` inherits the real env, and a developer with
-    /// valid CSE keys in their shell would otherwise trip the live path
-    /// during unit tests.
-    fn clear_cse_env() -> (Option<String>, Option<String>) {
-        let k = std::env::var(ENV_GOOGLE_CSE_KEY).ok();
-        let c = std::env::var(ENV_GOOGLE_CSE_CX).ok();
-        std::env::remove_var(ENV_GOOGLE_CSE_KEY);
-        std::env::remove_var(ENV_GOOGLE_CSE_CX);
-        (k, c)
-    }
-
-    fn restore_cse_env(saved: (Option<String>, Option<String>)) {
-        match saved.0 {
-            Some(v) => std::env::set_var(ENV_GOOGLE_CSE_KEY, v),
-            None => std::env::remove_var(ENV_GOOGLE_CSE_KEY),
-        }
-        match saved.1 {
-            Some(v) => std::env::set_var(ENV_GOOGLE_CSE_CX, v),
-            None => std::env::remove_var(ENV_GOOGLE_CSE_CX),
-        }
-    }
 
     #[test]
     fn schema_const_parses_as_json() {
@@ -492,10 +780,22 @@ mod tests {
     }
 
     #[test]
+    fn schema_description_mentions_anthropic_oauth_requirement() {
+        // The model relies on the description to decide whether
+        // calling WebSearch is even reasonable. Drift here would
+        // confuse it.
+        let v: Value = serde_json::from_str(TOOL_WEB_SEARCH_JSON).unwrap();
+        let desc = v["description"].as_str().unwrap();
+        assert!(desc.contains("anthropic-oauth"), "actual: {desc}");
+        assert!(
+            desc.contains("web_search_20250305"),
+            "schema description must name the server-tool so the model picks it correctly"
+        );
+    }
+
+    #[test]
     fn web_search_rejects_missing_query() {
-        let saved = clear_cse_env();
         let err = web_search(&json!({})).unwrap_err();
-        restore_cse_env(saved);
         match err {
             ToolError::InvalidArgs(msg) => assert!(msg.contains("query")),
             _ => panic!("expected InvalidArgs"),
@@ -504,9 +804,7 @@ mod tests {
 
     #[test]
     fn web_search_rejects_empty_query() {
-        let saved = clear_cse_env();
         let err = web_search(&json!({"query": "   "})).unwrap_err();
-        restore_cse_env(saved);
         // Upstream `validateInput` errorCode 1 message shape.
         match err {
             ToolError::InvalidArgs(msg) => {
@@ -519,9 +817,7 @@ mod tests {
     #[test]
     fn web_search_rejects_one_char_query() {
         // Upstream schema: `z.string().min(2)`.
-        let saved = clear_cse_env();
         let err = web_search(&json!({"query": "a"})).unwrap_err();
-        restore_cse_env(saved);
         match err {
             ToolError::InvalidArgs(msg) => {
                 assert!(msg.contains("2 characters"), "actual: {msg}");
@@ -532,14 +828,12 @@ mod tests {
 
     #[test]
     fn web_search_rejects_both_filter_lists() {
-        let saved = clear_cse_env();
         let err = web_search(&json!({
             "query": "rust async",
             "allowed_domains": ["example.com"],
             "blocked_domains": ["spam.tld"],
         }))
         .unwrap_err();
-        restore_cse_env(saved);
         match err {
             ToolError::InvalidArgs(msg) => {
                 assert!(msg.contains("both"));
@@ -552,13 +846,11 @@ mod tests {
 
     #[test]
     fn web_search_rejects_non_array_filter_list() {
-        let saved = clear_cse_env();
         let err = web_search(&json!({
             "query": "rust",
             "allowed_domains": "example.com",
         }))
         .unwrap_err();
-        restore_cse_env(saved);
         match err {
             ToolError::InvalidArgs(msg) => assert!(msg.contains("allowed_domains")),
             _ => panic!("expected InvalidArgs"),
@@ -567,179 +859,372 @@ mod tests {
 
     #[test]
     fn web_search_rejects_non_string_filter_entry() {
-        let saved = clear_cse_env();
         let err = web_search(&json!({
             "query": "rust",
             "blocked_domains": [42],
         }))
         .unwrap_err();
-        restore_cse_env(saved);
         match err {
             ToolError::InvalidArgs(msg) => assert!(msg.contains("blocked_domains")),
             _ => panic!("expected InvalidArgs"),
         }
     }
 
-    #[test]
-    fn unavailable_backend_stub_without_env() {
-        let saved = clear_cse_env();
-        let out = web_search(&json!({"query": "rust ownership"})).unwrap();
-        restore_cse_env(saved);
+    /// Redirect `config::config_dir()` at an empty temp dir for the
+    /// duration of one test so `auth::anthropic::load_credentials()`
+    /// returns `None` regardless of whether the developer is logged in
+    /// on their real machine. Env-var mutation — tests using this
+    /// helper serialize on [`ENV_MUTEX`] to avoid cross-test races.
+    fn with_empty_config_dir<F: FnOnce()>(body: F) {
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let saved = std::env::var_os("OTHERSIDE_CONFIG_DIR");
+        let tmp = std::env::temp_dir().join(format!(
+            "otherside-test-web-search-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).expect("mkdir temp config dir");
+        std::env::set_var("OTHERSIDE_CONFIG_DIR", &tmp);
 
-        assert_eq!(out["query"], "rust ownership");
-        let results = out["results"].as_array().unwrap();
-        assert_eq!(results.len(), 1);
-        let marker = results[0].as_str().unwrap();
-        assert!(marker.starts_with("web_search_unavailable"));
-        assert!(marker.contains("OTHERSIDE_GOOGLE_CSE_KEY"));
-        assert!(marker.contains("OTHERSIDE_GOOGLE_CSE_CX"));
-        assert!(out["durationSeconds"].is_number());
+        body();
+
+        match saved {
+            Some(v) => std::env::set_var("OTHERSIDE_CONFIG_DIR", v),
+            None => std::env::remove_var("OTHERSIDE_CONFIG_DIR"),
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    #[test]
-    fn unavailable_backend_when_only_key_set() {
-        // Partial env — still unavailable. Matches the `from_env()`
-        // invariant that BOTH vars are required.
-        let saved = clear_cse_env();
-        std::env::set_var(ENV_GOOGLE_CSE_KEY, "stub-key-only");
-        let out = web_search(&json!({"query": "rust ownership"})).unwrap();
-        std::env::remove_var(ENV_GOOGLE_CSE_KEY);
-        restore_cse_env(saved);
+    /// Serialize env-var mutation across tests in this module. Env
+    /// reads + mutations that touch `OTHERSIDE_CONFIG_DIR` race across
+    /// parallel test workers otherwise.
+    static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-        let results = out["results"].as_array().unwrap();
-        let marker = results[0].as_str().unwrap();
-        assert!(marker.starts_with("web_search_unavailable"));
+    #[test]
+    fn unavailable_backend_when_no_auth() {
+        with_empty_config_dir(|| {
+            let out = web_search(&json!({"query": "rust ownership"})).unwrap();
+            assert_eq!(out["query"], "rust ownership");
+            let results = out["results"].as_array().unwrap();
+            assert_eq!(results.len(), 1);
+            let marker = results[0].as_str().unwrap();
+            assert!(marker.starts_with("web_search_unavailable"));
+            assert!(marker.contains("anthropic-oauth"));
+            assert!(out["durationSeconds"].is_number());
+        });
     }
 
+    // -----------------------------------------------------------------
+    // Anthropic server-tool backend — config + parser
+    // -----------------------------------------------------------------
+
     #[test]
-    fn google_cse_build_url_includes_required_params() {
-        let backend = GoogleCseBackend {
-            key: "K".into(),
-            cx: "C".into(),
+    fn server_tool_config_has_required_fields() {
+        let backend = AnthropicServerToolBackend {
+            allowed_domains: vec![],
+            blocked_domains: vec![],
         };
-        let u = backend.build_url("rust ownership").unwrap();
-        let pairs: Vec<(String, String)> = u
-            .query_pairs()
-            .map(|(k, v)| (k.into_owned(), v.into_owned()))
-            .collect();
-        assert!(pairs.iter().any(|(k, v)| k == "key" && v == "K"));
-        assert!(pairs.iter().any(|(k, v)| k == "cx" && v == "C"));
-        assert!(pairs.iter().any(|(k, v)| k == "q" && v == "rust ownership"));
-        assert!(pairs.iter().any(|(k, _)| k == "num"));
-        assert_eq!(u.host_str(), Some("www.googleapis.com"));
-        assert_eq!(u.path(), "/customsearch/v1");
+        let cfg = backend.build_server_tool_config();
+        assert_eq!(cfg["type"], "web_search_20250305");
+        assert_eq!(cfg["name"], "web_search");
+        assert_eq!(cfg["max_uses"], 8);
+        // Empty domain lists must be OMITTED (not serialized as []) so
+        // the wire body stays minimal and byte-matches upstream when
+        // the caller didn't pass filters.
+        assert!(cfg.get("allowed_domains").is_none());
+        assert!(cfg.get("blocked_domains").is_none());
     }
 
     #[test]
-    fn parse_cse_items_maps_fields() {
-        let raw = json!({
-            "items": [
-                {"title": "A", "link": "https://a.example/x", "snippet": "aa"},
-                {"title": "B", "link": "https://b.example/y", "snippet": "bb"},
-            ]
-        });
-        let parsed: CseResponse = serde_json::from_value(raw).unwrap();
-        let hits = parse_cse_items(parsed);
-        assert_eq!(hits.len(), 2);
-        assert_eq!(hits[0].title, "A");
-        assert_eq!(hits[0].url, "https://a.example/x");
-        assert_eq!(hits[1].url, "https://b.example/y");
+    fn server_tool_config_includes_allowed_domains_when_set() {
+        let backend = AnthropicServerToolBackend {
+            allowed_domains: vec!["wikipedia.org".into(), "rust-lang.org".into()],
+            blocked_domains: vec![],
+        };
+        let cfg = backend.build_server_tool_config();
+        let allowed = cfg["allowed_domains"].as_array().unwrap();
+        assert_eq!(allowed.len(), 2);
+        assert_eq!(allowed[0], "wikipedia.org");
     }
 
     #[test]
-    fn parse_cse_items_tolerates_missing_fields() {
-        // Google occasionally omits optional fields on very-short
-        // results. Default to empty strings rather than erroring.
-        let raw = json!({"items": [{"title": "T"}]});
-        let parsed: CseResponse = serde_json::from_value(raw).unwrap();
-        let hits = parse_cse_items(parsed);
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].title, "T");
-        assert_eq!(hits[0].url, "");
+    fn server_tool_config_includes_blocked_domains_when_set() {
+        let backend = AnthropicServerToolBackend {
+            allowed_domains: vec![],
+            blocked_domains: vec!["spam.tld".into()],
+        };
+        let cfg = backend.build_server_tool_config();
+        let blocked = cfg["blocked_domains"].as_array().unwrap();
+        assert_eq!(blocked.len(), 1);
+        assert_eq!(blocked[0], "spam.tld");
     }
 
     #[test]
-    fn parse_cse_items_handles_empty_response() {
-        let raw = json!({});
-        let parsed: CseResponse = serde_json::from_value(raw).unwrap();
-        let hits = parse_cse_items(parsed);
-        assert!(hits.is_empty());
-    }
+    fn request_body_embeds_query_in_user_message() {
+        let backend = AnthropicServerToolBackend {
+            allowed_domains: vec![],
+            blocked_domains: vec![],
+        };
+        let body = backend.build_request_body("rust ownership");
+        let parsed: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(parsed["model"], "claude-opus-4-7");
+        // Upstream always streams the web_search turn — we match.
+        assert_eq!(parsed["stream"], true);
+        // Required envelope fields per the 2026-04-19 capture.
+        assert_eq!(parsed["max_tokens"], 64000);
+        assert_eq!(parsed["thinking"]["type"], "adaptive");
+        assert_eq!(parsed["output_config"]["effort"], "xhigh");
+        assert!(parsed["metadata"]["user_id"].is_string());
+        assert_eq!(parsed["system"].as_array().unwrap().len(), 3);
 
-    fn hits() -> Vec<SearchHit> {
-        vec![
-            SearchHit {
-                title: "Wiki".into(),
-                url: "https://en.wikipedia.org/wiki/Rust".into(),
-            },
-            SearchHit {
-                title: "FB".into(),
-                url: "https://facebook.com/page".into(),
-            },
-            SearchHit {
-                title: "Gh".into(),
-                url: "https://github.com/rust-lang/rust".into(),
-            },
-        ]
+        let user_text = parsed["messages"][0]["content"][0]["text"]
+            .as_str()
+            .unwrap();
+        assert!(
+            user_text.contains("rust ownership"),
+            "user message must carry the query: {user_text}"
+        );
+        // Upstream prompt wording — keep byte-compatible so server-side
+        // routing behaves identically.
+        assert!(user_text.starts_with("Perform a web search for the query:"));
+
+        let tools = parsed["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["type"], "web_search_20250305");
     }
 
     #[test]
-    fn filter_allowed_keeps_only_matching() {
-        let out = filter_by_domain(hits(), &["wikipedia.org".into()], &[]);
+    fn parse_blocks_handles_empty_content() {
+        let out = parse_server_tool_blocks(&[]);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn parse_blocks_single_text_block_becomes_text_entry() {
+        let blocks = vec![json!({"type": "text", "text": "Here is the answer"})];
+        let out = parse_server_tool_blocks(&blocks);
         assert_eq!(out.len(), 1);
-        assert!(out[0].url.contains("wikipedia.org"));
+        match &out[0] {
+            ResultEntry::Text(s) => assert_eq!(s, "Here is the answer"),
+            _ => panic!("expected Text entry"),
+        }
     }
 
     #[test]
-    fn filter_blocked_drops_matching() {
-        let out = filter_by_domain(hits(), &[], &["facebook.com".into()]);
-        assert_eq!(out.len(), 2);
-        assert!(!out.iter().any(|r| r.url.contains("facebook.com")));
+    fn parse_blocks_trims_whitespace_on_text_entries() {
+        // Upstream's parser trims before pushing.
+        let blocks = vec![json!({"type": "text", "text": "   padded   "})];
+        let out = parse_server_tool_blocks(&blocks);
+        match &out[0] {
+            ResultEntry::Text(s) => assert_eq!(s, "padded"),
+            _ => panic!("expected Text"),
+        }
     }
 
     #[test]
-    fn filter_is_noop_when_both_lists_empty() {
-        let out = filter_by_domain(hits(), &[], &[]);
+    fn parse_blocks_drops_empty_text_before_server_tool_use() {
+        // Leading whitespace-only text before the tool use must NOT
+        // land as a results entry.
+        let blocks = vec![
+            json!({"type": "text", "text": "   "}),
+            json!({"type": "server_tool_use", "id": "stu_1", "name": "web_search"}),
+            json!({
+                "type": "web_search_tool_result",
+                "tool_use_id": "stu_1",
+                "content": [{"title": "T", "url": "https://t.example/"}],
+            }),
+        ];
+        let out = parse_server_tool_blocks(&blocks);
+        assert_eq!(out.len(), 1);
+        match &out[0] {
+            ResultEntry::Result(r) => {
+                assert_eq!(r.tool_use_id, "stu_1");
+                assert_eq!(r.content.len(), 1);
+                assert_eq!(r.content[0].title, "T");
+            }
+            _ => panic!("expected Result"),
+        }
+    }
+
+    #[test]
+    fn parse_blocks_full_upstream_sequence() {
+        // Models emit: preamble text → server_tool_use → result →
+        // closing text. Expect 3 entries: preamble string, result,
+        // closing string.
+        let blocks = vec![
+            json!({"type": "text", "text": "Searching now."}),
+            json!({"type": "server_tool_use", "id": "stu_1", "name": "web_search",
+                   "input": {"query": "rust"}}),
+            json!({
+                "type": "web_search_tool_result",
+                "tool_use_id": "stu_1",
+                "content": [
+                    {"title": "Rust", "url": "https://rust-lang.org/"},
+                    {"title": "Docs", "url": "https://doc.rust-lang.org/"},
+                ],
+            }),
+            json!({"type": "text", "text": "Rust is a language."}),
+        ];
+        let out = parse_server_tool_blocks(&blocks);
         assert_eq!(out.len(), 3);
+
+        match &out[0] {
+            ResultEntry::Text(s) => assert_eq!(s, "Searching now."),
+            _ => panic!("expected preamble text"),
+        }
+        match &out[1] {
+            ResultEntry::Result(r) => {
+                assert_eq!(r.tool_use_id, "stu_1");
+                assert_eq!(r.content.len(), 2);
+                assert_eq!(r.content[0].url, "https://rust-lang.org/");
+            }
+            _ => panic!("expected SearchResult"),
+        }
+        match &out[2] {
+            ResultEntry::Text(s) => assert_eq!(s, "Rust is a language."),
+            _ => panic!("expected closing text"),
+        }
     }
 
     #[test]
-    fn filter_allowed_matches_subdomain() {
-        // `wikipedia.org` on allow-list should keep `en.wikipedia.org`.
-        let out = filter_by_domain(hits(), &["wikipedia.org".into()], &[]);
+    fn parse_blocks_multiple_searches_in_one_turn() {
+        // Model can issue several searches per turn; each pair lands
+        // as its own Result entry.
+        let blocks = vec![
+            json!({"type": "server_tool_use", "id": "stu_1", "name": "web_search"}),
+            json!({
+                "type": "web_search_tool_result",
+                "tool_use_id": "stu_1",
+                "content": [{"title": "A", "url": "https://a/"}],
+            }),
+            json!({"type": "server_tool_use", "id": "stu_2", "name": "web_search"}),
+            json!({
+                "type": "web_search_tool_result",
+                "tool_use_id": "stu_2",
+                "content": [{"title": "B", "url": "https://b/"}],
+            }),
+        ];
+        let out = parse_server_tool_blocks(&blocks);
+        assert_eq!(out.len(), 2);
+        for (i, entry) in out.iter().enumerate() {
+            match entry {
+                ResultEntry::Result(r) => {
+                    assert_eq!(r.tool_use_id, format!("stu_{}", i + 1));
+                }
+                _ => panic!("expected Result"),
+            }
+        }
+    }
+
+    #[test]
+    fn parse_blocks_surfaces_error_envelope_as_text_entry() {
+        // Upstream: non-array content on web_search_tool_result carries
+        // an `{error_code}` object; surface as "Web search error: <code>".
+        let blocks = vec![
+            json!({"type": "server_tool_use", "id": "stu_1", "name": "web_search"}),
+            json!({
+                "type": "web_search_tool_result",
+                "tool_use_id": "stu_1",
+                "content": {"error_code": "rate_limited"},
+            }),
+        ];
+        let out = parse_server_tool_blocks(&blocks);
         assert_eq!(out.len(), 1);
+        match &out[0] {
+            ResultEntry::Text(s) => assert_eq!(s, "Web search error: rate_limited"),
+            _ => panic!("expected Text entry for error"),
+        }
     }
 
     #[test]
-    fn filter_drops_malformed_url() {
-        let mut h = hits();
-        h.push(SearchHit {
-            title: "bad".into(),
-            url: "not-a-url".into(),
-        });
-        let out = filter_by_domain(h, &[], &[]);
-        // Malformed URL conservatively dropped even with empty lists.
-        assert!(!out.iter().any(|r| r.url == "not-a-url"));
+    fn parse_blocks_accumulates_text_deltas_in_preamble() {
+        // Several text blocks before the tool use should merge into a
+        // single preamble entry (stream delivers text in chunks).
+        let blocks = vec![
+            json!({"type": "text", "text": "Hello "}),
+            json!({"type": "text", "text": "there."}),
+            json!({"type": "server_tool_use", "id": "stu_1", "name": "web_search"}),
+            json!({
+                "type": "web_search_tool_result",
+                "tool_use_id": "stu_1",
+                "content": [{"title": "T", "url": "https://t/"}],
+            }),
+        ];
+        let out = parse_server_tool_blocks(&blocks);
+        assert_eq!(out.len(), 2);
+        match &out[0] {
+            ResultEntry::Text(s) => assert_eq!(s, "Hello there."),
+            _ => panic!("expected accumulated preamble"),
+        }
     }
 
     #[test]
-    fn matches_host_exact_and_subdomain() {
-        assert!(matches_host("example.com", "example.com"));
-        assert!(matches_host("en.example.com", "example.com"));
-        assert!(matches_host("deep.sub.example.com", "example.com"));
-        assert!(!matches_host("example.com", "en.example.com"));
-        assert!(!matches_host("evilexample.com", "example.com"));
+    fn parse_blocks_ignores_unknown_types() {
+        // Citation / thinking / tool_use blocks etc. must not crash.
+        let blocks = vec![
+            json!({"type": "thinking", "thinking": "internal"}),
+            json!({"type": "citation", "text": "cite"}),
+            json!({"type": "server_tool_use", "id": "stu_1", "name": "web_search"}),
+            json!({
+                "type": "web_search_tool_result",
+                "tool_use_id": "stu_1",
+                "content": [{"title": "T", "url": "https://t/"}],
+            }),
+        ];
+        let out = parse_server_tool_blocks(&blocks);
+        assert_eq!(out.len(), 1);
+        matches!(out[0], ResultEntry::Result(_));
     }
 
     #[test]
-    fn select_backend_returns_unavailable_without_env() {
-        let saved = clear_cse_env();
-        let _backend = select_backend();
-        // Can't downcast a trait object, but we can assert the
-        // externally-visible behavior: unavailable marker shows up.
-        let out = web_search(&json!({"query": "smoke"})).unwrap();
-        restore_cse_env(saved);
-        let marker = out["results"][0].as_str().unwrap();
-        assert!(marker.starts_with("web_search_unavailable"));
+    fn parse_blocks_tolerates_missing_hit_fields() {
+        // Anthropic might omit `url` on a degraded result. Default to
+        // empty strings rather than crashing.
+        let blocks = vec![
+            json!({"type": "server_tool_use", "id": "stu_1", "name": "web_search"}),
+            json!({
+                "type": "web_search_tool_result",
+                "tool_use_id": "stu_1",
+                "content": [{"title": "Only title"}],
+            }),
+        ];
+        let out = parse_server_tool_blocks(&blocks);
+        match &out[0] {
+            ResultEntry::Result(r) => {
+                assert_eq!(r.content[0].title, "Only title");
+                assert_eq!(r.content[0].url, "");
+            }
+            _ => panic!("expected Result"),
+        }
+    }
+
+    #[test]
+    fn search_hit_to_json_drops_everything_but_title_and_url() {
+        // Regression guard: upstream's `SearchHit` wire shape is strictly
+        // `{title, url}`. If someone adds a field we want to notice.
+        let hit = SearchHit {
+            title: "T".into(),
+            url: "https://t/".into(),
+        };
+        let v = hit.to_json();
+        let obj = v.as_object().unwrap();
+        assert_eq!(obj.len(), 2);
+        assert!(obj.contains_key("title"));
+        assert!(obj.contains_key("url"));
+    }
+
+    #[test]
+    fn search_result_to_json_carries_tool_use_id() {
+        let r = SearchResult {
+            tool_use_id: "stu_42".into(),
+            content: vec![SearchHit {
+                title: "T".into(),
+                url: "https://t/".into(),
+            }],
+        };
+        let v = r.to_json();
+        assert_eq!(v["tool_use_id"], "stu_42");
+        let content = v["content"].as_array().unwrap();
+        assert_eq!(content.len(), 1);
     }
 }

@@ -102,33 +102,49 @@ pub fn spinner_frame(tick: u64) -> char {
 const SPINNER_FRAME_RATIO: usize = 3;
 
 /// Format the progress line text (no styling) given live state + the
-/// turn-scoped verb and optional thinking-effort label. Upstream shape:
-///
-/// ```text
-/// ✽ Concocting… (12m 40s · ↑ 8.9k tokens · thinking with xhigh effort)
-/// ```
+/// turn-scoped verb and optional thinking-effort label. Upstream
+/// shape: `⏺ Whirlpooling… (22m 58s · ↑ 32.4k tokens · thought for 2s)`.
+/// otherside adds a `↓ tokens` segment so users see output token
+/// pressure too — the up-arrow tells them how much context they're
+/// spending, the down-arrow tells them what's coming back.
 pub fn format_progress_text(
     tick: u64,
     verb: &str,
     elapsed: Duration,
     tokens_up: u64,
-    _thought_ms: u64,
+    tokens_down: u64,
+    thought_ms: u64,
     effort_label: Option<&str>,
 ) -> String {
     let frame = spinner_frame(tick);
     let elapsed_str = format_elapsed(elapsed);
-    let tokens_part = if tokens_up > 0 {
+    let up_part = if tokens_up > 0 {
         format!(" · ↑ {} tokens", format_tokens_compact(tokens_up))
+    } else {
+        String::new()
+    };
+    let down_part = if tokens_down > 0 {
+        format!(" · ↓ {} tokens", format_tokens_compact(tokens_down))
+    } else {
+        String::new()
+    };
+    let thought_part = if thought_ms > 0 {
+        // Upstream's `thought for Xs` — seconds rounded. Matches
+        // `components/AssistantThinkingBlock.tsx` chip copy.
+        let secs = (thought_ms + 500) / 1000;
+        format!(" · thought for {secs}s")
     } else {
         String::new()
     };
     let effort_part = match effort_label {
         Some(label) if !label.is_empty() && label != "none" => {
-            format!(" · thinking with {label} effort")
+            format!(" · {label} effort")
         }
         _ => String::new(),
     };
-    format!("{frame} {verb}… ({elapsed_str}{tokens_part}{effort_part})")
+    format!(
+        "{frame} {verb}… ({elapsed_str}{up_part}{down_part}{thought_part}{effort_part})"
+    )
 }
 
 /// Upstream-style elapsed format: `Ns` under a minute, `Nm Ns`
@@ -167,19 +183,31 @@ pub fn draw(
     verb: &str,
     elapsed: Duration,
     tokens_up: u64,
-    _thought_ms: u64,
+    tokens_down: u64,
+    thought_ms: u64,
     effort_label: Option<&str>,
 ) {
     let frame = spinner_frame(tick);
     let elapsed_str = format_elapsed(elapsed);
-    let tokens_part = if tokens_up > 0 {
+    let up_part = if tokens_up > 0 {
         format!(" · ↑ {} tokens", format_tokens_compact(tokens_up))
+    } else {
+        String::new()
+    };
+    let down_part = if tokens_down > 0 {
+        format!(" · ↓ {} tokens", format_tokens_compact(tokens_down))
+    } else {
+        String::new()
+    };
+    let thought_part = if thought_ms > 0 {
+        let secs = (thought_ms + 500) / 1000;
+        format!(" · thought for {secs}s")
     } else {
         String::new()
     };
     let effort_part = match effort_label {
         Some(label) if !label.is_empty() && label != "none" => {
-            format!(" · thinking with {label} effort")
+            format!(" · {label} effort")
         }
         _ => String::new(),
     };
@@ -194,7 +222,7 @@ pub fn draw(
             Style::default().fg(theme::PRIMARY),
         ),
         Span::styled(
-            format!("({elapsed_str}{tokens_part}{effort_part})"),
+            format!("({elapsed_str}{up_part}{down_part}{thought_part}{effort_part})"),
             Style::default().fg(theme::MUTED),
         ),
     ]);
@@ -269,26 +297,29 @@ mod tests {
             "Concocting",
             Duration::from_secs(760), // 12m 40s
             8_873,                    // renders as 8.9k
+            2_450,                    // ↓ 2.5k tokens
             0,
             Some("xhigh"),
         );
         assert!(text.contains("12m 40s"), "elapsed: {text}");
         assert!(text.contains("↑ 8.9k tokens"), "tokens: {text}");
+        assert!(text.contains("↓ 2.5k tokens"), "tokens_down: {text}");
         assert!(text.contains("Concocting"));
-        assert!(text.contains("thinking with xhigh effort"));
+        assert!(text.contains("xhigh effort"));
     }
 
     #[test]
     fn format_progress_omits_tokens_when_zero() {
-        let text = format_progress_text(0, "Cogitating", Duration::from_secs(3), 0, 0, None);
+        let text = format_progress_text(0, "Cogitating", Duration::from_secs(3), 0, 0, 0, None);
         assert!(text.contains("3s"));
         assert!(!text.contains("↑"));
-        assert!(!text.contains("thinking with"));
+        assert!(!text.contains("↓"));
+        assert!(!text.contains("effort"));
     }
 
     #[test]
     fn format_progress_uses_supplied_verb() {
-        let text = format_progress_text(0, "Unwinding", Duration::from_secs(1), 0, 0, None);
+        let text = format_progress_text(0, "Unwinding", Duration::from_secs(1), 0, 0, 0, None);
         assert!(text.contains("Unwinding"));
     }
 
@@ -300,9 +331,24 @@ mod tests {
             Duration::from_secs(1),
             0,
             0,
+            0,
             Some("none"),
         );
-        assert!(!text.contains("thinking with"));
+        assert!(!text.contains("effort"));
+    }
+
+    #[test]
+    fn format_progress_shows_thought_time() {
+        let text = format_progress_text(
+            0,
+            "Cogitating",
+            Duration::from_secs(5),
+            100,
+            0,
+            2_400, // 2.4s → rounds to 2s
+            None,
+        );
+        assert!(text.contains("thought for 2s"), "rendered: {text}");
     }
 
     #[test]

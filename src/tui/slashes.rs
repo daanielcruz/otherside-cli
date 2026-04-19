@@ -55,6 +55,10 @@ pub enum SlashAction {
     Rewind,
     /// `/keybindings` — inline text listing active bindings.
     ShowKeybindings,
+    /// `/verbose` — toggle render-verbosity on tool-use messages.
+    /// Independent from the CLI `--verbose` logging flag; mirrors
+    /// upstream's `verbose` render-mode toggled by the same slash.
+    ToggleVerbose,
     /// Overlay menu is pending — 012a fallback. The event loop renders
     /// a muted inline note identifying the slash by name. 012b replaces
     /// this variant with real `ActiveMenu` state + modal key handler.
@@ -334,6 +338,7 @@ mod tests {
             ("permissions", A::MenuPending(MenuKind::Permissions)),
             ("hooks", A::MenuPending(MenuKind::Hooks)),
             ("keybindings", A::ShowKeybindings),
+            ("verbose", A::ToggleVerbose),
             ("sandbox", A::MenuPending(MenuKind::Sandbox)),
             ("statusline", A::SendToLlm("/statusline".into())),
             ("diff", A::MenuPending(MenuKind::Diff)),

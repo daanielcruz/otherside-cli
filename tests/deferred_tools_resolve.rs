@@ -252,33 +252,34 @@ fn web_search_dispatch_rejects_missing_query() {
 
 #[test]
 fn web_search_returns_unavailable_stub_by_default() {
-    // Without OTHERSIDE_GOOGLE_CSE_KEY + _CX set, the dispatcher should
-    // return a structured stub. We can't fully control env from an
-    // integration test (cargo test inherits process env), so only assert
-    // shape invariants that hold in both paths: results is an array,
-    // durationSeconds is a number, query echoes.
-    //
-    // Save-and-clear the env for the duration of the call so the test is
-    // deterministic even on developer machines with real keys exported.
-    let saved_k = std::env::var("OTHERSIDE_GOOGLE_CSE_KEY").ok();
-    let saved_c = std::env::var("OTHERSIDE_GOOGLE_CSE_CX").ok();
-    std::env::remove_var("OTHERSIDE_GOOGLE_CSE_KEY");
-    std::env::remove_var("OTHERSIDE_GOOGLE_CSE_CX");
+    // Without cached anthropic-oauth credentials, the dispatcher should
+    // return a structured stub. We point `OTHERSIDE_CONFIG_DIR` at an
+    // empty temp path so `auth::anthropic::load_credentials()` returns
+    // `None` regardless of whether the developer is logged in on their
+    // real machine.
+    let saved = std::env::var_os("OTHERSIDE_CONFIG_DIR");
+    let tmp = std::env::temp_dir().join(format!(
+        "otherside-itest-web-search-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).expect("mkdir temp config dir");
+    std::env::set_var("OTHERSIDE_CONFIG_DIR", &tmp);
 
     let out = tools::dispatch("WebSearch", &json!({"query": "rust async"})).unwrap();
 
-    // Restore before any assertion so a failure doesn't leak cleared env.
-    if let Some(v) = saved_k {
-        std::env::set_var("OTHERSIDE_GOOGLE_CSE_KEY", v);
+    // Restore before any assertion so a failure doesn't leak the override.
+    match saved {
+        Some(v) => std::env::set_var("OTHERSIDE_CONFIG_DIR", v),
+        None => std::env::remove_var("OTHERSIDE_CONFIG_DIR"),
     }
-    if let Some(v) = saved_c {
-        std::env::set_var("OTHERSIDE_GOOGLE_CSE_CX", v);
-    }
+    let _ = std::fs::remove_dir_all(&tmp);
 
     assert_eq!(out["query"], "rust async");
     let results = out["results"].as_array().unwrap();
     assert_eq!(results.len(), 1);
     let marker = results[0].as_str().unwrap();
     assert!(marker.starts_with("web_search_unavailable"));
+    assert!(marker.contains("anthropic-oauth"));
     assert!(out["durationSeconds"].is_number());
 }

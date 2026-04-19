@@ -198,6 +198,11 @@ async fn event_loop(
 ) -> Result<()> {
     let mut st =
         ConversationState::new_for_model_with_mode(&base_model, initial_permission_mode);
+    // Seed the render-verbose flag from settings.json so the user's
+    // persistent preference survives across sessions. `/verbose`
+    // toggles the flag in memory; settings-file writeback is
+    // scheduled for spec 007.
+    st.render_verbose = settings.verbose.unwrap_or(false);
     st.settings = settings;
     // Thread the session's thinking level into the progress-line
     // `thinking with <level> effort` chip. None when no thinking
@@ -529,6 +534,13 @@ fn handle_key(
                             "keybindings: Enter submit · Shift+Enter newline · Tab autocomplete · Shift+Tab mode · Esc cancel · Ctrl+C exit".to_string(),
                         );
                     }
+                    slashes::SlashAction::ToggleVerbose => {
+                        let now_on = st.toggle_render_verbose();
+                        st.push_system_note(format!(
+                            "verbose render: {}",
+                            if now_on { "on" } else { "off" }
+                        ));
+                    }
                     // Retired dispatch arms (015) — no-op. Post-012a
                     // classify() never returns these for user input;
                     // they survive as enum variants so 012c's menu
@@ -699,6 +711,13 @@ fn drain_queue_head_if_any(
             st.push_system_note(
                 "keybindings: Enter submit · Shift+Enter newline · Tab autocomplete · Shift+Tab mode · Esc cancel · Ctrl+C exit".to_string(),
             );
+        }
+        slashes::SlashAction::ToggleVerbose => {
+            let now_on = st.toggle_render_verbose();
+            st.push_system_note(format!(
+                "verbose render: {}",
+                if now_on { "on" } else { "off" }
+            ));
         }
         slashes::SlashAction::ShowModel
         | slashes::SlashAction::SwitchModel(_)

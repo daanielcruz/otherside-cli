@@ -58,8 +58,14 @@ pub mod theme {
 
     // ----- upstream palette (mirrored for parity) -----
 
-    /// White — body text.
-    pub const TEXT: Color = Color::Rgb(255, 255, 255);
+    /// Body text — terminal-palette white. Upstream uses
+    /// `ansi:whiteBright` (`utils/theme.ts:291`) which resolves to the
+    /// user's terminal theme off-white, NOT pure `rgb(255,255,255)`.
+    /// Using ratatui `Color::White` maps onto ANSI 37 so terminals
+    /// render it at whatever softness the user's color scheme
+    /// specifies (typically ~`#CDCDCD` on dark themes), matching the
+    /// softer feel upstream has.
+    pub const TEXT: Color = Color::White;
 
     /// Light gray — ambient helper text (tip line, shortcut hints,
     /// context chips when under threshold).
@@ -170,6 +176,7 @@ pub fn render(
             verb,
             Duration::from_millis(state.elapsed_ms()),
             state.input_tokens,
+            state.output_tokens,
             state.thought_ms,
             state.effort_label,
         );
@@ -260,6 +267,7 @@ fn draw_log(f: &mut Frame<'_>, area: Rect, state: &ConversationState, spinner_ti
                     None
                 },
                 payload: entry.payload.as_ref(),
+                verbose: state.render_verbose,
             };
             lines.extend(super::tool_render::render_tool_call(&view));
         }

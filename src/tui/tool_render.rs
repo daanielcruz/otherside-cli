@@ -114,6 +114,10 @@ impl ToolCallArchive {
             status: self.status,
             elapsed_ms: Some(self.elapsed_ms),
             payload: self.payload.as_ref(),
+            // Archived tool calls render with the compact
+            // (non-verbose) layout — we don't preserve per-entry
+            // verbose state across transcript serialization.
+            verbose: false,
         }
     }
 }
@@ -125,6 +129,12 @@ pub struct ToolCallView<'a> {
     pub status: ToolStatus,
     pub elapsed_ms: Option<u64>,
     pub payload: Option<&'a ToolPayload>,
+    /// Mirror the `verbose` render flag from upstream's `UI.tsx`
+    /// entry points. When `true`, per-tool branches expand headers
+    /// and previews (Glob/Grep file listings inline, Read `lines a-b`
+    /// qualifier, WebFetch appended body, Bash full output). Default
+    /// `false` keeps the compact render.
+    pub verbose: bool,
 }
 
 /// Render a single tool call into owned Lines ready to splice into
@@ -139,7 +149,7 @@ pub fn render_tool_call(view: &ToolCallView<'_>) -> Vec<Line<'static>> {
     let mut out: Vec<Line<'static>> = Vec::new();
 
     // Header row: `⏺ ToolName(arg_summary)`.
-    let arg_summary = summarize_args(view.name, view.args);
+    let arg_summary = summarize_args(view.name, view.args, view.verbose);
     let parens = if arg_summary.is_empty() {
         String::new()
     } else {
@@ -228,7 +238,7 @@ pub fn render_tool_call(view: &ToolCallView<'_>) -> Vec<Line<'static>> {
 ///
 /// Clips long strings, flattens newlines. Empty / non-object → empty
 /// string.
-pub fn summarize_args(name: &str, args: &Value) -> String {
+pub fn summarize_args(name: &str, args: &Value, verbose: bool) -> String {
     let obj = match args.as_object() {
         Some(o) => o,
         None => return String::new(),
@@ -236,6 +246,11 @@ pub fn summarize_args(name: &str, args: &Value) -> String {
     if obj.is_empty() {
         return String::new();
     }
+    // `verbose` currently feeds a handful of per-tool branches
+    // (WebSearch domain annotations, Read line range, Grep/Glob
+    // expansion). Suppressing the unused-var lint until every branch
+    // consumes it — documented as future-growth surface.
+    let _ = verbose;
 
     // Tools whose upstream `renderToolUseMessage` returns `null` —
     // the header shows just `⏺ <Name>`, no args. Mirror the hide so
@@ -383,7 +398,13 @@ fn clip_flat(s: &str, max: usize) -> String {
 /// lifted from the first obvious field (stdout, content, first-array
 /// entry) so the reader sees proof of execution without needing to
 /// scroll.
-pub fn payload_from_result(name: &str, result: &Value) -> Option<ToolPayload> {
+pub fn payload_from_result(name: &str, result: &Value, verbose: bool) -> Option<ToolPayload> {
+    let _ = verbose; // reserved for per-tool verbose branches (Glob
+                     // file listings, Read line range, WebFetch
+                     // body append). Currently only a subset of
+                     // branches consume it; keep the param on the
+                     // surface so every caller threads it and future
+                     // expansions don't need a signature change.
     match name {
         "TodoWrite" => todos_payload(result),
         "Edit" => diff_payload(result).or_else(|| edit_preview(result)),
@@ -555,17 +576,40 @@ fn edit_preview(result: &Value) -> Option<ToolPayload> {
 fn write_preview(result: &Value) -> Option<ToolPayload> {
     let obj = result.as_object()?;
     let fp = obj.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
+    // Upstream counts LINES written, not bytes. See
+    // `tools/FileWriteTool/UI.tsx::FileWriteToolCreatedMessage`.
+    // Prefer an explicit `numLines` field when the dispatcher
+    // provides it; otherwise derive from `content`. Fall back to
+    // `bytes_written` only as a last resort so the preview still
+    // renders something meaningful for legacy payloads.
+    let lines = obj
+        .get("numLines")
+        .or_else(|| obj.get("lines"))
+        .and_then(|v| v.as_u64())
+        .or_else(|| {
+            obj.get("content")
+                .and_then(|v| v.as_str())
+                .map(|s| s.lines().count() as u64)
+        });
     let bytes = obj.get("bytes_written").and_then(|v| v.as_u64());
     let created = obj.get("created").and_then(|v| v.as_bool()).unwrap_or(false);
     let verb = if created { "Created" } else { "Wrote" };
-    let text = match bytes {
-        Some(n) if !fp.is_empty() => format!(
+    let text = match (lines, bytes, fp.is_empty()) {
+        (Some(n), _, false) => format!(
+            "{verb} {n} line{} to {fp}",
+            if n == 1 { "" } else { "s" }
+        ),
+        (Some(n), _, true) => format!(
+            "{verb} {n} line{}",
+            if n == 1 { "" } else { "s" }
+        ),
+        (None, Some(n), false) => format!(
             "{verb} {n} byte{} to {fp}",
             if n == 1 { "" } else { "s" }
         ),
-        Some(n) => format!("{verb} {n} bytes"),
-        None if !fp.is_empty() => format!("{verb} {fp}"),
-        None => return None,
+        (None, Some(n), true) => format!("{verb} {n} bytes"),
+        (None, None, false) => format!("{verb} {fp}"),
+        (None, None, true) => return None,
     };
     Some(ToolPayload::Preview(text))
 }
@@ -608,12 +652,34 @@ fn grep_preview(result: &Value) -> Option<ToolPayload> {
         .unwrap_or("files_with_matches");
     let head = match mode {
         "content" => format!("Found {n} {}", if n == 1 { "line" } else { "lines" }),
-        "count" => format!("Found {n} {}", if n == 1 { "match" } else { "matches" }),
+        "count" => {
+            // Count mode: matches[] entries are `path:count` strings. Sum
+            // totals and count distinct files to emit upstream's
+            // `Found <total> match(es) across <files> file(s)` shape.
+            let (total, file_count) = matches
+                .iter()
+                .filter_map(|v| v.as_str())
+                .fold((0u64, 0u64), |(tot, files), s| {
+                    let c = s
+                        .rsplit_once(':')
+                        .and_then(|(_, cnt)| cnt.trim().parse::<u64>().ok())
+                        .unwrap_or(0);
+                    (tot + c, files + 1)
+                });
+            format!(
+                "Found {total} {} across {file_count} {}",
+                if total == 1 { "match" } else { "matches" },
+                if file_count == 1 { "file" } else { "files" },
+            )
+        }
         _ => format!("Found {n} {}", if n == 1 { "match" } else { "matches" }),
     };
     if matches.is_empty() {
         return Some(ToolPayload::Preview(head));
     }
+    // Upstream hides the body list in non-verbose mode; we still
+    // show the first 10 for scanability. For count mode the body is
+    // the `path:count` rows so the user sees the distribution.
     let list: Vec<String> = matches
         .iter()
         .filter_map(|v| v.as_str().map(|s| s.to_string()))
@@ -823,24 +889,26 @@ fn agent_preview(result: &Value) -> Option<ToolPayload> {
         .get("status")
         .and_then(|v| v.as_str())
         .unwrap_or("unknown");
-    // Real completion (future wiring): render the upstream-shape summary.
+    // Completion path — upstream-shape summary:
+    //   `Done (<N> tool uses · <formatNumber(tokens)> tokens · <formatDuration(ms)>)`
+    // with thousands separators on tokens and `Xm Ys` / `Xs` on
+    // duration per `tools/AgentTool/UI.tsx`.
     if status == "completed" {
         let tool_uses = obj
             .get("totalToolUseCount")
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
         let tokens = obj.get("totalTokens").and_then(|v| v.as_u64()).unwrap_or(0);
-        let duration = obj
+        let duration_ms = obj
             .get("totalDurationMs")
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
-        let dur_s = duration / 1000;
         return Some(ToolPayload::Preview(format!(
-            "Done ({} tool use{} · {} tokens · {}s)",
+            "Done ({} tool use{} · {} tokens · {})",
             tool_uses,
             if tool_uses == 1 { "" } else { "s" },
-            tokens,
-            dur_s
+            format_number_thousands(tokens),
+            format_duration_ms(duration_ms),
         )));
     }
     // Stubbed path — show the reason string so callers understand the
@@ -850,6 +918,42 @@ fn agent_preview(result: &Value) -> Option<ToolPayload> {
         .and_then(|v| v.as_str())
         .unwrap_or("agent dispatch returned no result");
     Some(ToolPayload::Preview(one_line_preview(reason, 240)))
+}
+
+/// Render an integer with comma thousands separators — matches
+/// upstream's `formatNumber` at `utils/format.ts`. Not locale-aware
+/// on purpose: upstream hard-codes `,` too.
+fn format_number_thousands(n: u64) -> String {
+    let raw = n.to_string();
+    let bytes = raw.as_bytes();
+    let mut out = String::with_capacity(raw.len() + raw.len() / 3);
+    let mut count = 0;
+    for b in bytes.iter().rev() {
+        if count > 0 && count % 3 == 0 {
+            out.push(',');
+        }
+        out.push(*b as char);
+        count += 1;
+    }
+    out.chars().rev().collect()
+}
+
+/// Render an elapsed millisecond count as `Xs` (<60s) or `Xm Ys`
+/// (>=60s). Matches upstream's `formatDuration` shape used by Agent
+/// + other tool previews — seconds only, no fractional component.
+fn format_duration_ms(ms: u64) -> String {
+    let total_s = ms / 1000;
+    if total_s < 60 {
+        format!("{total_s}s")
+    } else {
+        let m = total_s / 60;
+        let s = total_s % 60;
+        if s == 0 {
+            format!("{m}m")
+        } else {
+            format!("{m}m {s}s")
+        }
+    }
 }
 
 fn preview_payload(result: &Value) -> Option<ToolPayload> {
@@ -977,6 +1081,7 @@ mod tests {
             status: ToolStatus::Ok,
             elapsed_ms: Some(1500),
             payload: None,
+                    verbose: false,
         };
         let lines = render_tool_call(&view);
         let text = collect_text(&lines);
@@ -999,6 +1104,7 @@ mod tests {
             status: ToolStatus::Ok,
             elapsed_ms: None,
             payload: Some(&preview),
+                    verbose: false,
         };
         let lines = render_tool_call(&view);
         let text = collect_text(&lines);
@@ -1029,6 +1135,7 @@ mod tests {
             status: ToolStatus::Ok,
             elapsed_ms: Some(12),
             payload: Some(&payload),
+                    verbose: false,
         };
         let lines = render_tool_call(&view);
         let text = collect_text(&lines);
@@ -1048,6 +1155,7 @@ mod tests {
             status: ToolStatus::Ok,
             elapsed_ms: Some(4),
             payload: Some(&payload),
+                    verbose: false,
         };
         let lines = render_tool_call(&view);
         let text = collect_text(&lines);
@@ -1064,7 +1172,7 @@ mod tests {
                 {"content": "second", "status": "completed"},
             ]
         });
-        let payload = payload_from_result("TodoWrite", &value).expect("todos payload");
+        let payload = payload_from_result("TodoWrite", &value, false).expect("todos payload");
         match payload {
             ToolPayload::Todos(items) => {
                 assert_eq!(items.len(), 2);
@@ -1077,7 +1185,7 @@ mod tests {
     #[test]
     fn payload_from_result_read_returns_preview() {
         let value = serde_json::json!({ "content": "line one\nline two" });
-        let payload = payload_from_result("Read", &value).expect("preview");
+        let payload = payload_from_result("Read", &value, false).expect("preview");
         match payload {
             ToolPayload::Preview(s) => {
                 assert!(s.starts_with("line one"));
@@ -1094,7 +1202,7 @@ mod tests {
             "filenames": ["a.rs", "b.rs", "c.rs"],
             "truncated": false,
         });
-        let payload = payload_from_result("Glob", &value).expect("preview");
+        let payload = payload_from_result("Glob", &value, false).expect("preview");
         match payload {
             ToolPayload::Preview(s) => assert!(s.contains("3 file")),
             other => panic!("expected Preview, got {other:?}"),
@@ -1106,7 +1214,7 @@ mod tests {
         let value = serde_json::json!({
             "diff": "@@ -1 +1 @@\n-a\n+b",
         });
-        let payload = payload_from_result("Edit", &value).expect("diff");
+        let payload = payload_from_result("Edit", &value, false).expect("diff");
         assert!(matches!(payload, ToolPayload::Diff(_)));
     }
 
@@ -1137,7 +1245,7 @@ mod tests {
     #[test]
     fn summarize_args_read_renders_file_path_and_window() {
         let a = serde_json::json!({"file_path": "/tmp/x.rs", "offset": 10, "limit": 50});
-        let out = summarize_args("Read", &a);
+        let out = summarize_args("Read", &a, false);
         // Upstream shape: `<displayPath> · lines <a>-<b>` —
         // middot-joined qualifier, bare path.
         assert!(out.starts_with("/tmp/x.rs"), "got: {out}");
@@ -1147,7 +1255,7 @@ mod tests {
     #[test]
     fn summarize_args_read_pages_supersedes_window() {
         let a = serde_json::json!({"file_path": "/tmp/doc.pdf", "pages": "1-5", "offset": 10});
-        let out = summarize_args("Read", &a);
+        let out = summarize_args("Read", &a, false);
         assert!(out.starts_with("/tmp/doc.pdf"), "got: {out}");
         assert!(out.contains(" · pages 1-5"), "got: {out}");
         assert!(
@@ -1159,21 +1267,21 @@ mod tests {
     #[test]
     fn summarize_args_skill_is_bare() {
         let a = serde_json::json!({"skill": "verifier-tui", "args": "flag=1"});
-        let out = summarize_args("Skill", &a);
+        let out = summarize_args("Skill", &a, false);
         assert_eq!(out, "verifier-tui");
     }
 
     #[test]
     fn summarize_args_agent_is_bare_description() {
         let a = serde_json::json!({"description": "Audit ship-readiness", "prompt": "long…"});
-        let out = summarize_args("Agent", &a);
+        let out = summarize_args("Agent", &a, false);
         assert_eq!(out, "Audit ship-readiness");
     }
 
     #[test]
     fn summarize_args_tool_search_is_hidden() {
         let a = serde_json::json!({"query": "slack", "max_results": 5});
-        let out = summarize_args("ToolSearch", &a);
+        let out = summarize_args("ToolSearch", &a, false);
         assert_eq!(out, "");
     }
 
@@ -1181,9 +1289,9 @@ mod tests {
     fn summarize_args_glob_grep_emit_pattern_and_path() {
         // Upstream quotes both values and uses `: ` separator.
         let a = serde_json::json!({"pattern": "*.rs", "path": "/tmp"});
-        assert!(summarize_args("Glob", &a).contains(r#"pattern: "*.rs""#));
-        assert!(summarize_args("Glob", &a).contains(r#"path: "/tmp""#));
-        assert!(summarize_args("Grep", &a).contains(r#"pattern: "*.rs""#));
+        assert!(summarize_args("Glob", &a, false).contains(r#"pattern: "*.rs""#));
+        assert!(summarize_args("Glob", &a, false).contains(r#"path: "/tmp""#));
+        assert!(summarize_args("Grep", &a, false).contains(r#"pattern: "*.rs""#));
     }
 
     #[test]
@@ -1194,7 +1302,7 @@ mod tests {
             "startLine": 1,
             "totalLines": 2,
         });
-        let s = expect_preview(payload_from_result("Read", &v).unwrap());
+        let s = expect_preview(payload_from_result("Read", &v, false).unwrap());
         assert!(s.starts_with("Read 2 lines"), "got: {s}");
         assert!(s.contains("alpha"), "body excerpt present: {s}");
     }
@@ -1207,7 +1315,7 @@ mod tests {
             "startLine": 1,
             "totalLines": 1,
         });
-        let s = expect_preview(payload_from_result("Read", &v).unwrap());
+        let s = expect_preview(payload_from_result("Read", &v, false).unwrap());
         assert!(s.starts_with("Read 1 line"), "got: {s}");
     }
 
@@ -1219,7 +1327,7 @@ mod tests {
             "created": true,
             "bytes_written": 42,
         });
-        let s = expect_preview(payload_from_result("Write", &v).unwrap());
+        let s = expect_preview(payload_from_result("Write", &v, false).unwrap());
         assert!(s.contains("Created"), "got: {s}");
         assert!(s.contains("42 bytes"), "got: {s}");
         assert!(s.contains("/tmp/out.txt"), "got: {s}");
@@ -1233,7 +1341,7 @@ mod tests {
             "created": false,
             "bytes_written": 1,
         });
-        let s = expect_preview(payload_from_result("Write", &v).unwrap());
+        let s = expect_preview(payload_from_result("Write", &v, false).unwrap());
         assert!(s.starts_with("Wrote 1 byte "), "singular: {s}");
     }
 
@@ -1244,7 +1352,7 @@ mod tests {
             "file_path": "/tmp/x.rs",
             "replaced": 3,
         });
-        let s = expect_preview(payload_from_result("Edit", &v).unwrap());
+        let s = expect_preview(payload_from_result("Edit", &v, false).unwrap());
         assert!(s.contains("3 replacements"), "got: {s}");
         assert!(s.contains("/tmp/x.rs"), "got: {s}");
     }
@@ -1257,7 +1365,7 @@ mod tests {
             "truncated": false,
             "durationMs": 12,
         });
-        let s = expect_preview(payload_from_result("Glob", &v).unwrap());
+        let s = expect_preview(payload_from_result("Glob", &v, false).unwrap());
         assert!(s.starts_with("Found 2 files"), "got: {s}");
         assert!(s.contains("/a.rs"), "list body: {s}");
         assert!(s.contains("/b.rs"), "list body: {s}");
@@ -1271,7 +1379,7 @@ mod tests {
             "truncated": false,
             "durationMs": 1,
         });
-        let s = expect_preview(payload_from_result("Glob", &v).unwrap());
+        let s = expect_preview(payload_from_result("Glob", &v, false).unwrap());
         assert!(s.starts_with("Found 1 file\n"), "got: {s}");
     }
 
@@ -1283,7 +1391,7 @@ mod tests {
             "truncated": false,
             "exit": 0,
         });
-        let s = expect_preview(payload_from_result("Grep", &v).unwrap());
+        let s = expect_preview(payload_from_result("Grep", &v, false).unwrap());
         assert!(s.starts_with("Found 3 matches"), "got: {s}");
         assert!(s.contains("/a.rs"), "paths listed: {s}");
     }
@@ -1296,7 +1404,7 @@ mod tests {
             "truncated": false,
             "exit": 0,
         });
-        let s = expect_preview(payload_from_result("Grep", &v).unwrap());
+        let s = expect_preview(payload_from_result("Grep", &v, false).unwrap());
         assert!(s.starts_with("Found 2 lines"), "got: {s}");
     }
 
@@ -1308,7 +1416,7 @@ mod tests {
             "tools": ["Read", "Glob", "Bash"],
             "model": "claude-sonnet-4-6",
         });
-        let s = expect_preview(payload_from_result("Skill", &v).unwrap());
+        let s = expect_preview(payload_from_result("Skill", &v, false).unwrap());
         assert!(
             s.starts_with("Successfully loaded skill"),
             "got: {s}"
@@ -1328,7 +1436,7 @@ mod tests {
                 {"name": "ReadFoo", "description": "d", "input_schema": {}},
             ]
         });
-        let s = expect_preview(payload_from_result("ToolSearch", &v).unwrap());
+        let s = expect_preview(payload_from_result("ToolSearch", &v, false).unwrap());
         assert!(s.contains("Found 2 tools"), "got: {s}");
         assert!(s.contains("Read"), "got: {s}");
         assert!(s.contains("ReadFoo"), "got: {s}");
@@ -1337,7 +1445,7 @@ mod tests {
     #[test]
     fn payload_from_result_tool_search_empty_reports_zero() {
         let v = serde_json::json!({"query": "zz", "max_results": 5, "tools": []});
-        let s = expect_preview(payload_from_result("ToolSearch", &v).unwrap());
+        let s = expect_preview(payload_from_result("ToolSearch", &v, false).unwrap());
         assert!(s.contains("Found 0 tools"), "got: {s}");
     }
 
@@ -1350,7 +1458,7 @@ mod tests {
             "prompt_preview": "p",
             "reason": "subagents registry not yet wired",
         });
-        let s = expect_preview(payload_from_result("Agent", &v).unwrap());
+        let s = expect_preview(payload_from_result("Agent", &v, false).unwrap());
         assert!(s.contains("subagents registry"), "got: {s}");
     }
 
@@ -1362,10 +1470,10 @@ mod tests {
             "totalTokens": 12345,
             "totalDurationMs": 135000,
         });
-        let s = expect_preview(payload_from_result("Agent", &v).unwrap());
+        let s = expect_preview(payload_from_result("Agent", &v, false).unwrap());
         assert!(s.starts_with("Done ("), "got: {s}");
         assert!(s.contains("5 tool uses"), "got: {s}");
-        assert!(s.contains("12345 tokens"), "got: {s}");
-        assert!(s.contains("135s"), "got: {s}");
+        assert!(s.contains("12,345 tokens"), "got: {s}");
+        assert!(s.contains("2m 15s"), "got: {s}");
     }
 }

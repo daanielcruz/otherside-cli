@@ -302,7 +302,14 @@ fn truncate(s: &str, max: usize) -> String {
 /// MAPPING §/v1/messages inference request) or an OAuth-bearer
 /// authorization. Nothing in this function is "our" choice — every
 /// value traces back to the captured corpus.
-fn build_inference_headers(bearer: &str, has_1m: bool) -> Result<HeaderMap> {
+/// Build the full 20-header inference fingerprint that lets Anthropic
+/// recognize us as a legitimate Claude Code client. Exposed so the
+/// WebSearch / WebFetch server-tool backends can reuse the same
+/// header set instead of rolling their own minimal one — without the
+/// full Stainless + Claude-Code stamp, Anthropic rejects requests
+/// with an opaque 429 rate-limit (treats the caller as a non-CC
+/// client and throttles aggressively).
+pub(crate) fn build_inference_headers(bearer: &str, has_1m: bool) -> Result<HeaderMap> {
     let mut h = HeaderMap::new();
 
     // Authorization — the only per-request-rotating header that isn't

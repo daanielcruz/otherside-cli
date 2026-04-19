@@ -92,6 +92,18 @@ pub const ANTHROPIC_BETA_INFERENCE: &str =
 /// subscribers see the full 1M window.
 pub const ANTHROPIC_BETA_CONTEXT_1M: &str = "context-1m-2025-08-07";
 
+/// 8-flag beta set upstream ships when invoking the `web_search_20250305`
+/// server tool. Captured 2026-04-19 via Proxyman; see
+/// `../../fingerprint_corpus/tools-websearch-single/notes.md`.
+///
+/// Differs from `ANTHROPIC_BETA_INFERENCE`: drops `advanced-tool-use-
+/// 2025-11-20`, always includes `context-1m-2025-08-07` (not conditional),
+/// and adds `redact-thinking-2026-02-12`. Sending the wrong set triggers
+/// a 429 rate-limit rejection (Anthropic treats the caller as a non-CC
+/// client when the fingerprint drifts).
+pub const ANTHROPIC_BETA_WEB_SEARCH: &str =
+    "claude-code-20250219,oauth-2025-04-20,context-1m-2025-08-07,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,context-management-2025-06-27,prompt-caching-scope-2026-01-05,effort-2025-11-24";
+
 /// Single flag for /v1/mcp_servers.
 pub const ANTHROPIC_BETA_MCP_SERVERS: &str = "mcp-servers-2025-12-04";
 
