@@ -176,7 +176,7 @@ pub fn render(
             verb,
             Duration::from_millis(state.elapsed_ms()),
             state.input_tokens,
-            state.output_tokens,
+            state.total_output_tokens(),
             state.thought_ms,
             state.effort_label,
         );

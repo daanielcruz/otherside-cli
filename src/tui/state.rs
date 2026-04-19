@@ -211,9 +211,20 @@ pub struct ConversationState {
     /// progress line's elapsed counter (C46). `None` when idle.
     pub request_started_at: Option<Instant>,
 
-    /// Running output-token count for the in-flight response. Reset on
-    /// each submit. Bumped from SSE usage events (once wired).
+    /// Output tokens for the CURRENT in-flight assistant message
+    /// only — Anthropic's `message_delta` events ship the running
+    /// cumulative count within the same message, so this holds the
+    /// latest value for that message (not a session total). Reset
+    /// to 0 on each new message (detected via value-drop in
+    /// [`ConversationState::update_usage`]); the prior message's
+    /// final count folds into [`ConversationState::cumulative_output_tokens`].
     pub output_tokens: u64,
+
+    /// Output tokens finalized on prior messages in the current
+    /// agent-loop turn (tool-call sub-turns accumulate here). Added
+    /// to the current `output_tokens` for display via
+    /// [`ConversationState::total_output_tokens`].
+    pub cumulative_output_tokens: u64,
 
     /// Input tokens consumed so far this session. Maps to the
     /// context-window arithmetic on the statusline.
@@ -476,6 +487,7 @@ impl ConversationState {
         self.last_error = None;
         self.request_started_at = Some(Instant::now());
         self.output_tokens = 0;
+        self.cumulative_output_tokens = 0;
         self.thought_ms = 0;
         self.tip_rotation_index = self.tip_rotation_index.wrapping_add(1);
         self.autocomplete = None;
@@ -735,19 +747,49 @@ impl ConversationState {
 
     /// Overwrite whichever of `input_tokens` / `output_tokens` is
     /// `Some` in the argument, leaving the other field untouched.
-    /// Called from the event loop when a usage-carrying chunk folds
-    /// onto the in-flight turn — Anthropic's stream ships
-    /// `input_tokens` exactly once on `message_start` and a running
-    /// cumulative `output_tokens` on every `message_delta`, so the
-    /// two sides arrive independently and the latest-wins semantic
-    /// matches the wire.
+    /// Mirror upstream's `updateProgressFromMessage` semantics from
+    /// `tasks/LocalAgentTask/LocalAgentTask.tsx:73-75`:
+    ///
+    /// ```text
+    /// tracker.latestInputTokens  = usage.input_tokens + cache_creation + cache_read;
+    /// tracker.cumulativeOutputTokens += usage.output_tokens;
+    /// ```
+    ///
+    /// - **Input** REPLACES — the API's `input_tokens` is already
+    ///   cumulative for the turn (cache-creation / cache-read adders
+    ///   are folded in upstream of this call at the translator).
+    /// - **Output** accumulates ACROSS MESSAGES, not within a single
+    ///   message's deltas. Anthropic's `message_delta` events carry
+    ///   the running cumulative output_tokens WITHIN a message, so a
+    ///   naive `+=` would double-count mid-message deltas. We detect
+    ///   a new message by a DROP in value (next message_start resets
+    ///   output_tokens to 0) and roll the prior message's final
+    ///   into `cumulative_output_tokens`; display reads `cumulative +
+    ///   latest`.
     pub fn update_usage(&mut self, input_tokens: Option<u64>, output_tokens: Option<u64>) {
         if let Some(v) = input_tokens {
             self.input_tokens = v;
         }
         if let Some(v) = output_tokens {
+            // Drop signals a new message — fold the prior message's
+            // final count into the cumulative bucket before the
+            // new message starts accruing from 0.
+            if v < self.output_tokens {
+                self.cumulative_output_tokens =
+                    self.cumulative_output_tokens.saturating_add(self.output_tokens);
+            }
             self.output_tokens = v;
         }
+    }
+
+    /// Total output tokens used across the whole agent turn /
+    /// tool-call chain — the cumulative bucket of finalized prior
+    /// messages plus the current message's running count. The
+    /// progress line calls this so `↓ Nk tokens` reflects the full
+    /// agent-loop output pressure, not just the latest sub-turn.
+    pub fn total_output_tokens(&self) -> u64 {
+        self.cumulative_output_tokens
+            .saturating_add(self.output_tokens)
     }
 
     /// Append a chunk's content delta onto the in-flight assistant buffer.
@@ -1258,12 +1300,37 @@ mod tests {
     }
 
     #[test]
-    fn update_usage_overwrites_output_side_only() {
+    fn update_usage_sets_output_when_monotonic_within_message() {
+        // Within a single message, Anthropic's message_delta events
+        // ship the running cumulative count. `update_usage` treats
+        // non-decreasing values as in-message progress and replaces.
         let mut st = ConversationState::new();
         st.input_tokens = 555;
         st.update_usage(None, Some(77));
         assert_eq!(st.output_tokens, 77);
+        assert_eq!(st.cumulative_output_tokens, 0);
+        st.update_usage(None, Some(140));
+        assert_eq!(st.output_tokens, 140);
+        assert_eq!(st.cumulative_output_tokens, 0);
         assert_eq!(st.input_tokens, 555, "input side must be untouched");
+    }
+
+    #[test]
+    fn update_usage_rolls_prior_message_on_output_drop() {
+        // A DROP in output_tokens marks a new message — the prior
+        // message's final count folds into `cumulative_output_tokens`
+        // so the progress line surfaces full agent-loop output
+        // pressure via `total_output_tokens`.
+        let mut st = ConversationState::new();
+        st.update_usage(None, Some(200)); // message 1 final
+        st.update_usage(None, Some(50)); // message 2 starts small
+        assert_eq!(st.output_tokens, 50);
+        assert_eq!(st.cumulative_output_tokens, 200);
+        assert_eq!(st.total_output_tokens(), 250);
+        st.update_usage(None, Some(125)); // message 2 continues
+        assert_eq!(st.output_tokens, 125);
+        assert_eq!(st.cumulative_output_tokens, 200);
+        assert_eq!(st.total_output_tokens(), 325);
     }
 
     #[test]
