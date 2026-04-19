@@ -304,6 +304,23 @@ pub fn summarize_args(name: &str, args: &Value) -> String {
         }
     }
 
+    // WebFetch upstream header = bare `url` (non-verbose). Mirror
+    // that — no `url=` prefix, no prompt echo.
+    // See `tools/WebFetchTool/UI.tsx::renderToolUseMessage:27`.
+    if name == "WebFetch" {
+        if let Some(u) = obj.get("url").and_then(|v| v.as_str()) {
+            return clip_flat(u, 100);
+        }
+    }
+
+    // WebSearch upstream header = `"query"` (quoted).
+    // See `tools/WebSearchTool/UI.tsx::renderToolUseMessage:43`.
+    if name == "WebSearch" {
+        if let Some(q) = obj.get("query").and_then(|v| v.as_str()) {
+            return format!("\"{}\"", clip_flat(q, 100));
+        }
+    }
+
     // Generic fallback — first 2 fields as key=value pairs.
     let mut parts: Vec<String> = Vec::with_capacity(2);
     for (k, v) in obj.iter().take(2) {
@@ -349,6 +366,8 @@ pub fn payload_from_result(name: &str, result: &Value) -> Option<ToolPayload> {
         "Skill" => skill_preview(result).or_else(|| preview_payload(result)),
         "ToolSearch" => tool_search_preview(result).or_else(|| preview_payload(result)),
         "Agent" => agent_preview(result).or_else(|| preview_payload(result)),
+        "WebFetch" => web_fetch_preview(result).or_else(|| preview_payload(result)),
+        "WebSearch" => web_search_preview(result).or_else(|| preview_payload(result)),
         _ => preview_payload(result),
     }
 }
@@ -574,6 +593,91 @@ fn tool_search_preview(result: &Value) -> Option<ToolPayload> {
 /// description, prompt_preview, reason}` because subagent execution is
 /// not wired yet. Surface the `reason` (when status != "completed") so
 /// the user sees why nothing happened.
+/// Preview line for WebFetch — matches upstream's
+/// `Received <formatted_size> (<code> <codeText>)` shape.
+/// See `tools/WebFetchTool/UI.tsx::renderToolResultMessage:57-61`.
+fn web_fetch_preview(result: &Value) -> Option<ToolPayload> {
+    let obj = result.as_object()?;
+    let bytes = obj.get("bytes").and_then(|v| v.as_u64());
+    let code = obj.get("code").and_then(|v| v.as_u64());
+    let code_text = obj.get("codeText").and_then(|v| v.as_str()).unwrap_or("");
+
+    let size = bytes.map(format_file_size);
+    let status_tail = match (code, code_text.is_empty()) {
+        (Some(c), false) => Some(format!("({c} {code_text})")),
+        (Some(c), true) => Some(format!("({c})")),
+        (None, _) => None,
+    };
+
+    match (size, status_tail) {
+        (Some(s), Some(tail)) => Some(ToolPayload::Preview(format!("Received {s} {tail}"))),
+        (Some(s), None) => Some(ToolPayload::Preview(format!("Received {s}"))),
+        (None, Some(tail)) => Some(ToolPayload::Preview(format!("Received {tail}"))),
+        (None, None) => None,
+    }
+}
+
+/// Format a byte count the way upstream does — `formatFileSize`
+/// produces `"24 KB"` / `"1.2 MB"` rounded to single digits, matches
+/// `utils/format.ts`.
+fn format_file_size(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = 1024 * KB;
+    const GB: u64 = 1024 * MB;
+    if bytes < KB {
+        format!("{bytes} B")
+    } else if bytes < MB {
+        format!("{:.1} KB", bytes as f64 / KB as f64)
+    } else if bytes < GB {
+        format!("{:.1} MB", bytes as f64 / MB as f64)
+    } else {
+        format!("{:.1} GB", bytes as f64 / GB as f64)
+    }
+}
+
+/// Preview line for WebSearch — matches upstream's
+/// `Did N search(es) in <timeDisplay>` shape.
+/// See `tools/WebSearchTool/UI.tsx::renderToolResultMessage:79-92`.
+/// Unavailable-backend stub is surfaced verbatim so the user sees
+/// the configuration hint instead of an empty "Did 0 searches" line.
+fn web_search_preview(result: &Value) -> Option<ToolPayload> {
+    let obj = result.as_object()?;
+    let results = obj.get("results").and_then(|v| v.as_array())?;
+
+    // Unavailable backend path — single string entry that starts
+    // with `web_search_unavailable`. Surface it directly so the
+    // preview reads as `⎿ web_search_unavailable - configure …`
+    // instead of `Did 0 searches`.
+    if results.len() == 1 {
+        if let Some(s) = results[0].as_str() {
+            if s.starts_with("web_search_unavailable") {
+                return Some(ToolPayload::Preview(one_line_preview(s, 240)));
+            }
+        }
+    }
+
+    // Upstream `getSearchSummary`: only non-string entries count as a
+    // "search". String entries are the unavailable markers + error
+    // messages the model sees mid-transcript.
+    let search_count = results
+        .iter()
+        .filter(|v| !v.is_string() && !v.is_null())
+        .count();
+    let duration_seconds = obj
+        .get("durationSeconds")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    let time_display = if duration_seconds >= 1.0 {
+        format!("{}s", duration_seconds.round() as i64)
+    } else {
+        format!("{}ms", (duration_seconds * 1000.0).round() as i64)
+    };
+    let plural = if search_count == 1 { "" } else { "es" };
+    Some(ToolPayload::Preview(format!(
+        "Did {search_count} search{plural} in {time_display}"
+    )))
+}
+
 fn agent_preview(result: &Value) -> Option<ToolPayload> {
     let obj = result.as_object()?;
     let status = obj
