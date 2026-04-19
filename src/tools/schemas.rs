@@ -67,6 +67,7 @@ fn load_deferred() -> Vec<ToolSchema> {
         crate::tools::task::TOOL_TASK_UPDATE_JSON,
         crate::tools::notebook::TOOL_NOTEBOOK_EDIT_JSON,
         crate::tools::web_fetch::TOOL_WEB_FETCH_JSON,
+        crate::tools::web_search::TOOL_WEB_SEARCH_JSON,
     ];
     raws.iter()
         .map(|raw| {
@@ -78,7 +79,8 @@ fn load_deferred() -> Vec<ToolSchema> {
 
 /// Deferred-tool schemas — surfaced only through `ToolSearch`, never on
 /// the wire `tools[]` body. 018 first wave: TaskCreate, TaskList,
-/// TaskGet, TaskUpdate, NotebookEdit. 019 second wave adds WebFetch.
+/// TaskGet, TaskUpdate, NotebookEdit. 019 second wave adds WebFetch +
+/// WebSearch.
 pub fn deferred_schemas() -> &'static [ToolSchema] {
     static SCHEMAS: OnceLock<Vec<ToolSchema>> = OnceLock::new();
     SCHEMAS.get_or_init(load_deferred).as_slice()
@@ -249,9 +251,9 @@ mod tests {
     }
 
     #[test]
-    fn deferred_schemas_contain_six_after_019() {
-        // 018 seeded 5 (Task* + NotebookEdit); 019 added WebFetch.
-        assert_eq!(deferred_schemas().len(), 6);
+    fn deferred_schemas_contain_seven_after_019() {
+        // 018 seeded 5 (Task* + NotebookEdit); 019 added WebFetch + WebSearch.
+        assert_eq!(deferred_schemas().len(), 7);
     }
 
     #[test]
@@ -266,14 +268,15 @@ mod tests {
                 "TaskUpdate",
                 "NotebookEdit",
                 "WebFetch",
+                "WebSearch",
             ]
         );
     }
 
     #[test]
-    fn all_schemas_total_fifteen() {
-        // 9 wire + 6 deferred (018 first wave + 019 WebFetch).
-        assert_eq!(all_schemas().len(), 15);
+    fn all_schemas_total_sixteen() {
+        // 9 wire + 7 deferred (018 first wave + 019 WebFetch + WebSearch).
+        assert_eq!(all_schemas().len(), 16);
     }
 
     #[test]
@@ -292,6 +295,7 @@ mod tests {
                 "TaskUpdate",
                 "NotebookEdit",
                 "WebFetch",
+                "WebSearch",
             ]
         );
     }
@@ -304,6 +308,7 @@ mod tests {
         assert!(schema_for("TaskUpdate").is_some());
         assert!(schema_for("NotebookEdit").is_some());
         assert!(schema_for("WebFetch").is_some());
+        assert!(schema_for("WebSearch").is_some());
     }
 
     #[test]
@@ -313,6 +318,19 @@ mod tests {
         let names: Vec<&str> = required.iter().filter_map(|v| v.as_str()).collect();
         assert!(names.contains(&"url"));
         assert!(names.contains(&"prompt"));
+    }
+
+    #[test]
+    fn web_search_schema_requires_query_only() {
+        let s = schema_for("WebSearch").unwrap();
+        let required = s.input_schema["required"].as_array().unwrap();
+        let names: Vec<&str> = required.iter().filter_map(|v| v.as_str()).collect();
+        assert_eq!(names, vec!["query"]);
+        // Domain filters are optional, but the properties must exist so
+        // the model sees them as valid inputs.
+        let props = s.input_schema["properties"].as_object().unwrap();
+        assert!(props.contains_key("allowed_domains"));
+        assert!(props.contains_key("blocked_domains"));
     }
 
     #[test]
@@ -328,6 +346,7 @@ mod tests {
             "TaskUpdate",
             "NotebookEdit",
             "WebFetch",
+            "WebSearch",
         ] {
             assert!(
                 !names.iter().any(|n| n == deferred),

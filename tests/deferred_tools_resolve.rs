@@ -144,7 +144,7 @@ fn wire_catalog_stays_at_nine_after_deferred_dispatch() {
         vec!["Agent", "Bash", "Edit", "Glob", "Grep", "Read", "Skill", "ToolSearch", "Write"]
     );
 
-    // Deferred catalog = 018 first wave + 019 WebFetch.
+    // Deferred catalog = 018 first wave + 019 WebFetch + WebSearch.
     let deferred: Vec<&str> = schemas::deferred_schemas()
         .iter()
         .map(|s| s.name.as_str())
@@ -158,11 +158,12 @@ fn wire_catalog_stays_at_nine_after_deferred_dispatch() {
             "TaskUpdate",
             "NotebookEdit",
             "WebFetch",
+            "WebSearch",
         ]
     );
 
     // Combined catalog equals wire + deferred in that order.
-    assert_eq!(schemas::all_schemas().len(), 15);
+    assert_eq!(schemas::all_schemas().len(), 16);
 }
 
 #[test]
@@ -218,4 +219,66 @@ fn web_fetch_dispatch_rejects_missing_url() {
         err,
         otherside::tools::ToolError::InvalidArgs(_)
     ));
+}
+
+#[test]
+fn web_search_schema_resolves_through_tool_search() {
+    // 019 WebSearch deferred tool — schema must be loadable via
+    // ToolSearch so the model can validate inputs before calling.
+    let search = tools::dispatch(
+        "ToolSearch",
+        &json!({"query": "select:WebSearch", "max_results": 5}),
+    )
+    .unwrap();
+    let search_tools = search["tools"].as_array().unwrap();
+    assert_eq!(search_tools.len(), 1);
+    assert_eq!(search_tools[0]["name"], "WebSearch");
+    let required = search_tools[0]["input_schema"]["required"]
+        .as_array()
+        .unwrap();
+    assert!(required.iter().any(|v| v == "query"));
+}
+
+#[test]
+fn web_search_dispatch_rejects_missing_query() {
+    // Per-tool validation: missing `query` returns InvalidArgs (NOT
+    // Unsupported) — proves the arm routes to `web_search::web_search`.
+    let err = tools::dispatch("WebSearch", &json!({})).unwrap_err();
+    assert!(matches!(
+        err,
+        otherside::tools::ToolError::InvalidArgs(_)
+    ));
+}
+
+#[test]
+fn web_search_returns_unavailable_stub_by_default() {
+    // Without OTHERSIDE_GOOGLE_CSE_KEY + _CX set, the dispatcher should
+    // return a structured stub. We can't fully control env from an
+    // integration test (cargo test inherits process env), so only assert
+    // shape invariants that hold in both paths: results is an array,
+    // durationSeconds is a number, query echoes.
+    //
+    // Save-and-clear the env for the duration of the call so the test is
+    // deterministic even on developer machines with real keys exported.
+    let saved_k = std::env::var("OTHERSIDE_GOOGLE_CSE_KEY").ok();
+    let saved_c = std::env::var("OTHERSIDE_GOOGLE_CSE_CX").ok();
+    std::env::remove_var("OTHERSIDE_GOOGLE_CSE_KEY");
+    std::env::remove_var("OTHERSIDE_GOOGLE_CSE_CX");
+
+    let out = tools::dispatch("WebSearch", &json!({"query": "rust async"})).unwrap();
+
+    // Restore before any assertion so a failure doesn't leak cleared env.
+    if let Some(v) = saved_k {
+        std::env::set_var("OTHERSIDE_GOOGLE_CSE_KEY", v);
+    }
+    if let Some(v) = saved_c {
+        std::env::set_var("OTHERSIDE_GOOGLE_CSE_CX", v);
+    }
+
+    assert_eq!(out["query"], "rust async");
+    let results = out["results"].as_array().unwrap();
+    assert_eq!(results.len(), 1);
+    let marker = results[0].as_str().unwrap();
+    assert!(marker.starts_with("web_search_unavailable"));
+    assert!(out["durationSeconds"].is_number());
 }

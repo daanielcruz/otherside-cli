@@ -40,6 +40,7 @@ pub mod skill;
 pub mod task;
 pub mod tool_search;
 pub mod web_fetch;
+pub mod web_search;
 pub mod write;
 
 pub use schemas::{openai_tools, schema_for, tool_schemas, ToolSchema};
@@ -120,6 +121,10 @@ pub fn dispatch(tool_name: &str, args: &Value) -> Result<Value, ToolError> {
         "NotebookEdit" => notebook::notebook_edit(args),
         // 019 second wave — HTTP GET + HTML→markdown deferred tool.
         "WebFetch" => web_fetch::web_fetch(args),
+        // 019 second wave — web search deferred tool. Runtime-selected
+        // backend: Google CSE when env vars present, else unavailable
+        // stub so the tool stays resolvable via ToolSearch.
+        "WebSearch" => web_search::web_search(args),
         // Affordance hints for models that hallucinate retired names.
         "Task" => Err(ToolError::Unsupported(
             "tool `Task` is retired; use `Agent` for subagent dispatch (010 anchor selection)"
@@ -242,6 +247,19 @@ mod tests {
         match res {
             Err(ToolError::Unsupported(_)) => {
                 panic!("deferred tool `WebFetch` returned Unsupported")
+            }
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn dispatcher_covers_web_search() {
+        // 019 WebSearch deferred tool. Empty args hit InvalidArgs (query
+        // missing) — proves the arm routes to `web_search::web_search`.
+        let res = dispatch("WebSearch", &json!({}));
+        match res {
+            Err(ToolError::Unsupported(_)) => {
+                panic!("deferred tool `WebSearch` returned Unsupported")
             }
             _ => {}
         }
