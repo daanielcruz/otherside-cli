@@ -103,7 +103,7 @@ pub fn render_tool_call(view: &ToolCallView<'_>) -> Vec<Line<'static>> {
     let mut out: Vec<Line<'static>> = Vec::new();
 
     // Header row: `⏺ ToolName(arg_summary)`.
-    let arg_summary = summarize_args(view.args);
+    let arg_summary = summarize_args(view.name, view.args);
     let parens = if arg_summary.is_empty() {
         String::new()
     } else {
@@ -176,12 +176,15 @@ pub fn render_tool_call(view: &ToolCallView<'_>) -> Vec<Line<'static>> {
     out
 }
 
-/// Summarize the tool-call `args` JSON into a compact
-/// `key=value[, key2=value2]` string for the header parens — upstream
-/// format. Picks the first 1-2 top-level fields, clips long strings,
-/// flattens newlines. Empty object / non-object → empty string (call
-/// site drops the parens entirely).
-fn summarize_args(args: &Value) -> String {
+/// Summarize the tool-call `args` JSON into the compact header parens
+/// form. Upstream convention is tool-aware:
+///
+/// - `Bash` → just the command value: `(ls -la /tmp)`
+/// - others → `key=value[, key2=value2]` pairs
+///
+/// Picks the first 1-2 top-level fields, clips long strings, flattens
+/// newlines. Empty / non-object → empty string.
+fn summarize_args(name: &str, args: &Value) -> String {
     let obj = match args.as_object() {
         Some(o) => o,
         None => return String::new(),
@@ -189,35 +192,34 @@ fn summarize_args(args: &Value) -> String {
     if obj.is_empty() {
         return String::new();
     }
+    // Bash (and any future command-centric tool) drops the key prefix.
+    if name == "Bash" {
+        if let Some(cmd) = obj.get("command").and_then(|v| v.as_str()) {
+            return clip_flat(cmd, 90);
+        }
+    }
     let mut parts: Vec<String> = Vec::with_capacity(2);
     for (k, v) in obj.iter().take(2) {
         let rendered = match v {
-            Value::String(s) => {
-                let flat: String = s.chars().map(|c| if c == '\n' { ' ' } else { c }).collect();
-                if flat.chars().count() > 60 {
-                    let mut t: String = flat.chars().take(59).collect();
-                    t.push('…');
-                    t
-                } else {
-                    flat
-                }
-            }
+            Value::String(s) => clip_flat(s, 60),
             Value::Number(n) => n.to_string(),
             Value::Bool(b) => b.to_string(),
-            other => {
-                let s = other.to_string();
-                if s.chars().count() > 40 {
-                    let mut t: String = s.chars().take(39).collect();
-                    t.push('…');
-                    t
-                } else {
-                    s
-                }
-            }
+            other => clip_flat(&other.to_string(), 40),
         };
         parts.push(format!("{k}={rendered}"));
     }
     parts.join(", ")
+}
+
+fn clip_flat(s: &str, max: usize) -> String {
+    let flat: String = s.chars().map(|c| if c == '\n' { ' ' } else { c }).collect();
+    if flat.chars().count() > max {
+        let mut t: String = flat.chars().take(max.saturating_sub(1)).collect();
+        t.push('…');
+        t
+    } else {
+        flat
+    }
 }
 
 /// Produce the render payload for a tool result given the tool name.
@@ -312,12 +314,14 @@ fn preview_payload(result: &Value) -> Option<ToolPayload> {
                 let prefix = if exit == 0 {
                     String::new()
                 } else {
-                    format!("exit {exit}: ")
+                    format!("exit {exit}:\n")
                 };
-                return Some(ToolPayload::Preview(format!(
-                    "{prefix}{}",
-                    one_line_preview(output, 220)
-                )));
+                // Keep multi-line — upstream Bash renders first N lines
+                // of stdout under the gutter, one ⎿-prefixed line each.
+                // Cap at 20 lines * 200 chars each so a chatty command
+                // doesn't flood the log.
+                let trimmed = trim_multiline(output, 20, 200);
+                return Some(ToolPayload::Preview(format!("{prefix}{trimmed}")));
             }
             if let Some(s) = obj.get("content").and_then(|v| v.as_str()) {
                 return Some(ToolPayload::Preview(one_line_preview(s, 240)));
@@ -344,6 +348,35 @@ fn one_line_preview(s: &str, max: usize) -> String {
     } else {
         flat
     }
+}
+
+/// Preserve up to `max_lines` lines of `s`, clipping each to
+/// `max_chars`. Appends a `… (N more lines)` tail when truncation
+/// happens. Used by Bash-shape previews where multi-line structure
+/// is the point.
+fn trim_multiline(s: &str, max_lines: usize, max_chars: usize) -> String {
+    let all_lines: Vec<&str> = s.lines().collect();
+    let total = all_lines.len();
+    let mut out: Vec<String> = Vec::with_capacity(max_lines);
+    for line in all_lines.iter().take(max_lines) {
+        let clipped: String = if line.chars().count() > max_chars {
+            let mut t: String = line.chars().take(max_chars.saturating_sub(1)).collect();
+            t.push('…');
+            t
+        } else {
+            (*line).to_string()
+        };
+        out.push(clipped);
+    }
+    if total > max_lines {
+        let remaining = total - max_lines;
+        out.push(format!(
+            "… ({} more line{})",
+            remaining,
+            if remaining == 1 { "" } else { "s" }
+        ));
+    }
+    out.join("\n")
 }
 
 #[cfg(test)]
