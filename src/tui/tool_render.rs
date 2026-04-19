@@ -85,6 +85,7 @@ pub enum ToolPayload {
 /// Compact view the caller hands this module.
 pub struct ToolCallView<'a> {
     pub name: &'a str,
+    pub args: &'a Value,
     pub status: ToolStatus,
     pub elapsed_ms: Option<u64>,
     pub payload: Option<&'a ToolPayload>,
@@ -92,11 +93,23 @@ pub struct ToolCallView<'a> {
 
 /// Render a single tool call into owned Lines ready to splice into
 /// the streaming log.
+///
+/// Upstream-shape header: `⏺ ToolName(arg=value)`. Status is conveyed
+/// by the bullet color (MUTED+BLINK running → SUCCESS ok → ERROR err);
+/// no explicit status text or elapsed chip on the header row. Payload
+/// preview (when available) renders on the next line under a `⎿`
+/// gutter in MUTED.
 pub fn render_tool_call(view: &ToolCallView<'_>) -> Vec<Line<'static>> {
     let mut out: Vec<Line<'static>> = Vec::new();
 
-    // Header row: `⏺ ToolName  (status · Xs)`
-    let mut header_spans: Vec<Span<'static>> = Vec::with_capacity(4);
+    // Header row: `⏺ ToolName(arg_summary)`.
+    let arg_summary = summarize_args(view.args);
+    let parens = if arg_summary.is_empty() {
+        String::new()
+    } else {
+        format!("({arg_summary})")
+    };
+    let mut header_spans: Vec<Span<'static>> = Vec::with_capacity(3);
     header_spans.push(Span::styled(
         format!("{BULLET} "),
         Style::default()
@@ -109,10 +122,13 @@ pub fn render_tool_call(view: &ToolCallView<'_>) -> Vec<Line<'static>> {
             .fg(theme::TEXT)
             .add_modifier(Modifier::BOLD),
     ));
-    header_spans.push(Span::styled(
-        format!("  ({}{})", status_text(view.status), elapsed_suffix(view.elapsed_ms)),
-        Style::default().fg(theme::MUTED),
-    ));
+    if !parens.is_empty() {
+        header_spans.push(Span::styled(
+            parens,
+            Style::default().fg(theme::MUTED),
+        ));
+    }
+    let _ = view.elapsed_ms; // suppressed on the header per upstream format
     out.push(Line::from(header_spans));
 
     // Payload — indented under the gutter glyph.
@@ -160,20 +176,48 @@ pub fn render_tool_call(view: &ToolCallView<'_>) -> Vec<Line<'static>> {
     out
 }
 
-fn status_text(s: ToolStatus) -> &'static str {
-    match s {
-        ToolStatus::Running => "running",
-        ToolStatus::Ok => "ok",
-        ToolStatus::Error => "error",
+/// Summarize the tool-call `args` JSON into a compact
+/// `key=value[, key2=value2]` string for the header parens — upstream
+/// format. Picks the first 1-2 top-level fields, clips long strings,
+/// flattens newlines. Empty object / non-object → empty string (call
+/// site drops the parens entirely).
+fn summarize_args(args: &Value) -> String {
+    let obj = match args.as_object() {
+        Some(o) => o,
+        None => return String::new(),
+    };
+    if obj.is_empty() {
+        return String::new();
     }
-}
-
-fn elapsed_suffix(ms: Option<u64>) -> String {
-    match ms {
-        Some(m) if m >= 1_000 => format!(" · {}s", m / 1_000),
-        Some(m) => format!(" · {m}ms"),
-        None => String::new(),
+    let mut parts: Vec<String> = Vec::with_capacity(2);
+    for (k, v) in obj.iter().take(2) {
+        let rendered = match v {
+            Value::String(s) => {
+                let flat: String = s.chars().map(|c| if c == '\n' { ' ' } else { c }).collect();
+                if flat.chars().count() > 60 {
+                    let mut t: String = flat.chars().take(59).collect();
+                    t.push('…');
+                    t
+                } else {
+                    flat
+                }
+            }
+            Value::Number(n) => n.to_string(),
+            Value::Bool(b) => b.to_string(),
+            other => {
+                let s = other.to_string();
+                if s.chars().count() > 40 {
+                    let mut t: String = s.chars().take(39).collect();
+                    t.push('…');
+                    t
+                } else {
+                    s
+                }
+            }
+        };
+        parts.push(format!("{k}={rendered}"));
     }
+    parts.join(", ")
 }
 
 /// Produce the render payload for a tool result given the tool name.
@@ -321,25 +365,32 @@ mod tests {
     }
 
     #[test]
-    fn header_contains_tool_name_and_status() {
+    fn header_matches_upstream_shape() {
+        let args = serde_json::json!({"file_path": "/tmp/x.rs"});
         let view = ToolCallView {
             name: "Read",
+            args: &args,
             status: ToolStatus::Ok,
             elapsed_ms: Some(1500),
             payload: None,
         };
         let lines = render_tool_call(&view);
         let text = collect_text(&lines);
+        // Upstream shape: `⏺ Read(file_path=/tmp/x.rs)` — no status
+        // text, no elapsed chip on the header row.
         assert!(text.contains("Read"));
-        assert!(text.contains("ok"));
-        assert!(text.contains("1s"));
+        assert!(text.contains("file_path=/tmp/x.rs"));
+        assert!(!text.contains(" ok "));
+        assert!(!text.contains("1s"));
     }
 
     #[test]
     fn preview_payload_renders_under_gutter() {
+        let args = serde_json::json!({});
         let preview = ToolPayload::Preview("first line\nsecond line".into());
         let view = ToolCallView {
             name: "Glob",
+            args: &args,
             status: ToolStatus::Ok,
             elapsed_ms: None,
             payload: Some(&preview),
@@ -365,9 +416,11 @@ mod tests {
                 active_form: None,
             },
         ];
+        let args = serde_json::json!({});
         let payload = ToolPayload::Todos(items);
         let view = ToolCallView {
             name: "TodoWrite",
+            args: &args,
             status: ToolStatus::Ok,
             elapsed_ms: Some(12),
             payload: Some(&payload),
@@ -382,9 +435,11 @@ mod tests {
     #[test]
     fn diff_payload_renders_diff() {
         let frag = "@@ -1 +1 @@\n-old\n+new";
+        let args = serde_json::json!({});
         let payload = ToolPayload::Diff(frag.into());
         let view = ToolCallView {
             name: "Edit",
+            args: &args,
             status: ToolStatus::Ok,
             elapsed_ms: Some(4),
             payload: Some(&payload),

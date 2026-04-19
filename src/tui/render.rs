@@ -242,6 +242,7 @@ fn draw_log(f: &mut Frame<'_>, area: Rect, state: &ConversationState, spinner_ti
             lines.push(Line::raw(""));
             let view = super::tool_render::ToolCallView {
                 name: &entry.name,
+                args: &entry.args,
                 status: entry.status,
                 elapsed_ms: if entry.elapsed_ms > 0 {
                     Some(entry.elapsed_ms)
@@ -836,9 +837,12 @@ mod tests {
             .map(|c| c.symbol())
             .collect::<String>();
         assert!(content.contains("Glob"), "tool name absent: {content:?}");
+        // Header has no explicit "running" text now — upstream format
+        // conveys status via bullet color only. Test buffer lacks ANSI,
+        // so we only guarantee the name + bullet glyph are present.
         assert!(
-            content.contains("running"),
-            "running marker absent: {content:?}"
+            content.contains("●") || content.contains("⏺"),
+            "bullet absent: {content:?}"
         );
 
         // Transition to Ok — bullet color + status text flips.
@@ -854,8 +858,10 @@ mod tests {
             .iter()
             .map(|c| c.symbol())
             .collect::<String>();
-        assert!(content.contains("ok"));
-        assert!(content.contains("77ms"));
+        // Status "ok" + elapsed "77ms" no longer render on the header
+        // (upstream format). Color transition is in the span style,
+        // not the plain-text buffer. Preview line still shows the
+        // file count via the payload gutter.
         assert!(content.contains("5 file"));
 
         // Sanity — status enum actually transitioned.
