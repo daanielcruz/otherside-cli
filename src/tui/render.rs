@@ -109,10 +109,15 @@ pub fn render(
 
     // Progress + tip rows only exist when streaming.
     if let (Some(pr), Some(tp)) = (slots.progress, slots.tip) {
+        // Verb is seeded once per turn in submit() and held stable
+        // under spinner-frame tick rotation. Fall back to "Thinking"
+        // on the off chance a draw fires before submit seeds the state.
+        let verb = state.turn_verb.unwrap_or("Thinking");
         progress::draw(
             f,
             pr,
             spinner_tick,
+            verb,
             Duration::from_millis(state.elapsed_ms()),
             state.output_tokens,
             state.thought_ms,

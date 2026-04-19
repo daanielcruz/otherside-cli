@@ -131,6 +131,21 @@ pub struct ConversationState {
     /// `/model <id>` can swap it mid-session without rebuilding the
     /// TUI. The statusline reads this; request builders clone it.
     pub model: String,
+
+    /// Tail-follow flag. `true` means the log auto-pins to the newest
+    /// delta; `false` means the user scrolled up and expects subsequent
+    /// deltas to flow off-screen without yanking the view. Mirrors
+    /// upstream `ScrollBox.stickyScroll` semantics — the user's scroll
+    /// intent survives across stream events and across turn boundaries
+    /// until they explicitly scroll back to zero or submit a new turn.
+    pub sticky_bottom: bool,
+
+    /// Verb displayed in the progress spinner for the current turn.
+    /// Seeded once on submit and cleared on finish/fail — upstream
+    /// picks a `useState(() => sample(verbs))` at mount and holds it
+    /// for the turn; otherside mirrors that shape so the word stays
+    /// stable under tick-indexed spinner-frame rotation.
+    pub turn_verb: Option<&'static str>,
 }
 
 impl ConversationState {
@@ -138,6 +153,7 @@ impl ConversationState {
     pub fn new() -> Self {
         Self {
             context_window: 200_000,
+            sticky_bottom: true,
             ..Self::default()
         }
     }
@@ -160,6 +176,7 @@ impl ConversationState {
             context_window: if has_1m { 1_000_000 } else { 200_000 },
             permission_mode: mode,
             model: raw_model.to_string(),
+            sticky_bottom: true,
             ..Self::default()
         }
     }
@@ -219,18 +236,23 @@ impl ConversationState {
     /// it knows the wrapped height; here we just increment.
     pub fn scroll_up(&mut self, lines: usize) {
         self.scroll_offset = self.scroll_offset.saturating_add(lines);
+        self.sticky_bottom = false;
     }
 
-    /// Scroll down one line toward the newest message. Saturates at zero
-    /// which pins the log to the bottom.
+    /// Scroll down toward the newest message. Saturates at zero which
+    /// re-engages tail-follow.
     pub fn scroll_down(&mut self, lines: usize) {
         self.scroll_offset = self.scroll_offset.saturating_sub(lines);
+        if self.scroll_offset == 0 {
+            self.sticky_bottom = true;
+        }
     }
 
-    /// Pin the log to the newest message. Called after submit and after
-    /// every incoming stream delta so newly-arrived text is always visible.
+    /// Pin the log to the newest message and re-engage tail-follow.
+    /// Called on submit so a new turn always starts at the bottom.
     pub fn scroll_to_bottom(&mut self) {
         self.scroll_offset = 0;
+        self.sticky_bottom = true;
     }
 
     /// Attempt to submit the current input as a new user turn.
@@ -267,6 +289,9 @@ impl ConversationState {
         self.tip_rotation_index = self.tip_rotation_index.wrapping_add(1);
         self.autocomplete = None;
         self.scroll_to_bottom();
+        self.turn_verb = Some(super::progress::pick_verb_for_turn(
+            super::progress::next_turn_seed(),
+        ));
         Some(self.history_for_request())
     }
 
@@ -422,8 +447,10 @@ impl ConversationState {
     /// viewport so reading history during streaming survives deltas.
     pub fn append_stream_delta(&mut self, delta: &str) {
         self.current_assistant_buffer.push_str(delta);
-        if self.scroll_offset == 0 {
-            self.scroll_to_bottom();
+        // Tail-follow honors the user's scroll intent — only pin the
+        // newest delta into view when sticky_bottom is still true.
+        if self.sticky_bottom {
+            self.scroll_offset = 0;
         }
     }
 
@@ -446,7 +473,10 @@ impl ConversationState {
         }
         self.streaming = false;
         self.request_started_at = None;
-        self.scroll_to_bottom();
+        self.turn_verb = None;
+        // Do NOT yank the viewport — honor the user's scroll intent
+        // across turn boundaries. Upstream REPL.tsx:1284-1301 leaves
+        // scroll position untouched on completion.
     }
 
     /// Record an error reported by the provider.
@@ -467,7 +497,8 @@ impl ConversationState {
         self.last_error = Some(err);
         self.streaming = false;
         self.request_started_at = None;
-        self.scroll_to_bottom();
+        self.turn_verb = None;
+        // See finish_stream — scroll position is user intent.
     }
 }
 
@@ -669,5 +700,121 @@ mod tests {
         st.input = "/cle".to_string();
         st.refresh_autocomplete();
         assert!(st.autocomplete.is_some());
+    }
+
+    #[test]
+    fn streaming_delta_appears_before_stream_end() {
+        // Render path reads current_assistant_buffer while streaming —
+        // the delta must be visible BEFORE finish_stream promotes it.
+        let mut st = ConversationState::new();
+        st.input = "hi".to_string();
+        st.submit().unwrap();
+        st.append_stream_delta("hello");
+        assert_eq!(st.current_assistant_buffer, "hello");
+        assert!(st.streaming);
+    }
+
+    #[test]
+    fn scroll_up_sticks_through_deltas() {
+        // User scrolled up while a stream is live — subsequent deltas
+        // keep arriving but must NOT yank the viewport back to the
+        // bottom. sticky_bottom flips false on scroll_up and survives
+        // append_stream_delta calls.
+        let mut st = ConversationState::new();
+        st.input = "ask".to_string();
+        st.submit().unwrap();
+        st.scroll_up(5);
+        assert!(!st.sticky_bottom);
+        for _ in 0..10 {
+            st.append_stream_delta("x");
+        }
+        assert_eq!(st.scroll_offset, 5);
+        assert!(!st.sticky_bottom);
+    }
+
+    #[test]
+    fn scroll_down_to_zero_restores_sticky() {
+        let mut st = ConversationState::new();
+        st.scroll_up(5);
+        assert!(!st.sticky_bottom);
+        st.scroll_down(5);
+        assert_eq!(st.scroll_offset, 0);
+        assert!(st.sticky_bottom);
+    }
+
+    #[test]
+    fn finish_stream_does_not_override_scroll() {
+        // Upstream REPL.tsx:1284-1301 leaves scroll untouched on
+        // completion — otherside mirrors.
+        let mut st = ConversationState::new();
+        st.input = "x".to_string();
+        st.submit().unwrap();
+        st.scroll_up(5);
+        st.append_stream_delta("partial");
+        st.finish_stream();
+        assert_eq!(st.scroll_offset, 5);
+        assert!(!st.sticky_bottom);
+    }
+
+    #[test]
+    fn fail_stream_does_not_override_scroll() {
+        let mut st = ConversationState::new();
+        st.input = "x".to_string();
+        st.submit().unwrap();
+        st.scroll_up(5);
+        st.append_stream_delta("partial");
+        st.fail_stream("boom".to_string());
+        assert_eq!(st.scroll_offset, 5);
+        assert!(!st.sticky_bottom);
+    }
+
+    #[test]
+    fn submit_re_engages_sticky_bottom() {
+        // Even if the user was scrolled up, a new submit intentionally
+        // snaps the viewport back to the newest turn.
+        let mut st = ConversationState::new();
+        st.input = "one".to_string();
+        st.submit().unwrap();
+        st.scroll_up(3);
+        st.finish_stream();
+        st.input = "two".to_string();
+        st.submit().unwrap();
+        assert_eq!(st.scroll_offset, 0);
+        assert!(st.sticky_bottom);
+    }
+
+    #[test]
+    fn turn_verb_seeded_on_submit_and_cleared_on_finish() {
+        let mut st = ConversationState::new();
+        st.input = "ask".to_string();
+        st.submit().unwrap();
+        assert!(st.turn_verb.is_some());
+        st.finish_stream();
+        assert!(st.turn_verb.is_none());
+    }
+
+    #[test]
+    fn turn_verb_cleared_on_fail_stream() {
+        let mut st = ConversationState::new();
+        st.input = "ask".to_string();
+        st.submit().unwrap();
+        assert!(st.turn_verb.is_some());
+        st.fail_stream("network".to_string());
+        assert!(st.turn_verb.is_none());
+    }
+
+    #[test]
+    fn turn_verb_stable_within_turn() {
+        // The spinner ticker mutates no state that affects turn_verb —
+        // holding the value across arbitrary events is the load-bearing
+        // invariant tested here.
+        let mut st = ConversationState::new();
+        st.input = "ask".to_string();
+        st.submit().unwrap();
+        let v0 = st.turn_verb;
+        for _ in 0..100 {
+            st.append_stream_delta("x");
+        }
+        assert_eq!(st.turn_verb, v0);
     }
 }
