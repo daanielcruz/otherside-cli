@@ -1,10 +1,10 @@
 //! `Agent` tool — launches subagents (parallel / sequential delegation).
 //!
-//! This module was renamed from `task.rs` in change 010 because upstream
-//! Claude Code 2.1.113 advertises the tool as `Agent` on the wire
-//! (captured 2026-04-18; see decisions-log C48). R-20 protects both
-//! `Task` and `Agent` as training anchors — we pick the one upstream
-//! ships today.
+//! This module was renamed from `task.rs` in change 010 because the
+//! upstream capture (2026-04-18) advertises the tool as `Agent` on the
+//! wire. See outer decisions-log C62 for the anchor-selection rationale.
+//! R-20 protects both `Task` and `Agent` as training anchors — we pick
+//! the one upstream ships today.
 //!
 //! MVP behavior: return a structured "subagents registry not yet wired"
 //! response so the model sees its call reached a wired surface and can
