@@ -1,0 +1,23 @@
+<system-reminder>
+The following deferred tools are now available via ToolSearch. Their schemas are NOT loaded — calling them directly will fail with InputValidationError. Use ToolSearch with query "select:<name>[,<name>...]" to load tool schemas before calling them:
+AskUserQuestion
+CronCreate
+CronDelete
+CronList
+EnterPlanMode
+EnterWorktree
+ExitPlanMode
+ExitWorktree
+NotebookEdit
+ScheduleWakeup
+TaskCreate
+TaskGet
+TaskList
+TaskOutput
+TaskStop
+TaskUpdate
+WebFetch
+WebSearch
+mcp__claude_ai_Google_Drive__authenticate
+mcp__claude_ai_Google_Drive__complete_authentication
+</system-reminder>
