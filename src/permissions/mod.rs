@@ -87,10 +87,22 @@ pub fn resolve(
         let _ = rule;
         return Decision::Allow;
     }
-    // acceptEdits: Edit/Write pre-approved without needing a rule,
-    // mirroring upstream "accept edits on" mode.
-    if mode == PermissionMode::AcceptEdits && matches!(tool, "Edit" | "Write") {
-        return Decision::Allow;
+    // acceptEdits: Edit / Write / NotebookEdit pre-approved without
+    // needing a rule, UNLESS the path is inside a
+    // `DANGEROUS_DIRECTORIES` segment or the filename matches one of
+    // `DANGEROUS_FILES` — those are bypass-immune (`.git`, `.claude`,
+    // `.vscode`, `.idea`, shell configs, `.mcp.json`, etc.).
+    // Mirrors upstream's `checkPathSafetyForAutoEdit` at
+    // `utils/permissions/filesystem.ts:629` feeding into the
+    // AcceptEdits fast-path at `permissions.ts:604-654`.
+    if mode == PermissionMode::AcceptEdits
+        && matches!(tool, "Edit" | "Write" | "NotebookEdit")
+    {
+        if !is_dangerous_edit_path(tool_input) {
+            return Decision::Allow;
+        }
+        // Fall through to the Ask path so the user still explicitly
+        // approves edits to sensitive files even with AcceptEdits on.
     }
     // Non-mutating tools (Read/Glob/Grep/ToolSearch/Skill/Agent/
     // WebFetch/WebSearch/Task*) are allowed by default in every mode
@@ -117,6 +129,77 @@ pub fn resolve(
 
 fn is_mutating(tool: &str) -> bool {
     MUTATING_TOOLS.contains(&tool)
+}
+
+/// Directories that stay bypass-immune even with AcceptEdits on.
+/// Matches upstream's `DANGEROUS_DIRECTORIES` at
+/// `utils/permissions/filesystem.ts:83-88`.
+const DANGEROUS_DIRECTORIES: &[&str] = &[".git", ".vscode", ".idea", ".claude"];
+
+/// Filenames that stay bypass-immune even with AcceptEdits on.
+/// Matches upstream's `DANGEROUS_FILES` at
+/// `utils/permissions/filesystem.ts:66-77`.
+const DANGEROUS_FILES: &[&str] = &[
+    ".gitconfig",
+    ".gitmodules",
+    ".bashrc",
+    ".bash_profile",
+    ".zshrc",
+    ".zprofile",
+    ".profile",
+    ".ripgreprc",
+    ".mcp.json",
+    ".claude.json",
+];
+
+/// Extract the candidate `file_path` from the serialized tool input
+/// and return `true` when writing to it should NOT ride the
+/// AcceptEdits fast-path. Missing / malformed inputs return `false`
+/// — the dispatcher will reject on its own with `InvalidArgs` and
+/// we don't want the gate to second-guess syntactic errors.
+fn is_dangerous_edit_path(tool_input: &str) -> bool {
+    let val: serde_json::Value = match serde_json::from_str(tool_input) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    let path = val
+        .get("file_path")
+        .or_else(|| val.get("notebook_path"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if path.is_empty() {
+        return false;
+    }
+
+    // Case-insensitive segment walk — upstream normalizes for
+    // comparison so `.cLauDe/Settings.locaL.json` can't bypass the
+    // check on case-insensitive filesystems.
+    let lower = path.to_lowercase();
+    for seg in lower.split(&['/', '\\'][..]) {
+        if DANGEROUS_DIRECTORIES
+            .iter()
+            .any(|d| seg == d.to_lowercase())
+        {
+            return true;
+        }
+    }
+
+    // Filename match — check the basename against DANGEROUS_FILES.
+    let basename = lower
+        .rsplit(&['/', '\\'][..])
+        .next()
+        .unwrap_or(lower.as_str());
+    if DANGEROUS_FILES.iter().any(|f| basename == f.to_lowercase()) {
+        return true;
+    }
+
+    // UNC path defense-in-depth — network paths are never safe for
+    // auto-edit.
+    if path.starts_with("\\\\") || path.starts_with("//") {
+        return true;
+    }
+
+    false
 }
 
 fn rule_to_string(rule: &PermissionRule) -> Option<String> {
@@ -256,5 +339,109 @@ mod tests {
         let s = settings_with(&[], &[], &[]);
         let d = resolve("Bash", "ls", &s, PermissionMode::AcceptEdits);
         assert_eq!(d, Decision::Ask { rule: None });
+    }
+
+    // AcceptEdits safety-check coverage — dangerous paths fall
+    // through to Ask even with the fast-path mode on. Matches
+    // upstream `checkPathSafetyForAutoEdit` behavior.
+
+    #[test]
+    fn accept_edits_refuses_git_dir() {
+        let s = settings_with(&[], &[], &[]);
+        let d = resolve(
+            "Edit",
+            r#"{"file_path":"/repo/.git/HEAD","old_string":"x","new_string":"y"}"#,
+            &s,
+            PermissionMode::AcceptEdits,
+        );
+        assert_eq!(d, Decision::Ask { rule: None });
+    }
+
+    #[test]
+    fn accept_edits_refuses_claude_dir() {
+        let s = settings_with(&[], &[], &[]);
+        let d = resolve(
+            "Write",
+            r#"{"file_path":"/proj/.claude/settings.json","content":"{}"}"#,
+            &s,
+            PermissionMode::AcceptEdits,
+        );
+        assert_eq!(d, Decision::Ask { rule: None });
+    }
+
+    #[test]
+    fn accept_edits_refuses_vscode_dir() {
+        let s = settings_with(&[], &[], &[]);
+        let d = resolve(
+            "Edit",
+            r#"{"file_path":"/proj/.vscode/settings.json"}"#,
+            &s,
+            PermissionMode::AcceptEdits,
+        );
+        assert_eq!(d, Decision::Ask { rule: None });
+    }
+
+    #[test]
+    fn accept_edits_refuses_shell_config_file() {
+        let s = settings_with(&[], &[], &[]);
+        for path in [
+            "/home/user/.bashrc",
+            "/home/user/.zshrc",
+            "/home/user/.profile",
+            "/home/user/.gitconfig",
+            "/home/user/.mcp.json",
+        ] {
+            let input = format!(r#"{{"file_path":"{path}"}}"#);
+            let d = resolve("Edit", &input, &s, PermissionMode::AcceptEdits);
+            assert_eq!(d, Decision::Ask { rule: None }, "path {path} slipped through");
+        }
+    }
+
+    #[test]
+    fn accept_edits_refuses_case_insensitive_claude() {
+        let s = settings_with(&[], &[], &[]);
+        let d = resolve(
+            "Edit",
+            r#"{"file_path":"/proj/.cLauDe/settings.local.json"}"#,
+            &s,
+            PermissionMode::AcceptEdits,
+        );
+        assert_eq!(d, Decision::Ask { rule: None });
+    }
+
+    #[test]
+    fn accept_edits_refuses_unc_path() {
+        let s = settings_with(&[], &[], &[]);
+        let d = resolve(
+            "Edit",
+            r#"{"file_path":"\\\\share\\evil.txt"}"#,
+            &s,
+            PermissionMode::AcceptEdits,
+        );
+        assert_eq!(d, Decision::Ask { rule: None });
+    }
+
+    #[test]
+    fn accept_edits_allows_safe_project_path() {
+        let s = settings_with(&[], &[], &[]);
+        let d = resolve(
+            "Edit",
+            r#"{"file_path":"/proj/src/main.rs","old_string":"a","new_string":"b"}"#,
+            &s,
+            PermissionMode::AcceptEdits,
+        );
+        assert_eq!(d, Decision::Allow);
+    }
+
+    #[test]
+    fn accept_edits_covers_notebook_edit() {
+        let s = settings_with(&[], &[], &[]);
+        let d = resolve(
+            "NotebookEdit",
+            r#"{"notebook_path":"/proj/book.ipynb","cell_id":"a","new_source":"x"}"#,
+            &s,
+            PermissionMode::AcceptEdits,
+        );
+        assert_eq!(d, Decision::Allow);
     }
 }
