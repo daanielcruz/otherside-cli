@@ -64,6 +64,39 @@ pub enum ToolError {
     Unsupported(String),
 }
 
+/// Gated dispatch — threads the active `PermissionMode` + `Settings`
+/// through [`crate::permissions::resolve`] before delegating to
+/// [`dispatch`]. Mirrors upstream's `checkPermissionsAndCallTool` at
+/// `services/tools/toolExecution.ts:608`.
+///
+/// - [`Decision::Allow`] → delegate.
+/// - [`Decision::Deny`] → `PermissionDenied(rule)`.
+/// - [`Decision::Ask`] → `PermissionDenied` with a "modal pending" note.
+///   The interactive prompt modal is scoped for spec 007; until it
+///   lands the Ask branch degrades to a clean refusal so the model
+///   sees a structured error instead of a hang.
+pub fn dispatch_gated(
+    tool_name: &str,
+    args: &Value,
+    settings: &crate::config::settings::Settings,
+    mode: crate::config::settings::PermissionMode,
+) -> Result<Value, ToolError> {
+    use crate::permissions::{resolve, Decision};
+    let input_str = serde_json::to_string(args).unwrap_or_default();
+    match resolve(tool_name, &input_str, settings, mode) {
+        Decision::Allow => dispatch(tool_name, args),
+        Decision::Deny { rule } => Err(ToolError::PermissionDenied(rule)),
+        Decision::Ask { rule } => {
+            let suffix = rule
+                .map(|r| format!(" (rule: {r})"))
+                .unwrap_or_default();
+            Err(ToolError::PermissionDenied(format!(
+                "interactive approval required{suffix} — prompt modal pending spec 007"
+            )))
+        }
+    }
+}
+
 /// Dispatch a tool call by name. The agent loop calls this after the
 /// model emits a `tool_use` block.
 pub fn dispatch(tool_name: &str, args: &Value) -> Result<Value, ToolError> {

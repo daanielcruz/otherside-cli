@@ -48,6 +48,7 @@ pub mod provider;
 pub mod sessions;
 pub mod serve;
 pub mod statusline;
+pub mod subagents;
 pub mod thinking;
 // keep modules ordered; sessions added above alongside permissions.
 pub mod tools;
