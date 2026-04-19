@@ -326,6 +326,39 @@ fn draw_log(f: &mut Frame<'_>, area: Rect, state: &ConversationState, spinner_ti
 ///   real tool-call render lives at `tui::tool_render`, wired via
 ///   `ConversationState::active_tool_calls` per 015).
 fn render_message(role: OpenAiChatRole, content: &str, width: u16) -> Vec<Line<'static>> {
+    // Assistant content is markdown — render the whole block through
+    // `tui::markdown::render` so `**bold**`, backtick code, lists,
+    // headings, and links get their styled spans. Prefix the first
+    // rendered line with the assistant bullet. Every other role
+    // keeps the per-line path below.
+    if role == OpenAiChatRole::Assistant {
+        let _ = width; // markdown carves its own widths
+        let mut rendered = super::markdown::render(content);
+        let bullet = if cfg!(target_os = "macos") { "⏺ " } else { "● " };
+        let bullet_span = Span::styled(
+            bullet.to_string(),
+            Style::default()
+                .fg(theme::TEXT)
+                .add_modifier(Modifier::BOLD),
+        );
+        if rendered.is_empty() {
+            return vec![Line::from(bullet_span)];
+        }
+        // Splice the bullet into the first non-empty line so a leading
+        // blank paragraph (shouldn't happen in practice) doesn't push
+        // the bullet off-screen.
+        let first_idx = rendered
+            .iter()
+            .position(|l| !l.spans.is_empty())
+            .unwrap_or(0);
+        let head = std::mem::take(&mut rendered[first_idx]);
+        let mut spans: Vec<Span<'static>> = Vec::with_capacity(head.spans.len() + 1);
+        spans.push(bullet_span);
+        spans.extend(head.spans);
+        rendered[first_idx] = Line::from(spans);
+        return rendered;
+    }
+
     let mut lines: Vec<Line<'static>> = Vec::new();
     for (i, raw) in content.split('\n').enumerate() {
         match role {
@@ -356,26 +389,9 @@ fn render_message(role: OpenAiChatRole, content: &str, width: u16) -> Vec<Line<'
                 lines.push(Line::from(spans));
             }
             OpenAiChatRole::Assistant => {
-                if i == 0 {
-                    let bullet = if cfg!(target_os = "macos") { "⏺ " } else { "● " };
-                    // Assistant bullet is WHITE per upstream — the
-                    // PRIMARY accent is reserved for tool-call state
-                    // (gray blink while running, green on success).
-                    lines.push(Line::from(vec![
-                        Span::styled(
-                            bullet.to_string(),
-                            Style::default()
-                                .fg(theme::TEXT)
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                        Span::styled(raw.to_string(), Style::default().fg(theme::TEXT)),
-                    ]));
-                } else {
-                    lines.push(Line::from(Span::styled(
-                        raw.to_string(),
-                        Style::default().fg(theme::TEXT),
-                    )));
-                }
+                // Handled above via markdown::render — unreachable
+                // because we early-return before the loop for Assistant.
+                unreachable!("Assistant role handled via markdown path");
             }
             OpenAiChatRole::System => {
                 let prefix = if i == 0 { "⎿ system: " } else { "           " };
