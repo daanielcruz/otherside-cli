@@ -158,6 +158,14 @@ enum StreamEvent {
         rule: Option<String>,
         reply: tokio::sync::oneshot::Sender<crate::permissions::PermissionResponse>,
     },
+    /// AskUserQuestion tool dispatch — pause the agent turn and route
+    /// a free-form text question to the user. The reply oneshot
+    /// carries the typed answer (empty string on Esc).
+    AskUserQuestion {
+        question: String,
+        hint: Option<String>,
+        reply: tokio::sync::oneshot::Sender<String>,
+    },
 }
 
 /// Entry point — boot the TUI and run until the user exits.
@@ -266,6 +274,13 @@ async fn event_loop(
             // Forced redraw + spinner tick.
             _ = ticker.tick() => {
                 spinner_tick = spinner_tick.wrapping_add(1);
+                // Deliver any ScheduleWakeup entries whose fire_at has
+                // elapsed. Each tick drains the list synchronously —
+                // cheap (Vec<WakeupEntry>), bounded by how many wake-
+                // ups the model registered.
+                for entry in crate::tools::deferred::drain_due_wakeups() {
+                    st.push_system_note(format!("⏰ wakeup: {}", entry.message));
+                }
             }
 
             // Chunk / done / error from the inference task.
@@ -308,6 +323,14 @@ async fn event_loop(
                             tool_name,
                             args_preview,
                             rule,
+                            reply,
+                        ));
+                    }
+                    Some(StreamEvent::AskUserQuestion { question, hint, reply }) => {
+                        st.active_menu = None;
+                        st.pending_question = Some(menu::PendingQuestion::new(
+                            question,
+                            hint,
                             reply,
                         ));
                     }
@@ -377,6 +400,14 @@ fn handle_key(
     // care about presses. Without this check, every key fires twice on
     // Kitty / Wezterm.
     if k.kind != KeyEventKind::Press {
+        return false;
+    }
+
+    // A pending AskUserQuestion overlay owns focus until the user
+    // submits or cancels the answer — the agent task's oneshot is
+    // alive waiting for the reply.
+    if st.pending_question.is_some() {
+        handle_question_key(k, st);
         return false;
     }
 
@@ -923,6 +954,33 @@ fn handle_menu_key(
     false
 }
 
+/// Route a key event through the active AskUserQuestion overlay.
+/// Enter fires the reply (current input), Esc fires empty string.
+/// Char input accumulates into the answer buffer; Backspace trims.
+fn handle_question_key(k: KeyEvent, st: &mut ConversationState) {
+    let Some(q) = st.pending_question.as_mut() else {
+        return;
+    };
+    match k.code {
+        KeyCode::Esc => {
+            q.resolve(String::new());
+            st.pending_question = None;
+        }
+        KeyCode::Enter => {
+            let answer = std::mem::take(&mut q.input);
+            q.resolve(answer);
+            st.pending_question = None;
+        }
+        KeyCode::Backspace => q.backspace(),
+        KeyCode::Char(c)
+            if !k.modifiers.contains(KeyModifiers::CONTROL) =>
+        {
+            q.push_char(c);
+        }
+        _ => {}
+    }
+}
+
 /// Route a key event through the active permission prompt. Esc
 /// resolves as `Deny` (safe default — the agent sees a refusal and
 /// reports it to the model). Enter fires the currently-selected choice.
@@ -1406,6 +1464,13 @@ async fn dispatch_with_prompt(
     use crate::permissions::{self, Decision, PermissionResponse};
     use crate::tools::ToolError;
 
+    // AskUserQuestion needs the event loop to present a text-input
+    // overlay. Route it before the permission gate — the tool is
+    // always allowed (it IS the user interaction), no rule applies.
+    if tool_name == "AskUserQuestion" {
+        return ask_user_question_async(args, tx).await;
+    }
+
     let input_str = serde_json::to_string(args).unwrap_or_default();
     // Fold the session allowlist into the settings snapshot so
     // `permissions::resolve` sees it via the normal `permissions.allow`
@@ -1449,6 +1514,47 @@ async fn dispatch_with_prompt(
             }
         }
     }
+}
+
+/// Dispatch AskUserQuestion — surface the TUI overlay, block until
+/// the user resolves it, return the answer to the model. An empty
+/// answer comes from Esc; the tool result still surfaces it so the
+/// model can distinguish "user declined" from "user gave info".
+async fn ask_user_question_async(
+    args: &serde_json::Value,
+    tx: &mpsc::Sender<StreamEvent>,
+) -> std::result::Result<serde_json::Value, crate::tools::ToolError> {
+    use crate::tools::ToolError;
+    let question = args
+        .get("question")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| ToolError::InvalidArgs("`question` is required".into()))?
+        .to_string();
+    let hint = args
+        .get("hint")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    if tx
+        .send(StreamEvent::AskUserQuestion {
+            question,
+            hint,
+            reply: reply_tx,
+        })
+        .await
+        .is_err()
+    {
+        return Err(ToolError::InvalidArgs(
+            "user interface gone — AskUserQuestion aborted".into(),
+        ));
+    }
+    let answer = reply_rx
+        .await
+        .map_err(|_| ToolError::InvalidArgs("AskUserQuestion cancelled".into()))?;
+    Ok(serde_json::json!({
+        "answer": answer,
+        "declined": answer.is_empty(),
+    }))
 }
 
 /// Fold the session-scoped allowlist into a settings clone so the

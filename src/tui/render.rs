@@ -195,6 +195,18 @@ pub fn render(
     // active — the popup goes in the streaming area bottom strip so
     // it obscures nothing crucial (we redraw next frame anyway).
     draw_prompt(f, slots.prompt, state);
+    // Pending agent question (AskUserQuestion) outranks everything
+    // except a permission prompt — it also blocks the turn.
+    if let Some(q) = state.pending_question.as_ref() {
+        let overlay_h = 10u16.min(slots.streaming.height);
+        let overlay = Rect {
+            x: slots.streaming.x,
+            y: slots.streaming.y + slots.streaming.height.saturating_sub(overlay_h),
+            width: slots.streaming.width,
+            height: overlay_h,
+        };
+        super::menu::draw_question_prompt(f, overlay, q);
+    } else
     // Pending permission prompt wins over slash menus — it's agent-
     // driven and blocks the turn until the user resolves it. Autocomplete
     // stays suppressed.

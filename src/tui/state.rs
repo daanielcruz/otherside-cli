@@ -341,6 +341,11 @@ pub struct ConversationState {
     /// Takes precedence over `active_menu` for focus capture.
     pub pending_permission: Option<super::menu::PendingPermissionPrompt>,
 
+    /// Pending agent-driven question (`AskUserQuestion` tool). Same
+    /// focus-capture discipline as the permission prompt; the reply
+    /// is free-form text.
+    pub pending_question: Option<super::menu::PendingQuestion>,
+
     /// Session-scoped allowlist shared with the agent task. When the
     /// user picks "Allow and don't ask again" we push the rule here;
     /// every subsequent dispatch consults the snapshot in-line.

@@ -452,6 +452,113 @@ impl PendingPermissionPrompt {
     }
 }
 
+/// Agent-driven text-input prompt (AskUserQuestion). Distinct from
+/// [`PendingPermissionPrompt`] because the reply is free-form text
+/// rather than a choice index, and the render path embeds a live
+/// input line. Fires a `oneshot` with the typed answer on Enter,
+/// or an empty string on Esc (the agent treats empty as "declined").
+pub struct PendingQuestion {
+    pub question: String,
+    pub hint: Option<String>,
+    pub input: String,
+    pub reply: Option<tokio::sync::oneshot::Sender<String>>,
+}
+
+impl std::fmt::Debug for PendingQuestion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PendingQuestion")
+            .field("question", &self.question)
+            .field("hint", &self.hint)
+            .field("input_len", &self.input.len())
+            .field("reply_present", &self.reply.is_some())
+            .finish()
+    }
+}
+
+impl PendingQuestion {
+    pub fn new(
+        question: String,
+        hint: Option<String>,
+        reply: tokio::sync::oneshot::Sender<String>,
+    ) -> Self {
+        Self {
+            question,
+            hint,
+            input: String::new(),
+            reply: Some(reply),
+        }
+    }
+
+    pub fn push_char(&mut self, c: char) {
+        self.input.push(c);
+    }
+
+    pub fn backspace(&mut self) {
+        self.input.pop();
+    }
+
+    pub fn resolve(&mut self, answer: String) {
+        if let Some(tx) = self.reply.take() {
+            let _ = tx.send(answer);
+        }
+    }
+}
+
+/// Paint the AskUserQuestion overlay — question prose, optional hint
+/// below, a live input row, and the Enter/Esc footer.
+pub fn draw_question_prompt(f: &mut Frame<'_>, area: Rect, prompt: &PendingQuestion) {
+    if area.height < MIN_HEIGHT {
+        return;
+    }
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(6);
+
+    for wrapped in prompt.question.lines() {
+        lines.push(Line::from(Span::styled(
+            format!("  {wrapped}"),
+            Style::default()
+                .fg(theme::TEXT)
+                .add_modifier(Modifier::BOLD),
+        )));
+    }
+    if let Some(hint) = prompt.hint.as_ref() {
+        lines.push(Line::from(Span::styled(
+            format!("  {hint}"),
+            Style::default().fg(theme::MUTED),
+        )));
+    }
+    lines.push(Line::raw(""));
+    lines.push(Line::from(vec![
+        Span::styled(
+            "❯ ".to_string(),
+            Style::default()
+                .fg(theme::PRIMARY)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("{}_", prompt.input),
+            Style::default().fg(theme::TEXT),
+        ),
+    ]));
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(
+        "  Enter send  ·  Esc cancel".to_string(),
+        Style::default().fg(theme::MUTED),
+    )));
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(Span::styled(
+            " Question ".to_string(),
+            Style::default()
+                .fg(theme::PRIMARY)
+                .add_modifier(Modifier::BOLD),
+        ))
+        .border_style(Style::default().fg(theme::MUTED));
+
+    let paragraph = Paragraph::new(lines).block(block);
+    f.render_widget(paragraph, area);
+}
+
 /// Draw the permission overlay. Same shell as [`draw_overlay`] but
 /// with the tool name + args preview + ruleline above the choices.
 pub fn draw_permission_prompt(f: &mut Frame<'_>, area: Rect, prompt: &PendingPermissionPrompt) {

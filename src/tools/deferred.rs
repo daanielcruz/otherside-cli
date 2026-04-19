@@ -594,6 +594,27 @@ pub const TOOL_CRON_LIST_JSON: &str = r#"{
   }
 }"#;
 
+pub const TOOL_ASK_USER_QUESTION_JSON: &str = r#"{
+  "name": "AskUserQuestion",
+  "description": "Ask the user a clarifying question mid-turn. The TUI opens a text-input overlay; the answer comes back as this tool's result. Use when the next action depends on a piece of information only the user has (target file, environment, credentials pointer, etc.). Keep questions short and specific — one ask per invocation.",
+  "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "question": {
+        "description": "The question text shown to the user. Concise, imperative, one sentence where possible.",
+        "type": "string"
+      },
+      "hint": {
+        "description": "Optional secondary line shown dimmed below the question. Use for hints like accepted formats.",
+        "type": "string"
+      }
+    },
+    "required": ["question"],
+    "additionalProperties": false
+  }
+}"#;
+
 pub const TOOL_SCHEDULE_WAKEUP_JSON: &str = r#"{
   "name": "ScheduleWakeup",
   "description": "Register a one-shot wakeup — at `inMs` (or `in`, a duration string), surface the `message` inline in the transcript. Use to remind yourself of a pending step after a long-running tool.",

@@ -78,6 +78,7 @@ fn load_deferred() -> Vec<ToolSchema> {
         crate::tools::deferred::TOOL_CRON_DELETE_JSON,
         crate::tools::deferred::TOOL_CRON_LIST_JSON,
         crate::tools::deferred::TOOL_SCHEDULE_WAKEUP_JSON,
+        crate::tools::deferred::TOOL_ASK_USER_QUESTION_JSON,
     ];
     raws.iter()
         .map(|raw| {
@@ -263,9 +264,8 @@ mod tests {
     #[test]
     fn deferred_schemas_contain_wave_3_set() {
         // 018 seeded 5 (Task* + NotebookEdit), 019 added 2 web tools,
-        // wave 3 adds 10 deferred tools (plan + worktree + task extras
-        // + cron + wakeup). Total = 17 deferred shapes.
-        assert_eq!(deferred_schemas().len(), 17);
+        // wave 3 adds 10 deferred tools + AskUserQuestion. Total = 18.
+        assert_eq!(deferred_schemas().len(), 18);
     }
 
     #[test]
@@ -291,14 +291,15 @@ mod tests {
                 "CronDelete",
                 "CronList",
                 "ScheduleWakeup",
+                "AskUserQuestion",
             ]
         );
     }
 
     #[test]
     fn all_schemas_total_reflects_every_wave() {
-        // 9 wire + 17 deferred (018 + 019 + wave 3).
-        assert_eq!(all_schemas().len(), 26);
+        // 9 wire + 18 deferred (018 + 019 + wave 3 + AskUserQuestion).
+        assert_eq!(all_schemas().len(), 27);
     }
 
     #[test]
@@ -328,6 +329,7 @@ mod tests {
                 "CronDelete",
                 "CronList",
                 "ScheduleWakeup",
+                "AskUserQuestion",
             ]
         );
     }

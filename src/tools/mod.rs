@@ -138,6 +138,13 @@ pub fn dispatch(tool_name: &str, args: &Value) -> Result<Value, ToolError> {
         "CronDelete" => deferred::cron_delete(args),
         "CronList" => deferred::cron_list(args),
         "ScheduleWakeup" => deferred::schedule_wakeup(args),
+        // AskUserQuestion routes through the async dispatch (see
+        // `tui::mod.rs::dispatch_with_prompt`). Calling the sync
+        // dispatch is a programmer error but surface a clean
+        // Unsupported so tests / stray calls report rather than panic.
+        "AskUserQuestion" => Err(ToolError::Unsupported(
+            "AskUserQuestion requires the async agent dispatch path".into(),
+        )),
         // Affordance hints for models that hallucinate retired names.
         "Task" => Err(ToolError::Unsupported(
             "tool `Task` is retired; use `Agent` for subagent dispatch (010 anchor selection)"

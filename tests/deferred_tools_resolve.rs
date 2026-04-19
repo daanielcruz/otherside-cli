@@ -169,11 +169,12 @@ fn wire_catalog_stays_at_nine_after_deferred_dispatch() {
             "CronDelete",
             "CronList",
             "ScheduleWakeup",
+            "AskUserQuestion",
         ]
     );
 
     // Combined catalog equals wire + deferred in that order.
-    assert_eq!(schemas::all_schemas().len(), 26);
+    assert_eq!(schemas::all_schemas().len(), 27);
 }
 
 #[test]
@@ -191,10 +192,15 @@ fn tool_search_substring_query_covers_deferred_tools() {
 
 #[test]
 fn dispatch_unknown_deferred_name_still_errors() {
-    // Sanity guardrail: only wired deferred tools route. A name that
-    // is NOT in any wave (AskUserQuestion still lands later) still
-    // hits the default Unsupported arm.
+    // Sanity guardrail: names not in any wave still hit the default
+    // Unsupported arm. AskUserQuestion is now wired but only via the
+    // async path — the sync dispatch yields Unsupported on purpose.
     let err = tools::dispatch("AskUserQuestion", &json!({})).unwrap_err();
+    assert!(matches!(
+        err,
+        otherside::tools::ToolError::Unsupported(_)
+    ));
+    let err = tools::dispatch("SomeFutureToolThatDoesNotExistYet", &json!({})).unwrap_err();
     assert!(matches!(
         err,
         otherside::tools::ToolError::Unsupported(_)
