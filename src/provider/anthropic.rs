@@ -445,6 +445,12 @@ impl Stream for AnthropicChunkStream {
             // Always drain pending chunks first — they represent
             // already-translated events from earlier byte batches.
             if let Some(chunk) = self.pending.pop_front() {
+                tracing::trace!(
+                    target: "otherside::stream",
+                    hop = "provider_chunk_yield",
+                    pending_after = self.pending.len(),
+                    "OpenAiChunk leaving AnthropicChunkStream"
+                );
                 return Poll::Ready(Some(Ok(chunk)));
             }
             if self.finished {
@@ -454,6 +460,12 @@ impl Stream for AnthropicChunkStream {
             match self.bytes.as_mut().poll_next(cx) {
                 Poll::Pending => return Poll::Pending,
                 Poll::Ready(Some(Ok(bytes))) => {
+                    tracing::trace!(
+                        target: "otherside::stream",
+                        hop = "provider_bytes",
+                        len = bytes.len(),
+                        "reqwest bytes_stream chunk"
+                    );
                     self.buf.push(&bytes);
                     if let Err(e) = self.drain_events() {
                         // Translator error → terminate the stream with

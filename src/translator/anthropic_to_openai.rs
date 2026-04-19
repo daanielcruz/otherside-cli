@@ -149,7 +149,7 @@ impl AnthropicStreamTranslator {
             value.get("type").and_then(Value::as_str).unwrap_or("")
         };
 
-        match event_name {
+        let result = match event_name {
             "message_start" => self.handle_message_start(&value),
             "content_block_start" => self.handle_content_block_start(&value),
             "content_block_delta" => self.handle_content_block_delta(&value),
@@ -159,7 +159,16 @@ impl AnthropicStreamTranslator {
             // Everything else (ping, and any future event types) maps
             // to no client chunk.
             _ => Ok(None),
+        };
+        if let Ok(Some(_)) = &result {
+            tracing::trace!(
+                target: "otherside::stream",
+                hop = "translator_chunk_emit",
+                event = event_name,
+                "AnthropicStreamTranslator yielding OpenAiChunk"
+            );
         }
+        result
     }
 
     fn handle_content_block_start(&mut self, value: &Value) -> Result<Option<OpenAiChunk>> {

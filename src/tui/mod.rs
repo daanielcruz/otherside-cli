@@ -543,10 +543,16 @@ async fn run_agent_turns(
             match item {
                 Ok(chunk) => {
                     if let Some(delta) = turn.fold_chunk(chunk) {
-                        if !delta.is_empty()
-                            && tx.send(StreamEvent::Delta(delta)).await.is_err()
-                        {
-                            return;
+                        if !delta.is_empty() {
+                            tracing::trace!(
+                                target: "otherside::stream",
+                                hop = "tui_delta_send",
+                                len = delta.len(),
+                                "StreamEvent::Delta dispatching to TUI rx"
+                            );
+                            if tx.send(StreamEvent::Delta(delta)).await.is_err() {
+                                return;
+                            }
                         }
                     }
                 }
