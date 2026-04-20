@@ -2163,7 +2163,7 @@ mod settings_edit_tests {
         }
 
         edit_settings_row(&mut st, 1);
-        assert_eq!(st.settings.default_provider.as_deref(), Some("codex"));
+        assert_eq!(st.settings.default_provider.as_deref(), Some("codex-oauth"));
         assert_eq!(st.model, "gpt-5.4");
 
         edit_settings_row(&mut st, 1);
