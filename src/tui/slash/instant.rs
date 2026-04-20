@@ -5,7 +5,7 @@
 //! up to the event loop via [`SlashOutcome::ExitApp`] so the caller
 //! breaks out of the render loop.
 
-use super::super::state::ConversationState;
+use super::super::state::{ConversationState, DisplayOrigin};
 use super::SlashOutcome;
 
 /// Dispatch an Instant-category slash. Returns `ExitApp` for
@@ -14,7 +14,10 @@ pub fn handle(name: &str, _args: &str, state: &mut ConversationState) -> SlashOu
     match name.to_ascii_lowercase().as_str() {
         "clear" => {
             state.clear_conversation();
-            state.push_anchor("clear", "", "(no content)");
+            // Chrome — the `/clear` anchor is a local visual
+            // breadcrumb; the history wipe itself is the real effect
+            // and already drops prior turns before this push lands.
+            state.push_anchor("clear", "", "(no content)", DisplayOrigin::Chrome);
             SlashOutcome::Handled
         }
         "exit" | "bye" => SlashOutcome::ExitApp,
@@ -37,6 +40,6 @@ mod tests {
         let len = st.messages.len();
         assert_eq!(len, 2, "expected user-echo + anchor after clear");
         assert_eq!(st.messages[len - 2].content, "/clear");
-        assert_eq!(st.messages[len - 1].content, "⎿ (no content)");
+        assert_eq!(st.messages[len - 1].content, "⎿  (no content)");
     }
 }

@@ -91,6 +91,26 @@ use crate::inference::{OpenAiChatMessage, OpenAiChatRole};
 use super::autocomplete::Autocomplete;
 use super::tool_render::{self, ToolPayload, ToolStatus};
 
+/// Provider-visibility discriminator for a `DisplayMessage`.
+///
+/// Upstream claude-code marks each visible transcript row as
+/// `display: "system"` (chrome — visible locally, stripped from the
+/// outgoing `/v1/messages` body) or conversation content (serialized
+/// to the provider on the next turn). Otherside needs the same split
+/// so panel dismissals, toggle confirmations, and auth hints stay
+/// local while real user/assistant turns and genuine Anchor slashes
+/// (`/compact`, `/branch`, `/loop`, `/context`) ride the wire.
+///
+/// No `Default` impl on purpose (R-92) — every new construction site
+/// must classify explicitly, so silent leaks fail at compile time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DisplayOrigin {
+    /// Reaches the provider on the next `/v1/messages` turn.
+    Transcript,
+    /// Local chrome only — filtered at `history_for_request`.
+    Chrome,
+}
+
 /// A finalized message in the chat log.
 ///
 /// `role` is one of `User` / `Assistant` / `System` — we reuse the canonical
@@ -106,6 +126,11 @@ pub struct DisplayMessage {
     /// the request without leaking into the user-facing log (only
     /// `❯ /<name>` appears on screen).
     pub wire_override: Option<String>,
+    /// Chrome rows are filtered at the wire boundary (see
+    /// `DisplayOrigin`). Mirrors upstream's `display: "system"` flag
+    /// on panel / hint emissions (R-92 evidence: `reconstructed/
+    /// 2.1.114/source/components/Settings/Settings.tsx:46`).
+    pub origin: DisplayOrigin,
 }
 
 /// One tool-call entry on the active list.
@@ -462,20 +487,65 @@ mod feedback_tests {
     #[test]
     fn push_anchor_emits_echo_plus_result_line() {
         let mut st = ConversationState::default();
-        st.push_anchor("compact", "", "42 msgs dropped");
+        st.push_anchor("compact", "", "42 msgs dropped", DisplayOrigin::Transcript);
         assert_eq!(st.messages.len(), 2);
         assert_eq!(st.messages[0].role, super::OpenAiChatRole::User);
         assert_eq!(st.messages[0].content, "/compact");
+        assert_eq!(st.messages[0].origin, DisplayOrigin::Transcript);
         assert_eq!(st.messages[1].role, super::OpenAiChatRole::System);
         assert!(st.messages[1].content.starts_with("⎿ "));
         assert!(st.messages[1].content.contains("42 msgs dropped"));
+        assert_eq!(st.messages[1].origin, DisplayOrigin::Transcript);
     }
 
     #[test]
     fn push_anchor_with_args_echoes_them() {
         let mut st = ConversationState::default();
-        st.push_anchor("compact", "trim-to 3", "ok");
+        st.push_anchor("compact", "trim-to 3", "ok", DisplayOrigin::Transcript);
         assert_eq!(st.messages[0].content, "/compact trim-to 3");
+    }
+
+    #[test]
+    fn history_for_request_skips_chrome_anchors() {
+        // Panel dismissal anchor (Chrome) must NOT reach the wire;
+        // only the real user turn survives in the request body. R-92
+        // evidence: upstream `Settings.tsx:46` marks dismiss with
+        // `display: "system"` so the history serializer strips it.
+        let mut st = ConversationState::default();
+        // Panel dismissal — two Chrome rows.
+        st.push_anchor("config", "", "Status dialog dismissed", DisplayOrigin::Chrome);
+        // Real user turn — one Transcript row.
+        st.input = "what does main.rs do?".into();
+        let _ = st.submit();
+        // messages contains 3 rows total (chrome pair + user turn).
+        assert_eq!(st.messages.len(), 3);
+        // history_for_request emits only the real user turn.
+        let hist = st.history_for_request();
+        assert_eq!(hist.len(), 1, "chrome anchors must not ride the wire");
+        assert_eq!(hist[0].content, "what does main.rs do?");
+    }
+
+    #[test]
+    fn history_for_request_includes_transcript_anchors() {
+        // Anchor-category slashes (`/compact`, `/branch`, `/loop`,
+        // `/context`) carry semantic meaning — they MUST reach the
+        // provider. Guard against a future default-flip regression.
+        let mut st = ConversationState::default();
+        st.push_anchor("compact", "", "42 msgs dropped", DisplayOrigin::Transcript);
+        let hist = st.history_for_request();
+        assert_eq!(hist.len(), 2, "anchor pair rides the wire");
+        assert_eq!(hist[0].content, "/compact");
+        assert!(hist[1].content.starts_with("⎿ "));
+    }
+
+    #[test]
+    fn push_system_note_is_chrome() {
+        // Auth hints, wakeup alarms, error notes — all local chrome.
+        let mut st = ConversationState::default();
+        st.push_system_note("login needs stdin interaction");
+        assert_eq!(st.messages.len(), 1);
+        assert_eq!(st.messages[0].origin, DisplayOrigin::Chrome);
+        assert!(st.history_for_request().is_empty(), "system notes stay local");
     }
 
     #[test]
@@ -512,6 +582,7 @@ mod feedback_tests {
             role: super::OpenAiChatRole::Assistant,
             content: "prior turn".into(),
             wire_override: None,
+            origin: DisplayOrigin::Transcript,
         });
         assert!(!st.show_post_clear_splash);
         st.clear_conversation();
@@ -532,6 +603,7 @@ mod feedback_tests {
             role: super::OpenAiChatRole::User,
             content: "hi".into(),
             wire_override: None,
+            origin: DisplayOrigin::Transcript,
         });
         st.clear_conversation();
         assert_eq!(st.input_tokens, 0);
@@ -695,6 +767,7 @@ impl ConversationState {
             role: OpenAiChatRole::User,
             content,
             wire_override,
+            origin: DisplayOrigin::Transcript,
         });
         self.input.clear();
         self.streaming = true;
@@ -845,21 +918,34 @@ impl ConversationState {
             role: OpenAiChatRole::System,
             content: text.into(),
             wire_override: None,
+            origin: DisplayOrigin::Chrome,
         });
         self.input.clear();
         self.autocomplete = None;
         self.scroll_to_bottom();
     }
 
-    /// Append an anchor pair for the Anchor-category slashes
-    /// (`/compact`, `/branch`, `/loop`, `/context`). Emits two
-    /// messages:
+    /// Append an anchor pair.
+    ///
+    /// Emits two messages:
     ///
     /// 1. a User turn `/<name> <args>` — renders with the `❯` chevron.
     /// 2. a System turn prefixed with `⎿ ` — the render layer spots
     ///    the prefix and paints the line dim + italic WITHOUT the
     ///    usual `system:` label, giving the upstream anchor shape.
-    pub fn push_anchor(&mut self, slash_name: &str, args: &str, result: impl Into<String>) {
+    ///
+    /// `origin` decides whether the pair reaches the provider on the
+    /// next turn: `Transcript` for Anchor-category slashes (`/compact`,
+    /// `/branch`, `/loop`, `/context`) whose semantics belong in the
+    /// conversation; `Chrome` for Panel / Instant / Toggle / Auth
+    /// dismissal echoes that must stay local.
+    pub fn push_anchor(
+        &mut self,
+        slash_name: &str,
+        args: &str,
+        result: impl Into<String>,
+        origin: DisplayOrigin,
+    ) {
         let echo = if args.is_empty() {
             format!("/{slash_name}")
         } else {
@@ -869,11 +955,16 @@ impl ConversationState {
             role: OpenAiChatRole::User,
             content: echo,
             wire_override: None,
+            origin,
         });
         self.messages.push(DisplayMessage {
             role: OpenAiChatRole::System,
-            content: format!("⎿ {}", result.into()),
+            // Double-space after ⎿ mirrors upstream's uniform
+            // anchor prefix across every captured surface (010
+            // R-92 evidence: `/tmp/parity-20260420-tmux/**/upstream*.txt`).
+            content: format!("⎿  {}", result.into()),
             wire_override: None,
+            origin,
         });
         self.input.clear();
         self.autocomplete = None;
@@ -980,6 +1071,7 @@ impl ConversationState {
         self.messages
             .iter()
             .filter(|m| m.role != OpenAiChatRole::Tool)
+            .filter(|m| m.origin == DisplayOrigin::Transcript)
             .map(|m| OpenAiChatMessage {
                 role: m.role,
                 content: m
@@ -1087,15 +1179,17 @@ impl ConversationState {
             self.messages.push(DisplayMessage {
                 role: OpenAiChatRole::Tool,
                 content: format_tool_history_entry(&entry),
-            wire_override: None,
-        });
+                wire_override: None,
+                origin: DisplayOrigin::Transcript,
+            });
         }
         if !self.current_assistant_buffer.is_empty() {
             let content = std::mem::take(&mut self.current_assistant_buffer);
             self.messages.push(DisplayMessage {
                 role: OpenAiChatRole::Assistant,
                 content,
-            wire_override: None,
+                wire_override: None,
+                origin: DisplayOrigin::Transcript,
             });
         } else {
             self.current_assistant_buffer.clear();
@@ -1123,15 +1217,17 @@ impl ConversationState {
             self.messages.push(DisplayMessage {
                 role: OpenAiChatRole::Tool,
                 content: format_tool_history_entry(&entry),
-            wire_override: None,
-        });
+                wire_override: None,
+                origin: DisplayOrigin::Transcript,
+            });
         }
         if !self.current_assistant_buffer.is_empty() {
             let content = std::mem::take(&mut self.current_assistant_buffer);
             self.messages.push(DisplayMessage {
                 role: OpenAiChatRole::Assistant,
                 content,
-            wire_override: None,
+                wire_override: None,
+                origin: DisplayOrigin::Transcript,
             });
         }
         self.last_error = Some(err);
@@ -1162,7 +1258,8 @@ impl ConversationState {
             self.messages.push(DisplayMessage {
                 role: OpenAiChatRole::Assistant,
                 content,
-            wire_override: None,
+                wire_override: None,
+                origin: DisplayOrigin::Transcript,
             });
         }
         self.streaming = false;

@@ -7,7 +7,7 @@
 
 use crate::config::settings::PermissionMode;
 
-use super::super::state::ConversationState;
+use super::super::state::{ConversationState, DisplayOrigin};
 use super::SlashOutcome;
 
 /// Dispatch a Toggle-category slash. Always returns `Handled`.
@@ -31,7 +31,9 @@ pub fn handle(name: &str, args: &str, state: &mut ConversationState) -> SlashOut
                 state.permission_mode = PermissionMode::Plan;
                 "Enabled plan mode"
             };
-            state.push_anchor("plan", args, anchor_result);
+            // Chrome — plan-mode toggle is a local permission flip.
+            // Upstream never round-trips this to the provider.
+            state.push_anchor("plan", args, anchor_result, DisplayOrigin::Chrome);
         }
         "tag" => {
             state.set_feedback("/tag: turn tagging lands with persistence (spec 008)");
@@ -67,7 +69,7 @@ mod tests {
         let len = st.messages.len();
         assert!(len >= 2);
         assert_eq!(st.messages[len - 2].content, "/plan");
-        assert_eq!(st.messages[len - 1].content, "⎿ Enabled plan mode");
+        assert_eq!(st.messages[len - 1].content, "⎿  Enabled plan mode");
         assert!(matches!(st.permission_mode, PermissionMode::Plan));
     }
 

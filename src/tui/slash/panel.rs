@@ -25,22 +25,26 @@ pub fn handle(kind: PanelKind, state: &mut ConversationState) -> SlashOutcome {
     let overlay = match kind {
         PanelKind::Effort => menu::OverlayMenu::new_effort(state.effort_label),
         PanelKind::Permissions => menu::OverlayMenu::new_permissions(state.permission_mode),
-        PanelKind::Model => menu::OverlayMenu::new_model(&state.model),
+        PanelKind::Model => {
+            // Surface the session's effort level to the picker so
+            // upstream's inline `◉ {Level} effort (default) ← → to adjust`
+            // indicator renders (014 parity). Defaults to `xhigh`
+            // when unset — upstream Opus default.
+            let effort = state.effort_label.unwrap_or("xhigh");
+            menu::OverlayMenu::new_model_with_effort(&state.model, Some(effort))
+        }
         PanelKind::Help => menu::OverlayMenu::new_info(
             PanelKind::Help,
             "Slash commands".into(),
             help_hints(),
         ),
-        PanelKind::Status => menu::OverlayMenu::new_info(
-            PanelKind::Status,
-            "Session status".into(),
-            status_hints(state),
-        ),
-        PanelKind::Config => menu::OverlayMenu::new_info(
-            PanelKind::Config,
-            "Settings snapshot".into(),
-            config_hints(state),
-        ),
+        // Unified Settings panel — `/status`, `/config`, `/usage`
+        // collapse into one `PanelKind::Settings(tab)` per upstream
+        // `components/Settings/Settings.tsx` (008 evidence). Title,
+        // content body, and focus-initial depend on the default tab;
+        // the dismiss anchor is hardcoded `Status dialog dismissed`
+        // regardless of tab (see `emit_panel_dismiss_anchor`).
+        PanelKind::Settings(tab) => menu::OverlayMenu::new_settings(tab, state),
         PanelKind::Skills => menu::OverlayMenu::new_info(
             PanelKind::Skills,
             "Skills".into(),
@@ -149,99 +153,10 @@ fn help_hints() -> Vec<String> {
     lines
 }
 
-fn status_hints(st: &ConversationState) -> Vec<String> {
-    vec![
-        format!("model: {}", st.model),
-        format!("permission: {:?}", st.permission_mode),
-        format!(
-            "context: {}/{}",
-            st.input_tokens,
-            st.context_window_label()
-        ),
-        format!("effort: {}", st.effort_label.unwrap_or("auto")),
-        format!(
-            "verbose: {}",
-            if st.render_verbose { "on" } else { "off" }
-        ),
-    ]
-}
-
-fn config_hints(st: &ConversationState) -> Vec<String> {
-    let cwd = std::env::current_dir()
-        .ok()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|| "(unknown)".into());
-    let mut lines = vec![
-        "Active session".into(),
-        format!("  model            {}", st.model),
-        format!("  context window   {}", st.context_window_label()),
-        format!("  permission mode  {:?}", st.permission_mode),
-        format!(
-            "  effort           {}",
-            st.effort_label.unwrap_or("auto")
-        ),
-        format!(
-            "  verbose          {}",
-            if st.render_verbose { "on" } else { "off" }
-        ),
-        format!(
-            "  tokens (in/out)  {} / {}",
-            st.input_tokens,
-            st.total_output_tokens()
-        ),
-        format!("  cwd              {cwd}"),
-        String::new(),
-        "Settings file".into(),
-        format!(
-            "  default provider {}",
-            st.settings
-                .default_provider
-                .clone()
-                .unwrap_or_else(|| "(unset)".into())
-        ),
-        format!(
-            "  default model    {}",
-            st.settings
-                .default_model
-                .clone()
-                .unwrap_or_else(|| "(unset)".into())
-        ),
-        format!(
-            "  log level        {}",
-            st.settings
-                .log_level
-                .clone()
-                .unwrap_or_else(|| "(unset)".into())
-        ),
-        format!(
-            "  effort level     {}",
-            st.settings
-                .effort_level
-                .clone()
-                .unwrap_or_else(|| "(unset)".into())
-        ),
-        format!(
-            "  verbose          {}",
-            st.settings
-                .verbose
-                .map(|b| if b { "true".to_string() } else { "false".to_string() })
-                .unwrap_or_else(|| "(unset)".into())
-        ),
-    ];
-    if let Some(sl) = st.settings.statusline.as_ref() {
-        lines.push(format!("  statusline       {:?}", sl));
-    }
-    if let Some(hooks) = st.settings.hooks.as_ref() {
-        let total = hooks.pre_tool_use.len()
-            + hooks.post_tool_use.len()
-            + hooks.user_prompt_submit.len()
-            + hooks.stop.len();
-        lines.push(format!("  hooks            {total} configured"));
-    } else {
-        lines.push("  hooks            (none)".into());
-    }
-    lines
-}
+// Settings panel rows (Status / Config / Usage tabs) live in
+// `tui::menu::new_settings` now — 009 moved them there so interactive
+// editing (bool toggle, enum cycle, provider switch) can read the
+// row's `SettingsRowKind` directly.
 
 fn hooks_hints(st: &ConversationState) -> Vec<String> {
     let Some(h) = st.settings.hooks.as_ref() else {

@@ -64,6 +64,7 @@ pub mod mcp;
 pub mod merge;
 pub mod paths;
 pub mod projects;
+pub mod providers;
 pub mod settings;
 pub mod state;
 pub mod validation;

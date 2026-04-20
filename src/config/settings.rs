@@ -86,6 +86,58 @@ pub struct Settings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort_level: Option<String>,
 
+    // ----- openspec 009: Config-tab editable flags -----
+    //
+    // Upstream ships ~28 user-toggleable settings in the Config tab
+    // (live capture 2026-04-20). Otherside exposes the subset below
+    // as editable via the Settings panel; each is `Option<T>` so an
+    // absent value round-trips as `None` without pinning a default.
+    // The TUI renders the LIVE + persisted value per row.
+
+    /// Auto-compact conversation history when the context window
+    /// nears saturation. Upstream default: true.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_compact: Option<bool>,
+
+    /// Show rotating tip line below the progress row. Upstream
+    /// default: true.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub show_tips: Option<bool>,
+
+    /// Expose thinking-block deltas mid-turn. Upstream default:
+    /// true (the `✻ Thinking` band).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_mode: Option<bool>,
+
+    /// Render the per-turn recap header before the user's prompt
+    /// on long sessions. Upstream default: true.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_recap: Option<bool>,
+
+    /// Render a slim progress bar in the terminal titlebar. Upstream
+    /// default: true.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_progress_bar: Option<bool>,
+
+    /// Show turn duration inline on the assistant reply. Upstream
+    /// default: true.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub show_turn_duration: Option<bool>,
+
+    /// Theme name — `dark`, `light`, `dark-ansi`, `light-ansi`,
+    /// `dark-daltonized`, `light-daltonized`. Today only `dark` is
+    /// wired in otherside; the other values persist but fall back to
+    /// `dark` at render time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
+
+    /// Editor mode for the prompt input — `normal` or `vim`.
+    /// Upstream default: `normal`. `vim` mode lands in a later
+    /// change; persisting the value now keeps user intent round-
+    /// trippable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub editor_mode: Option<String>,
+
     // ----- Enterprise locks (read-only to users when set via policy) -----
     /// Block non-plugin customization paths (stricter than user-set).
     pub strict_plugin_only_customization: Option<bool>,

@@ -96,7 +96,7 @@ pub mod tips;
 pub mod todos;
 pub mod tool_render;
 
-use state::ConversationState;
+use state::{ConversationState, DisplayOrigin};
 
 /// Event payloads coming from the inference task, pushed onto the mpsc
 /// channel. Key events are consumed directly from `EventStream` in the
@@ -712,6 +712,7 @@ fn handle_menu_key(
     st: &mut ConversationState,
     thinking: &mut Option<ThinkingConfig>,
 ) -> bool {
+    use crate::tui::slash::catalog::PanelKind;
     if matches!(k.code, KeyCode::Esc) {
         if let Some(menu) = st.active_menu.take() {
             emit_panel_dismiss_anchor(st, &menu, None);
@@ -721,6 +722,76 @@ fn handle_menu_key(
     let Some(menu_state) = st.active_menu.as_mut() else {
         return false;
     };
+    // Settings panel navigation model (per upstream `Tabs.tsx:183-190`
+    // + user clarification 2026-04-20):
+    //
+    // - `←` / `→` / `Tab` rotate tabs **only** when the header (tab
+    //   row) is focused. When a config row is focused, the same keys
+    //   belong to the row's value-edit path (toggle bool, cycle enum)
+    //   — so they must NOT bleed through and rotate tabs.
+    // - `↑` from list top moves focus to the tab row.
+    // - `↓` from the tab row moves focus back to the list.
+    //
+    // Value-edit per-row is wired in openspec 009 (search mode +
+    // interactive editing); today the non-header branch is a no-op
+    // so we don't accidentally jump tabs from under the user.
+    if let PanelKind::Settings(_) = menu_state.kind {
+        let header_focused = menu_state.settings_header_focused.unwrap_or(false);
+        match k.code {
+            KeyCode::Left | KeyCode::Right | KeyCode::Tab | KeyCode::BackTab
+                if header_focused =>
+            {
+                let direction: i32 = match k.code {
+                    KeyCode::Right | KeyCode::Tab => 1,
+                    _ => -1,
+                };
+                rotate_settings_tab(st, direction);
+                return false;
+            }
+            KeyCode::Left | KeyCode::Right | KeyCode::Tab | KeyCode::BackTab
+                if !header_focused =>
+            {
+                // Row focused — cycle the focused setting's value.
+                let direction: i32 = match k.code {
+                    KeyCode::Right | KeyCode::Tab => 1,
+                    _ => -1,
+                };
+                edit_settings_row(st, direction);
+                return false;
+            }
+            KeyCode::Char(' ') if !header_focused => {
+                // Space: toggle bool; advance enum; no-op on read-only.
+                edit_settings_row(st, 1);
+                return false;
+            }
+            KeyCode::Up if !header_focused && menu_state.cursor == 0 => {
+                menu_state.settings_header_focused = Some(true);
+                return false;
+            }
+            KeyCode::Down if header_focused => {
+                menu_state.settings_header_focused = Some(false);
+                menu_state.cursor = 0;
+                return false;
+            }
+            _ => {}
+        }
+    }
+    // Effort picker is a horizontal slider — ←/→ move the cursor
+    // (clamped, no wrap) per 014 evidence. Up/Down ignored on Effort;
+    // other panels keep vertical navigation.
+    if matches!(menu_state.kind, PanelKind::Effort) {
+        match k.code {
+            KeyCode::Left => {
+                menu_state.move_left();
+                return false;
+            }
+            KeyCode::Right => {
+                menu_state.move_right();
+                return false;
+            }
+            _ => {}
+        }
+    }
     match k.code {
         KeyCode::Up => menu_state.move_up(),
         KeyCode::Down => menu_state.move_down(),
@@ -739,6 +810,260 @@ fn handle_menu_key(
     false
 }
 
+/// Mutate the focused Settings row per `direction` (±1). Dispatches
+/// on the row's `SettingsRowKind`:
+///
+/// - `Provider`    — cycle through the 4 provider slugs; side effect
+///                   sets `state.model` to the new provider's default.
+/// - `PermissionMode` — cycle Default → AcceptEdits → Plan → Yolo.
+/// - `Effort`       — cycle auto → low → medium → high → xhigh → max.
+/// - `Bool`         — ignore direction, just toggle.
+/// - `ReadOnly`     — no-op.
+///
+/// On any mutation, rebuild the overlay (so the new values render on
+/// the next frame) and persist the change to `~/.otherside/settings.json`.
+/// Errors on persistence surface via `push_system_note` (Chrome origin
+/// per 007 — stays local).
+fn edit_settings_row(st: &mut ConversationState, direction: i32) {
+    use crate::config::providers::{self, ProviderId};
+    use crate::config::settings::PermissionMode;
+    use crate::tui::menu::SettingsRowKind;
+    use crate::tui::slash::catalog::PanelKind;
+
+    let (kind, tab) = {
+        let Some(m) = st.active_menu.as_ref() else {
+            return;
+        };
+        let tab = match m.kind {
+            PanelKind::Settings(t) => t,
+            _ => return,
+        };
+        let Some(row) = m.options.get(m.cursor) else {
+            return;
+        };
+        let Some(kind) = row.settings_kind.clone() else {
+            return;
+        };
+        (kind, tab)
+    };
+
+    // Direction sign: -1 for Left/BackTab, +1 for Right/Tab/Space.
+    // Preserve the sign so backward cycling works — the prior
+    // `direction.signum().max(1)` clamp turned every `←` into a
+    // forward step (caught by `model_row_cycles_through_provider_aliases`
+    // 2026-04-20). Fall back to +1 when the caller passed 0.
+    let dir = if direction == 0 { 1 } else { direction.signum() };
+    match kind {
+        SettingsRowKind::Provider => {
+            let current = st
+                .settings
+                .default_provider
+                .as_deref()
+                .and_then(ProviderId::from_slug)
+                .unwrap_or(ProviderId::ClaudeCode);
+            let next = providers::cycle(current, dir);
+            st.settings.default_provider = Some(next.slug().to_string());
+            let default_model = next.default_model();
+            if !default_model.is_empty() {
+                st.switch_model(default_model);
+                st.settings.default_model = Some(default_model.to_string());
+            }
+        }
+        SettingsRowKind::Model => {
+            let provider = st
+                .settings
+                .default_provider
+                .as_deref()
+                .and_then(ProviderId::from_slug)
+                .unwrap_or(ProviderId::ClaudeCode);
+            let list = models_for_provider(provider);
+            if list.is_empty() {
+                return;
+            }
+            let idx = list
+                .iter()
+                .position(|m| *m == st.model.as_str())
+                .unwrap_or(0);
+            let n = list.len() as i32;
+            let next_idx = (((idx as i32) + dir).rem_euclid(n)) as usize;
+            let next_model = list[next_idx];
+            st.switch_model(next_model);
+            st.settings.default_model = Some(next_model.to_string());
+        }
+        SettingsRowKind::PermissionMode => {
+            let order = [
+                PermissionMode::Default,
+                PermissionMode::AcceptEdits,
+                PermissionMode::Plan,
+                PermissionMode::Yolo,
+            ];
+            let idx = order
+                .iter()
+                .position(|m| *m == st.permission_mode)
+                .unwrap_or(0);
+            let n = order.len() as i32;
+            let next_idx = (((idx as i32) + dir).rem_euclid(n)) as usize;
+            st.permission_mode = order[next_idx];
+            st.settings.permission_mode = Some(st.permission_mode);
+        }
+        SettingsRowKind::Effort => {
+            const LEVELS: &[&str] = &["auto", "low", "medium", "high", "xhigh", "max"];
+            let current = st.effort_label.unwrap_or("auto");
+            let idx = LEVELS.iter().position(|l| *l == current).unwrap_or(0);
+            let n = LEVELS.len() as i32;
+            let next_idx = (((idx as i32) + dir).rem_euclid(n)) as usize;
+            st.effort_label = Some(LEVELS[next_idx]);
+            st.settings.effort_level = Some(LEVELS[next_idx].to_string());
+        }
+        SettingsRowKind::Theme => {
+            const THEMES: &[&str] = &[
+                "dark",
+                "light",
+                "dark-ansi",
+                "light-ansi",
+                "dark-daltonized",
+                "light-daltonized",
+            ];
+            let current = st
+                .settings
+                .theme
+                .as_deref()
+                .unwrap_or("dark");
+            let idx = THEMES.iter().position(|t| *t == current).unwrap_or(0);
+            let n = THEMES.len() as i32;
+            let next_idx = (((idx as i32) + dir).rem_euclid(n)) as usize;
+            st.settings.theme = Some(THEMES[next_idx].to_string());
+        }
+        SettingsRowKind::EditorMode => {
+            const MODES: &[&str] = &["normal", "vim"];
+            let current = st
+                .settings
+                .editor_mode
+                .as_deref()
+                .unwrap_or("normal");
+            let idx = MODES.iter().position(|m| *m == current).unwrap_or(0);
+            let n = MODES.len() as i32;
+            let next_idx = (((idx as i32) + dir).rem_euclid(n)) as usize;
+            st.settings.editor_mode = Some(MODES[next_idx].to_string());
+        }
+        SettingsRowKind::Bool(id) => {
+            // Each bool row carries its own settings field. `verbose`
+            // also mirrors `state.render_verbose` so the render path
+            // reads it without a settings lookup each frame.
+            let current = match id {
+                "auto_compact" => st.settings.auto_compact.unwrap_or(true),
+                "show_tips" => st.settings.show_tips.unwrap_or(true),
+                "thinking_mode" => st.settings.thinking_mode.unwrap_or(true),
+                "session_recap" => st.settings.session_recap.unwrap_or(true),
+                "terminal_progress_bar" => {
+                    st.settings.terminal_progress_bar.unwrap_or(true)
+                }
+                "show_turn_duration" => st.settings.show_turn_duration.unwrap_or(true),
+                "verbose" => st.render_verbose,
+                _ => return,
+            };
+            let next = !current;
+            match id {
+                "auto_compact" => st.settings.auto_compact = Some(next),
+                "show_tips" => st.settings.show_tips = Some(next),
+                "thinking_mode" => st.settings.thinking_mode = Some(next),
+                "session_recap" => st.settings.session_recap = Some(next),
+                "terminal_progress_bar" => {
+                    st.settings.terminal_progress_bar = Some(next)
+                }
+                "show_turn_duration" => st.settings.show_turn_duration = Some(next),
+                "verbose" => {
+                    st.render_verbose = next;
+                    st.settings.verbose = Some(next);
+                }
+                _ => return,
+            }
+        }
+        SettingsRowKind::ReadOnly => return,
+    }
+
+    // Persist on every mutation — atomic write via `config::write_atomic`.
+    if let Err(e) = persist_settings(st) {
+        st.push_system_note(format!("settings write failed: {e}"));
+    }
+
+    // Rebuild the overlay so the new values render immediately. Keep
+    // cursor on the same row (not reset to 0) so editing feels stable.
+    let prev_cursor = st.active_menu.as_ref().map(|m| m.cursor).unwrap_or(0);
+    let prev_header_focused = st
+        .active_menu
+        .as_ref()
+        .and_then(|m| m.settings_header_focused)
+        .unwrap_or(false);
+    st.active_menu = Some(menu::OverlayMenu::new_settings(tab, st));
+    if let Some(m) = st.active_menu.as_mut() {
+        m.cursor = prev_cursor.min(m.options.len().saturating_sub(1));
+        m.settings_header_focused = Some(prev_header_focused);
+    }
+}
+
+/// Canonical model-alias list per provider — used by the Model row's
+/// enum cycle. The first entry is the provider's default (matches
+/// `ProviderId::default_model`); subsequent entries walk the known
+/// alias list for that provider. openai-custom returns an empty list
+/// because the alias is user-supplied; the Model row becomes
+/// effectively read-only there.
+fn models_for_provider(p: crate::config::providers::ProviderId) -> &'static [&'static str] {
+    use crate::config::providers::ProviderId;
+    match p {
+        ProviderId::ClaudeCode => &[
+            "claude-opus-4-7[1m]",
+            "claude-opus-4-7",
+            "claude-opus-4-6",
+            "claude-sonnet-4-6",
+            "claude-haiku-4-5",
+        ],
+        ProviderId::Codex => &["gpt-5.4", "gpt-5.3", "gpt-5.2", "gpt-4.1"],
+        ProviderId::GeminiCli => &[
+            "gemini-3.1-pro-preview",
+            "gemini-3.1-flash",
+            "gemini-2.5-pro",
+        ],
+        ProviderId::OpenAiCustom => &[],
+    }
+}
+
+/// Write the current `state.settings` to `~/.otherside/settings.json`
+/// atomically. Surfaces the `Err` to the caller for error rendering.
+fn persist_settings(st: &ConversationState) -> Result<()> {
+    let path = crate::config::settings_path()?;
+    let json = serde_json::to_vec_pretty(&st.settings)
+        .map_err(|e| crate::error::Error::Config(format!("serialize settings: {e}")))?;
+    crate::config::write_atomic(&path, &json, false)?;
+    Ok(())
+}
+
+/// Rotate the active Settings tab by `direction` (±1). Rebuilds the
+/// overlay with the new default tab; carries header_focused=true per
+/// upstream `Tabs.tsx:tabs:next` which sets focus as a side effect.
+fn rotate_settings_tab(st: &mut ConversationState, direction: i32) {
+    use crate::tui::slash::catalog::{PanelKind, SettingsTab};
+    let current_tab = match st.active_menu.as_ref().map(|m| m.kind) {
+        Some(PanelKind::Settings(t)) => t,
+        _ => return,
+    };
+    let order = [SettingsTab::Status, SettingsTab::Config, SettingsTab::Usage];
+    let idx = order.iter().position(|t| *t == current_tab).unwrap_or(0);
+    let n = order.len() as i32;
+    let next_idx = (((idx as i32) + direction).rem_euclid(n)) as usize;
+    let next_tab = order[next_idx];
+    // Rebuild via the same path the initial dispatch uses so the
+    // content list matches the new tab. `panel::handle` is
+    // idempotent-ish here — we discard the existing menu and remount.
+    use crate::tui::slash::panel;
+    st.active_menu = None;
+    let _ = panel::handle(PanelKind::Settings(next_tab), st);
+    // Tab rotation always sets header-focused (upstream side effect).
+    if let Some(m) = st.active_menu.as_mut() {
+        m.settings_header_focused = Some(true);
+    }
+}
+
 /// Emit the upstream-style `❯ /<name>` + `⎿ <text>` anchor on panel
 /// dismissal. Called for both Esc (no outcome) and Enter (outcome).
 /// Wording table transcribed from the 2026-04-19 tmux parity sweep —
@@ -751,6 +1076,11 @@ fn emit_panel_dismiss_anchor(
 ) {
     use crate::tui::slash::catalog::PanelKind;
     let (slash, text) = match menu.kind {
+        // 010 Gap 1: upstream `/rewind` emits nothing on Esc —
+        // the panel just closes. `commands/rewind/index.ts` has
+        // no cancel string; `/tmp/parity-20260420-tmux/05-rewind-panel/
+        // upstream-dismissed.txt` shows no `⎿ Rewind…` line.
+        PanelKind::Rewind => return,
         PanelKind::Model => {
             let chosen = match outcome {
                 Some(menu::OverlayMenuOutcome::SetModel { model_id }) => model_id.as_str(),
@@ -758,7 +1088,18 @@ fn emit_panel_dismiss_anchor(
             };
             let label = model_display_label(chosen);
             let text = if chosen == st.model {
-                format!("Kept model as {label}")
+                // 010 Gap 4: append ` (default)` when the current
+                // model matches the session default, mirroring
+                // upstream `renderModelLabel(null)` at
+                // `commands/model/model.tsx:316-318`. The ` (1M
+                // context)` half is already baked into
+                // `model_display_label` for `[1m]` models.
+                let suffix = if is_session_default_model(chosen, st) {
+                    " (default)"
+                } else {
+                    ""
+                };
+                format!("Kept model as {label}{suffix}")
             } else {
                 format!("Set model to {label}")
             };
@@ -774,20 +1115,48 @@ fn emit_panel_dismiss_anchor(
             Some(menu::OverlayMenuOutcome::SetEffort { label, .. }) => {
                 ("effort", format!("Set thinking effort to {label}"))
             }
-            _ => ("effort", "Effort dialog dismissed".to_string()),
+            // 010 Gap 3: bare `Cancelled`, not `Effort dialog
+            // dismissed`. Live-capture authority:
+            // `/tmp/parity-20260420-tmux/07-effort-panel/upstream-dismissed.txt:32`.
+            _ => ("effort", "Cancelled".to_string()),
         },
         PanelKind::Help => ("help", "Help dialog dismissed".to_string()),
-        PanelKind::Status => ("status", "Status dialog dismissed".to_string()),
-        PanelKind::Config => ("config", "Config dialog dismissed".to_string()),
+        // Settings panel dismiss — hardcoded `"Status dialog
+        // dismissed"` for all three slashes, matching upstream
+        // `Settings.tsx:46` (008 evidence). Slash name picked from
+        // the active tab so the user-echo row reads `/<slash>`
+        // consistently with what was typed.
+        PanelKind::Settings(tab) => (tab.slash_name(), "Status dialog dismissed".to_string()),
         PanelKind::Skills => ("skills", "Skills dialog dismissed".to_string()),
         PanelKind::Agents => ("agents", "Agents dialog dismissed".to_string()),
         PanelKind::Mcp => ("mcp", "MCP dialog dismissed".to_string()),
         PanelKind::Hooks => ("hooks", "Hooks dialog dismissed".to_string()),
         PanelKind::Diff => ("diff", "Diff dialog dismissed".to_string()),
-        PanelKind::Resume => ("resume", "Resume dialog dismissed".to_string()),
-        PanelKind::Rewind => ("rewind", "Rewind dialog dismissed".to_string()),
+        // 010 Gap 2: upstream emits `Resume cancelled` per
+        // `commands/resume/resume.tsx:172-175`.
+        PanelKind::Resume => ("resume", "Resume cancelled".to_string()),
     };
-    st.push_anchor(slash, "", text);
+    // Every panel dismissal is Chrome — the `⎿  … dialog dismissed`
+    // line is local UI breadcrumb only. Upstream marks the same
+    // emission with `display: "system"` (R-92 evidence:
+    // `reconstructed/2.1.114/source/components/Settings/Settings.tsx:46`)
+    // so the history serializer drops it before hitting the wire.
+    st.push_anchor(slash, "", text, DisplayOrigin::Chrome);
+}
+
+/// Session default per upstream `renderModelLabel(null)` semantics
+/// (`commands/model/model.tsx:316-318`). When the current model
+/// matches what startup would've picked, the `/model` dismiss
+/// anchor appends ` (default)`. Override chain: explicit
+/// `settings.default_model` wins; otherwise the `ClaudeCode`
+/// provider default (`claude-opus-4-7[1m]`).
+fn is_session_default_model(model: &str, st: &ConversationState) -> bool {
+    let default = st
+        .settings
+        .default_model
+        .as_deref()
+        .unwrap_or_else(|| crate::config::providers::ProviderId::ClaudeCode.default_model());
+    model == default
 }
 
 /// Map a model id (e.g. `claude-opus-4-7[1m]`) to the human label the
@@ -1586,12 +1955,13 @@ mod panel_anchor_tests {
     #[test]
     fn model_dismiss_without_change_reads_kept() {
         let mut st = ConversationState::default();
+        // Non-default, non-[1m] model → no suffix.
         st.model = "claude-opus-4-7".into();
         let menu = OverlayMenu::new_model(&st.model);
         emit_panel_dismiss_anchor(&mut st, &menu, None);
         let (echo, anchor) = anchor_lines(&st);
         assert_eq!(echo, "/model");
-        assert_eq!(anchor, "⎿ Kept model as Opus 4.7");
+        assert_eq!(anchor, "⎿  Kept model as Opus 4.7");
     }
 
     #[test]
@@ -1604,7 +1974,7 @@ mod panel_anchor_tests {
         };
         emit_panel_dismiss_anchor(&mut st, &menu, Some(&outcome));
         let (_, anchor) = anchor_lines(&st);
-        assert_eq!(anchor, "⎿ Set model to Sonnet 4.6");
+        assert_eq!(anchor, "⎿  Set model to Sonnet 4.6");
     }
 
     #[test]
@@ -1614,7 +1984,7 @@ mod panel_anchor_tests {
         emit_panel_dismiss_anchor(&mut st, &menu, None);
         let (echo, anchor) = anchor_lines(&st);
         assert_eq!(echo, "/help");
-        assert_eq!(anchor, "⎿ Help dialog dismissed");
+        assert_eq!(anchor, "⎿  Help dialog dismissed");
     }
 
     #[test]
@@ -1624,7 +1994,49 @@ mod panel_anchor_tests {
         emit_panel_dismiss_anchor(&mut st, &menu, None);
         let (echo, anchor) = anchor_lines(&st);
         assert_eq!(echo, "/permissions");
-        assert_eq!(anchor, "⎿ Permissions dialog dismissed");
+        assert_eq!(anchor, "⎿  Permissions dialog dismissed");
+    }
+
+    #[test]
+    fn settings_status_dismiss_wording_hardcoded() {
+        // R-92 evidence: upstream `Settings.tsx:46` hardcodes
+        // `"Status dialog dismissed"` for all three slashes in the
+        // Settings family. Verify /status, /config, /usage all emit
+        // the SAME wording (not per-tab variants).
+        use crate::tui::slash::catalog::SettingsTab;
+        for tab in [SettingsTab::Status, SettingsTab::Config, SettingsTab::Usage] {
+            let mut st = ConversationState::default();
+            let menu = OverlayMenu::new_info(PanelKind::Settings(tab), "_".into(), vec![]);
+            emit_panel_dismiss_anchor(&mut st, &menu, None);
+            let (echo, anchor) = anchor_lines(&st);
+            assert_eq!(echo, format!("/{}", tab.slash_name()));
+            assert_eq!(
+                anchor, "⎿  Status dialog dismissed",
+                "tab {:?} must dismiss with hardcoded 'Status dialog dismissed' per upstream",
+                tab
+            );
+        }
+    }
+
+    #[test]
+    fn settings_dismiss_anchor_is_chrome() {
+        // 007 + 008 interaction — Settings dismiss must stay local,
+        // not ride the wire on the next turn. Chrome origin is the
+        // flag that enforces it.
+        use crate::tui::slash::catalog::SettingsTab;
+        let mut st = ConversationState::default();
+        let menu = OverlayMenu::new_info(
+            PanelKind::Settings(SettingsTab::Config),
+            "_".into(),
+            vec![],
+        );
+        emit_panel_dismiss_anchor(&mut st, &menu, None);
+        // Real user turn after dismiss.
+        st.input = "what tests are in state.rs?".into();
+        let _ = st.submit();
+        let hist = st.history_for_request();
+        assert_eq!(hist.len(), 1);
+        assert_eq!(hist[0].content, "what tests are in state.rs?");
     }
 
     #[test]
@@ -1636,7 +2048,302 @@ mod panel_anchor_tests {
         };
         emit_panel_dismiss_anchor(&mut st, &menu, Some(&outcome));
         let (_, anchor) = anchor_lines(&st);
-        assert_eq!(anchor, "⎿ Set permission mode to plan");
+        assert_eq!(anchor, "⎿  Set permission mode to plan");
+    }
+
+    // 010 tests — panel dismiss wording parity.
+
+    #[test]
+    fn rewind_dismiss_emits_nothing() {
+        // Gap 1: upstream `/rewind` closes silently on Esc — no
+        // anchor, no echo. Evidence:
+        // `/tmp/parity-20260420-tmux/05-rewind-panel/upstream-dismissed.txt`.
+        let mut st = ConversationState::default();
+        let menu = OverlayMenu::new_info(PanelKind::Rewind, "Rewind".into(), vec![]);
+        emit_panel_dismiss_anchor(&mut st, &menu, None);
+        assert!(
+            st.messages.is_empty(),
+            "rewind dismiss must emit no messages; got {:?}",
+            st.messages
+        );
+    }
+
+    #[test]
+    fn resume_dismiss_wording_matches_upstream() {
+        // Gap 2: upstream `commands/resume/resume.tsx:172-175` emits
+        // `onDone('Resume cancelled', { display: 'system' })`.
+        let mut st = ConversationState::default();
+        let menu = OverlayMenu::new_info(PanelKind::Resume, "Resume".into(), vec![]);
+        emit_panel_dismiss_anchor(&mut st, &menu, None);
+        let (echo, anchor) = anchor_lines(&st);
+        assert_eq!(echo, "/resume");
+        assert_eq!(anchor, "⎿  Resume cancelled");
+    }
+
+    #[test]
+    fn effort_dismiss_wording_matches_upstream() {
+        // Gap 3: upstream emits bare `Cancelled`. Live authority:
+        // `/tmp/parity-20260420-tmux/07-effort-panel/upstream-dismissed.txt:32`.
+        let mut st = ConversationState::default();
+        let menu = OverlayMenu::new_info(PanelKind::Effort, "Effort".into(), vec![]);
+        emit_panel_dismiss_anchor(&mut st, &menu, None);
+        let (echo, anchor) = anchor_lines(&st);
+        assert_eq!(echo, "/effort");
+        assert_eq!(anchor, "⎿  Cancelled");
+    }
+
+    #[test]
+    fn model_dismiss_with_1m_beta_appends_suffix() {
+        // Gap 4: session default = `claude-opus-4-7[1m]` via
+        // `ProviderId::ClaudeCode.default_model()`. No settings
+        // override. Current model matches default → both suffixes
+        // compose: `(1M context) (default)`.
+        let mut st = ConversationState::default();
+        st.model = "claude-opus-4-7[1m]".into();
+        // Sanity-check the default provider resolution so a
+        // future rename of the provider constant flips this test
+        // loudly rather than silently.
+        assert_eq!(
+            crate::config::providers::ProviderId::ClaudeCode.default_model(),
+            "claude-opus-4-7[1m]",
+            "session-default rule depends on this constant"
+        );
+        let menu = OverlayMenu::new_model(&st.model);
+        emit_panel_dismiss_anchor(&mut st, &menu, None);
+        let (_, anchor) = anchor_lines(&st);
+        assert_eq!(anchor, "⎿  Kept model as Opus 4.7 (1M context) (default)");
+    }
+
+    #[test]
+    fn anchor_line_uses_double_space_after_symbol() {
+        // Cross-cutting: every captured upstream anchor uses `⎿  `
+        // (double space). Guard against a single-space regression
+        // in `state.rs::push_anchor`.
+        let mut st = ConversationState::default();
+        let menu = OverlayMenu::new_info(PanelKind::Help, "Help".into(), vec![]);
+        emit_panel_dismiss_anchor(&mut st, &menu, None);
+        let (_, anchor) = anchor_lines(&st);
+        assert!(
+            anchor.starts_with("⎿  "),
+            "anchor must start with `⎿  ` (double space); got {:?}",
+            anchor
+        );
+        // A single-space prefix must NOT match (beyond the
+        // double-space prefix which naturally matches as a longer
+        // prefix). Check character by character: the byte right
+        // after `⎿` and the two spaces must be a non-space.
+        let bytes = anchor.as_bytes();
+        // `⎿` is 3 bytes (U+23BF → 0xE2 0x8E 0xBF). Positions 3
+        // and 4 must be spaces; position 5 must not be a space.
+        assert_eq!(&bytes[0..3], [0xE2, 0x8E, 0xBF]);
+        assert_eq!(bytes[3], b' ');
+        assert_eq!(bytes[4], b' ');
+        assert_ne!(
+            bytes[5], b' ',
+            "no third space allowed; only double-space between ⎿ and the result"
+        );
     }
 }
 
+#[cfg(test)]
+mod settings_edit_tests {
+    use super::*;
+    use crate::config::settings::PermissionMode;
+    use crate::tui::menu::OverlayMenu;
+    use crate::tui::slash::catalog::SettingsTab;
+
+    /// Place cursor on the Settings row whose `label` matches `label`.
+    /// Panic if not found — the test is expressing an intent about a
+    /// row the builder MUST produce.
+    fn focus_row(menu: &mut OverlayMenu, label: &str) {
+        menu.cursor = menu
+            .options
+            .iter()
+            .position(|o| o.label == label)
+            .unwrap_or_else(|| panic!("row {label:?} missing from Settings Config tab"));
+        menu.settings_header_focused = Some(false);
+    }
+
+    #[test]
+    fn provider_row_cycles_and_switches_model_default() {
+        // R-92 evidence: user directive 2026-04-20. Provider cycle
+        // carries per-provider default-model side effect.
+        let mut st = ConversationState::default();
+        st.model = "claude-opus-4-7[1m]".into();
+        st.active_menu = Some(OverlayMenu::new_settings(SettingsTab::Config, &st));
+        if let Some(m) = st.active_menu.as_mut() {
+            focus_row(m, "Provider");
+        }
+
+        edit_settings_row(&mut st, 1);
+        assert_eq!(st.settings.default_provider.as_deref(), Some("codex"));
+        assert_eq!(st.model, "gpt-5.4");
+
+        edit_settings_row(&mut st, 1);
+        assert_eq!(
+            st.settings.default_provider.as_deref(),
+            Some("gemini-cli")
+        );
+        assert_eq!(st.model, "gemini-3.1-pro-preview");
+
+        edit_settings_row(&mut st, 1);
+        assert_eq!(
+            st.settings.default_provider.as_deref(),
+            Some("openai-custom")
+        );
+        // openai-custom default is empty → state.model stays whatever it was.
+        assert_eq!(st.model, "gemini-3.1-pro-preview");
+
+        edit_settings_row(&mut st, 1);
+        assert_eq!(
+            st.settings.default_provider.as_deref(),
+            Some("claude-code")
+        );
+        assert_eq!(st.model, "claude-opus-4-7[1m]");
+    }
+
+    #[test]
+    fn permission_mode_row_cycles_through_four_modes() {
+        let mut st = ConversationState::default();
+        st.permission_mode = PermissionMode::Default;
+        st.active_menu = Some(OverlayMenu::new_settings(SettingsTab::Config, &st));
+        if let Some(m) = st.active_menu.as_mut() {
+            focus_row(m, "Default permission mode");
+        }
+
+        edit_settings_row(&mut st, 1);
+        assert_eq!(st.permission_mode, PermissionMode::AcceptEdits);
+        edit_settings_row(&mut st, 1);
+        assert_eq!(st.permission_mode, PermissionMode::Plan);
+        edit_settings_row(&mut st, 1);
+        assert_eq!(st.permission_mode, PermissionMode::Yolo);
+        edit_settings_row(&mut st, 1);
+        assert_eq!(st.permission_mode, PermissionMode::Default);
+    }
+
+    #[test]
+    fn effort_row_cycles_through_six_levels() {
+        let mut st = ConversationState::default();
+        st.effort_label = Some("auto");
+        st.active_menu = Some(OverlayMenu::new_settings(SettingsTab::Config, &st));
+        if let Some(m) = st.active_menu.as_mut() {
+            focus_row(m, "Effort");
+        }
+        const EXPECTED: &[&str] = &["low", "medium", "high", "xhigh", "max", "auto"];
+        for want in EXPECTED {
+            edit_settings_row(&mut st, 1);
+            assert_eq!(st.effort_label, Some(*want));
+        }
+    }
+
+    #[test]
+    fn verbose_row_toggles_on_space() {
+        let mut st = ConversationState::default();
+        st.render_verbose = false;
+        st.active_menu = Some(OverlayMenu::new_settings(SettingsTab::Config, &st));
+        if let Some(m) = st.active_menu.as_mut() {
+            focus_row(m, "Verbose output");
+        }
+        edit_settings_row(&mut st, 1);
+        assert!(st.render_verbose);
+        assert_eq!(st.settings.verbose, Some(true));
+        edit_settings_row(&mut st, 1);
+        assert!(!st.render_verbose);
+        assert_eq!(st.settings.verbose, Some(false));
+    }
+
+    #[test]
+    fn model_row_cycles_through_provider_aliases() {
+        let mut st = ConversationState::default();
+        st.settings.default_provider = Some("claude-code".into());
+        st.model = "claude-opus-4-7[1m]".into();
+        st.active_menu = Some(OverlayMenu::new_settings(SettingsTab::Config, &st));
+        if let Some(m) = st.active_menu.as_mut() {
+            focus_row(m, "Model");
+        }
+        edit_settings_row(&mut st, 1);
+        assert_eq!(st.model, "claude-opus-4-7");
+        edit_settings_row(&mut st, 1);
+        assert_eq!(st.model, "claude-opus-4-6");
+        edit_settings_row(&mut st, -1);
+        assert_eq!(st.model, "claude-opus-4-7");
+    }
+
+    #[test]
+    fn read_only_row_is_a_no_op() {
+        // Status tab rows are all ReadOnly today. Focus a status row,
+        // attempt to edit, assert nothing changes. Guards against a
+        // future edit-dispatcher regression that forgets to check the
+        // ReadOnly variant.
+        let mut st = ConversationState::default();
+        st.model = "claude-opus-4-7".into();
+        st.active_menu = Some(OverlayMenu::new_settings(SettingsTab::Status, &st));
+        if let Some(m) = st.active_menu.as_mut() {
+            focus_row(m, "Model");
+        }
+        let snap = st.model.clone();
+        edit_settings_row(&mut st, 1);
+        assert_eq!(st.model, snap);
+    }
+
+    #[test]
+    fn theme_row_cycles_six_upstream_themes() {
+        let mut st = ConversationState::default();
+        st.active_menu = Some(OverlayMenu::new_settings(SettingsTab::Config, &st));
+        if let Some(m) = st.active_menu.as_mut() {
+            focus_row(m, "Theme");
+        }
+        const EXPECTED: &[&str] = &[
+            "light",
+            "dark-ansi",
+            "light-ansi",
+            "dark-daltonized",
+            "light-daltonized",
+            "dark",
+        ];
+        for want in EXPECTED {
+            edit_settings_row(&mut st, 1);
+            assert_eq!(st.settings.theme.as_deref(), Some(*want));
+        }
+    }
+
+    #[test]
+    fn editor_mode_row_flips_normal_and_vim() {
+        let mut st = ConversationState::default();
+        st.active_menu = Some(OverlayMenu::new_settings(SettingsTab::Config, &st));
+        if let Some(m) = st.active_menu.as_mut() {
+            focus_row(m, "Editor mode");
+        }
+        edit_settings_row(&mut st, 1);
+        assert_eq!(st.settings.editor_mode.as_deref(), Some("vim"));
+        edit_settings_row(&mut st, 1);
+        assert_eq!(st.settings.editor_mode.as_deref(), Some("normal"));
+    }
+
+    #[test]
+    fn every_bool_row_toggles_its_settings_field() {
+        let mut st = ConversationState::default();
+        st.active_menu = Some(OverlayMenu::new_settings(SettingsTab::Config, &st));
+
+        type Getter = fn(&ConversationState) -> Option<bool>;
+        let rows: &[(&str, Getter)] = &[
+            ("Auto-compact", |s| s.settings.auto_compact),
+            ("Show tips", |s| s.settings.show_tips),
+            ("Thinking mode", |s| s.settings.thinking_mode),
+            ("Session recap", |s| s.settings.session_recap),
+            ("Terminal progress bar", |s| {
+                s.settings.terminal_progress_bar
+            }),
+            ("Show turn duration", |s| s.settings.show_turn_duration),
+        ];
+        for (label, getter) in rows {
+            if let Some(m) = st.active_menu.as_mut() {
+                focus_row(m, label);
+            }
+            let before = getter(&st).unwrap_or(true);
+            edit_settings_row(&mut st, 1);
+            let after = getter(&st).expect("bool setting must persist");
+            assert_eq!(after, !before, "row {label} failed to toggle");
+        }
+    }
+}

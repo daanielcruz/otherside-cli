@@ -21,7 +21,7 @@
 //! - `/loop` is a placeholder; loop-mode toggle lives at the /loop
 //!   skill layer today.
 
-use super::super::state::ConversationState;
+use super::super::state::{ConversationState, DisplayOrigin};
 use super::SlashOutcome;
 
 /// Dispatch an Anchor-category slash. Returns `Handled` — the handler
@@ -39,8 +39,17 @@ pub fn handle(name: &str, args: &str, state: &mut ConversationState) -> SlashOut
     // wipe so the user sees it at the top of the new transcript.
     if lower.as_str() == "compact" {
         run_compact(state);
+        // ✻ marker is chrome (`push_system_note` stamps Chrome by
+        // default) — it's a visual reminder of the compaction, not a
+        // conversation turn. The `/compact` anchor pair below IS
+        // Transcript: the summary semantics belong in the wire.
         state.push_system_note("✻ Conversation compacted (ctrl+o for history)");
-        state.push_anchor(&lower, args, "Compacted (ctrl+o to see full summary)");
+        state.push_anchor(
+            &lower,
+            args,
+            "Compacted (ctrl+o to see full summary)",
+            DisplayOrigin::Transcript,
+        );
         return SlashOutcome::Handled;
     }
     let result = match lower.as_str() {
@@ -53,7 +62,10 @@ pub fn handle(name: &str, args: &str, state: &mut ConversationState) -> SlashOut
         }
         other => format!("unhandled anchor slash: /{other}"),
     };
-    state.push_anchor(&lower, args, result);
+    // Anchor-category slashes carry semantic meaning for the
+    // provider — they mutate conversation flow (`/branch`, `/loop`)
+    // or report factual state (`/context`). Transcript.
+    state.push_anchor(&lower, args, result, DisplayOrigin::Transcript);
     SlashOutcome::Handled
 }
 
@@ -94,7 +106,7 @@ mod tests {
         assert_eq!(st.messages[1].content, "/compact");
         assert_eq!(
             st.messages[2].content,
-            "⎿ Compacted (ctrl+o to see full summary)"
+            "⎿  Compacted (ctrl+o to see full summary)"
         );
     }
 
@@ -103,7 +115,7 @@ mod tests {
         let mut st = ConversationState::default();
         handle("compact", "", &mut st);
         let last = st.messages.last().unwrap();
-        assert_eq!(last.content, "⎿ Compacted (ctrl+o to see full summary)");
+        assert_eq!(last.content, "⎿  Compacted (ctrl+o to see full summary)");
         assert!(!last.content.contains("dropped"));
         assert!(!last.content.contains("prior message"));
     }

@@ -128,6 +128,22 @@ pub mod theme {
     /// Bash prefix (`!` prompt) border.
     pub const BASH_BORDER: Color = Color::Rgb(253, 93, 177);
 
+    /// Upstream's `permission` color token — the sky blue that Claude
+    /// Code actually renders for the focused tab pill, search box
+    /// border, and `<Pane color="permission">` wrapper.
+    ///
+    /// R-92 evidence (live tmux capture 2026-04-20 against
+    /// `claude --dangerously-skip-permissions` v2.1.114 in the user's
+    /// iTerm2 darkTheme): the focused tab bg and search border ANSI
+    /// read `[48;5;153m` / `[38;5;153m` — ANSI-256 palette index 153,
+    /// `#AFD7FF`. Ink's `permission` token resolves through its
+    /// rgb→ansi256 mapper in the user's terminal to this index, NOT
+    /// the truecolor `rgb(177,185,249)` that darkTheme declares in
+    /// `utils/theme.ts:447` nor the `rgb(87,105,247)` from
+    /// lightTheme. We target what renders, not what the source file
+    /// names.
+    pub const PERMISSION: Color = Color::Indexed(153);
+
     /// Resolve a [`super::super::state::ChipColor`] discriminant to a
     /// concrete ratatui color. Single lookup point so the permission
     /// chip render path never embeds inline RGB (C46).
@@ -1089,6 +1105,7 @@ mod tests {
             role: OpenAiChatRole::User,
             content: "list files".into(),
             wire_override: None,
+            origin: crate::tui::state::DisplayOrigin::Transcript,
         });
         st.begin_tool_call(
             "t1".into(),

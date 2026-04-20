@@ -32,15 +32,38 @@ pub enum SlashKind {
     Auth,
 }
 
-/// Discriminator for the 13 Panel slashes. Exactly 1:1 with the Panel
-/// section of `docs/slashes.md`. Variant count is pinned — a new Panel
-/// variant requires a new CATALOG row in the same change.
+/// Tab discriminator for the unified Settings panel. Upstream's
+/// `components/Settings/Settings.tsx` serves `/status`, `/config`,
+/// `/usage` as a single component that lands on a different default
+/// tab depending on which slash opened it (R-92 evidence:
+/// `commands/config/dashboard.tsx:10`; live capture 2026-04-20).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsTab {
+    Status,
+    Config,
+    Usage,
+}
+
+impl SettingsTab {
+    /// The slash whose invocation lands on this default tab.
+    pub fn slash_name(self) -> &'static str {
+        match self {
+            SettingsTab::Status => "status",
+            SettingsTab::Config => "config",
+            SettingsTab::Usage => "usage",
+        }
+    }
+}
+
+/// Discriminator for the Panel slashes. `Settings` is parameterized
+/// by default-tab (one upstream panel, three entry points); other
+/// variants are 1:1 with their slash.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PanelKind {
     Help,
     Resume,
     Rewind,
-    Config,
+    Settings(SettingsTab),
     Model,
     Effort,
     Permissions,
@@ -48,7 +71,6 @@ pub enum PanelKind {
     Diff,
     Skills,
     Agents,
-    Status,
     Mcp,
 }
 
@@ -60,7 +82,7 @@ impl PanelKind {
             PanelKind::Help => "help",
             PanelKind::Resume => "resume",
             PanelKind::Rewind => "rewind",
-            PanelKind::Config => "config",
+            PanelKind::Settings(tab) => tab.slash_name(),
             PanelKind::Model => "model",
             PanelKind::Effort => "effort",
             PanelKind::Permissions => "permissions",
@@ -68,7 +90,6 @@ impl PanelKind {
             PanelKind::Diff => "diff",
             PanelKind::Skills => "skills",
             PanelKind::Agents => "agents",
-            PanelKind::Status => "status",
             PanelKind::Mcp => "mcp",
         }
     }
@@ -211,7 +232,7 @@ pub const CATALOG: &[SlashEntry] = &[
     SlashEntry {
         name: "config",
         brief: "show the config file path",
-        kind: SlashKind::Panel(PanelKind::Config),
+        kind: SlashKind::Panel(PanelKind::Settings(SettingsTab::Config)),
     },
     SlashEntry {
         name: "model",
@@ -250,8 +271,13 @@ pub const CATALOG: &[SlashEntry] = &[
     },
     SlashEntry {
         name: "status",
-        brief: "render current statusline inline",
-        kind: SlashKind::Panel(PanelKind::Status),
+        brief: "show session status (Status tab of Settings)",
+        kind: SlashKind::Panel(PanelKind::Settings(SettingsTab::Status)),
+    },
+    SlashEntry {
+        name: "usage",
+        brief: "show plan usage limits (Usage tab of Settings)",
+        kind: SlashKind::Panel(PanelKind::Settings(SettingsTab::Usage)),
     },
     SlashEntry {
         name: "mcp",
@@ -295,12 +321,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn panel_kind_has_thirteen_variants() {
+    fn panel_kind_enumerates_all_variants() {
+        // `Settings(tab)` collapses three pre-008 variants into one
+        // payload-carrying variant — 10 panel kinds now, three of
+        // them surfaced via the same kind with different tab payload.
         let variants = [
             PanelKind::Help,
             PanelKind::Resume,
             PanelKind::Rewind,
-            PanelKind::Config,
+            PanelKind::Settings(SettingsTab::Status),
+            PanelKind::Settings(SettingsTab::Config),
+            PanelKind::Settings(SettingsTab::Usage),
             PanelKind::Model,
             PanelKind::Effort,
             PanelKind::Permissions,
@@ -308,10 +339,24 @@ mod tests {
             PanelKind::Diff,
             PanelKind::Skills,
             PanelKind::Agents,
-            PanelKind::Status,
             PanelKind::Mcp,
         ];
-        assert_eq!(variants.len(), 13);
+        // Three of these land the same `PanelKind::Settings` arm,
+        // differing only in the `SettingsTab` payload — the slash
+        // catalog still carries 14 Panel rows.
+        assert_eq!(variants.len(), 14);
+    }
+
+    #[test]
+    fn settings_tab_slash_names_match_catalog() {
+        // R-92 evidence: `commands/config/dashboard.tsx:10` shows
+        // `/config` sets `defaultTab: "Status"` — the SLASH NAME and
+        // the DEFAULT TAB don't share wording, but every
+        // `SettingsTab` variant MUST map to the slash that lands on
+        // it as its default.
+        assert_eq!(SettingsTab::Status.slash_name(), "status");
+        assert_eq!(SettingsTab::Config.slash_name(), "config");
+        assert_eq!(SettingsTab::Usage.slash_name(), "usage");
     }
 
     #[test]
@@ -414,11 +459,14 @@ mod tests {
     }
 
     #[test]
-    fn catalog_has_exactly_thirty_four_rows() {
+    fn catalog_row_count_matches_docs() {
+        // 008 added `/usage` to the panel section (upstream landing
+        // tab of the unified Settings component). Target row count =
+        // 35 until another slash joins or leaves the catalog.
         assert_eq!(
             CATALOG.len(),
-            34,
-            "CATALOG must be a strict subset of docs/slashes.md (34 rows)"
+            35,
+            "CATALOG must be a strict subset of docs/slashes.md"
         );
     }
 
@@ -484,7 +532,7 @@ mod tests {
             ("help", SlashKind::Panel(PanelKind::Help)),
             ("resume", SlashKind::Panel(PanelKind::Resume)),
             ("rewind", SlashKind::Panel(PanelKind::Rewind)),
-            ("config", SlashKind::Panel(PanelKind::Config)),
+            ("config", SlashKind::Panel(PanelKind::Settings(SettingsTab::Config))),
             ("model", SlashKind::Panel(PanelKind::Model)),
             ("effort", SlashKind::Panel(PanelKind::Effort)),
             ("permissions", SlashKind::Panel(PanelKind::Permissions)),
@@ -492,7 +540,8 @@ mod tests {
             ("diff", SlashKind::Panel(PanelKind::Diff)),
             ("skills", SlashKind::Panel(PanelKind::Skills)),
             ("agents", SlashKind::Panel(PanelKind::Agents)),
-            ("status", SlashKind::Panel(PanelKind::Status)),
+            ("status", SlashKind::Panel(PanelKind::Settings(SettingsTab::Status))),
+            ("usage", SlashKind::Panel(PanelKind::Settings(SettingsTab::Usage))),
             ("mcp", SlashKind::Panel(PanelKind::Mcp)),
             // auth
             ("login", SlashKind::Auth),
