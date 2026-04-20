@@ -2169,7 +2169,7 @@ mod settings_edit_tests {
         edit_settings_row(&mut st, 1);
         assert_eq!(
             st.settings.default_provider.as_deref(),
-            Some("gemini-cli")
+            Some("gemini-oauth")
         );
         assert_eq!(st.model, "gemini-3.1-pro-preview");
 
@@ -2184,7 +2184,7 @@ mod settings_edit_tests {
         edit_settings_row(&mut st, 1);
         assert_eq!(
             st.settings.default_provider.as_deref(),
-            Some("claude-code")
+            Some("anthropic-oauth")
         );
         assert_eq!(st.model, "claude-opus-4-7[1m]");
     }
