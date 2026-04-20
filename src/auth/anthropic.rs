@@ -378,6 +378,91 @@ fn token_http_client() -> Result<reqwest::Client> {
         .map_err(Error::from)
 }
 
+/// Subset of `GET /api/oauth/profile` we actually consume. Upstream
+/// returns a much richer shape (`account.full_name`, `organization.uuid`,
+/// etc.); we only parse the two fields needed to populate
+/// `subscription_type` + `rate_limit_tier` on the cached creds. Unknown
+/// sibling fields are tolerated.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct ProfileResponse {
+    pub organization: Option<ProfileOrganization>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct ProfileOrganization {
+    /// `claude_max` | `claude_pro` | `claude_enterprise` | `claude_team`.
+    pub organization_type: Option<String>,
+    pub rate_limit_tier: Option<String>,
+}
+
+/// Map upstream `organization.organization_type` → our canonical
+/// `subscription_type` string. Mirrors upstream `fetchProfileInfo`
+/// switch in `services/oauth/client.ts:370-387`.
+pub fn subscription_type_from_org_type(org_type: &str) -> Option<&'static str> {
+    match org_type {
+        "claude_max" => Some("max"),
+        "claude_pro" => Some("pro"),
+        "claude_enterprise" => Some("enterprise"),
+        "claude_team" => Some("team"),
+        _ => None,
+    }
+}
+
+/// Hit `GET /api/oauth/profile` with the supplied access token and
+/// return the parsed response. Used to hydrate `subscription_type` +
+/// `rate_limit_tier` on creds that were saved before this code path
+/// existed (or whose refresh ran while the profile endpoint was
+/// unreachable — upstream swallows that and falls back to null).
+pub async fn fetch_profile(access_token: &str) -> Result<ProfileResponse> {
+    let client = token_http_client()?;
+    let resp = client
+        .get(fp::API_PROFILE_URL)
+        .header("Authorization", format!("Bearer {access_token}"))
+        .header("Content-Type", "application/json")
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body_text = resp.text().await.unwrap_or_default();
+        return Err(Error::Auth(format!(
+            "profile fetch failed: HTTP {status}: {body_text}"
+        )));
+    }
+    resp.json::<ProfileResponse>().await.map_err(Error::from)
+}
+
+/// One-shot: if cached creds are missing `subscription_type`, fetch
+/// the profile endpoint and persist the mapped value. Silent no-op
+/// when creds are absent, already hydrated, or the endpoint errors —
+/// upstream behavior is "best effort, never block login" for this
+/// field (see `services/oauth/client.ts:1222` comment).
+pub async fn hydrate_subscription_if_missing() -> Result<()> {
+    let Some(mut creds) = load_credentials()? else {
+        return Ok(());
+    };
+    if creds.subscription_type.is_some() {
+        return Ok(());
+    }
+    let profile = match fetch_profile(&creds.access_token).await {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(?e, "profile fetch failed — subscription_type stays null");
+            return Ok(());
+        }
+    };
+    let Some(org) = profile.organization else { return Ok(()); };
+    if let Some(org_type) = org.organization_type.as_deref() {
+        if let Some(sub) = subscription_type_from_org_type(org_type) {
+            creds.subscription_type = Some(sub.to_string());
+        }
+    }
+    if creds.rate_limit_tier.is_none() {
+        creds.rate_limit_tier = org.rate_limit_tier;
+    }
+    save_credentials(&creds)?;
+    Ok(())
+}
+
 /// Run the interactive OAuth authorization-code flow end-to-end.
 ///
 /// 1. Generate a fresh PKCE pair + random state.

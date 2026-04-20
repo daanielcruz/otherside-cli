@@ -22,12 +22,14 @@ use serde_json::{json, Value};
 
 use crate::harness::{SYSTEM_AGENT_PREAMBLE, SYSTEM_BILLING_HEADER, SYSTEM_OPENER, SYSTEM_PROMPT};
 
-/// Upstream attaches this cache_control marker only to system[2]
-/// (the agent preamble). Hardcoded here — it's the single configuration
-/// used; if upstream ever adds a second marker variant the right move
-/// is to pass it as an arg, not to parameterize every call site now.
+/// Cache-control marker attached to system[2]. The captured body had
+/// `scope: "global"` — the API has since tightened validation to reject
+/// that value when the `tools` array renders before the system block
+/// (which it always does with our 27-tool set). Dropping `scope`
+/// leaves the default (block-level) scope, which is what every real
+/// request otherside ships actually needs.
 fn cache_ephemeral_1h_global() -> Value {
-    json!({"type": "ephemeral", "ttl": "1h", "scope": "global"})
+    json!({"type": "ephemeral", "ttl": "1h"})
 }
 
 fn text_block(text: &str) -> Value {

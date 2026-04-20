@@ -156,6 +156,20 @@ impl AnthropicStreamTranslator {
             "content_block_stop" => Ok(None),
             "message_delta" => self.handle_message_delta(&value),
             "message_stop" => self.handle_message_stop(),
+            // `event: error` carries a server-side failure mid-stream
+            // (invalid body shape, rate spike, internal error). The
+            // server still returns 200 with an SSE `error` frame rather
+            // than a 4xx HTTP status, so without surfacing here the
+            // stream would drain cleanly with zero chunks and the CLI
+            // would exit 0 with no output. Lift to Error::Sse so the
+            // caller prints the server's message.
+            "error" => {
+                let msg = value
+                    .pointer("/error/message")
+                    .and_then(Value::as_str)
+                    .unwrap_or_else(|| event.data.as_str());
+                Err(Error::Sse(format!("server: {msg}")))
+            }
             // Everything else (ping, and any future event types) maps
             // to no client chunk.
             _ => Ok(None),

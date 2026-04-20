@@ -98,7 +98,7 @@ tower-http = { version = "0.6", features = ["trace"] }
 # to the ratatui-0.29 + crossterm-0.28 pair because that's the version
 # combination ratatui ships and tests against. Default features cover
 # what the TUI needs (crossterm backend, underline-color styling).
-ratatui = "0.29"
+ratatui = { version = "0.29", features = ["unstable-rendered-line-info"] }
 # `event-stream` surfaces a futures::Stream of terminal events so the TUI
 # event loop can select! over it alongside the tokio mpsc. Without this
 # feature the only API is blocking `event::read()` which would freeze

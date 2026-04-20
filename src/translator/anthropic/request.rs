@@ -188,6 +188,37 @@ pub fn build_request_body(
         }
     }
 
+    // Rewrite `output_config.effort` from the hardcoded-capture default
+    // (`xhigh`) to the per-model default from the catalog — otherwise
+    // sonnet / haiku requests 400 because those models do not accept
+    // `xhigh`. Uses the stripped model id (without `[1m]`) for lookup.
+    let (stripped_for_effort, _) = strip_1m_suffix(&req.model);
+    let effort = crate::models::catalog::default_effort_for(&stripped_for_effort);
+    if let Some(out_cfg) = body.get_mut("output_config").and_then(|v| v.as_object_mut()) {
+        if effort == "auto" {
+            // Haiku (and future auto-only tiers) don't accept an explicit
+            // effort — drop the key so the server picks.
+            out_cfg.remove("effort");
+        } else {
+            out_cfg.insert("effort".to_string(), Value::String(effort.to_string()));
+        }
+    }
+
+    // Haiku doesn't support adaptive thinking (server rejects with
+    // "adaptive thinking is not supported on this model"). Drop the
+    // `thinking` envelope entirely when the model's only supported
+    // effort is "auto" — that's the catalog's signal that the model
+    // doesn't expose a thinking surface.
+    let efforts = crate::models::catalog::by_id(&stripped_for_effort)
+        .map(|m| m.supported_efforts)
+        .unwrap_or(&[]);
+    if efforts == ["auto"] || efforts.is_empty() {
+        body.remove("thinking");
+        // `clear_thinking_20251015` context_management strategy also
+        // requires thinking enabled — server rejects otherwise.
+        body.remove("context_management");
+    }
+
     serde_json::to_vec(&Value::Object(body))
         .map_err(|e| Error::Parse(format!("re-serialize failed: {e}")))
 }

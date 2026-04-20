@@ -167,6 +167,16 @@ fn setup_tracing(cli: &Cli) {
 /// Top-level dispatch. Thin — every non-trivial branch delegates to a
 /// dedicated function so `run` itself remains obvious to read.
 async fn run(cli: Cli) -> Result<()> {
+    // Best-effort backfill: cached creds from legacy refreshes lack
+    // `subscription_type` / `rate_limit_tier`. Upstream hydrates these
+    // from `GET /api/oauth/profile` on every refresh; we do the same
+    // once per invocation so the tier-aware defaults (opus[1m] gating,
+    // /model picker opus row) see the real plan. Silent no-op on
+    // endpoint error or already-hydrated creds.
+    if let Err(e) = otherside::auth::anthropic::hydrate_subscription_if_missing().await {
+        tracing::warn!(?e, "subscription hydrate failed (non-fatal)");
+    }
+
     match &cli.command {
         Some(Command::Login { provider }) => cmd_login(provider).await,
         Some(Command::Logout { provider }) => cmd_logout(provider),

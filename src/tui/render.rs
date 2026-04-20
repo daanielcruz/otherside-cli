@@ -386,12 +386,20 @@ fn draw_log(f: &mut Frame<'_>, area: Rect, state: &ConversationState, spinner_ti
     // ScrollBox which anchors to the newest turn next to the prompt
     // bar. When the log overflows, scroll so the latest line is on
     // the bottom edge; a user-scrolled `scroll_offset` walks back up.
-    let total_lines = lines.len() as u16;
     let inner_h = area.height;
     let para = Paragraph::new(lines).wrap(Wrap { trim: false });
+    // Measure the VISUAL (wrapped) line count — logical `lines.len()`
+    // underestimates when any single line is wider than `area.width`.
+    // Using logical count clips the wrapped tail of the in-flight
+    // assistant buffer mid-stream, which is exactly what the user sees
+    // as "active LLM output disappears and only surfaces on the next
+    // turn" (next turn appends more lines, tips us into the overflow
+    // branch, which scrolls correctly — hiding the original bug).
+    let total_lines = para.line_count(area.width) as u16;
 
     if total_lines <= inner_h {
-        // Fits entirely — render in a bottom-aligned sub-rect.
+        // Fits entirely — render in a bottom-aligned sub-rect sized to
+        // the visual height so no wrapped rows are clipped.
         let render_area = Rect {
             x: area.x,
             y: area.y + inner_h.saturating_sub(total_lines),
