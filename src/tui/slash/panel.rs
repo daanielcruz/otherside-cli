@@ -91,21 +91,62 @@ pub fn handle(kind: PanelKind, state: &mut ConversationState) -> SlashOutcome {
 }
 
 fn help_hints() -> Vec<String> {
-    vec![
-        "otherside cli — offensive-sec operator TUI".into(),
+    use super::catalog::{CATALOG, SlashKind};
+    let mut lines = vec![
+        format!("otherside cli v{}", env!("CARGO_PKG_VERSION")),
         String::new(),
-        "Keys".into(),
-        "  Enter      submit turn".into(),
-        "  Shift+Enter insert newline".into(),
-        "  Tab        autocomplete slash".into(),
-        "  Shift+Tab  cycle permission mode".into(),
-        "  Esc        cancel current overlay / stream".into(),
-        "  Ctrl+C     exit".into(),
+        "Shortcuts".into(),
+        "  Enter          submit turn               Shift+Enter   newline".into(),
+        "  Tab            autocomplete slash        Shift+Tab     cycle permission mode".into(),
+        "  ↑ / ↓          input history             Shift+↑/↓     scroll log one line".into(),
+        "  PgUp / PgDn    scroll log ± 10 lines     Ctrl+Home/End jump top / bottom".into(),
+        "  Esc            cancel overlay / stream   Ctrl+U        kill input line".into(),
+        "  Ctrl+C         arm exit (2× to quit)     Ctrl+D        exit when input empty".into(),
+        "  !              bash passthrough line".into(),
         String::new(),
-        "Slashes".into(),
-        "  type `/` to open the autocomplete popup.".into(),
-        "  / then <prefix> filters the catalog.".into(),
-    ]
+        "Slash commands".into(),
+    ];
+    // Group by category; two columns per row for density.
+    for kind in [
+        SlashKind::Instant,
+        SlashKind::Toggle,
+        SlashKind::Skill,
+        SlashKind::Anchor,
+        SlashKind::Auth,
+    ] {
+        let slashes: Vec<&str> = CATALOG
+            .iter()
+            .filter(|e| matches!(e.kind, ref k if std::mem::discriminant(k) == std::mem::discriminant(&kind)))
+            .map(|e| e.name)
+            .collect();
+        if slashes.is_empty() {
+            continue;
+        }
+        let label = match kind {
+            SlashKind::Instant => "instant",
+            SlashKind::Toggle => "toggle",
+            SlashKind::Skill => "skill",
+            SlashKind::Anchor => "anchor",
+            SlashKind::Panel(_) => "panel",
+            SlashKind::Auth => "auth",
+        };
+        lines.push(format!(
+            "  {label:<8}  /{}",
+            slashes.join(" /")
+        ));
+    }
+    // Panel group separately since its discriminant carries data.
+    let panel_names: Vec<&str> = CATALOG
+        .iter()
+        .filter(|e| matches!(e.kind, SlashKind::Panel(_)))
+        .map(|e| e.name)
+        .collect();
+    if !panel_names.is_empty() {
+        lines.push(format!("  panel     /{}", panel_names.join(" /")));
+    }
+    lines.push(String::new());
+    lines.push("Type `/` to filter. Type `/<prefix>` to narrow.".into());
+    lines
 }
 
 fn status_hints(st: &ConversationState) -> Vec<String> {
@@ -126,37 +167,61 @@ fn status_hints(st: &ConversationState) -> Vec<String> {
 }
 
 fn config_hints(st: &ConversationState) -> Vec<String> {
+    let cwd = std::env::current_dir()
+        .ok()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "(unknown)".into());
     let mut lines = vec![
+        "Active session".into(),
+        format!("  model            {}", st.model),
+        format!("  context window   {}", st.context_window_label()),
+        format!("  permission mode  {:?}", st.permission_mode),
         format!(
-            "default provider: {}",
+            "  effort           {}",
+            st.effort_label.unwrap_or("auto")
+        ),
+        format!(
+            "  verbose          {}",
+            if st.render_verbose { "on" } else { "off" }
+        ),
+        format!(
+            "  tokens (in/out)  {} / {}",
+            st.input_tokens,
+            st.total_output_tokens()
+        ),
+        format!("  cwd              {cwd}"),
+        String::new(),
+        "Settings file".into(),
+        format!(
+            "  default provider {}",
             st.settings
                 .default_provider
                 .clone()
                 .unwrap_or_else(|| "(unset)".into())
         ),
         format!(
-            "default model: {}",
+            "  default model    {}",
             st.settings
                 .default_model
                 .clone()
                 .unwrap_or_else(|| "(unset)".into())
         ),
         format!(
-            "log level: {}",
+            "  log level        {}",
             st.settings
                 .log_level
                 .clone()
                 .unwrap_or_else(|| "(unset)".into())
         ),
         format!(
-            "effort: {}",
+            "  effort level     {}",
             st.settings
                 .effort_level
                 .clone()
                 .unwrap_or_else(|| "(unset)".into())
         ),
         format!(
-            "verbose: {}",
+            "  verbose          {}",
             st.settings
                 .verbose
                 .map(|b| if b { "true".to_string() } else { "false".to_string() })
@@ -164,7 +229,16 @@ fn config_hints(st: &ConversationState) -> Vec<String> {
         ),
     ];
     if let Some(sl) = st.settings.statusline.as_ref() {
-        lines.push(format!("statusline: {:?}", sl));
+        lines.push(format!("  statusline       {:?}", sl));
+    }
+    if let Some(hooks) = st.settings.hooks.as_ref() {
+        let total = hooks.pre_tool_use.len()
+            + hooks.post_tool_use.len()
+            + hooks.user_prompt_submit.len()
+            + hooks.stop.len();
+        lines.push(format!("  hooks            {total} configured"));
+    } else {
+        lines.push("  hooks            (none)".into());
     }
     lines
 }
