@@ -111,9 +111,19 @@ pub fn dispatch_bash(args: &Value) -> Result<Value, ToolError> {
     })
     .map_err(|e| ToolError::InvalidArgs(e.to_string()))?;
 
+    // Upstream's `mapToolResultToToolResultBlockParam` emits the wire
+    // tool_result.content as a single string merging stdout + stderr
+    // with a newline separator (see reference BashTool.tsx line ~630:
+    // `content: [processedStdout, errorMessage, backgroundInfo]
+    // .filter(Boolean).join('\n')`). Match that shape on `content` so
+    // the model sees the same raw terminal output it was trained on;
+    // keep the split `stdout` / `stderr` fields alongside for the
+    // renderer + permission layer that want them separately.
+    let content = merge_stdout_stderr(&out.stdout, &out.stderr);
     Ok(json!({
         "status": if out.timed_out { "timeout" } else { "ok" },
         "exit_code": out.exit_code,
+        "content": content,
         "stdout": out.stdout,
         "stderr": out.stderr,
         "stdout_truncated": out.stdout_truncated,
@@ -121,6 +131,33 @@ pub fn dispatch_bash(args: &Value) -> Result<Value, ToolError> {
         "was_truncated": out.was_truncated(),
         "elapsed_ms": out.elapsed_ms,
     }))
+}
+
+/// Combine stdout and stderr the way upstream's tool-result packer
+/// does: trim stdout of leading whitespace-only lines + trailing
+/// whitespace, trim stderr, then join with a newline only when both
+/// are non-empty. Keeps the format the model was trained on.
+fn merge_stdout_stderr(stdout: &str, stderr: &str) -> String {
+    let processed_stdout = trim_leading_blank_lines(stdout).trim_end().to_string();
+    let stderr_trimmed = stderr.trim();
+    match (processed_stdout.is_empty(), stderr_trimmed.is_empty()) {
+        (false, false) => format!("{processed_stdout}\n{stderr_trimmed}"),
+        (false, true) => processed_stdout,
+        (true, false) => stderr_trimmed.to_string(),
+        (true, true) => String::new(),
+    }
+}
+
+fn trim_leading_blank_lines(s: &str) -> &str {
+    let mut end = 0usize;
+    for line in s.lines() {
+        if line.trim().is_empty() {
+            end += line.len() + 1; // +1 for \n
+        } else {
+            break;
+        }
+    }
+    s.get(end..).unwrap_or(s)
 }
 
 /// Dispatch — `BashOutput`. Polls the background registry for new
@@ -156,4 +193,39 @@ pub fn dispatch_kill_bash(args: &Value) -> Result<Value, ToolError> {
         "shell_id": shell_id,
         "status": "killed",
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn merge_keeps_stdout_only_when_stderr_empty() {
+        let merged = merge_stdout_stderr("hello\n", "");
+        assert_eq!(merged, "hello");
+    }
+
+    #[test]
+    fn merge_keeps_stderr_only_when_stdout_empty() {
+        let merged = merge_stdout_stderr("", "boom\n");
+        assert_eq!(merged, "boom");
+    }
+
+    #[test]
+    fn merge_joins_both_with_newline() {
+        let merged = merge_stdout_stderr("hello\n", "warning\n");
+        assert_eq!(merged, "hello\nwarning");
+    }
+
+    #[test]
+    fn merge_trims_leading_blank_lines_from_stdout() {
+        let merged = merge_stdout_stderr("\n\n   \nreal output\n", "");
+        assert_eq!(merged, "real output");
+    }
+
+    #[test]
+    fn merge_returns_empty_when_both_empty() {
+        assert_eq!(merge_stdout_stderr("", ""), "");
+        assert_eq!(merge_stdout_stderr("   \n", "  "), "");
+    }
 }

@@ -203,10 +203,24 @@ impl ToolDispatcher for DefaultToolDispatcher {
 }
 
 /// Build the `role = "tool"` message for a dispatched call.
+///
+/// If the dispatcher emits a top-level `content` string field, we use
+/// it verbatim — this lets tools like Bash match the upstream wire
+/// shape where `tool_result.content` is plain terminal output
+/// (merged stdout + stderr) instead of a JSON envelope. Tools that
+/// don't emit `content` fall back to JSON-serializing the whole
+/// result (current behavior for Read, Edit, Grep, Glob, Write, etc).
 pub fn tool_result_message(call_id: &str, result: &Value) -> OpenAiChatMessage {
+    let content = result
+        .get("content")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            serde_json::to_string(result).unwrap_or_else(|_| result.to_string())
+        });
     OpenAiChatMessage {
         role: OpenAiChatRole::Tool,
-        content: serde_json::to_string(result).unwrap_or_else(|_| result.to_string()),
+        content,
         name: None,
         tool_calls: Vec::new(),
         tool_call_id: Some(call_id.to_string()),
@@ -584,5 +598,37 @@ mod tests {
         assert_eq!(msg.role, OpenAiChatRole::Tool);
         assert_eq!(msg.tool_call_id.as_deref(), Some("tu_1"));
         assert!(msg.content.contains("\"ok\":true"));
+    }
+
+    #[test]
+    fn tool_result_message_uses_content_field_when_present() {
+        // Bash + future string-payload tools emit a top-level `content`
+        // string (upstream-wire shape: merged stdout + stderr). The
+        // wrapper must honor it verbatim so the model sees the same
+        // terminal output upstream shows.
+        let msg = tool_result_message(
+            "tu_bash",
+            &json!({
+                "status": "ok",
+                "exit_code": 0,
+                "content": "hello world\nwarn: stderr line",
+                "stdout": "hello world\n",
+                "stderr": "warn: stderr line\n",
+            }),
+        );
+        assert_eq!(msg.content, "hello world\nwarn: stderr line");
+    }
+
+    #[test]
+    fn tool_result_message_falls_back_to_json_when_no_content_field() {
+        // Read / Edit / Grep etc keep their JSON envelope — the wrapper
+        // JSON-serializes when no `content` string field is present.
+        let msg = tool_result_message(
+            "tu_read",
+            &json!({"numLines": 3, "content_body": "line1\nline2\nline3"}),
+        );
+        // JSON envelope — starts with `{`.
+        assert!(msg.content.starts_with('{'));
+        assert!(msg.content.contains("\"numLines\":3"));
     }
 }
