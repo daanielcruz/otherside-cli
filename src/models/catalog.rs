@@ -27,6 +27,13 @@ pub struct Model {
     /// alias. For opus we set this on the `[1m]` variant so bare `opus`
     /// → opus 1M (Max subscriber default).
     pub primary_for_family: bool,
+    /// Effort levels this model accepts on the wire. Subset of
+    /// `["auto", "low", "medium", "high", "xhigh", "max"]`. Models
+    /// without explicit effort support (haiku) carry `["auto"]` only.
+    pub supported_efforts: &'static [&'static str],
+    /// Effort level applied at session start when the user has no
+    /// override. `"auto"` for models without explicit effort support.
+    pub default_effort: &'static str,
 }
 
 /// Every model otherside knows about. Ordered roughly by
@@ -46,6 +53,8 @@ pub const CATALOG: &[Model] = &[
         provider: ProviderId::ClaudeCode,
         family_alias: Some("opus"),
         primary_for_family: true,
+        supported_efforts: &["auto", "low", "medium", "high", "xhigh", "max"],
+        default_effort: "xhigh",
     },
     Model {
         id: "claude-opus-4-7[1m]",
@@ -54,6 +63,8 @@ pub const CATALOG: &[Model] = &[
         provider: ProviderId::ClaudeCode,
         family_alias: Some("opus"),
         primary_for_family: false,
+        supported_efforts: &["auto", "low", "medium", "high", "xhigh", "max"],
+        default_effort: "xhigh",
     },
     Model {
         id: "claude-sonnet-4-6",
@@ -62,6 +73,8 @@ pub const CATALOG: &[Model] = &[
         provider: ProviderId::ClaudeCode,
         family_alias: Some("sonnet"),
         primary_for_family: true,
+        supported_efforts: &["auto", "low", "medium", "high"],
+        default_effort: "high",
     },
     Model {
         id: "claude-haiku-4-5",
@@ -70,6 +83,8 @@ pub const CATALOG: &[Model] = &[
         provider: ProviderId::ClaudeCode,
         family_alias: Some("haiku"),
         primary_for_family: true,
+        supported_efforts: &["auto"],
+        default_effort: "auto",
     },
     // Codex / OpenAI provider (dispatch frozen, catalog still exposed for
     // the picker row when the user selects this provider)
@@ -80,6 +95,8 @@ pub const CATALOG: &[Model] = &[
         provider: ProviderId::Codex,
         family_alias: None,
         primary_for_family: false,
+        supported_efforts: &["auto"],
+        default_effort: "auto",
     },
     // Gemini / Google provider (dispatch frozen)
     Model {
@@ -89,6 +106,8 @@ pub const CATALOG: &[Model] = &[
         provider: ProviderId::GeminiCli,
         family_alias: None,
         primary_for_family: false,
+        supported_efforts: &["auto"],
+        default_effort: "auto",
     },
 ];
 
@@ -111,6 +130,21 @@ pub fn has_1m_suffix(id: &str) -> bool {
 /// Every model belonging to `provider`, in catalog order.
 pub fn models_for(provider: ProviderId) -> Vec<&'static Model> {
     CATALOG.iter().filter(|m| m.provider == provider).collect()
+}
+
+/// Default effort level for the given model id — `default_effort`
+/// when the model is in the catalog, otherwise `"auto"`.
+pub fn default_effort_for(id: &str) -> &'static str {
+    by_id(id).map(|m| m.default_effort).unwrap_or("auto")
+}
+
+/// True iff `effort` is a valid level for `id`. Unknown ids only
+/// accept `"auto"`.
+pub fn supports_effort(id: &str, effort: &str) -> bool {
+    match by_id(id) {
+        Some(m) => m.supported_efforts.contains(&effort),
+        None => effort == "auto",
+    }
 }
 
 #[cfg(test)]

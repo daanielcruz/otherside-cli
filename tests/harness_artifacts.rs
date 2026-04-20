@@ -24,39 +24,43 @@ fn capture_body() -> Value {
 }
 
 #[test]
-fn system_prompt_is_capture_plus_verification_bullet() {
-    // V2 drift (2026-04-20): system-prompt.md carries the
-    // verification-contract bullet from upstream
-    // `constants/prompts.ts:410`. The capture was taken before the
-    // feature flag was on, so byte-exact equality is gone. We assert:
-    //  1. All non-drift content from the capture is still present.
-    //  2. The added verification bullet is present.
-    let body = capture_body();
-    let captured = body["system"][3]["text"]
-        .as_str()
-        .expect("system[3].text is a string");
-
-    // Find the last line of the capture's Session-specific guidance
-    // block — everything up to and including it must still appear.
-    let anchor = " - When the user types `/<skill-name>`, invoke it via Skill.";
-    let idx = captured
-        .find(anchor)
-        .expect("capture has the skill-name guidance bullet");
-    let captured_prefix = &captured[..idx + anchor.len()];
-    let captured_prefix = captured_prefix
-        .lines()
-        .next_back()
-        .map(|_| captured_prefix)
-        .unwrap();
+fn system_prompt_keeps_core_anchors_and_verification_bullet() {
+    // V2 drift (2026-04-20, user-authored): system-prompt.md was
+    // edited to identify otherside instead of claude-code, introduces
+    // environment placeholders (_WORKSPACE_DIR_ etc.), and trims
+    // claude-code-specific help / feedback bullets. Byte-exact compare
+    // with the capture is gone — structural guardrails here:
+    //
+    //  - Verification bullet (added per upstream constants/prompts.ts:410).
+    //  - Core sections every agent system prompt must retain.
+    //  - Environment placeholders are present for substitution.
     assert!(
-        harness::SYSTEM_PROMPT.contains(captured_prefix),
-        "system-prompt.md must preserve capture content up to the skill-name bullet"
-    );
-    assert!(
-        harness::SYSTEM_PROMPT
-            .contains("subagent_type=\"verification\""),
+        harness::SYSTEM_PROMPT.contains("subagent_type=\"verification\""),
         "system-prompt.md must include the verification-contract bullet"
     );
+    for anchor in [
+        "# Text output",
+        "# Session-specific guidance",
+        "# auto memory",
+        "# Environment",
+    ] {
+        assert!(
+            harness::SYSTEM_PROMPT.contains(anchor),
+            "system-prompt.md lost section `{anchor}`"
+        );
+    }
+    for placeholder in [
+        "_WORKSPACE_DIR_",
+        "_IS_GIT_REPO_",
+        "_PLATFORM_",
+        "_SHELL_",
+        "_OS_VERSION_",
+    ] {
+        assert!(
+            harness::SYSTEM_PROMPT.contains(placeholder),
+            "system-prompt.md lost env placeholder `{placeholder}`"
+        );
+    }
 }
 
 #[test]

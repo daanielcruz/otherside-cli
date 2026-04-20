@@ -394,11 +394,25 @@ async fn cmd_tui(cli: &Cli) -> Result<()> {
         .or(settings.default_provider.clone())
         .unwrap_or_else(|| DEFAULT_PROVIDER.to_string());
 
+    // Tier-aware default: when the user has no CLI `--model` override
+    // and no persisted `settings.default_model`, derive the default
+    // from the OAuth subscription tier. Max / Team Premium / Ant
+    // internal → opus[1m]; everyone else → sonnet. Mirrors upstream
+    // `getDefaultMainLoopModelSetting`.
+    let tier_default = {
+        use otherside::models::defaults::{default_claude_code_for_tier, SubscriptionTier};
+        let tier_str = otherside::auth::anthropic::load_credentials()
+            .ok()
+            .flatten()
+            .and_then(|c| c.subscription_type.clone());
+        let tier = SubscriptionTier::from_subscription_type(tier_str.as_deref());
+        default_claude_code_for_tier(tier).to_string()
+    };
     let raw_model = cli
         .model
         .clone()
         .or(settings.default_model.clone())
-        .unwrap_or_else(|| DEFAULT_MODEL.to_string());
+        .unwrap_or(tier_default);
 
     let registry = Registry::builder()
         .with(AnthropicProvider::arc()?)

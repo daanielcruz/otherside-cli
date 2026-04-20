@@ -2,7 +2,7 @@
 The following skills are available for use with the Skill tool:
 
 - loop: Run a prompt or slash command on a recurring interval (e.g. /loop 5m /foo, defaults to 10m) - When the user wants to set up a recurring task, poll for status, or run something repeatedly on an interval (e.g. "check the deploy every 5 minutes", "keep running /babysit-prs"). Do NOT invoke for one-off tasks.
-- init: Initialize a new CLAUDE.md file with codebase documentation
+- init: Initialize a new OTHERSIDE.md file with codebase documentation
 - review: Review a pull request
 - security-review: Complete a security review of the pending changes on the current branch
 </system-reminder>

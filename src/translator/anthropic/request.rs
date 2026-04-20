@@ -53,18 +53,19 @@ pub fn strip_1m_suffix(raw: &str) -> (String, bool) {
     (raw.to_string(), false)
 }
 
-/// Captured environment literals (from the tools-glob-single/turn1
-/// system[3] block). These are the tokens the assembler substitutes
-/// to per-session values.
-const CAPTURE_CWD: &str = "Primary working directory: /workspace";
-const CAPTURE_IS_GIT: &str = "Is a git repository: false";
-const CAPTURE_PLATFORM: &str = "- Platform: linux";
-const CAPTURE_SHELL: &str = "- Shell: bash";
-const CAPTURE_OS_VERSION: &str = "- OS Version: Linux 6.12.76-linuxkit";
-const CAPTURE_EMAIL: &str = "edaanxx@gmail.com";
-const CAPTURE_DATE: &str = "2026-04-18";
+/// V2 placeholder tokens embedded in harness_corpus/system/03-main-prompt.md.
+/// The assembler swaps each for the session's live values before the
+/// wire body ships. Placeholders are used instead of capture literals
+/// (old "Primary working directory: /workspace" form) so corpus edits
+/// don't have to re-anchor against machine-specific capture state.
+const PLACEHOLDER_CWD: &str = "_WORKSPACE_DIR_";
+const PLACEHOLDER_IS_GIT: &str = "_IS_GIT_REPO_";
+const PLACEHOLDER_PLATFORM: &str = "_PLATFORM_";
+const PLACEHOLDER_SHELL: &str = "_SHELL_";
+const PLACEHOLDER_OS_VERSION: &str = "_OS_VERSION_";
 
 /// Per-session context the assembler injects into the captured body.
+/// Email and current_date are always session-live — never hardcoded.
 #[derive(Debug, Clone)]
 pub struct UserContext<'a> {
     pub email: &'a str,
@@ -77,13 +78,14 @@ pub struct UserContext<'a> {
 }
 
 impl UserContext<'_> {
-    /// Values matching the `tools-glob-single/turn1` capture — supply
-    /// these to reproduce capture bytes for byte-match tests. Production
-    /// callers build their own `UserContext` from live environment.
+    /// Fixture values for byte-match tests only. Reproduces the
+    /// `tools-glob-single/turn1` capture environment. Production code
+    /// builds its own [`UserContext`] from live environment + OAuth
+    /// credentials — never call this outside test paths.
     pub fn capture_defaults() -> UserContext<'static> {
         UserContext {
-            email: CAPTURE_EMAIL,
-            current_date: CAPTURE_DATE,
+            email: "test@example.com",
+            current_date: "0000-00-00",
             cwd: "/workspace",
             is_git_repo: false,
             platform: "linux",
@@ -94,29 +96,23 @@ impl UserContext<'_> {
 }
 
 /// Post-process `system[]` to substitute per-session environment
-/// literals in the main agent prompt (`system[3]`). Walks every block
-/// and swaps the capture tokens in place — blocks without the
-/// "Primary working directory:" anchor are left untouched.
+/// placeholders in the main agent prompt (`system[3]`). Walks every
+/// block and swaps placeholder tokens for session literals — blocks
+/// without the `_WORKSPACE_DIR_` anchor are left untouched.
 fn substitute_environment_in_system(system: &mut [Value], ctx: &UserContext<'_>) {
     for block in system.iter_mut() {
         let Some(text) = block.get("text").and_then(|v| v.as_str()) else {
             continue;
         };
-        if !text.contains("Primary working directory:") {
+        if !text.contains(PLACEHOLDER_CWD) {
             continue;
         }
         let replaced = text
-            .replace(CAPTURE_CWD, &format!("Primary working directory: {}", ctx.cwd))
-            .replace(
-                CAPTURE_IS_GIT,
-                &format!("Is a git repository: {}", ctx.is_git_repo),
-            )
-            .replace(CAPTURE_PLATFORM, &format!("- Platform: {}", ctx.platform))
-            .replace(CAPTURE_SHELL, &format!("- Shell: {}", ctx.shell))
-            .replace(
-                CAPTURE_OS_VERSION,
-                &format!("- OS Version: {}", ctx.os_version),
-            );
+            .replace(PLACEHOLDER_CWD, ctx.cwd)
+            .replace(PLACEHOLDER_IS_GIT, &ctx.is_git_repo.to_string())
+            .replace(PLACEHOLDER_PLATFORM, ctx.platform)
+            .replace(PLACEHOLDER_SHELL, ctx.shell)
+            .replace(PLACEHOLDER_OS_VERSION, ctx.os_version);
         if replaced != text {
             if let Some(slot) = block.get_mut("text") {
                 *slot = Value::String(replaced);
@@ -271,7 +267,7 @@ mod tests {
             .unwrap();
         assert!(reminder2.contains("someone.else@example.com"));
         assert!(reminder2.contains("2027-01-01"));
-        assert!(!reminder2.contains(CAPTURE_EMAIL));
+        assert!(!reminder2.contains("test@example.com"));
     }
 
     #[test]
