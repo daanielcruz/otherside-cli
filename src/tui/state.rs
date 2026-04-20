@@ -100,6 +100,12 @@ use super::tool_render::{self, ToolPayload, ToolStatus};
 pub struct DisplayMessage {
     pub role: OpenAiChatRole,
     pub content: String,
+    /// When set, this is the payload sent over the wire to the
+    /// provider — `content` stays as the visible transcript echo.
+    /// Used by Skill-category slashes so the SKILL.md body rides
+    /// the request without leaking into the user-facing log (only
+    /// `❯ /<name>` appears on screen).
+    pub wire_override: Option<String>,
 }
 
 /// One tool-call entry on the active list.
@@ -189,6 +195,19 @@ pub struct ConversationState {
     /// wrapped lines. No prompt marker is stored here; the render layer
     /// draws the `>` prefix.
     pub input: String,
+
+    /// One-shot wire-content override consumed by the next `submit`.
+    /// Set by Skill-category slashes so the visible echo stays
+    /// `/<name>` while the full SKILL body rides the wire. Cleared
+    /// in `submit()` via `take()`.
+    pub pending_wire_override: Option<String>,
+
+    /// Re-paint the splash mascot above the transcript until the
+    /// next user submit lands. Set by `clear_conversation` so the
+    /// `/clear` state visually matches upstream — mascot + cwd
+    /// banner above the `⎿ (no content)` anchor. Cleared the moment
+    /// a new user turn fires.
+    pub show_post_clear_splash: bool,
 
     /// Scroll offset from the bottom of the log, measured in lines. `0`
     /// means pinned to the newest message; a positive value scrolls up.
@@ -460,6 +479,49 @@ mod feedback_tests {
     }
 
     #[test]
+    fn pending_wire_override_rides_history_but_not_display() {
+        // Skill dispatch path: visible echo is `/dream`, wire carries
+        // the full SKILL.md body. history_for_request must surface the
+        // body; st.messages must surface the echo.
+        let mut st = ConversationState::default();
+        st.input = "/dream".into();
+        st.pending_wire_override = Some(
+            "---\nname: dream\n---\nfull skill body here".into(),
+        );
+        let _ = st.submit();
+        assert_eq!(st.messages.len(), 1);
+        assert_eq!(st.messages[0].content, "/dream", "visible echo kept");
+        assert_eq!(
+            st.messages[0].wire_override.as_deref(),
+            Some("---\nname: dream\n---\nfull skill body here"),
+        );
+        assert!(st.pending_wire_override.is_none(), "consumed on submit");
+        let hist = st.history_for_request();
+        assert_eq!(hist.len(), 1);
+        assert!(
+            hist[0].content.contains("full skill body here"),
+            "wire carries body, got: {:?}",
+            hist[0].content
+        );
+    }
+
+    #[test]
+    fn clear_conversation_sets_post_clear_splash_flag() {
+        let mut st = ConversationState::default();
+        st.messages.push(DisplayMessage {
+            role: super::OpenAiChatRole::Assistant,
+            content: "prior turn".into(),
+            wire_override: None,
+        });
+        assert!(!st.show_post_clear_splash);
+        st.clear_conversation();
+        assert!(st.show_post_clear_splash, "flag must be set after /clear");
+        st.input = "next turn".into();
+        let _ = st.submit();
+        assert!(!st.show_post_clear_splash, "flag must clear on next submit");
+    }
+
+    #[test]
     fn clear_conversation_zeros_token_counters() {
         let mut st = ConversationState::default();
         st.input_tokens = 21_000;
@@ -469,6 +531,7 @@ mod feedback_tests {
         st.messages.push(DisplayMessage {
             role: super::OpenAiChatRole::User,
             content: "hi".into(),
+            wire_override: None,
         });
         st.clear_conversation();
         assert_eq!(st.input_tokens, 0);
@@ -626,9 +689,12 @@ impl ConversationState {
             return None;
         }
         let content = self.input.clone();
+        let wire_override = self.pending_wire_override.take();
+        self.show_post_clear_splash = false;
         self.messages.push(DisplayMessage {
             role: OpenAiChatRole::User,
             content,
+            wire_override,
         });
         self.input.clear();
         self.streaming = true;
@@ -765,6 +831,10 @@ impl ConversationState {
         self.output_tokens = 0;
         self.cumulative_output_tokens = 0;
         self.thought_ms = 0;
+        // Signal the render layer to redraw the splash above the
+        // `/clear` anchor. Cleared on the next user submit so the
+        // splash doesn't survive into subsequent turns.
+        self.show_post_clear_splash = true;
     }
 
     /// Surface an inline system note in the streaming area. Used by
@@ -774,6 +844,7 @@ impl ConversationState {
         self.messages.push(DisplayMessage {
             role: OpenAiChatRole::System,
             content: text.into(),
+            wire_override: None,
         });
         self.input.clear();
         self.autocomplete = None;
@@ -797,10 +868,12 @@ impl ConversationState {
         self.messages.push(DisplayMessage {
             role: OpenAiChatRole::User,
             content: echo,
+            wire_override: None,
         });
         self.messages.push(DisplayMessage {
             role: OpenAiChatRole::System,
             content: format!("⎿ {}", result.into()),
+            wire_override: None,
         });
         self.input.clear();
         self.autocomplete = None;
@@ -906,14 +979,13 @@ impl ConversationState {
     pub fn history_for_request(&self) -> Vec<OpenAiChatMessage> {
         self.messages
             .iter()
-            // Skip Role::Tool entries — those are TUI-only history
-            // records of tool dispatches (rendered via render_message).
-            // The actual tool-use / tool-result blocks ride the
-            // translator's Block path, not here.
             .filter(|m| m.role != OpenAiChatRole::Tool)
             .map(|m| OpenAiChatMessage {
                 role: m.role,
-                content: m.content.clone(),
+                content: m
+                    .wire_override
+                    .clone()
+                    .unwrap_or_else(|| m.content.clone()),
                 name: None,
                 tool_calls: Vec::new(),
                 tool_call_id: None,
@@ -1015,13 +1087,15 @@ impl ConversationState {
             self.messages.push(DisplayMessage {
                 role: OpenAiChatRole::Tool,
                 content: format_tool_history_entry(&entry),
-            });
+            wire_override: None,
+        });
         }
         if !self.current_assistant_buffer.is_empty() {
             let content = std::mem::take(&mut self.current_assistant_buffer);
             self.messages.push(DisplayMessage {
                 role: OpenAiChatRole::Assistant,
                 content,
+            wire_override: None,
             });
         } else {
             self.current_assistant_buffer.clear();
@@ -1049,13 +1123,15 @@ impl ConversationState {
             self.messages.push(DisplayMessage {
                 role: OpenAiChatRole::Tool,
                 content: format_tool_history_entry(&entry),
-            });
+            wire_override: None,
+        });
         }
         if !self.current_assistant_buffer.is_empty() {
             let content = std::mem::take(&mut self.current_assistant_buffer);
             self.messages.push(DisplayMessage {
                 role: OpenAiChatRole::Assistant,
                 content,
+            wire_override: None,
             });
         }
         self.last_error = Some(err);
@@ -1086,6 +1162,7 @@ impl ConversationState {
             self.messages.push(DisplayMessage {
                 role: OpenAiChatRole::Assistant,
                 content,
+            wire_override: None,
             });
         }
         self.streaming = false;

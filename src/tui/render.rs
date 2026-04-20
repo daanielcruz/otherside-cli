@@ -161,23 +161,34 @@ pub fn render(
     // &mut state here to call it from the renderer. For now prune is
     // invoked by the event loop before each draw; see the Tick arm.
 
-    // Popup-takeover math — when the autocomplete is open, the caller
-    // reserves an exact `popup_rows` strip below the prompt bar and the
-    // bottom chrome collapses. We clamp the row count to
-    // MAX_POPUP_ROWS and to the remaining height so short terminals
-    // still leave breathing room for the streaming area.
-    let popup_rows: u16 = state
-        .autocomplete
-        .as_ref()
-        .map(|ac| {
+    // Below-prompt slot sizing. Every overlay surface (autocomplete,
+    // panel menu, pending question, pending permission) now shares the
+    // same `slots.popup` strip below the prompt bar. The statusline +
+    // info + bottom pad collapse while any of them is active, mirroring
+    // how the autocomplete popup has always behaved. Mutual exclusion
+    // is enforced upstream by the state mutations — only one of the
+    // four fields is ever `Some` at a time.
+    let popup_rows: u16 = {
+        let remaining = area.height.saturating_sub(4 + 1 + 3 + 1);
+        if let Some(p) = state.pending_permission.as_ref() {
+            let mut rows: u16 = 2 + (super::menu::PERMISSION_CHOICES.len() as u16) * 2 + 2;
+            if !p.args_preview.is_empty() { rows += 1; }
+            if p.rule.is_some() { rows += 1; }
+            rows.min(remaining)
+        } else if let Some(q) = state.pending_question.as_ref() {
+            let question_rows = q.question.lines().count() as u16;
+            let hint_rows = if q.hint.is_some() { 1 } else { 0 };
+            (1 + question_rows + hint_rows + 4).min(remaining)
+        } else if let Some(m) = state.active_menu.as_ref() {
+            super::menu::overlay_rows(m).min(remaining)
+        } else if let Some(ac) = state.autocomplete.as_ref() {
             let matches_rows = ac.matches.len() as u16;
             let cap = autocomplete::MAX_POPUP_ROWS as u16;
-            // Reserve at least 4 rows (prompt + top-pad) so the popup
-            // doesn't starve the prompt bar on tiny terminals.
-            let remaining = area.height.saturating_sub(4 + 1 + 3 + 1);
             matches_rows.min(cap).min(remaining)
-        })
-        .unwrap_or(0);
+        } else {
+            0
+        }
+    };
 
     let slots = layout_mod::split_frame(
         area,
@@ -186,28 +197,35 @@ pub fn render(
         popup_rows,
     );
 
-    // Streaming area — mascot when empty, otherwise the scrolling log.
-    // When any overlay is active we carve the streaming area into two
-    // rects: a top portion for splash/log and a bottom portion reserved
-    // for the overlay. This mirrors the reference TUI — the panel hugs
-    // the prompt and the splash/log stays visible above it rather than
-    // leaving the upper rows blank.
-    let overlay_h = overlay_height(state, slots.streaming.height);
-    let non_overlay = Rect {
-        x: slots.streaming.x,
-        y: slots.streaming.y,
-        width: slots.streaming.width,
-        height: slots.streaming.height.saturating_sub(overlay_h),
-    };
+    // Streaming area owns the full top portion regardless of overlay
+    // state — the popup sits below the prompt now, not above it.
+    // After `/clear`, show the splash above the `⎿ (no content)`
+    // anchor (and any subsequent system notes) until the next user
+    // turn lands. Matches upstream: mascot persists through /clear.
     if state.messages.is_empty() && !state.streaming {
-        // Splash always renders (even with an overlay active) into the
-        // top portion above the overlay rect. Keeps the brand band
-        // visible instead of leaving the panel floating in blank rows.
-        if non_overlay.height > 0 {
-            draw_splash_centered(f, non_overlay);
+        draw_splash_centered(f, slots.streaming);
+    } else if state.show_post_clear_splash {
+        let splash_rows = slots.streaming.height / 2;
+        let splash_area = Rect {
+            x: slots.streaming.x,
+            y: slots.streaming.y,
+            width: slots.streaming.width,
+            height: splash_rows,
+        };
+        let log_area = Rect {
+            x: slots.streaming.x,
+            y: slots.streaming.y + splash_rows,
+            width: slots.streaming.width,
+            height: slots.streaming.height.saturating_sub(splash_rows),
+        };
+        if splash_area.height > 0 {
+            draw_splash_centered(f, splash_area);
         }
-    } else if non_overlay.height > 0 {
-        draw_log(f, non_overlay, state, spinner_tick);
+        if log_area.height > 0 {
+            draw_log(f, log_area, state, spinner_tick);
+        }
+    } else {
+        draw_log(f, slots.streaming, state, spinner_tick);
     }
 
     // Progress + tip rows only exist when streaming.
@@ -239,29 +257,24 @@ pub fn render(
         draw_queue_lines(f, queue_area, state);
     }
 
-    // Prompt bar with the autocomplete popup painted above it when
-    // active — the popup goes in the streaming area bottom strip so
-    // it obscures nothing crucial (we redraw next frame anyway).
     draw_prompt(f, slots.prompt, state);
-    // Pending agent question (AskUserQuestion) outranks everything
-    // except a permission prompt — it also blocks the turn.
-    let overlay_rect = |h: u16| Rect {
-        x: slots.streaming.x,
-        y: slots.streaming.y + slots.streaming.height.saturating_sub(h),
-        width: slots.streaming.width,
-        height: h,
-    };
-    if let Some(q) = state.pending_question.as_ref() {
-        super::menu::draw_question_prompt(f, overlay_rect(overlay_h), q);
-    } else if let Some(prompt) = state.pending_permission.as_ref() {
-        super::menu::draw_permission_prompt(f, overlay_rect(overlay_h), prompt);
-    } else if let Some(menu_state) = state.active_menu.as_ref() {
-        super::menu::draw_overlay(f, overlay_rect(overlay_h), menu_state);
-    } else if let (Some(ac), Some(popup_rect)) = (state.autocomplete.as_ref(), slots.popup) {
-        // Popup sits directly below the prompt bar in the dedicated
-        // `slots.popup` strip (openspec 001 phase 3). Chrome is
-        // already suppressed by the layout when popup_rows > 0.
-        autocomplete::draw(f, popup_rect, ac);
+    // Unified below-prompt overlay slot. Every modal surface
+    // (permission > question > menu > autocomplete) paints into
+    // `slots.popup`. Priority order matches the key routing in
+    // `tui::mod.rs::handle_key`. Chrome (statusline / info / bottom
+    // pad) is already suppressed by `split_frame` whenever
+    // `popup_rows > 0`, so the overlay takes over the bottom strip
+    // cleanly.
+    if let Some(popup_rect) = slots.popup {
+        if let Some(prompt) = state.pending_permission.as_ref() {
+            super::menu::draw_permission_prompt(f, popup_rect, prompt);
+        } else if let Some(q) = state.pending_question.as_ref() {
+            super::menu::draw_question_prompt(f, popup_rect, q);
+        } else if let Some(menu_state) = state.active_menu.as_ref() {
+            super::menu::draw_overlay(f, popup_rect, menu_state);
+        } else if let Some(ac) = state.autocomplete.as_ref() {
+            autocomplete::draw(f, popup_rect, ac);
+        }
     }
 
     // Statusline + info row — suppressed while the popup is active
@@ -281,27 +294,6 @@ pub fn render(
 /// frame can't fit the full layout.
 fn draw_splash_centered(f: &mut Frame<'_>, area: Rect) {
     mascot::draw_splash(f, area);
-}
-
-/// Row count of the active overlay surface (permission / question /
-/// menu), clamped to the streaming area height. Zero when no overlay
-/// is active. Single source of truth so splash/log painting above
-/// the overlay shares the exact row budget with the overlay draw.
-pub(super) fn overlay_height(state: &ConversationState, streaming_h: u16) -> u16 {
-    if let Some(q) = state.pending_question.as_ref() {
-        let question_rows = q.question.lines().count() as u16;
-        let hint_rows = if q.hint.is_some() { 1 } else { 0 };
-        (1 + question_rows + hint_rows + 4).min(streaming_h)
-    } else if let Some(p) = state.pending_permission.as_ref() {
-        let mut rows: u16 = 2 + (super::menu::PERMISSION_CHOICES.len() as u16) * 2 + 2;
-        if !p.args_preview.is_empty() { rows += 1; }
-        if p.rule.is_some() { rows += 1; }
-        rows.min(streaming_h)
-    } else if let Some(m) = state.active_menu.as_ref() {
-        super::menu::overlay_rows(m).min(streaming_h)
-    } else {
-        0
-    }
 }
 
 /// Scrolling message log. Each finalized message is rendered as a
@@ -886,21 +878,16 @@ fn draw_info_row(
         build_info_chip_line(state)
     };
 
-    // Right side: per-session token accounting. Upstream surfaces a
-    // `↑ N · ↓ N` pair so the user sees the running footprint without
-    // waiting for a `/status` dispatch. We skip the chip entirely when
-    // both counts are zero (fresh session, no turn taken yet).
-    let up = state.input_tokens;
-    let down = state.total_output_tokens();
-    let right_text = if up == 0 && down == 0 {
-        String::new()
-    } else {
-        format!(
-            "↑ {} · ↓ {}",
-            progress::format_tokens_compact(up),
-            progress::format_tokens_compact(down)
-        )
-    };
+    // Right side: per-session token accounting. Raw count (no
+    // abbreviation) when the session is still within the safe
+    // buffer; swap to upstream-shape `N% until auto-compact` warning
+    // once usage crosses the warning threshold (context_window - 20k
+    // minus the 13k auto-compact buffer — see
+    // reconstructed/2.1.113/source/services/compact/autoCompact.ts).
+    let total = state
+        .input_tokens
+        .saturating_add(state.total_output_tokens());
+    let right_text = build_token_right_chip(state, total);
 
     if right_text.is_empty() {
         f.render_widget(Paragraph::new(left), area);
@@ -922,6 +909,39 @@ fn draw_info_row(
             .alignment(Alignment::Right),
             chunks[1],
         );
+    }
+}
+
+/// Upstream buffer constants from
+/// `reconstructed/2.1.113/source/services/compact/autoCompact.ts`
+/// lines 142-145. Port verbatim — same thresholds keep the warning
+/// band consistent with upstream UX. The auto-compact buffer is
+/// subtracted from the context window to derive the `threshold`; the
+/// warning appears once `usage >= threshold - WARNING_BUFFER`.
+const AUTOCOMPACT_BUFFER_TOKENS: u64 = 13_000;
+const WARNING_THRESHOLD_BUFFER_TOKENS: u64 = 20_000;
+
+/// Decide the bottom-right chip text. Raw token sum when the session
+/// is still below the warning band; swap to `N% until auto-compact`
+/// once upstream's threshold math trips. Empty string on a fresh
+/// session (zero tokens) so the right column disappears entirely.
+fn build_token_right_chip(state: &ConversationState, total: u64) -> String {
+    if total == 0 {
+        return String::new();
+    }
+    if state.context_window == 0 {
+        return format!("{total} tokens");
+    }
+    let threshold = state
+        .context_window
+        .saturating_sub(AUTOCOMPACT_BUFFER_TOKENS);
+    let warning_threshold = threshold.saturating_sub(WARNING_THRESHOLD_BUFFER_TOKENS);
+    if state.input_tokens >= warning_threshold && threshold > 0 {
+        let remaining = threshold.saturating_sub(state.input_tokens);
+        let percent_left = ((remaining as u128 * 100) / threshold as u128) as u64;
+        format!("{percent_left}% until auto-compact")
+    } else {
+        format!("{total} tokens")
     }
 }
 
@@ -1060,6 +1080,7 @@ mod tests {
         st.messages.push(DisplayMessage {
             role: OpenAiChatRole::User,
             content: "list files".into(),
+            wire_override: None,
         });
         st.begin_tool_call(
             "t1".into(),
@@ -1271,6 +1292,23 @@ mod tests {
             !rendered.contains("(shift+tab to cycle)"),
             "rendered: {rendered:?}"
         );
+    }
+
+    #[test]
+    fn info_row_right_side_renders_raw_token_sum() {
+        // Per-session accounting: input + output as a single raw count.
+        // 12_345 + 6_789 = 19_134 → "19134 tokens" (no abbreviation,
+        // no sigil).
+        use super::super::state::ConversationState;
+        let mut st = ConversationState::new();
+        st.input_tokens = 12_345;
+        st.output_tokens = 6_789;
+        let rendered = render_info_row_to_string(&st, 80);
+        assert!(rendered.contains("19134 tokens"), "rendered: {rendered:?}");
+        assert!(!rendered.contains("↑"), "rendered: {rendered:?}");
+        assert!(!rendered.contains("↓"), "rendered: {rendered:?}");
+        assert!(!rendered.contains("Σ"), "rendered: {rendered:?}");
+        assert!(!rendered.contains("19k"), "rendered: {rendered:?}");
     }
 
     // --- 017 §4 queue lines ---------------------------------------------

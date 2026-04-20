@@ -80,14 +80,16 @@ impl Autocomplete {
 }
 
 /// Prefix-match the catalog for entries whose slash name starts with
-/// `partial`. Case-insensitive. Preserves catalog order so common
-/// slashes stay visually stable.
+/// `partial`. Case-insensitive. Alphabetized by slash name to match
+/// upstream — catalog-file order would surface rows in an opaque
+/// sequence that reads arbitrary to users comparing the two TUIs
+/// (2026-04-20 parity sweep flagged this).
 fn prefix_filter(partial: &str) -> Vec<&'static catalog::SlashEntry> {
     let lower = partial.to_ascii_lowercase();
-    // NO `.take(MAX_POPUP_ROWS)` cap — popup must surface every match
-    // or users with 41 catalog entries think slashes are "missing". The
-    // render path windows the visible rows via `ListState::offset`.
-    catalog::prefix_matches(&lower).collect()
+    let mut matches: Vec<&'static catalog::SlashEntry> =
+        catalog::prefix_matches(&lower).collect();
+    matches.sort_by(|a, b| a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase()));
+    matches
 }
 
 /// Popup name-column width in columns. 40% of the rect width clamped
@@ -225,11 +227,18 @@ mod tests {
     }
 
     #[test]
-    fn prefix_without_exact_match_keeps_catalog_order() {
+    fn prefix_without_exact_match_defaults_selected_to_zero() {
         let ac = Autocomplete::from_input("/statu").unwrap();
-        // `statusline` comes before `status` in catalog order; with no
-        // exact hit `selected = 0` keeps the original first-match rule.
         assert_eq!(ac.selected, 0);
+    }
+
+    #[test]
+    fn matches_are_alphabetized_by_name() {
+        let ac = Autocomplete::from_input("/s").unwrap();
+        let names: Vec<&str> = ac.matches.iter().map(|e| e.name).collect();
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(names, sorted, "matches must be alphabetized (upstream shape)");
     }
 
     #[test]

@@ -308,14 +308,22 @@ async fn event_loop(
             maybe = rx.recv() => {
                 match maybe {
                     Some(StreamEvent::Delta(s)) => {
+                        tracing::info!(
+                            target: "otherside::queue",
+                            delta_len = s.len(),
+                            buffer_len_after = st.current_assistant_buffer.len() + s.len(),
+                            "Delta received"
+                        );
                         st.append_stream_delta(&s);
                     }
                     Some(StreamEvent::Done) => {
-                        // Persist the assistant's final buffer before
-                        // finish_stream clears it. Usage is captured
-                        // via a lightweight view so the record carries
-                        // the real numbers even if the stream didn't
-                        // ship them inline.
+                        tracing::info!(
+                            target: "otherside::queue",
+                            queue_depth = st.queued_messages.len(),
+                            buffer_len = st.current_assistant_buffer.len(),
+                            messages_len = st.messages.len(),
+                            "StreamEvent::Done received"
+                        );
                         let content = st.current_assistant_buffer.clone();
                         let usage = Some(serde_json::json!({
                             "input_tokens": st.input_tokens,
@@ -1007,15 +1015,34 @@ fn drain_queue_head_if_any(
     provider_id: &str,
     tx: &mpsc::Sender<StreamEvent>,
 ) -> bool {
+    tracing::info!(
+        target: "otherside::queue",
+        queue_depth = st.queued_messages.len(),
+        streaming = st.streaming,
+        "drain_queue_head_if_any entered"
+    );
     if !st.consume_queue_head_into_input() {
+        tracing::info!(target: "otherside::queue", "queue empty — no drain");
         return false;
     }
+    tracing::info!(
+        target: "otherside::queue",
+        input_len = st.input.len(),
+        streaming = st.streaming,
+        "queue head consumed; dispatching"
+    );
     // Run the queued text through the same slash classifier the
     // Enter path uses — preserves local-handler semantics for
     // queued slashes (`/clear`, `/help`, etc.). A queued `/exit`
     // does NOT terminate immediately here; it gets noted so the
     // user can confirm with Ctrl+C instead of losing the queue.
     let exit_signal = dispatch_slash(st, provider, base_model, thinking, tx);
+    tracing::info!(
+        target: "otherside::queue",
+        exit_signal,
+        streaming_after = st.streaming,
+        "dispatch_slash returned"
+    );
     if exit_signal {
         st.push_system_note("queued /exit — press Ctrl+C twice to quit");
     }
@@ -1069,7 +1096,19 @@ fn dispatch_slash(
         }
         slash::SlashOutcome::ExitApp => true,
         slash::SlashOutcome::SendTurn(body) => {
-            st.input = body;
+            // Skill-category slashes ship the SKILL.md body here. We
+            // want the model to see the body (wire) but the user's
+            // transcript to show only `❯ /<name> [args]` (display).
+            // Stash body on state for submit() to pick up, then set
+            // the visible input to the `/<name>` echo.
+            let trimmed = st.input.trim();
+            let echo = if trimmed.is_empty() {
+                String::new()
+            } else {
+                trimmed.to_string()
+            };
+            st.pending_wire_override = Some(body);
+            st.input = echo;
             submit_current_input(st, provider, base_model, thinking, tx);
             false
         }
@@ -1590,40 +1629,3 @@ mod panel_anchor_tests {
     }
 }
 
-#[cfg(test)]
-mod overlay_height_tests {
-    use super::*;
-    use crate::tui::menu::OverlayMenu;
-    use crate::tui::slash::catalog::PanelKind;
-    use crate::tui::render::overlay_height as render_overlay_height;
-
-    #[test]
-    fn empty_state_has_no_overlay_height() {
-        let st = ConversationState::default();
-        assert_eq!(render_overlay_height(&st, 40), 0);
-    }
-
-    #[test]
-    fn active_menu_produces_matching_height() {
-        let mut st = ConversationState::default();
-        st.active_menu = Some(OverlayMenu::new_info(
-            PanelKind::Help,
-            "Help".into(),
-            vec!["hint".into()],
-        ));
-        let h = render_overlay_height(&st, 40);
-        assert!(h >= crate::tui::menu::MIN_HEIGHT);
-    }
-
-    #[test]
-    fn overlay_height_clamps_to_streaming() {
-        let mut st = ConversationState::default();
-        st.active_menu = Some(OverlayMenu::new_info(
-            PanelKind::Help,
-            "Help".into(),
-            (0..50).map(|i| format!("hint {i}")).collect(),
-        ));
-        let h = render_overlay_height(&st, 8);
-        assert_eq!(h, 8);
-    }
-}
