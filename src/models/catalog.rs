@@ -71,16 +71,6 @@ pub const CATALOG: &[Model] = &[
         family_alias: Some("haiku"),
         primary_for_family: true,
     },
-    // Legacy rows — not surfaced in the /model picker and not
-    // primary_for_family, but kept so their display names resolve
-    // when `state.model` carries an older id pinned by a previous
-    // session or a user settings.json.
-    Model { id: "claude-opus-4-5", display_name: "Opus 4.5", supports_1m: false, provider: ProviderId::ClaudeCode, family_alias: None, primary_for_family: false },
-    Model { id: "claude-opus-4-1", display_name: "Opus 4.1", supports_1m: false, provider: ProviderId::ClaudeCode, family_alias: None, primary_for_family: false },
-    Model { id: "claude-opus-4", display_name: "Opus 4", supports_1m: false, provider: ProviderId::ClaudeCode, family_alias: None, primary_for_family: false },
-    Model { id: "claude-sonnet-4-5", display_name: "Sonnet 4.5", supports_1m: false, provider: ProviderId::ClaudeCode, family_alias: None, primary_for_family: false },
-    Model { id: "claude-sonnet-4", display_name: "Sonnet 4", supports_1m: false, provider: ProviderId::ClaudeCode, family_alias: None, primary_for_family: false },
-    Model { id: "claude-haiku-4", display_name: "Haiku 4", supports_1m: false, provider: ProviderId::ClaudeCode, family_alias: None, primary_for_family: false },
     // Codex / OpenAI provider (dispatch frozen, catalog still exposed for
     // the picker row when the user selects this provider)
     Model {

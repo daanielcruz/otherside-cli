@@ -968,7 +968,6 @@ fn models_for_provider(p: crate::config::providers::ProviderId) -> &'static [&'s
         ProviderId::ClaudeCode => &[
             "claude-opus-4-7[1m]",
             "claude-opus-4-7",
-            "claude-opus-4-6",
             "claude-sonnet-4-6",
             "claude-haiku-4-5",
         ],
@@ -2218,7 +2217,7 @@ mod settings_edit_tests {
         edit_settings_row(&mut st, 1);
         assert_eq!(st.model, "claude-opus-4-7");
         edit_settings_row(&mut st, 1);
-        assert_eq!(st.model, "claude-opus-4-6");
+        assert_eq!(st.model, "claude-sonnet-4-6");
         edit_settings_row(&mut st, -1);
         assert_eq!(st.model, "claude-opus-4-7");
     }
