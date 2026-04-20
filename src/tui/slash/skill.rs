@@ -1,6 +1,6 @@
 //! Skill handler — bundled SKILL.md body becomes a user turn.
 //!
-//! Each `skills/<name>/SKILL.md` is embedded at compile time via
+//! Each `skills_corpus/<name>/SKILL.md` is embedded at compile time via
 //! `include_str!`. The handler resolves the body by slash name and
 //! emits a user turn of the shape `<skill_body>\n\n<args>` so the LLM
 //! treats the skill instructions as its active task.
@@ -20,17 +20,17 @@ use super::SlashOutcome;
 /// here whenever a Skill-category row is added to
 /// `docs/slashes.md` + `slash/catalog.rs`.
 const SKILL_BODIES: &[(&str, &str)] = &[
-    ("dream", include_str!("../../../skills/dream/SKILL.md")),
-    ("statusline", include_str!("../../../skills/statusline/SKILL.md")),
-    ("init", include_str!("../../../skills/init/SKILL.md")),
+    ("dream", include_str!("../../../skills_corpus/dream/SKILL.md")),
+    ("statusline", include_str!("../../../skills_corpus/statusline/SKILL.md")),
+    ("init", include_str!("../../../skills_corpus/init/SKILL.md")),
     (
         "init-verifiers",
-        include_str!("../../../skills/init-verifiers/SKILL.md"),
+        include_str!("../../../skills_corpus/init-verifiers/SKILL.md"),
     ),
-    ("review", include_str!("../../../skills/review/SKILL.md")),
+    ("review", include_str!("../../../skills_corpus/review/SKILL.md")),
     (
         "security-review",
-        include_str!("../../../skills/security-review/SKILL.md"),
+        include_str!("../../../skills_corpus/security-review/SKILL.md"),
     ),
 ];
 
