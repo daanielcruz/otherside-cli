@@ -60,18 +60,46 @@ fn system_prompt_is_capture_plus_verification_bullet() {
 }
 
 #[test]
-fn system_preamble_matches_capture() {
+fn system_preamble_head_blocks_match_capture() {
+    // Block 0 (billing header) + block 1 (opener) stay byte-identical
+    // to the capture. Block 2 (agent preamble) has V2 drift (user
+    // renamed CLI + trimmed claude-specific help lines) — asserted
+    // structurally in the next test.
     let body = capture_body();
     let captured: Vec<Value> = body["system"]
         .as_array()
         .expect("system is an array")
         .iter()
-        .take(3)
+        .take(2)
         .cloned()
         .collect();
     let assembled = translator::anthropic::system::build_system_blocks();
-    let assembled_preamble: Vec<Value> = assembled.iter().take(3).cloned().collect();
-    assert_eq!(assembled_preamble, captured);
+    let assembled_head: Vec<Value> = assembled.iter().take(2).cloned().collect();
+    assert_eq!(assembled_head, captured);
+}
+
+#[test]
+fn system_preamble_block2_keeps_cache_and_core_guidance() {
+    // Structural guardrail for the V2-drifted block 2:
+    //  - cache_control marker stays attached (upstream-required)
+    //  - core agent-guidance anchors remain present
+    let assembled = translator::anthropic::system::build_system_blocks();
+    let block2 = &assembled[2];
+    assert_eq!(block2["cache_control"]["type"], "ephemeral");
+    assert_eq!(block2["cache_control"]["ttl"], "1h");
+    let text = block2["text"].as_str().unwrap();
+    for anchor in [
+        "You are an interactive agent",
+        "IMPORTANT:",
+        "# System",
+        "# Doing tasks",
+        "# Using your tools",
+    ] {
+        assert!(
+            text.contains(anchor),
+            "block 2 lost anchor `{anchor}` — V2 edit over-trimmed"
+        );
+    }
 }
 
 #[test]

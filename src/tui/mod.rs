@@ -1255,6 +1255,11 @@ fn apply_model_outcome(st: &mut ConversationState, model_id: &str) {
     } else {
         st.context_window = 200_000;
     }
+    // Persist the user's model choice across sessions.
+    st.settings.default_model = Some(model_id.to_string());
+    if let Err(e) = persist_settings(st) {
+        st.push_system_note(format!("settings write failed: {e}"));
+    }
 }
 
 /// Translate a committed effort action-id into a new
@@ -1273,6 +1278,9 @@ fn apply_effort_outcome(
         *thinking = Some(ThinkingConfig::auto());
         st.effort_label = None;
         st.settings.effort_level = Some("auto".to_string());
+        if let Err(e) = persist_settings(st) {
+            st.push_system_note(format!("settings write failed: {e}"));
+        }
         return;
     }
     match ThinkingLevel::from_str(action_id) {
@@ -1280,6 +1288,9 @@ fn apply_effort_outcome(
             *thinking = Some(ThinkingConfig::level(level));
             st.effort_label = Some(level.as_label());
             st.settings.effort_level = Some(action_id.to_string());
+            if let Err(e) = persist_settings(st) {
+                st.push_system_note(format!("settings write failed: {e}"));
+            }
         }
         Err(_) => {
             st.push_system_note(format!("unknown effort level: {action_id}"));
