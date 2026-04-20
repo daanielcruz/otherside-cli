@@ -133,9 +133,15 @@ async fn main() -> ExitCode {
     let cli = Cli::parse();
     setup_tracing(&cli);
 
-    // Dispatch into a typed-Result wrapper so we control the exit code
-    // mapping explicitly. anyhow's default is always 1, which loses the
-    // CLI spec's 10/20/30 distinctions.
+    // Wire the subagent runner once at startup so the Agent tool
+    // dispatches to a real result path instead of the "unavailable"
+    // stub. Full inner-AgentLoop runner is pending; until then the
+    // productive-stub surfaces a marked result so the TUI and the
+    // model both see the dispatch succeeded end-to-end.
+    let _ = otherside::subagents::install_runner(
+        otherside::subagents::ProductiveStubRunner::new(),
+    );
+
     match run(cli).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {

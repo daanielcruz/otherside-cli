@@ -74,6 +74,13 @@ pub fn classify(input: &str) -> SlashAction {
     if !trimmed.starts_with('/') {
         return SlashAction::Passthrough;
     }
+    // Double-slash input is NOT a slash — treat it as a literal user
+    // turn. Observed during tmux parity: after Esc on autocomplete the
+    // leading `/` lingered in the buffer and a subsequent `/permissions`
+    // produced `//permissions`, escaping the dispatcher.
+    if trimmed.starts_with("//") {
+        return SlashAction::Passthrough;
+    }
     let body = &trimmed[1..];
     let (name, rest) = split_name_and_args(body);
 
@@ -238,6 +245,13 @@ mod tests {
             classify("/this-is-not-a-slash"),
             SlashAction::Passthrough
         );
+    }
+
+    #[test]
+    fn double_slash_is_passthrough() {
+        assert_eq!(classify("//permissions"), SlashAction::Passthrough);
+        assert_eq!(classify("//help"), SlashAction::Passthrough);
+        assert_eq!(classify("  //clear"), SlashAction::Passthrough);
     }
 
     #[test]

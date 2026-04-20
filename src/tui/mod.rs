@@ -518,7 +518,12 @@ fn handle_key(
         // `chat:cancel` semantics at hooks/useCancelRequest.ts.
         KeyCode::Esc => {
             if st.autocomplete.is_some() {
+                // Clear the input too — otherwise the leading `/` that
+                // triggered the popup lingers, and the next typed slash
+                // produces `//<name>` which escapes the dispatcher and
+                // reaches the model as a user turn.
                 st.close_autocomplete();
+                st.clear_input();
             } else if st.streaming {
                 st.cancel_stream();
             } else {
@@ -688,11 +693,10 @@ fn handle_menu_key(
     st: &mut ConversationState,
     thinking: &mut Option<ThinkingConfig>,
 ) -> bool {
-    // Esc cancels the overlay without a side effect. Explicit
-    // `st.active_menu = None` so a future user-configurable close
-    // hook has a single mutation point to intercept.
     if matches!(k.code, KeyCode::Esc) {
-        st.active_menu = None;
+        if let Some(menu) = st.active_menu.take() {
+            emit_panel_dismiss_anchor(st, &menu, None);
+        }
         return false;
     }
     let Some(menu_state) = st.active_menu.as_mut() else {
@@ -705,7 +709,8 @@ fn handle_menu_key(
         KeyCode::End => menu_state.jump_to_last(),
         KeyCode::Enter => {
             let outcome = menu_state.commit_outcome();
-            st.active_menu = None;
+            let menu = st.active_menu.take().expect("active_menu present");
+            emit_panel_dismiss_anchor(st, &menu, outcome.as_ref());
             if let Some(outcome) = outcome {
                 return apply_menu_outcome(st, thinking, outcome);
             }
@@ -713,6 +718,75 @@ fn handle_menu_key(
         _ => {} // modal — swallow everything else
     }
     false
+}
+
+/// Emit the upstream-style `❯ /<name>` + `⎿ <text>` anchor on panel
+/// dismissal. Called for both Esc (no outcome) and Enter (outcome).
+/// Wording table transcribed from the 2026-04-19 tmux parity sweep —
+/// byte-match on panels we actually captured; neutral dismiss phrasing
+/// on panels without a captured reference.
+fn emit_panel_dismiss_anchor(
+    st: &mut ConversationState,
+    menu: &menu::OverlayMenu,
+    outcome: Option<&menu::OverlayMenuOutcome>,
+) {
+    use crate::tui::slash::catalog::PanelKind;
+    let (slash, text) = match menu.kind {
+        PanelKind::Model => {
+            let chosen = match outcome {
+                Some(menu::OverlayMenuOutcome::SetModel { model_id }) => model_id.as_str(),
+                _ => st.model.as_str(),
+            };
+            let label = model_display_label(chosen);
+            let text = if chosen == st.model {
+                format!("Kept model as {label}")
+            } else {
+                format!("Set model to {label}")
+            };
+            ("model", text)
+        }
+        PanelKind::Permissions => match outcome {
+            Some(menu::OverlayMenuOutcome::SetPermissionMode { action_id }) => {
+                ("permissions", format!("Set permission mode to {action_id}"))
+            }
+            _ => ("permissions", "Permissions dialog dismissed".to_string()),
+        },
+        PanelKind::Effort => match outcome {
+            Some(menu::OverlayMenuOutcome::SetEffort { label, .. }) => {
+                ("effort", format!("Set thinking effort to {label}"))
+            }
+            _ => ("effort", "Effort dialog dismissed".to_string()),
+        },
+        PanelKind::Help => ("help", "Help dialog dismissed".to_string()),
+        PanelKind::Status => ("status", "Status dialog dismissed".to_string()),
+        PanelKind::Config => ("config", "Config dialog dismissed".to_string()),
+        PanelKind::Skills => ("skills", "Skills dialog dismissed".to_string()),
+        PanelKind::Agents => ("agents", "Agents dialog dismissed".to_string()),
+        PanelKind::Mcp => ("mcp", "MCP dialog dismissed".to_string()),
+        PanelKind::Hooks => ("hooks", "Hooks dialog dismissed".to_string()),
+        PanelKind::Diff => ("diff", "Diff dialog dismissed".to_string()),
+        PanelKind::Resume => ("resume", "Resume dialog dismissed".to_string()),
+        PanelKind::Rewind => ("rewind", "Rewind dialog dismissed".to_string()),
+    };
+    st.push_anchor(slash, "", text);
+}
+
+/// Map a model id (e.g. `claude-opus-4-7[1m]`) to the human label the
+/// panel displays (e.g. `Opus 4.7 with 1M context window`). Falls back
+/// to the id itself when no label is registered.
+fn model_display_label(model_id: &str) -> String {
+    const MODELS: &[(&str, &str)] = &[
+        ("claude-opus-4-7", "Opus 4.7"),
+        ("claude-opus-4-7[1m]", "Opus 4.7 (1M context)"),
+        ("claude-opus-4-6", "Opus 4.6"),
+        ("claude-sonnet-4-6", "Sonnet 4.6"),
+        ("claude-haiku-4-5", "Haiku 4.5"),
+    ];
+    MODELS
+        .iter()
+        .find(|(id, _)| *id == model_id)
+        .map(|(_, label)| (*label).to_string())
+        .unwrap_or_else(|| model_id.to_string())
 }
 
 /// Route a key event through the active AskUserQuestion overlay.
@@ -828,12 +902,9 @@ fn apply_permission_outcome(st: &mut ConversationState, action_id: &str) {
         }
     };
     st.permission_mode = mode;
-    st.push_system_note(format!("permission mode set to {action_id}"));
 }
 
 fn apply_model_outcome(st: &mut ConversationState, model_id: &str) {
-    // Re-run the 1M-suffix detector so switching to `claude-opus-4-7[1m]`
-    // re-expands the context-window budget.
     let (_base, _thinking) = crate::thinking::parse_suffix(model_id)
         .map(|(m, t)| (m, t))
         .unwrap_or_else(|_| (model_id.to_string(), None));
@@ -843,7 +914,6 @@ fn apply_model_outcome(st: &mut ConversationState, model_id: &str) {
     } else {
         st.context_window = 200_000;
     }
-    st.push_system_note(format!("model set to {model_id}"));
 }
 
 /// Translate a committed effort action-id into a new
@@ -859,12 +929,9 @@ fn apply_effort_outcome(
     use crate::thinking::ThinkingLevel;
     use std::str::FromStr;
     if action_id.eq_ignore_ascii_case("auto") {
-        // Disable the explicit level — next request uses the model's
-        // default thinking budget.
         *thinking = Some(ThinkingConfig::auto());
         st.effort_label = None;
         st.settings.effort_level = Some("auto".to_string());
-        st.push_system_note("effort level set to auto");
         return;
     }
     match ThinkingLevel::from_str(action_id) {
@@ -872,15 +939,12 @@ fn apply_effort_outcome(
             *thinking = Some(ThinkingConfig::level(level));
             st.effort_label = Some(level.as_label());
             st.settings.effort_level = Some(action_id.to_string());
-            st.push_system_note(format!("effort level set to {label}"));
         }
         Err(_) => {
-            // Shouldn't happen: every overlay action_id is a valid
-            // level string. Surface a diagnostic instead of silently
-            // swallowing the mismatch.
             st.push_system_note(format!("unknown effort level: {action_id}"));
         }
     }
+    let _ = label;
 }
 
 /// `JoinHandle` onto state so Esc / Ctrl+C can abort it. Shared by
@@ -1451,5 +1515,115 @@ impl TerminalGuard {
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         self.restore();
+    }
+}
+
+#[cfg(test)]
+mod panel_anchor_tests {
+    use super::*;
+    use crate::tui::menu::{OverlayMenu, OverlayMenuOutcome};
+    use crate::tui::slash::catalog::PanelKind;
+
+    fn anchor_lines(st: &ConversationState) -> (String, String) {
+        let n = st.messages.len();
+        assert!(n >= 2, "expected ≥2 messages, got {n}");
+        (
+            st.messages[n - 2].content.clone(),
+            st.messages[n - 1].content.clone(),
+        )
+    }
+
+    #[test]
+    fn model_dismiss_without_change_reads_kept() {
+        let mut st = ConversationState::default();
+        st.model = "claude-opus-4-7".into();
+        let menu = OverlayMenu::new_model(&st.model);
+        emit_panel_dismiss_anchor(&mut st, &menu, None);
+        let (echo, anchor) = anchor_lines(&st);
+        assert_eq!(echo, "/model");
+        assert_eq!(anchor, "⎿ Kept model as Opus 4.7");
+    }
+
+    #[test]
+    fn model_dismiss_with_switch_reads_set() {
+        let mut st = ConversationState::default();
+        st.model = "claude-opus-4-7".into();
+        let menu = OverlayMenu::new_model(&st.model);
+        let outcome = OverlayMenuOutcome::SetModel {
+            model_id: "claude-sonnet-4-6".into(),
+        };
+        emit_panel_dismiss_anchor(&mut st, &menu, Some(&outcome));
+        let (_, anchor) = anchor_lines(&st);
+        assert_eq!(anchor, "⎿ Set model to Sonnet 4.6");
+    }
+
+    #[test]
+    fn help_dismiss_emits_dialog_dismissed() {
+        let mut st = ConversationState::default();
+        let menu = OverlayMenu::new_info(PanelKind::Help, "Help".into(), vec![]);
+        emit_panel_dismiss_anchor(&mut st, &menu, None);
+        let (echo, anchor) = anchor_lines(&st);
+        assert_eq!(echo, "/help");
+        assert_eq!(anchor, "⎿ Help dialog dismissed");
+    }
+
+    #[test]
+    fn permissions_dismiss_esc_emits_dismissed() {
+        let mut st = ConversationState::default();
+        let menu = OverlayMenu::new_permissions(st.permission_mode);
+        emit_panel_dismiss_anchor(&mut st, &menu, None);
+        let (echo, anchor) = anchor_lines(&st);
+        assert_eq!(echo, "/permissions");
+        assert_eq!(anchor, "⎿ Permissions dialog dismissed");
+    }
+
+    #[test]
+    fn permissions_dismiss_with_mode_change_emits_set() {
+        let mut st = ConversationState::default();
+        let menu = OverlayMenu::new_permissions(st.permission_mode);
+        let outcome = OverlayMenuOutcome::SetPermissionMode {
+            action_id: "plan".into(),
+        };
+        emit_panel_dismiss_anchor(&mut st, &menu, Some(&outcome));
+        let (_, anchor) = anchor_lines(&st);
+        assert_eq!(anchor, "⎿ Set permission mode to plan");
+    }
+}
+
+#[cfg(test)]
+mod overlay_height_tests {
+    use super::*;
+    use crate::tui::menu::OverlayMenu;
+    use crate::tui::slash::catalog::PanelKind;
+    use crate::tui::render::overlay_height as render_overlay_height;
+
+    #[test]
+    fn empty_state_has_no_overlay_height() {
+        let st = ConversationState::default();
+        assert_eq!(render_overlay_height(&st, 40), 0);
+    }
+
+    #[test]
+    fn active_menu_produces_matching_height() {
+        let mut st = ConversationState::default();
+        st.active_menu = Some(OverlayMenu::new_info(
+            PanelKind::Help,
+            "Help".into(),
+            vec!["hint".into()],
+        ));
+        let h = render_overlay_height(&st, 40);
+        assert!(h >= crate::tui::menu::MIN_HEIGHT);
+    }
+
+    #[test]
+    fn overlay_height_clamps_to_streaming() {
+        let mut st = ConversationState::default();
+        st.active_menu = Some(OverlayMenu::new_info(
+            PanelKind::Help,
+            "Help".into(),
+            (0..50).map(|i| format!("hint {i}")).collect(),
+        ));
+        let h = render_overlay_height(&st, 8);
+        assert_eq!(h, 8);
     }
 }

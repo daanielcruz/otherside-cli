@@ -187,24 +187,27 @@ pub fn render(
     );
 
     // Streaming area — mascot when empty, otherwise the scrolling log.
-    // Suppress the mascot while any overlay is active so the inline
-    // menu takes the full streaming area without splash ascii peeking
-    // through above it. Upstream renders menus as appended scroll-log
-    // lines; we reserve the area instead to keep the renderer simple.
-    let overlay_active = state.pending_question.is_some()
-        || state.pending_permission.is_some()
-        || state.active_menu.is_some();
-    if state.messages.is_empty() && !state.streaming && !overlay_active {
-        draw_splash_centered(f, slots.streaming);
-    } else if !overlay_active {
-        draw_log(f, slots.streaming, state, spinner_tick);
-    } else {
-        // Overlay active + history present: keep the log visible above
-        // the overlay by drawing it into the top portion only. When the
-        // overlay eats the bottom strip, the log stays readable.
-        if !state.messages.is_empty() || state.streaming {
-            draw_log(f, slots.streaming, state, spinner_tick);
+    // When any overlay is active we carve the streaming area into two
+    // rects: a top portion for splash/log and a bottom portion reserved
+    // for the overlay. This mirrors the reference TUI — the panel hugs
+    // the prompt and the splash/log stays visible above it rather than
+    // leaving the upper rows blank.
+    let overlay_h = overlay_height(state, slots.streaming.height);
+    let non_overlay = Rect {
+        x: slots.streaming.x,
+        y: slots.streaming.y,
+        width: slots.streaming.width,
+        height: slots.streaming.height.saturating_sub(overlay_h),
+    };
+    if state.messages.is_empty() && !state.streaming {
+        // Splash always renders (even with an overlay active) into the
+        // top portion above the overlay rect. Keeps the brand band
+        // visible instead of leaving the panel floating in blank rows.
+        if non_overlay.height > 0 {
+            draw_splash_centered(f, non_overlay);
         }
+    } else if non_overlay.height > 0 {
+        draw_log(f, non_overlay, state, spinner_tick);
     }
 
     // Progress + tip rows only exist when streaming.
@@ -242,48 +245,18 @@ pub fn render(
     draw_prompt(f, slots.prompt, state);
     // Pending agent question (AskUserQuestion) outranks everything
     // except a permission prompt — it also blocks the turn.
+    let overlay_rect = |h: u16| Rect {
+        x: slots.streaming.x,
+        y: slots.streaming.y + slots.streaming.height.saturating_sub(h),
+        width: slots.streaming.width,
+        height: h,
+    };
     if let Some(q) = state.pending_question.as_ref() {
-        // Question overlay height: title + question lines + optional hint
-        // + blank + input + blank + footer. Exact row count matches the
-        // borderless render so the surface hugs the prompt bar.
-        let question_rows = q.question.lines().count() as u16;
-        let hint_rows = if q.hint.is_some() { 1 } else { 0 };
-        let overlay_h = (1 + question_rows + hint_rows + 4).min(slots.streaming.height);
-        let overlay = Rect {
-            x: slots.streaming.x,
-            y: slots.streaming.y + slots.streaming.height.saturating_sub(overlay_h),
-            width: slots.streaming.width,
-            height: overlay_h,
-        };
-        super::menu::draw_question_prompt(f, overlay, q);
-    } else
-    // Pending permission prompt wins over slash menus — it's agent-
-    // driven and blocks the turn until the user resolves it. Autocomplete
-    // stays suppressed.
-    if let Some(prompt) = state.pending_permission.as_ref() {
-        // title + tool + optional args + optional rule + blank + choices*(label+hint) + blank + footer
-        let mut rows: u16 = 2 + (super::menu::PERMISSION_CHOICES.len() as u16) * 2 + 2;
-        if !prompt.args_preview.is_empty() { rows += 1; }
-        if prompt.rule.is_some() { rows += 1; }
-        let overlay_h = rows.min(slots.streaming.height);
-        let overlay = Rect {
-            x: slots.streaming.x,
-            y: slots.streaming.y + slots.streaming.height.saturating_sub(overlay_h),
-            width: slots.streaming.width,
-            height: overlay_h,
-        };
-        super::menu::draw_permission_prompt(f, overlay, prompt);
+        super::menu::draw_question_prompt(f, overlay_rect(overlay_h), q);
+    } else if let Some(prompt) = state.pending_permission.as_ref() {
+        super::menu::draw_permission_prompt(f, overlay_rect(overlay_h), prompt);
     } else if let Some(menu_state) = state.active_menu.as_ref() {
-        // Overlay menu — inline render hugs the prompt bar. Exact row
-        // count from `overlay_rows` so we never paint a floating modal.
-        let overlay_h = super::menu::overlay_rows(menu_state).min(slots.streaming.height);
-        let overlay = Rect {
-            x: slots.streaming.x,
-            y: slots.streaming.y + slots.streaming.height.saturating_sub(overlay_h),
-            width: slots.streaming.width,
-            height: overlay_h,
-        };
-        super::menu::draw_overlay(f, overlay, menu_state);
+        super::menu::draw_overlay(f, overlay_rect(overlay_h), menu_state);
     } else if let (Some(ac), Some(popup_rect)) = (state.autocomplete.as_ref(), slots.popup) {
         // Popup sits directly below the prompt bar in the dedicated
         // `slots.popup` strip (openspec 001 phase 3). Chrome is
@@ -308,6 +281,27 @@ pub fn render(
 /// frame can't fit the full layout.
 fn draw_splash_centered(f: &mut Frame<'_>, area: Rect) {
     mascot::draw_splash(f, area);
+}
+
+/// Row count of the active overlay surface (permission / question /
+/// menu), clamped to the streaming area height. Zero when no overlay
+/// is active. Single source of truth so splash/log painting above
+/// the overlay shares the exact row budget with the overlay draw.
+pub(super) fn overlay_height(state: &ConversationState, streaming_h: u16) -> u16 {
+    if let Some(q) = state.pending_question.as_ref() {
+        let question_rows = q.question.lines().count() as u16;
+        let hint_rows = if q.hint.is_some() { 1 } else { 0 };
+        (1 + question_rows + hint_rows + 4).min(streaming_h)
+    } else if let Some(p) = state.pending_permission.as_ref() {
+        let mut rows: u16 = 2 + (super::menu::PERMISSION_CHOICES.len() as u16) * 2 + 2;
+        if !p.args_preview.is_empty() { rows += 1; }
+        if p.rule.is_some() { rows += 1; }
+        rows.min(streaming_h)
+    } else if let Some(m) = state.active_menu.as_ref() {
+        super::menu::overlay_rows(m).min(streaming_h)
+    } else {
+        0
+    }
 }
 
 /// Scrolling message log. Each finalized message is rendered as a

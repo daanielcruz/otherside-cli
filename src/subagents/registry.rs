@@ -73,6 +73,8 @@ fn parse_bundled(source_path: &str, src: &str) -> AgentDefinition {
 // with a missing definition.
 const GENERAL_PURPOSE_SRC: &str = include_str!("../../agents/general-purpose.md");
 const READER_SRC: &str = include_str!("../../agents/reader.md");
+const EXPLORE_SRC: &str = include_str!("../../agents/explore.md");
+const PLAN_SRC: &str = include_str!("../../agents/plan.md");
 
 /// Lazy-initialized bundled registry.
 fn bundled() -> &'static [AgentDefinition] {
@@ -81,6 +83,8 @@ fn bundled() -> &'static [AgentDefinition] {
         vec![
             parse_bundled("general-purpose.md", GENERAL_PURPOSE_SRC),
             parse_bundled("reader.md", READER_SRC),
+            parse_bundled("explore.md", EXPLORE_SRC),
+            parse_bundled("plan.md", PLAN_SRC),
         ]
     })
     .as_slice()
@@ -122,6 +126,35 @@ mod tests {
     #[test]
     fn bundled_registry_loads_at_least_two_definitions() {
         assert!(len() >= 2);
+    }
+
+    #[test]
+    fn registry_contains_expected_bundled_set() {
+        let names: Vec<&str> = all().iter().map(|d| d.name.as_str()).collect();
+        assert!(names.contains(&"general-purpose"));
+        assert!(names.contains(&"reader"));
+        assert!(names.contains(&"Explore"));
+        assert!(names.contains(&"Plan"));
+    }
+
+    #[test]
+    fn explore_is_read_only() {
+        let d = resolve("Explore").expect("Explore must load");
+        assert!(tool_is_allowed(d, "Read"));
+        assert!(tool_is_allowed(d, "Grep"));
+        assert!(tool_is_allowed(d, "Glob"));
+        assert!(!tool_is_allowed(d, "Bash"));
+        assert!(!tool_is_allowed(d, "Write"));
+        assert!(!tool_is_allowed(d, "Edit"));
+    }
+
+    #[test]
+    fn plan_is_read_only() {
+        let d = resolve("Plan").expect("Plan must load");
+        assert!(tool_is_allowed(d, "Read"));
+        assert!(tool_is_allowed(d, "Grep"));
+        assert!(!tool_is_allowed(d, "Bash"));
+        assert!(!tool_is_allowed(d, "Write"));
     }
 
     #[test]

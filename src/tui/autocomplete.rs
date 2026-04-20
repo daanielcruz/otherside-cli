@@ -37,8 +37,6 @@ impl Autocomplete {
     /// input does not begin with `/` or the partial has no matches.
     pub fn from_input(input: &str) -> Option<Self> {
         let trimmed = input.strip_prefix('/')?;
-        // Any whitespace inside the partial means the user has moved
-        // past the slash name — close the popup.
         if trimmed.contains(char::is_whitespace) {
             return None;
         }
@@ -46,9 +44,17 @@ impl Autocomplete {
         if matches.is_empty() {
             return None;
         }
+        // When the partial is an exact catalog entry, highlight that
+        // entry first. Prevents `/status` from committing `statusline`
+        // (catalog-order prefix match) when the user typed the exact
+        // panel name. Case-insensitive exact compare.
+        let selected = matches
+            .iter()
+            .position(|e| e.name.eq_ignore_ascii_case(trimmed))
+            .unwrap_or(0);
         Some(Self {
             partial: trimmed.to_string(),
-            selected: 0,
+            selected,
             matches,
         })
     }
@@ -203,6 +209,27 @@ mod tests {
     #[test]
     fn from_input_rejects_whitespace_in_partial() {
         assert!(Autocomplete::from_input("/help me").is_none());
+    }
+
+    #[test]
+    fn exact_match_is_preselected_over_longer_prefix() {
+        // Regression: `/status` commits `status` (panel), not
+        // `statusline` (skill) — even though `statusline` appears
+        // earlier in the catalog.
+        let ac = Autocomplete::from_input("/status").unwrap();
+        assert_eq!(
+            ac.matches[ac.selected].name, "status",
+            "exact match must be the selected row"
+        );
+        assert_eq!(ac.commit().unwrap(), "status");
+    }
+
+    #[test]
+    fn prefix_without_exact_match_keeps_catalog_order() {
+        let ac = Autocomplete::from_input("/statu").unwrap();
+        // `statusline` comes before `status` in catalog order; with no
+        // exact hit `selected = 0` keeps the original first-match rule.
+        assert_eq!(ac.selected, 0);
     }
 
     #[test]
