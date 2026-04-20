@@ -71,11 +71,11 @@ fn parse_bundled(source_path: &str, src: &str) -> AgentDefinition {
 // Bundled agent definitions. `include_str!` pulls the markdown at compile
 // time — zero filesystem lookups at runtime; zero chance the binary ships
 // with a missing definition.
-const GENERAL_PURPOSE_SRC: &str = include_str!("../../agents/general-purpose.md");
-const READER_SRC: &str = include_str!("../../agents/reader.md");
-const EXPLORE_SRC: &str = include_str!("../../agents/explore.md");
-const PLAN_SRC: &str = include_str!("../../agents/plan.md");
-const VERIFICATION_SRC: &str = include_str!("../../agents/verification.md");
+const GENERAL_PURPOSE_SRC: &str = include_str!("../../agents_corpus/general-purpose.md");
+const READER_SRC: &str = include_str!("../../agents_corpus/reader.md");
+const EXPLORE_SRC: &str = include_str!("../../agents_corpus/explore.md");
+const PLAN_SRC: &str = include_str!("../../agents_corpus/plan.md");
+const VERIFICATION_SRC: &str = include_str!("../../agents_corpus/verification.md");
 
 /// Lazy-initialized bundled registry.
 fn bundled() -> &'static [AgentDefinition] {
