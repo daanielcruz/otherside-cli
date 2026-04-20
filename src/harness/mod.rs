@@ -110,19 +110,19 @@ pub const SYSTEM_PROMPT: &str =
 /// Raw text of the deferred-tools system-reminder. Includes the
 /// `<system-reminder>` wrapper. Byte-verbatim from capture.
 pub const REMINDER_DEFERRED_TOOLS: &str =
-    include_str!("../../harness_corpus/system-reminders/deferred-tools.txt");
+    include_str!("../../harness_corpus/system-reminders/deferred-tools.md");
 
 /// Raw text of the skills system-reminder. Includes the
 /// `<system-reminder>` wrapper plus one trailing `\n`.
 pub const REMINDER_SKILLS: &str =
-    include_str!("../../harness_corpus/system-reminders/skills.txt");
+    include_str!("../../harness_corpus/system-reminders/skills.md");
 
 /// Raw template of the user-context system-reminder with `{{email}}`
 /// and `{{current_date}}` placeholders. Includes wrapper + two trailing
 /// `\n`s (byte-verbatim from capture minus the two literal
 /// substitutions).
 pub const REMINDER_USER_CONTEXT_TMPL: &str =
-    include_str!("../../harness_corpus/system-reminders/user-context.tmpl");
+    include_str!("../../harness_corpus/system-reminders/user-context.tmpl.md");
 
 /// Raw JSON for tool `Agent`.
 pub const TOOL_AGENT_JSON: &str =

@@ -9,7 +9,7 @@
 //! / TaskGet / TaskUpdate / NotebookEdit. Deferred tools are NOT in the
 //! wire-advertised `tools[]` array; the model loads their schemas on
 //! demand via `ToolSearch` (matches upstream's deferred-tools reminder
-//! at `harness_corpus/system-reminders/deferred-tools.txt`). Deferred
+//! at `harness_corpus/system-reminders/deferred-tools.md`). Deferred
 //! dispatchers live in `tools::task` and `tools::notebook`; schemas
 //! flow through `tools::schemas::deferred_schemas()`.
 //!

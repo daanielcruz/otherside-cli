@@ -65,8 +65,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crossterm::event::{
-    DisableMouseCapture, Event as CtEvent, EventStream, KeyCode, KeyEvent, KeyEventKind,
-    KeyModifiers,
+    DisableMouseCapture, EnableMouseCapture, Event as CtEvent, EventStream, KeyCode, KeyEvent,
+    KeyEventKind, KeyModifiers,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -805,6 +805,53 @@ fn handle_menu_key(
             _ => {}
         }
     }
+    // Model picker: ←/→ adjusts effort for the currently-highlighted
+    // model's supported_efforts set. Mutates session state AND rebuilds
+    // the overlay so the colored indicator updates.
+    if matches!(menu_state.kind, PanelKind::Model)
+        && matches!(k.code, KeyCode::Left | KeyCode::Right)
+    {
+        let dir: i32 = if matches!(k.code, KeyCode::Right) { 1 } else { -1 };
+        let cursor_model_id = menu_state
+            .options
+            .get(menu_state.cursor)
+            .map(|o| o.action_id.clone())
+            .unwrap_or_default();
+        // Compute next effort BEFORE re-borrowing st via
+        // apply_effort_outcome — menu_state holds a mutable borrow of
+        // st.active_menu which must drop first.
+        let next_effort: Option<&'static str> =
+            crate::models::catalog::by_id(&cursor_model_id).and_then(|m| {
+                let real: Vec<&'static str> = m
+                    .supported_efforts
+                    .iter()
+                    .copied()
+                    .filter(|l| *l != "auto")
+                    .collect();
+                if real.len() < 2 {
+                    return None;
+                }
+                let current = st.effort_label.unwrap_or(m.default_effort);
+                let idx = real.iter().position(|l| *l == current).unwrap_or(0);
+                let n = real.len() as i32;
+                let next_idx = (((idx as i32) + dir).rem_euclid(n)) as usize;
+                Some(real[next_idx])
+            });
+        // Drop menu_state borrow, then apply + rebuild overlay.
+        let _ = menu_state;
+        if let Some(next) = next_effort {
+            apply_effort_outcome(st, thinking, next, next);
+            let mut fresh =
+                menu::OverlayMenu::new_model_with_effort(&cursor_model_id, st.effort_label);
+            fresh.cursor = fresh
+                .options
+                .iter()
+                .position(|o| o.action_id == cursor_model_id)
+                .unwrap_or(0);
+            st.active_menu = Some(fresh);
+        }
+        return false;
+    }
     match k.code {
         KeyCode::Up => menu_state.move_up(),
         KeyCode::Down => menu_state.move_down(),
@@ -1340,14 +1387,17 @@ fn apply_effort_outcome(
 fn spawn_agent_turn(
     st: &mut ConversationState,
     provider: &Arc<dyn Provider>,
-    base_model: &str,
+    _base_model: &str,
     thinking: &Option<ThinkingConfig>,
     tx: &mpsc::Sender<StreamEvent>,
     history: Vec<crate::inference::OpenAiChatMessage>,
 ) {
     let thinking = *thinking;
     let tx = tx.clone();
-    let model = base_model.to_string();
+    // Read the LIVE session model so /model picker commits apply to
+    // the NEXT turn. The `_base_model` param is kept for compatibility
+    // with existing call sites but ignored — `st.model` is the truth.
+    let model = st.model.clone();
     // Snapshot settings + mode at spawn so mid-turn Shift+Tab toggles
     // take effect on the NEXT turn rather than silently mutating an
     // in-flight one. Matches upstream's per-turn permissionMode read.
@@ -1901,7 +1951,10 @@ impl TerminalGuard {
     fn enter() -> Result<Self> {
         enable_raw_mode().map_err(|e| Error::Other(format!("tui raw mode: {e}")))?;
         let mut out = io::stdout();
-        execute!(out, EnterAlternateScreen)
+        // Enable mouse capture so crossterm parses click/scroll bytes
+        // as MouseEvent (which the loop discards) instead of letting
+        // them leak into the input stream as pseudo-keys.
+        execute!(out, EnterAlternateScreen, EnableMouseCapture)
             .map_err(|e| Error::Other(format!("tui enter altscreen: {e}")))?;
         let backend = CrosstermBackend::new(out);
         let terminal = Terminal::new(backend)

@@ -54,13 +54,17 @@ impl SubscriptionTier {
 }
 
 /// Default model id for the `ClaudeCode` provider given a
-/// subscription tier. Encodes upstream's `getDefaultMainLoopModelSetting`
-/// for the claude-code provider only.
+/// subscription tier.
+///
+/// Opus is ALWAYS the anthropic default — only the `[1m]` 1M-context
+/// variant is tier-gated. Accounts without 1M entitlement land on
+/// plain opus (not sonnet — sonnet is a user-chosen alternative, not
+/// a tier-mandated default).
 pub fn default_claude_code_for_tier(tier: SubscriptionTier) -> &'static str {
     if tier.has_opus_1m() {
         "claude-opus-4-7[1m]"
     } else {
-        "claude-sonnet-4-6"
+        "claude-opus-4-7"
     }
 }
 
@@ -127,10 +131,12 @@ mod tests {
     }
 
     #[test]
-    fn non_premium_falls_back_to_sonnet() {
+    fn non_premium_gets_non_1m_opus() {
+        // Opus is anthropic's universal default; non-premium accounts
+        // just lose the 1M-context variant.
         assert_eq!(
             default_claude_code_for_tier(SubscriptionTier::NonPremium),
-            "claude-sonnet-4-6"
+            "claude-opus-4-7"
         );
     }
 

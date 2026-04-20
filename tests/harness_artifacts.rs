@@ -64,22 +64,27 @@ fn system_prompt_keeps_core_anchors_and_verification_bullet() {
 }
 
 #[test]
-fn system_preamble_head_blocks_match_capture() {
-    // Block 0 (billing header) + block 1 (opener) stay byte-identical
-    // to the capture. Block 2 (agent preamble) has V2 drift (user
-    // renamed CLI + trimmed claude-specific help lines) — asserted
-    // structurally in the next test.
+fn system_preamble_block0_matches_capture() {
+    // Block 0 (billing header) stays byte-identical to the capture.
+    // Blocks 1/2/3 carry user-authored V2 drifts (identity / preamble
+    // / prompt edits) and are asserted structurally below.
     let body = capture_body();
-    let captured: Vec<Value> = body["system"]
-        .as_array()
-        .expect("system is an array")
-        .iter()
-        .take(2)
-        .cloned()
-        .collect();
+    let captured = body["system"][0].clone();
     let assembled = translator::anthropic::system::build_system_blocks();
-    let assembled_head: Vec<Value> = assembled.iter().take(2).cloned().collect();
-    assert_eq!(assembled_head, captured);
+    assert_eq!(assembled[0], captured);
+}
+
+#[test]
+fn system_preamble_block1_identifies_as_otherside() {
+    // Structural guardrail for the V2-drifted opener (block 1): the
+    // text must NOT present as a plain upstream CLI only — it should
+    // carry the otherside identity cue.
+    let assembled = translator::anthropic::system::build_system_blocks();
+    let text = assembled[1]["text"].as_str().unwrap().to_lowercase();
+    assert!(
+        text.contains("otherside"),
+        "block 1 opener lost otherside identity"
+    );
 }
 
 #[test]

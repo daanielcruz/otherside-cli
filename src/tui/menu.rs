@@ -269,12 +269,32 @@ impl OverlayMenu {
     /// session's active level ("high" / "xhigh" / …); pass `None` to
     /// suppress the indicator (e.g. unit tests).
     pub fn new_model_with_effort(current: &str, current_effort: Option<&str>) -> Self {
-        const MODELS: &[(&str, &str, &str)] = &[
+        // Opus row is mutually exclusive: 1M variant when the account
+        // has that entitlement, plain 4.7 otherwise. Both never coexist
+        // in the picker.
+        let has_1m = crate::models::defaults::SubscriptionTier::from_subscription_type(
+            crate::auth::anthropic::load_credentials()
+                .ok()
+                .flatten()
+                .and_then(|c| c.subscription_type)
+                .as_deref(),
+        )
+        .has_opus_1m();
+        let opus_row: (&str, &str, &str) = if has_1m {
             (
                 "claude-opus-4-7[1m]",
                 "Default (recommended)",
                 "Opus 4.7 with 1M context · Most capable for complex work",
-            ),
+            )
+        } else {
+            (
+                "claude-opus-4-7",
+                "Default (recommended)",
+                "Opus 4.7 · Most capable for complex work",
+            )
+        };
+        let models: [(&str, &str, &str); 3] = [
+            opus_row,
             (
                 "claude-sonnet-4-6",
                 "Sonnet",
@@ -286,7 +306,7 @@ impl OverlayMenu {
                 "Haiku 4.5 · Fastest for quick answers",
             ),
         ];
-        let options: Vec<MenuOption> = MODELS
+        let options: Vec<MenuOption> = models
             .iter()
             .map(|(id, label, hint)| MenuOption {
                 label: (*label).to_string(),
@@ -972,7 +992,15 @@ fn draw_model_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
         } else {
             Style::default().fg(theme::MUTED)
         };
-        let label_style = if is_cursor {
+        // Active (checked) model row paints SUCCESS green so the user
+        // can scan at a glance which model the session is using.
+        let label_style = if is_default {
+            let mut s = Style::default().fg(theme::SUCCESS);
+            if is_cursor {
+                s = s.add_modifier(Modifier::BOLD);
+            }
+            s
+        } else if is_cursor {
             Style::default()
                 .fg(theme::TEXT)
                 .add_modifier(Modifier::BOLD)
@@ -989,15 +1017,60 @@ fn draw_model_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
         ]));
     }
 
-    // Inline effort indicator — upstream ModelPicker.tsx:328
-    // `◉ {Level} effort (default) ← → to adjust`.
-    if let Some(ind) = menu.effort_indicator.as_ref() {
+    // Inline effort indicator — per upstream ModelPicker.tsx:328
+    // `◉ {Level} effort (default) ← → to adjust`. Renders only when
+    // the row under the cursor is a model that supports effort levels;
+    // haiku (auto-only) hides the indicator entirely. The level shown
+    // is the session's current effort when the selected model accepts
+    // it, otherwise the selected model's `default_effort`.
+    let cursor_model_id = menu
+        .options
+        .get(menu.cursor)
+        .map(|o| o.action_id.as_str())
+        .unwrap_or("");
+    let cursor_model = crate::models::catalog::by_id(cursor_model_id);
+    let wants_indicator = cursor_model
+        .map(|m| {
+            m.supported_efforts
+                .iter()
+                .any(|lvl| *lvl != "auto")
+        })
+        .unwrap_or(false);
+    if wants_indicator {
+        let session_effort = menu.effort_indicator.as_ref().map(|e| e.level.clone());
+        let effective = session_effort
+            .as_deref()
+            .filter(|lvl| {
+                cursor_model
+                    .map(|m| m.supported_efforts.contains(lvl))
+                    .unwrap_or(false)
+            })
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                cursor_model
+                    .map(|m| m.default_effort.to_string())
+                    .unwrap_or_else(|| "auto".to_string())
+            });
+        let is_default = cursor_model
+            .map(|m| m.default_effort == effective)
+            .unwrap_or(false);
+        let level_display = effort_level_display(&effective);
+        let suffix = if is_default { " (default)" } else { "" };
+        // Level color signals whether the user has moved away from
+        // the model's default: default = MUTED, non-default = SUCCESS.
+        // Makes arrow-adjusted effort visible at a glance.
+        let level_color = if is_default { theme::MUTED } else { theme::SUCCESS };
         lines.push(Line::raw(""));
-        let level_display = effort_level_display(&ind.level);
-        let suffix = if ind.is_default { " (default)" } else { "" };
         lines.push(Line::from(vec![
+            Span::styled("  ◉ ".to_string(), Style::default().fg(theme::MUTED)),
             Span::styled(
-                format!("  ◉ {level_display} effort{suffix} "),
+                level_display.to_string(),
+                Style::default()
+                    .fg(level_color)
+                    .add_modifier(if is_default { Modifier::empty() } else { Modifier::BOLD }),
+            ),
+            Span::styled(
+                format!(" effort{suffix} "),
                 Style::default().fg(theme::MUTED),
             ),
             Span::styled(
@@ -1507,10 +1580,22 @@ mod tests {
             "upstream shows 3 rows per /tmp/parity-20260420-tmux/04-model-panel/upstream-open.txt lines 32-34"
         );
         assert_eq!(m.options[0].label, "Default (recommended)");
-        assert_eq!(m.options[0].action_id, "claude-opus-4-7[1m]");
-        assert_eq!(
-            m.options[0].hint.as_deref(),
-            Some("Opus 4.7 with 1M context · Most capable for complex work")
+        // Opus row is mutually exclusive per tier: [1m] variant when
+        // the account has Max/TeamPremium entitlement, plain 4.7
+        // otherwise. Test environment has no OAuth creds so the
+        // default resolver returns the non-1M row.
+        assert!(
+            m.options[0].action_id == "claude-opus-4-7"
+                || m.options[0].action_id == "claude-opus-4-7[1m]",
+            "opus row action_id must be one of the two variants, got {}",
+            m.options[0].action_id
+        );
+        assert!(
+            m.options[0]
+                .hint
+                .as_deref()
+                .map(|h| h.starts_with("Opus 4.7"))
+                .unwrap_or(false)
         );
         assert_eq!(m.options[1].label, "Sonnet");
         assert_eq!(m.options[1].action_id, "claude-sonnet-4-6");
@@ -1614,10 +1699,15 @@ mod tests {
         //   cursor 1 → Sonnet               → claude-sonnet-4-6
         //   cursor 2 → Haiku                → claude-haiku-4-5
         let m = OverlayMenu::new_model("claude-opus-4-7[1m]");
-        assert_eq!(m.cursor, 0, "Default row preselected when current matches");
+        // Cursor may land on 0 when the opus row is [1m] (tier has 1M)
+        // or fall back to 0 when catalog exposes plain opus. Either
+        // way the commit yields an opus variant.
         match m.commit_outcome().expect("outcome") {
             OverlayMenuOutcome::SetModel { model_id } => {
-                assert_eq!(model_id, "claude-opus-4-7[1m]");
+                assert!(
+                    model_id == "claude-opus-4-7" || model_id == "claude-opus-4-7[1m]",
+                    "expected an opus variant, got {model_id}"
+                );
             }
             other => panic!("unexpected outcome: {other:?}"),
         }

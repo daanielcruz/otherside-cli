@@ -7,7 +7,7 @@
 //!   byte-match chain (`tests/harness_artifacts.rs`) stays frozen.
 //! - **Deferred catalog** (`deferred_schemas`): tools the model loads on
 //!   demand through `ToolSearch` (matches upstream's deferred-tools
-//!   reminder at `harness_corpus/system-reminders/deferred-tools.txt`).
+//!   reminder at `harness_corpus/system-reminders/deferred-tools.md`).
 //!   Schemas are otherside-native — synthesized from upstream Zod shapes
 //!   since our live capture did not exercise `ToolSearch`. Swap to
 //!   byte-verbatim when a real capture lands.
