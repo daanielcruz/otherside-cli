@@ -750,7 +750,7 @@ fn draw_statusline(
     // Reuse the canonical stripper so display-layer matches wire-layer
     // semantics (case-insensitive `[1m]` anywhere in the string).
     let (canonical, has_1m) =
-        crate::translator::openai_to_anthropic::strip_1m_suffix(model);
+        crate::translator::anthropic::strip_1m_suffix(model);
     // Statusline uses the compact `[1M]` tag instead of the anchor-
     // wording `(1M context)` so the line stays dense.
     let base = crate::inference::model_display::public_model_display_name(&canonical)

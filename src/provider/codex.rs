@@ -3,9 +3,9 @@
 //!
 //! Wire-protocol notes:
 //! - Request body mirrors `ResponsesApiRequest` (codex-rs).
-//!   Built via [`crate::translator::openai_to_codex::build_responses_body`].
+//!   Built via [`crate::translator::codex::request::build_responses_body`].
 //! - SSE stream is decoded via [`crate::translator::sse::SseBuffer`] +
-//!   [`crate::translator::codex_to_openai::State`] which translates
+//!   [`crate::translator::codex::response::State`] which translates
 //!   `response.*` events into OpenAI `OpenAiChunk`s.
 //! - Headers per `docs/design/codex-openai-auth-api.md §FINGERPRINT`:
 //!   `Authorization: Bearer …`, `ChatGPT-Account-ID`, `originator`,
@@ -30,8 +30,8 @@ use crate::error::{Error, Result};
 use crate::fingerprint::codex as fp;
 use crate::inference::{OpenAiChatRequest, OpenAiChunk};
 use crate::thinking::ThinkingConfig;
-use crate::translator::codex_to_openai;
-use crate::translator::openai_to_codex::build_responses_body;
+use crate::translator::codex::response;
+use crate::translator::codex::request::build_responses_body;
 use crate::translator::sse::SseBuffer;
 
 use super::{ChunkStream, Provider};
@@ -137,12 +137,12 @@ impl Provider for CodexProvider {
     }
 }
 
-/// Streaming adapter — drives SseBuffer + codex_to_openai::State to
+/// Streaming adapter — drives SseBuffer + response::State to
 /// transform the raw bytes into OpenAiChunk events.
 struct CodexChunkStream {
     bytes: BoxStream<'static, reqwest::Result<Bytes>>,
     buffer: SseBuffer,
-    translator: codex_to_openai::State,
+    translator: response::State,
     pending: std::collections::VecDeque<OpenAiChunk>,
     done: bool,
 }
@@ -152,7 +152,7 @@ impl CodexChunkStream {
         Self {
             bytes,
             buffer: SseBuffer::new(),
-            translator: codex_to_openai::State::new(&model_hint),
+            translator: response::State::new(&model_hint),
             pending: std::collections::VecDeque::new(),
             done: false,
         }

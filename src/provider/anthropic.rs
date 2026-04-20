@@ -10,7 +10,7 @@
 //! 3. [`auth::anthropic::authorization_header`] resolves the bearer
 //!    (proactively refreshes if within 60s safety margin — see
 //!    `fingerprint_corpus/oauth/refresh_behavior.md`).
-//! 4. [`translator::openai_to_anthropic::build_request_body`] produces
+//! 4. [`translator::anthropic::build_request_body`] produces
 //!    the exact bytes captured by the corpus, with user prompt + session
 //!    email/date substituted in.
 //! 5. We POST with the full fingerprint header set from
@@ -54,8 +54,8 @@ use crate::error::{Error, Result};
 use crate::fingerprint::anthropic as fp;
 use crate::inference::{OpenAiChatRequest, OpenAiChunk};
 use crate::thinking::ThinkingConfig;
-use crate::translator::anthropic_to_openai::AnthropicStreamTranslator;
-use crate::translator::openai_to_anthropic::{build_request_body, strip_1m_suffix, UserContext};
+use crate::translator::anthropic::response::AnthropicStreamTranslator;
+use crate::translator::anthropic::{build_request_body, strip_1m_suffix, UserContext};
 use crate::translator::sse::SseBuffer;
 
 use super::{ChunkStream, Provider};

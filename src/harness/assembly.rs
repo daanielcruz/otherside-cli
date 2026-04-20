@@ -20,7 +20,7 @@
 //!   user-context system-reminder via the normalize pipeline.
 //! - First user turn receives the three `<system-reminder>` preamble
 //!   blocks; subsequent turns do not (see
-//!   `translator::openai_to_anthropic::message_builder`).
+//!   `translator::anthropic::message_builder`).
 //! - Exactly one `cache_control: ephemeral` marker on the last block
 //!   of the last message (see `message_builder::add_cache_breakpoints`).
 //!
@@ -36,7 +36,7 @@ use serde_json::{Map, Value};
 use crate::error::{Error, Result};
 use crate::harness;
 use crate::inference::{OpenAiChatRequest, OpenAiChatRole};
-use crate::translator::openai_to_anthropic::message_builder;
+use crate::translator::anthropic::message_builder;
 
 /// Strip the `[1m]` alias suffix off a model string. Returns
 /// `(stripped, has_1m)`. Mirrors the reference implementation's

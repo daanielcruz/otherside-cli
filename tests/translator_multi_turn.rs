@@ -7,7 +7,7 @@
 //! replacing the retired hello byte-match.
 //!
 //! Turn 2 and turn 3 reconstruct the full `messages[]` directly via
-//! `translator::openai_to_anthropic::blocks` + `message_builder` because
+//! `translator::anthropic::blocks` + `message_builder` because
 //! the OpenAI canonical shape does not carry `thinking` blocks. Capture
 //! includes a thinking block with a server-issued signature; our
 //! conformance test asserts the translator CAN emit the shape byte-match
@@ -20,10 +20,10 @@ use serde_json::{json, Value};
 use otherside::inference::{
     OpenAiChatMessage, OpenAiChatRequest, OpenAiChatRole, OpenAiToolCall, OpenAiToolCallFunction,
 };
-use otherside::translator::openai_to_anthropic::blocks::{
+use otherside::translator::anthropic::blocks::{
     AnthropicMessage, Block, Role,
 };
-use otherside::translator::openai_to_anthropic::{
+use otherside::translator::anthropic::{
     build_request_body, message_builder, UserContext,
 };
 

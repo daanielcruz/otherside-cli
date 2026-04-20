@@ -1,39 +1,35 @@
-//! Translator matrix: `<source_format>/<target_format>/`.
+//! Translator matrix: OpenAI-shape ↔ provider-native formats.
 //!
-//! # Why a matrix, not a hub
+//! `harness/` emits OpenAI `ChatCompletionRequest` shape. Each provider
+//! subdirectory owns two halves of the matrix:
 //!
-//! The obvious design is "canonical hub" — everything goes through OpenAI
-//! shape, each provider has one converter. We use something richer: a
-//! matrix. Each cell translates one source shape to one target shape.
+//! - `request.rs` — OpenAI chat request → provider-native wire body.
+//! - `response.rs` — provider-native streaming events → canonical
+//!   `chat.completion.chunk` events the inner agent loop consumes.
 //!
-//! This lets `otherside serve` accept MULTIPLE client formats (OpenAI,
-//! Anthropic, Gemini native) and route to any backend — because we have
-//! direct translators for each pair.
+//! `sse.rs` is a shared line-based SSE byte parser used by every
+//! provider's `response.rs`.
 //!
-//! For MVP, only `openai → anthropic` (and its reverse event stream
-//! translator) exists. Others are added as needed.
+//! # Active submodules
+//!
+//! - `anthropic/` — OpenAI → `/v1/messages` body + Anthropic SSE →
+//!   OpenAI stream chunks. This is the MVP path; all byte-fidelity
+//!   tests live here.
+//! - `codex/` — OpenAI → `/v1/responses` body + event translator.
+//!   Dispatch frozen per the provider-freeze directive (user-facing
+//!   selector live, wire-level translator NOT wired through
+//!   `provider::dispatch`). Kept in source so when the freeze lifts
+//!   the module is already in place.
+//! - `gemini/` — stub. Frozen.
+//! - `openai_custom/` — stub. Frozen.
 //!
 //! # Purity
 //!
-//! All translators are pure functions. No IO. No hidden state. Easy to
-//! unit-test with fixtures from `fingerprint_corpus/`.
-//!
-//! # SSE event translators
-//!
-//! For each backend that streams, we have a reverse translator that
-//! consumes provider-native SSE events and yields canonical
-//! `chat.completion.chunk` events.
-//!
-//! # Modules
-//!
-//! - `openai_to_anthropic` — MVP request-body translation.
-//! - `sse` — line-based SSE byte parser with partial-frame support.
-//! - `anthropic_to_openai` — MVP response-stream event translation
-//!   (Anthropic SSE events → canonical OpenAI chat.completion.chunk).
-//! - (future) `openai_to_codex`, `openai_to_gemini`, etc.
+//! Every function is pure: no IO, no hidden state. Fixtures under
+//! `fingerprint_corpus/` drive unit tests.
 
-pub mod anthropic_to_openai;
-pub mod codex_to_openai;
-pub mod openai_to_anthropic;
-pub mod openai_to_codex;
+pub mod anthropic;
+pub mod codex;
+pub mod gemini;
+pub mod openai_custom;
 pub mod sse;
