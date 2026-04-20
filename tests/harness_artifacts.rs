@@ -46,13 +46,9 @@ fn system_preamble_matches_capture() {
         .take(3)
         .cloned()
         .collect();
-    let bundled: Value = serde_json::from_str(harness::SYSTEM_PREAMBLE_JSON)
-        .expect("bundled system-preamble.json parses");
-    let bundled_arr = bundled
-        .as_array()
-        .expect("bundled preamble is an array")
-        .clone();
-    assert_eq!(bundled_arr, captured);
+    let assembled = harness::system::build_system_blocks();
+    let assembled_preamble: Vec<Value> = assembled.iter().take(3).cloned().collect();
+    assert_eq!(assembled_preamble, captured);
 }
 
 #[test]
@@ -90,8 +86,7 @@ fn reminder_user_context_matches_capture_after_substitution() {
 #[test]
 fn envelope_matches_capture_defaults() {
     let body = capture_body();
-    let bundled: Value = serde_json::from_str(harness::ENVELOPE_JSON)
-        .expect("bundled envelope.json parses");
+    let bundled = harness::envelope::build_envelope_defaults();
     for key in [
         "metadata",
         "max_tokens",
@@ -127,7 +122,7 @@ fn envelope_matches_capture_defaults() {
 
 #[test]
 fn envelope_has_no_request_specific_keys() {
-    let bundled: Value = serde_json::from_str(harness::ENVELOPE_JSON).unwrap();
+    let bundled = harness::envelope::build_envelope_defaults();
     for forbidden in ["model", "messages", "system", "tools", "tool_choice"] {
         assert!(
             bundled.get(forbidden).is_none(),

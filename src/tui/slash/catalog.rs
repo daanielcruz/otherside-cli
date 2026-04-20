@@ -5,10 +5,10 @@
 //! that doc (R-114). Adds / renames / removes land in `docs/slashes.md`
 //! first, then ride into code via a dedicated openspec change.
 //!
-//! Phase 1 (openspec 001) re-classifies the existing catalog rows under
-//! the new six-variant `SlashKind`. Phase 2 prunes cuts and adds the
-//! five new entries that `docs/slashes.md` carries — until phase 2
-//! lands, some rows below are flagged `// cut in phase 2`.
+//! openspec 011 (2026-04-20) purged `/bye` and `/swarm` (no upstream
+//! analogue — R-114 violation) and reclassified `/loop` from Anchor to
+//! Skill (upstream is `registerBundledSkill({ name: 'loop' })` at
+//! `skills/bundled/loop.ts:79`). Net catalog shrinks 35 → 33 rows.
 
 /// High-level classification for a slash command.
 ///
@@ -18,11 +18,11 @@
 /// dispatch by slash name inside their handler module.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SlashKind {
-    /// Silent immediate side-effect (e.g. `/clear`, `/bye`).
+    /// Silent immediate side-effect (e.g. `/clear`, `/exit`).
     Instant,
     /// State flip + ephemeral confirmation row (e.g. `/plan`).
     Toggle,
-    /// Bundled SKILL.md body → user turn (e.g. `/dream`).
+    /// Bundled SKILL.md body → user turn (e.g. `/dream`, `/loop`).
     Skill,
     /// User echo + `⎿` system-anchor render (e.g. `/compact`).
     Anchor,
@@ -106,16 +106,11 @@ pub struct SlashEntry {
     pub kind: SlashKind,
 }
 
-/// Full catalog — strict subset of `docs/slashes.md` (R-114). 34 rows
+/// Full catalog — strict subset of `docs/slashes.md` (R-114). 33 rows
 /// across 6 categories. Order here is the display order (help,
 /// autocomplete, tips rotation all walk this slice as-is).
 pub const CATALOG: &[SlashEntry] = &[
-    // ── instant (3) ─────────────────────────────────────────────
-    SlashEntry {
-        name: "bye",
-        brief: "exit the TUI",
-        kind: SlashKind::Instant,
-    },
+    // ── instant (2) ─────────────────────────────────────────────
     SlashEntry {
         name: "exit",
         brief: "exit the TUI",
@@ -181,17 +176,17 @@ pub const CATALOG: &[SlashEntry] = &[
         kind: SlashKind::Skill,
     },
     SlashEntry {
-        name: "swarm",
-        brief: "spin up a multi-agent team",
-        kind: SlashKind::Skill,
-    },
-    SlashEntry {
         name: "security-review",
         brief: "review pending changes for security issues",
         kind: SlashKind::Skill,
     },
+    SlashEntry {
+        name: "loop",
+        brief: "run a prompt or slash on a recurring interval",
+        kind: SlashKind::Skill,
+    },
 
-    // ── anchor (4) ──────────────────────────────────────────────
+    // ── anchor (3) ──────────────────────────────────────────────
     SlashEntry {
         name: "branch",
         brief: "fork the conversation from here",
@@ -200,11 +195,6 @@ pub const CATALOG: &[SlashEntry] = &[
     SlashEntry {
         name: "compact",
         brief: "summarize history, trim tokens",
-        kind: SlashKind::Anchor,
-    },
-    SlashEntry {
-        name: "loop",
-        brief: "toggle loop mode for recurring prompts",
         kind: SlashKind::Anchor,
     },
     SlashEntry {
@@ -428,11 +418,14 @@ mod tests {
 
     #[test]
     fn prefix_matches_finds_s_group() {
+        // openspec 011 dropped `/swarm` — prefix matchers now see
+        // the remaining `s` slashes only.
         let names: Vec<&str> = prefix_matches("s").map(|e| e.name).collect();
-        assert!(names.contains(&"swarm"));
         assert!(names.contains(&"status"));
         assert!(names.contains(&"statusline"));
         assert!(names.contains(&"skills"));
+        assert!(names.contains(&"security-review"));
+        assert!(!names.contains(&"swarm"), "/swarm cut in 011");
     }
 
     #[test]
@@ -460,22 +453,27 @@ mod tests {
 
     #[test]
     fn catalog_row_count_matches_docs() {
-        // 008 added `/usage` to the panel section (upstream landing
-        // tab of the unified Settings component). Target row count =
-        // 35 until another slash joins or leaves the catalog.
+        // openspec 011 (2026-04-20) purged `/bye` + `/swarm` (no
+        // upstream analogue) and reclassified `/loop` in place, net
+        // row count 35 → 33. Target holds until another slash joins
+        // or leaves the catalog.
         assert_eq!(
             CATALOG.len(),
-            35,
+            33,
             "CATALOG must be a strict subset of docs/slashes.md"
         );
     }
 
     #[test]
     fn catalog_contains_no_cut_slashes() {
-        // Cut slashes live in RULES.md §15 — they must NEVER ship in
+        // Cut slashes live in RULES.md §14 — they must NEVER ship in
         // the autocomplete catalog. Also guards against legacy names
         // from the pre-marco-zero era coming back by accident.
+        // openspec 011 added `"bye"` + `"swarm"` (no upstream
+        // analogue; cut per R-114).
         let cuts = [
+            "bye",
+            "swarm",
             "verbose",
             "sandbox",
             "scope",
@@ -506,7 +504,6 @@ mod tests {
         // offender. Mirror of `docs/slashes.md`.
         let expected: &[(&str, SlashKind)] = &[
             // instant
-            ("bye", SlashKind::Instant),
             ("exit", SlashKind::Instant),
             ("clear", SlashKind::Instant),
             // toggle
@@ -521,12 +518,11 @@ mod tests {
             ("init-verifiers", SlashKind::Skill),
             ("review", SlashKind::Skill),
             ("init", SlashKind::Skill),
-            ("swarm", SlashKind::Skill),
             ("security-review", SlashKind::Skill),
+            ("loop", SlashKind::Skill),
             // anchor
             ("branch", SlashKind::Anchor),
             ("compact", SlashKind::Anchor),
-            ("loop", SlashKind::Anchor),
             ("context", SlashKind::Anchor),
             // panel
             ("help", SlashKind::Panel(PanelKind::Help)),

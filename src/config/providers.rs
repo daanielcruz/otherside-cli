@@ -40,13 +40,13 @@ impl ProviderId {
         }
     }
 
-    /// Human label shown in the Config tab.
+    /// Human label shown in the Config tab + statusline provider chip.
     pub fn label(self) -> &'static str {
         match self {
-            ProviderId::ClaudeCode => "claude-code",
-            ProviderId::Codex => "codex",
-            ProviderId::GeminiCli => "gemini-cli",
-            ProviderId::OpenAiCustom => "openai-custom",
+            ProviderId::ClaudeCode => "Claude code",
+            ProviderId::Codex => "Codex",
+            ProviderId::GeminiCli => "Gemini CLI",
+            ProviderId::OpenAiCustom => "OpenAI Custom",
         }
     }
 

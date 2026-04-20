@@ -94,14 +94,22 @@ pub mod reminders;
 pub mod system;
 pub mod tools;
 
-/// Raw bytes of the system-prompt (the ~16KB main agent prompt).
-pub const SYSTEM_PROMPT: &str =
-    include_str!("../../harness_corpus/system-prompt.md");
+/// Billing header emitted as system[0]. Short (~80 bytes).
+pub const SYSTEM_BILLING_HEADER: &str =
+    include_str!("../../harness_corpus/system/00-billing-header.md");
 
-/// Raw JSON of the system-preamble (billing header + two pre-prompt
-/// blocks as a 3-entry array).
-pub const SYSTEM_PREAMBLE_JSON: &str =
-    include_str!("../../harness_corpus/system-preamble.json");
+/// Opener line emitted as system[1].
+pub const SYSTEM_OPENER: &str =
+    include_str!("../../harness_corpus/system/01-opener.md");
+
+/// ~7 KB agent preamble emitted as system[2]. Carries the cache_control
+/// ephemeral/1h/global marker on the wire.
+pub const SYSTEM_AGENT_PREAMBLE: &str =
+    include_str!("../../harness_corpus/system/02-agent-preamble.md");
+
+/// ~16 KB main agent prompt emitted as system[3].
+pub const SYSTEM_PROMPT: &str =
+    include_str!("../../harness_corpus/system/03-main-prompt.md");
 
 /// Raw text of the deferred-tools system-reminder. Includes the
 /// `<system-reminder>` wrapper. Byte-verbatim from capture.
@@ -119,11 +127,6 @@ pub const REMINDER_SKILLS: &str =
 /// substitutions).
 pub const REMINDER_USER_CONTEXT_TMPL: &str =
     include_str!("../../harness_corpus/system-reminders/user-context.tmpl");
-
-/// Raw JSON of the envelope defaults (metadata, max_tokens, thinking,
-/// context_management, output_config, stream).
-pub const ENVELOPE_JSON: &str =
-    include_str!("../../harness_corpus/envelope.json");
 
 /// Raw JSON for tool `Agent`.
 pub const TOOL_AGENT_JSON: &str =

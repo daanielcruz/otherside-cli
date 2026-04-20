@@ -14,17 +14,40 @@
 //! `XXX_*_XXX` placeholders. The translator replaces them with the
 //! session's real values before emission.
 
-use serde_json::Value;
+use serde_json::{json, Value};
 
-use super::ENVELOPE_JSON;
-
-/// Parse the bundled envelope defaults into a fresh `Value::Object`
-/// with preserved key order.
+/// Build the top-level envelope defaults. Key order is load-bearing —
+/// the capture emits `metadata, max_tokens, thinking,
+/// context_management, output_config, stream` in that exact order.
+/// `serde_json::json!` preserves insertion order when the
+/// `preserve_order` feature is on (R-56), so this literal doubles as
+/// the canonical wire-shape contract.
 ///
-/// Called per request; parse cost is negligible (~425 bytes) and a
-/// fresh copy lets callers mutate without aliasing.
+/// `metadata.user_id` is a stringified inner JSON carrying opaque
+/// identity placeholders (device_id / account_uuid / session_id).
+/// The translator rewrites them with session values before emission.
 pub fn build_envelope_defaults() -> Value {
-    serde_json::from_str(ENVELOPE_JSON).expect("bundled envelope.json is well-formed")
+    json!({
+        "metadata": {
+            "user_id": "{\"device_id\":\"XXX_DEVICE_ID_XXX\",\"account_uuid\":\"XXX_ACCOUNT_UUID_XXX\",\"session_id\":\"XXX_SESSION_ID_XXX\"}"
+        },
+        "max_tokens": 64000,
+        "thinking": {
+            "type": "adaptive"
+        },
+        "context_management": {
+            "edits": [
+                {
+                    "type": "clear_thinking_20251015",
+                    "keep": "all"
+                }
+            ]
+        },
+        "output_config": {
+            "effort": "xhigh"
+        },
+        "stream": true
+    })
 }
 
 #[cfg(test)]

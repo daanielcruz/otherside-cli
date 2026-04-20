@@ -188,12 +188,15 @@ mod tests {
 
     #[test]
     fn from_input_matches_multiple_prefix() {
+        // openspec 011 dropped `/swarm` — `/s` prefix now surfaces
+        // the remaining `s` slashes only.
         let ac = Autocomplete::from_input("/s").unwrap();
         let names: Vec<&str> = ac.matches.iter().map(|e| e.name).collect();
-        assert!(names.contains(&"swarm"));
         assert!(names.contains(&"status"));
         assert!(names.contains(&"statusline"));
         assert!(names.contains(&"skills"));
+        assert!(names.contains(&"security-review"));
+        assert!(!names.contains(&"swarm"), "/swarm cut in 011");
     }
 
     #[test]
@@ -264,11 +267,11 @@ mod tests {
         // Regression guard: before the single-source-of-truth refactor,
         // `config`, `model`, `login`, etc. were missing from the tips
         // list and thus the popup. They must now appear. Names below
-        // are the docs/slashes.md 34-row subset (R-114).
+        // are the docs/slashes.md 33-row subset (R-114) post-011 purge.
         for name in ["config", "model", "login", "logout", "init", "mcp",
                      "effort", "plan", "permissions", "diff", "skills",
                      "agents", "context", "keybindings",
-                     "statusline", "init-verifiers", "swarm", "dream",
+                     "statusline", "init-verifiers", "dream",
                      "review", "security-review", "loop", "tag"] {
             let prefix = &name[..1];
             let ac = Autocomplete::from_input(&format!("/{prefix}"))

@@ -8,7 +8,9 @@
 //! When a skill name is not in the bundled table the handler falls
 //! back to the raw `/<name> <args>` string — this keeps `Passthrough`
 //! -adjacent behavior for slashes that were added to the catalog
-//! without a bundled body yet.
+//! without a bundled body yet (e.g. `/loop` after openspec 011 moved
+//! it here; upstream body depends on `ScheduleCronTool` which otherside
+//! has not ported).
 
 use super::super::state::ConversationState;
 use super::SlashOutcome;
@@ -30,7 +32,6 @@ const SKILL_BODIES: &[(&str, &str)] = &[
         "security-review",
         include_str!("../../../skills/security-review/SKILL.md"),
     ),
-    ("swarm", include_str!("../../../skills/swarm/SKILL.md")),
 ];
 
 /// Resolve a skill body by slash name. Returns `None` when the name
@@ -61,10 +62,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_skill_slash_has_bundled_body() {
-        // The 7 Skill-category rows in docs/slashes.md each ship a
-        // SKILL.md via include_str! — missing entries would fail the
-        // build, this asserts the runtime lookup table is populated.
+    fn every_bundled_skill_slash_has_body() {
+        // The 6 Skill-category rows that ship a SKILL.md via
+        // include_str! — missing entries would fail the build. This
+        // asserts the runtime lookup table is populated. `/loop`
+        // lives in the catalog but has no bundled body yet (upstream
+        // body depends on ScheduleCronTool parity — future change).
         let expected = [
             "dream",
             "statusline",
@@ -72,7 +75,6 @@ mod tests {
             "init-verifiers",
             "review",
             "security-review",
-            "swarm",
         ];
         for name in expected {
             let body = lookup_body(name).unwrap_or_else(|| panic!("/{name} missing body"));
@@ -128,6 +130,22 @@ mod tests {
         match outcome {
             SlashOutcome::SendTurn(body) => {
                 assert_eq!(body, "/not-a-skill arg");
+            }
+            other => panic!("expected SendTurn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn loop_falls_back_to_raw_slash_pass_until_body_bundled() {
+        // openspec 011 reclassified /loop Anchor → Skill (upstream
+        // `registerBundledSkill({ name: 'loop' })`). No bundled body
+        // yet — handler emits the raw slash form so the provider
+        // sees the user's intent even if the skill body never lands.
+        let mut st = ConversationState::default();
+        let outcome = handle("loop", "5m /check-prs", &mut st);
+        match outcome {
+            SlashOutcome::SendTurn(body) => {
+                assert_eq!(body, "/loop 5m /check-prs");
             }
             other => panic!("expected SendTurn, got {other:?}"),
         }

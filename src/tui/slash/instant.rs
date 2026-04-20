@@ -1,9 +1,9 @@
 //! Instant handler — silent immediate side-effect. No overlay, no feedback row.
 //!
-//! Current slashes: `/clear`, `/exit`, `/bye`. Phase 1 routes them to
-//! the existing `ConversationState` mutations; `ExitApp` / `Bye` bubble
-//! up to the event loop via [`SlashOutcome::ExitApp`] so the caller
-//! breaks out of the render loop.
+//! Current slashes: `/clear`, `/exit`. openspec 011 dropped `/bye`
+//! (no upstream analogue — R-114). `/exit` bubbles up to the event
+//! loop via [`SlashOutcome::ExitApp`] so the caller breaks out of the
+//! render loop.
 
 use super::super::state::{ConversationState, DisplayOrigin};
 use super::SlashOutcome;
@@ -20,7 +20,7 @@ pub fn handle(name: &str, _args: &str, state: &mut ConversationState) -> SlashOu
             state.push_anchor("clear", "", "(no content)", DisplayOrigin::Chrome);
             SlashOutcome::Handled
         }
-        "exit" | "bye" => SlashOutcome::ExitApp,
+        "exit" => SlashOutcome::ExitApp,
         other => {
             state.push_system_note(format!("unhandled instant slash: /{other}"));
             SlashOutcome::Handled

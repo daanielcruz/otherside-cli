@@ -59,12 +59,6 @@ pub enum SettingsRowKind {
     PermissionMode,
     /// Effort-level cycle: auto / low / medium / high / xhigh / max.
     Effort,
-    /// Theme cycle — `dark`, `light`, `dark-ansi`, `light-ansi`,
-    /// `dark-daltonized`, `light-daltonized`. Value persists even if
-    /// only `dark` renders today.
-    Theme,
-    /// Editor mode cycle — `normal` / `vim`.
-    EditorMode,
     /// Boolean toggle keyed by `action_id` suffix (e.g.
     /// `setting:bool:auto_compact`). The dispatcher reads the suffix
     /// to route the flip to the right `settings.*` field.
@@ -1250,30 +1244,6 @@ fn config_rows(state: &super::state::ConversationState) -> Vec<MenuOption> {
         // when set.
         bool_row("Auto-compact", "auto_compact", state.settings.auto_compact, true),
         bool_row("Show tips", "show_tips", state.settings.show_tips, true),
-        bool_row(
-            "Thinking mode",
-            "thinking_mode",
-            state.settings.thinking_mode,
-            true,
-        ),
-        bool_row(
-            "Session recap",
-            "session_recap",
-            state.settings.session_recap,
-            true,
-        ),
-        bool_row(
-            "Terminal progress bar",
-            "terminal_progress_bar",
-            state.settings.terminal_progress_bar,
-            true,
-        ),
-        bool_row(
-            "Show turn duration",
-            "show_turn_duration",
-            state.settings.show_turn_duration,
-            true,
-        ),
         // Verbose output — also bool; keyed separately because the
         // live render_verbose flag mirrors this independently.
         MenuOption {
@@ -1283,39 +1253,6 @@ fn config_rows(state: &super::state::ConversationState) -> Vec<MenuOption> {
                 if state.render_verbose { "true" } else { "false" }.into(),
             ),
             settings_kind: Some(SettingsRowKind::Bool("verbose")),
-            hint: None,
-            ..Default::default()
-        },
-        settings_blank(),
-        // Theme — enum cycle (6 upstream variants). Only `dark`
-        // actually renders today; cycling persists the choice for
-        // when the theme engine lands.
-        MenuOption {
-            label: "Theme".into(),
-            action_id: "setting:theme".into(),
-            value_display: Some(
-                state
-                    .settings
-                    .theme
-                    .clone()
-                    .unwrap_or_else(|| "dark".into()),
-            ),
-            settings_kind: Some(SettingsRowKind::Theme),
-            hint: None,
-            ..Default::default()
-        },
-        // Editor mode — enum cycle (normal / vim).
-        MenuOption {
-            label: "Editor mode".into(),
-            action_id: "setting:editor-mode".into(),
-            value_display: Some(
-                state
-                    .settings
-                    .editor_mode
-                    .clone()
-                    .unwrap_or_else(|| "normal".into()),
-            ),
-            settings_kind: Some(SettingsRowKind::EditorMode),
             hint: None,
             ..Default::default()
         },

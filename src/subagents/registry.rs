@@ -75,6 +75,7 @@ const GENERAL_PURPOSE_SRC: &str = include_str!("../../agents/general-purpose.md"
 const READER_SRC: &str = include_str!("../../agents/reader.md");
 const EXPLORE_SRC: &str = include_str!("../../agents/explore.md");
 const PLAN_SRC: &str = include_str!("../../agents/plan.md");
+const VERIFICATION_SRC: &str = include_str!("../../agents/verification.md");
 
 /// Lazy-initialized bundled registry.
 fn bundled() -> &'static [AgentDefinition] {
@@ -85,6 +86,7 @@ fn bundled() -> &'static [AgentDefinition] {
             parse_bundled("reader.md", READER_SRC),
             parse_bundled("explore.md", EXPLORE_SRC),
             parse_bundled("plan.md", PLAN_SRC),
+            parse_bundled("verification.md", VERIFICATION_SRC),
         ]
     })
     .as_slice()
@@ -135,6 +137,19 @@ mod tests {
         assert!(names.contains(&"reader"));
         assert!(names.contains(&"Explore"));
         assert!(names.contains(&"Plan"));
+        assert!(names.contains(&"verification"));
+    }
+
+    #[test]
+    fn verification_disallows_mutation_tools() {
+        let d = resolve("verification").expect("verification must load");
+        assert!(tool_is_allowed(d, "Bash"));
+        assert!(tool_is_allowed(d, "Read"));
+        assert!(tool_is_allowed(d, "Grep"));
+        assert!(!tool_is_allowed(d, "Edit"));
+        assert!(!tool_is_allowed(d, "Write"));
+        assert!(!tool_is_allowed(d, "NotebookEdit"));
+        assert!(!tool_is_allowed(d, "Agent"));
     }
 
     #[test]

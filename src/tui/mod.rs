@@ -915,50 +915,10 @@ fn edit_settings_row(st: &mut ConversationState, direction: i32) {
             st.effort_label = Some(LEVELS[next_idx]);
             st.settings.effort_level = Some(LEVELS[next_idx].to_string());
         }
-        SettingsRowKind::Theme => {
-            const THEMES: &[&str] = &[
-                "dark",
-                "light",
-                "dark-ansi",
-                "light-ansi",
-                "dark-daltonized",
-                "light-daltonized",
-            ];
-            let current = st
-                .settings
-                .theme
-                .as_deref()
-                .unwrap_or("dark");
-            let idx = THEMES.iter().position(|t| *t == current).unwrap_or(0);
-            let n = THEMES.len() as i32;
-            let next_idx = (((idx as i32) + dir).rem_euclid(n)) as usize;
-            st.settings.theme = Some(THEMES[next_idx].to_string());
-        }
-        SettingsRowKind::EditorMode => {
-            const MODES: &[&str] = &["normal", "vim"];
-            let current = st
-                .settings
-                .editor_mode
-                .as_deref()
-                .unwrap_or("normal");
-            let idx = MODES.iter().position(|m| *m == current).unwrap_or(0);
-            let n = MODES.len() as i32;
-            let next_idx = (((idx as i32) + dir).rem_euclid(n)) as usize;
-            st.settings.editor_mode = Some(MODES[next_idx].to_string());
-        }
         SettingsRowKind::Bool(id) => {
-            // Each bool row carries its own settings field. `verbose`
-            // also mirrors `state.render_verbose` so the render path
-            // reads it without a settings lookup each frame.
             let current = match id {
                 "auto_compact" => st.settings.auto_compact.unwrap_or(true),
                 "show_tips" => st.settings.show_tips.unwrap_or(true),
-                "thinking_mode" => st.settings.thinking_mode.unwrap_or(true),
-                "session_recap" => st.settings.session_recap.unwrap_or(true),
-                "terminal_progress_bar" => {
-                    st.settings.terminal_progress_bar.unwrap_or(true)
-                }
-                "show_turn_duration" => st.settings.show_turn_duration.unwrap_or(true),
                 "verbose" => st.render_verbose,
                 _ => return,
             };
@@ -966,12 +926,6 @@ fn edit_settings_row(st: &mut ConversationState, direction: i32) {
             match id {
                 "auto_compact" => st.settings.auto_compact = Some(next),
                 "show_tips" => st.settings.show_tips = Some(next),
-                "thinking_mode" => st.settings.thinking_mode = Some(next),
-                "session_recap" => st.settings.session_recap = Some(next),
-                "terminal_progress_bar" => {
-                    st.settings.terminal_progress_bar = Some(next)
-                }
-                "show_turn_duration" => st.settings.show_turn_duration = Some(next),
                 "verbose" => {
                     st.render_verbose = next;
                     st.settings.verbose = Some(next);
@@ -1435,7 +1389,7 @@ fn drain_queue_head_if_any(
 
 /// Classify `st.input` and dispatch it through the per-category slash
 /// handlers. Returns `true` when the handler signals app-wide exit
-/// (`/exit`, `/bye`). Handlers that produce a user turn route it
+/// (`/exit`). Handlers that produce a user turn route it
 /// through `submit` + `spawn_agent_turn` so the provider streams it
 /// the same way regular chat does.
 fn dispatch_slash(
@@ -2287,40 +2241,6 @@ mod settings_edit_tests {
     }
 
     #[test]
-    fn theme_row_cycles_six_upstream_themes() {
-        let mut st = ConversationState::default();
-        st.active_menu = Some(OverlayMenu::new_settings(SettingsTab::Config, &st));
-        if let Some(m) = st.active_menu.as_mut() {
-            focus_row(m, "Theme");
-        }
-        const EXPECTED: &[&str] = &[
-            "light",
-            "dark-ansi",
-            "light-ansi",
-            "dark-daltonized",
-            "light-daltonized",
-            "dark",
-        ];
-        for want in EXPECTED {
-            edit_settings_row(&mut st, 1);
-            assert_eq!(st.settings.theme.as_deref(), Some(*want));
-        }
-    }
-
-    #[test]
-    fn editor_mode_row_flips_normal_and_vim() {
-        let mut st = ConversationState::default();
-        st.active_menu = Some(OverlayMenu::new_settings(SettingsTab::Config, &st));
-        if let Some(m) = st.active_menu.as_mut() {
-            focus_row(m, "Editor mode");
-        }
-        edit_settings_row(&mut st, 1);
-        assert_eq!(st.settings.editor_mode.as_deref(), Some("vim"));
-        edit_settings_row(&mut st, 1);
-        assert_eq!(st.settings.editor_mode.as_deref(), Some("normal"));
-    }
-
-    #[test]
     fn every_bool_row_toggles_its_settings_field() {
         let mut st = ConversationState::default();
         st.active_menu = Some(OverlayMenu::new_settings(SettingsTab::Config, &st));
@@ -2329,12 +2249,6 @@ mod settings_edit_tests {
         let rows: &[(&str, Getter)] = &[
             ("Auto-compact", |s| s.settings.auto_compact),
             ("Show tips", |s| s.settings.show_tips),
-            ("Thinking mode", |s| s.settings.thinking_mode),
-            ("Session recap", |s| s.settings.session_recap),
-            ("Terminal progress bar", |s| {
-                s.settings.terminal_progress_bar
-            }),
-            ("Show turn duration", |s| s.settings.show_turn_duration),
         ];
         for (label, getter) in rows {
             if let Some(m) = st.active_menu.as_mut() {

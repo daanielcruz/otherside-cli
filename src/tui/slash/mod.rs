@@ -5,7 +5,7 @@
 //! category:
 //!
 //! - [`catalog`] — single source of truth for names, briefs, kinds.
-//! - [`instant`] — silent immediate side-effect (`/clear`, `/exit`, `/bye`).
+//! - [`instant`] — silent immediate side-effect (`/clear`, `/exit`).
 //! - [`toggle`] — state flip + ephemeral confirmation (`/plan`, `/copy`…).
 //! - [`skill`] — bundled SKILL.md body → user turn (`/dream`, `/statusline`…).
 //! - [`anchor`] — user echo + `⎿` system anchor (`/compact`, `/branch`…).
@@ -162,11 +162,19 @@ mod tests {
     }
 
     #[test]
-    fn bye_is_instant() {
-        match classify("/bye") {
-            SlashAction::Instant { name, .. } => assert_eq!(name, "bye"),
-            other => panic!("expected Instant, got {other:?}"),
-        }
+    fn bye_is_passthrough_after_011_purge() {
+        // openspec 011 cut `/bye` — no upstream analogue (R-114).
+        // classify() now falls through to Passthrough; the caller
+        // submits it as a user turn verbatim.
+        assert_eq!(classify("/bye"), SlashAction::Passthrough);
+    }
+
+    #[test]
+    fn swarm_is_passthrough_after_011_purge() {
+        // openspec 011 cut `/swarm` — upstream has no slash by that
+        // name; swarm is multi-process orchestration infrastructure
+        // (RULES.md §14.1 cut).
+        assert_eq!(classify("/swarm"), SlashAction::Passthrough);
     }
 
     #[test]
@@ -186,6 +194,20 @@ mod tests {
                 assert_eq!(args, "trim");
             }
             other => panic!("expected Anchor, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn loop_is_skill_after_011_reclass() {
+        // Upstream registers `/loop` as a bundled skill
+        // (`skills/bundled/loop.ts:79`, `userInvocable: true`);
+        // otherside matches that classification post-011.
+        match classify("/loop 5m /check-prs") {
+            SlashAction::Skill { name, args } => {
+                assert_eq!(name, "loop");
+                assert_eq!(args, "5m /check-prs");
+            }
+            other => panic!("expected Skill, got {other:?}"),
         }
     }
 

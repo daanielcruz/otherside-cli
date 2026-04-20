@@ -82,10 +82,9 @@ pub struct FrameSlots {
 pub const QUEUE_ROWS_CAP: u16 = 5;
 
 /// Fixed overhead rows around the queued-message block: 1 row
-/// margin-top (separates from thinking/tip) + 1 row hint below
-/// (`↑ Press up to edit queued messages`). The message rows are
-/// additive on top of this.
-pub const QUEUE_CHROME_ROWS: u16 = 2;
+/// margin-top (separates from thinking/tip). The message rows are
+/// additive on top of this. Upstream renders no hint row.
+pub const QUEUE_CHROME_ROWS: u16 = 1;
 
 /// Split `area` into bottom-up slots per C44/C51.
 ///

@@ -297,7 +297,7 @@ pub fn render(
     // (slots.*.height == 0 per layout::split_frame popup-takeover).
     let _ = provider_id;
     if slots.statusline.height > 0 {
-        draw_statusline(f, slots.statusline, state, model);
+        draw_statusline(f, slots.statusline, state, model, provider_id);
     }
     if slots.info.height > 0 {
         draw_info_row(f, slots.info, state, model);
@@ -582,19 +582,16 @@ fn render_message(role: OpenAiChatRole, content: &str, width: u16) -> Vec<Line<'
     lines
 }
 
-/// Paint the 017 §4 queue — each queued message rendered as a
+/// Paint the queue — each queued message rendered as a
 /// user-message bubble (same `❯ ` chevron + USER_BG fill as a live
-/// user row) with a 1-row margin above and a `↑ Press up to edit
-/// queued messages` hint below. Mirrors the reference TUI's queued
-/// bubble placement: the entry looks like any other user message, it
-/// just sits directly above the prompt bar with a margin-top.
+/// user row) with a 1-row margin above. Upstream renders NO hint
+/// row below — the bubble sits directly above the prompt bar.
 fn draw_queue_lines(f: &mut Frame<'_>, area: Rect, state: &ConversationState) {
-    if area.height < 3 || state.queued_messages.is_empty() {
+    if area.height < 2 || state.queued_messages.is_empty() {
         return;
     }
-    // Slot layout: [margin-top (1)] [messages (N)] [hint (1)].
     let total_rows = area.height as usize;
-    let message_rows = total_rows.saturating_sub(2);
+    let message_rows = total_rows.saturating_sub(1);
     if message_rows == 0 {
         return;
     }
@@ -608,12 +605,8 @@ fn draw_queue_lines(f: &mut Frame<'_>, area: Rect, state: &ConversationState) {
     };
 
     let mut lines: Vec<Line<'_>> = Vec::with_capacity(total_rows);
-    // Margin-top — single blank USER_BG row. Separates the queue
-    // bubble from the thinking / tip block above and reads as the
-    // same cohesive block visually.
     lines.push(blank_user_bg_line(area.width));
 
-    // Each queued message renders exactly like a live user row.
     for msg in state.queued_messages.iter().take(body_slots) {
         let first_line = msg.lines().next().unwrap_or("");
         lines.push(user_bubble_row(first_line, area.width));
@@ -623,15 +616,6 @@ fn draw_queue_lines(f: &mut Frame<'_>, area: Rect, state: &ConversationState) {
         let summary = format!("… {remaining} more queued");
         lines.push(user_bubble_row(&summary, area.width));
     }
-
-    // Hint row outside the bubble — MUTED only, no bg fill so it
-    // reads as a separate affordance rather than part of the message.
-    let hint = "↑ Press up to edit queued messages";
-    let hint_row = Line::from(Span::styled(
-        hint.to_string(),
-        Style::default().fg(theme::MUTED),
-    ));
-    lines.push(hint_row);
 
     let para = Paragraph::new(lines);
     f.render_widget(para, area);
@@ -750,6 +734,7 @@ fn draw_statusline(
     area: Rect,
     state: &ConversationState,
     model: &str,
+    provider_id: &str,
 ) {
     use statusline::types::{
         ContextWindowInput, CostInput, ModelInput, OutputStyleInput, StatuslineCtx,
@@ -766,8 +751,16 @@ fn draw_statusline(
     // semantics (case-insensitive `[1m]` anywhere in the string).
     let (canonical, has_1m) =
         crate::translator::openai_to_anthropic::strip_1m_suffix(model);
-    let display_name =
-        crate::inference::model_display::render_model_name(&canonical, has_1m);
+    // Statusline uses the compact `[1M]` tag instead of the anchor-
+    // wording `(1M context)` so the line stays dense.
+    let base = crate::inference::model_display::public_model_display_name(&canonical)
+        .unwrap_or(&canonical)
+        .to_string();
+    let display_name = if has_1m {
+        format!("{base} [1M]")
+    } else {
+        base.clone()
+    };
 
     let window = state.context_window;
     let used = window.saturating_sub(state.context_available());
@@ -832,8 +825,12 @@ fn draw_statusline(
     // None path triggers the native emoji-prefixed fallback.
     let (line, _warn) = statusline::dispatch(&ctx, None);
     let stripped = strip_ansi(&line.content);
+    let provider_label = crate::config::providers::ProviderId::from_slug(provider_id)
+        .map(|p| p.label())
+        .unwrap_or(provider_id);
+    let composed = format!("{stripped} · {provider_label}");
     let para = Paragraph::new(Line::from(Span::styled(
-        stripped,
+        composed,
         Style::default().fg(theme::MUTED),
     )));
     f.render_widget(para, area);
@@ -1370,14 +1367,10 @@ mod tests {
         let mut st = ConversationState::new();
         st.queued_messages.push("first queued".into());
         st.queued_messages.push("second queued".into());
-        // 2 messages + 2 chrome rows = 4.
-        let s = render_queue_lines_to_string(&st, 80, 4);
+        // 2 messages + 1 margin row = 3.
+        let s = render_queue_lines_to_string(&st, 80, 3);
         assert!(s.contains("❯ first queued"), "rendered: {s:?}");
         assert!(s.contains("❯ second queued"), "rendered: {s:?}");
-        assert!(
-            s.contains("↑ Press up to edit queued messages"),
-            "hint missing: {s:?}"
-        );
     }
 
     #[test]
@@ -1387,8 +1380,8 @@ mod tests {
         for i in 0..7 {
             st.queued_messages.push(format!("msg-{i}"));
         }
-        // Height 5 → 3 message rows (margin + 3 + hint). Show 2 msgs + summary.
-        let s = render_queue_lines_to_string(&st, 80, 5);
+        // Height 4 → 3 message rows (margin + 3). Show 2 msgs + summary.
+        let s = render_queue_lines_to_string(&st, 80, 4);
         assert!(s.contains("❯ msg-0"), "rendered: {s:?}");
         assert!(s.contains("❯ msg-1"), "rendered: {s:?}");
         assert!(s.contains("… 5 more queued"), "rendered: {s:?}");
@@ -1400,8 +1393,8 @@ mod tests {
         let mut st = ConversationState::new();
         let long: String = "x".repeat(200);
         st.queued_messages.push(long);
-        // 1 message + 2 chrome = 3 rows.
-        let s = render_queue_lines_to_string(&st, 40, 3);
+        // 1 message + 1 margin = 2 rows.
+        let s = render_queue_lines_to_string(&st, 40, 2);
         assert!(s.contains("❯ "), "chevron missing: {s:?}");
         assert!(s.contains('…'), "ellipsis missing: {s:?}");
     }
@@ -1454,10 +1447,6 @@ mod tests {
         }
         assert!(joined.contains("❯ queued-alpha"), "rendered: {joined:?}");
         assert!(joined.contains("❯ queued-beta"), "rendered: {joined:?}");
-        assert!(
-            joined.contains("↑ Press up to edit queued messages"),
-            "hint missing: {joined:?}"
-        );
     }
 
     #[test]

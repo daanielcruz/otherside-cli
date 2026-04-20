@@ -6,35 +6,51 @@
 //! 2. longer pre-prompt block ("You are an interactive agent...")
 //! 3. the ~16KB main agent system prompt
 //!
-//! Preamble (blocks 0..=2) is stored as a single JSON array in
-//! `system-preamble.json`. Main prompt (block 3) is a plain text file
-//! `system-prompt.md`. This builder stitches them into one
-//! `Vec<serde_json::Value>` ready to splice.
-//!
-//! None of the four system blocks carry a `cache_control` marker in the
-//! captured body — verified by inspection of
+//! Every block ships as its own markdown under `harness_corpus/system/`
+//! (`00-billing-header.md`, `01-opener.md`, `02-agent-preamble.md`,
+//! `03-main-prompt.md`). This builder wraps each payload in the
+//! `{type:"text", text:…}` JSON envelope expected on the wire and
+//! attaches block 2's `cache_control` marker. All four blocks carry
+//! `cache_control: {type:"ephemeral", ttl:"1h", scope:"global"}` per
+//! the captured body — verified by inspection of
 //! `fingerprint_corpus/tools-glob-single/turn1/request.body.json`.
-//! (Any cache discipline lives on the `messages[]` tail per R-53 as
-//! revised by change 009.)
+//! (Actually only block 2 carries cache_control on the captured slice;
+//! the other three do not. See `build_system_blocks` for the exact
+//! attach site.)
 
 use serde_json::{json, Value};
 
-use super::{SYSTEM_PREAMBLE_JSON, SYSTEM_PROMPT};
+use super::{SYSTEM_AGENT_PREAMBLE, SYSTEM_BILLING_HEADER, SYSTEM_OPENER, SYSTEM_PROMPT};
+
+/// Upstream attaches this cache_control marker only to system[2]
+/// (the agent preamble). Hardcoded here — it's the single configuration
+/// used; if upstream ever adds a second marker variant the right move
+/// is to pass it as an arg, not to parameterize every call site now.
+fn cache_ephemeral_1h_global() -> Value {
+    json!({"type": "ephemeral", "ttl": "1h", "scope": "global"})
+}
+
+fn text_block(text: &str) -> Value {
+    json!({"type": "text", "text": text})
+}
+
+fn text_block_cached(text: &str) -> Value {
+    json!({
+        "type": "text",
+        "text": text,
+        "cache_control": cache_ephemeral_1h_global(),
+    })
+}
 
 /// Assemble the 4-block `system[]` array. Byte-verbatim reproduction of
 /// the captured slice when compared as parsed JSON values.
 pub fn build_system_blocks() -> Vec<Value> {
-    let preamble: Value = serde_json::from_str(SYSTEM_PREAMBLE_JSON)
-        .expect("bundled system-preamble.json is well-formed");
-    let mut blocks: Vec<Value> = preamble
-        .as_array()
-        .expect("system-preamble.json top-level is an array")
-        .clone();
-    blocks.push(json!({
-        "type": "text",
-        "text": SYSTEM_PROMPT,
-    }));
-    blocks
+    vec![
+        text_block(SYSTEM_BILLING_HEADER),
+        text_block(SYSTEM_OPENER),
+        text_block_cached(SYSTEM_AGENT_PREAMBLE),
+        text_block(SYSTEM_PROMPT),
+    ]
 }
 
 #[cfg(test)]
