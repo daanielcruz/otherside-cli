@@ -1224,7 +1224,7 @@ fn apply_menu_outcome(
             apply_permission_outcome(st, &action_id);
         }
         menu::OverlayMenuOutcome::SetModel { model_id } => {
-            apply_model_outcome(st, &model_id);
+            apply_model_outcome(st, thinking, &model_id);
         }
     }
     false
@@ -1245,7 +1245,11 @@ fn apply_permission_outcome(st: &mut ConversationState, action_id: &str) {
     st.permission_mode = mode;
 }
 
-fn apply_model_outcome(st: &mut ConversationState, model_id: &str) {
+fn apply_model_outcome(
+    st: &mut ConversationState,
+    thinking: &mut Option<ThinkingConfig>,
+    model_id: &str,
+) {
     let (_base, _thinking) = crate::thinking::parse_suffix(model_id)
         .map(|(m, t)| (m, t))
         .unwrap_or_else(|_| (model_id.to_string(), None));
@@ -1254,6 +1258,25 @@ fn apply_model_outcome(st: &mut ConversationState, model_id: &str) {
         st.context_window = 1_000_000;
     } else {
         st.context_window = 200_000;
+    }
+    // Reconcile effort against the new model's support matrix. When
+    // the old effort isn't supported (switching opus xhigh → sonnet
+    // which maxes at high, or → haiku which takes only auto), snap
+    // to the new model's default_effort AND rebuild `thinking` so
+    // the next /v1/messages turn doesn't 400.
+    let current_effort = st.effort_label.unwrap_or("auto");
+    if !crate::models::catalog::supports_effort(model_id, current_effort) {
+        use crate::thinking::ThinkingLevel;
+        use std::str::FromStr;
+        let next = crate::models::catalog::default_effort_for(model_id);
+        if next == "auto" {
+            st.effort_label = None;
+            *thinking = Some(ThinkingConfig::auto());
+        } else if let Ok(level) = ThinkingLevel::from_str(next) {
+            st.effort_label = Some(next);
+            *thinking = Some(ThinkingConfig::level(level));
+        }
+        st.settings.effort_level = Some(next.to_string());
     }
     // Persist the user's model choice across sessions.
     st.settings.default_model = Some(model_id.to_string());

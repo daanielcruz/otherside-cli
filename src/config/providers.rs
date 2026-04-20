@@ -30,12 +30,14 @@ pub enum ProviderId {
 }
 
 impl ProviderId {
-    /// Stable slug used in `settings.json::defaultProvider`.
+    /// Stable slug used in `settings.json::defaultProvider` + wire-
+    /// side logs. Every OAuth-backed provider carries the `-oauth`
+    /// suffix so the auth flow is visible in the slug itself.
     pub fn slug(self) -> &'static str {
         match self {
-            ProviderId::ClaudeCode => "claude-code",
-            ProviderId::Codex => "codex",
-            ProviderId::GeminiCli => "gemini-cli",
+            ProviderId::ClaudeCode => "anthropic-oauth",
+            ProviderId::Codex => "codex-oauth",
+            ProviderId::GeminiCli => "gemini-oauth",
             ProviderId::OpenAiCustom => "openai-custom",
         }
     }
@@ -43,9 +45,9 @@ impl ProviderId {
     /// Human label shown in the Config tab + statusline provider chip.
     pub fn label(self) -> &'static str {
         match self {
-            ProviderId::ClaudeCode => "Claude code",
-            ProviderId::Codex => "Codex",
-            ProviderId::GeminiCli => "Gemini CLI",
+            ProviderId::ClaudeCode => "Anthropic OAuth",
+            ProviderId::Codex => "Codex OAuth",
+            ProviderId::GeminiCli => "Gemini OAuth",
             ProviderId::OpenAiCustom => "OpenAI Custom",
         }
     }
@@ -57,14 +59,14 @@ impl ProviderId {
         crate::models::defaults::default_model_for(self)
     }
 
-    /// Parse from a slug. Matches the exact strings emitted by
-    /// `slug()`; unknown slugs return `None` (caller falls back to
-    /// `ProviderId::ClaudeCode` default).
+    /// Parse from a slug. Accepts current `<vendor>-oauth` form and
+    /// historical aliases so settings.json values from older sessions
+    /// round-trip cleanly.
     pub fn from_slug(s: &str) -> Option<Self> {
         match s {
-            "claude-code" => Some(ProviderId::ClaudeCode),
-            "codex" => Some(ProviderId::Codex),
-            "gemini-cli" => Some(ProviderId::GeminiCli),
+            "anthropic-oauth" | "claude-code" | "anthropic" => Some(ProviderId::ClaudeCode),
+            "codex-oauth" | "codex" => Some(ProviderId::Codex),
+            "gemini-oauth" | "gemini-cli" | "gemini" => Some(ProviderId::GeminiCli),
             "openai-custom" => Some(ProviderId::OpenAiCustom),
             _ => None,
         }
