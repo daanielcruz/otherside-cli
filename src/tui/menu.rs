@@ -87,10 +87,12 @@ impl OverlayMenu {
             });
         }
         options_with_hints.extend(options);
-        // Cursor snaps past the hint lines to the first actionable row.
+        // Cursor starts on the first row with a non-empty label so
+        // the user sees it settle on useful content instead of a
+        // blank separator. Info rows are navigable (C71).
         let cursor = options_with_hints
             .iter()
-            .position(|o| o.action_id != "__line__")
+            .position(|o| !o.label.is_empty())
             .unwrap_or(0);
         Self {
             kind,
@@ -220,8 +222,9 @@ impl OverlayMenu {
     }
 
     /// Move the cursor up; wraps to the last row when at the top.
-    /// `__line__` placeholder rows (info hints) are skipped so the
-    /// cursor never lands on a non-actionable line.
+    /// Skips rows with empty labels (visual separators) so the cursor
+    /// never lands on a blank line. `__line__` info rows ARE navigable
+    /// — users reported info panels felt frozen without cursor walk.
     pub fn move_up(&mut self) {
         if self.options.is_empty() {
             return;
@@ -233,15 +236,14 @@ impl OverlayMenu {
             } else {
                 self.cursor - 1
             };
-            if !self.cursor_is_placeholder() {
+            if !self.cursor_is_separator() {
                 return;
             }
         }
     }
 
     /// Move the cursor down; wraps to the first row when at the bottom.
-    /// `__line__` placeholder rows are skipped the same way move_up
-    /// handles them so info menus stay on their `Close` action.
+    /// Blank-label rows (visual separators) skipped.
     pub fn move_down(&mut self) {
         if self.options.is_empty() {
             return;
@@ -249,16 +251,16 @@ impl OverlayMenu {
         let n = self.options.len();
         for _ in 0..n {
             self.cursor = (self.cursor + 1) % n;
-            if !self.cursor_is_placeholder() {
+            if !self.cursor_is_separator() {
                 return;
             }
         }
     }
 
-    fn cursor_is_placeholder(&self) -> bool {
+    fn cursor_is_separator(&self) -> bool {
         self.options
             .get(self.cursor)
-            .map(|o| o.action_id == "__line__")
+            .map(|o| o.label.is_empty())
             .unwrap_or(false)
     }
 
@@ -629,16 +631,15 @@ pub fn draw_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
     lines.push(Line::raw(""));
 
     for (i, opt) in menu.options.iter().enumerate() {
-        // `__line__` placeholder: dim prose, no marker, no cursor — used
-        // to lift info text above the action rows on info-style menus.
-        if opt.action_id == "__line__" {
-            lines.push(Line::from(Span::styled(
-                format!("  {}", opt.label),
-                Style::default().fg(theme::MUTED),
-            )));
+        // Empty-label rows are visual separators — render a blank
+        // line and skip the cursor marker (separators are unreachable
+        // by the navigable walk, so `i == menu.cursor` never fires).
+        if opt.label.is_empty() {
+            lines.push(Line::raw(""));
             continue;
         }
         let is_cursor = i == menu.cursor;
+        let is_info = opt.action_id == "__line__";
         let marker = if is_cursor { "  ❯ " } else { "    " };
         let marker_style = if is_cursor {
             Style::default()
@@ -647,7 +648,13 @@ pub fn draw_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
         } else {
             Style::default().fg(theme::MUTED)
         };
-        let label_style = if is_cursor {
+        // Info rows (`__line__`) stay muted even under cursor so the
+        // panel reads as "this is prose you're walking through" not
+        // "press Enter here". Action rows read in the normal TEXT
+        // color, bold when highlighted.
+        let label_style = if is_info {
+            Style::default().fg(theme::MUTED)
+        } else if is_cursor {
             Style::default()
                 .fg(theme::TEXT)
                 .add_modifier(Modifier::BOLD)
@@ -782,29 +789,35 @@ mod tests {
     }
 
     #[test]
-    fn info_menu_skips_placeholder_rows() {
+    fn info_menu_cursor_starts_on_first_content_row() {
         let m = OverlayMenu::new_info(
             PanelKind::Status,
             "Status".into(),
             vec!["line1".into(), "line2".into()],
         );
-        // Cursor should land on the Close row, past the two placeholders.
-        assert_eq!(m.options[m.cursor].action_id, "__close__");
-        // commit_outcome on __close__ returns None.
+        // C71: info rows are navigable now — cursor starts at the
+        // first non-empty label which is the first hint line.
+        assert_eq!(m.options[m.cursor].label, "line1");
+        // commit_outcome on __line__ still returns None (no action).
         assert!(m.commit_outcome().is_none());
     }
 
     #[test]
-    fn info_menu_cursor_skips_placeholder_on_move() {
+    fn info_menu_down_walks_to_close() {
         let mut m = OverlayMenu::new_info(
             PanelKind::Status,
             "Status".into(),
             vec!["line1".into(), "line2".into()],
         );
-        let close_idx = m.cursor;
-        m.move_down(); // should wrap, land back on close
-        assert_eq!(m.cursor, close_idx);
-        m.move_up(); // still close — only one action row
-        assert_eq!(m.cursor, close_idx);
+        // line1 → line2 → Close → wrap to line1
+        assert_eq!(m.options[m.cursor].label, "line1");
+        m.move_down();
+        assert_eq!(m.options[m.cursor].label, "line2");
+        m.move_down();
+        assert_eq!(m.options[m.cursor].label, "Close");
+        m.move_down();
+        assert_eq!(m.options[m.cursor].label, "line1");
+        m.move_up();
+        assert_eq!(m.options[m.cursor].label, "Close");
     }
 }

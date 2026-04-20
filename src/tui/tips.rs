@@ -24,11 +24,14 @@ pub fn tip_at(index: usize) -> String {
     catalog::display_line(&CATALOG[index % CATALOG.len()])
 }
 
-/// Paint the tip line into `area`. Format: `⎿ Tip: /<slash> — <brief>`.
+/// Paint the tip line into `area`. Dim `Tip: /<slash> — <brief>` —
+/// no `⎿` glyph because that symbol is reserved for tool-result
+/// and anchor output; tips should read as ambient chrome, not an
+/// emitted turn line.
 pub fn draw(f: &mut Frame<'_>, area: Rect, rotation_index: usize) {
     let tip = tip_at(rotation_index);
     let line = Line::from(vec![
-        Span::styled("⎿ Tip: ", Style::default().fg(theme::MUTED)),
+        Span::styled("Tip: ", Style::default().fg(theme::MUTED)),
         Span::styled(tip, Style::default().fg(theme::MUTED)),
     ]);
     f.render_widget(Paragraph::new(line), area);

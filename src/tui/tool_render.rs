@@ -216,41 +216,40 @@ pub fn render_tool_call(view: &ToolCallView<'_>) -> Vec<Line<'static>> {
     let _ = view.elapsed_ms; // suppressed on the header per upstream format
     out.push(Line::from(header_spans));
 
-    // Payload — indented under the gutter glyph.
+    // Payload — indented under the gutter glyph. Upstream parity:
+    // only the FIRST line carries `  ⎿ `; continuation lines align
+    // under the label with a 4-space pad. Previously each wrapped
+    // line emitted its own `⎿`, producing a column of symbols
+    // rather than a tree-drawn preview.
+    const GUTTER_HEAD: &str = "  ⎿ ";
+    const GUTTER_CONT: &str = "    ";
     if let Some(payload) = view.payload {
         match payload {
             ToolPayload::Preview(text) => {
-                for raw in text.lines() {
+                for (i, raw) in text.lines().enumerate() {
+                    let prefix = if i == 0 { GUTTER_HEAD } else { GUTTER_CONT };
                     out.push(Line::from(vec![
-                        Span::styled(
-                            "  ⎿ ".to_string(),
-                            Style::default().fg(theme::MUTED),
-                        ),
+                        Span::styled(prefix.to_string(), Style::default().fg(theme::MUTED)),
                         Span::styled(raw.to_string(), Style::default().fg(theme::MUTED)),
                     ]));
                 }
             }
             ToolPayload::Todos(items) => {
                 let rendered = todos::render_lines(items);
-                for l in rendered {
-                    // Add left gutter for visual consistency.
+                for (i, l) in rendered.into_iter().enumerate() {
+                    let prefix = if i == 0 { GUTTER_HEAD } else { GUTTER_CONT };
                     let mut spans: Vec<Span<'static>> = Vec::with_capacity(l.spans.len() + 1);
-                    spans.push(Span::styled(
-                        "  ⎿ ".to_string(),
-                        Style::default().fg(theme::MUTED),
-                    ));
+                    spans.push(Span::styled(prefix.to_string(), Style::default().fg(theme::MUTED)));
                     spans.extend(l.spans);
                     out.push(Line::from(spans));
                 }
             }
             ToolPayload::Diff(fragment) => {
                 let rendered = diff::render_unified(fragment);
-                for l in rendered {
+                for (i, l) in rendered.into_iter().enumerate() {
+                    let prefix = if i == 0 { GUTTER_HEAD } else { GUTTER_CONT };
                     let mut spans: Vec<Span<'static>> = Vec::with_capacity(l.spans.len() + 1);
-                    spans.push(Span::styled(
-                        "  ⎿ ".to_string(),
-                        Style::default().fg(theme::MUTED),
-                    ));
+                    spans.push(Span::styled(prefix.to_string(), Style::default().fg(theme::MUTED)));
                     spans.extend(l.spans);
                     out.push(Line::from(spans));
                 }
@@ -261,29 +260,22 @@ pub fn render_tool_call(view: &ToolCallView<'_>) -> Vec<Line<'static>> {
                 exit_code,
             } => {
                 let _ = exit_code;
+                let mut emitted = 0usize;
                 for raw in stdout.lines() {
+                    let prefix = if emitted == 0 { GUTTER_HEAD } else { GUTTER_CONT };
                     out.push(Line::from(vec![
-                        Span::styled(
-                            "  ⎿ ".to_string(),
-                            Style::default().fg(theme::MUTED),
-                        ),
-                        Span::styled(
-                            raw.to_string(),
-                            Style::default().fg(theme::MUTED),
-                        ),
+                        Span::styled(prefix.to_string(), Style::default().fg(theme::MUTED)),
+                        Span::styled(raw.to_string(), Style::default().fg(theme::MUTED)),
                     ]));
+                    emitted += 1;
                 }
                 for raw in stderr.lines() {
+                    let prefix = if emitted == 0 { GUTTER_HEAD } else { GUTTER_CONT };
                     out.push(Line::from(vec![
-                        Span::styled(
-                            "  ⎿ ".to_string(),
-                            Style::default().fg(theme::MUTED),
-                        ),
-                        Span::styled(
-                            raw.to_string(),
-                            Style::default().fg(theme::ERROR),
-                        ),
+                        Span::styled(prefix.to_string(), Style::default().fg(theme::MUTED)),
+                        Span::styled(raw.to_string(), Style::default().fg(theme::ERROR)),
                     ]));
+                    emitted += 1;
                 }
             }
         }
