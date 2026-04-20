@@ -17,20 +17,20 @@ pub fn handle(name: &str, args: &str, state: &mut ConversationState) -> SlashOut
             // Flip in/out of plan mode. Shift+Tab still cycles all four
             // permission modes (R-104); /plan is a direct toggle between
             // the current mode and Plan, same as upstream.
-            let (feedback_msg, anchor_result) =
-                if matches!(state.permission_mode, PermissionMode::Plan) {
-                    state.permission_mode = PermissionMode::Default;
-                    ("plan mode off", "Disabled plan mode")
-                } else {
-                    state.permission_mode = PermissionMode::Plan;
-                    ("plan mode on", "Enabled plan mode")
-                };
-            state.set_feedback(feedback_msg);
-            // Scrollback anchor pair matches upstream: the transition
-            // emits `❯ /plan` + `⎿ Enabled plan mode` (or Disabled).
-            // Ephemeral feedback row is the transient confirmation;
-            // the anchor is the durable transcript record. Both
-            // surfaces coexist (openspec 002 Gap 1).
+            //
+            // Do NOT set_feedback here — the ephemeral "plan mode on"
+            // text would hide the persistent `⏸ plan mode on
+            // (shift+tab to cycle)` chip in the info-row left slot.
+            // Upstream uses only the persistent chip; we do the same.
+            // The scrollback anchor below carries the transient
+            // confirmation.
+            let anchor_result = if matches!(state.permission_mode, PermissionMode::Plan) {
+                state.permission_mode = PermissionMode::Default;
+                "Disabled plan mode"
+            } else {
+                state.permission_mode = PermissionMode::Plan;
+                "Enabled plan mode"
+            };
             state.push_anchor("plan", args, anchor_result);
         }
         "tag" => {
@@ -79,5 +79,15 @@ mod tests {
         let len = st.messages.len();
         assert!(st.messages[len - 1].content.ends_with("Disabled plan mode"));
         assert!(matches!(st.permission_mode, PermissionMode::Default));
+    }
+
+    #[test]
+    fn plan_does_not_set_ephemeral_feedback() {
+        // Chip path owns plan-mode signal (`⏸ plan mode on
+        // (shift+tab to cycle)`) persistently; an ephemeral "plan
+        // mode on" feedback would hide it for 3s.
+        let mut st = ConversationState::default();
+        handle("plan", "", &mut st);
+        assert!(st.toggle_feedback.is_none());
     }
 }
