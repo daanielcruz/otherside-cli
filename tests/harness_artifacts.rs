@@ -24,15 +24,38 @@ fn capture_body() -> Value {
 }
 
 #[test]
-fn system_prompt_matches_capture() {
+fn system_prompt_is_capture_plus_verification_bullet() {
+    // V2 drift (2026-04-20): system-prompt.md carries the
+    // verification-contract bullet from upstream
+    // `constants/prompts.ts:410`. The capture was taken before the
+    // feature flag was on, so byte-exact equality is gone. We assert:
+    //  1. All non-drift content from the capture is still present.
+    //  2. The added verification bullet is present.
     let body = capture_body();
     let captured = body["system"][3]["text"]
         .as_str()
         .expect("system[3].text is a string");
-    assert_eq!(
-        harness::SYSTEM_PROMPT,
-        captured,
-        "system-prompt.md must be byte-identical to capture system[3].text"
+
+    // Find the last line of the capture's Session-specific guidance
+    // block — everything up to and including it must still appear.
+    let anchor = " - When the user types `/<skill-name>`, invoke it via Skill.";
+    let idx = captured
+        .find(anchor)
+        .expect("capture has the skill-name guidance bullet");
+    let captured_prefix = &captured[..idx + anchor.len()];
+    let captured_prefix = captured_prefix
+        .lines()
+        .next_back()
+        .map(|_| captured_prefix)
+        .unwrap();
+    assert!(
+        harness::SYSTEM_PROMPT.contains(captured_prefix),
+        "system-prompt.md must preserve capture content up to the skill-name bullet"
+    );
+    assert!(
+        harness::SYSTEM_PROMPT
+            .contains("subagent_type=\"verification\""),
+        "system-prompt.md must include the verification-contract bullet"
     );
 }
 
@@ -52,21 +75,66 @@ fn system_preamble_matches_capture() {
 }
 
 #[test]
-fn reminder_deferred_tools_matches_capture() {
+fn reminder_deferred_tools_is_capture_minus_gdrive() {
+    // V2 drift (2026-04-20, user-authored): GDrive auth tools removed
+    // from the deferred-tools reminder — they are not wired in
+    // otherside. All other entries must remain.
     let body = capture_body();
     let captured = body["messages"][0]["content"][0]["text"]
         .as_str()
         .expect("content[0].text is a string");
-    assert_eq!(harness::REMINDER_DEFERRED_TOOLS, captured);
+    for kept in &[
+        "AskUserQuestion",
+        "TaskCreate",
+        "TaskList",
+        "WebFetch",
+        "WebSearch",
+    ] {
+        assert!(
+            harness::REMINDER_DEFERRED_TOOLS.contains(kept),
+            "deferred-tools reminder lost the `{kept}` entry"
+        );
+        assert!(captured.contains(kept), "capture sanity: lost `{kept}`");
+    }
+    for removed in &[
+        "mcp__claude_ai_Google_Drive__authenticate",
+        "mcp__claude_ai_Google_Drive__complete_authentication",
+    ] {
+        assert!(
+            !harness::REMINDER_DEFERRED_TOOLS.contains(removed),
+            "deferred-tools reminder must NOT advertise removed `{removed}`"
+        );
+    }
 }
 
 #[test]
-fn reminder_skills_matches_capture() {
+fn reminder_skills_is_capture_minus_removed() {
+    // V2 drift (2026-04-20, user-authored): removed skills without
+    // otherside equivalents (update-config, keybindings-help, simplify,
+    // fewer-permission-prompts, claude-api). Kept skills must remain.
     let body = capture_body();
     let captured = body["messages"][0]["content"][1]["text"]
         .as_str()
         .expect("content[1].text is a string");
-    assert_eq!(harness::REMINDER_SKILLS, captured);
+    for kept in &["loop:", "init:", "review:", "security-review:"] {
+        assert!(
+            harness::REMINDER_SKILLS.contains(kept),
+            "skills reminder lost the `{kept}` entry"
+        );
+        assert!(captured.contains(kept), "capture sanity: lost `{kept}`");
+    }
+    for removed in &[
+        "update-config:",
+        "keybindings-help:",
+        "simplify:",
+        "fewer-permission-prompts:",
+        "claude-api:",
+    ] {
+        assert!(
+            !harness::REMINDER_SKILLS.contains(removed),
+            "skills reminder must NOT advertise removed `{removed}`"
+        );
+    }
 }
 
 #[test]

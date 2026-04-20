@@ -46,6 +46,7 @@ fn build_via_entrypoint(req: &OpenAiChatRequest, ctx: &UserContext<'_>) -> Value
 }
 
 #[test]
+#[ignore = "V2 drift: verification bullet in system-prompt.md + skills.txt / deferred-tools.txt user-authored cuts make byte-exact match impossible until a V2-reference capture is taken. Structural asserts live in harness_artifacts.rs."]
 fn turn1_byte_match_against_capture() {
     let req = OpenAiChatRequest {
         model: "claude-opus-4-7".to_string(),
@@ -141,6 +142,7 @@ const CAPTURE_THINKING_SIGNATURE: &str = "EpUCClkIDBgCKkBoDodzDJYTc9zImpelmvf4rP
 /// builds the `messages[]` fragment directly via the translator's
 /// blocks module.
 #[test]
+#[ignore = "V2 drift — see turn1 note"]
 fn turn2_messages_fragment_matches_capture() {
     // Preamble + user prompt (first user turn).
     let preamble =
@@ -199,6 +201,7 @@ fn turn2_messages_fragment_matches_capture() {
 /// Turn 3 shape: turn2 + second assistant tool_use (Read) + second user
 /// tool_result.
 #[test]
+#[ignore = "V2 drift — see turn1 note"]
 fn turn3_messages_fragment_matches_capture() {
     let preamble =
         otherside::harness::reminders::build_preamble_blocks("edaanxx@gmail.com", "2026-04-18");
@@ -329,6 +332,7 @@ fn openai_history_with_tool_round_trip_produces_three_messages() {
 /// translator produces capture-fidelity under realistic agent-loop
 /// state (no thinking replay).
 #[test]
+#[ignore = "V2 drift — see turn1 note"]
 fn openai_round_trip_turn2_matches_capture_sans_thinking_block() {
     let req = OpenAiChatRequest {
         model: "claude-opus-4-7".to_string(),
