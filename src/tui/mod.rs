@@ -841,8 +841,12 @@ fn handle_menu_key(
         let _ = menu_state;
         if let Some(next) = next_effort {
             apply_effort_outcome(st, thinking, next, next);
+            // Rebuild anchored to the SESSION model so the ✔ checkmark
+            // stays on the committed row; restore cursor to where the
+            // user's arrows had parked it (cursor_model_id) so the
+            // effort change paints beside the row they were inspecting.
             let mut fresh =
-                menu::OverlayMenu::new_model_with_effort(&cursor_model_id, st.effort_label);
+                menu::OverlayMenu::new_model_with_effort(&st.model, st.effort_label);
             fresh.cursor = fresh
                 .options
                 .iter()

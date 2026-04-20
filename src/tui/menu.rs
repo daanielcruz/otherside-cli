@@ -107,6 +107,13 @@ pub struct OverlayMenu {
     /// footer (014 evidence: `/tmp/parity-20260420-tmux/04-model-panel/upstream-open.txt` line 36).
     /// `None` on every non-Model panel and when effort is unset.
     pub effort_indicator: Option<EffortIndicator>,
+    /// The `action_id` of the currently-active row — the one that
+    /// paints green + ✔ in the render. Single source of truth at
+    /// overlay construction time: caller passes `st.model` (or
+    /// `st.permission_mode`, etc.) so the checkmark can never drift
+    /// from session state. `None` on panels where "active" is not
+    /// applicable (e.g. `/help` info overlays).
+    pub active_action_id: Option<String>,
 }
 
 /// Snapshot of the effort level shown beneath the `/model` picker.
@@ -174,6 +181,7 @@ impl OverlayMenu {
             cursor,
             settings_header_focused,
             effort_indicator: None,
+            active_action_id: None,
         }
     }
 
@@ -206,6 +214,7 @@ impl OverlayMenu {
             cursor,
             settings_header_focused: Some(!matches!(default_tab, SettingsTab::Config)),
             effort_indicator: None,
+            active_action_id: None,
         }
     }
 
@@ -244,6 +253,7 @@ impl OverlayMenu {
             crate::config::settings::PermissionMode::Plan => 2,
             crate::config::settings::PermissionMode::Yolo => 3,
         };
+        let active_id = options[cursor].action_id.clone();
         Self {
             kind: PanelKind::Permissions,
             title: "Set permission mode".into(),
@@ -251,6 +261,7 @@ impl OverlayMenu {
             cursor,
             settings_header_focused: None,
             effort_indicator: None,
+            active_action_id: Some(active_id),
         }
     }
 
@@ -333,6 +344,10 @@ impl OverlayMenu {
             cursor,
             settings_header_focused: None,
             effort_indicator,
+            // Active row = the one matching the session's current model.
+            // Single source of truth: caller passes `st.model`, so the
+            // ✔/green checkmark cannot drift from statusline state.
+            active_action_id: Some(current.to_string()),
         }
     }
 
@@ -371,6 +386,9 @@ impl OverlayMenu {
             .map(str::to_lowercase)
             .and_then(|c| LEVELS.iter().position(|&l| l == c))
             .unwrap_or(2);
+        let active_id = current
+            .map(str::to_lowercase)
+            .filter(|c| LEVELS.iter().any(|l| *l == c.as_str()));
         Self {
             kind: PanelKind::Effort,
             title: "Set effort level".into(),
@@ -378,6 +396,7 @@ impl OverlayMenu {
             cursor,
             settings_header_focused: None,
             effort_indicator: None,
+            active_action_id: active_id,
         }
     }
 
@@ -964,19 +983,18 @@ fn draw_model_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
     )));
     lines.push(Line::raw(""));
 
-    // Rows — single-line per option, numbered, with ✔ on the default.
-    // Default row is determined by the cursor position matching the
-    // `action_id` equal to `ProviderId::ClaudeCode.default_model()`.
+    // Rows — single-line per option, numbered, with ✔ on the row whose
+    // `action_id` matches the overlay's `active_action_id` (the
+    // session's live model). Cursor moves independently of the
+    // checkmark so arrow keys preview other rows without lying about
+    // what's active.
+    let active_id = menu.active_action_id.as_deref().unwrap_or("");
     for (i, opt) in menu.options.iter().enumerate() {
         let is_cursor = i == menu.cursor;
-        // `1. Default (recommended) ✔` carries the checkmark because
-        // upstream flags the currently-active model row. The cursor
-        // preselects that row so is_cursor + is_default coincide
-        // initially; treat "default model" as index 0.
-        let is_default = i == 0;
+        let is_active = opt.action_id == active_id;
         let prefix = if is_cursor { "  ❯ " } else { "    " };
         let num = format!("{}. ", i + 1);
-        let check = if is_default { " ✔" } else { "" };
+        let check = if is_active { " ✔" } else { "" };
         // Compose the label segment and pad to fixed column so
         // descriptions align across rows. Column count is in chars.
         let label_segment = format!("{num}{}{check}", opt.label);
@@ -994,7 +1012,7 @@ fn draw_model_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
         };
         // Active (checked) model row paints SUCCESS green so the user
         // can scan at a glance which model the session is using.
-        let label_style = if is_default {
+        let label_style = if is_active {
             let mut s = Style::default().fg(theme::SUCCESS);
             if is_cursor {
                 s = s.add_modifier(Modifier::BOLD);
