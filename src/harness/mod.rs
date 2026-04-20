@@ -88,11 +88,7 @@
 //! that is the function of this module. Identifiers follow R-11
 //! (describe function, no upstream-product echoes in names).
 
-pub mod assembly;
-pub mod envelope;
 pub mod reminders;
-pub mod system;
-pub mod tools;
 
 /// Billing header emitted as system[0]. Short (~80 bytes).
 pub const SYSTEM_BILLING_HEADER: &str =

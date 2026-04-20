@@ -2,7 +2,7 @@
 //!
 //! - **Wire catalog** (`tool_schemas`): the 9 tools advertised on the
 //!   outbound `tools[]` body. Byte-locked to capture via
-//!   `harness::tools::build_tools_array()` → `fingerprint_corpus/harness/
+//!   `crate::translator::anthropic::tools::build_tools_array()` → `fingerprint_corpus/harness/
 //!   tools/<Name>.json`. Only `openai_tools()` reads this surface so the
 //!   byte-match chain (`tests/harness_artifacts.rs`) stays frozen.
 //! - **Deferred catalog** (`deferred_schemas`): tools the model loads on
@@ -27,7 +27,6 @@ use std::sync::OnceLock;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::harness;
 use crate::inference::{OpenAiFunctionDef, OpenAiToolDef};
 
 /// Loaded tool schema. Deserialized from a captured `Value`.
@@ -39,7 +38,7 @@ pub struct ToolSchema {
 }
 
 fn load_all() -> Vec<ToolSchema> {
-    harness::tools::build_tools_array()
+    crate::translator::anthropic::tools::build_tools_array()
         .into_iter()
         .map(|v| {
             serde_json::from_value(v).expect("harness tool Value deserializes into ToolSchema")

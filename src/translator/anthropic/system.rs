@@ -20,7 +20,7 @@
 
 use serde_json::{json, Value};
 
-use super::{SYSTEM_AGENT_PREAMBLE, SYSTEM_BILLING_HEADER, SYSTEM_OPENER, SYSTEM_PROMPT};
+use crate::harness::{SYSTEM_AGENT_PREAMBLE, SYSTEM_BILLING_HEADER, SYSTEM_OPENER, SYSTEM_PROMPT};
 
 /// Upstream attaches this cache_control marker only to system[2]
 /// (the agent preamble). Hardcoded here — it's the single configuration

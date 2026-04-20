@@ -12,7 +12,7 @@
 
 use serde_json::Value;
 
-use super::{
+use crate::harness::{
     TOOL_AGENT_JSON, TOOL_BASH_JSON, TOOL_EDIT_JSON, TOOL_GLOB_JSON, TOOL_GREP_JSON,
     TOOL_READ_JSON, TOOL_SKILL_JSON, TOOL_TOOL_SEARCH_JSON, TOOL_WRITE_JSON,
 };

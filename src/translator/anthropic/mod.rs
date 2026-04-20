@@ -9,9 +9,12 @@
 //! - `message_builder` — two-stage normalize + cache-breakpoint pass.
 
 pub mod blocks;
+pub mod envelope;
 pub mod message_builder;
 pub mod request;
 pub mod response;
+pub mod system;
+pub mod tools;
 
 // Re-export the surface previous call sites imported from the old
 // `openai_to_anthropic` module so the migration is one-line in each
