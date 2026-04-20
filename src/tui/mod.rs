@@ -260,6 +260,19 @@ async fn event_loop(
         }
     }
     st.settings = settings;
+    // Seed default_provider in settings when null so the file reflects
+    // the actual provider the session is using. Future boots see the
+    // stamped value and the Provider switcher row renders the right
+    // starting point.
+    if st.settings.default_provider.is_none() {
+        st.settings.default_provider = Some(provider_id.to_string());
+    }
+    if st.settings.default_model.is_none() {
+        st.settings.default_model = Some(st.model.clone());
+    }
+    if let Err(e) = persist_settings(&st) {
+        tracing::warn!(?e, "initial settings write failed");
+    }
     // Thread the session's thinking level into the progress-line
     // `thinking with <level> effort` chip. None when no thinking
     // config means the chip is suppressed.
@@ -287,7 +300,7 @@ async fn event_loop(
     // Initial paint so the box appears immediately.
     st.prune_feedback();
     terminal
-        .draw(|f| render::render(f, &st, &base_model, &provider_id, spinner_tick))
+        .draw(|f| render::render(f, &st, &st.model, &provider_id, spinner_tick))
         .map_err(|e| Error::Other(format!("tui draw: {e}")))?;
 
     loop {
@@ -443,7 +456,7 @@ async fn event_loop(
 
         st.prune_feedback();
         terminal
-            .draw(|f| render::render(f, &st, &base_model, &provider_id, spinner_tick))
+            .draw(|f| render::render(f, &st, &st.model, &provider_id, spinner_tick))
             .map_err(|e| Error::Other(format!("tui draw: {e}")))?;
     }
 
