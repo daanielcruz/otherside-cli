@@ -50,7 +50,7 @@ use serde_json::{json, Value};
 
 use crate::subagents::{registry, AgentInvocation, DepthGuard, RunnerError, SubagentRunner};
 
-use super::ToolError;
+use crate::tools::ToolError;
 
 /// Dispatch an `Agent` tool call. Sync because the harness-wide
 /// [`tools::dispatch`] signature is sync; the installed runner is
@@ -183,7 +183,7 @@ impl SubagentToolGate {
                 self.definition.name, tool_name
             )));
         }
-        super::dispatch(tool_name, args)
+        crate::tools::dispatch(tool_name, args)
     }
 }
 

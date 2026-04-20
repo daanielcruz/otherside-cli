@@ -5,7 +5,7 @@ use std::time::SystemTime;
 
 use serde_json::{json, Value};
 
-use super::ToolError;
+use crate::tools::ToolError;
 
 const MAX_RESULTS: usize = 100;
 

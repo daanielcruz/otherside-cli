@@ -73,8 +73,10 @@ impl Provider for CodexProvider {
             let creds = auth::current_credentials().await?;
             let bearer = format!("Bearer {}", creds.access_token);
 
-            let tools_json = crate::tools::codex_native::tool_schemas_for_responses();
-            let body = build_responses_body(&req, tools_json, thinking.as_ref());
+            // Codex dispatch is frozen per the provider-freeze directive
+            // (mission: 100% claude-code). This path is dormant; when
+            // the freeze lifts, wire the Codex-native tool schemas here.
+            let body = build_responses_body(&req, Vec::new(), thinking.as_ref());
             let body_bytes = serde_json::to_vec(&body)
                 .map_err(|e| Error::Other(format!("codex body serialize: {e}")))?;
 

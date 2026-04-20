@@ -13,7 +13,8 @@
 
 use serde_json::{json, Value};
 
-use super::{schemas, ToolError};
+use crate::tools::schemas;
+use crate::tools::ToolError;
 
 pub const DEFAULT_MAX_RESULTS: usize = 5;
 

@@ -12,7 +12,7 @@ use std::path::PathBuf;
 
 use serde_json::{json, Value};
 
-use super::ToolError;
+use crate::tools::ToolError;
 
 /// Resolve `otherside-cli/skills/<name>/SKILL.md` relative to the
 /// crate root. Cargo tests and the `otherside` binary both run with

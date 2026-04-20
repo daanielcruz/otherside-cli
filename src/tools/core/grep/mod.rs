@@ -6,7 +6,7 @@ use std::process::Command;
 
 use serde_json::{json, Value};
 
-use super::ToolError;
+use crate::tools::ToolError;
 
 const DEFAULT_HEAD_LIMIT: usize = 250;
 

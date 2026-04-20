@@ -9,7 +9,8 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 
-use super::{read_set, ToolError};
+use crate::tools::read_set;
+use crate::tools::ToolError;
 
 /// Execute an Edit tool call.
 ///

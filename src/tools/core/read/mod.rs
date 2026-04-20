@@ -9,8 +9,10 @@ use std::path::Path;
 
 use serde_json::{json, Value};
 
-use super::read_set;
-use super::ToolError;
+pub mod set;
+
+use crate::tools::ToolError;
+use set as read_set;
 
 const DEFAULT_LIMIT: usize = 2000;
 const MAX_LINE_CHARS: usize = 2000;

@@ -43,7 +43,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
-use super::ToolError;
+use crate::tools::ToolError;
 
 /// Request timeout for the Anthropic server-tool call. Web searches
 /// fan out into several sub-requests on Anthropic's side so this runs
@@ -731,7 +731,7 @@ pub fn web_search(args: &Value) -> Result<Value, ToolError> {
 /// the behavior guarantees without dragging in upstream prose that
 /// mentions product names (R-103).
 pub const TOOL_WEB_SEARCH_JSON: &str =
-    include_str!("../../harness_corpus/tools/WebSearch.json");
+    include_str!("../../../../harness_corpus/tools/WebSearch.json");
 
 #[cfg(test)]
 mod tests {

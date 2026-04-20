@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 
-use super::ToolError;
+use crate::tools::ToolError;
 
 /// Execute a Write tool call.
 ///

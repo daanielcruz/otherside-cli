@@ -36,7 +36,7 @@ use std::sync::{Mutex, OnceLock};
 
 use serde_json::{json, Map, Value};
 
-use super::ToolError;
+use crate::tools::ToolError;
 
 /// Status of a task in the registry. Stable lowercase-snake wire form
 /// via [`TaskStatus::as_str`] matches upstream's Zod `TaskStatusSchema`.
@@ -365,21 +365,21 @@ pub fn clear_registry() {
 /// `TaskCreate` schema. Mirrors upstream's Zod strict object with
 /// `subject` + `description` required, `activeForm` optional.
 pub const TOOL_TASK_CREATE_JSON: &str =
-    include_str!("../../harness_corpus/tools/TaskCreate.json");
+    include_str!("../../../../harness_corpus/tools/TaskCreate.json");
 
 /// `TaskList` schema. Zero required fields — enumerate the whole list.
 pub const TOOL_TASK_LIST_JSON: &str =
-    include_str!("../../harness_corpus/tools/TaskList.json");
+    include_str!("../../../../harness_corpus/tools/TaskList.json");
 
 /// `TaskGet` schema. Single required field.
 pub const TOOL_TASK_GET_JSON: &str =
-    include_str!("../../harness_corpus/tools/TaskGet.json");
+    include_str!("../../../../harness_corpus/tools/TaskGet.json");
 
 /// `TaskUpdate` schema. Only `taskId` required; every mutation field is
 /// optional and fields absent from the call do not change state. The
 /// pseudo-status `"deleted"` removes the entry from the registry.
 pub const TOOL_TASK_UPDATE_JSON: &str =
-    include_str!("../../harness_corpus/tools/TaskUpdate.json");
+    include_str!("../../../../harness_corpus/tools/TaskUpdate.json");
 
 #[cfg(test)]
 mod tests {

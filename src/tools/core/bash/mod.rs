@@ -26,7 +26,7 @@ use std::sync::OnceLock;
 
 use serde_json::{json, Value};
 
-use super::ToolError;
+use crate::tools::ToolError;
 
 pub mod matcher;
 pub mod registry;

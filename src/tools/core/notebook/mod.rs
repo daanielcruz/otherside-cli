@@ -33,7 +33,7 @@ use std::path::Path;
 
 use serde_json::{json, Value};
 
-use super::ToolError;
+use crate::tools::ToolError;
 
 /// Edit a single cell's source inside a `.ipynb` file. See module
 /// docstring for the supported subset in this wave.
@@ -180,7 +180,7 @@ fn serialize_ipynb(v: &Value) -> Result<String, ToolError> {
 /// at `tools/NotebookEditTool/NotebookEditTool.ts:39-66`. 018 implements
 /// `replace` only.
 pub const TOOL_NOTEBOOK_EDIT_JSON: &str =
-    include_str!("../../harness_corpus/tools/NotebookEdit.json");
+    include_str!("../../../../harness_corpus/tools/NotebookEdit.json");
 
 #[cfg(test)]
 mod tests {

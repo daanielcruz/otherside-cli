@@ -40,7 +40,7 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-use super::ToolError;
+use crate::tools::ToolError;
 
 /// Cap on response body bytes. Oversize bodies are truncated at this
 /// offset and flagged with `truncated: true` in the output JSON.
@@ -198,7 +198,7 @@ fn is_rejected_content_type(ct: &str) -> bool {
 /// deferred-tool surface stays compact; behavior guarantees are
 /// enforced by this module, not carried in description prose.
 pub const TOOL_WEB_FETCH_JSON: &str =
-    include_str!("../../harness_corpus/tools/WebFetch.json");
+    include_str!("../../../../harness_corpus/tools/WebFetch.json");
 
 #[cfg(test)]
 mod tests {
