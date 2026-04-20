@@ -458,37 +458,37 @@ pub fn clear_wakeup_registry() {
 // ---------------------------------------------------------------------
 
 pub const TOOL_ENTER_PLAN_MODE_JSON: &str =
-    include_str!("../../../../harness_corpus/tools/EnterPlanMode.json");
+    include_str!("../../../harness_corpus/tools/EnterPlanMode.json");
 
 pub const TOOL_EXIT_PLAN_MODE_JSON: &str =
-    include_str!("../../../../harness_corpus/tools/ExitPlanMode.json");
+    include_str!("../../../harness_corpus/tools/ExitPlanMode.json");
 
 pub const TOOL_ENTER_WORKTREE_JSON: &str =
-    include_str!("../../../../harness_corpus/tools/EnterWorktree.json");
+    include_str!("../../../harness_corpus/tools/EnterWorktree.json");
 
 pub const TOOL_EXIT_WORKTREE_JSON: &str =
-    include_str!("../../../../harness_corpus/tools/ExitWorktree.json");
+    include_str!("../../../harness_corpus/tools/ExitWorktree.json");
 
 pub const TOOL_TASK_OUTPUT_JSON: &str =
-    include_str!("../../../../harness_corpus/tools/TaskOutput.json");
+    include_str!("../../../harness_corpus/tools/TaskOutput.json");
 
 pub const TOOL_TASK_STOP_JSON: &str =
-    include_str!("../../../../harness_corpus/tools/TaskStop.json");
+    include_str!("../../../harness_corpus/tools/TaskStop.json");
 
 pub const TOOL_CRON_CREATE_JSON: &str =
-    include_str!("../../../../harness_corpus/tools/CronCreate.json");
+    include_str!("../../../harness_corpus/tools/CronCreate.json");
 
 pub const TOOL_CRON_DELETE_JSON: &str =
-    include_str!("../../../../harness_corpus/tools/CronDelete.json");
+    include_str!("../../../harness_corpus/tools/CronDelete.json");
 
 pub const TOOL_CRON_LIST_JSON: &str =
-    include_str!("../../../../harness_corpus/tools/CronList.json");
+    include_str!("../../../harness_corpus/tools/CronList.json");
 
 pub const TOOL_ASK_USER_QUESTION_JSON: &str =
-    include_str!("../../../../harness_corpus/tools/AskUserQuestion.json");
+    include_str!("../../../harness_corpus/tools/AskUserQuestion.json");
 
 pub const TOOL_SCHEDULE_WAKEUP_JSON: &str =
-    include_str!("../../../../harness_corpus/tools/ScheduleWakeup.json");
+    include_str!("../../../harness_corpus/tools/ScheduleWakeup.json");
 
 #[cfg(test)]
 mod tests {

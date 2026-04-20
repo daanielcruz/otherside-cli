@@ -1056,11 +1056,14 @@ impl ConversationState {
     /// `openspec/changes/016-permission-cycle-4-mode/` + R-104).
     pub fn cycle_permission_mode(&mut self) {
         use crate::config::PermissionMode as P;
+        // Visible cycle stops: AcceptEdits → Plan → Yolo → AcceptEdits.
+        // `Default` is the hidden `ask` mode — reachable via settings /
+        // programmatic flow but never by cycling. Session-scoped, not
+        // persisted.
         self.permission_mode = match self.permission_mode {
-            P::Default => P::AcceptEdits,
             P::AcceptEdits => P::Plan,
             P::Plan => P::Yolo,
-            P::Yolo => P::Default,
+            P::Yolo | P::Default => P::AcceptEdits,
         };
     }
 
@@ -1734,26 +1737,24 @@ mod tests {
     // ----- Permission mode cycle (016) -----
 
     #[test]
-    fn cycle_permission_mode_four_stops() {
-        // Primary conformance anchor for R-104 — four Shift+Tab presses
-        // from Default must tour AcceptEdits → Plan → Yolo and return
-        // to Default on the 4th press. Matches upstream external-build
-        // cycle at `getNextPermissionMode.ts:27-59`.
+    fn cycle_permission_mode_three_visible_stops() {
+        // Visible Shift+Tab cycle has 3 stops: AcceptEdits → Plan →
+        // Yolo → AcceptEdits. `Default` (ask-before-edit) is hidden
+        // from the TUI cycle — reachable via Settings / programmatic
+        // path only.
         use crate::config::PermissionMode as P;
         let mut st = ConversationState::new();
-        assert_eq!(st.permission_mode, P::Default);
-        st.cycle_permission_mode();
-        assert_eq!(st.permission_mode, P::AcceptEdits);
+        st.permission_mode = P::AcceptEdits;
         st.cycle_permission_mode();
         assert_eq!(st.permission_mode, P::Plan);
         st.cycle_permission_mode();
         assert_eq!(st.permission_mode, P::Yolo);
         st.cycle_permission_mode();
-        assert_eq!(st.permission_mode, P::Default);
+        assert_eq!(st.permission_mode, P::AcceptEdits);
     }
 
     #[test]
-    fn cycle_permission_mode_from_default_goes_to_accept_edits() {
+    fn cycle_permission_mode_from_hidden_default_lands_on_accept() {
         use crate::config::PermissionMode as P;
         let mut st = ConversationState::new();
         st.permission_mode = P::Default;
@@ -1780,12 +1781,12 @@ mod tests {
     }
 
     #[test]
-    fn cycle_permission_mode_from_yolo_returns_to_default() {
+    fn cycle_permission_mode_from_yolo_returns_to_accept_edits() {
         use crate::config::PermissionMode as P;
         let mut st = ConversationState::new();
         st.permission_mode = P::Yolo;
         st.cycle_permission_mode();
-        assert_eq!(st.permission_mode, P::Default);
+        assert_eq!(st.permission_mode, P::AcceptEdits);
     }
 
     #[test]

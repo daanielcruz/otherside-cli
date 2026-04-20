@@ -180,7 +180,7 @@ fn serialize_ipynb(v: &Value) -> Result<String, ToolError> {
 /// at `tools/NotebookEditTool/NotebookEditTool.ts:39-66`. 018 implements
 /// `replace` only.
 pub const TOOL_NOTEBOOK_EDIT_JSON: &str =
-    include_str!("../../../../harness_corpus/tools/NotebookEdit.json");
+    include_str!("../../../harness_corpus/tools/NotebookEdit.json");
 
 #[cfg(test)]
 mod tests {

@@ -427,10 +427,16 @@ async fn cmd_tui(cli: &Cli) -> Result<()> {
         );
     }
 
+    // Session-start mode:
+    // - `--yolo` flag → Yolo
+    // - otherwise → AcceptEdits (the visible "default" in the cycle).
+    //   The `Default` (ask-before-edit) mode is hidden from the TUI
+    //   cycle and never becomes the session-start value. Permission
+    //   mode is session-scoped — NOT loaded from settings.json.
     let permission_mode = if cli.yolo {
         config::PermissionMode::Yolo
     } else {
-        settings.permission_mode.unwrap_or_default()
+        config::PermissionMode::AcceptEdits
     };
     tui::run(registry, raw_model, provider_id, permission_mode, settings).await
 }

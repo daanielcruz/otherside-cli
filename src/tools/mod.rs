@@ -27,20 +27,29 @@
 //! background shell control now rides `Bash` via the captured
 //! `run_in_background` property).
 
-pub mod api;
-pub mod core;
+// One folder per tool at the root — no core/api split. WebSearch
+// carries the per-provider backend pattern because its behavior
+// changes with the active provider (claude-code → Google CSE, codex →
+// native OpenAI web_search, gemini → grounded search); every other
+// tool is provider-agnostic with a single implementation.
+pub mod agent;
+pub mod bash;
+pub mod deferred;
+pub mod edit;
+pub mod glob;
+pub mod grep;
+pub mod notebook;
+pub mod read;
 pub mod schemas;
+pub mod skill;
+pub mod task;
+pub mod tool_search;
+pub mod web_fetch;
+pub mod web_search;
+pub mod write;
 
 pub use schemas::{openai_tools, schema_for, tool_schemas, ToolSchema};
-
-// Flat re-exports so callers keep their existing paths
-// (`crate::tools::read::...`, `crate::tools::bash::...`, etc.). The
-// core/api split is a layering concern, not a naming one.
-pub use core::{
-    agent, bash, deferred, edit, glob, grep, notebook, read, skill, task, tool_search, write,
-};
-pub use core::read::set as read_set;
-pub use api::{web_fetch, web_search};
+pub use read::set as read_set;
 
 use serde_json::Value;
 
@@ -129,15 +138,16 @@ pub fn dispatch(tool_name: &str, args: &Value) -> Result<Value, ToolError> {
         "TaskGet" => task::task_get(args),
         "TaskUpdate" => task::task_update(args),
         "NotebookEdit" => notebook::notebook_edit(args),
-        // External-API tools — schema is provider-agnostic (lives once
-        // under harness_corpus/tools/); the backend dispatches per
-        // provider at call time. Today only claude-code is wired; the
-        // others surface an Unsupported.
-        //
-        // TODO: thread the session's ProviderId through `dispatch` so
-        // the router reads it from state instead of hardcoding.
-        "WebFetch" => web_fetch::dispatch(args, crate::config::providers::ProviderId::ClaudeCode),
-        "WebSearch" => web_search::dispatch(args, crate::config::providers::ProviderId::ClaudeCode),
+        // WebFetch is a plain HTTP client wrapper (reqwest GET +
+        // HTML→markdown) — same impl across providers.
+        "WebFetch" => web_fetch::web_fetch(args),
+        // WebSearch maps to provider-native search when the active
+        // provider exposes one; today the claude-code backend does
+        // Google CSE locally. TODO: thread session.provider_id through
+        // `dispatch` so the router doesn't hardcode ClaudeCode.
+        "WebSearch" => {
+            web_search::dispatch(args, crate::config::providers::ProviderId::ClaudeCode)
+        }
         // Wave 3 deferred tools (2026-04-19): plan-mode toggle,
         // worktree cwd stack, task lifecycle extras, cron + wakeup.
         "EnterPlanMode" => deferred::enter_plan_mode(args),
