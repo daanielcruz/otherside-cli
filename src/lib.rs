@@ -42,6 +42,7 @@ pub mod fingerprint;
 pub mod harness;
 pub mod hooks;
 pub mod inference;
+pub mod models;
 pub mod permissions;
 pub mod provider;
 pub mod sessions;

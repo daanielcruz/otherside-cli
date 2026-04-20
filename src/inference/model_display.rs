@@ -13,23 +13,12 @@
 //! This helper feeds `statusline::types::ModelInput.display_name` at
 //! construction time so zero-config users see a humanized name.
 
-/// Map a canonical model id to its humanized display base (no
-/// context-window suffix). Returns `None` for unknown ids so the caller
-/// can fall back to the canonical verbatim — preferable to rendering a
-/// wrong-but-plausible name.
+/// Map a canonical model id to its humanized display base. Delegates
+/// to `crate::models::catalog::display_name_for` — the registry owns
+/// the table. Returns `None` for unknown ids so the caller falls back
+/// to the canonical verbatim.
 pub fn public_model_display_name(canonical: &str) -> Option<&'static str> {
-    match canonical {
-        "claude-opus-4-7" => Some("Opus 4.7"),
-        "claude-opus-4-5" => Some("Opus 4.5"),
-        "claude-opus-4-1" => Some("Opus 4.1"),
-        "claude-opus-4" => Some("Opus 4"),
-        "claude-sonnet-4-6" => Some("Sonnet 4.6"),
-        "claude-sonnet-4-5" => Some("Sonnet 4.5"),
-        "claude-sonnet-4" => Some("Sonnet 4"),
-        "claude-haiku-4-5" => Some("Haiku 4.5"),
-        "claude-haiku-4" => Some("Haiku 4"),
-        _ => None,
-    }
+    crate::models::catalog::display_name_for(canonical)
 }
 
 /// Compose the full display name including the optional `(1M context)`

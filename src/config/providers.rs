@@ -50,18 +50,11 @@ impl ProviderId {
         }
     }
 
-    /// Canonical default model alias for this provider.
-    ///
-    /// Returned when the user switches Provider via the Config tab;
-    /// `state.model` auto-updates to this value (the user can then
-    /// override independently via the Model row).
+    /// Canonical default model alias for this provider. Delegates to
+    /// `crate::models::defaults::default_model_for` — the catalog is
+    /// the single source of truth for model policy.
     pub fn default_model(self) -> &'static str {
-        match self {
-            ProviderId::ClaudeCode => "claude-opus-4-7[1m]",
-            ProviderId::Codex => "gpt-5.4",
-            ProviderId::GeminiCli => "gemini-3.1-pro-preview",
-            ProviderId::OpenAiCustom => "",
-        }
+        crate::models::defaults::default_model_for(self)
     }
 
     /// Parse from a slug. Matches the exact strings emitted by

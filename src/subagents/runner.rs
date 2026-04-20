@@ -77,89 +77,9 @@ impl ToolDispatcher for GatedToolDispatcher {
 /// `budget_exceeded` status rather than a silent truncation.
 pub const SUBAGENT_MAX_TURNS: u32 = MAX_AUTO_TURNS;
 
-/// Resolve upstream-convention short aliases (`opus`, `sonnet`,
-/// `haiku`, and their `[1m]` variants) to concrete model ids the
-/// Anthropic `/v1/messages` API accepts. Anything else passes through
-/// verbatim so custom or provider-specific ids still work.
-///
-/// Carries the `[1m]` suffix across the alias boundary per upstream
-/// `utils/model/model.ts::parseUserSpecifiedModel`. For `opus` we
-/// default to the 1M variant because the target deployment is a
-/// Max subscriber with `isOpus1mMergeEnabled` on — the non-1M opus
-/// is unreachable from an alias string. Explicit raw ids
-/// (`claude-opus-4-7` without `[1m]`) still pass through unchanged.
-///
-/// TODO(multi-provider unfreeze): mapping lives here for the
-/// claude-code provider only. When codex / gemini-cli unfreeze, the
-/// resolver becomes provider-scoped.
-fn resolve_model_alias(raw: &str) -> String {
-    let lower = raw.trim().to_ascii_lowercase();
-    let (base, has_1m) = if let Some(stripped) = lower.strip_suffix("[1m]") {
-        (stripped.trim().to_string(), true)
-    } else {
-        (lower.clone(), false)
-    };
-
-    let resolved = match base.as_str() {
-        "opus" => Some(("claude-opus-4-7", true)),
-        "sonnet" => Some(("claude-sonnet-4-6", has_1m)),
-        "haiku" => Some(("claude-haiku-4-5", has_1m)),
-        _ => None,
-    };
-
-    match resolved {
-        Some((id, carry_1m)) if carry_1m => format!("{id}[1m]"),
-        Some((id, _)) => id.to_string(),
-        None => raw.to_string(),
-    }
-}
-
-#[cfg(test)]
-mod alias_tests {
-    use super::resolve_model_alias;
-
-    #[test]
-    fn bare_opus_defaults_to_1m() {
-        assert_eq!(resolve_model_alias("opus"), "claude-opus-4-7[1m]");
-    }
-
-    #[test]
-    fn explicit_opus_1m_passes_suffix() {
-        assert_eq!(resolve_model_alias("opus[1m]"), "claude-opus-4-7[1m]");
-    }
-
-    #[test]
-    fn sonnet_bare_has_no_1m() {
-        assert_eq!(resolve_model_alias("sonnet"), "claude-sonnet-4-6");
-    }
-
-    #[test]
-    fn sonnet_1m_carries_suffix() {
-        assert_eq!(resolve_model_alias("sonnet[1m]"), "claude-sonnet-4-6[1m]");
-    }
-
-    #[test]
-    fn haiku_bare_has_no_1m() {
-        assert_eq!(resolve_model_alias("haiku"), "claude-haiku-4-5");
-    }
-
-    #[test]
-    fn raw_id_passes_through_unchanged() {
-        assert_eq!(
-            resolve_model_alias("claude-opus-4-7"),
-            "claude-opus-4-7"
-        );
-        assert_eq!(
-            resolve_model_alias("claude-opus-4-7[1m]"),
-            "claude-opus-4-7[1m]"
-        );
-    }
-
-    #[test]
-    fn unknown_alias_passes_through() {
-        assert_eq!(resolve_model_alias("gpt-5.4"), "gpt-5.4");
-    }
-}
+// Alias resolution lives in `crate::models::aliases::resolve` — the
+// single source of truth. This module's runner delegates there. Tests
+// live under `src/models/aliases.rs`.
 
 /// Real subagent runner. Holds the provider + the fallback model id.
 pub struct InnerLoopRunner {
@@ -183,12 +103,11 @@ impl InnerLoopRunner {
         invocation: &AgentInvocation,
     ) -> Result<Value, RunnerError> {
         let started = std::time::Instant::now();
-        let raw_model = invocation
-            .model
-            .clone()
-            .or_else(|| definition.model.clone())
-            .unwrap_or_else(|| self.default_model.clone());
-        let model = resolve_model_alias(&raw_model);
+        let model = crate::models::agents::resolve_agent_model(
+            invocation.model.as_deref(),
+            definition.model.as_deref(),
+            &self.default_model,
+        );
 
         let history: Vec<OpenAiChatMessage> = vec![
             OpenAiChatMessage {
