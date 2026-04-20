@@ -569,6 +569,17 @@ fn handle_key(
         KeyCode::PageUp => st.scroll_up(10),
         KeyCode::PageDown => st.scroll_down(10),
 
+        // Shift+↑ / Shift+↓ — fine-grained scroll. Preserves Up/Down
+        // for history navigation while giving keyboard users a way
+        // to walk the transcript a line at a time without PageUp's
+        // 10-line jump.
+        KeyCode::Up if shift => st.scroll_up(1),
+        KeyCode::Down if shift => st.scroll_down(1),
+
+        // Ctrl+Home / Ctrl+End — jump to top / bottom of log.
+        KeyCode::Home if ctrl => st.scroll_up(10_000),
+        KeyCode::End if ctrl => st.scroll_to_bottom(),
+
         // Up / Down — navigate the autocomplete popup when it's open.
         // When the popup is closed, Up at an empty input restores the
         // most-recent queued message for editing (017 §4 — queue-tail

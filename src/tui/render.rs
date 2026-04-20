@@ -874,6 +874,14 @@ fn draw_info_row(
             msg.clone(),
             Style::default().fg(theme::MUTED),
         ))
+    } else if state.scroll_offset > 0 {
+        Line::from(Span::styled(
+            format!(
+                "scrolled {} · PgDn/Ctrl+End to return",
+                state.scroll_offset
+            ),
+            Style::default().fg(theme::MUTED),
+        ))
     } else {
         build_info_chip_line(state)
     };
