@@ -1,0 +1,22 @@
+{
+  "name": "CronCreate",
+  "description": "Register a recurring prompt that should fire on an interval. Returns an id usable with CronDelete. Intervals accept `Ns` (seconds), `Nm` (minutes, default), `Nh` (hours). Delivery of fired prompts is session-scoped; restarting otherside clears the registry.",
+  "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "prompt": {
+        "description": "The slash command or prompt text that should fire on each tick.",
+        "type": "string"
+      },
+      "interval": {
+        "description": "Interval between fires, e.g. `30s`, `5m`, `1h`. Bare numbers are interpreted as minutes. Defaults to `10m` when omitted.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "additionalProperties": false
+  }
+}

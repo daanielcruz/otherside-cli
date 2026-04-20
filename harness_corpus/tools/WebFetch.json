@@ -1,0 +1,23 @@
+{
+  "name": "WebFetch",
+  "description": "Fetch content from a URL and return it as markdown. HTML responses are converted to markdown; other text responses pass through. Responses larger than 1 MB are truncated. Binary content types (PDF, images, archives, octet-stream) are rejected. Follows up to 5 redirects. 30-second timeout. Read-only — does not modify files.",
+  "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "url": {
+        "description": "The URL to fetch content from. Must be a fully-formed http or https URL.",
+        "type": "string"
+      },
+      "prompt": {
+        "description": "What to extract or describe from the fetched content. The caller uses this to summarize the response; this tool returns the raw markdown and leaves summarization to the caller.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "url",
+      "prompt"
+    ],
+    "additionalProperties": false
+  }
+}

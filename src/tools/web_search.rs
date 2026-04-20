@@ -730,33 +730,8 @@ pub fn web_search(args: &Value) -> Result<Value, ToolError> {
 /// `tools/WebSearchTool/WebSearchTool.ts:25-37`. Description captures
 /// the behavior guarantees without dragging in upstream prose that
 /// mentions product names (R-103).
-pub const TOOL_WEB_SEARCH_JSON: &str = r#"{
-  "name": "WebSearch",
-  "description": "Search the web and return result links. Returns hits as {title, url} objects grouped by server-side search call. Supports optional allowed_domains or blocked_domains filters (not both in the same call). Read-only — does not modify files. Delegates to Anthropic's server-side web_search_20250305 tool; requires anthropic-oauth credentials. When no credentials are configured the tool returns a structured unavailable stub so the model can still plan.",
-  "input_schema": {
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "type": "object",
-    "properties": {
-      "query": {
-        "description": "The search query. Minimum 2 characters.",
-        "type": "string",
-        "minLength": 2
-      },
-      "allowed_domains": {
-        "description": "Only include search results from these domains.",
-        "type": "array",
-        "items": { "type": "string" }
-      },
-      "blocked_domains": {
-        "description": "Never include search results from these domains.",
-        "type": "array",
-        "items": { "type": "string" }
-      }
-    },
-    "required": ["query"],
-    "additionalProperties": false
-  }
-}"#;
+pub const TOOL_WEB_SEARCH_JSON: &str =
+    include_str!("../../harness_corpus/tools/WebSearch.json");
 
 #[cfg(test)]
 mod tests {

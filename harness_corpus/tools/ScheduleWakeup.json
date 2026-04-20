@@ -1,0 +1,26 @@
+{
+  "name": "ScheduleWakeup",
+  "description": "Register a one-shot wakeup — at `inMs` (or `in`, a duration string), surface the `message` inline in the transcript. Use to remind yourself of a pending step after a long-running tool.",
+  "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "message": {
+        "description": "Text that surfaces when the wakeup fires.",
+        "type": "string"
+      },
+      "inMs": {
+        "description": "Fire after N milliseconds from now (take either this OR `in`).",
+        "type": "integer"
+      },
+      "in": {
+        "description": "Duration string — e.g. `30s`, `5m`, `1h` (take either this OR `inMs`).",
+        "type": "string"
+      }
+    },
+    "required": [
+      "message"
+    ],
+    "additionalProperties": false
+  }
+}

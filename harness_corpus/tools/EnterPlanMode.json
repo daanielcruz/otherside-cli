@@ -1,0 +1,11 @@
+{
+  "name": "EnterPlanMode",
+  "description": "Engage plan mode — every subsequent mutating tool call (Edit, Write, Bash, NotebookEdit) is denied without prompting until ExitPlanMode fires. Use when the user asks to plan a change, review options before mutating, or keep exploration read-only.",
+  "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {},
+    "required": [],
+    "additionalProperties": false
+  }
+}

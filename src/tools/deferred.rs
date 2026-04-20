@@ -457,188 +457,38 @@ pub fn clear_wakeup_registry() {
 // Schemas.
 // ---------------------------------------------------------------------
 
-pub const TOOL_ENTER_PLAN_MODE_JSON: &str = r#"{
-  "name": "EnterPlanMode",
-  "description": "Engage plan mode — every subsequent mutating tool call (Edit, Write, Bash, NotebookEdit) is denied without prompting until ExitPlanMode fires. Use when the user asks to plan a change, review options before mutating, or keep exploration read-only.",
-  "input_schema": {
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "type": "object",
-    "properties": {},
-    "required": [],
-    "additionalProperties": false
-  }
-}"#;
+pub const TOOL_ENTER_PLAN_MODE_JSON: &str =
+    include_str!("../../harness_corpus/tools/EnterPlanMode.json");
 
-pub const TOOL_EXIT_PLAN_MODE_JSON: &str = r#"{
-  "name": "ExitPlanMode",
-  "description": "Leave plan mode — resume default permission behavior. Pair with EnterPlanMode.",
-  "input_schema": {
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "type": "object",
-    "properties": {},
-    "required": [],
-    "additionalProperties": false
-  }
-}"#;
+pub const TOOL_EXIT_PLAN_MODE_JSON: &str =
+    include_str!("../../harness_corpus/tools/ExitPlanMode.json");
 
-pub const TOOL_ENTER_WORKTREE_JSON: &str = r#"{
-  "name": "EnterWorktree",
-  "description": "Push a new current-working-directory onto the session worktree stack. Subsequent relative-path tool calls (Bash, Read, Write, Edit) resolve from the stack top. Pair with ExitWorktree to pop.",
-  "input_schema": {
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "type": "object",
-    "properties": {
-      "path": {
-        "description": "Absolute path to the directory to enter.",
-        "type": "string"
-      }
-    },
-    "required": ["path"],
-    "additionalProperties": false
-  }
-}"#;
+pub const TOOL_ENTER_WORKTREE_JSON: &str =
+    include_str!("../../harness_corpus/tools/EnterWorktree.json");
 
-pub const TOOL_EXIT_WORKTREE_JSON: &str = r#"{
-  "name": "ExitWorktree",
-  "description": "Pop the top-of-stack worktree entry. If the stack is empty, returns a no-op result.",
-  "input_schema": {
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "type": "object",
-    "properties": {},
-    "required": [],
-    "additionalProperties": false
-  }
-}"#;
+pub const TOOL_EXIT_WORKTREE_JSON: &str =
+    include_str!("../../harness_corpus/tools/ExitWorktree.json");
 
-pub const TOOL_TASK_OUTPUT_JSON: &str = r#"{
-  "name": "TaskOutput",
-  "description": "Fetch accumulated output for a task — combines subject, description, and any metadata fields named `output`, `logs`, or `stdout`. Returns `output: null` when the taskId is unknown.",
-  "input_schema": {
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "type": "object",
-    "properties": {
-      "taskId": {
-        "description": "The id of the task whose output should be fetched.",
-        "type": "string"
-      }
-    },
-    "required": ["taskId"],
-    "additionalProperties": false
-  }
-}"#;
+pub const TOOL_TASK_OUTPUT_JSON: &str =
+    include_str!("../../harness_corpus/tools/TaskOutput.json");
 
-pub const TOOL_TASK_STOP_JSON: &str = r#"{
-  "name": "TaskStop",
-  "description": "Cancel a running or pending task — sets its status to `cancelled`. Idempotent; stopping an unknown or already-cancelled task reports success with an empty statusChange.",
-  "input_schema": {
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "type": "object",
-    "properties": {
-      "taskId": {
-        "description": "The id of the task to cancel.",
-        "type": "string"
-      }
-    },
-    "required": ["taskId"],
-    "additionalProperties": false
-  }
-}"#;
+pub const TOOL_TASK_STOP_JSON: &str =
+    include_str!("../../harness_corpus/tools/TaskStop.json");
 
-pub const TOOL_CRON_CREATE_JSON: &str = r#"{
-  "name": "CronCreate",
-  "description": "Register a recurring prompt that should fire on an interval. Returns an id usable with CronDelete. Intervals accept `Ns` (seconds), `Nm` (minutes, default), `Nh` (hours). Delivery of fired prompts is session-scoped; restarting otherside clears the registry.",
-  "input_schema": {
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "type": "object",
-    "properties": {
-      "prompt": {
-        "description": "The slash command or prompt text that should fire on each tick.",
-        "type": "string"
-      },
-      "interval": {
-        "description": "Interval between fires, e.g. `30s`, `5m`, `1h`. Bare numbers are interpreted as minutes. Defaults to `10m` when omitted.",
-        "type": "string"
-      }
-    },
-    "required": ["prompt"],
-    "additionalProperties": false
-  }
-}"#;
+pub const TOOL_CRON_CREATE_JSON: &str =
+    include_str!("../../harness_corpus/tools/CronCreate.json");
 
-pub const TOOL_CRON_DELETE_JSON: &str = r#"{
-  "name": "CronDelete",
-  "description": "Remove a cron registration by id. Returns `deleted: true` on success, `false` when the id was not registered.",
-  "input_schema": {
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "type": "object",
-    "properties": {
-      "id": {
-        "description": "The cron id returned by CronCreate.",
-        "type": "string"
-      }
-    },
-    "required": ["id"],
-    "additionalProperties": false
-  }
-}"#;
+pub const TOOL_CRON_DELETE_JSON: &str =
+    include_str!("../../harness_corpus/tools/CronDelete.json");
 
-pub const TOOL_CRON_LIST_JSON: &str = r#"{
-  "name": "CronList",
-  "description": "Enumerate every registered cron entry — id, prompt, intervalMs, createdAt, lastFiredAt.",
-  "input_schema": {
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "type": "object",
-    "properties": {},
-    "required": [],
-    "additionalProperties": false
-  }
-}"#;
+pub const TOOL_CRON_LIST_JSON: &str =
+    include_str!("../../harness_corpus/tools/CronList.json");
 
-pub const TOOL_ASK_USER_QUESTION_JSON: &str = r#"{
-  "name": "AskUserQuestion",
-  "description": "Ask the user a clarifying question mid-turn. The TUI opens a text-input overlay; the answer comes back as this tool's result. Use when the next action depends on a piece of information only the user has (target file, environment, credentials pointer, etc.). Keep questions short and specific — one ask per invocation.",
-  "input_schema": {
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "type": "object",
-    "properties": {
-      "question": {
-        "description": "The question text shown to the user. Concise, imperative, one sentence where possible.",
-        "type": "string"
-      },
-      "hint": {
-        "description": "Optional secondary line shown dimmed below the question. Use for hints like accepted formats.",
-        "type": "string"
-      }
-    },
-    "required": ["question"],
-    "additionalProperties": false
-  }
-}"#;
+pub const TOOL_ASK_USER_QUESTION_JSON: &str =
+    include_str!("../../harness_corpus/tools/AskUserQuestion.json");
 
-pub const TOOL_SCHEDULE_WAKEUP_JSON: &str = r#"{
-  "name": "ScheduleWakeup",
-  "description": "Register a one-shot wakeup — at `inMs` (or `in`, a duration string), surface the `message` inline in the transcript. Use to remind yourself of a pending step after a long-running tool.",
-  "input_schema": {
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "type": "object",
-    "properties": {
-      "message": {
-        "description": "Text that surfaces when the wakeup fires.",
-        "type": "string"
-      },
-      "inMs": {
-        "description": "Fire after N milliseconds from now (take either this OR `in`).",
-        "type": "integer"
-      },
-      "in": {
-        "description": "Duration string — e.g. `30s`, `5m`, `1h` (take either this OR `inMs`).",
-        "type": "string"
-      }
-    },
-    "required": ["message"],
-    "additionalProperties": false
-  }
-}"#;
+pub const TOOL_SCHEDULE_WAKEUP_JSON: &str =
+    include_str!("../../harness_corpus/tools/ScheduleWakeup.json");
 
 #[cfg(test)]
 mod tests {

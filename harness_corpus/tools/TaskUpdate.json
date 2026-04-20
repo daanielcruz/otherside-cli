@@ -1,0 +1,64 @@
+{
+  "name": "TaskUpdate",
+  "description": "Mutate an existing task. Fields absent from the call do not change. `status: \"deleted\"` removes the entry from the registry. Returns `updatedFields` listing which fields changed and an optional `statusChange` for transitions. Use TaskGet afterwards to retrieve the full post-update record.",
+  "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "taskId": {
+        "description": "The id of the task to update",
+        "type": "string"
+      },
+      "subject": {
+        "description": "New subject (title) for the task",
+        "type": "string"
+      },
+      "description": {
+        "description": "New description for the task",
+        "type": "string"
+      },
+      "activeForm": {
+        "description": "New present-continuous spinner form",
+        "type": "string"
+      },
+      "status": {
+        "description": "New status — one of pending, in_progress, completed, cancelled, deleted",
+        "type": "string",
+        "enum": [
+          "pending",
+          "in_progress",
+          "completed",
+          "cancelled",
+          "deleted"
+        ]
+      },
+      "owner": {
+        "description": "New owner for the task",
+        "type": "string"
+      },
+      "addBlocks": {
+        "description": "Task ids that this task blocks",
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "addBlockedBy": {
+        "description": "Task ids that block this task",
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "metadata": {
+        "description": "Metadata keys to merge. Set a key to null to delete it.",
+        "type": "object",
+        "additionalProperties": true
+      }
+    },
+    "required": [
+      "taskId"
+    ],
+    "additionalProperties": false
+  }
+}

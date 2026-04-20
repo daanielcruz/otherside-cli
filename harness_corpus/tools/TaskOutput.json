@@ -1,0 +1,18 @@
+{
+  "name": "TaskOutput",
+  "description": "Fetch accumulated output for a task — combines subject, description, and any metadata fields named `output`, `logs`, or `stdout`. Returns `output: null` when the taskId is unknown.",
+  "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "taskId": {
+        "description": "The id of the task whose output should be fetched.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "taskId"
+    ],
+    "additionalProperties": false
+  }
+}

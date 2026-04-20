@@ -1,0 +1,11 @@
+{
+  "name": "TaskList",
+  "description": "Enumerate every task in the in-session task list, sorted ascending by id. Returns id, subject, status, owner, and blockedBy for each entry. Use before creating new tasks to avoid duplicates, or after TaskUpdate to confirm the new state.",
+  "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {},
+    "required": [],
+    "additionalProperties": false
+  }
+}

@@ -179,40 +179,8 @@ fn serialize_ipynb(v: &Value) -> Result<String, ToolError> {
 /// `NotebookEdit` schema — otherside-native synthesis of upstream's Zod
 /// at `tools/NotebookEditTool/NotebookEditTool.ts:39-66`. 018 implements
 /// `replace` only.
-pub const TOOL_NOTEBOOK_EDIT_JSON: &str = r#"{
-  "name": "NotebookEdit",
-  "description": "Replace the source of one cell inside a Jupyter `.ipynb` notebook. The cell is located by `cell_id`; its `source` is replaced with `new_source`. For code cells, `execution_count` resets to null and `outputs` resets to an empty array (mutated code cells have stale output). Insert and delete edit modes are deferred to a later wave — this tool accepts only `edit_mode: \"replace\"` (the default).",
-  "input_schema": {
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "type": "object",
-    "properties": {
-      "notebook_path": {
-        "description": "Absolute path to the .ipynb file to edit",
-        "type": "string"
-      },
-      "cell_id": {
-        "description": "Id of the cell to replace (the `id` field inside the notebook's `cells[]` entry)",
-        "type": "string"
-      },
-      "new_source": {
-        "description": "New source content for the cell",
-        "type": "string"
-      },
-      "cell_type": {
-        "description": "Optional cell type (`code` or `markdown`). If provided, must match the current cell type — type conversion is deferred to a later wave.",
-        "type": "string",
-        "enum": ["code", "markdown"]
-      },
-      "edit_mode": {
-        "description": "Edit mode — only `replace` is supported in this wave; `insert` and `delete` return InvalidArgs",
-        "type": "string",
-        "enum": ["replace", "insert", "delete"]
-      }
-    },
-    "required": ["notebook_path", "cell_id", "new_source"],
-    "additionalProperties": false
-  }
-}"#;
+pub const TOOL_NOTEBOOK_EDIT_JSON: &str =
+    include_str!("../../harness_corpus/tools/NotebookEdit.json");
 
 #[cfg(test)]
 mod tests {

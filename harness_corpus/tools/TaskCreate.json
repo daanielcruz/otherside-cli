@@ -1,0 +1,27 @@
+{
+  "name": "TaskCreate",
+  "description": "Register a new task in the in-session task list. Use proactively for multi-step work (3+ distinct steps), non-trivial tasks needing careful planning, plan mode tracking, or when the user provides an explicit list of items. Skip for single trivial tasks. Pair with TaskUpdate to transition status, TaskList to enumerate, TaskGet to inspect one entry.",
+  "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "subject": {
+        "description": "A brief, actionable title for the task (imperative form, e.g. \"Port deferred tools wave 1\")",
+        "type": "string"
+      },
+      "description": {
+        "description": "What needs to be done — enough detail for another agent to pick up the task",
+        "type": "string"
+      },
+      "activeForm": {
+        "description": "Present continuous form shown in the spinner when the task is in_progress (e.g., \"Porting deferred tools\"). Optional — defaults to the subject.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "subject",
+      "description"
+    ],
+    "additionalProperties": false
+  }
+}

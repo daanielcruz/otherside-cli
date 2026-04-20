@@ -1,0 +1,11 @@
+{
+  "name": "ExitPlanMode",
+  "description": "Leave plan mode — resume default permission behavior. Pair with EnterPlanMode.",
+  "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {},
+    "required": [],
+    "additionalProperties": false
+  }
+}

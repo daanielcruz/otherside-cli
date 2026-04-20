@@ -1,0 +1,18 @@
+{
+  "name": "TaskStop",
+  "description": "Cancel a running or pending task — sets its status to `cancelled`. Idempotent; stopping an unknown or already-cancelled task reports success with an empty statusChange.",
+  "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "taskId": {
+        "description": "The id of the task to cancel.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "taskId"
+    ],
+    "additionalProperties": false
+  }
+}

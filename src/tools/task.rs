@@ -364,117 +364,22 @@ pub fn clear_registry() {
 
 /// `TaskCreate` schema. Mirrors upstream's Zod strict object with
 /// `subject` + `description` required, `activeForm` optional.
-pub const TOOL_TASK_CREATE_JSON: &str = r#"{
-  "name": "TaskCreate",
-  "description": "Register a new task in the in-session task list. Use proactively for multi-step work (3+ distinct steps), non-trivial tasks needing careful planning, plan mode tracking, or when the user provides an explicit list of items. Skip for single trivial tasks. Pair with TaskUpdate to transition status, TaskList to enumerate, TaskGet to inspect one entry.",
-  "input_schema": {
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "type": "object",
-    "properties": {
-      "subject": {
-        "description": "A brief, actionable title for the task (imperative form, e.g. \"Port deferred tools wave 1\")",
-        "type": "string"
-      },
-      "description": {
-        "description": "What needs to be done — enough detail for another agent to pick up the task",
-        "type": "string"
-      },
-      "activeForm": {
-        "description": "Present continuous form shown in the spinner when the task is in_progress (e.g., \"Porting deferred tools\"). Optional — defaults to the subject.",
-        "type": "string"
-      }
-    },
-    "required": ["subject", "description"],
-    "additionalProperties": false
-  }
-}"#;
+pub const TOOL_TASK_CREATE_JSON: &str =
+    include_str!("../../harness_corpus/tools/TaskCreate.json");
 
 /// `TaskList` schema. Zero required fields — enumerate the whole list.
-pub const TOOL_TASK_LIST_JSON: &str = r#"{
-  "name": "TaskList",
-  "description": "Enumerate every task in the in-session task list, sorted ascending by id. Returns id, subject, status, owner, and blockedBy for each entry. Use before creating new tasks to avoid duplicates, or after TaskUpdate to confirm the new state.",
-  "input_schema": {
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "type": "object",
-    "properties": {},
-    "required": [],
-    "additionalProperties": false
-  }
-}"#;
+pub const TOOL_TASK_LIST_JSON: &str =
+    include_str!("../../harness_corpus/tools/TaskList.json");
 
 /// `TaskGet` schema. Single required field.
-pub const TOOL_TASK_GET_JSON: &str = r#"{
-  "name": "TaskGet",
-  "description": "Fetch the full record of one task by id — subject, description, status, blocks, blockedBy. Returns {\"task\": null} when the id is not registered. Use for inspecting a specific entry without pulling the whole list.",
-  "input_schema": {
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "type": "object",
-    "properties": {
-      "taskId": {
-        "description": "The id of the task to retrieve (as returned by TaskCreate or surfaced in TaskList output)",
-        "type": "string"
-      }
-    },
-    "required": ["taskId"],
-    "additionalProperties": false
-  }
-}"#;
+pub const TOOL_TASK_GET_JSON: &str =
+    include_str!("../../harness_corpus/tools/TaskGet.json");
 
 /// `TaskUpdate` schema. Only `taskId` required; every mutation field is
 /// optional and fields absent from the call do not change state. The
 /// pseudo-status `"deleted"` removes the entry from the registry.
-pub const TOOL_TASK_UPDATE_JSON: &str = r#"{
-  "name": "TaskUpdate",
-  "description": "Mutate an existing task. Fields absent from the call do not change. `status: \"deleted\"` removes the entry from the registry. Returns `updatedFields` listing which fields changed and an optional `statusChange` for transitions. Use TaskGet afterwards to retrieve the full post-update record.",
-  "input_schema": {
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "type": "object",
-    "properties": {
-      "taskId": {
-        "description": "The id of the task to update",
-        "type": "string"
-      },
-      "subject": {
-        "description": "New subject (title) for the task",
-        "type": "string"
-      },
-      "description": {
-        "description": "New description for the task",
-        "type": "string"
-      },
-      "activeForm": {
-        "description": "New present-continuous spinner form",
-        "type": "string"
-      },
-      "status": {
-        "description": "New status — one of pending, in_progress, completed, cancelled, deleted",
-        "type": "string",
-        "enum": ["pending", "in_progress", "completed", "cancelled", "deleted"]
-      },
-      "owner": {
-        "description": "New owner for the task",
-        "type": "string"
-      },
-      "addBlocks": {
-        "description": "Task ids that this task blocks",
-        "type": "array",
-        "items": { "type": "string" }
-      },
-      "addBlockedBy": {
-        "description": "Task ids that block this task",
-        "type": "array",
-        "items": { "type": "string" }
-      },
-      "metadata": {
-        "description": "Metadata keys to merge. Set a key to null to delete it.",
-        "type": "object",
-        "additionalProperties": true
-      }
-    },
-    "required": ["taskId"],
-    "additionalProperties": false
-  }
-}"#;
+pub const TOOL_TASK_UPDATE_JSON: &str =
+    include_str!("../../harness_corpus/tools/TaskUpdate.json");
 
 #[cfg(test)]
 mod tests {
