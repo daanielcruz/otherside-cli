@@ -43,6 +43,9 @@
 
 pub mod frontmatter;
 pub mod registry;
+pub mod runner;
+
+pub use runner::InnerLoopRunner;
 
 use std::cell::Cell;
 use std::sync::{Arc, OnceLock};

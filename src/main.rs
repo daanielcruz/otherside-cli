@@ -133,14 +133,9 @@ async fn main() -> ExitCode {
     let cli = Cli::parse();
     setup_tracing(&cli);
 
-    // Wire the subagent runner once at startup so the Agent tool
-    // dispatches to a real result path instead of the "unavailable"
-    // stub. Full inner-AgentLoop runner is pending; until then the
-    // productive-stub surfaces a marked result so the TUI and the
-    // model both see the dispatch succeeded end-to-end.
-    let _ = otherside::subagents::install_runner(
-        otherside::subagents::ProductiveStubRunner::new(),
-    );
+    // Subagent runner install happens lazily — once `run()` resolves
+    // the provider + model we know enough to wire `InnerLoopRunner`.
+    // See `otherside::run` for the call site.
 
     match run(cli).await {
         Ok(()) => ExitCode::SUCCESS,
@@ -418,9 +413,20 @@ async fn cmd_tui(cli: &Cli) -> Result<()> {
 
     let registry = Arc::new(registry);
 
-    // `--yolo` outranks the settings-file mode (C40 cascade: flag scope
-    // > project > user). If neither is set, fall back to Default so the
-    // user sees the standard permission prompts.
+    // Wire the subagent runner now that the provider is resolved. The
+    // runner spawns an inner AgentLoop against the same provider, so
+    // it must know which one was picked + what model to default to.
+    // OnceLock semantics: first install wins — re-entry is a no-op so
+    // --resume / multi-subcommand flows don't double-install.
+    if let Some(provider) = registry.get(&provider_id) {
+        let _ = otherside::subagents::install_runner(
+            otherside::subagents::InnerLoopRunner::new(
+                provider.clone(),
+                raw_model.clone(),
+            ),
+        );
+    }
+
     let permission_mode = if cli.yolo {
         config::PermissionMode::Yolo
     } else {
