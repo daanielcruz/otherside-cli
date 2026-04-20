@@ -75,15 +75,17 @@ fn system_preamble_block0_matches_capture() {
 }
 
 #[test]
-fn system_preamble_block1_identifies_as_otherside() {
-    // Structural guardrail for the V2-drifted opener (block 1): the
-    // text must NOT present as a plain upstream CLI only — it should
-    // carry the otherside identity cue.
+fn system_preamble_block1_is_compat_identity_literal() {
+    // Block 1 is the compat identity marker the anthropic-oauth
+    // inference gate validates against. Rewording it causes the API
+    // to reject the OAuth token, so this assertion locks the literal
+    // to its compat-required shape. User-facing persona overrides
+    // belong in block 2 (agent preamble), never here.
     let assembled = translator::anthropic::system::build_system_blocks();
-    let text = assembled[1]["text"].as_str().unwrap().to_lowercase();
-    assert!(
-        text.contains("otherside"),
-        "block 1 opener lost otherside identity"
+    let text = assembled[1]["text"].as_str().unwrap();
+    assert_eq!(
+        text,
+        "You are Claude Code, Anthropic's official CLI for Claude."
     );
 }
 

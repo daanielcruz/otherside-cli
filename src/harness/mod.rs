@@ -94,10 +94,6 @@ pub mod reminders;
 pub const SYSTEM_BILLING_HEADER: &str =
     include_str!("../../harness_corpus/system/00-billing-header.md");
 
-/// Opener line emitted as system[1].
-pub const SYSTEM_OPENER: &str =
-    include_str!("../../harness_corpus/system/01-opener.md");
-
 /// ~7 KB agent preamble emitted as system[2]. Carries the cache_control
 /// ephemeral/1h/global marker on the wire.
 pub const SYSTEM_AGENT_PREAMBLE: &str =
