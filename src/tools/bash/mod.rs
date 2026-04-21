@@ -1,4 +1,4 @@
-//! Bash / BashOutput / KillBash — shell-command tool trio.
+//! Bash — shell-command tool.
 //!
 //! # Components
 //!
@@ -7,14 +7,17 @@
 //! - [`sync`] — blocking `tokio::process::Command` driver with timeout
 //!   + grace-period SIGTERM → SIGKILL.
 //! - [`registry`] — async background shells keyed by [`ShellId`] with
-//!   stdout/stderr accumulation and cursor-based polling.
+//!   stdout/stderr accumulation and cursor-based polling. Background
+//!   shell control rides `Bash` itself via the `run_in_background`
+//!   property; the old standalone `BashOutput` / `KillBash` tools
+//!   retired with the 010 anchor selection (see `tools/mod.rs`
+//!   header, "Retired names").
 //!
-//! # Dispatch entry points
+//! # Dispatch entry point
 //!
-//! The agent loop calls `dispatch_bash`, `dispatch_bash_output`, and
-//! `dispatch_kill_bash` via `tools::mod::dispatch`. Each accepts a
-//! JSON args value, validates shape, and returns a `Value` payload
-//! for the model.
+//! The agent loop calls [`bash`] via `tools::mod::dispatch`. It
+//! accepts a JSON args value, validates shape, and returns a `Value`
+//! payload for the model.
 //!
 //! Defaults (per upstream):
 //! - timeout default 120 000 ms (2 min), max 600 000 ms (10 min)
@@ -59,7 +62,7 @@ pub fn shell_registry() -> &'static registry::ShellRegistry {
 /// Spawning + polling is async internally; this wrapper blocks the
 /// caller only for sync mode. Background mode returns immediately
 /// with the assigned shell_id.
-pub fn dispatch_bash(args: &Value) -> Result<Value, ToolError> {
+pub fn bash(args: &Value) -> Result<Value, ToolError> {
     let command = args
         .get("command")
         .and_then(Value::as_str)
@@ -158,41 +161,6 @@ fn trim_leading_blank_lines(s: &str) -> &str {
         }
     }
     s.get(end..).unwrap_or(s)
-}
-
-/// Dispatch — `BashOutput`. Polls the background registry for new
-/// output on a given shell id.
-pub fn dispatch_bash_output(args: &Value) -> Result<Value, ToolError> {
-    let bash_id = args
-        .get("bash_id")
-        .and_then(Value::as_str)
-        .ok_or_else(|| ToolError::InvalidArgs("missing or non-string `bash_id`".into()))?;
-    let filter = args.get("filter").and_then(Value::as_str);
-    let poll = shell_registry()
-        .poll(bash_id, filter)
-        .map_err(|e| ToolError::InvalidArgs(e.to_string()))?;
-    Ok(json!({
-        "shell_id": bash_id,
-        "status": poll.status.as_str(),
-        "exit_code": poll.exit_code,
-        "stdout": poll.stdout,
-        "stderr": poll.stderr,
-    }))
-}
-
-/// Dispatch — `KillBash`. SIGTERM → grace → SIGKILL, then reap.
-pub fn dispatch_kill_bash(args: &Value) -> Result<Value, ToolError> {
-    let shell_id = args
-        .get("shell_id")
-        .and_then(Value::as_str)
-        .ok_or_else(|| ToolError::InvalidArgs("missing or non-string `shell_id`".into()))?;
-    shell_registry()
-        .kill(shell_id)
-        .map_err(|e| ToolError::InvalidArgs(e.to_string()))?;
-    Ok(json!({
-        "shell_id": shell_id,
-        "status": "killed",
-    }))
 }
 
 #[cfg(test)]

@@ -184,7 +184,7 @@ pub fn matcher_input_for(tool_name: &str, args: &Value) -> String {
 pub fn dispatch(tool_name: &str, args: &Value) -> Result<Value, ToolError> {
     match tool_name {
         "Agent" => agent::agent(args),
-        "Bash" => bash::dispatch_bash(args),
+        "Bash" => bash::bash(args),
         "Edit" => edit::edit(args),
         "Glob" => glob::glob(args),
         "Grep" => grep::grep(args),
