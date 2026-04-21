@@ -947,6 +947,7 @@ fn status_rows(state: &super::state::ConversationState) -> Vec<MenuOption> {
 fn config_rows(state: &super::state::ConversationState) -> Vec<MenuOption> {
     use crate::config::providers::ProviderId;
     let provider = state
+        .persistence
         .settings
         .default_provider
         .as_deref()
@@ -1010,8 +1011,8 @@ fn config_rows(state: &super::state::ConversationState) -> Vec<MenuOption> {
         },
         settings_blank(),
 
-        bool_row("Auto-compact", "auto_compact", state.settings.auto_compact, true),
-        bool_row("Show tips", "show_tips", state.settings.show_tips, true),
+        bool_row("Auto-compact", "auto_compact", state.persistence.settings.auto_compact, true),
+        bool_row("Show tips", "show_tips", state.persistence.settings.show_tips, true),
 
         MenuOption {
             label: "Verbose output".into(),

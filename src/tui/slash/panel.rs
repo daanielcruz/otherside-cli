@@ -144,7 +144,7 @@ fn help_hints() -> Vec<String> {
 }
 
 fn hooks_hints(st: &ConversationState) -> Vec<String> {
-    let Some(h) = st.settings.hooks.as_ref() else {
+    let Some(h) = st.persistence.settings.hooks.as_ref() else {
         return vec!["no hooks configured".into()];
     };
     vec![

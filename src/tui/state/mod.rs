@@ -107,7 +107,7 @@ pub struct ConversationState {
 
     pub queued_messages: Vec<String>,
 
-    pub settings: crate::config::settings::Settings,
+    pub persistence: crate::state::PersistenceState,
 
     pub render_verbose: bool,
 

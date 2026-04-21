@@ -151,13 +151,13 @@ async fn event_loop(
             }
         }
     }
-    st.settings = settings;
+    st.persistence.settings = settings;
 
-    if st.settings.default_provider.is_none() {
-        st.settings.default_provider = Some(provider_id.to_string());
+    if st.persistence.settings.default_provider.is_none() {
+        st.persistence.settings.default_provider = Some(provider_id.to_string());
     }
-    if st.settings.default_model.is_none() {
-        st.settings.default_model = Some(st.session.model.clone());
+    if st.persistence.settings.default_model.is_none() {
+        st.persistence.settings.default_model = Some(st.session.model.clone());
     }
     if let Err(e) = persist_session_defaults(&st) {
         tracing::warn!(?e, "initial settings write failed");
@@ -704,21 +704,23 @@ fn edit_settings_row(st: &mut ConversationState, direction: i32) {
     match kind {
         SettingsRowKind::Provider => {
             let current = st
+                .persistence
                 .settings
                 .default_provider
                 .as_deref()
                 .and_then(ProviderId::from_slug)
                 .unwrap_or(ProviderId::ClaudeCode);
             let next = providers::cycle(current, dir);
-            st.settings.default_provider = Some(next.slug().to_string());
+            st.persistence.settings.default_provider = Some(next.slug().to_string());
             let default_model = next.default_model();
             if !default_model.is_empty() {
                 st.switch_model(default_model);
-                st.settings.default_model = Some(default_model.to_string());
+                st.persistence.settings.default_model = Some(default_model.to_string());
             }
         }
         SettingsRowKind::Model => {
             let provider = st
+                .persistence
                 .settings
                 .default_provider
                 .as_deref()
@@ -736,7 +738,7 @@ fn edit_settings_row(st: &mut ConversationState, direction: i32) {
             let next_idx = (((idx as i32) + dir).rem_euclid(n)) as usize;
             let next_model = list[next_idx].id;
             st.switch_model(next_model);
-            st.settings.default_model = Some(next_model.to_string());
+            st.persistence.settings.default_model = Some(next_model.to_string());
         }
         SettingsRowKind::PermissionMode => {
             let order = [
@@ -765,22 +767,22 @@ fn edit_settings_row(st: &mut ConversationState, direction: i32) {
             let n = levels.len() as i32;
             let next_idx = (((idx as i32) + dir).rem_euclid(n)) as usize;
             st.session.effort_label = Some(levels[next_idx]);
-            st.settings.effort_level = Some(levels[next_idx].to_string());
+            st.persistence.settings.effort_level = Some(levels[next_idx].to_string());
         }
         SettingsRowKind::Bool(id) => {
             let current = match id {
-                "auto_compact" => st.settings.auto_compact.unwrap_or(true),
-                "show_tips" => st.settings.show_tips.unwrap_or(true),
+                "auto_compact" => st.persistence.settings.auto_compact.unwrap_or(true),
+                "show_tips" => st.persistence.settings.show_tips.unwrap_or(true),
                 "verbose" => st.render_verbose,
                 _ => return,
             };
             let next = !current;
             match id {
-                "auto_compact" => st.settings.auto_compact = Some(next),
-                "show_tips" => st.settings.show_tips = Some(next),
+                "auto_compact" => st.persistence.settings.auto_compact = Some(next),
+                "show_tips" => st.persistence.settings.show_tips = Some(next),
                 "verbose" => {
                     st.render_verbose = next;
-                    st.settings.verbose = Some(next);
+                    st.persistence.settings.verbose = Some(next);
                 }
                 _ => return,
             }
@@ -807,11 +809,12 @@ fn edit_settings_row(st: &mut ConversationState, direction: i32) {
 
 fn persist_session_defaults(st: &ConversationState) -> Result<()> {
     let provider_id = st
+        .persistence
         .settings
         .default_provider
         .clone()
         .unwrap_or_else(|| "anthropic-oauth".to_string());
-    let mut pers = crate::state::PersistenceState::new(st.settings.clone());
+    let mut pers = crate::state::PersistenceState::new(st.persistence.settings.clone());
     pers.commit_session_defaults(&st.session, &provider_id)
 }
 
@@ -898,6 +901,7 @@ fn emit_panel_dismiss_anchor(
 
 fn is_session_default_model(model: &str, st: &ConversationState) -> bool {
     let default = st
+        .persistence
         .settings
         .default_model
         .as_deref()
@@ -1025,10 +1029,10 @@ fn apply_model_outcome(
             st.session.effort_label = Some(next);
             *thinking = Some(ThinkingConfig::level(level));
         }
-        st.settings.effort_level = Some(next.to_string());
+        st.persistence.settings.effort_level = Some(next.to_string());
     }
 
-    st.settings.default_model = Some(model_id.to_string());
+    st.persistence.settings.default_model = Some(model_id.to_string());
     if let Err(e) = persist_session_defaults(st) {
         st.push_system_note(format!("settings write failed: {e}"));
     }
@@ -1045,7 +1049,7 @@ fn apply_effort_outcome(
     if action_id.eq_ignore_ascii_case("auto") {
         *thinking = Some(ThinkingConfig::auto());
         st.session.effort_label = None;
-        st.settings.effort_level = Some("auto".to_string());
+        st.persistence.settings.effort_level = Some("auto".to_string());
         if let Err(e) = persist_session_defaults(st) {
             st.push_system_note(format!("settings write failed: {e}"));
         }
@@ -1055,7 +1059,7 @@ fn apply_effort_outcome(
         Ok(level) => {
             *thinking = Some(ThinkingConfig::level(level));
             st.session.effort_label = Some(level.as_label());
-            st.settings.effort_level = Some(action_id.to_string());
+            st.persistence.settings.effort_level = Some(action_id.to_string());
             if let Err(e) = persist_session_defaults(st) {
                 st.push_system_note(format!("settings write failed: {e}"));
             }
@@ -1080,7 +1084,7 @@ fn spawn_agent_turn(
 
     let model = st.session.model.clone();
 
-    let settings = st.settings.clone();
+    let settings = st.persistence.settings.clone();
     let mode = st.session.permission_mode;
     let session_allowlist = st.session_allowlist.clone();
 
@@ -1854,19 +1858,19 @@ mod settings_edit_tests {
         }
 
         edit_settings_row(&mut st, 1);
-        assert_eq!(st.settings.default_provider.as_deref(), Some("codex-oauth"));
+        assert_eq!(st.persistence.settings.default_provider.as_deref(), Some("codex-oauth"));
         assert_eq!(st.session.model, "gpt-5.4");
 
         edit_settings_row(&mut st, 1);
         assert_eq!(
-            st.settings.default_provider.as_deref(),
+            st.persistence.settings.default_provider.as_deref(),
             Some("gemini-oauth")
         );
         assert_eq!(st.session.model, "gemini-3.1-pro-preview");
 
         edit_settings_row(&mut st, 1);
         assert_eq!(
-            st.settings.default_provider.as_deref(),
+            st.persistence.settings.default_provider.as_deref(),
             Some("openai-custom")
         );
 
@@ -1874,7 +1878,7 @@ mod settings_edit_tests {
 
         edit_settings_row(&mut st, 1);
         assert_eq!(
-            st.settings.default_provider.as_deref(),
+            st.persistence.settings.default_provider.as_deref(),
             Some("anthropic-oauth")
         );
         assert_eq!(st.session.model, "claude-opus-4-7[1m]");
@@ -1924,16 +1928,16 @@ mod settings_edit_tests {
         }
         edit_settings_row(&mut st, 1);
         assert!(st.render_verbose);
-        assert_eq!(st.settings.verbose, Some(true));
+        assert_eq!(st.persistence.settings.verbose, Some(true));
         edit_settings_row(&mut st, 1);
         assert!(!st.render_verbose);
-        assert_eq!(st.settings.verbose, Some(false));
+        assert_eq!(st.persistence.settings.verbose, Some(false));
     }
 
     #[test]
     fn model_row_cycles_through_provider_aliases() {
         let mut st = ConversationState::default();
-        st.settings.default_provider = Some("claude-code".into());
+        st.persistence.settings.default_provider = Some("claude-code".into());
         st.session.model = "claude-opus-4-7[1m]".into();
         st.active_menu = Some(OverlayMenu::new_settings(SettingsTab::Config, &st));
         if let Some(m) = st.active_menu.as_mut() {
@@ -1968,8 +1972,8 @@ mod settings_edit_tests {
 
         type Getter = fn(&ConversationState) -> Option<bool>;
         let rows: &[(&str, Getter)] = &[
-            ("Auto-compact", |s| s.settings.auto_compact),
-            ("Show tips", |s| s.settings.show_tips),
+            ("Auto-compact", |s| s.persistence.settings.auto_compact),
+            ("Show tips", |s| s.persistence.settings.show_tips),
         ];
         for (label, getter) in rows {
             if let Some(m) = st.active_menu.as_mut() {
