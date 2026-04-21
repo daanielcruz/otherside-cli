@@ -201,7 +201,18 @@ mod tests {
         let bytes = to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
         let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["object"], "list");
-        assert_eq!(body["data"][0]["id"], "claude-opus-4-7");
+        // Catalog-driven listing: first claude-code row is the 1M variant
+        // (picker ordering per Slice U).
+        assert_eq!(body["data"][0]["id"], "claude-opus-4-7[1m]");
+        let ids: Vec<&str> = body["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|m| m["id"].as_str())
+            .collect();
+        assert!(ids.iter().any(|id| *id == "claude-opus-4-7"));
+        assert!(ids.iter().any(|id| *id == "claude-sonnet-4-6"));
+        assert!(ids.iter().any(|id| *id == "claude-haiku-4-5"));
     }
 
     #[tokio::test]

@@ -293,18 +293,21 @@ fn now_epoch() -> u64 {
 
 /// `GET /v1/models` — stub listing.
 ///
-/// MVP: a single hard-coded entry so OpenAI-SDK clients (which often hit
-/// this endpoint at startup to validate connectivity) don't fail. The spec
-/// calls for a full multi-provider listing; that lands when multi-provider
-/// routing does.
+/// `/v1/models` lists every claude-code row from the catalog so
+/// OpenAI-SDK clients see the real id set — dropping the old single
+/// hardcoded `"claude-opus-4-7"` entry. Codex and gemini-cli rows
+/// skip this listing until those providers unfreeze; the catalog's
+/// per-row `provider` field keeps the filter tight.
 pub async fn list_models() -> Json<ModelListing> {
-    Json(ModelListing {
-        object: "list",
-        data: vec![ModelEntry {
-            id: "claude-opus-4-7".to_string(),
+    use crate::config::providers::ProviderId;
+    let data: Vec<ModelEntry> = crate::models::catalog::models_for(ProviderId::ClaudeCode)
+        .into_iter()
+        .map(|m| ModelEntry {
+            id: m.id.to_string(),
             object: "model",
-        }],
-    })
+        })
+        .collect();
+    Json(ModelListing { object: "list", data })
 }
 
 /// OpenAI `/v1/models` shape. Kept local to the handlers since no other
