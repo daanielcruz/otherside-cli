@@ -98,10 +98,10 @@ fn run_compact(state: &mut ConversationState) {
 
 fn context_result(state: &ConversationState) -> String {
     let used = state.input_tokens + state.total_output_tokens();
-    let pct = if state.context_window == 0 {
+    let pct = if state.session.context_window == 0 {
         0
     } else {
-        (used.saturating_mul(100) / state.context_window).min(100)
+        (used.saturating_mul(100) / state.session.context_window).min(100)
     };
     format!("{} / {} ({}%)", used, state.context_window_label(), pct)
 }

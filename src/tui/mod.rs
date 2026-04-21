@@ -268,7 +268,7 @@ async fn event_loop(
         st.settings.default_provider = Some(provider_id.to_string());
     }
     if st.settings.default_model.is_none() {
-        st.settings.default_model = Some(st.model.clone());
+        st.settings.default_model = Some(st.session.model.clone());
     }
     if let Err(e) = persist_settings(&st) {
         tracing::warn!(?e, "initial settings write failed");
@@ -276,7 +276,7 @@ async fn event_loop(
     // Thread the session's thinking level into the progress-line
     // `thinking with <level> effort` chip. None when no thinking
     // config means the chip is suppressed.
-    st.effort_label = thinking
+    st.session.effort_label = thinking
         .as_ref()
         .and_then(|cfg| match cfg.level {
             crate::thinking::ThinkingLevel::Auto | crate::thinking::ThinkingLevel::None => None,
@@ -300,7 +300,7 @@ async fn event_loop(
     // Initial paint so the box appears immediately.
     st.prune_feedback();
     terminal
-        .draw(|f| render::render(f, &st, &st.model, &provider_id, spinner_tick))
+        .draw(|f| render::render(f, &st, &st.session.model, &provider_id, spinner_tick))
         .map_err(|e| Error::Other(format!("tui draw: {e}")))?;
 
     loop {
@@ -456,7 +456,7 @@ async fn event_loop(
 
         st.prune_feedback();
         terminal
-            .draw(|f| render::render(f, &st, &st.model, &provider_id, spinner_tick))
+            .draw(|f| render::render(f, &st, &st.session.model, &provider_id, spinner_tick))
             .map_err(|e| Error::Other(format!("tui draw: {e}")))?;
     }
 
@@ -831,7 +831,7 @@ fn handle_menu_key(
                 if real.len() < 2 {
                     return None;
                 }
-                let current = st.effort_label.unwrap_or(m.default_effort);
+                let current = st.session.effort_label.unwrap_or(m.default_effort);
                 let idx = real.iter().position(|l| *l == current).unwrap_or(0);
                 let n = real.len() as i32;
                 let next_idx = (((idx as i32) + dir).rem_euclid(n)) as usize;
@@ -846,7 +846,7 @@ fn handle_menu_key(
             // user's arrows had parked it (cursor_model_id) so the
             // effort change paints beside the row they were inspecting.
             let mut fresh =
-                menu::OverlayMenu::new_model_with_effort(&st.model, st.effort_label);
+                menu::OverlayMenu::new_model_with_effort(&st.session.model, st.session.effort_label);
             fresh.cursor = fresh
                 .options
                 .iter()
@@ -878,7 +878,7 @@ fn handle_menu_key(
 /// on the row's `SettingsRowKind`:
 ///
 /// - `Provider`    — cycle through the 4 provider slugs; side effect
-///                   sets `state.model` to the new provider's default.
+///                   sets `state.session.model` to the new provider's default.
 /// - `PermissionMode` — cycle Default → AcceptEdits → Plan → Yolo.
 /// - `Effort`       — cycle auto → low → medium → high → xhigh → max.
 /// - `Bool`         — ignore direction, just toggle.
@@ -946,7 +946,7 @@ fn edit_settings_row(st: &mut ConversationState, direction: i32) {
             }
             let idx = list
                 .iter()
-                .position(|m| *m == st.model.as_str())
+                .position(|m| *m == st.session.model.as_str())
                 .unwrap_or(0);
             let n = list.len() as i32;
             let next_idx = (((idx as i32) + dir).rem_euclid(n)) as usize;
@@ -963,20 +963,20 @@ fn edit_settings_row(st: &mut ConversationState, direction: i32) {
             ];
             let idx = order
                 .iter()
-                .position(|m| *m == st.permission_mode)
+                .position(|m| *m == st.session.permission_mode)
                 .unwrap_or(0);
             let n = order.len() as i32;
             let next_idx = (((idx as i32) + dir).rem_euclid(n)) as usize;
-            st.permission_mode = order[next_idx];
-            st.settings.permission_mode = Some(st.permission_mode);
+            st.session.permission_mode = order[next_idx];
+            st.settings.permission_mode = Some(st.session.permission_mode);
         }
         SettingsRowKind::Effort => {
             const LEVELS: &[&str] = &["auto", "low", "medium", "high", "xhigh", "max"];
-            let current = st.effort_label.unwrap_or("auto");
+            let current = st.session.effort_label.unwrap_or("auto");
             let idx = LEVELS.iter().position(|l| *l == current).unwrap_or(0);
             let n = LEVELS.len() as i32;
             let next_idx = (((idx as i32) + dir).rem_euclid(n)) as usize;
-            st.effort_label = Some(LEVELS[next_idx]);
+            st.session.effort_label = Some(LEVELS[next_idx]);
             st.settings.effort_level = Some(LEVELS[next_idx].to_string());
         }
         SettingsRowKind::Bool(id) => {
@@ -1101,10 +1101,10 @@ fn emit_panel_dismiss_anchor(
         PanelKind::Model => {
             let chosen = match outcome {
                 Some(menu::OverlayMenuOutcome::SetModel { model_id }) => model_id.as_str(),
-                _ => st.model.as_str(),
+                _ => st.session.model.as_str(),
             };
             let label = model_display_label(chosen);
-            let text = if chosen == st.model {
+            let text = if chosen == st.session.model {
                 // 010 Gap 4: append ` (default)` when the current
                 // model matches the session default, mirroring
                 // upstream `renderModelLabel(null)` at
@@ -1306,7 +1306,7 @@ fn apply_permission_outcome(st: &mut ConversationState, action_id: &str) {
             return;
         }
     };
-    st.permission_mode = mode;
+    st.session.permission_mode = mode;
 }
 
 fn apply_model_outcome(
@@ -1317,27 +1317,27 @@ fn apply_model_outcome(
     let (_base, _thinking) = crate::thinking::parse_suffix(model_id)
         .map(|(m, t)| (m, t))
         .unwrap_or_else(|_| (model_id.to_string(), None));
-    st.model = model_id.to_string();
+    st.session.model = model_id.to_string();
     if model_id.to_lowercase().contains("[1m]") {
-        st.context_window = 1_000_000;
+        st.session.context_window = 1_000_000;
     } else {
-        st.context_window = 200_000;
+        st.session.context_window = 200_000;
     }
     // Reconcile effort against the new model's support matrix. When
     // the old effort isn't supported (switching opus xhigh → sonnet
     // which maxes at high, or → haiku which takes only auto), snap
     // to the new model's default_effort AND rebuild `thinking` so
     // the next /v1/messages turn doesn't 400.
-    let current_effort = st.effort_label.unwrap_or("auto");
+    let current_effort = st.session.effort_label.unwrap_or("auto");
     if !crate::models::catalog::supports_effort(model_id, current_effort) {
         use crate::thinking::ThinkingLevel;
         use std::str::FromStr;
         let next = crate::models::catalog::default_effort_for(model_id);
         if next == "auto" {
-            st.effort_label = None;
+            st.session.effort_label = None;
             *thinking = Some(ThinkingConfig::auto());
         } else if let Ok(level) = ThinkingLevel::from_str(next) {
-            st.effort_label = Some(next);
+            st.session.effort_label = Some(next);
             *thinking = Some(ThinkingConfig::level(level));
         }
         st.settings.effort_level = Some(next.to_string());
@@ -1363,7 +1363,7 @@ fn apply_effort_outcome(
     use std::str::FromStr;
     if action_id.eq_ignore_ascii_case("auto") {
         *thinking = Some(ThinkingConfig::auto());
-        st.effort_label = None;
+        st.session.effort_label = None;
         st.settings.effort_level = Some("auto".to_string());
         if let Err(e) = persist_settings(st) {
             st.push_system_note(format!("settings write failed: {e}"));
@@ -1373,7 +1373,7 @@ fn apply_effort_outcome(
     match ThinkingLevel::from_str(action_id) {
         Ok(level) => {
             *thinking = Some(ThinkingConfig::level(level));
-            st.effort_label = Some(level.as_label());
+            st.session.effort_label = Some(level.as_label());
             st.settings.effort_level = Some(action_id.to_string());
             if let Err(e) = persist_settings(st) {
                 st.push_system_note(format!("settings write failed: {e}"));
@@ -1400,13 +1400,13 @@ fn spawn_agent_turn(
     let tx = tx.clone();
     // Read the LIVE session model so /model picker commits apply to
     // the NEXT turn. The `_base_model` param is kept for compatibility
-    // with existing call sites but ignored — `st.model` is the truth.
-    let model = st.model.clone();
+    // with existing call sites but ignored — `st.session.model` is the truth.
+    let model = st.session.model.clone();
     // Snapshot settings + mode at spawn so mid-turn Shift+Tab toggles
     // take effect on the NEXT turn rather than silently mutating an
     // in-flight one. Matches upstream's per-turn permissionMode read.
     let settings = st.settings.clone();
-    let mode = st.permission_mode;
+    let mode = st.session.permission_mode;
     let session_allowlist = st.session_allowlist.clone();
     // Lifetime dance: `provider.stream(req, thinking)` yields a
     // future bound to `&self`. Cloning the Arc gives the spawned
@@ -2013,8 +2013,8 @@ mod panel_anchor_tests {
     fn model_dismiss_without_change_reads_kept() {
         let mut st = ConversationState::default();
         // Non-default, non-[1m] model → no suffix.
-        st.model = "claude-opus-4-7".into();
-        let menu = OverlayMenu::new_model(&st.model);
+        st.session.model = "claude-opus-4-7".into();
+        let menu = OverlayMenu::new_model(&st.session.model);
         emit_panel_dismiss_anchor(&mut st, &menu, None);
         let (echo, anchor) = anchor_lines(&st);
         assert_eq!(echo, "/model");
@@ -2024,8 +2024,8 @@ mod panel_anchor_tests {
     #[test]
     fn model_dismiss_with_switch_reads_set() {
         let mut st = ConversationState::default();
-        st.model = "claude-opus-4-7".into();
-        let menu = OverlayMenu::new_model(&st.model);
+        st.session.model = "claude-opus-4-7".into();
+        let menu = OverlayMenu::new_model(&st.session.model);
         let outcome = OverlayMenuOutcome::SetModel {
             model_id: "claude-sonnet-4-6".into(),
         };
@@ -2047,7 +2047,7 @@ mod panel_anchor_tests {
     #[test]
     fn permissions_dismiss_esc_emits_dismissed() {
         let mut st = ConversationState::default();
-        let menu = OverlayMenu::new_permissions(st.permission_mode);
+        let menu = OverlayMenu::new_permissions(st.session.permission_mode);
         emit_panel_dismiss_anchor(&mut st, &menu, None);
         let (echo, anchor) = anchor_lines(&st);
         assert_eq!(echo, "/permissions");
@@ -2099,7 +2099,7 @@ mod panel_anchor_tests {
     #[test]
     fn permissions_dismiss_with_mode_change_emits_set() {
         let mut st = ConversationState::default();
-        let menu = OverlayMenu::new_permissions(st.permission_mode);
+        let menu = OverlayMenu::new_permissions(st.session.permission_mode);
         let outcome = OverlayMenuOutcome::SetPermissionMode {
             action_id: "plan".into(),
         };
@@ -2156,7 +2156,7 @@ mod panel_anchor_tests {
         // override. Current model matches default → both suffixes
         // compose: `(1M context) (default)`.
         let mut st = ConversationState::default();
-        st.model = "claude-opus-4-7[1m]".into();
+        st.session.model = "claude-opus-4-7[1m]".into();
         // Sanity-check the default provider resolution so a
         // future rename of the provider constant flips this test
         // loudly rather than silently.
@@ -2165,7 +2165,7 @@ mod panel_anchor_tests {
             "claude-opus-4-7[1m]",
             "session-default rule depends on this constant"
         );
-        let menu = OverlayMenu::new_model(&st.model);
+        let menu = OverlayMenu::new_model(&st.session.model);
         emit_panel_dismiss_anchor(&mut st, &menu, None);
         let (_, anchor) = anchor_lines(&st);
         assert_eq!(anchor, "⎿  Kept model as Opus 4.7 (1M context) (default)");
@@ -2226,7 +2226,7 @@ mod settings_edit_tests {
         // R-92 evidence: user directive 2026-04-20. Provider cycle
         // carries per-provider default-model side effect.
         let mut st = ConversationState::default();
-        st.model = "claude-opus-4-7[1m]".into();
+        st.session.model = "claude-opus-4-7[1m]".into();
         st.active_menu = Some(OverlayMenu::new_settings(SettingsTab::Config, &st));
         if let Some(m) = st.active_menu.as_mut() {
             focus_row(m, "Provider");
@@ -2234,54 +2234,54 @@ mod settings_edit_tests {
 
         edit_settings_row(&mut st, 1);
         assert_eq!(st.settings.default_provider.as_deref(), Some("codex-oauth"));
-        assert_eq!(st.model, "gpt-5.4");
+        assert_eq!(st.session.model, "gpt-5.4");
 
         edit_settings_row(&mut st, 1);
         assert_eq!(
             st.settings.default_provider.as_deref(),
             Some("gemini-oauth")
         );
-        assert_eq!(st.model, "gemini-3.1-pro-preview");
+        assert_eq!(st.session.model, "gemini-3.1-pro-preview");
 
         edit_settings_row(&mut st, 1);
         assert_eq!(
             st.settings.default_provider.as_deref(),
             Some("openai-custom")
         );
-        // openai-custom default is empty → state.model stays whatever it was.
-        assert_eq!(st.model, "gemini-3.1-pro-preview");
+        // openai-custom default is empty → state.session.model stays whatever it was.
+        assert_eq!(st.session.model, "gemini-3.1-pro-preview");
 
         edit_settings_row(&mut st, 1);
         assert_eq!(
             st.settings.default_provider.as_deref(),
             Some("anthropic-oauth")
         );
-        assert_eq!(st.model, "claude-opus-4-7[1m]");
+        assert_eq!(st.session.model, "claude-opus-4-7[1m]");
     }
 
     #[test]
     fn permission_mode_row_cycles_through_four_modes() {
         let mut st = ConversationState::default();
-        st.permission_mode = PermissionMode::Default;
+        st.session.permission_mode = PermissionMode::Default;
         st.active_menu = Some(OverlayMenu::new_settings(SettingsTab::Config, &st));
         if let Some(m) = st.active_menu.as_mut() {
             focus_row(m, "Default permission mode");
         }
 
         edit_settings_row(&mut st, 1);
-        assert_eq!(st.permission_mode, PermissionMode::AcceptEdits);
+        assert_eq!(st.session.permission_mode, PermissionMode::AcceptEdits);
         edit_settings_row(&mut st, 1);
-        assert_eq!(st.permission_mode, PermissionMode::Plan);
+        assert_eq!(st.session.permission_mode, PermissionMode::Plan);
         edit_settings_row(&mut st, 1);
-        assert_eq!(st.permission_mode, PermissionMode::Yolo);
+        assert_eq!(st.session.permission_mode, PermissionMode::Yolo);
         edit_settings_row(&mut st, 1);
-        assert_eq!(st.permission_mode, PermissionMode::Default);
+        assert_eq!(st.session.permission_mode, PermissionMode::Default);
     }
 
     #[test]
     fn effort_row_cycles_through_six_levels() {
         let mut st = ConversationState::default();
-        st.effort_label = Some("auto");
+        st.session.effort_label = Some("auto");
         st.active_menu = Some(OverlayMenu::new_settings(SettingsTab::Config, &st));
         if let Some(m) = st.active_menu.as_mut() {
             focus_row(m, "Effort");
@@ -2289,7 +2289,7 @@ mod settings_edit_tests {
         const EXPECTED: &[&str] = &["low", "medium", "high", "xhigh", "max", "auto"];
         for want in EXPECTED {
             edit_settings_row(&mut st, 1);
-            assert_eq!(st.effort_label, Some(*want));
+            assert_eq!(st.session.effort_label, Some(*want));
         }
     }
 
@@ -2313,17 +2313,17 @@ mod settings_edit_tests {
     fn model_row_cycles_through_provider_aliases() {
         let mut st = ConversationState::default();
         st.settings.default_provider = Some("claude-code".into());
-        st.model = "claude-opus-4-7[1m]".into();
+        st.session.model = "claude-opus-4-7[1m]".into();
         st.active_menu = Some(OverlayMenu::new_settings(SettingsTab::Config, &st));
         if let Some(m) = st.active_menu.as_mut() {
             focus_row(m, "Model");
         }
         edit_settings_row(&mut st, 1);
-        assert_eq!(st.model, "claude-opus-4-7");
+        assert_eq!(st.session.model, "claude-opus-4-7");
         edit_settings_row(&mut st, 1);
-        assert_eq!(st.model, "claude-sonnet-4-6");
+        assert_eq!(st.session.model, "claude-sonnet-4-6");
         edit_settings_row(&mut st, -1);
-        assert_eq!(st.model, "claude-opus-4-7");
+        assert_eq!(st.session.model, "claude-opus-4-7");
     }
 
     #[test]
@@ -2333,14 +2333,14 @@ mod settings_edit_tests {
         // future edit-dispatcher regression that forgets to check the
         // ReadOnly variant.
         let mut st = ConversationState::default();
-        st.model = "claude-opus-4-7".into();
+        st.session.model = "claude-opus-4-7".into();
         st.active_menu = Some(OverlayMenu::new_settings(SettingsTab::Status, &st));
         if let Some(m) = st.active_menu.as_mut() {
             focus_row(m, "Model");
         }
-        let snap = st.model.clone();
+        let snap = st.session.model.clone();
         edit_settings_row(&mut st, 1);
-        assert_eq!(st.model, snap);
+        assert_eq!(st.session.model, snap);
     }
 
     #[test]

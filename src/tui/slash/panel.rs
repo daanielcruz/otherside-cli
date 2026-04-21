@@ -23,15 +23,15 @@ pub fn handle(kind: PanelKind, state: &mut ConversationState) -> SlashOutcome {
     state.input.clear();
     state.autocomplete = None;
     let overlay = match kind {
-        PanelKind::Effort => menu::OverlayMenu::new_effort(state.effort_label),
-        PanelKind::Permissions => menu::OverlayMenu::new_permissions(state.permission_mode),
+        PanelKind::Effort => menu::OverlayMenu::new_effort(state.session.effort_label),
+        PanelKind::Permissions => menu::OverlayMenu::new_permissions(state.session.permission_mode),
         PanelKind::Model => {
             // Surface the session's effort level to the picker so
             // upstream's inline `◉ {Level} effort (default) ← → to adjust`
             // indicator renders (014 parity). Defaults to `xhigh`
             // when unset — upstream Opus default.
-            let effort = state.effort_label.unwrap_or("xhigh");
-            menu::OverlayMenu::new_model_with_effort(&state.model, Some(effort))
+            let effort = state.session.effort_label.unwrap_or("xhigh");
+            menu::OverlayMenu::new_model_with_effort(&state.session.model, Some(effort))
         }
         PanelKind::Help => menu::OverlayMenu::new_info(
             PanelKind::Help,

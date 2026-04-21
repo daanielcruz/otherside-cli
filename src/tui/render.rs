@@ -259,7 +259,7 @@ pub fn render(
             state.input_tokens,
             state.total_output_tokens(),
             state.thought_ms,
-            state.effort_label,
+            state.session.effort_label,
         );
         tips::draw(f, tp, state.tip_rotation_index);
     }
@@ -770,7 +770,7 @@ fn draw_statusline(
         base.clone()
     };
 
-    let window = state.context_window;
+    let window = state.session.context_window;
     let used = window.saturating_sub(state.context_available());
     let pct = state.context_used_percent();
 
@@ -958,10 +958,11 @@ fn build_token_right_chip(state: &ConversationState, total: u64) -> String {
     if total == 0 {
         return String::new();
     }
-    if state.context_window == 0 {
+    if state.session.context_window == 0 {
         return format!("{total} tokens");
     }
     let threshold = state
+        .session
         .context_window
         .saturating_sub(AUTOCOMPACT_BUFFER_TOKENS);
     let warning_threshold = threshold.saturating_sub(WARNING_THRESHOLD_BUFFER_TOKENS);
@@ -1247,7 +1248,7 @@ mod tests {
         use super::super::state::ConversationState;
         use crate::config::PermissionMode;
         let mut st = ConversationState::new();
-        st.permission_mode = PermissionMode::Default;
+        st.session.permission_mode = PermissionMode::Default;
         let rendered = render_info_row_to_string(&st, 80);
         assert!(!rendered.contains("⏸"), "rendered: {rendered:?}");
         assert!(!rendered.contains("⏵⏵"), "rendered: {rendered:?}");
@@ -1261,7 +1262,7 @@ mod tests {
         use super::super::state::ConversationState;
         use crate::config::PermissionMode;
         let mut st = ConversationState::new();
-        st.permission_mode = PermissionMode::Plan;
+        st.session.permission_mode = PermissionMode::Plan;
         let rendered = render_info_row_to_string(&st, 80);
         assert!(rendered.contains("⏸"), "rendered: {rendered:?}");
         assert!(rendered.contains("plan mode on"), "rendered: {rendered:?}");
@@ -1272,7 +1273,7 @@ mod tests {
         use super::super::state::ConversationState;
         use crate::config::PermissionMode;
         let mut st = ConversationState::new();
-        st.permission_mode = PermissionMode::AcceptEdits;
+        st.session.permission_mode = PermissionMode::AcceptEdits;
         let rendered = render_info_row_to_string(&st, 80);
         assert!(rendered.contains("⏵⏵"), "rendered: {rendered:?}");
         assert!(rendered.contains("accept edits on"), "rendered: {rendered:?}");
@@ -1283,7 +1284,7 @@ mod tests {
         use super::super::state::ConversationState;
         use crate::config::PermissionMode;
         let mut st = ConversationState::new();
-        st.permission_mode = PermissionMode::Yolo;
+        st.session.permission_mode = PermissionMode::Yolo;
         let rendered = render_info_row_to_string(&st, 80);
         assert!(rendered.contains("⏵⏵"), "rendered: {rendered:?}");
         // Identity-zone brand: `yolo on`, not `bypass permissions on`.
@@ -1301,7 +1302,7 @@ mod tests {
         use super::super::state::ConversationState;
         use crate::config::PermissionMode;
         let mut st = ConversationState::new();
-        st.permission_mode = PermissionMode::Plan;
+        st.session.permission_mode = PermissionMode::Plan;
         let rendered = render_info_row_to_string(&st, 120);
         assert!(
             rendered.contains("(shift+tab to cycle)"),
@@ -1316,7 +1317,7 @@ mod tests {
         use super::super::state::ConversationState;
         use crate::config::PermissionMode;
         let mut st = ConversationState::new();
-        st.permission_mode = PermissionMode::Default;
+        st.session.permission_mode = PermissionMode::Default;
         let rendered = render_info_row_to_string(&st, 80);
         assert!(
             !rendered.contains("(shift+tab to cycle)"),

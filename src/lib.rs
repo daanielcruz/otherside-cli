@@ -47,6 +47,7 @@ pub mod permissions;
 pub mod provider;
 pub mod sessions;
 pub mod serve;
+pub mod state;
 pub mod statusline;
 pub mod subagents;
 pub mod thinking;

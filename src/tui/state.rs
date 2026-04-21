@@ -274,9 +274,12 @@ pub struct ConversationState {
     /// context-window arithmetic on the statusline.
     pub input_tokens: u64,
 
-    /// Effective context window size for the current model (default
-    /// 200 000 tokens — upstream's Opus 4 baseline).
-    pub context_window: u64,
+    /// Session identity (model, effort_label, permission_mode,
+    /// context_window). Single source of truth — see
+    /// `crate::state::SessionState` rustdoc. Render paths, overlay
+    /// constructors, and the statusline look up via `st.session.*`;
+    /// they never copy these fields into locals.
+    pub session: crate::state::SessionState,
 
     /// Cumulative thinking-block duration for the in-flight response,
     /// in ms. Reset on each submit.
@@ -288,17 +291,6 @@ pub struct ConversationState {
 
     /// Active slash-autocomplete popup, if any.
     pub autocomplete: Option<Autocomplete>,
-
-    /// Current permission mode. Shift+Tab cycles through the four
-    /// values. `--yolo` / `permissionMode` in settings set the initial
-    /// value; mutation via the info row does NOT persist to
-    /// `settings.json` (C40 parity — session-scoped toggle).
-    pub permission_mode: crate::config::PermissionMode,
-
-    /// Model id the user is currently talking to. Kept on state so
-    /// `/model <id>` can swap it mid-session without rebuilding the
-    /// TUI. The statusline reads this; request builders clone it.
-    pub model: String,
 
     /// Tail-follow flag. `true` means the log auto-pins to the newest
     /// delta; `false` means the user scrolled up and expects subsequent
@@ -314,12 +306,6 @@ pub struct ConversationState {
     /// for the turn; otherside mirrors that shape so the word stays
     /// stable under tick-indexed spinner-frame rotation.
     pub turn_verb: Option<&'static str>,
-
-    /// Effort label rendered as `thinking with <label> effort` on the
-    /// progress line. `None` suppresses the segment; labels `"none"` /
-    /// `""` are also suppressed. Set from `ThinkingLevel::as_label` at
-    /// TUI bootstrap and updated by `/effort` menu commits.
-    pub effort_label: Option<&'static str>,
 
     /// JoinHandle of the currently-running turn task. `Some` while
     /// streaming; abort()ed by Esc / Ctrl+C to cancel the in-flight
@@ -622,7 +608,10 @@ impl ConversationState {
     /// Fresh state with no messages, empty input, scroll pinned to bottom.
     pub fn new() -> Self {
         Self {
-            context_window: 200_000,
+            session: crate::state::SessionState::new(
+                "",
+                crate::config::PermissionMode::Default,
+            ),
             sticky_bottom: true,
             ..Self::default()
         }
@@ -630,9 +619,9 @@ impl ConversationState {
 
     /// Fresh state sized to the model's context window — 1M when the
     /// raw model alias carries a `[1m]` suffix, 200K otherwise. Mirrors
-    /// upstream `getContextWindowForModel` (see memory entry on 1M
-    /// mechanics). The `permission_mode` argument seeds the session
-    /// mode so `--yolo` (or a policy-set mode) is respected on launch.
+    /// upstream `getContextWindowForModel`. The `permission_mode`
+    /// argument seeds the session mode so `--yolo` (or a policy-set
+    /// mode) is respected on launch.
     pub fn new_for_model(raw_model: &str) -> Self {
         Self::new_for_model_with_mode(raw_model, crate::config::PermissionMode::Default)
     }
@@ -641,41 +630,29 @@ impl ConversationState {
         raw_model: &str,
         mode: crate::config::PermissionMode,
     ) -> Self {
-        let has_1m = raw_model.to_ascii_lowercase().contains("[1m]");
         Self {
-            context_window: if has_1m { 1_000_000 } else { 200_000 },
-            permission_mode: mode,
-            model: raw_model.to_string(),
+            session: crate::state::SessionState::new(raw_model, mode),
             sticky_bottom: true,
             ..Self::default()
         }
     }
 
-    /// Percentage of the context window currently consumed, rounded
-    /// to the nearest integer. Uses `input_tokens` as the usage
-    /// signal — matches upstream's "context remaining" math.
+    /// Percentage of the context window currently consumed. Delegates
+    /// to [`SessionState::context_used_percent`] — Session owns the
+    /// budget, Conversation owns the consumption counter.
     pub fn context_used_percent(&self) -> u32 {
-        if self.context_window == 0 {
-            return 0;
-        }
-        let pct = (self.input_tokens.saturating_mul(100)) / self.context_window;
-        pct.min(100) as u32
+        self.session.context_used_percent(self.input_tokens)
     }
 
     /// Tokens remaining in the context window.
     pub fn context_available(&self) -> u64 {
-        self.context_window.saturating_sub(self.input_tokens)
+        self.session.context_available(self.input_tokens)
     }
 
-    /// Render the context-window total in the statusline format users
-    /// expect: `200K`, `1M`. Upstream's model-display string appends
-    /// ` (1M context)` for the 1M variant; we surface the same signal
-    /// compactly.
+    /// Render the context-window total — delegates to
+    /// [`SessionState::context_window_label`].
     pub fn context_window_label(&self) -> String {
-        match self.context_window {
-            n if n >= 1_000_000 => format!("{}M", n / 1_000_000),
-            n => format!("{}K", n / 1_000),
-        }
+        self.session.context_window_label()
     }
 
     /// Append a single character typed by the user to the input buffer.
@@ -977,9 +954,7 @@ impl ConversationState {
     /// `[1m]` flag; the thinking suffix passes through untouched for
     /// the next request's parser.
     pub fn switch_model(&mut self, new_raw: &str) {
-        let has_1m = new_raw.to_ascii_lowercase().contains("[1m]");
-        self.model = new_raw.to_string();
-        self.context_window = if has_1m { 1_000_000 } else { 200_000 };
+        self.session.set_model(new_raw);
     }
 
     /// `/compact` — drop finalized messages and surface a short
@@ -1026,7 +1001,7 @@ impl ConversationState {
     /// gratuitous deviation from our own brand.
     pub fn permission_mode_label(&self) -> Option<PermissionChip> {
         use crate::config::PermissionMode as P;
-        match self.permission_mode {
+        match self.session.permission_mode {
             P::Default => None,
             P::Plan => Some(PermissionChip {
                 symbol: "⏸",
@@ -1055,16 +1030,7 @@ impl ConversationState {
     /// regress back to the 3-mode collapse the audit caught (see
     /// `openspec/changes/016-permission-cycle-4-mode/` + R-104).
     pub fn cycle_permission_mode(&mut self) {
-        use crate::config::PermissionMode as P;
-        // Visible cycle stops: AcceptEdits → Plan → Yolo → AcceptEdits.
-        // `Default` is the hidden `ask` mode — reachable via settings /
-        // programmatic flow but never by cycling. Session-scoped, not
-        // persisted.
-        self.permission_mode = match self.permission_mode {
-            P::AcceptEdits => P::Plan,
-            P::Plan => P::Yolo,
-            P::Yolo | P::Default => P::AcceptEdits,
-        };
+        self.session.cycle_permission_mode();
     }
 
     /// Snapshot `messages` as a `Vec<OpenAiChatMessage>` suitable for the
@@ -1368,21 +1334,21 @@ mod tests {
     #[test]
     fn new_for_model_picks_1m_when_suffix_present() {
         let st = ConversationState::new_for_model("claude-opus-4-7[1m]");
-        assert_eq!(st.context_window, 1_000_000);
+        assert_eq!(st.session.context_window, 1_000_000);
         assert_eq!(st.context_window_label(), "1M");
     }
 
     #[test]
     fn new_for_model_defaults_to_200k() {
         let st = ConversationState::new_for_model("claude-opus-4-7");
-        assert_eq!(st.context_window, 200_000);
+        assert_eq!(st.session.context_window, 200_000);
         assert_eq!(st.context_window_label(), "200K");
     }
 
     #[test]
     fn new_for_model_is_case_insensitive() {
         let st = ConversationState::new_for_model("OPUS[1M]");
-        assert_eq!(st.context_window, 1_000_000);
+        assert_eq!(st.session.context_window, 1_000_000);
     }
 
     #[test]
@@ -1744,49 +1710,49 @@ mod tests {
         // path only.
         use crate::config::PermissionMode as P;
         let mut st = ConversationState::new();
-        st.permission_mode = P::AcceptEdits;
+        st.session.permission_mode = P::AcceptEdits;
         st.cycle_permission_mode();
-        assert_eq!(st.permission_mode, P::Plan);
+        assert_eq!(st.session.permission_mode, P::Plan);
         st.cycle_permission_mode();
-        assert_eq!(st.permission_mode, P::Yolo);
+        assert_eq!(st.session.permission_mode, P::Yolo);
         st.cycle_permission_mode();
-        assert_eq!(st.permission_mode, P::AcceptEdits);
+        assert_eq!(st.session.permission_mode, P::AcceptEdits);
     }
 
     #[test]
     fn cycle_permission_mode_from_hidden_default_lands_on_accept() {
         use crate::config::PermissionMode as P;
         let mut st = ConversationState::new();
-        st.permission_mode = P::Default;
+        st.session.permission_mode = P::Default;
         st.cycle_permission_mode();
-        assert_eq!(st.permission_mode, P::AcceptEdits);
+        assert_eq!(st.session.permission_mode, P::AcceptEdits);
     }
 
     #[test]
     fn cycle_permission_mode_from_accept_edits_goes_to_plan() {
         use crate::config::PermissionMode as P;
         let mut st = ConversationState::new();
-        st.permission_mode = P::AcceptEdits;
+        st.session.permission_mode = P::AcceptEdits;
         st.cycle_permission_mode();
-        assert_eq!(st.permission_mode, P::Plan);
+        assert_eq!(st.session.permission_mode, P::Plan);
     }
 
     #[test]
     fn cycle_permission_mode_from_plan_goes_to_yolo() {
         use crate::config::PermissionMode as P;
         let mut st = ConversationState::new();
-        st.permission_mode = P::Plan;
+        st.session.permission_mode = P::Plan;
         st.cycle_permission_mode();
-        assert_eq!(st.permission_mode, P::Yolo);
+        assert_eq!(st.session.permission_mode, P::Yolo);
     }
 
     #[test]
     fn cycle_permission_mode_from_yolo_returns_to_accept_edits() {
         use crate::config::PermissionMode as P;
         let mut st = ConversationState::new();
-        st.permission_mode = P::Yolo;
+        st.session.permission_mode = P::Yolo;
         st.cycle_permission_mode();
-        assert_eq!(st.permission_mode, P::AcceptEdits);
+        assert_eq!(st.session.permission_mode, P::AcceptEdits);
     }
 
     #[test]
@@ -1794,7 +1760,7 @@ mod tests {
         // Upstream `hasActiveMode` gate collapses the chip for Default —
         // absence is the correct render state.
         let st = ConversationState::new();
-        assert_eq!(st.permission_mode, crate::config::PermissionMode::Default);
+        assert_eq!(st.session.permission_mode, crate::config::PermissionMode::Default);
         assert!(st.permission_mode_label().is_none());
     }
 
@@ -1802,7 +1768,7 @@ mod tests {
     fn permission_mode_label_plan_returns_pause_chip() {
         use crate::config::PermissionMode as P;
         let mut st = ConversationState::new();
-        st.permission_mode = P::Plan;
+        st.session.permission_mode = P::Plan;
         let chip = st.permission_mode_label().expect("plan chip");
         assert_eq!(chip.symbol, "⏸");
         assert_eq!(chip.text, "plan mode on");
@@ -1813,7 +1779,7 @@ mod tests {
     fn permission_mode_label_accept_edits_returns_chevron_chip() {
         use crate::config::PermissionMode as P;
         let mut st = ConversationState::new();
-        st.permission_mode = P::AcceptEdits;
+        st.session.permission_mode = P::AcceptEdits;
         let chip = st.permission_mode_label().expect("accept edits chip");
         assert_eq!(chip.symbol, "⏵⏵");
         assert_eq!(chip.text, "accept edits on");
@@ -1824,7 +1790,7 @@ mod tests {
     fn permission_mode_label_yolo_returns_chevron_chip() {
         use crate::config::PermissionMode as P;
         let mut st = ConversationState::new();
-        st.permission_mode = P::Yolo;
+        st.session.permission_mode = P::Yolo;
         let chip = st.permission_mode_label().expect("yolo chip");
         assert_eq!(chip.symbol, "⏵⏵");
         // Identity-zone brand wins over upstream literal `bypass

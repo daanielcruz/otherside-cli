@@ -48,7 +48,7 @@ use super::slash::catalog::SettingsTab;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SettingsRowKind {
     /// Provider selector — cycles through `ProviderId::PROVIDER_ORDER`
-    /// with side effect: switching provider sets `state.model` to the
+    /// with side effect: switching provider sets `state.session.model` to the
     /// provider's default alias (openspec 009).
     Provider,
     /// Model cycle — values depend on the active provider. `action_id`
@@ -109,8 +109,8 @@ pub struct OverlayMenu {
     pub effort_indicator: Option<EffortIndicator>,
     /// The `action_id` of the currently-active row — the one that
     /// paints green + ✔ in the render. Single source of truth at
-    /// overlay construction time: caller passes `st.model` (or
-    /// `st.permission_mode`, etc.) so the checkmark can never drift
+    /// overlay construction time: caller passes `st.session.model` (or
+    /// `st.session.permission_mode`, etc.) so the checkmark can never drift
     /// from session state. `None` on panels where "active" is not
     /// applicable (e.g. `/help` info overlays).
     pub active_action_id: Option<String>,
@@ -345,7 +345,7 @@ impl OverlayMenu {
             settings_header_focused: None,
             effort_indicator,
             // Active row = the one matching the session's current model.
-            // Single source of truth: caller passes `st.model`, so the
+            // Single source of truth: caller passes `st.session.model`, so the
             // ✔/green checkmark cannot drift from statusline state.
             active_action_id: Some(current.to_string()),
         }
@@ -1239,7 +1239,7 @@ fn status_rows(state: &super::state::ConversationState) -> Vec<MenuOption> {
         .ok()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| "(unknown)".into());
-    let permission_label = match state.permission_mode {
+    let permission_label = match state.session.permission_mode {
         crate::config::settings::PermissionMode::Default => "Default",
         crate::config::settings::PermissionMode::AcceptEdits => "Accept edits",
         crate::config::settings::PermissionMode::Plan => "Plan",
@@ -1253,9 +1253,9 @@ fn status_rows(state: &super::state::ConversationState) -> Vec<MenuOption> {
         settings_ro("Login method", "(none)"),
         settings_ro("Organization", "(n/a)"),
         settings_blank(),
-        settings_ro("Model", state.model.clone()),
+        settings_ro("Model", state.session.model.clone()),
         settings_ro("Permission mode", permission_label),
-        settings_ro("Effort", state.effort_label.unwrap_or("auto")),
+        settings_ro("Effort", state.session.effort_label.unwrap_or("auto")),
         settings_ro("MCP servers", "(client lands in Phase 3)"),
     ]
 }
@@ -1272,7 +1272,7 @@ fn config_rows(state: &super::state::ConversationState) -> Vec<MenuOption> {
         .as_deref()
         .and_then(ProviderId::from_slug)
         .unwrap_or(ProviderId::ClaudeCode);
-    let permission_label = match state.permission_mode {
+    let permission_label = match state.session.permission_mode {
         crate::config::settings::PermissionMode::Default => "default",
         crate::config::settings::PermissionMode::AcceptEdits => "acceptEdits",
         crate::config::settings::PermissionMode::Plan => "plan",
@@ -1293,7 +1293,7 @@ fn config_rows(state: &super::state::ConversationState) -> Vec<MenuOption> {
 
     vec![
         // Provider — otherside-native row. Cycle with ← → / Space.
-        // Side effect: updates state.model to provider.default_model().
+        // Side effect: updates state.session.model to provider.default_model().
         MenuOption {
             label: "Provider".into(),
             action_id: "setting:provider".into(),
@@ -1306,7 +1306,7 @@ fn config_rows(state: &super::state::ConversationState) -> Vec<MenuOption> {
         MenuOption {
             label: "Model".into(),
             action_id: "setting:model".into(),
-            value_display: Some(state.model.clone()),
+            value_display: Some(state.session.model.clone()),
             settings_kind: Some(SettingsRowKind::Model),
             hint: None,
             ..Default::default()
@@ -1324,7 +1324,7 @@ fn config_rows(state: &super::state::ConversationState) -> Vec<MenuOption> {
         MenuOption {
             label: "Effort".into(),
             action_id: "setting:effort".into(),
-            value_display: Some(state.effort_label.unwrap_or("auto").to_string()),
+            value_display: Some(state.session.effort_label.unwrap_or("auto").to_string()),
             settings_kind: Some(SettingsRowKind::Effort),
             hint: None,
             ..Default::default()

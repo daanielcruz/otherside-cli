@@ -24,11 +24,11 @@ pub fn handle(name: &str, args: &str, state: &mut ConversationState) -> SlashOut
             // Upstream uses only the persistent chip; we do the same.
             // The scrollback anchor below carries the transient
             // confirmation.
-            let anchor_result = if matches!(state.permission_mode, PermissionMode::Plan) {
-                state.permission_mode = PermissionMode::Default;
+            let anchor_result = if matches!(state.session.permission_mode, PermissionMode::Plan) {
+                state.session.permission_mode = PermissionMode::Default;
                 "Disabled plan mode"
             } else {
-                state.permission_mode = PermissionMode::Plan;
+                state.session.permission_mode = PermissionMode::Plan;
                 "Enabled plan mode"
             };
             // Chrome — plan-mode toggle is a local permission flip.
@@ -63,24 +63,24 @@ mod tests {
     #[test]
     fn plan_anchor_enabled_wording() {
         let mut st = ConversationState::default();
-        assert!(!matches!(st.permission_mode, PermissionMode::Plan));
+        assert!(!matches!(st.session.permission_mode, PermissionMode::Plan));
         handle("plan", "", &mut st);
         // push_anchor appends [user-echo, `⎿ <result>`] at the tail.
         let len = st.messages.len();
         assert!(len >= 2);
         assert_eq!(st.messages[len - 2].content, "/plan");
         assert_eq!(st.messages[len - 1].content, "⎿  Enabled plan mode");
-        assert!(matches!(st.permission_mode, PermissionMode::Plan));
+        assert!(matches!(st.session.permission_mode, PermissionMode::Plan));
     }
 
     #[test]
     fn plan_anchor_disabled_wording() {
         let mut st = ConversationState::default();
-        st.permission_mode = PermissionMode::Plan;
+        st.session.permission_mode = PermissionMode::Plan;
         handle("plan", "", &mut st);
         let len = st.messages.len();
         assert!(st.messages[len - 1].content.ends_with("Disabled plan mode"));
-        assert!(matches!(st.permission_mode, PermissionMode::Default));
+        assert!(matches!(st.session.permission_mode, PermissionMode::Default));
     }
 
     #[test]
