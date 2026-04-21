@@ -8,6 +8,16 @@
 //! body, no provider-side appliers writing to it. The translator calls
 //! [`build_request_body`] once and ships the result.
 //!
+//! # Source of the four byte-verbatim anchors
+//!
+//! The system prompt, system-reminders, tool schemas, and envelope
+//! defaults are not invented here — they are loaded from
+//! [`crate::harness`], which embeds them verbatim from
+//! `otherside-cli/harness_corpus/` at compile time. See the
+//! [`crate::harness`] module docs for the corpus layout and the refresh
+//! procedure. This file is where those anchors get composed; the
+//! harness module is where they live.
+//!
 //! # Current branches (R-57 baseline shape — zero intentional deviation)
 //!
 //! - `strip_1m_suffix`: `[1m]` alias is stripped here so the model

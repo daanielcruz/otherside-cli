@@ -54,6 +54,27 @@
 //!     └── Write.json
 //! ```
 //!
+//! # Assembly site (R-34)
+//!
+//! These artifacts are consumed by a **single** body assembler:
+//! [`crate::translator::anthropic::request::build_request_body`]. That
+//! function is the only place that composes the four anchors above into
+//! the final outbound JSON. If you are tracing how a byte ends up on
+//! the wire, follow this path:
+//!
+//! ```text
+//! harness_corpus/*            (byte-verbatim upstream artifacts)
+//!   → harness/mod.rs          (include_str! into const &str)
+//!   → harness::reminders      (assemble reminder blocks)
+//!   → translator::anthropic::request::build_request_body  (R-34)
+//!   → translator::anthropic::message_builder              (per-turn shape)
+//!   → provider::anthropic     (HTTP client, beta headers)
+//!   → /v1/messages wire
+//! ```
+//!
+//! Any conditional that could change the wire shape **must** live in
+//! `build_request_body` or the helpers it calls directly — nowhere else.
+//!
 //! # Inspection map
 //!
 //! | question                                          | inspect                                       |
@@ -63,6 +84,7 @@
 //! | what `system-reminder` blocks prepend turn 1?     | `system-reminders/*.{txt,tmpl}`               |
 //! | which tools are advertised on the wire?           | `tools/*.json` (9 files; order locked)        |
 //! | what are the body envelope defaults?              | `envelope.json`                               |
+//! | where does the body get composed?                 | `translator/anthropic/request.rs::build_request_body` |
 //! | which TUI slashes does the binary handle?         | `docs/slashes.md` + `src/tui/slash/catalog.rs`|
 //! | which SSE events does the stream emit?            | `src/translator/anthropic_to_openai.rs`       |
 //!
