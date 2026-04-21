@@ -442,6 +442,39 @@ impl ConversationState {
     }
 }
 
+/// Which [`crate::tasks::TaskKind`] a given tool-call name maps to for
+/// the background-task surface. `None` for tools that don't produce
+/// user-backgroundable work (Read / Edit / Glob / Grep / Write /
+/// NotebookEdit — fast atomic tool calls upstream also doesn't
+/// background). Agent + Bash are the two backgroundable kinds
+/// upstream exposes (`tasks/LocalAgentTask.tsx` + `LocalShellTask.tsx`).
+fn backgroundable_kind(tool_name: &str) -> Option<crate::tasks::TaskKind> {
+    match tool_name {
+        "Agent" => Some(crate::tasks::TaskKind::Agent),
+        "Bash" => Some(crate::tasks::TaskKind::Shell),
+        _ => None,
+    }
+}
+
+/// Short human label shown in the footer pill hover / detail view.
+/// For Agent: the `subagent_type` arg. For Bash: the first ~40 chars
+/// of the command. Falls back to the tool name on parse failure.
+fn summarize_tool_invocation(name: &str, args: &Value) -> String {
+    match name {
+        "Agent" => args
+            .get("subagent_type")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| "agent".into()),
+        "Bash" => args
+            .get("command")
+            .and_then(Value::as_str)
+            .map(|s| s.chars().take(40).collect::<String>())
+            .unwrap_or_else(|| "bash".into()),
+        other => other.to_string(),
+    }
+}
+
 /// How long an ephemeral toggle confirmation stays pinned in the info
 /// row before the prune pass clears it. Matches upstream's observed
 /// feedback duration from the tmux-parity captures (~3s).
@@ -786,7 +819,33 @@ impl ConversationState {
     /// onto [`ConversationState::active_tool_calls`]. Called from the
     /// event loop when the agent task sends
     /// `StreamEvent::ToolCallStart`.
+    ///
+    /// For backgroundable tool kinds (Agent, Bash) also mirrors the
+    /// tool-call into the [`crate::tasks::TaskStore`] so the footer
+    /// pill, the Ctrl+B predicate, and the `/tasks` dialog surface
+    /// the in-flight work while it dispatches. The store record's
+    /// id is the tool-call id, so the completion path in
+    /// [`Self::finish_tool_call`] can transition the same row.
     pub fn begin_tool_call(&mut self, id: String, name: String, args: Value) {
+        if let Some(kind) = backgroundable_kind(&name) {
+            let task_id = crate::tasks::TaskId::from_string(id.clone());
+            let display_name = summarize_tool_invocation(&name, &args);
+            let command = args.to_string();
+            let mut record = match kind {
+                crate::tasks::TaskKind::Shell => {
+                    crate::tasks::TaskRecord::new_shell(task_id, display_name, command)
+                }
+                crate::tasks::TaskKind::Agent => {
+                    crate::tasks::TaskRecord::new_agent(task_id, display_name, command)
+                }
+                crate::tasks::TaskKind::Generic => {
+                    crate::tasks::TaskRecord::new_shell(task_id, display_name, command)
+                }
+            };
+            record.state = crate::tasks::TaskState::Running;
+            record.is_backgrounded = false;
+            self.tasks.insert(record);
+        }
         self.active_tool_calls.push(ToolCallEntry {
             id,
             name,
@@ -827,17 +886,44 @@ impl ConversationState {
         };
         entry.elapsed_ms = elapsed_ms;
         let verbose = self.render_verbose;
-        match result {
+        let tool_name = entry.name.clone();
+        match &result {
             Ok(value) => {
                 entry.status = ToolStatus::Ok;
-                entry.payload = tool_render::payload_from_result(&entry.name, &value, verbose);
-                entry.raw_result = Some(value);
+                entry.payload = tool_render::payload_from_result(&entry.name, value, verbose);
+                entry.raw_result = Some(value.clone());
             }
             Err(err) => {
                 entry.status = ToolStatus::Error;
-                entry.payload = Some(tool_render::payload_from_error(&err));
+                entry.payload = Some(tool_render::payload_from_error(err));
                 entry.raw_result = None;
             }
+        }
+        // Mirror the transition into TaskStore when this tool was
+        // registered as a backgroundable task. Completed / Failed
+        // flows the same way regardless of whether the user hit
+        // Ctrl+B — the store record closes out either way.
+        if backgroundable_kind(&tool_name).is_some() {
+            let task_id = crate::tasks::TaskId::from_string(id.to_string());
+            self.tasks.update_with(&task_id, |r| {
+                match &result {
+                    Ok(_) => {
+                        r.state = crate::tasks::TaskState::Completed;
+                        r.exit_code = Some(0);
+                    }
+                    Err(_) => {
+                        r.state = crate::tasks::TaskState::Failed;
+                        r.exit_code = Some(1);
+                    }
+                }
+                // Only flag injection when it was actually in the
+                // background — otherwise the result already rode the
+                // synchronous tool_result message and a duplicate
+                // <task-notification> would confuse the model.
+                if r.is_backgrounded {
+                    r.inject_on_next_turn = true;
+                }
+            });
         }
     }
 
