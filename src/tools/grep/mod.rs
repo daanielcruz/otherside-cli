@@ -1,7 +1,6 @@
 //! Grep tool — spawns `rg` (ripgrep) and returns matching paths or
 //! content. Falls back to an error if ripgrep isn't on PATH.
 
-use std::path::PathBuf;
 use std::process::Command;
 
 use serde_json::{json, Value};
@@ -19,8 +18,8 @@ pub fn grep(args: &Value) -> Result<Value, ToolError> {
     let search_path = args
         .get("path")
         .and_then(Value::as_str)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        .map(|s| crate::tools::resolve_against_cwd(std::path::Path::new(s)))
+        .unwrap_or_else(crate::tools::effective_cwd);
 
     let output_mode = args
         .get("output_mode")

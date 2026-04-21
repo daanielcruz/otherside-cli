@@ -87,6 +87,34 @@ pub fn current_tool_call_id() -> Option<String> {
     CURRENT_TOOL_CALL_ID.with(|cell| cell.borrow().clone())
 }
 
+/// Effective working directory for a tool dispatch — honors the
+/// session worktree stack when `EnterWorktree` has been pushed,
+/// otherwise falls back to the process `current_dir` (and finally
+/// `"."` if even that fails).
+///
+/// Used by the filesystem-facing tools (Bash, Glob, Grep,
+/// NotebookEdit). Before Slice D only Bash consulted the stack —
+/// EnterWorktree silently left the other three rooted at the
+/// process cwd, so a model running `EnterWorktree /tmp/foo` followed
+/// by `Glob "**/*.rs"` would still scan the original cwd.
+pub fn effective_cwd() -> std::path::PathBuf {
+    crate::tools::deferred::worktree::effective_cwd()
+        .unwrap_or_else(|| {
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+        })
+}
+
+/// Resolve a relative filesystem path against [`effective_cwd`].
+/// Absolute paths are returned verbatim. Matches the semantics
+/// Bash already gets from `Command::current_dir`.
+pub fn resolve_against_cwd(path: &std::path::Path) -> std::path::PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        effective_cwd().join(path)
+    }
+}
+
 /// Tool execution error surface. Serializes to the ToolResult the
 /// agent loop feeds back to the model.
 #[derive(Debug, thiserror::Error)]

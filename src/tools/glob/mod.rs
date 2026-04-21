@@ -18,8 +18,8 @@ pub fn glob(args: &Value) -> Result<Value, ToolError> {
     let search_root = args
         .get("path")
         .and_then(Value::as_str)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        .map(|s| crate::tools::resolve_against_cwd(std::path::Path::new(s)))
+        .unwrap_or_else(crate::tools::effective_cwd);
 
     let started = std::time::Instant::now();
 

@@ -77,7 +77,7 @@ pub fn notebook_edit(args: &Value) -> Result<Value, ToolError> {
         }
     }
 
-    let path = Path::new(notebook_path);
+    let path = crate::tools::resolve_against_cwd(Path::new(notebook_path));
     if path.extension().and_then(|s| s.to_str()) != Some("ipynb") {
         return Err(ToolError::InvalidArgs(format!(
             "notebook_path `{notebook_path}` does not have a .ipynb extension",
@@ -86,7 +86,7 @@ pub fn notebook_edit(args: &Value) -> Result<Value, ToolError> {
 
     // Read file. Wrap blocking I/O per R-107 so this behaves correctly
     // when called from the tokio multi-thread runtime.
-    let raw = tokio::task::block_in_place(|| std::fs::read_to_string(path))?;
+    let raw = tokio::task::block_in_place(|| std::fs::read_to_string(&path))?;
 
     let mut notebook: Value = serde_json::from_str(&raw).map_err(|e| {
         ToolError::InvalidArgs(format!("notebook is not valid JSON: {e}"))
@@ -145,7 +145,7 @@ pub fn notebook_edit(args: &Value) -> Result<Value, ToolError> {
     // `preserve_order` is already enabled on serde_json via Cargo.toml
     // (R-56) so cell key order round-trips intact.
     let updated = serialize_ipynb(&notebook)?;
-    let path_owned = path.to_path_buf();
+    let path_owned = path.clone();
     let bytes = updated.clone();
     tokio::task::block_in_place(move || std::fs::write(&path_owned, bytes.as_bytes()))?;
 
