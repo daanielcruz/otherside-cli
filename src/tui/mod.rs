@@ -275,7 +275,7 @@ async fn event_loop(
     if st.settings.default_model.is_none() {
         st.settings.default_model = Some(st.session.model.clone());
     }
-    if let Err(e) = persist_settings(&st) {
+    if let Err(e) = persist_session_defaults(&st) {
         tracing::warn!(?e, "initial settings write failed");
     }
     // Thread the session's thinking level into the progress-line
@@ -1042,7 +1042,7 @@ fn edit_settings_row(st: &mut ConversationState, direction: i32) {
             let n = order.len() as i32;
             let next_idx = (((idx as i32) + dir).rem_euclid(n)) as usize;
             st.session.permission_mode = order[next_idx];
-            st.settings.permission_mode = Some(st.session.permission_mode);
+            // Rule §3: permission_mode is session-scoped. No write-back to Settings.
         }
         SettingsRowKind::Effort => {
             const LEVELS: &[&str] = &["auto", "low", "medium", "high", "xhigh", "max"];
@@ -1075,7 +1075,7 @@ fn edit_settings_row(st: &mut ConversationState, direction: i32) {
     }
 
     // Persist on every mutation — atomic write via `config::write_atomic`.
-    if let Err(e) = persist_settings(st) {
+    if let Err(e) = persist_session_defaults(st) {
         st.push_system_note(format!("settings write failed: {e}"));
     }
 
@@ -1119,14 +1119,29 @@ fn models_for_provider(p: crate::config::providers::ProviderId) -> &'static [&'s
     }
 }
 
-/// Flush `state.settings` to disk via the state-module persistence
-/// facade. Kept as a thin wrapper at the call-site layer so the 5
-/// existing call sites don't churn; the real work lives in
-/// [`crate::state::PersistenceState::flush`]. Fase 3 folds this
-/// into `AppState::persistence` and the wrapper goes away.
-fn persist_settings(st: &ConversationState) -> Result<()> {
-    let pers = crate::state::PersistenceState::new(st.settings.clone());
-    pers.flush()
+/// Flush session-scoped identity fields (`default_provider`,
+/// `default_model`, `effort_level`) to `~/.otherside/settings.json`
+/// via [`crate::state::PersistenceState::commit_session_defaults`].
+///
+/// Rule §3 (2026-04-20): `permission_mode` is session-scoped and
+/// NEVER persisted. This wrapper routes through
+/// `commit_session_defaults` — which writes only the three
+/// session-identity fields — instead of flushing the raw Settings
+/// struct. Any settings-only knob the caller mutated (auto_compact,
+/// show_tips, verbose, ...) still survives: the PersistenceState
+/// is seeded from `st.settings.clone()`, and flush serializes the
+/// full struct.
+///
+/// Fase 3 folds this into `AppState::persistence` and the wrapper
+/// goes away.
+fn persist_session_defaults(st: &ConversationState) -> Result<()> {
+    let provider_id = st
+        .settings
+        .default_provider
+        .clone()
+        .unwrap_or_else(|| "anthropic-oauth".to_string());
+    let mut pers = crate::state::PersistenceState::new(st.settings.clone());
+    pers.commit_session_defaults(&st.session, &provider_id)
 }
 
 /// Rotate the active Settings tab by `direction` (±1). Rebuilds the
@@ -1423,7 +1438,7 @@ fn apply_model_outcome(
     }
     // Persist the user's model choice across sessions.
     st.settings.default_model = Some(model_id.to_string());
-    if let Err(e) = persist_settings(st) {
+    if let Err(e) = persist_session_defaults(st) {
         st.push_system_note(format!("settings write failed: {e}"));
     }
 }
@@ -1444,7 +1459,7 @@ fn apply_effort_outcome(
         *thinking = Some(ThinkingConfig::auto());
         st.session.effort_label = None;
         st.settings.effort_level = Some("auto".to_string());
-        if let Err(e) = persist_settings(st) {
+        if let Err(e) = persist_session_defaults(st) {
             st.push_system_note(format!("settings write failed: {e}"));
         }
         return;
@@ -1454,7 +1469,7 @@ fn apply_effort_outcome(
             *thinking = Some(ThinkingConfig::level(level));
             st.session.effort_label = Some(level.as_label());
             st.settings.effort_level = Some(action_id.to_string());
-            if let Err(e) = persist_settings(st) {
+            if let Err(e) = persist_session_defaults(st) {
                 st.push_system_note(format!("settings write failed: {e}"));
             }
         }

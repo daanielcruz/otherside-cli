@@ -35,11 +35,6 @@ pub struct Settings {
     /// Overridden by `--verbose`, `--debug`, or `RUST_LOG`.
     pub log_level: Option<String>,
 
-    /// Interactive permission posture: ask on every mutation (default),
-    /// accept non-destructive edits without prompting (acceptEdits),
-    /// read-only exploration (plan), or all-allow (yolo — C40).
-    pub permission_mode: Option<PermissionMode>,
-
     /// User consented to yolo mode at least once.
     pub has_accepted_yolo_dialog: Option<bool>,
 
@@ -289,7 +284,6 @@ mod tests {
     fn corpus_settings_full_parses() {
         let s = parse(&corpus_root().join("settings/full.json")).unwrap();
         assert_eq!(s.default_provider.as_deref(), Some("anthropic-oauth"));
-        assert_eq!(s.permission_mode, Some(PermissionMode::Default));
         assert_eq!(s.has_accepted_yolo_dialog, Some(false));
         assert_eq!(s.auto_dedup_mem_enabled, Some(true));
         assert!(s.permissions.is_some());
@@ -297,6 +291,10 @@ mod tests {
         assert!(s.providers.openai_compatible.is_some());
         assert_eq!(s.env.get("GIT_AUTHOR_NAME").map(|s| s.as_str()), Some("Elliot"));
         assert_eq!(s.strict_plugin_only_customization, Some(false));
+        assert!(
+            s.extra.contains_key("permissionMode"),
+            "rule §3: permissionMode in settings.json falls through to extra and never seeds the session"
+        );
     }
 
     #[test]
@@ -352,18 +350,26 @@ mod tests {
     #[test]
     fn corpus_yolo_mode_parses_canonical_form() {
         let s = parse(&corpus_root().join("settings/yolo_mode.json")).unwrap();
-        assert_eq!(s.permission_mode, Some(PermissionMode::Yolo));
         assert_eq!(s.has_accepted_yolo_dialog, Some(true));
+        assert!(
+            s.extra.contains_key("permissionMode"),
+            "rule §3: permissionMode survives as passthrough extra, not a typed field"
+        );
     }
 
     #[test]
-    fn yolo_serializes_as_canonical_spelling() {
-        let s = Settings {
-            permission_mode: Some(PermissionMode::Yolo),
-            ..Default::default()
-        };
-        let json = serde_json::to_string(&s).unwrap();
-        assert!(json.contains("\"permissionMode\":\"yolo\""));
+    fn permission_mode_is_not_a_typed_settings_field() {
+        // Rule §3: permission_mode is session-scoped, NEVER persisted.
+        // Deserializing a settings blob that carries `permissionMode`
+        // must succeed AND drop the value into `extra` so no boot path
+        // can accidentally seed the session from it.
+        let json = r#"{"permissionMode":"yolo","defaultProvider":"anthropic-oauth"}"#;
+        let s: Settings = serde_json::from_str(json).unwrap();
+        assert_eq!(s.default_provider.as_deref(), Some("anthropic-oauth"));
+        assert_eq!(
+            s.extra.get("permissionMode"),
+            Some(&Value::String("yolo".to_string()))
+        );
     }
 
     #[test]

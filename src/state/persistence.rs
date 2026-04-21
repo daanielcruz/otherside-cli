@@ -114,19 +114,19 @@ mod tests {
     }
 
     #[test]
-    fn permission_mode_never_touches_settings() {
-        // Rule §3 contract: commit_session_defaults MUST NOT write
-        // permission_mode into settings. This test locks that guarantee
-        // by asserting the field stays whatever it was, regardless of
-        // the session value.
-        let mut p = PersistenceState::default();
-        p.settings.permission_mode = None; // was unset
+    fn permission_mode_is_not_a_typed_settings_field() {
+        // Rule §3 (compile-time proof): Settings has no typed
+        // `permission_mode` field — any attempt to write
+        // `settings.permission_mode = _` fails to compile. The session
+        // still carries `permission_mode`; the write-back path that used
+        // to mirror it onto Settings was deleted in Slice A.
         let s = Session::new("opus", PermissionMode::Yolo);
-        // We can't call commit_session_defaults without touching disk,
-        // but the implementation above explicitly doesn't set
-        // permission_mode — this test compiles as a reminder: if you
-        // ever add such a write, rewrite this test first.
         assert_eq!(s.permission_mode, PermissionMode::Yolo);
-        assert_eq!(p.settings.permission_mode, None);
+
+        // Legacy settings blobs carrying `"permissionMode"` round-trip
+        // into `extra` rather than a typed field — see
+        // `config::settings::tests::permission_mode_is_not_a_typed_settings_field`.
+        let settings = crate::config::Settings::default();
+        assert!(settings.extra.is_empty());
     }
 }

@@ -516,13 +516,19 @@ mod tests {
     }
 
     #[test]
-    fn resolve_policy_permission_mode_wins() {
-        // §10.6: policy yolo beats user default
+    fn resolve_passes_permission_mode_through_as_extra_not_typed_field() {
+        // Rule §3 (2026-04-20): permission_mode is session-scoped and
+        // NEVER seeded from settings.json. The resolver still merges
+        // the raw JSON across scopes (policy beats user) — it just
+        // lands in `extra` so no boot path can pick it up.
         let (s, _) = resolve(&[
             SettingsSource::UserGlobal(json!({"permissionMode":"default"})),
             SettingsSource::Policy(json!({"permissionMode":"yolo"})),
         ]);
-        assert_eq!(s.permission_mode, Some(PermissionMode::Yolo));
+        assert_eq!(
+            s.extra.get("permissionMode"),
+            Some(&json!("yolo"))
+        );
     }
 
     #[test]
