@@ -291,39 +291,31 @@ impl OverlayMenu {
                 .as_deref(),
         )
         .has_opus_1m();
-        let opus_row: (&str, &str, &str) = if has_1m {
-            (
-                "claude-opus-4-7[1m]",
-                "Default (recommended)",
-                "Opus 4.7 with 1M context · Most capable for complex work",
-            )
+        // Hints come from the catalog's `display_hint` column — the
+        // short row labels stay UX copy here. Row 0's id flips with
+        // the tier; hint flips with the id via catalog lookup.
+        let opus_id = if has_1m {
+            "claude-opus-4-7[1m]"
         } else {
-            (
-                "claude-opus-4-7",
-                "Default (recommended)",
-                "Opus 4.7 · Most capable for complex work",
-            )
+            "claude-opus-4-7"
         };
-        let models: [(&str, &str, &str); 3] = [
-            opus_row,
-            (
-                "claude-sonnet-4-6",
-                "Sonnet",
-                "Sonnet 4.6 · Best for everyday tasks",
-            ),
-            (
-                "claude-haiku-4-5",
-                "Haiku",
-                "Haiku 4.5 · Fastest for quick answers",
-            ),
+        let rows: [(&str, &str); 3] = [
+            (opus_id, "Default (recommended)"),
+            ("claude-sonnet-4-6", "Sonnet"),
+            ("claude-haiku-4-5", "Haiku"),
         ];
-        let options: Vec<MenuOption> = models
+        let options: Vec<MenuOption> = rows
             .iter()
-            .map(|(id, label, hint)| MenuOption {
-                label: (*label).to_string(),
-                action_id: (*id).to_string(),
-                hint: Some((*hint).to_string()),
-                ..Default::default()
+            .map(|(id, label)| {
+                let hint = crate::models::catalog::by_id(id)
+                    .map(|m| m.display_hint.to_string())
+                    .filter(|h| !h.is_empty());
+                MenuOption {
+                    label: (*label).to_string(),
+                    action_id: (*id).to_string(),
+                    hint,
+                    ..Default::default()
+                }
             })
             .collect();
         let cursor = options

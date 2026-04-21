@@ -28,9 +28,7 @@
 //! by manual `context_window` and `effort_label` fixups.
 
 use crate::config::PermissionMode;
-
-const CONTEXT_WINDOW_1M: u64 = 1_000_000;
-const CONTEXT_WINDOW_200K: u64 = 200_000;
+use crate::models::catalog;
 
 #[derive(Debug, Clone)]
 pub struct Session {
@@ -46,11 +44,11 @@ pub struct Session {
 }
 
 impl Session {
-    /// Fresh session sized by the model alias. `[1m]` in the raw
-    /// string selects the 1M context window.
+    /// Fresh session sized by the model alias. Context window reads
+    /// from the catalog; unknown ids fall back to 200K.
     pub fn new(raw_model: &str, permission_mode: PermissionMode) -> Self {
         Self {
-            context_window: context_window_for(raw_model),
+            context_window: catalog::context_window_for(raw_model),
             permission_mode,
             model: raw_model.to_string(),
             effort_label: None,
@@ -58,13 +56,13 @@ impl Session {
     }
 
     /// Swap the model alias mid-session. Recomputes `context_window`
-    /// from the new `[1m]` suffix flag. Effort reconcile (snap to the
-    /// new model's supported_efforts) lives at the AppState level
-    /// because it needs to rebuild the ThinkingConfig held by the
-    /// event loop — this function only touches Session-owned fields.
+    /// via catalog lookup. Effort reconcile (snap to the new model's
+    /// supported_efforts) lives at the AppState level because it
+    /// needs to rebuild the ThinkingConfig held by the event loop —
+    /// this function only touches Session-owned fields.
     pub fn set_model(&mut self, new_raw: &str) {
         self.model = new_raw.to_string();
-        self.context_window = context_window_for(new_raw);
+        self.context_window = catalog::context_window_for(new_raw);
     }
 
     /// Update the displayed effort label. `None` = auto / unset.
@@ -135,16 +133,6 @@ impl Default for Session {
     }
 }
 
-/// 1M when `[1m]` suffix present (case-insensitive), 200K otherwise.
-/// Mirrors upstream's `getContextWindowForModel` check.
-fn context_window_for(raw_model: &str) -> u64 {
-    if raw_model.to_ascii_lowercase().contains("[1m]") {
-        CONTEXT_WINDOW_1M
-    } else {
-        CONTEXT_WINDOW_200K
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -152,14 +140,14 @@ mod tests {
     #[test]
     fn new_picks_1m_on_suffix() {
         let s = Session::new("claude-opus-4-7[1m]", PermissionMode::AcceptEdits);
-        assert_eq!(s.context_window, CONTEXT_WINDOW_1M);
+        assert_eq!(s.context_window, 1_000_000);
         assert_eq!(s.context_window_label(), "1M");
     }
 
     #[test]
     fn new_defaults_to_200k() {
         let s = Session::new("claude-sonnet-4-6", PermissionMode::AcceptEdits);
-        assert_eq!(s.context_window, CONTEXT_WINDOW_200K);
+        assert_eq!(s.context_window, 200_000);
         assert_eq!(s.context_window_label(), "200K");
     }
 
@@ -167,9 +155,9 @@ mod tests {
     fn set_model_reconciles_context_window() {
         let mut s = Session::new("claude-opus-4-7", PermissionMode::AcceptEdits);
         s.set_model("claude-opus-4-7[1m]");
-        assert_eq!(s.context_window, CONTEXT_WINDOW_1M);
+        assert_eq!(s.context_window, 1_000_000);
         s.set_model("claude-haiku-4-5");
-        assert_eq!(s.context_window, CONTEXT_WINDOW_200K);
+        assert_eq!(s.context_window, 200_000);
     }
 
     #[test]

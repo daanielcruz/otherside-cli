@@ -28,9 +28,14 @@ pub fn handle(kind: PanelKind, state: &mut ConversationState) -> SlashOutcome {
         PanelKind::Model => {
             // Surface the session's effort level to the picker so
             // upstream's inline `◉ {Level} effort (default) ← → to adjust`
-            // indicator renders (014 parity). Defaults to `xhigh`
-            // when unset — upstream Opus default.
-            let effort = state.session.effort_label.unwrap_or("xhigh");
+            // indicator renders (014 parity). Falls back to the active
+            // model's catalog default — opus yields `"xhigh"`, sonnet
+            // `"high"`, haiku `"auto"`. Avoids the old hardcoded
+            // `"xhigh"` that rendered wrong for sonnet/haiku sessions.
+            let effort = state
+                .session
+                .effort_label
+                .unwrap_or_else(|| crate::models::catalog::default_effort_for(&state.session.model));
             menu::OverlayMenu::new_model_with_effort(&state.session.model, Some(effort))
         }
         PanelKind::Help => menu::OverlayMenu::new_info(

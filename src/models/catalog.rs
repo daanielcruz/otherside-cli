@@ -34,6 +34,15 @@ pub struct Model {
     /// Effort level applied at session start when the user has no
     /// override. `"auto"` for models without explicit effort support.
     pub default_effort: &'static str,
+    /// Token budget the session seeds from this model. The `[1m]`
+    /// variants carry 1_000_000; everything else carries 200_000.
+    /// Single source of truth — before this column landed,
+    /// `state::session::context_window_for` and two TUI sites each
+    /// sniffed the string `[1m]` independently.
+    pub context_window: u64,
+    /// Short marketing blurb the `/model` picker renders as the row's
+    /// hint line. Empty string = no hint.
+    pub display_hint: &'static str,
 }
 
 /// Every model otherside knows about. Ordered roughly by
@@ -46,6 +55,22 @@ pub const CATALOG: &[Model] = &[
     // (`opus[1m]`). Tier-aware default (Max / Team Premium) flips to
     // the `[1m]` variant upstream of the resolver — see
     // `defaults::default_claude_code_for_tier`.
+    // 1M variant first: picker presents it as "Default (recommended)"
+    // per upstream v2.1.114 shape. `primary_for_family` still sits on
+    // the NON-1M row — the alias resolver follows that flag, the
+    // picker follows catalog order.
+    Model {
+        id: "claude-opus-4-7[1m]",
+        display_name: "Opus 4.7 (1M context)",
+        supports_1m: true,
+        provider: ProviderId::ClaudeCode,
+        family_alias: Some("opus"),
+        primary_for_family: false,
+        supported_efforts: &["auto", "low", "medium", "high", "xhigh", "max"],
+        default_effort: "xhigh",
+        context_window: 1_000_000,
+        display_hint: "Opus 4.7 with 1M context · Most capable for complex work",
+    },
     Model {
         id: "claude-opus-4-7",
         display_name: "Opus 4.7",
@@ -55,16 +80,8 @@ pub const CATALOG: &[Model] = &[
         primary_for_family: true,
         supported_efforts: &["auto", "low", "medium", "high", "xhigh", "max"],
         default_effort: "xhigh",
-    },
-    Model {
-        id: "claude-opus-4-7[1m]",
-        display_name: "Opus 4.7",
-        supports_1m: true,
-        provider: ProviderId::ClaudeCode,
-        family_alias: Some("opus"),
-        primary_for_family: false,
-        supported_efforts: &["auto", "low", "medium", "high", "xhigh", "max"],
-        default_effort: "xhigh",
+        context_window: 200_000,
+        display_hint: "Opus 4.7 · Most capable for complex work",
     },
     Model {
         id: "claude-sonnet-4-6",
@@ -75,6 +92,8 @@ pub const CATALOG: &[Model] = &[
         primary_for_family: true,
         supported_efforts: &["auto", "low", "medium", "high"],
         default_effort: "high",
+        context_window: 200_000,
+        display_hint: "Sonnet 4.6 · Best for everyday tasks",
     },
     Model {
         id: "claude-haiku-4-5",
@@ -85,6 +104,8 @@ pub const CATALOG: &[Model] = &[
         primary_for_family: true,
         supported_efforts: &["auto"],
         default_effort: "auto",
+        context_window: 200_000,
+        display_hint: "Haiku 4.5 · Fastest for quick answers",
     },
     // Codex / OpenAI provider (dispatch frozen, catalog still exposed for
     // the picker row when the user selects this provider)
@@ -97,6 +118,8 @@ pub const CATALOG: &[Model] = &[
         primary_for_family: false,
         supported_efforts: &["auto"],
         default_effort: "auto",
+        context_window: 200_000,
+        display_hint: "",
     },
     // Gemini / Google provider (dispatch frozen)
     Model {
@@ -108,6 +131,8 @@ pub const CATALOG: &[Model] = &[
         primary_for_family: false,
         supported_efforts: &["auto"],
         default_effort: "auto",
+        context_window: 200_000,
+        display_hint: "",
     },
 ];
 
@@ -136,6 +161,24 @@ pub fn models_for(provider: ProviderId) -> Vec<&'static Model> {
 /// when the model is in the catalog, otherwise `"auto"`.
 pub fn default_effort_for(id: &str) -> &'static str {
     by_id(id).map(|m| m.default_effort).unwrap_or("auto")
+}
+
+/// Context window for the given model id — 200K fallback when the
+/// model is not in the catalog. Single source of truth; the
+/// `[1m]`-sniff logic used to live in three places before Slice U.
+///
+/// When the exact id is missing, we still honor the `[1m]` alias
+/// suffix case-insensitively so pre-resolve callers (e.g. the CLI
+/// that hands `"OPUS[1M]"` straight to `Session::new`) still size
+/// the window correctly.
+pub fn context_window_for(id: &str) -> u64 {
+    if let Some(m) = by_id(id) {
+        return m.context_window;
+    }
+    if has_1m_suffix(id) {
+        return 1_000_000;
+    }
+    200_000
 }
 
 /// True iff `effort` is a valid level for `id`. Unknown ids only
@@ -172,7 +215,11 @@ mod tests {
     #[test]
     fn display_name_resolves_for_opus() {
         assert_eq!(display_name_for("claude-opus-4-7"), Some("Opus 4.7"));
-        assert_eq!(display_name_for("claude-opus-4-7[1m]"), Some("Opus 4.7"));
+        assert_eq!(
+            display_name_for("claude-opus-4-7[1m]"),
+            Some("Opus 4.7 (1M context)"),
+            "the 1M variant carries a distinct label; `model_display_label` used to synthesize this, now catalog owns it"
+        );
     }
 
     #[test]

@@ -1014,17 +1014,17 @@ fn edit_settings_row(st: &mut ConversationState, direction: i32) {
                 .as_deref()
                 .and_then(ProviderId::from_slug)
                 .unwrap_or(ProviderId::ClaudeCode);
-            let list = models_for_provider(provider);
+            let list = crate::models::catalog::models_for(provider);
             if list.is_empty() {
                 return;
             }
             let idx = list
                 .iter()
-                .position(|m| *m == st.session.model.as_str())
+                .position(|m| m.id == st.session.model.as_str())
                 .unwrap_or(0);
             let n = list.len() as i32;
             let next_idx = (((idx as i32) + dir).rem_euclid(n)) as usize;
-            let next_model = list[next_idx];
+            let next_model = list[next_idx].id;
             st.switch_model(next_model);
             st.settings.default_model = Some(next_model.to_string());
         }
@@ -1045,13 +1045,21 @@ fn edit_settings_row(st: &mut ConversationState, direction: i32) {
             // Rule §3: permission_mode is session-scoped. No write-back to Settings.
         }
         SettingsRowKind::Effort => {
-            const LEVELS: &[&str] = &["auto", "low", "medium", "high", "xhigh", "max"];
+            // Levels come from the catalog row for the active model.
+            // Haiku reports `["auto"]`, so its Settings row still works
+            // but the cycle is a no-op. Unknown models fall back to the
+            // six-level slider that matches upstream's
+            // `commands/effort/effort.tsx::SLIDER_LEVELS` plus `auto`.
+            let levels: &[&str] = crate::models::catalog::by_id(&st.session.model)
+                .map(|m| m.supported_efforts)
+                .filter(|s| !s.is_empty())
+                .unwrap_or(&["auto", "low", "medium", "high", "xhigh", "max"]);
             let current = st.session.effort_label.unwrap_or("auto");
-            let idx = LEVELS.iter().position(|l| *l == current).unwrap_or(0);
-            let n = LEVELS.len() as i32;
+            let idx = levels.iter().position(|l| *l == current).unwrap_or(0);
+            let n = levels.len() as i32;
             let next_idx = (((idx as i32) + dir).rem_euclid(n)) as usize;
-            st.session.effort_label = Some(LEVELS[next_idx]);
-            st.settings.effort_level = Some(LEVELS[next_idx].to_string());
+            st.session.effort_label = Some(levels[next_idx]);
+            st.settings.effort_level = Some(levels[next_idx].to_string());
         }
         SettingsRowKind::Bool(id) => {
             let current = match id {
@@ -1091,31 +1099,6 @@ fn edit_settings_row(st: &mut ConversationState, direction: i32) {
     if let Some(m) = st.active_menu.as_mut() {
         m.cursor = prev_cursor.min(m.options.len().saturating_sub(1));
         m.settings_header_focused = Some(prev_header_focused);
-    }
-}
-
-/// Canonical model-alias list per provider — used by the Model row's
-/// enum cycle. The first entry is the provider's default (matches
-/// `ProviderId::default_model`); subsequent entries walk the known
-/// alias list for that provider. openai-custom returns an empty list
-/// because the alias is user-supplied; the Model row becomes
-/// effectively read-only there.
-fn models_for_provider(p: crate::config::providers::ProviderId) -> &'static [&'static str] {
-    use crate::config::providers::ProviderId;
-    match p {
-        ProviderId::ClaudeCode => &[
-            "claude-opus-4-7[1m]",
-            "claude-opus-4-7",
-            "claude-sonnet-4-6",
-            "claude-haiku-4-5",
-        ],
-        ProviderId::Codex => &["gpt-5.4", "gpt-5.3", "gpt-5.2", "gpt-4.1"],
-        ProviderId::GeminiCli => &[
-            "gemini-3.1-pro-preview",
-            "gemini-3.1-flash",
-            "gemini-2.5-pro",
-        ],
-        ProviderId::OpenAiCustom => &[],
     }
 }
 
@@ -1192,7 +1175,9 @@ fn emit_panel_dismiss_anchor(
                 Some(menu::OverlayMenuOutcome::SetModel { model_id }) => model_id.as_str(),
                 _ => st.session.model.as_str(),
             };
-            let label = model_display_label(chosen);
+            let label = crate::models::catalog::display_name_for(chosen)
+                .map(str::to_string)
+                .unwrap_or_else(|| chosen.to_string());
             let text = if chosen == st.session.model {
                 // 010 Gap 4: append ` (default)` when the current
                 // model matches the session default, mirroring
@@ -1270,23 +1255,6 @@ fn is_session_default_model(model: &str, st: &ConversationState) -> bool {
     model == default
 }
 
-/// Map a model id (e.g. `claude-opus-4-7[1m]`) to the human label the
-/// panel displays (e.g. `Opus 4.7 with 1M context window`). Falls back
-/// to the id itself when no label is registered.
-fn model_display_label(model_id: &str) -> String {
-    const MODELS: &[(&str, &str)] = &[
-        ("claude-opus-4-7", "Opus 4.7"),
-        ("claude-opus-4-7[1m]", "Opus 4.7 (1M context)"),
-        ("claude-opus-4-6", "Opus 4.6"),
-        ("claude-sonnet-4-6", "Sonnet 4.6"),
-        ("claude-haiku-4-5", "Haiku 4.5"),
-    ];
-    MODELS
-        .iter()
-        .find(|(id, _)| *id == model_id)
-        .map(|(_, label)| (*label).to_string())
-        .unwrap_or_else(|| model_id.to_string())
-}
 
 /// Route a key event through the active AskUserQuestion overlay.
 /// Enter fires the reply (current input), Esc fires empty string.
@@ -1411,12 +1379,7 @@ fn apply_model_outcome(
     let (_base, _thinking) = crate::thinking::parse_suffix(model_id)
         .map(|(m, t)| (m, t))
         .unwrap_or_else(|_| (model_id.to_string(), None));
-    st.session.model = model_id.to_string();
-    if model_id.to_lowercase().contains("[1m]") {
-        st.session.context_window = 1_000_000;
-    } else {
-        st.session.context_window = 200_000;
-    }
+    st.session.set_model(model_id);
     // Reconcile effort against the new model's support matrix. When
     // the old effort isn't supported (switching opus xhigh → sonnet
     // which maxes at high, or → haiku which takes only auto), snap
