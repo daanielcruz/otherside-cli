@@ -991,9 +991,13 @@ fn build_info_chip_line(state: &ConversationState) -> Line<'static> {
     let chip_opt = state.permission_mode_label();
     let has_chip = chip_opt.is_some();
     // Background-task pill — byte-match upstream
-    // (`tasks/pillLabel.ts:10-67`). `None` when no active tasks ⇒
-    // segment skipped.
-    let task_pill = crate::tasks::pill_label::get_pill_label(state.tasks.counts_active());
+    // (`tasks/pillLabel.ts:10-67`). `None` when no active tasks OR
+    // when OTHERSIDE_DISABLE_BACKGROUND_TASKS=1 ⇒ segment skipped.
+    let task_pill = if crate::tasks::is_disabled() {
+        None
+    } else {
+        crate::tasks::pill_label::get_pill_label(state.tasks.counts_active())
+    };
     let has_task_pill = task_pill.is_some();
     // Hide cycle-hint once any other left-side segment is present so
     // the row doesn't grow into a wrap-prone string.

@@ -29,12 +29,14 @@
 //! - No teammate/cloud tasks — those live on a different upstream
 //!   code path and are out of scope per user directive.
 
+pub mod env;
 pub mod id;
 pub mod pill_label;
 pub mod spawn;
 pub mod state;
 pub mod store;
 
+pub use env::is_disabled;
 pub use id::TaskId;
 pub use spawn::spawn_background_agent;
 pub use state::{TaskKind, TaskRecord, TaskState};

@@ -148,10 +148,16 @@ impl Binding {
 /// friendly + can live in a `&'static` slice.
 
 fn any_running_foreground(ctx: &PredicateContext<'_>) -> bool {
+    if crate::tasks::is_disabled() {
+        return false;
+    }
     ctx.tasks.any_running_foreground()
 }
 
 fn any_backgrounded(ctx: &PredicateContext<'_>) -> bool {
+    if crate::tasks::is_disabled() {
+        return false;
+    }
     ctx.tasks
         .list_active()
         .into_iter()

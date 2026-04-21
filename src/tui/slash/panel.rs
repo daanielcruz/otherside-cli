@@ -195,6 +195,11 @@ fn hooks_hints(st: &ConversationState) -> Vec<String> {
 /// · running for <Ns>`. Format is local until §7 lands the
 /// upstream-shaped two-column row.
 fn tasks_hints(st: &ConversationState) -> Vec<String> {
+    if crate::tasks::is_disabled() {
+        return vec![
+            "Background tasks disabled via OTHERSIDE_DISABLE_BACKGROUND_TASKS".into(),
+        ];
+    }
     let active = st.tasks.list_active();
     if active.is_empty() {
         return vec!["No tasks currently running".into()];
