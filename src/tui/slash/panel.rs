@@ -69,6 +69,20 @@ pub fn handle(kind: PanelKind, state: &mut ConversationState) -> SlashOutcome {
                 "No servers active this session.".into(),
             ],
         ),
+        PanelKind::Tasks => {
+            // Wave-1 §6: register the panel + dispatch via /tasks
+            // and /bashes alias, opening a list-style overlay.
+            // Detail-view + auto-skip-when-N=1 + `x` stop shortcut
+            // land in §7 with the dedicated BackgroundTasksDialog
+            // widget. For now `new_info` shows the list as muted
+            // hint rows mirroring the upstream empty-state +
+            // populated-state strings byte-match.
+            menu::OverlayMenu::new_info(
+                PanelKind::Tasks,
+                "Background tasks".into(),
+                tasks_hints(state),
+            )
+        }
         PanelKind::Hooks => menu::OverlayMenu::new_info(
             PanelKind::Hooks,
             "Hooks".into(),
@@ -168,4 +182,32 @@ fn hooks_hints(st: &ConversationState) -> Vec<String> {
         format!("user_prompt_submit: {}", h.user_prompt_submit.len()),
         format!("stop: {}", h.stop.len()),
     ]
+}
+
+/// Stringly hints rendered inside the `/tasks` info-style overlay
+/// (wave-1 §6 stub). `§7` replaces this with a real
+/// BackgroundTasksDialog widget with selection + detail view.
+///
+/// Empty state matches upstream byte-for-byte: `No tasks currently
+/// running` (capture `05-kill-confirm.txt:38`).
+///
+/// Populated state lists one row per active task: `<name> · <id>
+/// · running for <Ns>`. Format is local until §7 lands the
+/// upstream-shaped two-column row.
+fn tasks_hints(st: &ConversationState) -> Vec<String> {
+    let active = st.tasks.list_active();
+    if active.is_empty() {
+        return vec!["No tasks currently running".into()];
+    }
+    active
+        .into_iter()
+        .map(|r| {
+            format!(
+                "{} · {} · running for {}s",
+                r.name,
+                r.id.as_str(),
+                r.runtime_secs(),
+            )
+        })
+        .collect()
 }

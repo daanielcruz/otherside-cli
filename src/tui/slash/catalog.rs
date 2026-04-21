@@ -72,6 +72,10 @@ pub enum PanelKind {
     Skills,
     Agents,
     Mcp,
+    /// `/tasks` (alias `/bashes`) — BackgroundTasksDialog. SEPARATE
+    /// from `/agents` (the agent CONFIG panel). Source:
+    /// `commands/tasks/index.ts:3-9`.
+    Tasks,
 }
 
 impl PanelKind {
@@ -91,6 +95,7 @@ impl PanelKind {
             PanelKind::Skills => "skills",
             PanelKind::Agents => "agents",
             PanelKind::Mcp => "mcp",
+            PanelKind::Tasks => "tasks",
         }
     }
 }
@@ -274,6 +279,16 @@ pub const CATALOG: &[SlashEntry] = &[
         brief: "manage MCP servers",
         kind: SlashKind::Panel(PanelKind::Mcp),
     },
+    SlashEntry {
+        name: "tasks",
+        brief: "list and manage background tasks",
+        kind: SlashKind::Panel(PanelKind::Tasks),
+    },
+    SlashEntry {
+        name: "bashes",
+        brief: "list and manage background tasks",
+        kind: SlashKind::Panel(PanelKind::Tasks),
+    },
 
     // ── auth (2) ────────────────────────────────────────────────
     SlashEntry {
@@ -437,8 +452,14 @@ mod tests {
     #[test]
     fn panel_kind_slash_names_match_catalog() {
         // Every PanelKind variant reachable from CATALOG produces the
-        // same slash name as the entry that carries it.
+        // same slash name as the entry that carries it. Aliases
+        // (e.g. /bashes → PanelKind::Tasks) are exempt — the canonical
+        // slash_name() returns the primary name only.
+        const ALIAS_NAMES: &[&str] = &["bashes"];
         for entry in CATALOG {
+            if ALIAS_NAMES.contains(&entry.name) {
+                continue;
+            }
             if let SlashKind::Panel(kind) = entry.kind {
                 assert_eq!(
                     entry.name,
@@ -453,13 +474,14 @@ mod tests {
 
     #[test]
     fn catalog_row_count_matches_docs() {
-        // openspec 011 (2026-04-20) purged `/bye` + `/swarm` (no
-        // upstream analogue) and reclassified `/loop` in place, net
-        // row count 35 → 33. Target holds until another slash joins
+        // openspec 011 (2026-04-20) purged `/bye` + `/swarm` and
+        // reclassified `/loop` (35 → 33). openspec 015 (2026-04-20)
+        // added `/tasks` + `/bashes` alias for the BackgroundTasks
+        // dialog (33 → 35). Target holds until another slash joins
         // or leaves the catalog.
         assert_eq!(
             CATALOG.len(),
-            33,
+            35,
             "CATALOG must be a strict subset of docs/slashes.md"
         );
     }
@@ -539,6 +561,8 @@ mod tests {
             ("status", SlashKind::Panel(PanelKind::Settings(SettingsTab::Status))),
             ("usage", SlashKind::Panel(PanelKind::Settings(SettingsTab::Usage))),
             ("mcp", SlashKind::Panel(PanelKind::Mcp)),
+            ("tasks", SlashKind::Panel(PanelKind::Tasks)),
+            ("bashes", SlashKind::Panel(PanelKind::Tasks)),
             // auth
             ("login", SlashKind::Auth),
             ("logout", SlashKind::Auth),

@@ -1196,6 +1196,11 @@ fn emit_panel_dismiss_anchor(
         // 010 Gap 2: upstream emits `Resume cancelled` per
         // `commands/resume/resume.tsx:172-175`.
         PanelKind::Resume => ("resume", "Resume cancelled".to_string()),
+        // §6: dismiss line for /tasks. Upstream capture not yet
+        // available for this exact string — using the same
+        // `<panel> dialog dismissed` shape as siblings; refine to
+        // upstream byte-match in a follow-up wave.
+        PanelKind::Tasks => ("tasks", "Tasks dialog dismissed".to_string()),
     };
     // Every panel dismissal is Chrome — the `⎿  … dialog dismissed`
     // line is local UI breadcrumb only. Upstream marks the same
