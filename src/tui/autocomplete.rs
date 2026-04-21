@@ -230,7 +230,7 @@ mod tests {
 
         for name in ["config", "model", "login", "logout", "init", "mcp",
                      "effort", "plan", "permissions", "diff", "skills",
-                     "agents", "context", "keybindings",
+                     "agents", "context",
                      "statusline", "init-verifiers", "dream",
                      "review", "security-review", "loop", "tag"] {
             let prefix = &name[..1];

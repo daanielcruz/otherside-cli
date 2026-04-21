@@ -106,6 +106,9 @@ pub const TOOL_SCHEDULE_WAKEUP_JSON: &str =
 pub const TOOL_ASK_USER_QUESTION_JSON: &str =
     include_str!("../../harness_corpus/tools/AskUserQuestion.json");
 
+pub const ENVELOPE_JSON: &str =
+    include_str!("../../harness_corpus/envelope.json");
+
 pub const TOOL_ORDER: [&str; 9] = [
     "Agent",
     "Bash",

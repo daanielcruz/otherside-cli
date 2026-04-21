@@ -1,29 +1,10 @@
 
 
-use serde_json::{json, Value};
+use serde_json::Value;
 
 pub fn build_envelope_defaults() -> Value {
-    json!({
-        "metadata": {
-            "user_id": "{\"device_id\":\"XXX_DEVICE_ID_XXX\",\"account_uuid\":\"XXX_ACCOUNT_UUID_XXX\",\"session_id\":\"XXX_SESSION_ID_XXX\"}"
-        },
-        "max_tokens": 64000,
-        "thinking": {
-            "type": "adaptive"
-        },
-        "context_management": {
-            "edits": [
-                {
-                    "type": "clear_thinking_20251015",
-                    "keep": "all"
-                }
-            ]
-        },
-        "output_config": {
-            "effort": "xhigh"
-        },
-        "stream": true
-    })
+    serde_json::from_str(crate::harness::ENVELOPE_JSON)
+        .expect("bundled envelope.json is well-formed")
 }
 
 #[cfg(test)]

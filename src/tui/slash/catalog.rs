@@ -116,11 +116,6 @@ pub const CATALOG: &[SlashEntry] = &[
         brief: "write the session to a file",
         kind: SlashKind::Toggle,
     },
-    SlashEntry {
-        name: "keybindings",
-        brief: "show the active keybindings",
-        kind: SlashKind::Toggle,
-    },
 
     SlashEntry {
         name: "dream",
@@ -424,7 +419,7 @@ mod tests {
 
         assert_eq!(
             CATALOG.len(),
-            35,
+            34,
             "CATALOG must be a strict subset of docs/slashes.md"
         );
     }
@@ -470,7 +465,6 @@ mod tests {
             ("tag", SlashKind::Toggle),
             ("copy", SlashKind::Toggle),
             ("export", SlashKind::Toggle),
-            ("keybindings", SlashKind::Toggle),
 
             ("dream", SlashKind::Skill),
             ("statusline", SlashKind::Skill),
