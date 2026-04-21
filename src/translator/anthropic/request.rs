@@ -164,7 +164,7 @@ pub fn build_web_search_body(query: &str, tool_config: Value) -> Vec<u8> {
             {"type": "text", "text": billing_header},
             {
                 "type": "text",
-                "text": "You are Claude Code, Anthropic's official CLI for Claude.",
+                "text": crate::harness::SYSTEM_OPENER,
                 "cache_control": {"type": "ephemeral"},
             },
             {

@@ -2,9 +2,7 @@
 
 use serde_json::{json, Value};
 
-use crate::harness::{SYSTEM_AGENT_PREAMBLE, SYSTEM_BILLING_HEADER, SYSTEM_PROMPT};
-
-const SYSTEM_OPENER: &str = "You are Claude Code, Anthropic's official CLI for Claude.";
+use crate::harness::{SYSTEM_AGENT_PREAMBLE, SYSTEM_BILLING_HEADER, SYSTEM_OPENER, SYSTEM_PROMPT};
 
 fn cache_ephemeral_1h_global() -> Value {
     json!({"type": "ephemeral", "ttl": "1h"})

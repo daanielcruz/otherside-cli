@@ -6,6 +6,9 @@ pub mod task_notification;
 pub const SYSTEM_BILLING_HEADER: &str =
     include_str!("../../harness_corpus/system/00-billing-header.md");
 
+pub const SYSTEM_OPENER: &str =
+    include_str!("../../harness_corpus/system/01-opener.md");
+
 pub const SYSTEM_AGENT_PREAMBLE: &str =
     include_str!("../../harness_corpus/system/02-agent-preamble.md");
 
