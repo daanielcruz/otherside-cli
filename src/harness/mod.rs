@@ -89,6 +89,7 @@
 //! (describe function, no upstream-product echoes in names).
 
 pub mod reminders;
+pub mod task_notification;
 
 /// Billing header emitted as system[0]. Short (~80 bytes).
 pub const SYSTEM_BILLING_HEADER: &str =
