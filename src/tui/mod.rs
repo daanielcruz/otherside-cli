@@ -517,6 +517,50 @@ fn handle_key(
         st.clear_exit_armed();
     }
 
+    // Try the keybinding registry FIRST so context-gated actions
+    // (Ctrl+B, Shift+↓ for the tasks dialog) win over the legacy
+    // hardcoded match arms. The registry's `is_active` predicate
+    // gates each binding so unrelated chords (Shift+↓ when no
+    // backgrounded tasks exist) fall through to the match arms
+    // for their default behavior (scroll).
+    {
+        use crate::keybindings::{dispatch as kb_dispatch, Action, PredicateContext};
+        let pred_ctx = PredicateContext {
+            tasks: &st.tasks,
+            dialog_open: st.active_menu.is_some(),
+        };
+        if let Some(action) = kb_dispatch(&k, &pred_ctx) {
+            match action {
+                Action::TaskBackground => {
+                    let flipped = st.tasks.background_all_running_foreground();
+                    if !flipped.is_empty() {
+                        // Mirror upstream LocalAgentTask.tsx — emit
+                        // one assistant-visible line per flipped id.
+                        // Byte-match capture
+                        // `02-after-ctrl-b.txt:23`.
+                        for id in flipped {
+                            st.push_system_note(format!(
+                                "Started in background as {}. I'll be notified when it completes.",
+                                id.as_str()
+                            ));
+                        }
+                    }
+                    return false;
+                }
+                Action::OpenBackgroundTasksDialog => {
+                    // Dialog widget lands in §7. Until then, surface
+                    // a placeholder so the binding is observable
+                    // end-to-end without inventing dialog behavior.
+                    st.push_system_note(
+                        "(BackgroundTasksDialog renders in §7 — open via /tasks for now)"
+                            .to_string(),
+                    );
+                    return false;
+                }
+            }
+        }
+    }
+
     match k.code {
         // Ctrl+C — upstream priority order:
         //   1. if a turn is running, cancel it (do NOT exit);
