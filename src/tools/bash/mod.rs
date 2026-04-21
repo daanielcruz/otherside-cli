@@ -1,29 +1,4 @@
-//! Bash — shell-command tool.
-//!
-//! # Components
-//!
-//! - [`truncate`] — size-cap + head/tail split for oversized output.
-//! - [`matcher`] — permission-rule DSL (`Bash(prefix:*)`) evaluation.
-//! - [`sync`] — blocking `tokio::process::Command` driver with timeout
-//!   + grace-period SIGTERM → SIGKILL.
-//! - [`registry`] — async background shells keyed by [`ShellId`] with
-//!   stdout/stderr accumulation and cursor-based polling. Background
-//!   shell control rides `Bash` itself via the `run_in_background`
-//!   property; the old standalone `BashOutput` / `KillBash` tools
-//!   retired with the 010 anchor selection (see `tools/mod.rs`
-//!   header, "Retired names").
-//!
-//! # Dispatch entry point
-//!
-//! The agent loop calls [`bash`] via `tools::mod::dispatch`. It
-//! accepts a JSON args value, validates shape, and returns a `Value`
-//! payload for the model.
-//!
-//! Defaults (per upstream):
-//! - timeout default 120 000 ms (2 min), max 600 000 ms (10 min)
-//! - output cap 30 000 chars
-//! - grace period on timeout 2 s
-//! - background registry cap 10 concurrent shells
+
 
 use std::sync::OnceLock;
 
@@ -36,32 +11,19 @@ pub mod registry;
 pub mod sync;
 pub mod truncate;
 
-/// Default per-call timeout in milliseconds (matches upstream).
 pub const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 
-/// Hard ceiling on a caller-supplied timeout.
 pub const MAX_TIMEOUT_MS: u64 = 600_000;
 
-/// Maximum chars preserved in the returned output. Upstream's cap.
 pub const OUTPUT_CAP: usize = 30_000;
 
-/// Grace period between SIGTERM and SIGKILL when a timeout fires.
 pub const GRACE_PERIOD_MS: u64 = 2_000;
 
-/// Global background shell registry — one per process. Accessed via
-/// `shell_registry()`. Tests that need isolation use their own
-/// [`registry::ShellRegistry`] instances instead.
 pub fn shell_registry() -> &'static registry::ShellRegistry {
     static REG: OnceLock<registry::ShellRegistry> = OnceLock::new();
     REG.get_or_init(|| registry::ShellRegistry::new(registry::MAX_CONCURRENT))
 }
 
-/// Dispatch entry — synchronous-feeling wrapper so the generic
-/// `tools::dispatch` can route to Bash without knowing about async.
-///
-/// Spawning + polling is async internally; this wrapper blocks the
-/// caller only for sync mode. Background mode returns immediately
-/// with the assigned shell_id.
 pub fn bash(args: &Value) -> Result<Value, ToolError> {
     let command = args
         .get("command")
@@ -100,11 +62,6 @@ pub fn bash(args: &Value) -> Result<Value, ToolError> {
         }));
     }
 
-    // `dispatch` is called from the TUI's agent loop task, which is
-    // running *inside* the tokio runtime — calling `Handle::block_on`
-    // from a runtime thread panics. Use `block_in_place` so the
-    // runtime knows to move other work off this thread while we
-    // await, then `Handle::block_on` is safe.
     let handle = tokio::runtime::Handle::try_current().map_err(|_| {
         ToolError::InvalidArgs("Bash tool requires an active tokio runtime".into())
     })?;
@@ -114,14 +71,6 @@ pub fn bash(args: &Value) -> Result<Value, ToolError> {
     })
     .map_err(|e| ToolError::InvalidArgs(e.to_string()))?;
 
-    // Upstream's `mapToolResultToToolResultBlockParam` emits the wire
-    // tool_result.content as a single string merging stdout + stderr
-    // with a newline separator (see reference BashTool.tsx line ~630:
-    // `content: [processedStdout, errorMessage, backgroundInfo]
-    // .filter(Boolean).join('\n')`). Match that shape on `content` so
-    // the model sees the same raw terminal output it was trained on;
-    // keep the split `stdout` / `stderr` fields alongside for the
-    // renderer + permission layer that want them separately.
     let content = merge_stdout_stderr(&out.stdout, &out.stderr);
     Ok(json!({
         "status": if out.timed_out { "timeout" } else { "ok" },
@@ -136,10 +85,6 @@ pub fn bash(args: &Value) -> Result<Value, ToolError> {
     }))
 }
 
-/// Combine stdout and stderr the way upstream's tool-result packer
-/// does: trim stdout of leading whitespace-only lines + trailing
-/// whitespace, trim stderr, then join with a newline only when both
-/// are non-empty. Keeps the format the model was trained on.
 fn merge_stdout_stderr(stdout: &str, stderr: &str) -> String {
     let processed_stdout = trim_leading_blank_lines(stdout).trim_end().to_string();
     let stderr_trimmed = stderr.trim();
@@ -155,7 +100,7 @@ fn trim_leading_blank_lines(s: &str) -> &str {
     let mut end = 0usize;
     for line in s.lines() {
         if line.trim().is_empty() {
-            end += line.len() + 1; // +1 for \n
+            end += line.len() + 1;
         } else {
             break;
         }

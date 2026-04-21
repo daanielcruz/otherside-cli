@@ -1,15 +1,8 @@
-//! Auth handler — provider login/logout dispatch.
-//!
-//! Phase 1 emits the existing CLI hints (`otherside login --provider …`)
-//! since the TUI has no interactive stdin for OAuth flows. A future
-//! change wires an in-TUI provider picker + token input; until then
-//! the user exits and runs the CLI subcommand.
+
 
 use super::super::state::ConversationState;
 use super::SlashOutcome;
 
-/// Dispatch an Auth-category slash. Returns `Handled` — the hint is
-/// rendered inline as a system note.
 pub fn handle(name: &str, args: &str, state: &mut ConversationState) -> SlashOutcome {
     let provider_hint = if args.is_empty() {
         "<provider>".to_string()

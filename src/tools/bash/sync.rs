@@ -1,5 +1,4 @@
-//! Sync bash driver — spawn via `sh -c`, race against a timeout,
-//! SIGTERM with grace, then SIGKILL.
+
 
 use std::process::Stdio;
 use std::time::{Duration, Instant};
@@ -9,10 +8,6 @@ use tokio::time::timeout;
 
 use super::{truncate, GRACE_PERIOD_MS};
 
-/// Output of a single synchronous Bash invocation. stdout and stderr
-/// are surfaced separately to match upstream `BashToolResultMessage`
-/// which renders them in distinct styles (dim for stdout, error-red
-/// for stderr).
 #[derive(Debug, Clone)]
 pub struct SyncOutput {
     pub exit_code: i32,
@@ -25,18 +20,12 @@ pub struct SyncOutput {
 }
 
 impl SyncOutput {
-    /// True when either stream hit the truncation cap — kept as a
-    /// convenience so callers that don't care which stream overflowed
-    /// keep a single boolean to check.
+
     pub fn was_truncated(&self) -> bool {
         self.stdout_truncated || self.stderr_truncated
     }
 }
 
-/// Run `command` under `sh -c`, wait up to `timeout_ms`, apply output
-/// truncation, and return. Returns Err only on spawn failure. Honors
-/// the session worktree stack — if `EnterWorktree` has been fired,
-/// the command runs inside the topmost cwd.
 pub async fn run(command: &str, timeout_ms: u64) -> std::io::Result<SyncOutput> {
     let start = Instant::now();
     let mut builder = Command::new("sh");
@@ -47,7 +36,7 @@ pub async fn run(command: &str, timeout_ms: u64) -> std::io::Result<SyncOutput> 
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    if let Some(cwd) = crate::tools::deferred::worktree::effective_cwd() {
+    if let Some(cwd) = crate::tools::worktree::effective_cwd() {
         builder.current_dir(cwd);
     }
     let mut child = builder.spawn()?;
@@ -87,8 +76,7 @@ pub async fn run(command: &str, timeout_ms: u64) -> std::io::Result<SyncOutput> 
             })
         }
         Err(_) => {
-            // Timeout fired. SIGTERM via start_kill, then grace window
-            // before the OS's kill_on_drop delivers SIGKILL on our way out.
+
             let _ = child.start_kill();
             let _ = timeout(Duration::from_millis(GRACE_PERIOD_MS), child.wait()).await;
             Ok(SyncOutput {

@@ -1,19 +1,4 @@
-//! Per-turn byte-match: translator output vs captured live
-//! `fingerprint_corpus/tools-glob-single/turn{1,2,3}/request.body.json`.
-//!
-//! Turn 1 goes through the public OpenAI entrypoint (`build_request_body`)
-//! — single-turn, no tool history, matches capture bytes under
-//! `capture_defaults()` environment. This is the new regression anchor
-//! replacing the retired hello byte-match.
-//!
-//! Turn 2 and turn 3 reconstruct the full `messages[]` directly via
-//! `translator::anthropic::blocks` + `message_builder` because
-//! the OpenAI canonical shape does not carry `thinking` blocks. Capture
-//! includes a thinking block with a server-issued signature; our
-//! conformance test asserts the translator CAN emit the shape byte-match
-//! when given an assistant message carrying a thinking block. Whether
-//! the agent loop feeds thinking blocks back on turn 2+ is tracked in
-//! the follow-up change (design.md §14.1 — thinking-signature echo).
+
 
 use serde_json::{json, Value};
 
@@ -38,8 +23,6 @@ fn capture(turn: u8) -> Value {
 
 const TURN1_PROMPT: &str = "list all .rs files directly in src/ and tell me in one sentence what main.rs does";
 
-/// Build a body via the public OpenAI entry path, then parse to Value
-/// for semantic comparison.
 fn build_via_entrypoint(req: &OpenAiChatRequest, ctx: &UserContext<'_>) -> Value {
     let bytes = build_request_body(req, ctx).expect("build_request_body succeeds");
     serde_json::from_slice(&bytes).expect("built body parses as JSON")
@@ -99,9 +82,6 @@ fn turn1_top_level_keys_match_capture_order() {
     }
 }
 
-/// Replace `tool_use.id` and `tool_result.tool_use_id` string values
-/// with placeholders in a body Value, so production-generated ids
-/// match the scrubbed capture under comparison.
 fn scrub_ids(body: &mut Value, id_map: &[(&str, &str)]) {
     fn walk(v: &mut Value, id_map: &[(&str, &str)]) {
         match v {
@@ -130,21 +110,12 @@ fn scrub_ids(body: &mut Value, id_map: &[(&str, &str)]) {
     walk(body, id_map);
 }
 
-/// Capture's scrubbed signature for the thinking block (frozen in
-/// `turn2/request.body.json`). Replayed here for the turn2 / turn3
-/// conformance tests.
 const CAPTURE_THINKING_SIGNATURE: &str = "EpUCClkIDBgCKkBoDodzDJYTc9zImpelmvf4rPUbZJgL4EqwWRBgu3cNu22L03frQDJ+Em4kDNmChx+45L6ZRg6DtFZzLIoSSwP7Mg9jbGF1ZGUtb3B1cy00LTc4ABIMrAqVujVqPgZF1WtJGgzDzYuymS9/FeV4q9AiMPsPnyxMla1HapxDBHzcUP0f/+SUO8uT2pPSgzBDhpL23BxBbVufsprDR71IdCAttCpqBh+QN0OT6TuVA7j1uVeoHl03WpQo+W7ENMaHWQq0cfJATlQAgGGcnxv6vO0PdtnfwD1v6kIg5RZ1C1u+5xTk9QyUPp6koltWMG0EfP58ushYYEhlNok0VxhcUUrYe4UYDtMudDYVNluRTxgB";
 
-/// Turn 2 shape: first user (same as turn1) + assistant with thinking +
-/// tool_use(Glob) + user with tool_result.
-///
-/// Because OpenAi canonical shape does not carry thinking, this test
-/// builds the `messages[]` fragment directly via the translator's
-/// blocks module.
 #[test]
 #[ignore = "V2 drift — see turn1 note"]
 fn turn2_messages_fragment_matches_capture() {
-    // Preamble + user prompt (first user turn).
+
     let preamble =
         otherside::harness::reminders::build_preamble_blocks("edaanxx@gmail.com", "2026-04-18");
     let user1 = AnthropicMessage {
@@ -198,8 +169,6 @@ fn turn2_messages_fragment_matches_capture() {
     assert_eq!(built, expected, "turn2 messages[] diverges from capture");
 }
 
-/// Turn 3 shape: turn2 + second assistant tool_use (Read) + second user
-/// tool_result.
 #[test]
 #[ignore = "V2 drift — see turn1 note"]
 fn turn3_messages_fragment_matches_capture() {
@@ -273,12 +242,6 @@ fn turn3_messages_fragment_matches_capture() {
     assert_eq!(built, expected, "turn3 messages[] diverges from capture");
 }
 
-/// Integration-path sanity: if the agent loop feeds OpenAI-shape
-/// history (user, assistant+tool_calls, tool) without a thinking
-/// block, the translator still produces a well-formed multi-turn body
-/// that would satisfy upstream's schema (modulo the missing thinking
-/// block — expected to be elided on turn 2+ until signature replay
-/// lands, per design §14.1).
 #[test]
 fn openai_history_with_tool_round_trip_produces_three_messages() {
     let req = OpenAiChatRequest {
@@ -325,12 +288,6 @@ fn openai_history_with_tool_round_trip_produces_three_messages() {
     assert!(msgs[2]["content"][0].get("cache_control").is_some());
 }
 
-/// Post-scrub sanity: after replacing the production toolu_* ids with
-/// the capture placeholders and omitting the thinking block (design
-/// §14.1), the OpenAI-round-trip turn 2 body byte-matches capture
-/// turn 2 on everything EXCEPT the thinking block. Used to prove the
-/// translator produces capture-fidelity under realistic agent-loop
-/// state (no thinking replay).
 #[test]
 #[ignore = "V2 drift — see turn1 note"]
 fn openai_round_trip_turn2_matches_capture_sans_thinking_block() {
@@ -368,10 +325,8 @@ fn openai_round_trip_turn2_matches_capture_sans_thinking_block() {
     let bytes = build_request_body(&req, &ctx).unwrap();
     let mut body: Value = serde_json::from_slice(&bytes).unwrap();
 
-    // Scrub the production id to the capture placeholder.
     scrub_ids(&mut body, &[("toolu_actual_01", "XXX_TOOLUSE_ID_1_XXX")]);
 
-    // Capture turn2 WITH thinking block elided from assistant content.
     let mut expected = capture(2);
     let assistant_content = expected["messages"][1]["content"]
         .as_array_mut()

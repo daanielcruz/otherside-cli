@@ -1,9 +1,4 @@
-//! Session retention sweep.
-//!
-//! Walks `sessions_root`, computes each subdir's newest file mtime,
-//! deletes the whole subdir when older than `retention_days`. Fire-
-//! and-forget from startup — swallows per-dir errors so one permission
-//! hiccup doesn't abort launch.
+
 
 use std::path::Path;
 use std::time::{Duration, SystemTime};

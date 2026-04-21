@@ -1,54 +1,4 @@
-//! Configuration: file-only loaders for `~/.otherside/` and the
-//! per-project overlay at `./.otherside/`.
-//!
-//! # Scopes
-//!
-//! Four sources compose the effective settings, applied in the order
-//! below (lowest-precedence first):
-//!
-//! 1. User-global `~/.otherside/settings.json`.
-//! 2. Project-local `./.otherside/settings.json` (walked from CWD).
-//! 3. CLI flags (`--provider`, `--model`, `--config`).
-//! 4. Admin policy `~/.otherside/managed-settings.json` +
-//!    `~/.otherside/managed-settings.d/*.json` — always wins.
-//!
-//! Environment variables do **not** participate in per-field overrides.
-//! The only env var the config layer reads is `OTHERSIDE_CONFIG_DIR`,
-//! which relocates the config home (bootstrap-only). Any other
-//! `OTHERSIDE_*` that looks like a settings-key shadow is ignored with
-//! a one-time warning at startup (see `paths::warn_shadow_env_vars`).
-//!
-//! # Paths
-//!
-//! Paths are resolved via the `directories` crate so the code honors a
-//! custom `HOME`. We deliberately use `~/.otherside/` (a dotfile
-//! folder inside HOME) rather than XDG_CONFIG_HOME so the layout
-//! matches the user-facing docs exactly and is portable across
-//! darwin/linux without surprises.
-//!
-//! # `config_corpus/` — schema fixtures
-//!
-//! Hand-authored JSON fixtures under `otherside-cli/config_corpus/`
-//! define the target shape of the config layer. Distinct from
-//! `fingerprint_corpus/` (captured upstream traffic, byte-match
-//! anchors). Fixtures set the bar for what this module must parse,
-//! merge, and round-trip. Edit freely; when the schema changes, update
-//! the fixture AND the parser in the same commit.
-//!
-//! Fixture groups:
-//! - `settings/` — `minimal.json`, `full.json`, `with_unknown_keys.json`,
-//!   `with_permission_rules.json`, `with_hooks.json`,
-//!   `invalid_permission_rule.json`, `malformed.json`, `yolo_mode.json`.
-//! - `projects/` — `empty.json`, `with_trust.json`.
-//! - `mcp/` — `stdio.json`, `sse_http_mix.json`, `project_parent_walk/`.
-//! - `managed/` — `base.json`, `base_plus_dropins/` (admin policy drop-ins).
-//!
-//! Conventions: top-level field names camelCase (`permissionMode`,
-//! `hasAcceptedYoloDialog`). String values exact canonical (`"yolo"`,
-//! provider IDs lowercase with hyphens). Legacy values migrate on read.
-//! `malformed.json` is the ONLY fixture that MUST fail to parse — all
-//! others MUST parse even when semantically invalid at a deeper level
-//! (invalid rules drop with a warning, not a hard fail).
+
 
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
@@ -57,8 +7,6 @@ use serde_json::{Map, Value};
 
 use crate::error::{Error, Result};
 
-// 003 sub-modules: schema, scope resolvers, per-file loaders, merge
-// engine, validation.
 pub mod managed;
 pub mod mcp;
 pub mod merge;
@@ -76,13 +24,10 @@ pub use settings::{
 };
 pub use validation::{Scope, ValidationWarning, WarningKind};
 
-/// Default settings file name inside the config directory.
 const SETTINGS_FILENAME: &str = "settings.json";
 
-/// Default credentials file name inside the config directory.
 const CREDENTIALS_FILENAME: &str = "credentials.json";
 
-/// The otherside config home. Defaults to `$HOME/.otherside`.
 pub fn config_dir() -> Result<PathBuf> {
     if let Some(override_dir) = std::env::var_os("OTHERSIDE_CONFIG_DIR") {
         return Ok(PathBuf::from(override_dir));
@@ -94,23 +39,14 @@ pub fn config_dir() -> Result<PathBuf> {
     Ok(base.home_dir().join(".otherside"))
 }
 
-/// Absolute path to `settings.json`.
 pub fn settings_path() -> Result<PathBuf> {
     Ok(config_dir()?.join(SETTINGS_FILENAME))
 }
 
-/// Absolute path to `credentials.json`.
 pub fn credentials_path() -> Result<PathBuf> {
     Ok(config_dir()?.join(CREDENTIALS_FILENAME))
 }
 
-// ------------------------------------------------------------------
-// Five-scope resolver (§10) + public `load_all` entry point (§11)
-// ------------------------------------------------------------------
-
-/// One scope's worth of input to the resolver. All four scopes are
-/// typed as raw JSON so unknown keys survive; conversion to `Settings`
-/// happens once at the end of `resolve()`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SettingsSource {
     UserGlobal(Value),
@@ -119,9 +55,6 @@ pub enum SettingsSource {
     Policy(Value),
 }
 
-/// Fully-resolved config for a single process. Callers read `settings`
-/// for the merged effective view; `warnings` is informational only and
-/// never fails the startup path.
 #[derive(Debug, Default, Clone)]
 pub struct EffectiveConfig {
     pub settings: Settings,
@@ -131,12 +64,6 @@ pub struct EffectiveConfig {
     pub warnings: Vec<ValidationWarning>,
 }
 
-/// Pure resolver — all inputs explicit, single call site, no hidden
-/// env reads. Applies precedence UserGlobal < ProjectLocal < Flag,
-/// then Policy overlays LAST (managed policy always wins).
-///
-/// Returns the effective `Settings` plus any `ValidationWarning`s the
-/// caller should surface.
 pub fn resolve(sources: &[SettingsSource]) -> (Settings, Vec<ValidationWarning>) {
     let empty = || Value::Object(Map::new());
     let mut user = empty();
@@ -161,9 +88,7 @@ pub fn resolve(sources: &[SettingsSource]) -> (Settings, Vec<ValidationWarning>)
     let mut settings: Settings = match serde_json::from_value(merged.clone()) {
         Ok(s) => s,
         Err(_) => {
-            // Malformed cross-scope result — fall back to default and
-            // warn loudly. Unlikely to hit in practice because each
-            // scope parses individually in its loader.
+
             warnings.push(ValidationWarning::new(
                 Scope::UserGlobal,
                 WarningKind::UnknownTopLevelKey,
@@ -173,7 +98,6 @@ pub fn resolve(sources: &[SettingsSource]) -> (Settings, Vec<ValidationWarning>)
         }
     };
 
-    // §13.3 — surface unknown top-level keys as warnings (once per key).
     for (k, _) in &settings.extra {
         warnings.push(ValidationWarning::new(
             Scope::UserGlobal,
@@ -182,7 +106,6 @@ pub fn resolve(sources: &[SettingsSource]) -> (Settings, Vec<ValidationWarning>)
         ));
     }
 
-    // §10.4 / §13.2 — drop invalid permission rules with warnings.
     if let Some(perms) = settings.permissions.as_mut() {
         prune_invalid(&mut perms.allow, "permissions.allow", &mut warnings);
         prune_invalid(&mut perms.deny, "permissions.deny", &mut warnings);
@@ -212,18 +135,8 @@ fn prune_invalid(
     }
 }
 
-/// Session-scoped cache for `load_all`. Scope rationale: every tool
-/// dispatch and TUI render path reads resolved config; re-parsing the
-/// 5-scope merge on each call would thrash I/O. `reset_cache()` clears
-/// so a writer can force the next read to pick up fresh disk state.
-/// `RwLock` because reads dominate by ~100:1 vs writes.
 static CACHE: RwLock<Option<EffectiveConfig>> = RwLock::new(None);
 
-/// Top-level entry that does the five-scope merge in one call.
-///
-/// Reads every scope from disk (honoring `OTHERSIDE_CONFIG_DIR`),
-/// collapses with the resolver, loads `projects.json` + `state.json` +
-/// merged `.mcp.json` chain, caches the result.
 pub fn load_all(cwd: &Path, cli_flags: Value) -> Result<EffectiveConfig> {
     if let Some(cached) = CACHE.read().ok().and_then(|g| g.clone()) {
         return Ok(cached);
@@ -263,8 +176,6 @@ pub fn load_all(cwd: &Path, cli_flags: Value) -> Result<EffectiveConfig> {
     Ok(effective)
 }
 
-/// Drop the cached `EffectiveConfig`. Call after any `save()` so the
-/// next `load_all()` re-reads fresh disk state.
 pub fn reset_cache() {
     if let Ok(mut guard) = CACHE.write() {
         *guard = None;
@@ -283,18 +194,11 @@ fn read_json_or_empty(path: &Path) -> Result<Value> {
     })
 }
 
-// ------------------------------------------------------------------
-// Back-compat shims — keep existing `load()` / `load_from()` callers
-// working until main.rs + serve migrate to `load_all()`.
-// ------------------------------------------------------------------
-
-/// Load settings from the default location (`~/.otherside/settings.json`).
 pub fn load() -> Result<Settings> {
     let path = settings_path()?;
     load_from(&path)
 }
 
-/// Load settings from a specific path (useful for `--config` flag).
 pub fn load_from(path: &Path) -> Result<Settings> {
     paths::warn_shadow_env_vars();
 
@@ -310,15 +214,6 @@ pub fn load_from(path: &Path) -> Result<Settings> {
     })
 }
 
-// ------------------------------------------------------------------
-// Atomic write helper (§12)
-// ------------------------------------------------------------------
-
-/// Write `bytes` to `path` via a temp file + rename, fsyncing before
-/// the rename so a crash mid-write leaves either the old file or the
-/// new one — never a truncated in-between state. On unix with
-/// `mode_0600 = true`, the temp file is chmodded before the rename
-/// so the final file is never world-readable.
 pub fn write_atomic(path: &Path, bytes: &[u8], mode_0600: bool) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {
@@ -474,8 +369,6 @@ mod tests {
         );
     }
 
-    // ---- §10 resolver tests ----
-
     #[test]
     fn resolve_user_only() {
         let (s, warnings) = resolve(&[SettingsSource::UserGlobal(
@@ -517,10 +410,7 @@ mod tests {
 
     #[test]
     fn resolve_passes_permission_mode_through_as_extra_not_typed_field() {
-        // Rule §3 (2026-04-20): permission_mode is session-scoped and
-        // NEVER seeded from settings.json. The resolver still merges
-        // the raw JSON across scopes (policy beats user) — it just
-        // lands in `extra` so no boot path can pick it up.
+
         let (s, _) = resolve(&[
             SettingsSource::UserGlobal(json!({"permissionMode":"default"})),
             SettingsSource::Policy(json!({"permissionMode":"yolo"})),
@@ -533,7 +423,7 @@ mod tests {
 
     #[test]
     fn resolve_array_concat_across_scopes() {
-        // Permissions deny list across three scopes — all three entries survive.
+
         let (s, _) = resolve(&[
             SettingsSource::UserGlobal(json!({
                 "permissions":{"deny":[{"toolName":"Bash","matchPattern":"rm -rf *"}]}
@@ -551,7 +441,7 @@ mod tests {
 
     #[test]
     fn resolve_drops_invalid_rules_with_warning() {
-        // §10.4: one bad rule — dropped, warning issued, rest pass.
+
         let (s, warnings) = resolve(&[SettingsSource::UserGlobal(json!({
             "permissions":{"allow":[
                 {"toolName":"Read","matchPattern":"*"},
@@ -584,8 +474,6 @@ mod tests {
         assert!(warnings.is_empty());
     }
 
-    // ---- §11 load_all cache ----
-
     #[test]
     fn load_all_caches_and_reset_cache_reruns() {
         let _g = EnvGuard::new(&["OTHERSIDE_CONFIG_DIR"]);
@@ -595,11 +483,9 @@ mod tests {
         unsafe { std::env::set_var("OTHERSIDE_CONFIG_DIR", &tmp) };
         reset_cache();
 
-        // No files yet — defaults.
         let first = load_all(Path::new("/"), Value::Object(Map::new())).unwrap();
         assert_eq!(first.settings.default_provider, None);
 
-        // Write a file, but don't reset — still cached.
         fs::write(
             tmp.join("settings.json"),
             r#"{"defaultProvider":"anthropic-oauth"}"#,
@@ -608,7 +494,6 @@ mod tests {
         let cached = load_all(Path::new("/"), Value::Object(Map::new())).unwrap();
         assert_eq!(cached.settings.default_provider, None, "cache still held");
 
-        // Reset — now re-read.
         reset_cache();
         let fresh = load_all(Path::new("/"), Value::Object(Map::new())).unwrap();
         assert_eq!(
@@ -619,8 +504,6 @@ mod tests {
         reset_cache();
         fs::remove_dir_all(&tmp).ok();
     }
-
-    // ---- §12 atomic write ----
 
     #[test]
     fn write_atomic_lands_file() {
@@ -653,8 +536,7 @@ mod tests {
 
     #[test]
     fn write_atomic_no_partial_file_on_parent_missing() {
-        // Target parent doesn't exist before the call — create_dir_all
-        // covers it; the file lands cleanly.
+
         let tmp_root = std::env::temp_dir().join(format!(
             "otherside-atomic-mkdir-{}",
             std::process::id()

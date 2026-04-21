@@ -1,14 +1,4 @@
-//! `projects.json` — tool-managed trust list keyed by absolute workspace
-//! path. Kept separate from `settings.json` so user edits to settings
-//! can't corrupt the trust ledger and vice versa.
-//!
-//! Why split across three files: settings / projects / state have
-//! different edit cadences and risk profiles — users hand-edit
-//! settings, the tool manages projects, state drifts on every
-//! startup. Three files keeps each read/write small and each file
-//! corruption bounded to its own surface. A single bundled file
-//! would couple every startup write to the same bytes the user
-//! might be editing.
+
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -20,32 +10,27 @@ use crate::error::{Error, Result};
 
 use super::paths;
 
-/// `projects.json` top-level shape.
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ProjectsConfig {
-    /// Keyed by absolute workspace path. JSON has string keys — callers
-    /// convert `Path` → `String` at the boundary.
+
     pub projects: HashMap<String, ProjectEntry>,
 
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
 
-/// Per-workspace trust + prompt history.
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ProjectEntry {
     pub trusted: bool,
-    /// ISO-8601 timestamp; `None` when the workspace was listed but
-    /// has never been entered interactively.
+
     pub last_accessed: Option<String>,
     pub history: Vec<HistoryEntry>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
 
-/// Single prompt-history entry.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct HistoryEntry {
@@ -55,7 +40,6 @@ pub struct HistoryEntry {
     pub extra: Map<String, Value>,
 }
 
-/// Read `~/.otherside/projects.json`. Missing file → empty config.
 pub fn load() -> Result<ProjectsConfig> {
     let path = paths::projects_path()?;
     if !path.exists() {
@@ -69,10 +53,6 @@ pub fn load() -> Result<ProjectsConfig> {
     })
 }
 
-/// Write `~/.otherside/projects.json`. Creates the config dir if
-/// missing. Atomic rename via [`super::write_atomic`] so a crash mid-
-/// write leaves either the old file or the new one, never a truncated
-/// in-between state.
 pub fn save(cfg: &ProjectsConfig) -> Result<()> {
     let path = paths::projects_path()?;
     let bytes = serde_json::to_vec_pretty(cfg).map_err(|e| {
@@ -81,7 +61,6 @@ pub fn save(cfg: &ProjectsConfig) -> Result<()> {
     super::write_atomic(&path, &bytes, false)
 }
 
-/// Is the workspace marked trusted?
 pub fn is_trusted(cfg: &ProjectsConfig, workspace: &Path) -> bool {
     cfg.projects
         .get(&workspace.to_string_lossy().into_owned())

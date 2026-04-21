@@ -1,123 +1,59 @@
-//! `Settings` schema and the serde deserializers that migrate legacy
-//! values on read. Split from `config::mod` so that the schema (which
-//! grows with every new feature flag) lives alone and the public API
-//! stays small.
-//!
-//! Why a dedicated module: the Settings struct ends up with dozens of
-//! fields, several custom `Deserialize` impls (permissionMode legacy
-//! migration, camelCase tolerance), and a large `extra` passthrough
-//! map. Keeping this out of `mod.rs` means the public entry points
-//! (`load`, `load_all`, `credentials_path`) remain skimmable.
+
 
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-/// Top-level settings, mirrored into `~/.otherside/settings.json`.
-///
-/// All fields are optional — an empty file round-trips to
-/// `Settings::default()`. Unknown keys survive round-trips via `extra`
-/// so user config written against a future version of otherside does
-/// not get lost on read/write by an older version.
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Settings {
-    /// Default provider ID. One of `anthropic-oauth`, `codex`,
-    /// `gemini-cli`, `openai-compatible`.
+
     pub default_provider: Option<String>,
 
-    /// Default model ID, optionally with thinking suffix
-    /// (e.g. `claude-opus-4-7(xhigh)`).
     pub default_model: Option<String>,
 
-    /// Log level: `error` / `warn` / `info` / `debug` / `trace`.
-    /// Overridden by `--verbose`, `--debug`, or `RUST_LOG`.
     pub log_level: Option<String>,
 
-    /// User consented to yolo mode at least once.
     pub has_accepted_yolo_dialog: Option<bool>,
 
-    /// Auto-run the memory dedup pass on idle.
     pub auto_dedup_mem_enabled: Option<bool>,
 
-    /// Environment variables exported to every tool subprocess. Used by
-    /// Phase 2 T3 (Bash / Edit / Write) to propagate user-controlled
-    /// env into executed commands.
     pub env: HashMap<String, String>,
 
-    /// Permission rules — allow / deny / ask lists evaluated against
-    /// every tool invocation. See `permissions/` (Phase 2 T3).
     pub permissions: Option<PermissionsConfig>,
 
-    /// Pre/post-tool hooks. See `hooks/` (Phase 2 T3).
     pub hooks: Option<HooksConfig>,
 
-    /// Per-provider settings (all optional).
     pub providers: ProviderSettings,
 
-    /// Statusline override — when absent, the native renderer is used.
-    /// See `otherside-cli/src/statusline/` for behavior; see C48/C49/C50/C51
-    /// for the dual-naming + timeout + layout decisions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub statusline: Option<crate::statusline::types::StatuslineConfig>,
 
-    /// Render-verbose flag — persists across sessions. When `true`,
-    /// tool-use headers and result previews expand to upstream's
-    /// verbose branches (full bash output, Glob / Grep file listings
-    /// inline, Read `lines a-b` qualifier, WebFetch result body
-    /// appended). `/verbose` toggles this at runtime; the flipped
-    /// value writes back to settings.json so it sticks across
-    /// restarts. Independent from the `--verbose` CLI logging flag.
-    /// Matches upstream's `settings.json::verbose` boolean.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verbose: Option<bool>,
 
-    /// Persisted thinking-effort level — one of `auto`, `low`, `medium`,
-    /// `high`, `xhigh`, `max`. When set, the TUI seeds its inference
-    /// config from this value on startup and `/effort <level>` writes
-    /// the chosen value back. Matches upstream's
-    /// `settings.json::effortLevel` field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort_level: Option<String>,
 
-    // ----- openspec 009: Config-tab editable flags -----
-    //
-    // Upstream ships ~28 user-toggleable settings in the Config tab
-    // (live capture 2026-04-20). Otherside exposes the subset below
-    // as editable via the Settings panel; each is `Option<T>` so an
-    // absent value round-trips as `None` without pinning a default.
-    // The TUI renders the LIVE + persisted value per row.
-
-    /// Auto-compact conversation history when the context window
-    /// nears saturation. Upstream default: true.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_compact: Option<bool>,
 
-    /// Show rotating tip line below the progress row. Upstream
-    /// default: true.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub show_tips: Option<bool>,
 
-    // ----- Enterprise locks (read-only to users when set via policy) -----
-    /// Block non-plugin customization paths (stricter than user-set).
     pub strict_plugin_only_customization: Option<bool>,
 
-    /// Only hooks installed via a plugin or managed policy may run.
     pub allow_managed_hooks_only: Option<bool>,
 
-    /// If Some, only these MCP server names may activate.
     pub allowed_mcp_servers: Option<Vec<String>>,
 
-    /// If Some, these MCP server names are blocked regardless of scope.
     pub disabled_mcp_servers: Option<Vec<String>>,
 
-    /// Round-trip passthrough for any key this version doesn't know.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
 
-/// Permission posture values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum PermissionMode {
@@ -133,10 +69,6 @@ impl Default for PermissionMode {
     }
 }
 
-/// Allow / deny / ask rule lists. Rule-level leniency: a malformed
-/// individual rule does not fail the file parse; it's kept around with
-/// partial fields so the resolver (§10.4) can emit a warning and drop
-/// just that entry.
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, rename_all = "camelCase")]
 pub struct PermissionsConfig {
@@ -147,9 +79,6 @@ pub struct PermissionsConfig {
     pub extra: Map<String, Value>,
 }
 
-/// A single permission rule. Both fields are Optional so a malformed
-/// entry survives parse; `is_valid()` tells the resolver whether to
-/// keep it.
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, rename_all = "camelCase")]
 pub struct PermissionRule {
@@ -160,15 +89,12 @@ pub struct PermissionRule {
 }
 
 impl PermissionRule {
-    /// Rule has the two required fields — resolver drops any whose
-    /// `is_valid()` is false and emits a warning.
+
     pub fn is_valid(&self) -> bool {
         self.tool_name.is_some() && self.match_pattern.is_some()
     }
 }
 
-/// Pre/post tool hooks + lifecycle hooks. Field names mirror the
-/// hook-event catalog (see `openspec/specs/hooks/` when it lands).
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, rename_all = "camelCase")]
 pub struct HooksConfig {
@@ -182,23 +108,15 @@ pub struct HooksConfig {
     pub extra: Map<String, Value>,
 }
 
-/// Single hook entry. `matcher` selects which tool triggers it
-/// (`"*"` = any), `command` is the shell string executed.
-///
-/// `source_tag` is populated by the config resolver so the managed-
-/// hooks gate can tell user hooks apart from policy hooks. Not
-/// serialized back out (skipped when saving).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct HookEntry {
     pub matcher: String,
     pub command: String,
-    /// Optional per-entry timeout in milliseconds. Defaults to
-    /// 60 000 ms at dispatch when unset.
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout: Option<u64>,
-    /// Provenance tag set by the config resolver. `"policy"` means a
-    /// managed (enterprise-installed) hook.
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_tag: Option<String>,
     #[serde(flatten, default)]
@@ -211,7 +129,6 @@ impl HookEntry {
     }
 }
 
-/// Per-provider settings (all optional — user opts in per provider).
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ProviderSettings {
@@ -223,7 +140,6 @@ pub struct ProviderSettings {
     pub extra: Map<String, Value>,
 }
 
-/// Anthropic OAuth provider settings.
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, rename_all = "camelCase")]
 pub struct AnthropicOauthSettings {
@@ -234,7 +150,6 @@ pub struct AnthropicOauthSettings {
     pub extra: Map<String, Value>,
 }
 
-/// Codex provider settings (populated post-MVP).
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, rename_all = "camelCase")]
 pub struct CodexSettings {
@@ -242,7 +157,6 @@ pub struct CodexSettings {
     pub extra: Map<String, Value>,
 }
 
-/// Gemini CLI provider settings (populated post-MVP).
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, rename_all = "camelCase")]
 pub struct GeminiCliSettings {
@@ -250,7 +164,6 @@ pub struct GeminiCliSettings {
     pub extra: Map<String, Value>,
 }
 
-/// OpenAI-compatible provider settings — requires user-supplied endpoint.
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, rename_all = "camelCase")]
 pub struct OpenAiCompatibleSettings {
@@ -302,7 +215,7 @@ mod tests {
         let s = parse(&corpus_root().join("settings/with_unknown_keys.json")).unwrap();
         assert!(s.extra.contains_key("experimentalFeatureFromFutureVersion"));
         assert!(s.extra.contains_key("customUserAnnotation"));
-        // nested unknown under providers.anthropicOauth survives too
+
         let ant = s.providers.anthropic_oauth.as_ref().unwrap();
         assert!(ant.extra.contains_key("futureProviderKnob"));
     }
@@ -314,7 +227,7 @@ mod tests {
         assert!(p.allow.len() >= 10);
         assert!(p.deny.len() >= 5);
         assert!(p.ask.len() >= 2);
-        // every rule in this fixture is well-formed.
+
         assert!(p.allow.iter().all(PermissionRule::is_valid));
         assert!(p.deny.iter().all(PermissionRule::is_valid));
     }
@@ -331,8 +244,7 @@ mod tests {
 
     #[test]
     fn corpus_invalid_permission_rule_keeps_file_parseable() {
-        // §4.8: the file itself MUST parse. The one bad rule keeps
-        // partial fields — §10.4 filters it out with a warning.
+
         let s = parse(&corpus_root().join("settings/invalid_permission_rule.json")).unwrap();
         let p = s.permissions.unwrap();
         let valid_count = p.allow.iter().filter(|r| r.is_valid()).count();
@@ -359,10 +271,7 @@ mod tests {
 
     #[test]
     fn permission_mode_is_not_a_typed_settings_field() {
-        // Rule §3: permission_mode is session-scoped, NEVER persisted.
-        // Deserializing a settings blob that carries `permissionMode`
-        // must succeed AND drop the value into `extra` so no boot path
-        // can accidentally seed the session from it.
+
         let json = r#"{"permissionMode":"yolo","defaultProvider":"anthropic-oauth"}"#;
         let s: Settings = serde_json::from_str(json).unwrap();
         assert_eq!(s.default_provider.as_deref(), Some("anthropic-oauth"));
@@ -374,8 +283,7 @@ mod tests {
 
     #[test]
     fn unknown_keys_round_trip_byte_identical_after_normalization() {
-        // Read the fixture, serialize back, re-read. The `extra` map +
-        // known fields must match on the second read.
+
         let bytes = std::fs::read(corpus_root().join("settings/with_unknown_keys.json")).unwrap();
         let first: Settings = serde_json::from_slice(&bytes).unwrap();
         let reemitted = serde_json::to_vec(&first).unwrap();

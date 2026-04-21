@@ -1,37 +1,4 @@
-//! Agent loop — conversation state + multi-turn orchestration.
-//!
-//! Owns the "send request → stream back → accumulate tool_use blocks
-//! → dispatch tools → build tool results → feed back into next turn"
-//! cycle. Does NOT own provider dispatch (`provider::*`) or tool
-//! implementations (`tools::*`) — it wires them together.
-//!
-//! # Turn lifecycle
-//!
-//! 1. Caller prepares the initial `Vec<OpenAiChatMessage>` (the user
-//!    turn and any prior history) and hands it to [`AgentLoop::run`].
-//! 2. Loop dispatches the provider stream, folding each
-//!    [`OpenAiChunk`] through [`TurnState::fold_chunk`]: text deltas
-//!    accumulate into the assistant buffer; tool_call deltas
-//!    accumulate per index into a pending-call table.
-//! 3. When the stream closes with `finish_reason = "tool_calls"`, the
-//!    loop drains pending calls, dispatches each via
-//!    [`tools::dispatch`], packages each result as a `role = "tool"`
-//!    message, appends everything (assistant + tools) to the history,
-//!    and starts another turn.
-//! 4. Any other `finish_reason` (or reaching [`MAX_AUTO_TURNS`])
-//!    terminates the loop; final history is returned to the caller.
-//!
-//! # Determinism
-//!
-//! Tool ordering: the loop dispatches in ascending call index, which
-//! matches both the stream arrival order and the order the model
-//! intended. Results go into the next turn's history in the same order.
-//!
-//! # TUI plumbing
-//!
-//! The TUI event loop owns the display-side of tool calls; it feeds
-//! the accumulated deltas into `tui::tool_render` to paint the
-//! `⏺ ToolName ⎿ …` shape while the agent loop runs underneath.
+
 
 use std::collections::HashMap;
 
@@ -46,34 +13,20 @@ use crate::provider::{ChunkStream, Provider};
 use crate::thinking::ThinkingConfig;
 use crate::tools;
 
-/// Hard cap on auto-turns before the loop yields control back to the
-/// user. Mirrors upstream. Exposed so it can be lowered via settings
-/// when the model gets looped on a non-terminating task.
 pub const MAX_AUTO_TURNS: u32 = 25;
 
-/// One turn's worth of accumulation state — deltas-to-full.
-///
-/// Reset between turns. `fold_chunk` is the only mutator and is
-/// expected to be called once per [`OpenAiChunk`] from the stream.
 #[derive(Debug, Clone, Default)]
 pub struct Turn {
-    /// Text content accumulated from `delta.content` fragments.
+
     pub assistant_text: String,
-    /// Tool-call fragments keyed by OpenAI `index`. Every delta
-    /// concatenates into the matching entry.
+
     pub tool_calls: HashMap<u32, PendingToolCall>,
-    /// Final `finish_reason` once the stream closes. `None` while
-    /// streaming.
+
     pub finish_reason: Option<String>,
-    /// Latest pending usage surfaced by a chunk this turn. Set when a
-    /// chunk arrived with `usage: Some(_)`, drained by
-    /// [`Turn::take_usage`]. Follows the "latest-wins per side"
-    /// semantic — `input_tokens` updates overwrite, `output_tokens`
-    /// updates overwrite, missing sides stay as they were.
+
     pub pending_usage: Option<crate::inference::OpenAiUsage>,
 }
 
-/// Accumulator for a single tool call across streaming deltas.
 #[derive(Debug, Clone, Default)]
 pub struct PendingToolCall {
     pub id: Option<String>,
@@ -82,16 +35,14 @@ pub struct PendingToolCall {
 }
 
 impl PendingToolCall {
-    /// Merge a delta's fragment into this accumulator.
+
     pub fn merge(&mut self, delta: &OpenAiToolCallDelta) {
         if let Some(id) = &delta.id {
             self.id = Some(id.clone());
         }
         if let Some(f) = &delta.function {
             if let Some(name) = &f.name {
-                // Last name wins — the first fragment carries the name
-                // and subsequent ones usually omit it, but tolerate a
-                // server that repeats.
+
                 self.name = Some(name.clone());
             }
             if let Some(args) = &f.arguments {
@@ -100,9 +51,6 @@ impl PendingToolCall {
         }
     }
 
-    /// Freeze into a complete [`OpenAiToolCall`]. Returns `None` if
-    /// `id` or `name` were never seen — those are required and a
-    /// missing value means the translator gave us a malformed stream.
     pub fn finalize(self) -> Option<OpenAiToolCall> {
         Some(OpenAiToolCall {
             id: self.id?,
@@ -120,9 +68,6 @@ impl Turn {
         Self::default()
     }
 
-    /// Fold one chunk into this turn's accumulators. Returns the text
-    /// delta (if any) so the caller can stream it to the UI — the
-    /// accumulators themselves are internal state.
     pub fn fold_chunk(&mut self, chunk: OpenAiChunk) -> Option<String> {
         if let Some(usage) = chunk.usage {
             let slot = self.pending_usage.get_or_insert_with(Default::default);
@@ -152,17 +97,10 @@ impl Turn {
         emitted
     }
 
-    /// Drain the latest pending usage, returning it to the caller and
-    /// clearing the slot. Used by the TUI loop to forward usage into
-    /// a `StreamEvent::Usage` after each chunk. Returns `None` when
-    /// no new usage has been folded since the previous drain.
     pub fn take_usage(&mut self) -> Option<crate::inference::OpenAiUsage> {
         self.pending_usage.take()
     }
 
-    /// Drain tool calls in ascending index order. Non-finalizable
-    /// entries (missing id/name) are dropped — that's a translator
-    /// bug, not a dispatch concern.
     pub fn drain_calls(&mut self) -> Vec<OpenAiToolCall> {
         let mut indices: Vec<u32> = self.tool_calls.keys().copied().collect();
         indices.sort_unstable();
@@ -186,13 +124,10 @@ impl Turn {
     }
 }
 
-/// Trait-abstracted tool executor so tests can inject deterministic
-/// fakes without touching the filesystem.
 pub trait ToolDispatcher {
     fn dispatch(&self, name: &str, args: &Value) -> Result<Value>;
 }
 
-/// Default executor — thin wrapper over `tools::dispatch`.
 #[derive(Debug, Default)]
 pub struct DefaultToolDispatcher;
 
@@ -202,14 +137,6 @@ impl ToolDispatcher for DefaultToolDispatcher {
     }
 }
 
-/// Build the `role = "tool"` message for a dispatched call.
-///
-/// If the dispatcher emits a top-level `content` string field, we use
-/// it verbatim — this lets tools like Bash match the upstream wire
-/// shape where `tool_result.content` is plain terminal output
-/// (merged stdout + stderr) instead of a JSON envelope. Tools that
-/// don't emit `content` fall back to JSON-serializing the whole
-/// result (current behavior for Read, Edit, Grep, Glob, Write, etc).
 pub fn tool_result_message(call_id: &str, result: &Value) -> OpenAiChatMessage {
     let content = result
         .get("content")
@@ -227,8 +154,6 @@ pub fn tool_result_message(call_id: &str, result: &Value) -> OpenAiChatMessage {
     }
 }
 
-/// Orchestrator — holds the provider + model config between turns so
-/// the caller can run a multi-turn cycle with a single call.
 pub struct AgentLoop<D: ToolDispatcher> {
     pub model: String,
     pub thinking: Option<ThinkingConfig>,
@@ -236,24 +161,18 @@ pub struct AgentLoop<D: ToolDispatcher> {
     pub dispatcher: D,
 }
 
-/// Output of a full loop — the assistant-facing history plus a
-/// summary so the caller can decide whether to show "hit auto limit".
 #[derive(Debug, Default)]
 pub struct LoopResult {
-    /// Messages to display / persist. Starts with the caller-provided
-    /// history; every assistant message (plus tool results) appended.
+
     pub history: Vec<OpenAiChatMessage>,
-    /// Number of turns taken.
+
     pub turns: u32,
-    /// `true` if the loop exited because [`AgentLoop::max_turns`] was
-    /// reached before the model asked to stop. The caller typically
-    /// surfaces a system note in the TUI.
+
     pub hit_turn_limit: bool,
 }
 
 impl<D: ToolDispatcher> AgentLoop<D> {
-    /// Drive the cycle. `initial` is the full starting history; it's
-    /// taken into the returned `LoopResult.history` as the prefix.
+
     pub async fn run<F, Fut>(
         &self,
         initial: Vec<OpenAiChatMessage>,
@@ -305,7 +224,6 @@ impl<D: ToolDispatcher> AgentLoop<D> {
                 continue;
             }
 
-            // No tools — final assistant turn. Append and stop.
             if !turn.assistant_text.is_empty() {
                 history.push(OpenAiChatMessage {
                     role: OpenAiChatRole::Assistant,
@@ -330,8 +248,6 @@ impl<D: ToolDispatcher> AgentLoop<D> {
     }
 }
 
-/// Convenience: build an `AgentLoop` that uses a provider's stream
-/// function directly.
 pub async fn run_with_provider<P: Provider + ?Sized>(
     provider: &P,
     model: String,
@@ -446,11 +362,7 @@ mod tests {
 
     #[test]
     fn fold_chunk_accumulates_usage_latest_wins_per_side() {
-        // Feed an input-only usage chunk, then an output-only usage
-        // chunk — both must survive the drain because the update
-        // protocol is "overwrite the Some side, leave the None side
-        // alone." Mirrors how Anthropic ships input_tokens on
-        // message_start and cumulative output_tokens on message_delta.
+
         use crate::inference::{OpenAiChoice, OpenAiDelta, OpenAiUsage};
         let mut t = Turn::new();
         t.fold_chunk(OpenAiChunk {
@@ -486,7 +398,7 @@ mod tests {
         let drained = t.take_usage().expect("pending usage drained");
         assert_eq!(drained.input_tokens, Some(1234));
         assert_eq!(drained.output_tokens, Some(56));
-        // Second drain after a take() returns None — the slot resets.
+
         assert!(t.take_usage().is_none());
     }
 
@@ -500,7 +412,7 @@ mod tests {
 
     #[tokio::test]
     async fn agent_loop_dispatches_tool_then_terminates() {
-        // Turn 1 → model asks for tool. Turn 2 → model replies plain text.
+
         let turn1: Vec<std::result::Result<OpenAiChunk, Error>> = vec![
             Ok(tool_chunk(
                 0,
@@ -545,7 +457,7 @@ mod tests {
 
         assert_eq!(result.turns, 2);
         assert!(!result.hit_turn_limit);
-        // history = user + assistant(tool_calls) + tool_result + assistant(final)
+
         assert_eq!(result.history.len(), 4);
         assert_eq!(result.history[1].role, OpenAiChatRole::Assistant);
         assert_eq!(result.history[1].tool_calls.len(), 1);
@@ -556,7 +468,7 @@ mod tests {
 
     #[tokio::test]
     async fn agent_loop_respects_max_turns() {
-        // Every turn asks for a tool → loop hits the cap.
+
         let loop_ = AgentLoop {
             model: "m".into(),
             thinking: None,
@@ -602,10 +514,7 @@ mod tests {
 
     #[test]
     fn tool_result_message_uses_content_field_when_present() {
-        // Bash + future string-payload tools emit a top-level `content`
-        // string (upstream-wire shape: merged stdout + stderr). The
-        // wrapper must honor it verbatim so the model sees the same
-        // terminal output upstream shows.
+
         let msg = tool_result_message(
             "tu_bash",
             &json!({
@@ -621,13 +530,12 @@ mod tests {
 
     #[test]
     fn tool_result_message_falls_back_to_json_when_no_content_field() {
-        // Read / Edit / Grep etc keep their JSON envelope — the wrapper
-        // JSON-serializes when no `content` string field is present.
+
         let msg = tool_result_message(
             "tu_read",
             &json!({"numLines": 3, "content_body": "line1\nline2\nline3"}),
         );
-        // JSON envelope — starts with `{`.
+
         assert!(msg.content.starts_with('{'));
         assert!(msg.content.contains("\"numLines\":3"));
     }

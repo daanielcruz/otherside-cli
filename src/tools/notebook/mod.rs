@@ -1,33 +1,4 @@
-//! `NotebookEdit` — minimal `.ipynb` cell-source replace.
-//!
-//! # Status
-//!
-//! Schema in this module is **otherside-native** — NOT byte-fidelity
-//! against a captured `ToolSearch` response. Shape mirrors upstream's
-//! Zod at `tools/NotebookEditTool/NotebookEditTool.ts:39-66`. When a
-//! live capture records the real schema, `TOOL_NOTEBOOK_EDIT_JSON`
-//! gets swapped byte-verbatim.
-//!
-//! # Scope — first wave (018)
-//!
-//! Only `edit_mode: "replace"` is implemented. `insert` and `delete`
-//! return `InvalidArgs` with a deferral hint — they land in a later
-//! wave along with cell-id generation, nbformat compat checks, and
-//! splice-semantics validation.
-//!
-//! # Deferred gates (tracked in `openspec/changes/018-.../tasks.md` §1)
-//!
-//! - **TODO-1:** Read-before-Edit guard. Upstream requires the notebook
-//!   have been `Read` before any edit; this wave skips that check to
-//!   avoid threading `read_set::global()` through every dispatcher
-//!   signature. Partial mitigation: the dispatcher validates file
-//!   extension + cell-id existence before any write, so a wrong path
-//!   or wrong cell errors before corrupting anything.
-//! - **TODO-2:** Write-permission gate. Same signature-refactor
-//!   reason — a later wave plumbs `PermissionContext` through the
-//!   dispatcher.
-//!
-//! Zone: identity — R-103 applies.
+
 
 use std::path::Path;
 
@@ -35,8 +6,6 @@ use serde_json::{json, Value};
 
 use crate::tools::ToolError;
 
-/// Edit a single cell's source inside a `.ipynb` file. See module
-/// docstring for the supported subset in this wave.
 pub fn notebook_edit(args: &Value) -> Result<Value, ToolError> {
     let notebook_path = args
         .get("notebook_path")
@@ -84,8 +53,6 @@ pub fn notebook_edit(args: &Value) -> Result<Value, ToolError> {
         )));
     }
 
-    // Read file. Wrap blocking I/O per R-107 so this behaves correctly
-    // when called from the tokio multi-thread runtime.
     let raw = tokio::task::block_in_place(|| std::fs::read_to_string(&path))?;
 
     let mut notebook: Value = serde_json::from_str(&raw).map_err(|e| {
@@ -133,17 +100,12 @@ pub fn notebook_edit(args: &Value) -> Result<Value, ToolError> {
     if let Some(obj) = cell.as_object_mut() {
         obj.insert("source".to_string(), Value::String(new_source.to_string()));
         if cell_type == "code" {
-            // Mutating a code cell invalidates prior execution artifacts;
-            // match upstream's reset behavior at
-            // tools/NotebookEditTool/NotebookEditTool.ts:429-433.
+
             obj.insert("execution_count".to_string(), Value::Null);
             obj.insert("outputs".to_string(), Value::Array(Vec::new()));
         }
     }
 
-    // Re-serialize with a one-space indent — upstream `IPYNB_INDENT = 1`.
-    // `preserve_order` is already enabled on serde_json via Cargo.toml
-    // (R-56) so cell key order round-trips intact.
     let updated = serialize_ipynb(&notebook)?;
     let path_owned = path.clone();
     let bytes = updated.clone();
@@ -159,10 +121,6 @@ pub fn notebook_edit(args: &Value) -> Result<Value, ToolError> {
     }))
 }
 
-/// Serialize with a 1-space indent to match upstream's `IPYNB_INDENT`.
-/// `serde_json::to_string_pretty` only supports multi-char indentation
-/// through a custom formatter; we build one explicitly so the output
-/// stays byte-comparable to the canonical ipynb layout.
 fn serialize_ipynb(v: &Value) -> Result<String, ToolError> {
     let mut buf = Vec::new();
     let indent = b" ";
@@ -176,9 +134,6 @@ fn serialize_ipynb(v: &Value) -> Result<String, ToolError> {
     })
 }
 
-/// `NotebookEdit` schema — otherside-native synthesis of upstream's Zod
-/// at `tools/NotebookEditTool/NotebookEditTool.ts:39-66`. 018 implements
-/// `replace` only.
 pub const TOOL_NOTEBOOK_EDIT_JSON: &str =
     include_str!("../../../harness_corpus/tools/NotebookEdit.json");
 
@@ -261,7 +216,7 @@ mod tests {
         let written: Value = serde_json::from_str(&std::fs::read_to_string(&nb).unwrap()).unwrap();
         assert_eq!(written["cells"][0]["cell_type"], "markdown");
         assert_eq!(written["cells"][0]["source"], "# new heading");
-        // Markdown cells don't carry execution_count / outputs.
+
         assert!(written["cells"][0].get("execution_count").is_none());
         assert!(written["cells"][0].get("outputs").is_none());
     }
@@ -368,9 +323,6 @@ mod tests {
         let _: Value = serde_json::from_str(TOOL_NOTEBOOK_EDIT_JSON).unwrap();
     }
 
-    // Ephemeral scratch directory helper — std library only, no tempfile
-    // crate dependency. Creates a unique subdirectory under the OS temp
-    // dir; the handle removes it on drop.
     struct ScratchDir(std::path::PathBuf);
     impl ScratchDir {
         fn path(&self) -> &std::path::Path {

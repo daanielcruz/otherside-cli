@@ -1,22 +1,13 @@
-//! Instant handler — silent immediate side-effect. No overlay, no feedback row.
-//!
-//! Current slashes: `/clear`, `/exit`. openspec 011 dropped `/bye`
-//! (no upstream analogue — R-114). `/exit` bubbles up to the event
-//! loop via [`SlashOutcome::ExitApp`] so the caller breaks out of the
-//! render loop.
+
 
 use super::super::state::{ConversationState, DisplayOrigin};
 use super::SlashOutcome;
 
-/// Dispatch an Instant-category slash. Returns `ExitApp` for
-/// terminators, `Handled` otherwise.
 pub fn handle(name: &str, _args: &str, state: &mut ConversationState) -> SlashOutcome {
     match name.to_ascii_lowercase().as_str() {
         "clear" => {
             state.clear_conversation();
-            // Chrome — the `/clear` anchor is a local visual
-            // breadcrumb; the history wipe itself is the real effect
-            // and already drops prior turns before this push lands.
+
             state.push_anchor("clear", "", "(no content)", DisplayOrigin::Chrome);
             SlashOutcome::Handled
         }

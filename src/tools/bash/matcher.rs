@@ -1,16 +1,5 @@
-//! Permission-rule matching for `Bash(prefix:*)` DSL.
-//!
-//! Rule strings come from `settings.permissions.allow` / `deny` /
-//! `ask` (003). A rule is either:
-//!
-//! - `Bash(ls:*)`   → matches any command whose first token is `ls`
-//! - `Bash(git status)` → exact match on the entire command
-//! - `Bash(rm -rf:*)` → matches any command starting with `rm -rf`
-//!
-//! Longest-prefix wins across matching rules; on a tie, deny beats
-//! allow. Unmatched commands fall through to `Ask`.
 
-/// Outcome of a permission decision.
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Decision {
     Allow,
@@ -18,22 +7,11 @@ pub enum Decision {
     Ask,
 }
 
-/// Parse a `Bash(...)` rule string. Returns the pattern inside the
-/// parens; `None` for rules targeting other tools (not our concern).
 pub fn parse_bash_pattern(rule: &str) -> Option<&str> {
     let inside = rule.strip_prefix("Bash(")?;
     inside.strip_suffix(')')
 }
 
-/// Does `command` match `pattern`? A trailing `:*` marks a prefix
-/// wildcard; without it the pattern must equal the command.
-///
-/// Wildcard rules:
-/// - `command` must start with the literal prefix.
-/// - The boundary char right after the prefix must either not exist
-///   (exact equality) OR be a non-alphanumeric delimiter (space, `/`,
-///   `:`, `.`, tab). This prevents `ls:*` from matching `lsof` while
-///   still letting `rm -rf /tmp/foo:*` match `rm -rf /tmp/foo/bar`.
 pub fn pattern_matches(pattern: &str, command: &str) -> bool {
     if let Some(prefix) = pattern.strip_suffix(":*") {
         let prefix = prefix.trim();
@@ -52,8 +30,6 @@ pub fn pattern_matches(pattern: &str, command: &str) -> bool {
     }
 }
 
-/// Evaluate a full rule set. `allow` and `deny` are Bash(...) rule
-/// strings; anything else is silently ignored.
 pub fn decide(command: &str, allow: &[String], deny: &[String]) -> Decision {
     let best_allow = best_match(command, allow);
     let best_deny = best_match(command, deny);
@@ -63,7 +39,7 @@ pub fn decide(command: &str, allow: &[String], deny: &[String]) -> Decision {
         (None, Some(_)) => Decision::Deny,
         (Some(a), Some(d)) => {
             if d >= a {
-                // Deny ties with allow → deny wins.
+
                 Decision::Deny
             } else {
                 Decision::Allow
@@ -72,7 +48,6 @@ pub fn decide(command: &str, allow: &[String], deny: &[String]) -> Decision {
     }
 }
 
-/// Length of the longest matching pattern, in chars (not bytes).
 fn best_match(command: &str, rules: &[String]) -> Option<usize> {
     rules
         .iter()

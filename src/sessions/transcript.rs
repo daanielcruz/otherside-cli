@@ -1,8 +1,4 @@
-//! Transcript JSONL reader + writer.
-//!
-//! The writer is append-only, fsyncs on every record, and sets file
-//! mode 0600 on unix. The reader tolerates a truncated trailing
-//! line (crash-during-write) by reporting those as end-of-stream.
+
 
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
@@ -72,7 +68,7 @@ impl Reader {
             match serde_json::from_str::<Record>(trimmed) {
                 Ok(r) => out.push(r),
                 Err(_) => {
-                    // Truncated / malformed trailing line — treat as EOF.
+
                     break;
                 }
             }
@@ -127,7 +123,7 @@ mod tests {
             })
             .unwrap();
         }
-        // Append a garbage half-line simulating crash mid-write.
+
         {
             let mut f = OpenOptions::new()
                 .append(true)
@@ -136,7 +132,7 @@ mod tests {
             f.write_all(b"{\"type\":\"user_message\",\"ts\":\"").unwrap();
         }
         let records = Reader::read_all(&path).unwrap();
-        // Valid first line preserved; truncated tail silently skipped.
+
         assert_eq!(records.len(), 1);
         std::fs::remove_file(&path).ok();
     }

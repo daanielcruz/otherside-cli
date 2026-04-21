@@ -1,24 +1,8 @@
-//! Skill handler — bundled SKILL.md body becomes a user turn.
-//!
-//! Each `skills_corpus/<name>/SKILL.md` is embedded at compile time via
-//! `include_str!`. The handler resolves the body by slash name and
-//! emits a user turn of the shape `<skill_body>\n\n<args>` so the LLM
-//! treats the skill instructions as its active task.
-//!
-//! When a skill name is not in the bundled table the handler falls
-//! back to the raw `/<name> <args>` string — this keeps `Passthrough`
-//! -adjacent behavior for slashes that were added to the catalog
-//! without a bundled body yet (e.g. `/loop` after openspec 011 moved
-//! it here; upstream body depends on `ScheduleCronTool` which otherside
-//! has not ported).
+
 
 use super::super::state::ConversationState;
 use super::SlashOutcome;
 
-/// Lookup table of bundled skill bodies. Each entry is a slash name →
-/// verbatim SKILL.md contents (frontmatter + body). New entries land
-/// here whenever a Skill-category row is added to
-/// `docs/slashes.md` + `slash/catalog.rs`.
 const SKILL_BODIES: &[(&str, &str)] = &[
     ("dream", include_str!("../../../skills_corpus/dream/SKILL.md")),
     ("statusline", include_str!("../../../skills_corpus/statusline/SKILL.md")),
@@ -34,8 +18,6 @@ const SKILL_BODIES: &[(&str, &str)] = &[
     ),
 ];
 
-/// Resolve a skill body by slash name. Returns `None` when the name
-/// has no bundled body — the caller falls back to a raw slash pass.
 pub fn lookup_body(name: &str) -> Option<&'static str> {
     SKILL_BODIES
         .iter()
@@ -43,9 +25,6 @@ pub fn lookup_body(name: &str) -> Option<&'static str> {
         .map(|(_, body)| *body)
 }
 
-/// Dispatch a Skill-category slash. Returns `SendTurn(<body>\n\n<args>)`
-/// so the event loop submits the skill as a user turn. When no body
-/// is bundled, fall back to `/<name> <args>` verbatim.
 pub fn handle(name: &str, args: &str, _state: &mut ConversationState) -> SlashOutcome {
     let body = lookup_body(name);
     let user_turn = match (body, args.is_empty()) {
@@ -63,11 +42,7 @@ mod tests {
 
     #[test]
     fn every_bundled_skill_slash_has_body() {
-        // The 6 Skill-category rows that ship a SKILL.md via
-        // include_str! — missing entries would fail the build. This
-        // asserts the runtime lookup table is populated. `/loop`
-        // lives in the catalog but has no bundled body yet (upstream
-        // body depends on ScheduleCronTool parity — future change).
+
         let expected = [
             "dream",
             "statusline",
@@ -137,10 +112,7 @@ mod tests {
 
     #[test]
     fn loop_falls_back_to_raw_slash_pass_until_body_bundled() {
-        // openspec 011 reclassified /loop Anchor → Skill (upstream
-        // `registerBundledSkill({ name: 'loop' })`). No bundled body
-        // yet — handler emits the raw slash form so the provider
-        // sees the user's intent even if the skill body never lands.
+
         let mut st = ConversationState::default();
         let outcome = handle("loop", "5m /check-prs", &mut st);
         match outcome {

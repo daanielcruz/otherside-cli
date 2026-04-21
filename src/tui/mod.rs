@@ -1,64 +1,4 @@
-//! Interactive chat TUI.
-//!
-//! Single-screen ratatui interface with a header, a scrolling message log,
-//! and a three-line input box at the bottom. Multi-turn conversation is
-//! kept entirely in memory for now — close the TUI and history is gone.
-//!
-//! # Event loop shape
-//!
-//! We run three cooperating async primitives:
-//!
-//! 1. A `crossterm::event::EventStream` that surfaces key events as they
-//!    happen (no polling).
-//! 2. A `tokio::sync::mpsc` channel carrying chunk / done / error messages
-//!    from the inference task.
-//! 3. A `tokio::time::interval` that fires periodically so the spinner
-//!    animates even when no other event arrives.
-//!
-//! `tokio::select!` drives all three. State mutations happen on the main
-//! task; the network task is pure I/O and only talks back through the
-//! channel.
-//!
-//! # Terminal discipline
-//!
-//! [`run`] enables raw mode, switches to the alternate screen, hides the
-//! cursor, and installs a drop-guard ([`TerminalGuard`]) that reverses
-//! every step — even on panic. Forgetting the guard would leave the
-//! user's shell in raw mode if anything went wrong, which is a terrible
-//! experience to inflict.
-//!
-//! # Message queue (017 §4)
-//!
-//! Enter-while-streaming and submit-during-streaming both redirect
-//! the input onto [`ConversationState::queued_messages`] instead of
-//! dispatching a concurrent request. When the in-flight turn finishes
-//! (via `Done`, `Error`, or the sender-drop fallback) the event loop
-//! calls [`ConversationState::consume_queue_head_into_input`], and
-//! if a head was consumed, re-enters the SendToLlm dispatch path so
-//! the queued turn auto-fires. This is inline in the `rx.recv` arm —
-//! no background poll, no `queue_head_pending` intermediate field.
-//! Up-arrow at empty input pops the queue TAIL for editing (C70).
-//!
-//! # Open items for future pick-up
-//!
-//! TODO(hand-off): token accounting for the `context: --%` header slot is
-//!   placeholder. Needs a tokenizer and a cache-hit calculator.
-//! TODO(hand-off): no session persistence — closing the TUI drops history.
-//!   Phase 2 should wire `~/.otherside/sessions/<uuid>.json`.
-//! TODO(hand-off): no slash commands (`/help`, `/clear`, `/model`). Input
-//!   lines starting with `/` are currently sent verbatim.
-//! TODO(hand-off): mouse support disabled. Left intentionally — adding it
-//!   requires EnterMouseCapture and selection/click behavior decisions.
-//! TODO(hand-off): left/right arrow, Home/End, word-delete are not wired.
-//!   Input is append-only plus Backspace. Adding a real text editor means
-//!   pulling `tui-textarea` or writing one — defer until the user asks.
-//! TODO(hand-off): Ctrl+L clears the screen by forcing a redraw, but does
-//!   NOT clear the alternate-screen scrollback. That matches iTerm2 /
-//!   tmux semantics; revisit if users find it confusing.
-//! TODO(hand-off): error rendering shows only the last error string. No
-//!   per-error styling (auth vs network vs rate-limit). Consider wiring
-//!   the `Error` variant through once we have more than one failure mode
-//!   surfacing in the TUI.
+
 
 use std::io::{self, Stdout};
 use std::sync::Arc;
@@ -98,68 +38,39 @@ pub mod tool_render;
 
 use state::{ConversationState, DisplayOrigin};
 
-/// Event payloads coming from the inference task, pushed onto the mpsc
-/// channel. Key events are consumed directly from `EventStream` in the
-/// main loop — they don't ride this enum.
-///
-/// Tool-call lifecycle rides typed `ToolCallStart` / `ToolCallFinish`
-/// variants (015). The pair always arrives in order — Start before the
-/// dispatcher blocks, Finish after it returns — because
-/// [`run_agent_turns`] dispatches tools sequentially. The render layer
-/// relies on this ordering to drive the `Running → Ok / Error` state
-/// machine.
 #[derive(Debug)]
 enum StreamEvent {
-    /// A chunk from the provider with a non-empty `delta.content`. We
-    /// pre-extract the content so the event loop doesn't have to re-unwrap
-    /// the OpenAiChunk structure on every tick.
+
     Delta(String),
-    /// The provider finished without error. Full content already delivered
-    /// via `Delta`s.
+
     Done,
-    /// Something failed. Carries the formatted message.
+
     Error(String),
-    /// A tool call is about to be dispatched. Arrives BEFORE the
-    /// synchronous dispatcher runs so the TUI paints the Running
-    /// bullet immediately. Paired with a later `ToolCallFinish`
-    /// carrying the same `id`.
+
     ToolCallStart {
         id: String,
         name: String,
         args: serde_json::Value,
     },
-    /// A tool call finished. `result` carries the dispatcher's `Ok`
-    /// value or a dispatcher-side `Err` string. `elapsed_ms` is wall
-    /// clock between the `Start` send and this `Finish` send.
+
     ToolCallFinish {
         id: String,
         result: std::result::Result<serde_json::Value, String>,
         elapsed_ms: u64,
     },
-    /// Running token counts folded out of the provider stream
-    /// (`message_start` / `message_delta` in the Anthropic dialect).
-    /// Either side may be `None` — the consumer overwrites whichever
-    /// field is `Some` so the most-recent count for each side wins.
-    /// Lets the TUI progress line paint `↑ N tokens` in real time
-    /// without waiting for the turn to finalize.
+
     Usage {
         input_tokens: Option<u64>,
         output_tokens: Option<u64>,
     },
-    /// Agent task needs interactive permission approval before it can
-    /// dispatch a tool call. The event loop opens a modal overlay and
-    /// fires the reply once the user resolves it; the agent task awaits
-    /// the oneshot's recv side. Mirrors upstream's `checkPermissions`
-    /// modal dialog shape.
+
     PermissionAsk {
         tool_name: String,
         args_preview: String,
         rule: Option<String>,
         reply: tokio::sync::oneshot::Sender<crate::permissions::PermissionResponse>,
     },
-    /// AskUserQuestion tool dispatch — pause the agent turn and route
-    /// a free-form text question to the user. The reply oneshot
-    /// carries the typed answer (empty string on Esc).
+
     AskUserQuestion {
         question: String,
         hint: Option<String>,
@@ -167,11 +78,6 @@ enum StreamEvent {
     },
 }
 
-/// Entry point — boot the TUI and run until the user exits.
-///
-/// `raw_model` is the model id as typed on the command line (or resolved
-/// from settings), possibly with a thinking suffix like `(xhigh)`. We
-/// parse it here so the suffix rides every turn without re-parsing.
 pub async fn run(
     registry: Arc<Registry>,
     raw_model: String,
@@ -186,9 +92,6 @@ pub async fn run(
     let (base_model, thinking) = parse_suffix(&raw_model)
         .map_err(|e| Error::Other(format!("invalid model suffix: {e}")))?;
 
-    // Enter the alt-screen + raw mode. The guard reverses this on drop,
-    // including on panic — essential because a panicked TUI with raw mode
-    // still on leaves the user's shell unusable.
     let mut guard = TerminalGuard::enter()?;
     let res = event_loop(
         &mut guard.terminal,
@@ -204,8 +107,6 @@ pub async fn run(
     res
 }
 
-/// The core async event loop. Split out from [`run`] so the terminal
-/// guard's scope is obvious and the loop itself can be read top-to-bottom.
 async fn event_loop(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     provider: Arc<dyn Provider>,
@@ -217,21 +118,11 @@ async fn event_loop(
 ) -> Result<()> {
     let mut st =
         ConversationState::new_for_model_with_mode(&base_model, initial_permission_mode);
-    // Publish the TaskStore to the process global so the Agent
-    // tool's background route + provider-side <task-notification>
-    // drainage can reach the live store without threading it
-    // through every dispatcher signature.
+
     let _ = crate::tasks::store::install_global(st.tasks.clone());
-    // Seed the render-verbose flag from settings.json so the user's
-    // persistent preference survives across sessions. `/verbose`
-    // toggles the flag in memory; settings-file writeback is
-    // scheduled for spec 007.
+
     st.render_verbose = settings.verbose.unwrap_or(false);
-    // Open a fresh session transcript — fsync'd append-only JSONL per
-    // spec 008. Every user / assistant / tool event lands here; the
-    // user can replay via `otherside tui --resume <id>` (future). A
-    // failure to open (read-only filesystem, missing config dir) drops
-    // persistence silently so the TUI stays interactive.
+
     match crate::config::config_dir() {
         Ok(cfg_dir) => {
             match crate::sessions::open_new(&cfg_dir) {
@@ -248,11 +139,7 @@ async fn event_loop(
             tracing::warn!(?e, "config dir unavailable; sessions disabled");
         }
     }
-    // Seed `thinking` from settings.json::effort_level when the model
-    // suffix didn't already pin a level. The suffix wins (per R-105 /
-    // R-106 parity) so passing `--model claude-opus-4-7(high)` still
-    // trumps settings. Matches upstream precedence: suffix > settings
-    // > default.
+
     if thinking.is_none() {
         if let Some(level_str) = settings.effort_level.as_deref() {
             use crate::thinking::{ThinkingConfig, ThinkingLevel};
@@ -265,10 +152,7 @@ async fn event_loop(
         }
     }
     st.settings = settings;
-    // Seed default_provider in settings when null so the file reflects
-    // the actual provider the session is using. Future boots see the
-    // stamped value and the Provider switcher row renders the right
-    // starting point.
+
     if st.settings.default_provider.is_none() {
         st.settings.default_provider = Some(provider_id.to_string());
     }
@@ -278,9 +162,7 @@ async fn event_loop(
     if let Err(e) = persist_session_defaults(&st) {
         tracing::warn!(?e, "initial settings write failed");
     }
-    // Thread the session's thinking level into the progress-line
-    // `thinking with <level> effort` chip. None when no thinking
-    // config means the chip is suppressed.
+
     st.session.effort_label = thinking
         .as_ref()
         .and_then(|cfg| match cfg.level {
@@ -289,20 +171,11 @@ async fn event_loop(
         });
     let mut key_stream = EventStream::new();
 
-    // 50 ms = 20 fps — matches upstream's spinner cadence so rotation
-    // reads as continuous motion, not a stutter. The same interval
-    // doubles as a forced redraw so any state change without a keypress
-    // or chunk still paints.
     let mut ticker = tokio::time::interval(Duration::from_millis(50));
     let mut spinner_tick: u64 = 0;
 
-    // The inference task sends StreamEvents through this channel while the
-    // main task reads them. Bounded at 1024 — wildly more than any single
-    // response should ever produce in flight, and bounded so a runaway
-    // stream cannot OOM us.
     let (tx, mut rx) = mpsc::channel::<StreamEvent>(1024);
 
-    // Initial paint so the box appears immediately.
     st.prune_feedback();
     terminal
         .draw(|f| render::render(f, &st, &st.session.model, &provider_id, spinner_tick))
@@ -310,44 +183,26 @@ async fn event_loop(
 
     loop {
         tokio::select! {
-            // Forced redraw + spinner tick.
+
             _ = ticker.tick() => {
                 spinner_tick = spinner_tick.wrapping_add(1);
-                // Deliver any ScheduleWakeup entries whose fire_at has
-                // elapsed. Each tick drains the list synchronously —
-                // cheap (Vec<WakeupEntry>), bounded by how many wake-
-                // ups the model registered.
-                for entry in crate::tools::deferred::drain_due_wakeups() {
+
+                for entry in crate::tools::cron::drain_due_wakeups() {
                     st.push_system_note(format!("⏰ wakeup: {}", entry.message));
                 }
-                // Surface ephemeral completion lines for every
-                // terminal background task that hasn't been painted
-                // yet. Pushed as Chrome-origin so they DON'T leak
-                // into the wire — they're transcript chrome only.
-                // Mirrors upstream's React effect that emits a
-                // `Background command "<name>" completed` line on
-                // terminal transition.
+
                 if let Some(store) = crate::tasks::store::current_global() {
                     for record in store.drain_unrendered_completions() {
                         let line = render_completion_line(&record);
                         st.push_system_note(line);
                     }
                 }
-                // Catch BG agents that completed AFTER the prior
-                // stream's Done/Error already drained the queue.
-                // Cheap reads (`!streaming && input.is_empty() &&
-                // store.has_pending_notifications()` short-circuit).
-                // Without this, a backgrounded task that lands while
-                // the user sits idle never fires its notification
-                // turn — match upstream `useQueueProcessor` reactive
-                // behavior with a 50 ms poll instead of a React
-                // signal subscription.
+
                 let _ = auto_trigger_pending_notifications(
                     &mut st, &provider, &base_model, &thinking, &tx,
                 );
             }
 
-            // Chunk / done / error from the inference task.
             maybe = rx.recv() => {
                 match maybe {
                     Some(StreamEvent::Delta(s)) => {
@@ -383,9 +238,7 @@ async fn event_loop(
                             });
                         }
                         st.finish_stream();
-                        // 017 §4 — if the user queued messages while
-                        // streaming, pop the head and fire it as the
-                        // next turn. No-op when queue empty.
+
                         drain_pending_inputs(
                             &mut st, &provider, &base_model, &thinking, &provider_id, &tx,
                         );
@@ -422,10 +275,7 @@ async fn event_loop(
                         st.update_usage(input_tokens, output_tokens);
                     }
                     Some(StreamEvent::PermissionAsk { tool_name, args_preview, rule, reply }) => {
-                        // Surface the modal overlay — the agent task is
-                        // awaiting the reply oneshot. Any existing menu
-                        // is forced shut so the permission prompt owns
-                        // the screen until the user resolves it.
+
                         st.active_menu = None;
                         st.pending_permission = Some(menu::PendingPermissionPrompt::new(
                             tool_name,
@@ -443,10 +293,7 @@ async fn event_loop(
                         ));
                     }
                     None => {
-                        // Channel closed without a terminal event — the
-                        // task dropped its sender unexpectedly. Treat as
-                        // done so we don't leave the UI locked in
-                        // streaming mode forever.
+
                         if st.streaming {
                             st.finish_stream();
                             drain_queue_head_if_any(
@@ -457,7 +304,6 @@ async fn event_loop(
                 }
             }
 
-            // Key / resize / paste events from the terminal.
             maybe = key_stream.next() => {
                 match maybe {
                     Some(Ok(CtEvent::Key(k))) => {
@@ -466,18 +312,16 @@ async fn event_loop(
                         }
                     }
                     Some(Ok(CtEvent::Resize(_, _))) => {
-                        // ratatui picks up the new size on next draw —
-                        // nothing to mutate in state.
+
                     }
                     Some(Ok(_)) => {
-                        // Paste / mouse / focus events ignored for MVP.
+
                     }
                     Some(Err(e)) => {
                         return Err(Error::Other(format!("tui event: {e}")));
                     }
                     None => {
-                        // Event stream ended — shouldn't happen while the
-                        // terminal is alive, but bail cleanly if it does.
+
                         break;
                     }
                 }
@@ -493,9 +337,6 @@ async fn event_loop(
     Ok(())
 }
 
-/// Dispatch a single key event against the state + (optionally) the
-/// inference task. Returns `true` when the user asked to quit, so the
-/// outer loop can break cleanly.
 fn handle_key(
     k: KeyEvent,
     st: &mut ConversationState,
@@ -505,32 +346,21 @@ fn handle_key(
     _provider_id: &str,
     tx: &mpsc::Sender<StreamEvent>,
 ) -> bool {
-    // crossterm emits KeyEventKind::Release on some terminals; we only
-    // care about presses. Without this check, every key fires twice on
-    // Kitty / Wezterm.
+
     if k.kind != KeyEventKind::Press {
         return false;
     }
 
-    // A pending AskUserQuestion overlay owns focus until the user
-    // submits or cancels the answer — the agent task's oneshot is
-    // alive waiting for the reply.
     if st.pending_question.is_some() {
         handle_question_key(k, st);
         return false;
     }
 
-    // A pending permission prompt outranks every other overlay —
-    // the agent task is awaiting the oneshot reply, so we gate all
-    // keys through the permission handler until it resolves.
     if st.pending_permission.is_some() {
         handle_permission_key(k, st);
         return false;
     }
 
-    // An active overlay menu captures focus first. Every key is
-    // routed through the menu handler until it resolves (Enter /
-    // Esc). Mirrors upstream `local-jsx` mount shape.
     if st.active_menu.is_some() {
         return handle_menu_key(k, st, thinking);
     }
@@ -538,21 +368,12 @@ fn handle_key(
     let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
     let shift = k.modifiers.contains(KeyModifiers::SHIFT);
 
-    // Any keypress that isn't one of the exit-arming keys disarms the
-    // double-press window. Upstream behavior: the hint disappears as
-    // soon as the user does anything else.
     let is_exit_arming_key = ctrl
         && matches!(k.code, KeyCode::Char('c') | KeyCode::Char('d'));
     if !is_exit_arming_key {
         st.clear_exit_armed();
     }
 
-    // Try the keybinding registry FIRST so context-gated actions
-    // (Ctrl+B, Shift+↓ for the tasks dialog) win over the legacy
-    // hardcoded match arms. The registry's `is_active` predicate
-    // gates each binding so unrelated chords (Shift+↓ when no
-    // backgrounded tasks exist) fall through to the match arms
-    // for their default behavior (scroll).
     {
         use crate::keybindings::{dispatch as kb_dispatch, Action, PredicateContext};
         let pred_ctx = PredicateContext {
@@ -564,10 +385,7 @@ fn handle_key(
                 Action::TaskBackground => {
                     let flipped = st.tasks.background_all_running_foreground();
                     if !flipped.is_empty() {
-                        // Mirror upstream LocalAgentTask.tsx — emit
-                        // one assistant-visible line per flipped id.
-                        // Byte-match capture
-                        // `02-after-ctrl-b.txt:23`.
+
                         for id in flipped {
                             st.push_system_note(format!(
                                 "Started in background as {}. I'll be notified when it completes.",
@@ -578,9 +396,7 @@ fn handle_key(
                     return false;
                 }
                 Action::OpenBackgroundTasksDialog => {
-                    // Dialog widget lands in §7. Until then, surface
-                    // a placeholder so the binding is observable
-                    // end-to-end without inventing dialog behavior.
+
                     st.push_system_note(
                         "(BackgroundTasksDialog renders in §7 — open via /tasks for now)"
                             .to_string(),
@@ -592,15 +408,10 @@ fn handle_key(
     }
 
     match k.code {
-        // Ctrl+C — upstream priority order:
-        //   1. if a turn is running, cancel it (do NOT exit);
-        //   2. if no turn running and exit arm is active within
-        //      the 800ms window, exit;
-        //   3. otherwise arm the double-press window so a second
-        //      Ctrl+C within 800ms exits.
+
         KeyCode::Char('c') if ctrl => {
             if st.cancel_stream() {
-                // Cancel landed; don't escalate to exit.
+
             } else if st.exit_confirmed() {
                 return true;
             } else {
@@ -608,15 +419,9 @@ fn handle_key(
             }
         }
 
-        // Esc — NEVER exits. Dismisses autocomplete, then cancels a
-        // running turn, then clears the input buffer. Matches upstream
-        // `chat:cancel` semantics at hooks/useCancelRequest.ts.
         KeyCode::Esc => {
             if st.autocomplete.is_some() {
-                // Clear the input too — otherwise the leading `/` that
-                // triggered the popup lingers, and the next typed slash
-                // produces `//<name>` which escapes the dispatcher and
-                // reaches the model as a user turn.
+
                 st.close_autocomplete();
                 st.clear_input();
             } else if st.streaming {
@@ -627,8 +432,6 @@ fn handle_key(
             st.clear_exit_armed();
         }
 
-        // Ctrl+D — same double-press semantics as Ctrl+C, but only
-        // engages when the input is empty (classic shell behavior).
         KeyCode::Char('d') if ctrl && st.input.is_empty() => {
             if st.exit_confirmed() && st.exit_armed_key == Some("Ctrl+D") {
                 return true;
@@ -637,42 +440,22 @@ fn handle_key(
             }
         }
 
-        // Ctrl+L — force a redraw by doing nothing; the outer loop
-        // redraws after every event. (Cheap clear-screen equivalent.)
         KeyCode::Char('l') if ctrl => {}
 
-        // Ctrl+U — kill the whole input line. Standard readline
-        // binding; without it users expect Ctrl+U to wipe the
-        // buffer and a later Enter submits stale content (bug #76
-        // surfaced via parity-tmux: Tab-inserted slash + Ctrl+U +
-        // fresh slash concatenated and leaked to the provider).
         KeyCode::Char('u') if ctrl => {
             st.input.clear();
             st.refresh_autocomplete();
         }
 
-        // PgUp / PgDn — scroll the log by a chunk. 10 lines is the
-        // de-facto standard across pagers.
         KeyCode::PageUp => st.scroll_up(10),
         KeyCode::PageDown => st.scroll_down(10),
 
-        // Shift+↑ / Shift+↓ — fine-grained scroll. Preserves Up/Down
-        // for history navigation while giving keyboard users a way
-        // to walk the transcript a line at a time without PageUp's
-        // 10-line jump.
         KeyCode::Up if shift => st.scroll_up(1),
         KeyCode::Down if shift => st.scroll_down(1),
 
-        // Ctrl+Home / Ctrl+End — jump to top / bottom of log.
         KeyCode::Home if ctrl => st.scroll_up(10_000),
         KeyCode::End if ctrl => st.scroll_to_bottom(),
 
-        // Up / Down — navigate the autocomplete popup when it's open.
-        // When the popup is closed, Up at an empty input restores the
-        // most-recent queued message for editing (017 §4 — queue-tail
-        // restore, design.md "Decision: Up-arrow restores the queue
-        // TAIL"). Up at a non-empty input or with an empty queue is a
-        // no-op — leaves room for a future history-recall binding.
         KeyCode::Up => {
             if let Some(ac) = st.autocomplete.as_mut() {
                 ac.move_up();
@@ -692,13 +475,6 @@ fn handle_key(
             }
         }
 
-        // Tab — commit the highlighted slash completion without
-        // submitting. Standard autocomplete semantics.
-        //
-        // Shift+Tab (no popup open) cycles the permission mode per
-        // the info-row affordance. Most terminals deliver this as
-        // `KeyCode::BackTab`; a handful send `Tab` with the Shift
-        // modifier set, so handle both.
         KeyCode::Tab if shift => {
             if st.autocomplete.is_none() {
                 st.cycle_permission_mode();
@@ -718,19 +494,6 @@ fn handle_key(
             }
         }
 
-        // Enter — submit or newline, depending on Shift. When the
-        // popup is open, Enter commits the selection and submits the
-        // completed slash command. Slash classifier runs before the
-        // provider dispatch so local handlers never hit the network.
-        //
-        // While a stream is in flight, Enter redirects the trimmed
-        // input onto `queued_messages` per 017 §4 — we bypass the
-        // slash classifier entirely because a local slash handler
-        // (e.g. `/clear`) firing mid-turn would mutate state the
-        // streaming render path is actively reading. The queue's
-        // auto-pop on finish re-runs the Enter path cleanly with
-        // streaming == false, which routes the queued text back
-        // through classify() at the right moment.
         KeyCode::Enter => {
             if shift {
                 st.input_push_newline();
@@ -761,9 +524,6 @@ fn handle_key(
             }
         }
 
-        // Backspace — char-at-a-time delete. Shells also bind Ctrl+H to
-        // backspace historically; some terminals send it for backspace,
-        // others for literal ^H. We honor both.
         KeyCode::Backspace => {
             st.input_backspace();
             st.refresh_autocomplete();
@@ -773,10 +533,6 @@ fn handle_key(
             st.refresh_autocomplete();
         }
 
-        // Plain character — append to input buffer. Accepted while
-        // streaming so the user can type the next turn into the queue
-        // (017 §4). `refresh_autocomplete` is a no-op while streaming
-        // per 011 fidelity, so the popup stays suppressed.
         KeyCode::Char(c) if !ctrl => {
             st.input_push_char(c);
             st.refresh_autocomplete();
@@ -788,12 +544,6 @@ fn handle_key(
     false
 }
 
-// Panel overlay construction moved to `slash::panel::handle` (openspec 001).
-
-/// Route a key event through the active overlay menu. Consumes
-/// Enter / Esc to resolve the overlay and the arrow keys to move the
-/// cursor. Everything else is swallowed — menus are modal. Returns
-/// `true` when the overlay requested an app-wide exit.
 fn handle_menu_key(
     k: KeyEvent,
     st: &mut ConversationState,
@@ -809,19 +559,7 @@ fn handle_menu_key(
     let Some(menu_state) = st.active_menu.as_mut() else {
         return false;
     };
-    // Settings panel navigation model (per upstream `Tabs.tsx:183-190`
-    // + user clarification 2026-04-20):
-    //
-    // - `←` / `→` / `Tab` rotate tabs **only** when the header (tab
-    //   row) is focused. When a config row is focused, the same keys
-    //   belong to the row's value-edit path (toggle bool, cycle enum)
-    //   — so they must NOT bleed through and rotate tabs.
-    // - `↑` from list top moves focus to the tab row.
-    // - `↓` from the tab row moves focus back to the list.
-    //
-    // Value-edit per-row is wired in openspec 009 (search mode +
-    // interactive editing); today the non-header branch is a no-op
-    // so we don't accidentally jump tabs from under the user.
+
     if let PanelKind::Settings(_) = menu_state.kind {
         let header_focused = menu_state.settings_header_focused.unwrap_or(false);
         match k.code {
@@ -838,7 +576,7 @@ fn handle_menu_key(
             KeyCode::Left | KeyCode::Right | KeyCode::Tab | KeyCode::BackTab
                 if !header_focused =>
             {
-                // Row focused — cycle the focused setting's value.
+
                 let direction: i32 = match k.code {
                     KeyCode::Right | KeyCode::Tab => 1,
                     _ => -1,
@@ -847,7 +585,7 @@ fn handle_menu_key(
                 return false;
             }
             KeyCode::Char(' ') if !header_focused => {
-                // Space: toggle bool; advance enum; no-op on read-only.
+
                 edit_settings_row(st, 1);
                 return false;
             }
@@ -863,9 +601,7 @@ fn handle_menu_key(
             _ => {}
         }
     }
-    // Effort picker is a horizontal slider — ←/→ move the cursor
-    // (clamped, no wrap) per 014 evidence. Up/Down ignored on Effort;
-    // other panels keep vertical navigation.
+
     if matches!(menu_state.kind, PanelKind::Effort) {
         match k.code {
             KeyCode::Left => {
@@ -879,9 +615,7 @@ fn handle_menu_key(
             _ => {}
         }
     }
-    // Model picker: ←/→ adjusts effort for the currently-highlighted
-    // model's supported_efforts set. Mutates session state AND rebuilds
-    // the overlay so the colored indicator updates.
+
     if matches!(menu_state.kind, PanelKind::Model)
         && matches!(k.code, KeyCode::Left | KeyCode::Right)
     {
@@ -891,9 +625,7 @@ fn handle_menu_key(
             .get(menu_state.cursor)
             .map(|o| o.action_id.clone())
             .unwrap_or_default();
-        // Compute next effort BEFORE re-borrowing st via
-        // apply_effort_outcome — menu_state holds a mutable borrow of
-        // st.active_menu which must drop first.
+
         let next_effort: Option<&'static str> =
             crate::models::catalog::by_id(&cursor_model_id).and_then(|m| {
                 let real: Vec<&'static str> = m
@@ -911,14 +643,11 @@ fn handle_menu_key(
                 let next_idx = (((idx as i32) + dir).rem_euclid(n)) as usize;
                 Some(real[next_idx])
             });
-        // Drop menu_state borrow, then apply + rebuild overlay.
+
         let _ = menu_state;
         if let Some(next) = next_effort {
             apply_effort_outcome(st, thinking, next, next);
-            // Rebuild anchored to the SESSION model so the ✔ checkmark
-            // stays on the committed row; restore cursor to where the
-            // user's arrows had parked it (cursor_model_id) so the
-            // effort change paints beside the row they were inspecting.
+
             let mut fresh =
                 menu::OverlayMenu::new_model_with_effort(&st.session.model, st.session.effort_label);
             fresh.cursor = fresh
@@ -943,25 +672,11 @@ fn handle_menu_key(
                 return apply_menu_outcome(st, thinking, outcome);
             }
         }
-        _ => {} // modal — swallow everything else
+        _ => {}
     }
     false
 }
 
-/// Mutate the focused Settings row per `direction` (±1). Dispatches
-/// on the row's `SettingsRowKind`:
-///
-/// - `Provider`    — cycle through the 4 provider slugs; side effect
-///                   sets `state.session.model` to the new provider's default.
-/// - `PermissionMode` — cycle Default → AcceptEdits → Plan → Yolo.
-/// - `Effort`       — cycle auto → low → medium → high → xhigh → max.
-/// - `Bool`         — ignore direction, just toggle.
-/// - `ReadOnly`     — no-op.
-///
-/// On any mutation, rebuild the overlay (so the new values render on
-/// the next frame) and persist the change to `~/.otherside/settings.json`.
-/// Errors on persistence surface via `push_system_note` (Chrome origin
-/// per 007 — stays local).
 fn edit_settings_row(st: &mut ConversationState, direction: i32) {
     use crate::config::providers::{self, ProviderId};
     use crate::config::settings::PermissionMode;
@@ -985,11 +700,6 @@ fn edit_settings_row(st: &mut ConversationState, direction: i32) {
         (kind, tab)
     };
 
-    // Direction sign: -1 for Left/BackTab, +1 for Right/Tab/Space.
-    // Preserve the sign so backward cycling works — the prior
-    // `direction.signum().max(1)` clamp turned every `←` into a
-    // forward step (caught by `model_row_cycles_through_provider_aliases`
-    // 2026-04-20). Fall back to +1 when the caller passed 0.
     let dir = if direction == 0 { 1 } else { direction.signum() };
     match kind {
         SettingsRowKind::Provider => {
@@ -1042,14 +752,10 @@ fn edit_settings_row(st: &mut ConversationState, direction: i32) {
             let n = order.len() as i32;
             let next_idx = (((idx as i32) + dir).rem_euclid(n)) as usize;
             st.session.permission_mode = order[next_idx];
-            // Rule §3: permission_mode is session-scoped. No write-back to Settings.
+
         }
         SettingsRowKind::Effort => {
-            // Levels come from the catalog row for the active model.
-            // Haiku reports `["auto"]`, so its Settings row still works
-            // but the cycle is a no-op. Unknown models fall back to the
-            // six-level slider that matches upstream's
-            // `commands/effort/effort.tsx::SLIDER_LEVELS` plus `auto`.
+
             let levels: &[&str] = crate::models::catalog::by_id(&st.session.model)
                 .map(|m| m.supported_efforts)
                 .filter(|s| !s.is_empty())
@@ -1082,13 +788,10 @@ fn edit_settings_row(st: &mut ConversationState, direction: i32) {
         SettingsRowKind::ReadOnly => return,
     }
 
-    // Persist on every mutation — atomic write via `config::write_atomic`.
     if let Err(e) = persist_session_defaults(st) {
         st.push_system_note(format!("settings write failed: {e}"));
     }
 
-    // Rebuild the overlay so the new values render immediately. Keep
-    // cursor on the same row (not reset to 0) so editing feels stable.
     let prev_cursor = st.active_menu.as_ref().map(|m| m.cursor).unwrap_or(0);
     let prev_header_focused = st
         .active_menu
@@ -1102,21 +805,6 @@ fn edit_settings_row(st: &mut ConversationState, direction: i32) {
     }
 }
 
-/// Flush session-scoped identity fields (`default_provider`,
-/// `default_model`, `effort_level`) to `~/.otherside/settings.json`
-/// via [`crate::state::PersistenceState::commit_session_defaults`].
-///
-/// Rule §3 (2026-04-20): `permission_mode` is session-scoped and
-/// NEVER persisted. This wrapper routes through
-/// `commit_session_defaults` — which writes only the three
-/// session-identity fields — instead of flushing the raw Settings
-/// struct. Any settings-only knob the caller mutated (auto_compact,
-/// show_tips, verbose, ...) still survives: the PersistenceState
-/// is seeded from `st.settings.clone()`, and flush serializes the
-/// full struct.
-///
-/// Fase 3 folds this into `AppState::persistence` and the wrapper
-/// goes away.
 fn persist_session_defaults(st: &ConversationState) -> Result<()> {
     let provider_id = st
         .settings
@@ -1127,9 +815,6 @@ fn persist_session_defaults(st: &ConversationState) -> Result<()> {
     pers.commit_session_defaults(&st.session, &provider_id)
 }
 
-/// Rotate the active Settings tab by `direction` (±1). Rebuilds the
-/// overlay with the new default tab; carries header_focused=true per
-/// upstream `Tabs.tsx:tabs:next` which sets focus as a side effect.
 fn rotate_settings_tab(st: &mut ConversationState, direction: i32) {
     use crate::tui::slash::catalog::{PanelKind, SettingsTab};
     let current_tab = match st.active_menu.as_ref().map(|m| m.kind) {
@@ -1141,23 +826,16 @@ fn rotate_settings_tab(st: &mut ConversationState, direction: i32) {
     let n = order.len() as i32;
     let next_idx = (((idx as i32) + direction).rem_euclid(n)) as usize;
     let next_tab = order[next_idx];
-    // Rebuild via the same path the initial dispatch uses so the
-    // content list matches the new tab. `panel::handle` is
-    // idempotent-ish here — we discard the existing menu and remount.
+
     use crate::tui::slash::panel;
     st.active_menu = None;
     let _ = panel::handle(PanelKind::Settings(next_tab), st);
-    // Tab rotation always sets header-focused (upstream side effect).
+
     if let Some(m) = st.active_menu.as_mut() {
         m.settings_header_focused = Some(true);
     }
 }
 
-/// Emit the upstream-style `❯ /<name>` + `⎿ <text>` anchor on panel
-/// dismissal. Called for both Esc (no outcome) and Enter (outcome).
-/// Wording table transcribed from the 2026-04-19 tmux parity sweep —
-/// byte-match on panels we actually captured; neutral dismiss phrasing
-/// on panels without a captured reference.
 fn emit_panel_dismiss_anchor(
     st: &mut ConversationState,
     menu: &menu::OverlayMenu,
@@ -1165,10 +843,7 @@ fn emit_panel_dismiss_anchor(
 ) {
     use crate::tui::slash::catalog::PanelKind;
     let (slash, text) = match menu.kind {
-        // 010 Gap 1: upstream `/rewind` emits nothing on Esc —
-        // the panel just closes. `commands/rewind/index.ts` has
-        // no cancel string; `/tmp/parity-20260420-tmux/05-rewind-panel/
-        // upstream-dismissed.txt` shows no `⎿ Rewind…` line.
+
         PanelKind::Rewind => return,
         PanelKind::Model => {
             let chosen = match outcome {
@@ -1179,12 +854,7 @@ fn emit_panel_dismiss_anchor(
                 .map(str::to_string)
                 .unwrap_or_else(|| chosen.to_string());
             let text = if chosen == st.session.model {
-                // 010 Gap 4: append ` (default)` when the current
-                // model matches the session default, mirroring
-                // upstream `renderModelLabel(null)` at
-                // `commands/model/model.tsx:316-318`. The ` (1M
-                // context)` half is already baked into
-                // `model_display_label` for `[1m]` models.
+
                 let suffix = if is_session_default_model(chosen, st) {
                     " (default)"
                 } else {
@@ -1206,46 +876,26 @@ fn emit_panel_dismiss_anchor(
             Some(menu::OverlayMenuOutcome::SetEffort { label, .. }) => {
                 ("effort", format!("Set thinking effort to {label}"))
             }
-            // 010 Gap 3: bare `Cancelled`, not `Effort dialog
-            // dismissed`. Live-capture authority:
-            // `/tmp/parity-20260420-tmux/07-effort-panel/upstream-dismissed.txt:32`.
+
             _ => ("effort", "Cancelled".to_string()),
         },
         PanelKind::Help => ("help", "Help dialog dismissed".to_string()),
-        // Settings panel dismiss — hardcoded `"Status dialog
-        // dismissed"` for all three slashes, matching upstream
-        // `Settings.tsx:46` (008 evidence). Slash name picked from
-        // the active tab so the user-echo row reads `/<slash>`
-        // consistently with what was typed.
+
         PanelKind::Settings(tab) => (tab.slash_name(), "Status dialog dismissed".to_string()),
         PanelKind::Skills => ("skills", "Skills dialog dismissed".to_string()),
         PanelKind::Agents => ("agents", "Agents dialog dismissed".to_string()),
         PanelKind::Mcp => ("mcp", "MCP dialog dismissed".to_string()),
         PanelKind::Hooks => ("hooks", "Hooks dialog dismissed".to_string()),
         PanelKind::Diff => ("diff", "Diff dialog dismissed".to_string()),
-        // 010 Gap 2: upstream emits `Resume cancelled` per
-        // `commands/resume/resume.tsx:172-175`.
+
         PanelKind::Resume => ("resume", "Resume cancelled".to_string()),
-        // §6: dismiss line for /tasks. Upstream capture not yet
-        // available for this exact string — using the same
-        // `<panel> dialog dismissed` shape as siblings; refine to
-        // upstream byte-match in a follow-up wave.
+
         PanelKind::Tasks => ("tasks", "Tasks dialog dismissed".to_string()),
     };
-    // Every panel dismissal is Chrome — the `⎿  … dialog dismissed`
-    // line is local UI breadcrumb only. Upstream marks the same
-    // emission with `display: "system"` (R-92 evidence:
-    // `reconstructed/2.1.114/source/components/Settings/Settings.tsx:46`)
-    // so the history serializer drops it before hitting the wire.
+
     st.push_anchor(slash, "", text, DisplayOrigin::Chrome);
 }
 
-/// Session default per upstream `renderModelLabel(null)` semantics
-/// (`commands/model/model.tsx:316-318`). When the current model
-/// matches what startup would've picked, the `/model` dismiss
-/// anchor appends ` (default)`. Override chain: explicit
-/// `settings.default_model` wins; otherwise the `ClaudeCode`
-/// provider default (`claude-opus-4-7[1m]`).
 fn is_session_default_model(model: &str, st: &ConversationState) -> bool {
     let default = st
         .settings
@@ -1255,10 +905,6 @@ fn is_session_default_model(model: &str, st: &ConversationState) -> bool {
     model == default
 }
 
-
-/// Route a key event through the active AskUserQuestion overlay.
-/// Enter fires the reply (current input), Esc fires empty string.
-/// Char input accumulates into the answer buffer; Backspace trims.
 fn handle_question_key(k: KeyEvent, st: &mut ConversationState) {
     let Some(q) = st.pending_question.as_mut() else {
         return;
@@ -1283,9 +929,6 @@ fn handle_question_key(k: KeyEvent, st: &mut ConversationState) {
     }
 }
 
-/// Route a key event through the active permission prompt. Esc
-/// resolves as `Deny` (safe default — the agent sees a refusal and
-/// reports it to the model). Enter fires the currently-selected choice.
 fn handle_permission_key(k: KeyEvent, st: &mut ConversationState) {
     use crate::permissions::PermissionResponse;
     let Some(prompt) = st.pending_permission.as_mut() else {
@@ -1300,9 +943,7 @@ fn handle_permission_key(k: KeyEvent, st: &mut ConversationState) {
         KeyCode::Down => prompt.move_down(),
         KeyCode::Enter => {
             let response = prompt.selected_response();
-            // Record the session-scoped rule BEFORE firing the reply
-            // so re-entrant dispatches from the agent task see the
-            // new allowlist entry.
+
             if response == PermissionResponse::AllowSession {
                 let rule = session_rule_for(&prompt.tool_name, &prompt.args_preview);
                 st.session_allowlist.push_rule(rule);
@@ -1314,10 +955,6 @@ fn handle_permission_key(k: KeyEvent, st: &mut ConversationState) {
     }
 }
 
-/// Derive a session-allowlist rule string from `(tool, args_preview)`.
-/// For Bash we keep the command prefix up to the first whitespace;
-/// for other tools we accept any args (`ToolName(*)`). Mirrors
-/// upstream's `buildSessionAllowRule`.
 fn session_rule_for(tool_name: &str, args_preview: &str) -> String {
     if tool_name == "Bash" {
         let cmd = args_preview.trim();
@@ -1332,11 +969,6 @@ fn session_rule_for(tool_name: &str, args_preview: &str) -> String {
     }
 }
 
-/// Apply the overlay's commit outcome to session state. Each variant
-/// is side-effectful: `SetEffort` flips the active thinking config,
-/// `SetPermissionMode` swaps the posture, `SetModel` switches model.
-/// Always returns `false` — app exit is handled by the Instant slash
-/// handler, not the overlay path.
 fn apply_menu_outcome(
     st: &mut ConversationState,
     thinking: &mut Option<ThinkingConfig>,
@@ -1380,11 +1012,7 @@ fn apply_model_outcome(
         .map(|(m, t)| (m, t))
         .unwrap_or_else(|_| (model_id.to_string(), None));
     st.session.set_model(model_id);
-    // Reconcile effort against the new model's support matrix. When
-    // the old effort isn't supported (switching opus xhigh → sonnet
-    // which maxes at high, or → haiku which takes only auto), snap
-    // to the new model's default_effort AND rebuild `thinking` so
-    // the next /v1/messages turn doesn't 400.
+
     let current_effort = st.session.effort_label.unwrap_or("auto");
     if !crate::models::catalog::supports_effort(model_id, current_effort) {
         use crate::thinking::ThinkingLevel;
@@ -1399,17 +1027,13 @@ fn apply_model_outcome(
         }
         st.settings.effort_level = Some(next.to_string());
     }
-    // Persist the user's model choice across sessions.
+
     st.settings.default_model = Some(model_id.to_string());
     if let Err(e) = persist_session_defaults(st) {
         st.push_system_note(format!("settings write failed: {e}"));
     }
 }
 
-/// Translate a committed effort action-id into a new
-/// `ThinkingConfig` + progress-line label, persist it to the session,
-/// and surface an inline confirmation. `"auto"` disables the explicit
-/// level (upstream's `unsetEffortLevel` path).
 fn apply_effort_outcome(
     st: &mut ConversationState,
     thinking: &mut Option<ThinkingConfig>,
@@ -1443,8 +1067,6 @@ fn apply_effort_outcome(
     let _ = label;
 }
 
-/// `JoinHandle` onto state so Esc / Ctrl+C can abort it. Shared by
-/// the Enter dispatch and the queue auto-pop path in the event loop.
 fn spawn_agent_turn(
     st: &mut ConversationState,
     provider: &Arc<dyn Provider>,
@@ -1455,20 +1077,13 @@ fn spawn_agent_turn(
 ) {
     let thinking = *thinking;
     let tx = tx.clone();
-    // Read the LIVE session model so /model picker commits apply to
-    // the NEXT turn. The `_base_model` param is kept for compatibility
-    // with existing call sites but ignored — `st.session.model` is the truth.
+
     let model = st.session.model.clone();
-    // Snapshot settings + mode at spawn so mid-turn Shift+Tab toggles
-    // take effect on the NEXT turn rather than silently mutating an
-    // in-flight one. Matches upstream's per-turn permissionMode read.
+
     let settings = st.settings.clone();
     let mode = st.session.permission_mode;
     let session_allowlist = st.session_allowlist.clone();
-    // Lifetime dance: `provider.stream(req, thinking)` yields a
-    // future bound to `&self`. Cloning the Arc gives the spawned
-    // task its own owned handle so the borrow lives on the task
-    // stack, not here.
+
     let provider_for_task = provider.clone();
     let handle = tokio::spawn(async move {
         run_agent_turns(
@@ -1486,24 +1101,6 @@ fn spawn_agent_turn(
     st.turn_task = Some(handle);
 }
 
-/// If the queue has a head pending, pop it into `st.input` and fire
-/// a fresh turn through the same spawn path as Enter. Called from
-/// the event loop right after `finish_stream` / `fail_stream` /
-/// channel-drop so a queued message gets its turn without the user
-/// having to press Enter again. No-op when the queue is empty.
-///
-/// The queued content bypasses the slash classifier — it's raw
-/// user text that was classified at push time (which is the same
-/// conservative stance the Enter-while-streaming path takes:
-/// queue storage is verbatim, re-classification on drain). A slash
-/// typed during streaming gets its handler fired now, on drain,
-/// which is upstream's behavior for queued slashes.
-/// One-line ephemeral transcript caption for a terminal-state
-/// background task. Mirrors upstream's React effect that paints
-/// `Background command "<name>" completed (exit code N)` for
-/// shells and `Agent "<name>" completed` for backgrounded agents
-/// (`tasks/LocalShellTask/LocalShellTask.tsx` +
-/// `tasks/LocalAgentTask/LocalAgentTask.tsx:246`).
 fn render_completion_line(r: &crate::tasks::TaskRecord) -> String {
     let kind_label = match r.kind {
         crate::tasks::TaskKind::Agent => "Agent",
@@ -1514,9 +1111,7 @@ fn render_completion_line(r: &crate::tasks::TaskRecord) -> String {
         crate::tasks::TaskState::Completed => "completed",
         crate::tasks::TaskState::Failed => "failed",
         crate::tasks::TaskState::Stopped => "was stopped",
-        // Non-terminal states never reach this path — the drain
-        // helper filters by `is_terminal()`. Defensive default
-        // keeps the line shape stable if the matrix changes.
+
         _ => "ended",
     };
     let exit_suffix = r
@@ -1527,18 +1122,6 @@ fn render_completion_line(r: &crate::tasks::TaskRecord) -> String {
     format!("{kind_label} \"{}\" {status_phrase}{exit_suffix}", r.name)
 }
 
-/// Combined "what's next" pump for between-turn idle moments.
-///
-/// Priority mirrors upstream `messageQueueManager.PRIORITY_ORDER`:
-/// `now > next > later`. otherside maps this to:
-///   1. `now`/`next` — user-queued text typed during the prior
-///      stream → [`drain_queue_head_if_any`] (unchanged).
-///   2. `later` — completed background-task `<task-notification>`
-///      envelopes drained from [`crate::tasks::TaskStore`] →
-///      [`auto_trigger_pending_notifications`].
-///
-/// Returns `true` when something was dispatched. Caller need not
-/// branch on the return — both paths spawn their own turn task.
 fn drain_pending_inputs(
     st: &mut ConversationState,
     provider: &Arc<dyn Provider>,
@@ -1553,16 +1136,6 @@ fn drain_pending_inputs(
     auto_trigger_pending_notifications(st, provider, base_model, thinking, tx)
 }
 
-/// Auto-fire a turn whose user content is one or more
-/// `<task-notification>` XML envelopes drained from the global
-/// [`crate::tasks::TaskStore`]. No-op (`false`) when:
-///   - a stream is already in flight,
-///   - the user has typed input the next submit will consume, OR
-///   - no record carries `inject_on_next_turn = true`.
-///
-/// Mirrors upstream `useQueueProcessor` reactive hook +
-/// `processQueueIfReady` for `mode: 'task-notification'` items
-/// (`hooks/useQueueProcessor.ts`, `utils/queueProcessor.ts`).
 fn auto_trigger_pending_notifications(
     st: &mut ConversationState,
     provider: &Arc<dyn Provider>,
@@ -1618,11 +1191,7 @@ fn drain_queue_head_if_any(
         streaming = st.streaming,
         "queue head consumed; dispatching"
     );
-    // Run the queued text through the same slash classifier the
-    // Enter path uses — preserves local-handler semantics for
-    // queued slashes (`/clear`, `/help`, etc.). A queued `/exit`
-    // does NOT terminate immediately here; it gets noted so the
-    // user can confirm with Ctrl+C instead of losing the queue.
+
     let exit_signal = dispatch_slash(st, provider, base_model, thinking, tx);
     tracing::info!(
         target: "otherside::queue",
@@ -1633,18 +1202,11 @@ fn drain_queue_head_if_any(
     if exit_signal {
         st.push_system_note("queued /exit — press Ctrl+C twice to quit");
     }
-    // Silence the unused-parameter warning; the queue-drain path
-    // no longer interpolates a default provider id into login/out
-    // hints because the auth handler threads its own placeholder.
+
     let _ = provider_id;
     true
 }
 
-/// Classify `st.input` and dispatch it through the per-category slash
-/// handlers. Returns `true` when the handler signals app-wide exit
-/// (`/exit`). Handlers that produce a user turn route it
-/// through `submit` + `spawn_agent_turn` so the provider streams it
-/// the same way regular chat does.
 fn dispatch_slash(
     st: &mut ConversationState,
     provider: &Arc<dyn Provider>,
@@ -1683,11 +1245,7 @@ fn dispatch_slash(
         }
         slash::SlashOutcome::ExitApp => true,
         slash::SlashOutcome::SendTurn(body) => {
-            // Skill-category slashes ship the SKILL.md body here. We
-            // want the model to see the body (wire) but the user's
-            // transcript to show only `❯ /<name> [args]` (display).
-            // Stash body on state for submit() to pick up, then set
-            // the visible input to the `/<name>` echo.
+
             let trimmed = st.input.trim();
             let echo = if trimmed.is_empty() {
                 String::new()
@@ -1702,9 +1260,6 @@ fn dispatch_slash(
     }
 }
 
-/// Submit whatever is in `st.input` as a user turn. Shared tail of
-/// the Passthrough / SendTurn paths so both route through the same
-/// session-record append + agent spawn.
 fn submit_current_input(
     st: &mut ConversationState,
     provider: &Arc<dyn Provider>,
@@ -1722,17 +1277,6 @@ fn submit_current_input(
     }
 }
 
-/// Drive the agent loop for one user submission end-to-end. Multi-turn:
-/// text stream → if the model asks for tools, dispatch them inline and
-/// emit typed `ToolCallStart` / `ToolCallFinish` events so the render
-/// layer drives the bullet state machine through `tool_render`; feed
-/// the tool results back into history and run another turn, until the
-/// model stops asking or the turn cap is hit.
-///
-/// Tool events are NOT fabricated as `Delta(String)` text — the
-/// assistant buffer is strictly assistant-text; tool calls are
-/// siblings routed into `ConversationState::active_tool_calls` by
-/// the outer event loop (015).
 async fn run_agent_turns(
     provider: Arc<dyn Provider>,
     model: String,
@@ -1777,10 +1321,7 @@ async fn run_agent_turns(
             match item {
                 Ok(chunk) => {
                     let emitted = turn.fold_chunk(chunk);
-                    // Drain any usage folded off this chunk BEFORE the
-                    // content delta — small guarantee: the progress
-                    // line sees the new token count before the user
-                    // perceives the matching text arrive.
+
                     if let Some(usage) = turn.take_usage() {
                         if tx
                             .send(StreamEvent::Usage {
@@ -1851,10 +1392,7 @@ async fn run_agent_turns(
                 )
                 .await;
                 let elapsed_ms = started.elapsed().as_millis() as u64;
-                // The tool-result history entry always carries a JSON
-                // value — on error, fold the message into a string so
-                // the next provider turn sees `{"error": "..."}`-style
-                // context instead of a missing block.
+
                 let (history_value, finish_result) = match dispatch_outcome {
                     Ok(v) => (v.clone(), Ok(v)),
                     Err(e) => {
@@ -1894,19 +1432,6 @@ async fn run_agent_turns(
     let _ = tx.send(StreamEvent::Done).await;
 }
 
-/// Permission-aware tool dispatch. Mirrors `tools::dispatch_gated` but
-/// resolves `Decision::Ask` via an async round-trip through the event
-/// loop's modal overlay rather than degrading it to a refusal.
-///
-/// Flow:
-/// 1. Build a session-overlay `Settings` (user perms + session allowlist).
-/// 2. `permissions::resolve` → Allow / Deny / Ask.
-/// 3. Allow → sync dispatch.
-/// 4. Deny → PermissionDenied.
-/// 5. Ask → send [`StreamEvent::PermissionAsk`] with a oneshot, await the
-///    reply, then dispatch (or refuse) based on the user's choice.
-///    `AllowSession` pushes a rule into the session allowlist BEFORE
-///    dispatching so subsequent calls in the same turn auto-allow.
 async fn dispatch_with_prompt(
     tool_name: &str,
     args: &serde_json::Value,
@@ -1919,29 +1444,15 @@ async fn dispatch_with_prompt(
     use crate::permissions::{self, Decision, PermissionResponse};
     use crate::tools::ToolError;
 
-    // AskUserQuestion needs the event loop to present a text-input
-    // overlay. Route it before the permission gate — the tool is
-    // always allowed (it IS the user interaction), no rule applies.
     if tool_name == "AskUserQuestion" {
         return ask_user_question_async(args, tx).await;
     }
 
-    // Project args into matcher-shaped input — Bash uses the raw
-    // command, every other tool uses the stringified JSON. Without
-    // this the session allowlist rule `Bash(ls:*)` never matches
-    // the JSON `{"command":"ls /usr"}` the second dispatch sees.
     let input_str = crate::tools::matcher_input_for(tool_name, args);
-    // Fold the session allowlist into the settings snapshot so
-    // `permissions::resolve` sees it via the normal `permissions.allow`
-    // path. Clone the settings locally — we only need the composite
-    // for this one resolve call.
+
     let mut composed = settings.clone();
     overlay_session_allowlist(&mut composed, session_allowlist);
-    // Wrap each sync dispatch in the tool_call_id scope so tools
-    // that need it (today: `Agent`'s BG route) can read it via
-    // `crate::tools::current_tool_call_id` without a signature
-    // change. Three call-sites because the permission gate fans
-    // into Allow / Allow-after-prompt / AllowSession-after-prompt.
+
     let dispatch_scoped = |tool_name: &str, args: &serde_json::Value| {
         crate::tools::with_tool_call_id(tool_call_id.to_string(), || {
             crate::tools::dispatch(tool_name, args)
@@ -1970,8 +1481,7 @@ async fn dispatch_with_prompt(
             match reply_rx.await {
                 Ok(PermissionResponse::Allow) => dispatch_scoped(tool_name, args),
                 Ok(PermissionResponse::AllowSession) => {
-                    // Rule was already pushed to the allowlist by the
-                    // event loop's Enter handler. Dispatch immediately.
+
                     dispatch_scoped(tool_name, args)
                 }
                 Ok(PermissionResponse::Deny) => Err(ToolError::PermissionDenied(
@@ -1985,10 +1495,6 @@ async fn dispatch_with_prompt(
     }
 }
 
-/// Dispatch AskUserQuestion — surface the TUI overlay, block until
-/// the user resolves it, return the answer to the model. An empty
-/// answer comes from Esc; the tool result still surfaces it so the
-/// model can distinguish "user declined" from "user gave info".
 async fn ask_user_question_async(
     args: &serde_json::Value,
     tx: &mpsc::Sender<StreamEvent>,
@@ -2026,10 +1532,6 @@ async fn ask_user_question_async(
     }))
 }
 
-/// Fold the session-scoped allowlist into a settings clone so the
-/// shared `permissions::resolve` function treats it like normal
-/// allow rules. Kept separate from the settings struct because
-/// session rules never write back to disk.
 fn overlay_session_allowlist(
     settings: &mut crate::config::settings::Settings,
     session: &crate::permissions::RuntimePermissionGrants,
@@ -2042,9 +1544,7 @@ fn overlay_session_allowlist(
     }
     let mut existing = settings.permissions.take().unwrap_or_else(PermissionsConfig::default);
     for raw in rules {
-        // Build a PermissionRule from the raw rule string the same
-        // way `tests::parse_rule` does — reuse the matcher parser so
-        // bad session strings fail identically to bad settings ones.
+
         let parsed = match matcher::parse(&raw) {
             Ok(p) => p,
             Err(_) => continue,
@@ -2063,9 +1563,6 @@ fn overlay_session_allowlist(
     settings.permissions = Some(existing);
 }
 
-/// Build the dim args preview shown on the permission overlay. Mirrors
-/// the tool-header convention: Bash surfaces the raw command; others
-/// show the primary field. Falls back to a compact JSON stringification.
 fn preview_args_for_prompt(tool_name: &str, args: &serde_json::Value) -> String {
     let obj = match args.as_object() {
         Some(o) => o,
@@ -2095,22 +1592,12 @@ fn truncate_preview(s: &str, cap: usize) -> String {
     }
 }
 
-/// Format an error for inline rendering. Keep the message one-line-ish by
-/// replacing embedded newlines with spaces; the TUI wraps on the width of
-/// the log and long errors scroll horizontally badly otherwise.
 fn format_err(e: &Error) -> String {
     let mut s = e.to_string();
     s = s.replace('\n', " ");
     s
 }
 
-/// RAII guard that owns the terminal handle plus the raw-mode /
-/// alt-screen invariants.
-///
-/// Entering the TUI and then forgetting to restore the terminal leaves
-/// the user's shell in raw mode, which requires `reset` to recover. The
-/// guard's `Drop` impl runs even on panic, so as long as we keep this on
-/// the stack until `run` returns we stay safe.
 struct TerminalGuard {
     terminal: Terminal<CrosstermBackend<Stdout>>,
     active: bool,
@@ -2120,15 +1607,7 @@ impl TerminalGuard {
     fn enter() -> Result<Self> {
         enable_raw_mode().map_err(|e| Error::Other(format!("tui raw mode: {e}")))?;
         let mut out = io::stdout();
-        // NO mouse capture — upstream claude-code doesn't grab mouse
-        // either, and capturing breaks the terminal's native text
-        // selection (users reported: "nao consigo selecionar o texto
-        // na tela" 2026-04-20). Trade-off: if a legacy terminal
-        // emits bare click escape sequences they'd leak to the input
-        // stream, but modern terminals (macOS Terminal, iTerm2,
-        // Wezterm, kitty) are quiet by default. Defensive
-        // DisableMouseCapture on exit stays in `restore()` so we
-        // always clear any capture state inherited from a prior app.
+
         execute!(out, EnterAlternateScreen)
             .map_err(|e| Error::Other(format!("tui enter altscreen: {e}")))?;
         let backend = CrosstermBackend::new(out);
@@ -2140,15 +1619,12 @@ impl TerminalGuard {
         })
     }
 
-    /// Explicit restore so callers can propagate the result. Idempotent —
-    /// Drop calls through to here if the caller didn't.
     fn restore(&mut self) {
         if !self.active {
             return;
         }
         self.active = false;
-        // Best-effort cleanup — ignore errors so a restore failure doesn't
-        // mask the real error we're trying to return.
+
         let _ = disable_raw_mode();
         let _ = execute!(
             self.terminal.backend_mut(),
@@ -2183,7 +1659,7 @@ mod panel_anchor_tests {
     #[test]
     fn model_dismiss_without_change_reads_kept() {
         let mut st = ConversationState::default();
-        // Non-default, non-[1m] model → no suffix.
+
         st.session.model = "claude-opus-4-7".into();
         let menu = OverlayMenu::new_model(&st.session.model);
         emit_panel_dismiss_anchor(&mut st, &menu, None);
@@ -2227,10 +1703,7 @@ mod panel_anchor_tests {
 
     #[test]
     fn settings_status_dismiss_wording_hardcoded() {
-        // R-92 evidence: upstream `Settings.tsx:46` hardcodes
-        // `"Status dialog dismissed"` for all three slashes in the
-        // Settings family. Verify /status, /config, /usage all emit
-        // the SAME wording (not per-tab variants).
+
         use crate::tui::slash::catalog::SettingsTab;
         for tab in [SettingsTab::Status, SettingsTab::Config, SettingsTab::Usage] {
             let mut st = ConversationState::default();
@@ -2248,9 +1721,7 @@ mod panel_anchor_tests {
 
     #[test]
     fn settings_dismiss_anchor_is_chrome() {
-        // 007 + 008 interaction — Settings dismiss must stay local,
-        // not ride the wire on the next turn. Chrome origin is the
-        // flag that enforces it.
+
         use crate::tui::slash::catalog::SettingsTab;
         let mut st = ConversationState::default();
         let menu = OverlayMenu::new_info(
@@ -2259,7 +1730,7 @@ mod panel_anchor_tests {
             vec![],
         );
         emit_panel_dismiss_anchor(&mut st, &menu, None);
-        // Real user turn after dismiss.
+
         st.input = "what tests are in state.rs?".into();
         let _ = st.submit();
         let hist = st.history_for_request();
@@ -2279,13 +1750,9 @@ mod panel_anchor_tests {
         assert_eq!(anchor, "⎿  Set permission mode to plan");
     }
 
-    // 010 tests — panel dismiss wording parity.
-
     #[test]
     fn rewind_dismiss_emits_nothing() {
-        // Gap 1: upstream `/rewind` closes silently on Esc — no
-        // anchor, no echo. Evidence:
-        // `/tmp/parity-20260420-tmux/05-rewind-panel/upstream-dismissed.txt`.
+
         let mut st = ConversationState::default();
         let menu = OverlayMenu::new_info(PanelKind::Rewind, "Rewind".into(), vec![]);
         emit_panel_dismiss_anchor(&mut st, &menu, None);
@@ -2298,8 +1765,7 @@ mod panel_anchor_tests {
 
     #[test]
     fn resume_dismiss_wording_matches_upstream() {
-        // Gap 2: upstream `commands/resume/resume.tsx:172-175` emits
-        // `onDone('Resume cancelled', { display: 'system' })`.
+
         let mut st = ConversationState::default();
         let menu = OverlayMenu::new_info(PanelKind::Resume, "Resume".into(), vec![]);
         emit_panel_dismiss_anchor(&mut st, &menu, None);
@@ -2310,8 +1776,7 @@ mod panel_anchor_tests {
 
     #[test]
     fn effort_dismiss_wording_matches_upstream() {
-        // Gap 3: upstream emits bare `Cancelled`. Live authority:
-        // `/tmp/parity-20260420-tmux/07-effort-panel/upstream-dismissed.txt:32`.
+
         let mut st = ConversationState::default();
         let menu = OverlayMenu::new_info(PanelKind::Effort, "Effort".into(), vec![]);
         emit_panel_dismiss_anchor(&mut st, &menu, None);
@@ -2322,15 +1787,10 @@ mod panel_anchor_tests {
 
     #[test]
     fn model_dismiss_with_1m_beta_appends_suffix() {
-        // Gap 4: session default = `claude-opus-4-7[1m]` via
-        // `ProviderId::ClaudeCode.default_model()`. No settings
-        // override. Current model matches default → both suffixes
-        // compose: `(1M context) (default)`.
+
         let mut st = ConversationState::default();
         st.session.model = "claude-opus-4-7[1m]".into();
-        // Sanity-check the default provider resolution so a
-        // future rename of the provider constant flips this test
-        // loudly rather than silently.
+
         assert_eq!(
             crate::config::providers::ProviderId::ClaudeCode.default_model(),
             "claude-opus-4-7[1m]",
@@ -2344,9 +1804,7 @@ mod panel_anchor_tests {
 
     #[test]
     fn anchor_line_uses_double_space_after_symbol() {
-        // Cross-cutting: every captured upstream anchor uses `⎿  `
-        // (double space). Guard against a single-space regression
-        // in `state.rs::push_anchor`.
+
         let mut st = ConversationState::default();
         let menu = OverlayMenu::new_info(PanelKind::Help, "Help".into(), vec![]);
         emit_panel_dismiss_anchor(&mut st, &menu, None);
@@ -2356,13 +1814,9 @@ mod panel_anchor_tests {
             "anchor must start with `⎿  ` (double space); got {:?}",
             anchor
         );
-        // A single-space prefix must NOT match (beyond the
-        // double-space prefix which naturally matches as a longer
-        // prefix). Check character by character: the byte right
-        // after `⎿` and the two spaces must be a non-space.
+
         let bytes = anchor.as_bytes();
-        // `⎿` is 3 bytes (U+23BF → 0xE2 0x8E 0xBF). Positions 3
-        // and 4 must be spaces; position 5 must not be a space.
+
         assert_eq!(&bytes[0..3], [0xE2, 0x8E, 0xBF]);
         assert_eq!(bytes[3], b' ');
         assert_eq!(bytes[4], b' ');
@@ -2380,9 +1834,6 @@ mod settings_edit_tests {
     use crate::tui::menu::OverlayMenu;
     use crate::tui::slash::catalog::SettingsTab;
 
-    /// Place cursor on the Settings row whose `label` matches `label`.
-    /// Panic if not found — the test is expressing an intent about a
-    /// row the builder MUST produce.
     fn focus_row(menu: &mut OverlayMenu, label: &str) {
         menu.cursor = menu
             .options
@@ -2394,8 +1845,7 @@ mod settings_edit_tests {
 
     #[test]
     fn provider_row_cycles_and_switches_model_default() {
-        // R-92 evidence: user directive 2026-04-20. Provider cycle
-        // carries per-provider default-model side effect.
+
         let mut st = ConversationState::default();
         st.session.model = "claude-opus-4-7[1m]".into();
         st.active_menu = Some(OverlayMenu::new_settings(SettingsTab::Config, &st));
@@ -2419,7 +1869,7 @@ mod settings_edit_tests {
             st.settings.default_provider.as_deref(),
             Some("openai-custom")
         );
-        // openai-custom default is empty → state.session.model stays whatever it was.
+
         assert_eq!(st.session.model, "gemini-3.1-pro-preview");
 
         edit_settings_row(&mut st, 1);
@@ -2499,10 +1949,7 @@ mod settings_edit_tests {
 
     #[test]
     fn read_only_row_is_a_no_op() {
-        // Status tab rows are all ReadOnly today. Focus a status row,
-        // attempt to edit, assert nothing changes. Guards against a
-        // future edit-dispatcher regression that forgets to check the
-        // ReadOnly variant.
+
         let mut st = ConversationState::default();
         st.session.model = "claude-opus-4-7".into();
         st.active_menu = Some(OverlayMenu::new_settings(SettingsTab::Status, &st));

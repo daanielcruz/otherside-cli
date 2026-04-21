@@ -1,16 +1,4 @@
-//! `state.json` — tool-managed counters the user doesn't hand-edit:
-//! onboarding completion, startup count, first-run markers.
-//!
-//! Renamed from `config::state::State` to disambiguate from
-//! `crate::state::Session` (runtime identity — model / effort /
-//! permission_mode) and `crate::sessions::` (transcript JSONL writer).
-//! Every field here is process-startup bookkeeping, never session
-//! runtime state.
-//!
-//! Why a separate file from `settings.json`: see `projects.rs` header.
-//! State rewrites on almost every run; co-locating with `settings.json`
-//! would mean every launch touches the same file the user might be
-//! editing. Split avoids that race.
+
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -19,8 +7,6 @@ use crate::error::{Error, Result};
 
 use super::paths;
 
-/// `state.json` shape. All fields optional / defaulted so a missing
-/// file is equivalent to a zero-initialized `StartupCounters`.
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, rename_all = "camelCase")]
 pub struct StartupCounters {
@@ -28,13 +14,11 @@ pub struct StartupCounters {
     pub num_startups: u64,
     pub first_startup_date: Option<String>,
     pub last_startup_date: Option<String>,
-    /// Unknown keys round-trip.
+
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
 
-/// Read `~/.otherside/state.json`. Missing file →
-/// `StartupCounters::default()`.
 pub fn load() -> Result<StartupCounters> {
     let path = paths::state_path()?;
     if !path.exists() {
@@ -48,9 +32,6 @@ pub fn load() -> Result<StartupCounters> {
     })
 }
 
-/// Write `~/.otherside/state.json` via [`super::write_atomic`] — temp
-/// file + fsync + rename so a crash mid-write never leaves a
-/// truncated blob.
 pub fn save(state: &StartupCounters) -> Result<()> {
     let path = paths::state_path()?;
     let bytes = serde_json::to_vec_pretty(state).map_err(|e| {

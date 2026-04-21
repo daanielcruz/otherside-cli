@@ -1,22 +1,4 @@
-//! Sessions — append-only JSONL transcript persistence + resume replay.
-//!
-//! Each interactive run lives in its own directory under
-//! `<config_dir>/sessions/<uuid>/transcript.jsonl`. Records are
-//! append-only JSONL; every write fsyncs so a crash never leaves a
-//! partially-written final line unreadable.
-//!
-//! # Crash tolerance
-//!
-//! A truncated trailing line (from a crash mid-append) is treated as
-//! "stream ended here" by the reader — NOT an error. This makes
-//! `--resume latest` robust against the tiny window between
-//! write-start and fsync-complete.
-//!
-//! # Retention
-//!
-//! Background sweep (`retention::sweep`) walks `sessions_root` and
-//! deletes directories whose newest mtime is older than
-//! `settings.sessions.retention_days`. Fire-and-forget at startup.
+
 
 pub mod id;
 pub mod paths;
@@ -31,16 +13,12 @@ use std::path::PathBuf;
 
 use crate::error::{Error, Result};
 
-/// Handle on an open session — Writer + current transcript path. Drop
-/// closes the underlying file; callers hold onto this for the lifetime
-/// of the TUI turn.
 pub struct SessionHandle {
     pub id: SessionId,
     pub transcript_path: PathBuf,
     pub writer: transcript::Writer,
 }
 
-/// Start a fresh session under `config_dir`.
 pub fn open_new(config_dir: &std::path::Path) -> Result<SessionHandle> {
     let id = SessionId::new();
     let dir = paths::session_dir(config_dir, &id);
@@ -62,7 +40,6 @@ pub fn open_new(config_dir: &std::path::Path) -> Result<SessionHandle> {
     })
 }
 
-/// Reopen an existing session by id.
 pub fn resume(config_dir: &std::path::Path, id: &SessionId) -> Result<(SessionHandle, Vec<Record>)> {
     let transcript_path = paths::transcript_path(config_dir, id);
     let records = transcript::Reader::read_all(&transcript_path)?;
@@ -77,8 +54,6 @@ pub fn resume(config_dir: &std::path::Path, id: &SessionId) -> Result<(SessionHa
     ))
 }
 
-/// Find the newest session dir under `config_dir/sessions/` and
-/// resume it. Returns `None` if no sessions exist.
 pub fn resume_latest(config_dir: &std::path::Path) -> Result<Option<(SessionHandle, Vec<Record>)>> {
     let root = paths::sessions_root(config_dir);
     if !root.exists() {

@@ -1,38 +1,10 @@
-//! Translator — OpenAI canonical request → ChatGPT `/v1/responses`
-//! body. Mirrors `codex-rs/codex-api/src/common.rs :: ResponsesApiRequest`.
-//!
-//! # Shape
-//!
-//! ```json
-//! {
-//!   "model": "gpt-5-codex",
-//!   "instructions": "<system prompt>",
-//!   "input": [
-//!     {"type":"message","role":"user","content":[{"type":"input_text","text":"..."}]}
-//!   ],
-//!   "tools": [ /* codex-native tool defs */ ],
-//!   "tool_choice": "auto",
-//!   "parallel_tool_calls": true,
-//!   "reasoning": {"effort":"medium","summary":"auto"},
-//!   "store": true,
-//!   "stream": true
-//! }
-//! ```
-//!
-//! Unlike the anthropic translator, codex's `/responses` consumes a
-//! flat `input[]` array of polymorphic items (`message`, `function_call`,
-//! `function_call_output`, `reasoning`) — not a `messages[]` of role
-//! strings + plain content. We map OpenAI-canonical history into the
-//! codex shape on each outbound turn.
+
 
 use serde_json::{json, Map, Value};
 
 use crate::inference::{OpenAiChatMessage, OpenAiChatRequest, OpenAiChatRole};
 use crate::thinking::{ThinkingConfig, ThinkingLevel, ThinkingMode};
 
-/// Build the full `/responses` body. `tools_json` is the already-
-/// assembled tool array (codex-native schemas); `instructions` is the
-/// optional system prompt.
 pub fn build_responses_body(
     req: &OpenAiChatRequest,
     tools_json: Vec<Value>,
@@ -52,19 +24,13 @@ pub fn build_responses_body(
     if let Some(reasoning) = thinking.and_then(reasoning_json) {
         body.insert("reasoning".into(), reasoning);
     }
-    // `store: true` enables previous_response_id continuity server-side.
-    // We don't use `previous_response_id` on the SSE path today — every
-    // turn replays the full input — but keeping store=true matches
-    // upstream parity and unlocks the WebSocket path later.
+
     body.insert("store".into(), Value::Bool(true));
     body.insert("stream".into(), Value::Bool(true));
     body.insert("include".into(), Value::Array(Vec::new()));
     Value::Object(body)
 }
 
-/// Pull the first `system` message out and return its plain text — the
-/// codex `/responses` envelope expects the system prompt on the
-/// top-level `instructions` field, NOT as an input item.
 fn extract_instructions(messages: &[OpenAiChatMessage]) -> Option<String> {
     for msg in messages {
         if matches!(msg.role, OpenAiChatRole::System) && !msg.content.is_empty() {
@@ -74,15 +40,11 @@ fn extract_instructions(messages: &[OpenAiChatMessage]) -> Option<String> {
     None
 }
 
-/// Convert the rest of the history into `input[]` items. System
-/// messages (already pulled onto `instructions`) are skipped; tool
-/// results go in as `function_call_output`; assistant messages with
-/// tool_calls become `function_call` items.
 fn messages_to_input(messages: &[OpenAiChatMessage]) -> Vec<Value> {
     let mut out: Vec<Value> = Vec::new();
     for msg in messages {
         match msg.role {
-            OpenAiChatRole::System => {} // already on instructions
+            OpenAiChatRole::System => {}
             OpenAiChatRole::User => {
                 out.push(json!({
                     "type": "message",
@@ -120,10 +82,6 @@ fn messages_to_input(messages: &[OpenAiChatMessage]) -> Vec<Value> {
     out
 }
 
-/// Map our `ThinkingConfig` into the codex `reasoning` envelope. Codex
-/// accepts `effort: low|medium|high` only — `minimal`/`xhigh`/`max`
-/// collapse to the closest allowed value. `auto` / `none` drop the
-/// reasoning envelope entirely.
 fn reasoning_json(cfg: &ThinkingConfig) -> Option<Value> {
     if matches!(cfg.mode, ThinkingMode::None | ThinkingMode::Auto) {
         return None;

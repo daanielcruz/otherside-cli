@@ -1,10 +1,4 @@
-//! Minimal diff rendering for Edit-tool ToolResults.
-//!
-//! Input is a unified-diff fragment (plus lines prefix `+`, minus
-//! lines prefix `-`, context lines no prefix). Output is a sequence
-//! of Lines with per-side coloring — green on dim-green bg for
-//! additions, rose on dim-rose bg for removals, muted grey for
-//! context. Mirrors upstream's diff palette.
+
 
 use ratatui::{
     style::{Color, Modifier, Style},
@@ -13,18 +7,12 @@ use ratatui::{
 
 use super::render::theme;
 
-/// Dim background fill for `+` lines. Matches upstream's diff palette.
 const DIFF_ADDED_BG: Color = Color::Rgb(34, 92, 43);
 
-/// Dim background fill for `-` lines.
 const DIFF_REMOVED_BG: Color = Color::Rgb(122, 41, 54);
 
-/// Maximum rendered lines before collapsing into a `… N more lines …`
-/// footer. Keeps the streaming area from being overwhelmed by large
-/// edits.
 pub const MAX_LINES: usize = 100;
 
-/// Render a unified-diff fragment. Empty input yields an empty Vec.
 pub fn render_unified(fragment: &str) -> Vec<Line<'static>> {
     let all: Vec<&str> = fragment.lines().collect();
     let total = all.len();
@@ -99,9 +87,7 @@ mod tests {
     fn header_lines_styled_as_header_not_add_remove() {
         let frag = "--- a/foo\n+++ b/foo\n@@ -1 +1 @@\n-old\n+new";
         let lines = render_unified(frag);
-        // `---` and `+++` should NOT be mistaken for remove/add lines:
-        // they render as muted metadata. The real `-old` and `+new`
-        // pick up ERROR and PRIMARY respectively.
+
         assert_eq!(lines.len(), 5);
     }
 }

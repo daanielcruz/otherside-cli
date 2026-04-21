@@ -1,20 +1,4 @@
-//! `TaskStore` — concurrent in-memory store of [`TaskRecord`]s.
-//!
-//! Single source of truth for "what tasks exist + what's their
-//! state". Mutated from two sides:
-//!
-//! - **Spawner side** (runner on `tokio::spawn`): inserts on spawn,
-//!   appends output via `update_with`, transitions to terminal on
-//!   completion.
-//! - **TUI side** (event loop): reads via `list` / `get` for render +
-//!   pill + dialog; mutates via `mark_backgrounded` (Ctrl+B) and
-//!   `mark_stopped` (`x` in dialog).
-//!
-//! Locking discipline:
-//! - All write paths take a short-lived `write()` guard.
-//! - All read paths take `read()`. Render path holds the guard for
-//!   the duration of one frame draw — short.
-//! - Never await while holding either guard (R-107 corollary).
+
 
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock, RwLock};
@@ -22,9 +6,6 @@ use std::sync::{Arc, OnceLock, RwLock};
 use super::id::TaskId;
 use super::state::{TaskKind, TaskRecord, TaskState};
 
-/// Counts grouped by kind — driver of pill label form. Returned
-/// from [`TaskStore::counts_active`] so callers don't iterate the
-/// full map themselves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct TaskCounts {
     pub shells: usize,
@@ -37,8 +18,6 @@ impl TaskCounts {
         self.shells + self.agents + self.generic
     }
 
-    /// True when more than one kind is non-zero — pill label uses
-    /// the aggregate "N background tasks" form in that case.
     pub fn is_mixed(&self) -> bool {
         let kinds = (self.shells > 0) as u8
             + (self.agents > 0) as u8
@@ -52,17 +31,8 @@ pub struct TaskStore {
     inner: Arc<RwLock<HashMap<TaskId, TaskRecord>>>,
 }
 
-/// Process-global [`TaskStore`] handle installed by the TUI boot
-/// path. Tool dispatchers (Agent tool's background route, the
-/// deferred Task* tools landing in §9) and the provider request
-/// builder (for draining pending `<task-notification>` injections
-/// on the next turn) reach the live store through this OnceLock.
-/// Mirrors the `crate::subagents::current_runner` pattern.
 static GLOBAL: OnceLock<TaskStore> = OnceLock::new();
 
-/// Install the process-global store. First call wins — subsequent
-/// calls return the existing store (OnceLock semantics) so
-/// re-entering the TUI within a test harness doesn't double-install.
 pub fn install_global(store: TaskStore) -> TaskStore {
     if let Err(existing) = GLOBAL.set(store.clone()) {
         let _ = existing;
@@ -71,9 +41,6 @@ pub fn install_global(store: TaskStore) -> TaskStore {
     store
 }
 
-/// Access the process-global store. `None` when the TUI boot path
-/// didn't install one (test-harness dispatchers + the `serve`
-/// subcommand currently skip installation).
 pub fn current_global() -> Option<TaskStore> {
     GLOBAL.get().cloned()
 }
@@ -83,9 +50,6 @@ impl TaskStore {
         Self::default()
     }
 
-    /// Insert a fresh record. Caller is responsible for generating
-    /// a non-colliding id (use [`TaskId::generate`]). Returns the
-    /// id back for ergonomic chaining.
     pub fn insert(&self, record: TaskRecord) -> TaskId {
         let id = record.id.clone();
         self.inner
@@ -95,8 +59,6 @@ impl TaskStore {
         id
     }
 
-    /// Snapshot read of one record. Returns `None` for unknown id.
-    /// Clones — caller doesn't hold the lock.
     pub fn get(&self, id: &TaskId) -> Option<TaskRecord> {
         self.inner
             .read()
@@ -105,8 +67,6 @@ impl TaskStore {
             .cloned()
     }
 
-    /// Snapshot list of all records. Order is map-iteration —
-    /// callers that need stable ordering sort by `started_at`.
     pub fn list(&self) -> Vec<TaskRecord> {
         self.inner
             .read()
@@ -116,8 +76,6 @@ impl TaskStore {
             .collect()
     }
 
-    /// Active records sorted oldest-first. Used by the dialog list
-    /// view + the pill counts.
     pub fn list_active(&self) -> Vec<TaskRecord> {
         let mut v: Vec<TaskRecord> = self
             .inner
@@ -131,8 +89,6 @@ impl TaskStore {
         v
     }
 
-    /// Counts grouped by kind, restricted to active records. Pill
-    /// render calls this every frame.
     pub fn counts_active(&self) -> TaskCounts {
         let map = self.inner.read().expect("task store rwlock poisoned");
         let mut c = TaskCounts::default();
@@ -149,9 +105,6 @@ impl TaskStore {
         c
     }
 
-    /// Mutate a record by id. Returns `true` if found + applied.
-    /// Closure receives `&mut TaskRecord` — keep the body short
-    /// (no awaits).
     pub fn update_with<F: FnOnce(&mut TaskRecord)>(&self, id: &TaskId, f: F) -> bool {
         let mut map = self.inner.write().expect("task store rwlock poisoned");
         match map.get_mut(id) {
@@ -163,9 +116,6 @@ impl TaskStore {
         }
     }
 
-    /// Predicate for the Ctrl+B keybinding's `is_active` gate —
-    /// only fire `task:background` when there's at least one
-    /// non-backgrounded running task to flip.
     pub fn any_running_foreground(&self) -> bool {
         self.inner
             .read()
@@ -174,11 +124,6 @@ impl TaskStore {
             .any(|r| matches!(r.state, TaskState::Running) && !r.is_backgrounded)
     }
 
-    /// `Ctrl+B` action — flip every Running foreground task to
-    /// Backgrounded. Mirrors `LocalShellTask.tsx:400-429`
-    /// `backgroundAll`. Returns the count of tasks flipped (caller
-    /// renders the `Started in background as <id>.` line per
-    /// flipped task).
     pub fn background_all_running_foreground(&self) -> Vec<TaskId> {
         let mut map = self.inner.write().expect("task store rwlock poisoned");
         let mut flipped = Vec::new();
@@ -192,16 +137,6 @@ impl TaskStore {
         flipped
     }
 
-    /// Drain records that are in a terminal state but haven't yet
-    /// surfaced an ephemeral completion line in the transcript.
-    /// Returns owned snapshots; callers are responsible for the
-    /// actual paint. The flag flip happens here so a follow-up tick
-    /// finds them already accounted for and doesn't double-paint.
-    ///
-    /// Mirrors upstream's React effect that watches task state and
-    /// emits a `Background command "<name>" completed` line once on
-    /// the transition to terminal — but otherside polls every tick
-    /// (50 ms) instead of subscribing to a signal.
     pub fn drain_unrendered_completions(&self) -> Vec<TaskRecord> {
         let mut map = self.inner.write().expect("task store rwlock poisoned");
         let mut out = Vec::new();
@@ -214,11 +149,6 @@ impl TaskStore {
         out
     }
 
-    /// Read-only predicate — true when at least one record is
-    /// flagged `inject_on_next_turn = true`. Cheaper than
-    /// [`Self::drain_pending_notifications`] for the auto-trigger
-    /// detector that polls every tick (50 ms) — we don't want to
-    /// drain on a poll, just to know whether to fire.
     pub fn has_pending_notifications(&self) -> bool {
         self.inner
             .read()
@@ -227,10 +157,6 @@ impl TaskStore {
             .any(|r| r.inject_on_next_turn)
     }
 
-    /// Drain records flagged `inject_on_next_turn = true`,
-    /// clearing the flag on each. Returns owned snapshots so the
-    /// caller can render `<task-notification>` blocks without
-    /// holding the lock during XML assembly.
     pub fn drain_pending_notifications(&self) -> Vec<TaskRecord> {
         let mut map = self.inner.write().expect("task store rwlock poisoned");
         let mut out = Vec::new();

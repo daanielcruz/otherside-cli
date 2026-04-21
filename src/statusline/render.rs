@@ -1,26 +1,11 @@
-//! Native statusline renderer. Composes the fallback line painted when
-//! `settings.statusline` is unset or set to `type: "native"`. Shape is
-//! locked per user decision 2026-04-18 (C67):
-//!
-//! ```text
-//! 🤖 {display_name} · 📉 {avail} available · 🧠 {pct}% used
-//! ```
-//!
-//! Semantic glyphs only — robot = model, chart-decreasing = available
-//! tokens, brain = usage. Middle-dot separator. No upstream product
-//! identifier appears (R-01/R-11). Output is plain text (no ANSI); the
-//! TUI paints the final line using `theme::MUTED`. The yolo indicator
-//! lives in the info row per C44 — it is NOT a statusline chip.
+
 
 use unicode_width::UnicodeWidthChar;
 
 use super::types::{display_width, StatuslineCtx, StatuslineLine};
 
-// Mascot-family truncation glyph (C48-adjacent / mascot aesthetic).
 const TRUNCATE_GLYPH: &str = "·••";
 
-/// Build the statusline output for the given ctx. Locked shape:
-/// `🤖 {display_name} · 📉 {avail} available · 🧠 {pct}% used`.
 pub fn native(ctx: &StatuslineCtx) -> StatuslineLine {
     let display_name = if ctx.payload.model.display_name.is_empty() {
         ctx.payload.model.id.as_str()
@@ -44,9 +29,6 @@ pub fn native(ctx: &StatuslineCtx) -> StatuslineLine {
     }
 }
 
-/// Format a token count matching the scale of the window — 1M windows
-/// render `x.xM`, anything else renders `xxxK`. Mirrors the old
-/// hardcoded statusline's formatting so the number reads cleanly.
 fn format_tokens(tokens: u64, window: u64) -> String {
     if window >= 1_000_000 {
         format!("{:.1}M", tokens as f64 / 1_000_000.0)
@@ -55,9 +37,6 @@ fn format_tokens(tokens: u64, window: u64) -> String {
     }
 }
 
-/// Truncate a line to `width_cols` display columns, preserving ANSI
-/// escape sequences (zero-width) and ending in the mascot-family
-/// truncation glyph when truncation occurs.
 pub fn truncate_to_width(line: &str, width_cols: u16) -> String {
     if display_width(line) <= width_cols {
         return line.to_string();
@@ -92,7 +71,7 @@ pub fn truncate_to_width(line: &str, width_cols: u16) -> String {
         out.push(ch);
         rendered_width += ch_w;
     }
-    // Close any dangling SGR sequence before appending the glyph.
+
     out.push_str("\x1b[0m");
     out.push_str(TRUNCATE_GLYPH);
     out
@@ -173,7 +152,7 @@ mod tests {
     fn truncate_preserves_ansi_escapes_mid_segment() {
         let line = "\x1b[38;2;255;0;0mhello world\x1b[0m";
         let out = truncate_to_width(line, 7);
-        // Must still contain the opening escape.
+
         assert!(out.contains("\x1b[38;2;255;0;0m"));
         assert!(out.ends_with(TRUNCATE_GLYPH));
     }

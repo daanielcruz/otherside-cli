@@ -1,15 +1,4 @@
-//! Permission engine — matcher DSL + resolver + prompt surface.
-//!
-//! Inputs:
-//! - `tool_name` from the agent loop's dispatch decision
-//! - `tool_input` — stringified JSON of the model's argument object
-//! - `PermissionMode` from the effective settings / CLI flag
-//! - `PermissionsConfig` (`allow` / `deny` / `ask` rule lists)
-//!
-//! Output: [`Decision::Allow`], [`Decision::Deny`], or
-//! [`Decision::Ask`] with the matching rule surface. The agent loop
-//! short-circuits Deny, fires an interactive prompt for Ask, and
-//! dispatches on Allow.
+
 
 pub mod matcher;
 pub mod prompt;
@@ -21,22 +10,6 @@ use std::sync::{Arc, RwLock};
 
 use crate::config::settings::{PermissionMode, PermissionRule, PermissionsConfig, Settings};
 
-/// Runtime-only permission grants — rules the user picked "allow,
-/// and don't ask again" for during this process. NOT persisted; a
-/// fresh `otherside tui` launch starts empty. Shared between the
-/// event loop (mutator on overlay commit) and the agent task
-/// (reader on every dispatch) via `Arc`.
-///
-/// Renamed from `SessionAllowlist` to disambiguate: "session" is
-/// already saturated in this codebase (`crate::state::Session`
-/// identity, `crate::sessions::` transcript writer, `sessionId` on
-/// wire). "Runtime" communicates that these grants live in-memory
-/// only.
-///
-/// Each entry is a raw matcher rule string (same grammar as
-/// `settings.json::permissions.allow`). The permission gate OR's
-/// these rules into the resolve step so a runtime allow trumps a
-/// settings-file ask.
 #[derive(Debug, Clone, Default)]
 pub struct RuntimePermissionGrants(Arc<RwLock<Vec<String>>>);
 
@@ -58,7 +31,6 @@ impl RuntimePermissionGrants {
     }
 }
 
-/// Outcome of a permission query.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
     Allow,
@@ -66,8 +38,6 @@ pub enum Decision {
     Ask { rule: Option<String> },
 }
 
-/// Source list that produced a match — exposed on Deny so the user
-/// knows which rule triggered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuleScope {
     Allow,
@@ -77,7 +47,6 @@ pub enum RuleScope {
     ModeDefault,
 }
 
-/// Mutating tools — blocked in `plan` mode, gated in `default`.
 pub const MUTATING_TOOLS: &[&str] = &[
     "Edit",
     "Write",
@@ -87,31 +56,23 @@ pub const MUTATING_TOOLS: &[&str] = &[
     "NotebookEdit",
 ];
 
-/// Resolve a decision for `(tool, input, mode, permissions)`. Pure
-/// function — no I/O, no prompts. The caller is responsible for
-/// actually invoking `prompt::render` on `Decision::Ask`.
 pub fn resolve(
     tool: &str,
     tool_input: &str,
     settings: &Settings,
     mode: PermissionMode,
 ) -> Decision {
-    // EnterPlanMode pin — the model-driven plan flag out-ranks the
-    // session permission mode. Equivalent to flipping to
-    // `PermissionMode::Plan`: mutating tools deny, read-only tools
-    // allow. ExitPlanMode clears the flag.
-    let effective_mode = if crate::tools::deferred::plan_mode_active() {
+
+    let effective_mode = if crate::tools::plan_mode::plan_mode_active() {
         PermissionMode::Plan
     } else {
         mode
     };
-    // yolo — caller already verified this isn't blocked at a higher
-    // tier; treat as carte blanche.
+
     if effective_mode == PermissionMode::Yolo {
         return Decision::Allow;
     }
 
-    // plan — block every mutating tool; read-only tools pass.
     if effective_mode == PermissionMode::Plan {
         if is_mutating(tool) {
             return Decision::Deny {
@@ -123,55 +84,33 @@ pub fn resolve(
 
     let empty = PermissionsConfig::default();
     let perms = settings.permissions.as_ref().unwrap_or(&empty);
-    // Explicit deny rules outrank everything else — even Yolo was
-    // already short-circuited above, so here Default/AcceptEdits are
-    // the live modes.
+
     if let Some(rule) = best_match(tool, tool_input, &perms.deny) {
         return Decision::Deny { rule };
     }
-    // Explicit allow rule → allow regardless of mutating/non-mutating
-    // classification. Matches upstream's `alwaysAllowRules` behavior.
+
     if let Some(rule) = best_match(tool, tool_input, &perms.allow) {
         let _ = rule;
         return Decision::Allow;
     }
-    // acceptEdits: Edit / Write / NotebookEdit pre-approved without
-    // needing a rule, UNLESS the path is inside a
-    // `DANGEROUS_DIRECTORIES` segment or the filename matches one of
-    // `DANGEROUS_FILES` — those are bypass-immune (`.git`, `.claude`,
-    // `.vscode`, `.idea`, shell configs, `.mcp.json`, etc.).
-    // Mirrors upstream's `checkPathSafetyForAutoEdit` at
-    // `utils/permissions/filesystem.ts:629` feeding into the
-    // AcceptEdits fast-path at `permissions.ts:604-654`.
+
     if effective_mode == PermissionMode::AcceptEdits
         && matches!(tool, "Edit" | "Write" | "NotebookEdit")
     {
         if !is_dangerous_edit_path(tool_input) {
             return Decision::Allow;
         }
-        // Fall through to the Ask path so the user still explicitly
-        // approves edits to sensitive files even with AcceptEdits on.
+
     }
-    // Non-mutating tools (Read/Glob/Grep/ToolSearch/Skill/Agent/
-    // WebFetch/WebSearch/Task*) are allowed by default in every mode
-    // that didn't already short-circuit. Upstream's tool objects
-    // declare `canUseTool` as unconditional allow for read-only
-    // surfaces; only mutating tools flow through the ask path. This
-    // matches `services/tools/toolExecution.ts:608` behavior where
-    // most tools never reach the interactive prompt dialog.
+
     if !is_mutating(tool) {
         return Decision::Allow;
     }
-    // Explicit ask rule takes precedence over the generic fallthrough
-    // so the user can point the resolver at a specific rule surface.
+
     if let Some(rule) = best_match(tool, tool_input, &perms.ask) {
         return Decision::Ask { rule: Some(rule) };
     }
 
-    // Mutating tool, no matching rule, no AcceptEdits short-circuit →
-    // user approval required. The interactive modal lives behind
-    // spec 007; until it ships, `dispatch_gated` degrades Ask to
-    // `PermissionDenied` with a modal-pending note.
     Decision::Ask { rule: None }
 }
 
@@ -179,14 +118,8 @@ fn is_mutating(tool: &str) -> bool {
     MUTATING_TOOLS.contains(&tool)
 }
 
-/// Directories that stay bypass-immune even with AcceptEdits on.
-/// Matches upstream's `DANGEROUS_DIRECTORIES` at
-/// `utils/permissions/filesystem.ts:83-88`.
 const DANGEROUS_DIRECTORIES: &[&str] = &[".git", ".vscode", ".idea", ".claude"];
 
-/// Filenames that stay bypass-immune even with AcceptEdits on.
-/// Matches upstream's `DANGEROUS_FILES` at
-/// `utils/permissions/filesystem.ts:66-77`.
 const DANGEROUS_FILES: &[&str] = &[
     ".gitconfig",
     ".gitmodules",
@@ -200,11 +133,6 @@ const DANGEROUS_FILES: &[&str] = &[
     ".claude.json",
 ];
 
-/// Extract the candidate `file_path` from the serialized tool input
-/// and return `true` when writing to it should NOT ride the
-/// AcceptEdits fast-path. Missing / malformed inputs return `false`
-/// — the dispatcher will reject on its own with `InvalidArgs` and
-/// we don't want the gate to second-guess syntactic errors.
 fn is_dangerous_edit_path(tool_input: &str) -> bool {
     let val: serde_json::Value = match serde_json::from_str(tool_input) {
         Ok(v) => v,
@@ -219,9 +147,6 @@ fn is_dangerous_edit_path(tool_input: &str) -> bool {
         return false;
     }
 
-    // Case-insensitive segment walk — upstream normalizes for
-    // comparison so `.cLauDe/Settings.locaL.json` can't bypass the
-    // check on case-insensitive filesystems.
     let lower = path.to_lowercase();
     for seg in lower.split(&['/', '\\'][..]) {
         if DANGEROUS_DIRECTORIES
@@ -232,7 +157,6 @@ fn is_dangerous_edit_path(tool_input: &str) -> bool {
         }
     }
 
-    // Filename match — check the basename against DANGEROUS_FILES.
     let basename = lower
         .rsplit(&['/', '\\'][..])
         .next()
@@ -241,8 +165,6 @@ fn is_dangerous_edit_path(tool_input: &str) -> bool {
         return true;
     }
 
-    // UNC path defense-in-depth — network paths are never safe for
-    // auto-edit.
     if path.starts_with("\\\\") || path.starts_with("//") {
         return true;
     }
@@ -285,7 +207,6 @@ fn best_match(tool: &str, tool_input: &str, rules: &[PermissionRule]) -> Option<
     best.map(|(_, rule)| rule)
 }
 
-/// Convenience constructor used by the pure tests below.
 pub fn allow_all() -> PermissionsConfig {
     PermissionsConfig::default()
 }
@@ -388,10 +309,6 @@ mod tests {
         let d = resolve("Bash", "ls", &s, PermissionMode::AcceptEdits);
         assert_eq!(d, Decision::Ask { rule: None });
     }
-
-    // AcceptEdits safety-check coverage — dangerous paths fall
-    // through to Ask even with the fast-path mode on. Matches
-    // upstream `checkPathSafetyForAutoEdit` behavior.
 
     #[test]
     fn accept_edits_refuses_git_dir() {

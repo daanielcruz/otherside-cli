@@ -1,7 +1,4 @@
-//! Rotating tip line below the progress row. Per C47, tips come from
-//! otherside's slash catalog (the same `slash::catalog::CATALOG` the
-//! classifier and autocomplete popup walk). Random rotation per
-//! render, no persistence across sessions.
+
 
 use ratatui::{
     layout::Rect,
@@ -14,9 +11,6 @@ use ratatui::{
 use super::render::theme;
 use super::slash::catalog::{self, CATALOG};
 
-/// Pick a tip by rotation index. Stable across same index so callers
-/// control the rotation cadence (typically bump the index on new
-/// inference requests, not every render).
 pub fn tip_at(index: usize) -> String {
     if CATALOG.is_empty() {
         return String::new();
@@ -24,10 +18,6 @@ pub fn tip_at(index: usize) -> String {
     catalog::display_line(&CATALOG[index % CATALOG.len()])
 }
 
-/// Paint the tip line into `area`. Dim `Tip: /<slash> — <brief>` —
-/// no `⎿` glyph because that symbol is reserved for tool-result
-/// and anchor output; tips should read as ambient chrome, not an
-/// emitted turn line.
 pub fn draw(f: &mut Frame<'_>, area: Rect, rotation_index: usize) {
     let tip = tip_at(rotation_index);
     let line = Line::from(vec![
@@ -69,9 +59,7 @@ mod tests {
 
     #[test]
     fn tips_cover_full_catalog() {
-        // Walk the first CATALOG.len() indices and collect distinct
-        // tips — every catalog entry must appear exactly once in that
-        // range so the rotation visits every slash before looping.
+
         let mut seen = std::collections::HashSet::new();
         for i in 0..CATALOG.len() {
             seen.insert(tip_at(i));

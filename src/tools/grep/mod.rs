@@ -1,5 +1,4 @@
-//! Grep tool — spawns `rg` (ripgrep) and returns matching paths or
-//! content. Falls back to an error if ripgrep isn't on PATH.
+
 
 use std::process::Command;
 
@@ -32,10 +31,6 @@ pub fn grep(args: &Value) -> Result<Value, ToolError> {
         .map(|n| n as usize)
         .unwrap_or(DEFAULT_HEAD_LIMIT);
 
-    // Pagination — upstream's schema advertises `offset: skip first N
-    // lines before applying head_limit` (equivalent to
-    // `| tail -n +N | head -N`). Missing wiring silently returned the
-    // same head slice on every page, so model-driven paging looped.
     let offset = args
         .get("offset")
         .and_then(Value::as_u64)
@@ -98,16 +93,14 @@ pub fn grep(args: &Value) -> Result<Value, ToolError> {
         String::from_utf8(out.stdout).map_err(|_| ToolError::Unsupported("rg output not utf-8".into()))?;
     let lines: Vec<&str> = stdout.lines().collect();
     let total = lines.len();
-    // offset skips the first N lines BEFORE head_limit applies.
+
     let paged: Vec<&str> = lines.iter().skip(offset).copied().collect();
     let limited: Vec<&str> = if head_limit == 0 {
         paged.clone()
     } else {
         paged.iter().take(head_limit).copied().collect()
     };
-    // `truncated` reflects whether more lines exist beyond the
-    // paged+limited window — either we skipped rows via offset that
-    // the caller can still fetch, or head_limit capped the tail.
+
     let truncated = offset + limited.len() < total;
 
     Ok(json!({
@@ -191,9 +184,6 @@ mod tests {
         }))
         .unwrap();
 
-        // offset + total + truncated fields surface correctly; the
-        // ordering of `matches` is rg-dependent (filesystem-order),
-        // so the contract is the metadata fields, not set-disjointness.
         assert_eq!(page0["offset"], 0);
         assert_eq!(page1["offset"], 3);
         assert_eq!(page0["total"], 10);
@@ -203,7 +193,6 @@ mod tests {
         assert_eq!(page0["matches"].as_array().unwrap().len(), 3);
         assert_eq!(page1["matches"].as_array().unwrap().len(), 3);
 
-        // A large offset drops everything — total still reported.
         let empty_page = grep(&json!({
             "pattern": "hit me",
             "path": tmp.to_str().unwrap(),

@@ -1,45 +1,4 @@
-//! Subagent registry + runner plumbing for the `Agent` tool dispatcher.
-//!
-//! # Why this exists
-//!
-//! `tools::agent::agent` is a synchronous `fn(&Value) -> Result<Value, ToolError>`
-//! (matches every other tool dispatcher). A real subagent turn, however, needs
-//! async provider I/O + multi-turn orchestration (see `agent::AgentLoop`).
-//!
-//! This module hosts the bridge:
-//!
-//! - [`AgentDefinition`] — parsed frontmatter + prompt body (name, description,
-//!   tools allowlist, model override, system prompt). Loaded from bundled
-//!   `otherside-cli/agents/*.md` files at startup via [`registry::load_bundled`].
-//! - [`SubagentRunner`] trait — the async entry the binary wires at startup.
-//!   Takes a resolved `AgentDefinition`, the `prompt` from the tool call, and
-//!   the current recursion depth; returns a structured result or a
-//!   [`RunnerError`] the dispatcher serializes into `ToolError`.
-//! - Global [`install_runner`] / [`current_runner`] — `OnceLock<Arc<dyn
-//!   SubagentRunner>>`. Binary installs the real runner at startup; tests
-//!   inject fakes.
-//! - [`registry::resolve`] + [`registry::tool_is_allowed`] — type lookup and
-//!   per-agent tool-subset enforcement.
-//! - [`depth`] — thread-local recursion counter with `MAX_DEPTH = 3`.
-//!
-//! # Result shape
-//!
-//! Matches upstream's `agentToolResultSchema` (AgentTool/agentToolUtils.ts):
-//! `{ agentId, agentType, content: [{type: "text", text}], totalToolUseCount,
-//!   totalDurationMs, totalTokens, usage: {...} }`. Our MVP trims `usage` to
-//! a minimal `{ input_tokens, output_tokens }` pair until the surrounding
-//! plumbing carries the full cache ledger. The `tui::tool_render::agent_preview`
-//! already reads `totalToolUseCount`, `totalTokens`, `totalDurationMs` off the
-//! result, so rendering is zero-change.
-//!
-//! # Parallelism
-//!
-//! MVP runs sequentially. The schema reserves space for `run_in_background`
-//! (upstream property) so parallel dispatch can land without breaking the wire
-//! shape. Documented in `openspec/changes/020-agent-tool/design.md`.
-//!
-//! Zone: identity (R-103). No upstream product name strings in identifiers or
-//! copy — the runner is a trait, agent defs describe behavior.
+
 
 pub mod frontmatter;
 pub mod registry;
@@ -52,15 +11,8 @@ use std::sync::{Arc, OnceLock};
 
 use serde_json::Value;
 
-/// Maximum number of nested `Agent` dispatches permitted. A subagent may call
-/// `Agent` itself, but only up to this depth from the top-level invocation.
-/// Prevents runaway spawn loops when a model hands itself back a prompt that
-/// re-invokes the same subagent type.
 pub const MAX_DEPTH: u32 = 3;
 
-/// Errors the runner surfaces to the dispatcher. The dispatcher maps every
-/// variant to the appropriate `ToolError` so the model sees a consistent
-/// result shape.
 #[derive(Debug, thiserror::Error)]
 pub enum RunnerError {
     #[error("subagent runner not installed — the binary did not call `subagents::install_runner` at startup")]
@@ -73,38 +25,18 @@ pub enum RunnerError {
     Internal(String),
 }
 
-/// Optional per-call overrides the upstream schema advertises on the
-/// `Agent` tool: the model string, whether to run detached, and the
-/// isolation mode (worktree vs cwd). Runners may honor or ignore each
-/// field — they are wire-schema advertised so ignoring them silently
-/// is fine, but the dispatcher must PASS them through so future
-/// runners can pick them up without every call-site changing.
 #[derive(Debug, Default, Clone)]
 pub struct AgentInvocation {
-    /// Model override (e.g. `"sonnet"`, `"haiku"`). None = inherit
-    /// caller's active model.
+
     pub model: Option<String>,
-    /// Run detached — caller gets back an agent id immediately instead
-    /// of the final result. None = synchronous (upstream default).
+
     pub run_in_background: Option<bool>,
-    /// Isolation mode. Upstream accepts `"worktree"`; everything else
-    /// runs in the caller's cwd. None = caller's cwd.
+
     pub isolation: Option<String>,
 }
 
-/// Trait the binary implements at startup to wire the real subagent loop.
-/// Tests provide a deterministic fake (see [`InlineFakeRunner`] below).
 pub trait SubagentRunner: Send + Sync {
-    /// Dispatch a resolved subagent. `definition` is the registry entry
-    /// (tools allowlist + model override + system prompt body); `prompt` is
-    /// the `prompt` arg from the tool call; `depth` is the current recursion
-    /// depth BEFORE this subagent runs (0 at the top level). `invocation`
-    /// carries per-call overrides (model, isolation, background) that
-    /// upstream advertises on the tool schema — runners that don't
-    /// implement those features yet may ignore the field.
-    ///
-    /// Returns the upstream-shape result map (see module docstring) or a
-    /// [`RunnerError`].
+
     fn run(
         &self,
         definition: &registry::AgentDefinition,
@@ -114,47 +46,27 @@ pub trait SubagentRunner: Send + Sync {
     ) -> Result<Value, RunnerError>;
 }
 
-/// Lazily-set global runner. Binary calls `install_runner` once at startup;
-/// a second call returns the existing runner (OnceLock semantics) — tests
-/// that want to swap in a fake should use [`with_runner_for_test`] instead.
 static RUNNER: OnceLock<Arc<dyn SubagentRunner>> = OnceLock::new();
 
-/// Install the global runner. Returns `true` if this call set the value,
-/// `false` if a runner was already installed (the existing one stays).
 pub fn install_runner(runner: Arc<dyn SubagentRunner>) -> bool {
     RUNNER.set(runner).is_ok()
 }
 
-/// Fetch the current runner if installed.
 pub fn current_runner() -> Option<Arc<dyn SubagentRunner>> {
     RUNNER.get().cloned()
 }
 
-// Per-thread subagent recursion depth. Thread-local (not process-global)
-// because nested dispatch only needs per-task isolation: the original
-// turn runs on the TUI event loop thread; each `Agent` tool dispatch
-// bumps depth on the same thread, pops when the call returns. Cross-
-// thread nesting is impossible today (dispatcher is sync). Scope
-// rationale: global state within a thread because the depth guard
-// must be observable from every `dispatch` call on the stack without
-// threading it through every intermediate function.
 thread_local! {
     static DEPTH: Cell<u32> = const { Cell::new(0) };
 }
 
-/// Recursion-depth helpers. The dispatcher bumps on entry, decrements on
-/// exit (RAII via [`DepthGuard`]) so nested `Agent` calls observe the
-/// cumulative depth.
 pub mod depth {
     use super::{DEPTH, MAX_DEPTH};
 
-    /// Current depth (0 when no subagent is running).
     pub fn current() -> u32 {
         DEPTH.with(|d| d.get())
     }
 
-    /// Try to push a new level. Returns `true` if the push fit under
-    /// `MAX_DEPTH`, `false` otherwise (caller should reject the dispatch).
     pub fn push() -> bool {
         DEPTH.with(|d| {
             let next = d.get() + 1;
@@ -166,7 +78,6 @@ pub mod depth {
         })
     }
 
-    /// Pop one level. Saturating — never underflows.
     pub fn pop() {
         DEPTH.with(|d| {
             let cur = d.get();
@@ -177,9 +88,6 @@ pub mod depth {
     }
 }
 
-/// RAII guard that pairs `depth::push` with `depth::pop`. Construct via
-/// [`DepthGuard::try_push`]; returns `None` when the push would exceed
-/// `MAX_DEPTH`.
 pub struct DepthGuard;
 
 impl DepthGuard {
@@ -198,27 +106,16 @@ impl Drop for DepthGuard {
     }
 }
 
-/// Test-only runner helper — swaps a runner for the duration of the callback
-/// using a fresh `OnceLock` via a trampoline. Not exposed outside `cfg(test)`
-/// because the global `RUNNER` intentionally has set-once semantics for the
-/// binary path.
 #[cfg(test)]
 pub fn with_runner_for_test<F, T>(runner: Arc<dyn SubagentRunner>, f: F) -> T
 where
     F: FnOnce() -> T,
 {
-    // We can't reset the OnceLock, so tests rely on the fact that the first
-    // `install_runner` call in a test process wins. Callers should use
-    // `inline_fake` in-place for a deterministic injection.
+
     let _ = install_runner(runner);
     f()
 }
 
-/// Deterministic in-process runner used by tests (both the lib's
-/// `#[cfg(test)]` module and out-of-crate integration tests under
-/// `tests/`). Exposed unconditionally because integration tests compile
-/// the crate without `cfg(test)`; the type carries no production behavior
-/// beyond recording inputs + producing a configurable result shape.
 #[derive(Default)]
 pub struct InlineFakeRunner {
     pub content: std::sync::Mutex<String>,
@@ -316,7 +213,7 @@ mod tests {
         let _g1 = DepthGuard::try_push().unwrap();
         let _g2 = DepthGuard::try_push().unwrap();
         let _g3 = DepthGuard::try_push().unwrap();
-        // Fourth push would exceed MAX_DEPTH=3 → None.
+
         assert!(DepthGuard::try_push().is_none());
         assert_eq!(depth::current(), MAX_DEPTH);
     }

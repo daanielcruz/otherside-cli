@@ -1,26 +1,11 @@
-//! Alias resolver — maps short family names (`opus`, `sonnet`, `haiku`,
-//! `opus[1m]`, …) to concrete catalog ids. Mirrors upstream
-//! `utils/model/model.ts::parseUserSpecifiedModel`.
-//!
-//! Rules:
-//! - Bare `opus` → `claude-opus-4-7[1m]` (Max subscriber default, the
-//!   `primary_for_family` row in the catalog).
-//! - Bare `sonnet` / `haiku` → non-1M primary row.
-//! - `[1m]` suffix carried across the alias boundary when the family
-//!   has a 1M variant. Unknown suffix → pass through verbatim.
-//! - Non-family strings pass through verbatim so raw wire ids and
-//!   provider-specific names still work.
+
 
 use super::catalog::{self, Model};
 
-/// Resolve a user-supplied model string (alias or raw id) to the
-/// concrete wire id otherside should send.
 pub fn resolve(raw: &str) -> String {
     let lower = raw.trim().to_ascii_lowercase();
     let (base, explicit_1m) = strip_1m_suffix(&lower);
 
-    // First try exact id match (includes catalog rows that are
-    // `[1m]`-suffixed themselves).
     if catalog::by_id(raw).is_some() {
         return raw.to_string();
     }
@@ -28,9 +13,6 @@ pub fn resolve(raw: &str) -> String {
         return lower;
     }
 
-    // Family alias path — find the primary row for this family, then
-    // flip to the alternate variant if the user's suffix disagrees
-    // with the primary's 1M flag.
     if let Some(primary) = primary_by_family(&base) {
         let primary_is_1m = catalog::has_1m_suffix(primary.id);
         if explicit_1m == primary_is_1m {
@@ -45,7 +27,6 @@ pub fn resolve(raw: &str) -> String {
     raw.to_string()
 }
 
-/// Split trailing `[1m]` off a lowered model string.
 fn strip_1m_suffix(lower: &str) -> (String, bool) {
     if let Some(base) = lower.strip_suffix("[1m]") {
         (base.trim().to_string(), true)
@@ -72,10 +53,7 @@ mod tests {
 
     #[test]
     fn bare_opus_is_non_1m() {
-        // Upstream-faithful: bare `opus` → non-1M. The Max-subscriber
-        // bias lives in `defaults::default_claude_code_for_tier`, not
-        // in the resolver. Callers that want 1M pass `opus[1m]`
-        // explicitly or feed the tier-aware default upstream.
+
         assert_eq!(resolve("opus"), "claude-opus-4-7");
     }
 
@@ -96,7 +74,7 @@ mod tests {
 
     #[test]
     fn sonnet_1m_would_fallback_to_primary_without_alt_row() {
-        // No sonnet[1m] row in catalog today; resolver returns primary.
+
         assert_eq!(resolve("sonnet[1m]"), "claude-sonnet-4-6");
     }
 

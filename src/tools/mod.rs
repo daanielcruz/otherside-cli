@@ -1,44 +1,14 @@
-//! Tool registry + execution surface.
-//!
-//! Tool schemas source from `harness::build_tools_array` (the fingerprint
-//! corpus extracted in 009 and byte-matched against live capture). The
-//! advertised 9-tool set is Agent / Bash / Edit / Glob / Grep / Read /
-//! Skill / ToolSearch / Write (change 010 — C48 anchor selection).
-//!
-//! 018 added the first wave of **deferred tools** — TaskCreate / TaskList
-//! / TaskGet / TaskUpdate / NotebookEdit. Deferred tools are NOT in the
-//! wire-advertised `tools[]` array; the model loads their schemas on
-//! demand via `ToolSearch` (matches upstream's deferred-tools reminder
-//! at `harness_corpus/system-reminders/deferred-tools.md`). Deferred
-//! dispatchers live in `tools::task` and `tools::notebook`; schemas
-//! flow through `tools::schemas::deferred_schemas()`.
-//!
-//! # Contract
-//!
-//! Every tool is `fn(&Value) -> Result<Value, ToolError>`. Input is
-//! accepted as-emitted by the model; per-tool validation is the tool's
-//! responsibility. Schema enforcement at the dispatcher level is a
-//! later pass.
-//!
-//! # Retired names
-//!
-//! `Task` → `Agent` (C48 anchor selection, 2026-04-18). `BashOutput` /
-//! `KillBash` → internal helpers under `bash::` (no longer advertised;
-//! background shell control now rides `Bash` via the captured
-//! `run_in_background` property).
 
-// One folder per tool at the root — no core/api split. WebSearch
-// carries the per-provider backend pattern because its behavior
-// changes with the active provider (claude-code → Google CSE, codex →
-// native OpenAI web_search, gemini → grounded search); every other
-// tool is provider-agnostic with a single implementation.
+
 pub mod agent;
+pub mod ask_user_question;
 pub mod bash;
-pub mod deferred;
+pub mod cron;
 pub mod edit;
 pub mod glob;
 pub mod grep;
 pub mod notebook;
+pub mod plan_mode;
 pub mod read;
 pub mod schemas;
 pub mod skill;
@@ -46,6 +16,7 @@ pub mod task;
 pub mod tool_search;
 pub mod web_fetch;
 pub mod web_search;
+pub mod worktree;
 pub mod write;
 
 pub use schemas::{openai_tools, schema_for, tool_schemas, ToolSchema};
@@ -54,23 +25,11 @@ pub use read::set as read_set;
 use serde_json::Value;
 
 thread_local! {
-    /// Tool-call id of the in-flight dispatch, scoped to the current
-    /// thread. Set by [`with_tool_call_id`] around each dispatch so
-    /// tools that need to associate side-effects with the originating
-    /// `tool_use` block (today: `Agent`'s background route, which
-    /// stores it on the `TaskRecord` so the next-turn
-    /// `<task-notification>` XML can populate `<tool-use-id>`) can
-    /// read it without changing the public sync `dispatch`
-    /// signature. Empty `None` outside a dispatch — callers MUST
-    /// treat it as an optional hint, not a contract.
+
     static CURRENT_TOOL_CALL_ID: std::cell::RefCell<Option<String>> =
         const { std::cell::RefCell::new(None) };
 }
 
-/// Run `f` with `tool_call_id` made available to the dispatch via
-/// [`current_tool_call_id`]. The previous value is restored on
-/// return so re-entrant dispatches (e.g. a subagent inner loop
-/// calling tools) keep their own scope.
 pub fn with_tool_call_id<R>(tool_call_id: String, f: impl FnOnce() -> R) -> R {
     CURRENT_TOOL_CALL_ID.with(|cell| {
         let prev = cell.borrow_mut().replace(tool_call_id);
@@ -80,33 +39,17 @@ pub fn with_tool_call_id<R>(tool_call_id: String, f: impl FnOnce() -> R) -> R {
     })
 }
 
-/// Read the in-flight tool-call id set by [`with_tool_call_id`].
-/// `None` when called outside a dispatch scope (or when the
-/// installer didn't wire the helper — degraded but non-fatal).
 pub fn current_tool_call_id() -> Option<String> {
     CURRENT_TOOL_CALL_ID.with(|cell| cell.borrow().clone())
 }
 
-/// Effective working directory for a tool dispatch — honors the
-/// session worktree stack when `EnterWorktree` has been pushed,
-/// otherwise falls back to the process `current_dir` (and finally
-/// `"."` if even that fails).
-///
-/// Used by the filesystem-facing tools (Bash, Glob, Grep,
-/// NotebookEdit). Before Slice D only Bash consulted the stack —
-/// EnterWorktree silently left the other three rooted at the
-/// process cwd, so a model running `EnterWorktree /tmp/foo` followed
-/// by `Glob "**/*.rs"` would still scan the original cwd.
 pub fn effective_cwd() -> std::path::PathBuf {
-    crate::tools::deferred::worktree::effective_cwd()
+    crate::tools::worktree::effective_cwd()
         .unwrap_or_else(|| {
             std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
         })
 }
 
-/// Resolve a relative filesystem path against [`effective_cwd`].
-/// Absolute paths are returned verbatim. Matches the semantics
-/// Bash already gets from `Command::current_dir`.
 pub fn resolve_against_cwd(path: &std::path::Path) -> std::path::PathBuf {
     if path.is_absolute() {
         path.to_path_buf()
@@ -115,8 +58,6 @@ pub fn resolve_against_cwd(path: &std::path::Path) -> std::path::PathBuf {
     }
 }
 
-/// Tool execution error surface. Serializes to the ToolResult the
-/// agent loop feeds back to the model.
 #[derive(Debug, thiserror::Error)]
 pub enum ToolError {
     #[error("invalid arguments: {0}")]
@@ -133,17 +74,6 @@ pub enum ToolError {
     Unsupported(String),
 }
 
-/// Gated dispatch — threads the active `PermissionMode` + `Settings`
-/// through [`crate::permissions::resolve`] before delegating to
-/// [`dispatch`]. Mirrors upstream's `checkPermissionsAndCallTool` at
-/// `services/tools/toolExecution.ts:608`.
-///
-/// - [`Decision::Allow`] → delegate.
-/// - [`Decision::Deny`] → `PermissionDenied(rule)`.
-/// - [`Decision::Ask`] → `PermissionDenied` with a "modal pending" note.
-///   The interactive prompt modal is scoped for spec 007; until it
-///   lands the Ask branch degrades to a clean refusal so the model
-///   sees a structured error instead of a hang.
 pub fn dispatch_gated(
     tool_name: &str,
     args: &Value,
@@ -166,10 +96,6 @@ pub fn dispatch_gated(
     }
 }
 
-/// Project `args` into the string shape the permission matcher
-/// compares against. Bash rules target the raw `command` (so
-/// `Bash(ls:*)` matches `ls -la`); every other tool matcher uses the
-/// stringified JSON. Mirrors upstream's `getToolInputForMatcher`.
 pub fn matcher_input_for(tool_name: &str, args: &Value) -> String {
     if tool_name == "Bash" {
         if let Some(cmd) = args.get("command").and_then(Value::as_str) {
@@ -179,8 +105,6 @@ pub fn matcher_input_for(tool_name: &str, args: &Value) -> String {
     serde_json::to_string(args).unwrap_or_default()
 }
 
-/// Dispatch a tool call by name. The agent loop calls this after the
-/// model emits a `tool_use` block.
 pub fn dispatch(tool_name: &str, args: &Value) -> Result<Value, ToolError> {
     match tool_name {
         "Agent" => agent::agent(args),
@@ -192,44 +116,34 @@ pub fn dispatch(tool_name: &str, args: &Value) -> Result<Value, ToolError> {
         "Skill" => skill::skill(args),
         "ToolSearch" => tool_search::tool_search(args),
         "Write" => write::write(args),
-        // Deferred tools (018 first wave). Not wire-advertised; loaded on
-        // demand via ToolSearch. Dispatch works whether or not the model
-        // went through the resolve step.
+
         "TaskCreate" => task::task_create(args),
         "TaskList" => task::task_list(args),
         "TaskGet" => task::task_get(args),
         "TaskUpdate" => task::task_update(args),
         "NotebookEdit" => notebook::notebook_edit(args),
-        // WebFetch is a plain HTTP client wrapper (reqwest GET +
-        // HTML→markdown) — same impl across providers.
+
         "WebFetch" => web_fetch::web_fetch(args),
-        // WebSearch maps to provider-native search when the active
-        // provider exposes one; today the claude-code backend does
-        // Google CSE locally. TODO: thread session.provider_id through
-        // `dispatch` so the router doesn't hardcode ClaudeCode.
+
         "WebSearch" => {
             web_search::dispatch(args, crate::config::providers::ProviderId::ClaudeCode)
         }
-        // Wave 3 deferred tools (2026-04-19): plan-mode toggle,
-        // worktree cwd stack, task lifecycle extras, cron + wakeup.
-        "EnterPlanMode" => deferred::enter_plan_mode(args),
-        "ExitPlanMode" => deferred::exit_plan_mode(args),
-        "EnterWorktree" => deferred::enter_worktree(args),
-        "ExitWorktree" => deferred::exit_worktree(args),
-        "TaskOutput" => deferred::task_output(args),
-        "TaskStop" => deferred::task_stop(args),
-        "CronCreate" => deferred::cron_create(args),
-        "CronDelete" => deferred::cron_delete(args),
-        "CronList" => deferred::cron_list(args),
-        "ScheduleWakeup" => deferred::schedule_wakeup(args),
-        // AskUserQuestion routes through the async dispatch (see
-        // `tui::mod.rs::dispatch_with_prompt`). Calling the sync
-        // dispatch is a programmer error but surface a clean
-        // Unsupported so tests / stray calls report rather than panic.
+
+        "EnterPlanMode" => plan_mode::enter_plan_mode(args),
+        "ExitPlanMode" => plan_mode::exit_plan_mode(args),
+        "EnterWorktree" => worktree::enter_worktree(args),
+        "ExitWorktree" => worktree::exit_worktree(args),
+        "TaskOutput" => task::task_output(args),
+        "TaskStop" => task::task_stop(args),
+        "CronCreate" => cron::cron_create(args),
+        "CronDelete" => cron::cron_delete(args),
+        "CronList" => cron::cron_list(args),
+        "ScheduleWakeup" => cron::schedule_wakeup(args),
+
         "AskUserQuestion" => Err(ToolError::Unsupported(
             "AskUserQuestion requires the async agent dispatch path".into(),
         )),
-        // Affordance hints for models that hallucinate retired names.
+
         "Task" => Err(ToolError::Unsupported(
             "tool `Task` is retired; use `Agent` for subagent dispatch (010 anchor selection)"
                 .to_string(),
@@ -303,8 +217,7 @@ mod tests {
 
     #[test]
     fn dispatcher_covers_all_advertised() {
-        // Each advertised name must NOT return Unsupported.
-        // Tools may error on missing args or other validation — that's fine.
+
         for name in [
             "Agent",
             "Bash",
@@ -321,16 +234,14 @@ mod tests {
                 Err(ToolError::Unsupported(_)) => {
                     panic!("advertised tool `{name}` returned Unsupported")
                 }
-                _ => {} // Any other result (Ok or other Err) is fine.
+                _ => {}
             }
         }
     }
 
     #[test]
     fn dispatcher_covers_deferred_first_wave() {
-        // 018 deferred tools MUST route through to their dispatchers, not
-        // bounce off the default Unsupported arm. Empty args are fine —
-        // per-tool validation handles missing fields.
+
         for name in ["TaskCreate", "TaskList", "TaskGet", "TaskUpdate", "NotebookEdit"] {
             let res = dispatch(name, &json!({}));
             match res {
@@ -344,9 +255,7 @@ mod tests {
 
     #[test]
     fn dispatcher_covers_web_fetch() {
-        // 019 WebFetch deferred tool. Empty args hit InvalidArgs (url
-        // missing) — the invariant is that the arm routes, not that it
-        // succeeds without inputs.
+
         let res = dispatch("WebFetch", &json!({}));
         match res {
             Err(ToolError::Unsupported(_)) => {
@@ -358,8 +267,7 @@ mod tests {
 
     #[test]
     fn dispatcher_covers_web_search() {
-        // 019 WebSearch deferred tool. Empty args hit InvalidArgs (query
-        // missing) — proves the arm routes to `web_search::web_search`.
+
         let res = dispatch("WebSearch", &json!({}));
         match res {
             Err(ToolError::Unsupported(_)) => {
@@ -375,7 +283,7 @@ mod tests {
 
         #[test]
         fn yolo_short_circuits_deny_rules() {
-            // Deny rule present but Yolo outranks everything.
+
             let mut s = Settings::default();
             s.permissions = Some(crate::config::settings::PermissionsConfig {
                 deny: vec![crate::config::settings::PermissionRule {
@@ -385,15 +293,14 @@ mod tests {
                 }],
                 ..Default::default()
             });
-            // Bash with a runnable command — just exercise the gate, not the
-            // dispatcher's output path.
+
             let res = dispatch_gated(
                 "Glob",
                 &json!({"pattern": "*.md"}),
                 &s,
                 PermissionMode::Yolo,
             );
-            // Allow reached — Glob runs and returns Ok (empty or populated).
+
             assert!(res.is_ok(), "Yolo should bypass deny rule, got {res:?}");
         }
 
@@ -417,8 +324,7 @@ mod tests {
         #[test]
         fn plan_mode_allows_read_tools() {
             let s = Settings::default();
-            // Read without args → InvalidArgs, but NOT PermissionDenied —
-            // gate allowed, dispatcher validated.
+
             let res = dispatch_gated("Read", &json!({}), &s, PermissionMode::Plan);
             match res {
                 Err(ToolError::PermissionDenied(_)) => {
@@ -431,9 +337,7 @@ mod tests {
         #[test]
         fn default_mode_asks_without_rule_maps_to_denied() {
             let s = Settings::default();
-            // No rules configured → resolve returns Ask{None} →
-            // dispatch_gated maps to PermissionDenied with the
-            // modal-pending note.
+
             let res = dispatch_gated(
                 "Bash",
                 &json!({"command": "ls"}),
@@ -454,9 +358,7 @@ mod tests {
         #[test]
         fn accept_edits_mode_allows_edit_and_write() {
             let s = Settings::default();
-            // Edit/Write should pass the gate; dispatcher will then hit
-            // InvalidArgs on empty input — that's the expected non-gate
-            // outcome.
+
             for tool in ["Edit", "Write"] {
                 let res = dispatch_gated(tool, &json!({}), &s, PermissionMode::AcceptEdits);
                 match res {

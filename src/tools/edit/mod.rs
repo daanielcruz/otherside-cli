@@ -1,9 +1,4 @@
-//! Edit tool — exact-string replacement inside a previously-Read file.
-//!
-//! The Read-before-Edit gate is non-negotiable (upstream invariant):
-//! the caller must have Read'd the file earlier in the same session.
-//! We enforce via the process-wide [`read_set::global()`]; an
-//! in-process session owns one instance.
+
 
 use std::path::{Path, PathBuf};
 
@@ -12,13 +7,6 @@ use serde_json::{json, Value};
 use crate::tools::read_set;
 use crate::tools::ToolError;
 
-/// Execute an Edit tool call.
-///
-/// Schema:
-/// - `file_path: String` (required, absolute)
-/// - `old_string: String` (required)
-/// - `new_string: String` (required, must differ from `old_string`)
-/// - `replace_all: bool` (optional, default false)
 pub fn edit(args: &Value) -> Result<Value, ToolError> {
     let file_path = args
         .get("file_path")

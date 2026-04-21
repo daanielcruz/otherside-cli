@@ -1,26 +1,5 @@
-//! Provider registry — the four user-selectable providers exposed
-//! in the Config tab's Provider row, each with a canonical default
-//! model alias.
-//!
-//! Spec: openspec 009-settings-interactive-edit §"Provider selector".
-//!
-//! Today this module only exposes the metadata (slug + default
-//! model). Dispatch wiring (translator + fingerprint) lands per
-//! pillar archive — the freeze rule in
-//! `feedback_otherside_autonomous_mode_directive.md` still holds
-//! for the actual request routing code; only the USER-FACING row
-//! is live now.
-//!
-//! Default model table per user directive 2026-04-20:
-//!
-//! | Provider       | Default model                 |
-//! |---------------:|-------------------------------|
-//! | claude-code    | `claude-opus-4-7[1m]`         |
-//! | codex          | `gpt-5.4`                     |
-//! | gemini-cli     | `gemini-3.1-pro-preview`      |
-//! | openai-custom  | `""` (user-supplied)          |
 
-/// User-selectable provider identifier.
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderId {
     ClaudeCode,
@@ -30,9 +9,7 @@ pub enum ProviderId {
 }
 
 impl ProviderId {
-    /// Stable slug used in `settings.json::defaultProvider` + wire-
-    /// side logs. Every OAuth-backed provider carries the `-oauth`
-    /// suffix so the auth flow is visible in the slug itself.
+
     pub fn slug(self) -> &'static str {
         match self {
             ProviderId::ClaudeCode => "anthropic-oauth",
@@ -42,7 +19,6 @@ impl ProviderId {
         }
     }
 
-    /// Human label shown in the Config tab + statusline provider chip.
     pub fn label(self) -> &'static str {
         match self {
             ProviderId::ClaudeCode => "Anthropic OAuth",
@@ -52,16 +28,10 @@ impl ProviderId {
         }
     }
 
-    /// Canonical default model alias for this provider. Delegates to
-    /// `crate::models::defaults::default_model_for` — the catalog is
-    /// the single source of truth for model policy.
     pub fn default_model(self) -> &'static str {
         crate::models::defaults::default_model_for(self)
     }
 
-    /// Parse from a slug. Accepts current `<vendor>-oauth` form and
-    /// historical aliases so settings.json values from older sessions
-    /// round-trip cleanly.
     pub fn from_slug(s: &str) -> Option<Self> {
         match s {
             "anthropic-oauth" | "claude-code" | "anthropic" => Some(ProviderId::ClaudeCode),
@@ -73,7 +43,6 @@ impl ProviderId {
     }
 }
 
-/// Canonical order used by the Provider row's cycle.
 pub const PROVIDER_ORDER: &[ProviderId] = &[
     ProviderId::ClaudeCode,
     ProviderId::Codex,
@@ -81,8 +50,6 @@ pub const PROVIDER_ORDER: &[ProviderId] = &[
     ProviderId::OpenAiCustom,
 ];
 
-/// Advance `current` by `direction` (±1) through `PROVIDER_ORDER`,
-/// wrapping.
 pub fn cycle(current: ProviderId, direction: i32) -> ProviderId {
     let idx = PROVIDER_ORDER
         .iter()

@@ -1,33 +1,4 @@
-//! Codex OAuth — ChatGPT authorization-code flow with PKCE.
-//!
-//! Mirrors the `openai/codex` Rust CLI (`codex-rs/login/src/`). Three
-//! endpoints on `https://auth.openai.com/oauth/`:
-//!
-//! 1. `/oauth/authorize` — browser redirect with PKCE challenge + state
-//! 2. `/oauth/token` — code-exchange (form-encoded, grant=authorization_code)
-//! 3. `/oauth/token` — refresh (JSON body, grant=refresh_token)
-//!
-//! The optional api-key token exchange from upstream
-//! (`grant_type=urn:ietf:params:oauth:grant-type:token-exchange`) is wired
-//! but not invoked by default — we don't need the fallback API key for
-//! ChatGPT-mode dispatch.
-//!
-//! # Callback server
-//!
-//! Upstream listens on `127.0.0.1:1455` with path `/auth/callback`. On
-//! port collision they increment until a free port is found. We follow
-//! the same pattern with a bare `tokio::net::TcpListener` — no `hyper`
-//! dependency needed for the one request we accept.
-//!
-//! # Persistence
-//!
-//! Credentials land in `~/.otherside/credentials.json` under key
-//! `codex`. Shape mirrors the anthropic entry but adds `id_token` and
-//! `account_id` (extracted from the `https://api.openai.com/auth`
-//! JWT claim, `chatgpt_account_id` subfield).
-//!
-//! Upstream spec is captured at
-//! `docs/design/codex-openai-auth-api.md` (outer repo).
+
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
@@ -43,9 +14,6 @@ use crate::error::{Error, Result};
 
 use super::pkce::PkcePair;
 
-/// Upstream `codex_cli_rs` constants. R-20 / R-66: these are the
-/// identifiers codex-cli broadcasts — impersonation requires exact
-/// match.
 pub const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 pub const ISSUER: &str = "https://auth.openai.com";
 pub const DEFAULT_PORT: u16 = 1455;
@@ -53,20 +21,10 @@ pub const CALLBACK_PATH: &str = "/auth/callback";
 pub const SCOPE: &str =
     "openid profile email offline_access api.connectors.read api.connectors.invoke";
 
-/// Proactive-refresh safety margin — refresh when the access token has
-/// less than this long before expiry. Matches the 60s cushion the
-/// anthropic path uses.
 pub const REFRESH_SAFETY_MARGIN: Duration = Duration::from_secs(60);
 
-/// Credentials-file key under `~/.otherside/credentials.json`.
 pub const CREDENTIALS_KEY: &str = "codex";
 
-// =============================================================================
-// Authorize URL + callback parsing
-// =============================================================================
-
-/// Build the `oauth/authorize` URL that opens in the user's browser.
-/// Query params mirror upstream `server.rs :: build_authorize_url`.
 pub fn build_authorize_url(challenge: &str, state: &str, port: u16) -> Url {
     let redirect_uri = format!("http://localhost:{port}{CALLBACK_PATH}");
     let mut url = Url::parse(&format!("{ISSUER}/oauth/authorize")).expect("static url parses");
@@ -84,18 +42,12 @@ pub fn build_authorize_url(challenge: &str, state: &str, port: u16) -> Url {
     url
 }
 
-/// Generate a 32-byte URL-safe base64 state string — same shape as
-/// upstream's random state.
 pub fn generate_state() -> String {
     let mut bytes = [0u8; 32];
     use rand::RngCore;
     rand::rng().fill_bytes(&mut bytes);
     URL_SAFE_NO_PAD.encode(bytes)
 }
-
-// =============================================================================
-// Token exchange + refresh
-// =============================================================================
 
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct ExchangedTokens {
@@ -114,7 +66,6 @@ pub struct RefreshedTokens {
     pub refresh_token: Option<String>,
 }
 
-/// POST `oauth/token` with `grant_type=authorization_code`. Form body.
 pub async fn exchange_code_for_tokens(
     code: &str,
     verifier: &str,
@@ -154,8 +105,6 @@ pub async fn exchange_code_for_tokens(
         .map_err(|e| Error::Other(format!("codex token parse: {e} — body {body}")))
 }
 
-/// POST `oauth/token` with `grant_type=refresh_token`. JSON body per
-/// upstream `manager.rs :: request_chatgpt_token_refresh`.
 pub async fn refresh_tokens(refresh_token: &str) -> Result<RefreshedTokens> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
@@ -186,8 +135,6 @@ pub async fn refresh_tokens(refresh_token: &str) -> Result<RefreshedTokens> {
         .map_err(|e| Error::Other(format!("codex refresh parse: {e} — body {body}")))
 }
 
-/// Codex-native UA string. Mirrors upstream `default_client.rs :: get_codex_user_agent`
-/// at a high level — versioned to our crate, platform appended.
 fn codex_user_agent() -> String {
     format!(
         "codex_cli_rs/{} ({} {}; {})",
@@ -198,13 +145,6 @@ fn codex_user_agent() -> String {
     )
 }
 
-// =============================================================================
-// JWT helpers
-// =============================================================================
-
-/// Decode the `exp` claim out of a JWT without verifying the signature —
-/// we trust the upstream issuer over the wire; local expiry is used
-/// only to drive proactive refresh.
 pub fn parse_jwt_exp(jwt: &str) -> Option<u64> {
     let payload_b64 = jwt.split('.').nth(1)?;
     let payload_bytes = URL_SAFE_NO_PAD.decode(payload_b64).ok()?;
@@ -215,8 +155,6 @@ pub fn parse_jwt_exp(jwt: &str) -> Option<u64> {
         .or_else(|| payload.get("exp").and_then(Value::as_f64).map(|f| f as u64))
 }
 
-/// Extract the ChatGPT account id from a JWT's
-/// `https://api.openai.com/auth.chatgpt_account_id` claim.
 pub fn parse_jwt_account_id(jwt: &str) -> Option<String> {
     let payload_b64 = jwt.split('.').nth(1)?;
     let payload_bytes = URL_SAFE_NO_PAD.decode(payload_b64).ok()?;
@@ -228,26 +166,18 @@ pub fn parse_jwt_account_id(jwt: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-// =============================================================================
-// Credentials cache
-// =============================================================================
-
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CachedCreds {
     pub access_token: String,
     pub refresh_token: String,
     pub id_token: String,
-    /// ChatGPT workspace account UUID, extracted from the id_token
-    /// JWT claim. Sent as `ChatGPT-Account-ID` header on every request.
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account_id: Option<String>,
-    /// Epoch milliseconds when the access token expires (derived from
-    /// the JWT `exp` claim).
+
     pub expires_at: u64,
-    /// Granted scopes, space-joined as returned by the issuer (the
-    /// refresh response doesn't echo scopes, so we cache the login-
-    /// time set).
+
     #[serde(default)]
     pub scopes: Vec<String>,
 }
@@ -262,8 +192,6 @@ impl CachedCreds {
         self.expires_at.saturating_sub(margin_ms) <= now_ms
     }
 
-    /// Assemble from a fresh code-exchange response. Stamps
-    /// `expires_at` from the access-token JWT `exp` claim.
     pub fn from_exchange(resp: &ExchangedTokens) -> Self {
         let exp_s = parse_jwt_exp(&resp.access_token).unwrap_or(0);
         let expires_at = exp_s.saturating_mul(1000);
@@ -278,8 +206,6 @@ impl CachedCreds {
         }
     }
 
-    /// Merge a refresh response into `self`, replacing each field the
-    /// response carried and leaving the others alone.
     pub fn apply_refresh(&mut self, refreshed: &RefreshedTokens) {
         if let Some(at) = refreshed.access_token.as_ref() {
             self.access_token = at.clone();
@@ -364,12 +290,6 @@ pub fn clear_credentials() -> Result<()> {
     Ok(())
 }
 
-// =============================================================================
-// Interactive login — spin up local callback server
-// =============================================================================
-
-/// Listen on the first free port starting at [`DEFAULT_PORT`]. Mirrors
-/// upstream's port-increment-on-collision behavior.
 pub fn bind_callback_port() -> Result<(TcpListener, u16)> {
     for port in DEFAULT_PORT..DEFAULT_PORT + 32 {
         if let Ok(listener) = TcpListener::bind(("127.0.0.1", port)) {
@@ -381,9 +301,6 @@ pub fn bind_callback_port() -> Result<(TcpListener, u16)> {
     ))
 }
 
-/// Accept one HTTP request on `listener` and parse the `code` + `state`
-/// query params from the request line. Serves a short "you can close
-/// this tab" response before returning.
 pub fn wait_for_callback(listener: &TcpListener) -> Result<(String, String)> {
     listener
         .set_nonblocking(false)
@@ -399,7 +316,7 @@ pub fn wait_for_callback(listener: &TcpListener) -> Result<(String, String)> {
             first_line = line;
         }
     }
-    // First line: `GET /auth/callback?code=...&state=... HTTP/1.1`
+
     let path = first_line
         .split_whitespace()
         .nth(1)
@@ -428,9 +345,6 @@ pub fn wait_for_callback(listener: &TcpListener) -> Result<(String, String)> {
     }
 }
 
-/// End-to-end login. Prints the authorize URL to stdout, opens the
-/// browser, waits for the callback, exchanges the code, persists the
-/// result.
 pub async fn login_interactive() -> Result<CachedCreds> {
     let (listener, port) = bind_callback_port()?;
     let pkce = PkcePair::generate();
@@ -455,8 +369,6 @@ pub async fn login_interactive() -> Result<CachedCreds> {
     Ok(creds)
 }
 
-/// Return a fresh `Authorization: Bearer …` header value, refreshing
-/// proactively when the cached token is within the safety margin.
 pub async fn authorization_header() -> Result<String> {
     let mut creds = load_credentials()?
         .ok_or_else(|| Error::Auth("not logged in — run `otherside login --provider codex`".into()))?;
@@ -468,9 +380,6 @@ pub async fn authorization_header() -> Result<String> {
     Ok(format!("Bearer {}", creds.access_token))
 }
 
-/// Return the cached `CachedCreds` with the access token refreshed
-/// if it's close to expiry. Convenience for provider callers that
-/// need both the token and the `account_id` / `id_token` fields.
 pub async fn current_credentials() -> Result<CachedCreds> {
     let mut creds = load_credentials()?
         .ok_or_else(|| Error::Auth("not logged in — run `otherside login --provider codex`".into()))?;
@@ -508,7 +417,7 @@ mod tests {
 
     #[test]
     fn parse_jwt_exp_reads_exp_claim() {
-        // Hand-rolled JWT: header.{"exp":1745000000}.sig
+
         let header = URL_SAFE_NO_PAD.encode(b"{\"alg\":\"none\"}");
         let payload = URL_SAFE_NO_PAD.encode(b"{\"exp\":1745000000}");
         let jwt = format!("{header}.{payload}.sig");

@@ -1,6 +1,4 @@
-//! TodoWrite list rendering. Renders a bulleted checklist with status
-//! glyphs inside the streaming area when the assistant emits a
-//! TodoWrite ToolResult.
+
 
 use ratatui::{
     layout::Rect,
@@ -13,8 +11,6 @@ use serde::{Deserialize, Serialize};
 
 use super::render::theme;
 
-/// Todo status values. Matches upstream shape so TodoWrite ToolResults
-/// round-trip without translation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TodoStatus {
@@ -32,9 +28,7 @@ pub struct TodoItem {
 }
 
 impl TodoStatus {
-    /// Glyph per status. `◻` pending, `◼` in-progress, `✔` completed —
-    /// cleaner strokes than the historical `☐/◐/☒` triad and easier to
-    /// scan across the streaming area.
+
     pub fn glyph(&self) -> char {
         match self {
             TodoStatus::Pending => '◻',
@@ -44,7 +38,6 @@ impl TodoStatus {
     }
 }
 
-/// Summarize the list as `"N tasks (X done, Y in progress, Z open)"`.
 pub fn summary_line(items: &[TodoItem]) -> String {
     let mut done = 0usize;
     let mut in_progress = 0usize;
@@ -62,10 +55,6 @@ pub fn summary_line(items: &[TodoItem]) -> String {
     )
 }
 
-/// Render a todo list as owned Lines for composition into the
-/// streaming area. Leading row is a summary header; subsequent rows
-/// are one per item. Returning Lines (not painting a Frame directly)
-/// lets the caller intersperse todos with assistant text.
 pub fn render_lines(items: &[TodoItem]) -> Vec<Line<'static>> {
     let mut out: Vec<Line<'static>> = Vec::with_capacity(items.len() + 1);
     out.push(Line::from(Span::styled(
@@ -99,8 +88,6 @@ pub fn render_lines(items: &[TodoItem]) -> Vec<Line<'static>> {
     out
 }
 
-/// Convenience: paint lines into `area` using Paragraph. Caller sizes
-/// the Rect to `items.len()`.
 pub fn draw(f: &mut Frame<'_>, area: Rect, items: &[TodoItem]) {
     let lines = render_lines(items);
     f.render_widget(Paragraph::new(lines), area);
@@ -178,7 +165,7 @@ mod tests {
             active_form: Some("live label".into()),
         };
         let lines = render_lines(&[item]);
-        // lines[0] is the summary header; item content starts at index 1.
+
         let rendered: String = lines[1]
             .spans
             .iter()

@@ -1,10 +1,7 @@
-//! Output truncation — cap combined stdout+stderr at `OUTPUT_CAP`
-//! chars with a head/tail split so the model sees both the start and
-//! the tail end of the process output.
+
 
 use super::OUTPUT_CAP;
 
-/// Truncation result.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TruncatedOutput {
     pub output: String,
@@ -12,14 +9,10 @@ pub struct TruncatedOutput {
     pub truncated_chars: usize,
 }
 
-/// Apply the cap. Uses char boundaries (not bytes) so UTF-8 glyphs
-/// never get split mid-codepoint.
 pub fn apply(s: &str) -> TruncatedOutput {
     apply_with_cap(s, OUTPUT_CAP)
 }
 
-/// Parameterized variant so tests can exercise boundary behavior
-/// without allocating 30 000-char fixtures.
 pub fn apply_with_cap(s: &str, cap: usize) -> TruncatedOutput {
     let total_chars = s.chars().count();
     if total_chars <= cap {
@@ -68,20 +61,20 @@ mod tests {
         assert!(t.was_truncated);
         assert_eq!(t.truncated_chars, 100);
         assert!(t.output.contains("truncated 100 chars"));
-        // First chars preserved
+
         assert!(t.output.starts_with('a'));
-        // Tail preserved — last original char is (200 - 1) % 26 → 'v'
+
         let last = s.chars().last().unwrap();
         assert!(t.output.ends_with(last));
     }
 
     #[test]
     fn utf8_boundaries_respected() {
-        // A hundred "日" glyphs (3 bytes each) ≈ 300 bytes; char count 100.
+
         let s: String = (0..100).map(|_| '日').collect();
         let t = apply_with_cap(&s, 40);
         assert!(t.was_truncated);
-        // Must parse as valid UTF-8 — split_at_char logic would panic on bytes.
+
         assert!(t.output.chars().count() <= 40 + t.output.len() / 3);
     }
 }

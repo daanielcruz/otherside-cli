@@ -1,8 +1,4 @@
-//! Write tool — create or overwrite a file on the local filesystem.
-//!
-//! Unlike Edit, Write does NOT require a prior Read — it's a
-//! create-or-replace operation. On existing files we preserve the
-//! existing mode; new files land at 0644 on unix.
+
 
 use std::path::{Path, PathBuf};
 
@@ -10,11 +6,6 @@ use serde_json::{json, Value};
 
 use crate::tools::ToolError;
 
-/// Execute a Write tool call.
-///
-/// Schema:
-/// - `file_path: String` (required, absolute)
-/// - `content: String` (required)
 pub fn write(args: &Value) -> Result<Value, ToolError> {
     let file_path = args
         .get("file_path")
@@ -39,10 +30,6 @@ pub fn write(args: &Value) -> Result<Value, ToolError> {
     let existed = path.exists();
     write_with_mode(&path, content.as_bytes(), existed)?;
 
-    // Upstream `WriteTool` render prefers line count (`numLines`) over
-    // raw bytes. Count lines the same way `wc -l` does: each `\n`
-    // separator increments the count, and a trailing newline-less
-    // segment contributes the final line. Empty content → 0 lines.
     let num_lines = if content.is_empty() {
         0
     } else {
@@ -58,19 +45,11 @@ pub fn write(args: &Value) -> Result<Value, ToolError> {
     }))
 }
 
-/// Atomic write: materialize bytes in a sibling temp file, fsync it,
-/// then `rename()` over the final path. rename(2) is atomic on POSIX
-/// and NTFS, so readers never see a half-written file. If anything
-/// goes wrong mid-write the temp is removed and the original path
-/// (if it existed) stays untouched. Preserves the prior mode on
-/// existing files; new files inherit 0o644.
 fn write_with_mode(path: &Path, bytes: &[u8], existed: bool) -> std::io::Result<()> {
     use std::io::Write;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
-    // Stage path: <target>.otherside.<pid>.<nanos>.tmp. Sibling-scoped
-    // so it lands on the same filesystem (rename across fs fails).
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let file_name = path
         .file_name()
@@ -86,9 +65,6 @@ fn write_with_mode(path: &Path, bytes: &[u8], existed: bool) -> std::io::Result<
     );
     let stage_path = parent.join(&stage_name);
 
-    // Drop any leftover stage file from a prior crash — harmless if
-    // missing. Ignore the error; the subsequent create will fail
-    // with a clearer message.
     let _ = std::fs::remove_file(&stage_path);
 
     let _prior_mode: Option<u32> = {
@@ -107,8 +83,6 @@ fn write_with_mode(path: &Path, bytes: &[u8], existed: bool) -> std::io::Result<
         }
     };
 
-    // Write + fsync before rename. fsync ensures the bytes reach disk
-    // before the directory entry flips.
     let cleanup = || {
         let _ = std::fs::remove_file(&stage_path);
     };
@@ -210,9 +184,7 @@ mod tests {
 
     #[test]
     fn atomic_write_leaves_no_stage_file() {
-        // The stage file uses a deterministic template; after a
-        // successful write no `.otherside.*.tmp` sibling should
-        // remain.
+
         let path = unique_path();
         let args = json!({
             "file_path": path.to_string_lossy(),
@@ -235,16 +207,10 @@ mod tests {
 
     #[test]
     fn atomic_write_preserves_original_on_stage_failure() {
-        // Force the stage write to fail by pointing at a parent that
-        // doesn't exist AFTER we've confirmed the existing file is
-        // present. We construct the target as a file inside a
-        // deleted directory to trigger the error mid-flight.
-        // Tests here focus on the happy-path atomicity; the failure
-        // path is covered implicitly by the rename(2) contract —
-        // if rename fails, the stage file never replaces the target.
+
         let path = unique_path();
         std::fs::write(&path, b"original").unwrap();
-        // Successful write should replace content atomically.
+
         let args = json!({
             "file_path": path.to_string_lossy(),
             "content": "new",

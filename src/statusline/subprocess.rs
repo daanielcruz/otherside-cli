@@ -1,29 +1,4 @@
-//! Subprocess mode: pipe the statusline payload as JSON on stdin to
-//! a user-configured shell command, read the first line of stdout.
-//!
-//! # Timeout + runtime
-//!
-//! C50 initially picked `tokio::time::timeout` wrapping
-//! `tokio::process::Command`. On implementation, a simpler
-//! `std::process::Command` + `Child::try_wait` poll loop is enough —
-//! zero extra deps, no runtime nesting, render path can call from
-//! any context (TUI event loop OR serve request handler). The
-//! semantics are the same: bounded wall-clock, SIGKILL on
-//! expiration. Updated decision recorded inline; the architectural
-//! outcome (no `wait-timeout` crate) holds.
-//!
-//! # Working directory
-//!
-//! The child inherits the parent's CWD (matches the upstream
-//! contract so `jq` pipelines that rely on `$PWD` see the right dir).
-//! We do NOT fall back to `workspace.project_dir`.
-//!
-//! # Stdin / stdout
-//!
-//! Payload serialized via `serde_json::to_vec` with `preserve_order`
-//! (already enabled repo-wide per R-56 / C49). Stdout capped at
-//! `MAX_STDOUT_BYTES` to bound memory. Only the first non-empty line
-//! is returned.
+
 
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
@@ -32,25 +7,16 @@ use std::time::{Duration, Instant};
 
 use super::types::{StatuslineCtx, StatuslineError};
 
-/// Hard cap on subprocess runtime before SIGKILL.
 const DEFAULT_TIMEOUT: Duration = Duration::from_millis(1500);
 
-/// Max bytes we read from stdout. 4 KB is plenty for a one-line
-/// status; anything longer gets truncated + the first line returned.
 const MAX_STDOUT_BYTES: usize = 4096;
 
-/// Poll interval for `try_wait`. Low enough that a 50ms command feels
-/// instantaneous, high enough to avoid pegging a core.
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 
-/// Run `sh -c <command>` with the payload on stdin, return the first
-/// non-empty line of stdout. Times out at `DEFAULT_TIMEOUT`.
 pub fn execute(command: &str, ctx: &StatuslineCtx) -> Result<String, StatuslineError> {
     execute_with_timeout(command, ctx, DEFAULT_TIMEOUT)
 }
 
-/// Testable variant with explicit timeout — unit tests use short
-/// timeouts to exercise the killed-child path.
 pub fn execute_with_timeout(
     command: &str,
     ctx: &StatuslineCtx,
@@ -68,11 +34,9 @@ pub fn execute_with_timeout(
         .map_err(StatuslineError::SpawnFailed)?;
 
     if let Some(mut stdin) = child.stdin.take() {
-        // Best-effort write + close. If the command doesn't read stdin,
-        // write_all may EPIPE — that's fine, the child already decided
-        // to ignore our payload.
+
         let _ = stdin.write_all(&payload);
-        // Drop stdin here to send EOF to the child.
+
     }
 
     let start = Instant::now();
@@ -202,15 +166,13 @@ mod tests {
         let out = execute(&script, &ctx).unwrap();
         assert_eq!(out, "ok");
         let captured = std::fs::read_to_string(&tap).unwrap();
-        // The JSON payload landed on stdin and got tee'd to the tempfile.
+
         let parsed: serde_json::Value = serde_json::from_str(&captured).unwrap();
         assert_eq!(parsed["session_id"].as_str(), Some("test-session"));
         std::fs::remove_file(&tap).ok();
     }
 }
 
-// A tiny shell-quoter for the stdin-capture test above.
-// Keeps the crate free of a shell-escaping dep for a single test usage.
 #[cfg(test)]
 mod shell_quote {
     pub fn quote(s: &str) -> String {

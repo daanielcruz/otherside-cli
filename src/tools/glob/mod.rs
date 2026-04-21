@@ -1,4 +1,4 @@
-//! Glob tool — fast file-pattern matching, sorted by mtime descending.
+
 
 use std::path::PathBuf;
 use std::time::SystemTime;
@@ -23,7 +23,6 @@ pub fn glob(args: &Value) -> Result<Value, ToolError> {
 
     let started = std::time::Instant::now();
 
-    // Compose the full glob expression: `<root>/<pattern>`.
     let joined = search_root.join(pattern);
     let full_pattern = joined
         .to_str()

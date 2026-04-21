@@ -1,20 +1,4 @@
-//! Codex (ChatGPT OAuth) provider — POST
-//! `https://chatgpt.com/backend-api/codex/responses`.
-//!
-//! Wire-protocol notes:
-//! - Request body mirrors `ResponsesApiRequest` (codex-rs).
-//!   Built via [`crate::translator::codex::request::build_responses_body`].
-//! - SSE stream is decoded via [`crate::translator::sse::SseBuffer`] +
-//!   [`crate::translator::codex::response::State`] which translates
-//!   `response.*` events into OpenAI `OpenAiChunk`s.
-//! - Headers per `docs/design/codex-openai-auth-api.md §FINGERPRINT`:
-//!   `Authorization: Bearer …`, `ChatGPT-Account-ID`, `originator`,
-//!   `session_id`, `x-codex-installation-id`, `x-codex-window-id`,
-//!   `User-Agent: codex_cli_rs/…`. No Stainless headers.
-//!
-//! No reactive refresh on 401 — matches upstream's terminal-error
-//! stance; the cached `expires_at` drives proactive refresh in
-//! [`crate::auth::codex::authorization_header`].
+
 
 use std::pin::Pin;
 use std::sync::Arc;
@@ -73,9 +57,6 @@ impl Provider for CodexProvider {
             let creds = auth::current_credentials().await?;
             let bearer = format!("Bearer {}", creds.access_token);
 
-            // Codex dispatch is frozen per the provider-freeze directive
-            // (mission: 100% claude-code). This path is dormant; when
-            // the freeze lifts, wire the Codex-native tool schemas here.
             let body = build_responses_body(&req, Vec::new(), thinking.as_ref());
             let body_bytes = serde_json::to_vec(&body)
                 .map_err(|e| Error::Other(format!("codex body serialize: {e}")))?;
@@ -139,8 +120,6 @@ impl Provider for CodexProvider {
     }
 }
 
-/// Streaming adapter — drives SseBuffer + response::State to
-/// transform the raw bytes into OpenAiChunk events.
 struct CodexChunkStream {
     bytes: BoxStream<'static, reqwest::Result<Bytes>>,
     buffer: SseBuffer,
@@ -177,9 +156,7 @@ impl Stream for CodexChunkStream {
                 Some(Ok(bytes)) => {
                     self.buffer.push(&bytes);
                     while let Some(event) = self.buffer.pop() {
-                        // Codex SSE frames always carry `event: <type>`
-                        // alongside `data: <json>`. Unknown types are
-                        // silently ignored by the translator.
+
                         let payload: serde_json::Value =
                             match serde_json::from_str(&event.data) {
                                 Ok(v) => v,

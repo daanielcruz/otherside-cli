@@ -1,24 +1,16 @@
-//! JSONL record vocabulary for a session transcript.
-//!
-//! Serde-tagged on `type` → lowercase-snake-case variant name. Every
-//! record carries a `ts` ISO-8601 timestamp with millisecond
-//! precision. Tool names in `ToolCall` are training anchors (R-20) —
-//! serialize verbatim.
+
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// ISO-8601 timestamp string (RFC 3339 with millisecond precision).
 pub type Timestamp = String;
 
-/// Current UTC as an ISO-8601 timestamp with milliseconds.
 pub fn now_iso() -> Timestamp {
     chrono::Utc::now()
         .format("%Y-%m-%dT%H:%M:%S%.3fZ")
         .to_string()
 }
 
-/// One line in the transcript.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Record {
@@ -58,8 +50,7 @@ pub enum Record {
 }
 
 impl Record {
-    /// Serialize into one JSONL line (no trailing newline — the
-    /// writer appends that).
+
     pub fn to_line(&self) -> String {
         serde_json::to_string(self).unwrap_or_default()
     }
@@ -83,7 +74,7 @@ mod tests {
 
     #[test]
     fn tool_call_preserves_name_anchor() {
-        // `Bash` is a training anchor — must survive serialize/parse verbatim.
+
         let rec = Record::ToolCall {
             ts: "2026-04-18T12:00:00.000Z".into(),
             tool_name: "Bash".into(),
@@ -122,7 +113,7 @@ mod tests {
     fn now_iso_has_expected_shape() {
         let ts = now_iso();
         assert!(ts.ends_with('Z'));
-        // YYYY-MM-DDTHH:MM:SS.mmmZ = 24 chars.
+
         assert_eq!(ts.len(), 24);
     }
 }

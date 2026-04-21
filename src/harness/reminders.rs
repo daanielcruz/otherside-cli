@@ -1,32 +1,15 @@
-//! Build the three `<system-reminder>`-wrapped text blocks prepended to
-//! the first user turn.
-//!
-//! Each reminder is stored byte-verbatim (including wrapper + any trailing
-//! whitespace) in `fingerprint_corpus/harness/system-reminders/`. Only
-//! `user-context.tmpl` has placeholders — `{{email}}` and
-//! `{{current_date}}` — substituted per-session.
-//!
-//! Order on the wire (verified against capture):
-//! 0. deferred-tools notice
-//! 1. skills catalog
-//! 2. user-context (email + date)
+
 
 use serde_json::{json, Value};
 
 use super::{REMINDER_DEFERRED_TOOLS, REMINDER_SKILLS, REMINDER_USER_CONTEXT_TMPL};
 
-/// Substitute `{{email}}` and `{{current_date}}` in the user-context
-/// template. Template placeholders are literal strings — no regex, no
-/// escaping required.
 pub fn render_user_context(email: &str, current_date: &str) -> String {
     REMINDER_USER_CONTEXT_TMPL
         .replace("{{email}}", email)
         .replace("{{current_date}}", current_date)
 }
 
-/// Produce the three preamble content blocks (text type) for
-/// `messages[0].content[0..3]`. The 4th content block — the user's
-/// literal prompt — is appended by the translator at a higher layer.
 pub fn build_preamble_blocks(email: &str, current_date: &str) -> [Value; 3] {
     [
         json!({ "type": "text", "text": REMINDER_DEFERRED_TOOLS }),
@@ -68,7 +51,7 @@ mod tests {
 
     #[test]
     fn skills_trailing_newline_preserved() {
-        // Skills reminder in capture ends with "</system-reminder>\n".
+
         let blocks = build_preamble_blocks("e", "d");
         let text = blocks[1]["text"].as_str().unwrap();
         assert!(text.ends_with("</system-reminder>\n"));
@@ -76,7 +59,7 @@ mod tests {
 
     #[test]
     fn user_context_double_trailing_newline_preserved() {
-        // User-context reminder in capture ends with "</system-reminder>\n\n".
+
         let blocks = build_preamble_blocks("e", "d");
         let text = blocks[2]["text"].as_str().unwrap();
         assert!(text.ends_with("</system-reminder>\n\n"));

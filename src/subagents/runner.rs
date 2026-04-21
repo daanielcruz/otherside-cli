@@ -1,29 +1,4 @@
-//! Real subagent runner — spawns a fresh inner `AgentLoop` against the
-//! subagent's system prompt + tool allowlist.
-//!
-//! Replaces 005's `ProductiveStubRunner` which returned a marker-tagged
-//! no-op. Flow:
-//!
-//! 1. Seed history with the subagent's `system_prompt` + the caller's
-//!    `prompt` (as the initial user turn).
-//! 2. Resolve the effective model: `AgentInvocation.model` wins over
-//!    `AgentDefinition.model`, falling back to the runner's default.
-//! 3. Build a [`GatedToolDispatcher`] that enforces
-//!    `AgentDefinition.tools` on every nested tool call.
-//! 4. Bridge the sync [`SubagentRunner::run`] to the async
-//!    `AgentLoop::run` via `tokio::task::block_in_place` +
-//!    `Handle::current().block_on` — R-107 single authorized pattern.
-//! 5. Shape the result into the upstream `agentToolResultSchema`
-//!    (`tui::tool_render::agent_preview` reads it verbatim).
-//!
-//! Zone: identity (R-103). Neutral type name + no upstream product
-//! strings in copy.
-//!
-//! # Thread-safety
-//!
-//! Runner is `Send + Sync`. The stored provider is `Arc<dyn Provider>`.
-//! The inner loop runs on the current tokio runtime via block-on; no
-//! fresh runtime is spawned.
+
 
 use std::sync::Arc;
 
@@ -37,11 +12,6 @@ use crate::provider::Provider;
 use super::frontmatter::ToolsField;
 use super::{registry, AgentInvocation, RunnerError, SubagentRunner};
 
-/// Tool dispatcher that gates every call against an allowlist before
-/// delegating to the normal [`crate::tools::dispatch`]. Denied calls
-/// return `ToolError::PermissionDenied` the inner loop serializes
-/// into a `tool_result` block, so the nested model sees the refusal
-/// and can adapt instead of silently dropping a capability.
 pub struct GatedToolDispatcher {
     pub tools: ToolsField,
 }
@@ -71,17 +41,8 @@ impl ToolDispatcher for GatedToolDispatcher {
     }
 }
 
-/// Default tool-call budget for a single subagent dispatch. Matches
-/// the outer `MAX_AUTO_TURNS` so a subagent has the same runway as
-/// the top-level agent — callers hitting the cap see a
-/// `budget_exceeded` status rather than a silent truncation.
 pub const SUBAGENT_MAX_TURNS: u32 = MAX_AUTO_TURNS;
 
-// Alias resolution lives in `crate::models::aliases::resolve` — the
-// single source of truth. This module's runner delegates there. Tests
-// live under `src/models/aliases.rs`.
-
-/// Real subagent runner. Holds the provider + the fallback model id.
 pub struct InnerLoopRunner {
     provider: Arc<dyn Provider>,
     default_model: String,
@@ -109,27 +70,6 @@ impl InnerLoopRunner {
             &self.default_model,
         );
 
-        // Provider-guarded System seed — the `definition.system_prompt`
-        // string reaches the wire only on providers whose translator
-        // consumes role=system input into a canonical instructions slot:
-        //
-        //   - `codex` (`translator/codex/request.rs::extract_instructions`)
-        //     pulls the first System message onto top-level
-        //     `instructions`. Skipping the seed would drop the subagent
-        //     prompt off the wire. Keep it.
-        //   - `anthropic-oauth`
-        //     (`translator/anthropic/message_builder.rs::normalize`)
-        //     discards every System message ("harness provides
-        //     system[]"). The seed is dead bytes there, so skip it and
-        //     document the behavior: anthropic subagents currently
-        //     inherit the main harness system prompt verbatim. Making
-        //     the subagent's own `.md` system_prompt reach the anthropic
-        //     wire requires an evidence-grounded change folder (R-92)
-        //     with a live upstream capture of a subagent turn.
-        //
-        // Zero wire change for either provider — this gate just stops
-        // building a seed message that translator::anthropic would
-        // discard downstream anyway. Codex path is untouched.
         let mut history: Vec<OpenAiChatMessage> = Vec::with_capacity(2);
         match self.provider.id() {
             "codex" => {
@@ -165,9 +105,7 @@ impl InnerLoopRunner {
         };
 
         let provider = self.provider.clone();
-        // R-107: sync→async bridge. `block_in_place` + `block_on` is
-        // the single authorized way to pivot from a sync trait method
-        // into an async inner call without spawning a new runtime.
+
         let loop_result = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async move {
                 loop_

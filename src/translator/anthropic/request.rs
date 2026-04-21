@@ -1,63 +1,4 @@
-//! Centralized `/v1/messages` body assembler (R-34).
-//!
-//! Every conditional that shapes the outgoing body lives here as a
-//! visible `if` / `match` branch. An auditor reading this file sees
-//! every shape the request can take.
-//!
-//! Two shapes, two sibling entry points in this single file:
-//!
-//! - [`build_request_body`] — full inference turn (9 tools, 4 system
-//!   blocks with main agent prompt, conversation history + reminders).
-//! - [`build_web_search_body`] — WebSearch synthesis turn (1 server
-//!   tool, 3 system blocks without the agent prompt, synthetic single
-//!   user message). Shape locked against
-//!   `fingerprint_corpus/tools-websearch-single/raw/flow-41-scrubbed.txt`.
-//!
-//! Historically the WebSearch body was assembled inline inside
-//! `tools::web_search::claude_code::AnthropicServerToolBackend` — a
-//! second assembler that duplicated the envelope, billing header, and
-//! system opener. Slice C consolidated both shapes into this file so
-//! an auditor can compare them side-by-side; the backend now owns
-//! only its filter state (`allowed_domains` / `blocked_domains`) and
-//! calls through to the translator for the wire bytes.
-//!
-//! No prompt logic lives elsewhere — no utility modules mutating the
-//! body, no provider-side appliers writing to it. The translator calls
-//! [`build_request_body`] (or [`build_web_search_body`]) once and
-//! ships the result.
-//!
-//! # Source of the four byte-verbatim anchors
-//!
-//! The system prompt, system-reminders, tool schemas, and envelope
-//! defaults are not invented here — they are loaded from
-//! [`crate::harness`], which embeds them verbatim from
-//! `otherside-cli/harness_corpus/` at compile time. See the
-//! [`crate::harness`] module docs for the corpus layout and the refresh
-//! procedure. This file is where those anchors get composed; the
-//! harness module is where they live.
-//!
-//! # Current branches (R-57 baseline shape — zero intentional deviation)
-//!
-//! - `strip_1m_suffix`: `[1m]` alias is stripped here so the model
-//!   string matches the wire; callers push the `context-1m-2025-08-07`
-//!   beta header on the HTTP side based on the returned flag.
-//! - `substitute_environment_in_system`: five per-session literals
-//!   (cwd, git flag, platform, shell, os_version) replace the capture
-//!   tokens embedded in the main system prompt.
-//! - `UserContext.email` / `UserContext.current_date` thread into the
-//!   user-context system-reminder via the normalize pipeline.
-//! - First user turn receives the three `<system-reminder>` preamble
-//!   blocks; subsequent turns do not (see
-//!   `translator::anthropic::message_builder`).
-//! - Exactly one `cache_control: ephemeral` marker on the last block
-//!   of the last message (see `message_builder::add_cache_breakpoints`).
-//!
-//! # V2+ modifications
-//!
-//! Future prompt / payload shaping lands as new conditional branches
-//! in this file with inline commentary explaining the behavioral
-//! target. The single-assembly-file rule (R-34) exists for exactly
-//! this — one place to audit every branch.
+
 
 use serde_json::{Map, Value};
 
@@ -65,11 +6,6 @@ use crate::error::{Error, Result};
 use crate::inference::{OpenAiChatRequest, OpenAiChatRole};
 use crate::translator::anthropic::message_builder;
 
-/// Strip the `[1m]` alias suffix off a model string. Returns
-/// `(stripped, has_1m)`. Mirrors the reference implementation's
-/// `has1mContext` regex `/\[1m\]/i` (case-insensitive). The suffix
-/// travels through alias resolution — when present, callers MUST push
-/// the `context-1m-2025-08-07` beta header on the outbound request.
 pub fn strip_1m_suffix(raw: &str) -> (String, bool) {
     let lower = raw.to_ascii_lowercase();
     if let Some(idx) = lower.find("[1m]") {
@@ -81,26 +17,12 @@ pub fn strip_1m_suffix(raw: &str) -> (String, bool) {
     (raw.to_string(), false)
 }
 
-/// V2 placeholder tokens embedded in harness_corpus/system/03-main-prompt.md.
-/// The assembler swaps each for the session's live values before the
-/// wire body ships. Placeholders are used instead of capture literals
-/// (old "Primary working directory: /workspace" form) so corpus edits
-/// don't have to re-anchor against machine-specific capture state.
 const PLACEHOLDER_CWD: &str = "_WORKSPACE_DIR_";
 const PLACEHOLDER_IS_GIT: &str = "_IS_GIT_REPO_";
 const PLACEHOLDER_PLATFORM: &str = "_PLATFORM_";
 const PLACEHOLDER_SHELL: &str = "_SHELL_";
 const PLACEHOLDER_OS_VERSION: &str = "_OS_VERSION_";
 
-/// Per-session context the assembler injects into the captured body.
-/// Email and current_date are always session-live — never hardcoded.
-///
-/// `<task-notification>` injection no longer rides this struct — it
-/// lives on the TUI side now via
-/// [`crate::tui::state::ConversationState::consume_pending_notifications`]
-/// + the auto-trigger detector in the event loop. Single drain
-/// point eliminates a class of double-inject bugs that the
-/// previous build-time drain path enabled.
 #[derive(Debug, Clone)]
 pub struct UserContext<'a> {
     pub email: &'a str,
@@ -113,10 +35,7 @@ pub struct UserContext<'a> {
 }
 
 impl UserContext<'_> {
-    /// Fixture values for byte-match tests only. Reproduces the
-    /// `tools-glob-single/turn1` capture environment. Production code
-    /// builds its own [`UserContext`] from live environment + OAuth
-    /// credentials — never call this outside test paths.
+
     pub fn capture_defaults() -> UserContext<'static> {
         UserContext {
             email: "test@example.com",
@@ -130,10 +49,6 @@ impl UserContext<'_> {
     }
 }
 
-/// Post-process `system[]` to substitute per-session environment
-/// placeholders in the main agent prompt (`system[3]`). Walks every
-/// block and swaps placeholder tokens for session literals — blocks
-/// without the `_WORKSPACE_DIR_` anchor are left untouched.
 fn substitute_environment_in_system(system: &mut [Value], ctx: &UserContext<'_>) {
     for block in system.iter_mut() {
         let Some(text) = block.get("text").and_then(|v| v.as_str()) else {
@@ -156,14 +71,6 @@ fn substitute_environment_in_system(system: &mut [Value], ctx: &UserContext<'_>)
     }
 }
 
-/// Build the full outbound `/v1/messages` request body bytes.
-///
-/// Single entry point per R-34. Every shape-affecting branch lives
-/// inline in this function or the helpers above.
-///
-/// # Errors
-/// [`Error::Parse`] when the OpenAI request carries no user message —
-/// the target API requires at least one user turn.
 pub fn build_request_body(
     req: &OpenAiChatRequest,
     ctx: &UserContext<'_>,
@@ -178,40 +85,18 @@ pub fn build_request_body(
         ));
     }
 
-    // 1. Envelope defaults (metadata, max_tokens, thinking,
-    //    context_management, output_config, stream) — byte-verbatim
-    //    from the capture, deserialized into JSON.
     let envelope_defaults = super::envelope::build_envelope_defaults();
     let env_obj = envelope_defaults
         .as_object()
         .expect("envelope defaults parse as object");
 
-    // 2. System blocks — 4-entry array (billing header + two
-    //    pre-prompt blocks + main agent prompt). Environment tokens
-    //    in the main prompt are substituted to the session's actual
-    //    values.
     let mut system_blocks = super::system::build_system_blocks();
     substitute_environment_in_system(&mut system_blocks, ctx);
 
-    // 3. Tools array — 9 entries in canonical wire order (Agent,
-    //    Bash, Edit, Glob, Grep, Read, Skill, ToolSearch, Write).
     let tools = super::tools::build_tools_array();
 
-    // 4. Messages — two-stage pipeline (normalize → cache-breakpoint).
-    //    The first user turn gets the three `<system-reminder>`
-    //    preamble blocks; later turns do not.
-    //
-    //    4a. `<task-notification>` injection used to live here at
-    //    build time. It now rides on the TUI side as a synthetic
-    //    user `DisplayMessage` pushed by
-    //    `ConversationState::consume_pending_notifications` at the
-    //    event-loop tick that auto-fires the next turn. Single
-    //    drain point — `request.rs` is wire-shape only now.
     let messages = message_builder::build(&req.messages, ctx);
 
-    // 5. Assemble in capture top-level key order:
-    //    model < messages < system < tools < metadata < max_tokens
-    //    < thinking < context_management < output_config < stream
     let mut body = Map::with_capacity(10);
     body.insert("model".to_string(), Value::String(req.model.clone()));
     body.insert("messages".to_string(), Value::Array(messages));
@@ -230,34 +115,23 @@ pub fn build_request_body(
         }
     }
 
-    // Rewrite `output_config.effort` from the hardcoded-capture default
-    // (`xhigh`) to the per-model default from the catalog — otherwise
-    // sonnet / haiku requests 400 because those models do not accept
-    // `xhigh`. Uses the stripped model id (without `[1m]`) for lookup.
     let (stripped_for_effort, _) = strip_1m_suffix(&req.model);
     let effort = crate::models::catalog::default_effort_for(&stripped_for_effort);
     if let Some(out_cfg) = body.get_mut("output_config").and_then(|v| v.as_object_mut()) {
         if effort == "auto" {
-            // Haiku (and future auto-only tiers) don't accept an explicit
-            // effort — drop the key so the server picks.
+
             out_cfg.remove("effort");
         } else {
             out_cfg.insert("effort".to_string(), Value::String(effort.to_string()));
         }
     }
 
-    // Haiku doesn't support adaptive thinking (server rejects with
-    // "adaptive thinking is not supported on this model"). Drop the
-    // `thinking` envelope entirely when the model's only supported
-    // effort is "auto" — that's the catalog's signal that the model
-    // doesn't expose a thinking surface.
     let efforts = crate::models::catalog::by_id(&stripped_for_effort)
         .map(|m| m.supported_efforts)
         .unwrap_or(&[]);
     if efforts == ["auto"] || efforts.is_empty() {
         body.remove("thinking");
-        // `clear_thinking_20251015` context_management strategy also
-        // requires thinking enabled — server rejects otherwise.
+
         body.remove("context_management");
     }
 
@@ -265,45 +139,10 @@ pub fn build_request_body(
         .map_err(|e| Error::Parse(format!("re-serialize failed: {e}")))
 }
 
-/// Build the `/v1/messages` body for a single WebSearch synthesis
-/// turn. Shape mirrors the 2026-04-19 capture at
-/// `fingerprint_corpus/tools-websearch-single/raw/flow-41-scrubbed.txt`.
-///
-/// Divergences from [`build_request_body`] (12 dimensions, per
-/// Slice C checklist):
-///
-/// 1. `model` — hardcoded `"claude-opus-4-7"` (capture always uses
-///    this model for WebSearch, regardless of the main session model).
-/// 2. `system[]` — 3 blocks (no main agent prompt).
-/// 3. `system[2]` — WebSearch-specific preamble string.
-/// 4. `messages[]` — single synthetic user turn `{content: [{type:
-///    "text", text: "Perform a web search for the query: <q>",
-///    cache_control: ephemeral}]}`.
-/// 5. `tools[]` — the one `web_search_20250305` server tool passed
-///    in by the caller (carries the caller's domain filters).
-/// 6. `metadata.user_id` — same nested-JSON shape as inference.
-/// 7. `max_tokens` — hardcoded `64000`.
-/// 8. `thinking` — `{type: "adaptive"}` (no level).
-/// 9. `context_management` — `clear_thinking_20251015` with
-///    `keep: "all"`.
-/// 10. `output_config.effort` — hardcoded `"xhigh"`.
-/// 11. `stream` — `true`.
-/// 12. `cache_control: ephemeral` — three sites (system[1],
-///     system[2], and the user message's sole content block).
-///
-/// Every literal below is load-bearing: the capture analysis at
-/// `notes.md` §"Our bugs (why 429)" documents that dropping any of
-/// the envelope fields causes Anthropic to reject with 429.
 pub fn build_web_search_body(query: &str, tool_config: Value) -> Vec<u8> {
-    // Reuse the main-inference billing marker. Anthropic's analytics
-    // path treats any CC-shaped `cc_version=<hash>; cc_entrypoint=<e>;
-    // cch=<hash>;` as authentic — the specific hash is not validated.
+
     let billing_header = crate::fingerprint::anthropic::BILLING_HEADER_TEXT.to_string();
 
-    // `metadata.user_id` nests a JSON string carrying device /
-    // account / session identifiers — upstream's analytics path
-    // consumes this for rate-limit scoping. Empty placeholders are
-    // accepted as long as the field is present.
     let user_id = serde_json::json!({
         "device_id": "",
         "account_uuid": "",
@@ -311,10 +150,6 @@ pub fn build_web_search_body(query: &str, tool_config: Value) -> Vec<u8> {
     })
     .to_string();
 
-    // TODO (Slice L): `SYSTEM_OPENER` literal duplicates
-    // `translator/anthropic/system.rs:28`. Pending Slice L: move to
-    // corpus const. Until then the literal is inline here to keep
-    // Slice C self-contained.
     let body = serde_json::json!({
         "model": "claude-opus-4-7",
         "messages": [{
@@ -463,15 +298,7 @@ mod tests {
 
     #[test]
     fn build_request_body_no_longer_injects_task_notifications() {
-        // Regression guard: the §8.2 build-time inject path was
-        // removed in the §9 auto-trigger refactor (2026-04-21). The
-        // body builder is wire-shape only now — synthetic user
-        // messages carrying `<task-notification>` are pushed by
-        // `ConversationState::consume_pending_notifications` on
-        // the TUI side BEFORE this builder runs. If a caller hands
-        // us a request whose `messages` already contain a
-        // `<task-notification>` user turn, we ship it verbatim;
-        // we no longer rewrite the message slice ourselves.
+
         let req = mvp_request();
         let ctx = UserContext::capture_defaults();
         let bytes = build_request_body(&req, &ctx).unwrap();

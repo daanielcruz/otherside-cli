@@ -1,12 +1,4 @@
-//! Managed-hooks-only gate.
-//!
-//! Policy-tier settings may set `allowManagedHooksOnly = true`,
-//! which restricts hook execution to entries whose `source_tag`
-//! (set during config resolution) is `policy`. User-authored hooks
-//! are silently dropped with a one-time warning.
-//!
-//! The `HookEntry` struct (in config::settings) carries an optional
-//! `source_tag` field populated during resolve; this gate checks it.
+
 
 use crate::config::settings::HookEntry;
 

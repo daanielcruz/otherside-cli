@@ -1,32 +1,4 @@
-//! Drawing functions for the TUI.
-//!
-//! ratatui is immediate-mode: we re-render everything on every tick.
-//! The C44 bottom-up frame is owned by `tui::layout`; this module
-//! composes the individual drawers (mascot, progress, tip, autocomplete,
-//! statusline, streaming, prompt, info row) into the slots it returns.
-//!
-//! # Theme constants
-//!
-//! All user-tunable colors live in [`theme`] below. Every widget reads
-//! them; editing here recolors the whole interface on the next frame.
-//!
-//! # Tool-call interleave (015)
-//!
-//! [`draw_log`] splices [`tool_render::render_tool_call`] output for
-//! every entry in `state.active_tool_calls` after the finalized
-//! message paint and before the in-flight `current_assistant_buffer`
-//! paint. Ordering mirrors upstream's transcript: user → assistant
-//! text → tool calls for this turn → assistant text after tool results.
-//! The entries clear on [`ConversationState::submit`], so prior-turn
-//! tool calls don't leak into a new turn's render.
-//!
-//! # User message background (015)
-//!
-//! [`render_message`] for role `User` emits every span with
-//! `Style::bg(theme::USER_BG)` plus a trailing filler span sized to
-//! `width - used` so the fill extends to the frame edge. The first
-//! line carries a muted `)` chevron; continuation lines indent with
-//! two spaces on the same background.
+
 
 use std::time::Duration;
 
@@ -45,108 +17,46 @@ use crate::config::settings::PermissionMode;
 use super::state::ConversationState;
 use super::{autocomplete, layout as layout_mod, mascot, progress, tips};
 
-/// Visual theme. Edit these constants to recolor the entire TUI.
 pub mod theme {
     use ratatui::style::Color;
 
-    // ----- otherside-native -----
-
-    /// Light blue — PRIMARY accent. Reserved for the spinner glyph
-    /// and the thinking verb ONLY. Everything else mirrors upstream's
-    /// palette so the TUI reads as familiar.
     pub const PRIMARY: Color = Color::Rgb(0x3E, 0xA0, 0xC3);
 
-    // ----- upstream palette (mirrored for parity) -----
-
-    /// Body text — explicit off-white RGB. Upstream's rendered output
-    /// reads markedly softer than pure `#FFFFFF`; `Color::White`
-    /// (ANSI 37) is terminal-theme-dependent and still too bright on
-    /// typical darwin profiles. `#D4D4D4` sits in the middle of the
-    /// observed upstream brightness — stays readable on dark
-    /// backgrounds without burning through like pure white.
     pub const TEXT: Color = Color::Rgb(0xD4, 0xD4, 0xD4);
 
-    /// Light gray — ambient helper text (tip line, shortcut hints,
-    /// context chips when under threshold).
     pub const MUTED: Color = Color::Rgb(153, 153, 153);
 
-    /// Dark gray — very dim secondary detail.
     pub const SUBTLE: Color = Color::Rgb(80, 80, 80);
 
-    /// User message background — upstream `theme.ts:488` dark-theme
-    /// `userMessageBackground: rgb(55, 55, 55)`. Darker grey strip
-    /// that spans the user turn's full width so the chevron + text
-    /// read as one continuous element distinct from the assistant
-    /// bullet band.
     pub const USER_MSG_BG: Color = Color::Rgb(55, 55, 55);
 
-    /// Medium gray — prompt-bar border.
     pub const PROMPT_BORDER: Color = Color::Rgb(136, 136, 136);
 
-    /// Bright red — errors and the mascot's corrupted-core accent
-    /// on `/clear`.
     pub const ERROR: Color = Color::Rgb(255, 107, 128);
 
-    /// Amber — warnings.
     pub const WARNING: Color = Color::Rgb(255, 193, 7);
 
-    /// Green — success.
     pub const SUCCESS: Color = Color::Rgb(78, 186, 101);
 
-    /// Light blue-purple — slash popup suggestions.
     pub const SUGGESTION: Color = Color::Rgb(177, 185, 249);
 
-    /// User-message background fill.
     pub const USER_BG: Color = Color::Rgb(55, 55, 55);
 
-    /// Diff coloring (word-level).
     pub const DIFF_ADDED: Color = Color::Rgb(56, 166, 96);
     pub const DIFF_REMOVED: Color = Color::Rgb(179, 89, 107);
 
-    /// Warm amber — assistant bullet + mascot core. Neutral name so
-    /// identity-zone widgets carry no upstream provenance.
     pub const ACCENT_AMBER: Color = Color::Rgb(215, 119, 87);
 
-    /// Auto-accept-edits permission mode chip color — teal-leaning
-    /// cyan. Upstream `autoAccept` ships violet `rgb(175,135,255)` but
-    /// that collides with otherside PRIMARY (blue-violet) and the
-    /// `#51158C` brand; C69 picked a distinct hue to keep the three
-    /// accents visually separable on the info row.
     pub const AUTO_ACCEPT: Color = Color::Rgb(72, 170, 170);
 
-    /// Plan mode chip — sage, mirrors upstream `planMode`
-    /// `rgb(72,150,140)` with no color collision against PRIMARY.
     pub const PLAN_MODE: Color = Color::Rgb(72, 150, 140);
 
-    /// Dark-theme error red for high-risk permission chips (yolo /
-    /// bypass). Upstream `theme.ts:137` dark-theme `error`
-    /// `rgb(171,43,63)`. Distinct from `ERROR` above (which is the
-    /// brighter inline-error copy color) so the chip reads as a
-    /// standing state rather than a transient error string.
     pub const CHIP_ERROR: Color = Color::Rgb(171, 43, 63);
 
-    /// Bash prefix (`!` prompt) border.
     pub const BASH_BORDER: Color = Color::Rgb(253, 93, 177);
 
-    /// Upstream's `permission` color token — the sky blue that Claude
-    /// Code actually renders for the focused tab pill, search box
-    /// border, and `<Pane color="permission">` wrapper.
-    ///
-    /// R-92 evidence (live tmux capture 2026-04-20 against
-    /// `claude --dangerously-skip-permissions` v2.1.114 in the user's
-    /// iTerm2 darkTheme): the focused tab bg and search border ANSI
-    /// read `[48;5;153m` / `[38;5;153m` — ANSI-256 palette index 153,
-    /// `#AFD7FF`. Ink's `permission` token resolves through its
-    /// rgb→ansi256 mapper in the user's terminal to this index, NOT
-    /// the truecolor `rgb(177,185,249)` that darkTheme declares in
-    /// `utils/theme.ts:447` nor the `rgb(87,105,247)` from
-    /// lightTheme. We target what renders, not what the source file
-    /// names.
     pub const PERMISSION: Color = Color::Indexed(153);
 
-    /// Resolve a [`super::super::state::ChipColor`] discriminant to a
-    /// concrete ratatui color. Single lookup point so the permission
-    /// chip render path never embeds inline RGB (C46).
     pub fn color_for(chip: super::super::state::ChipColor) -> Color {
         use super::super::state::ChipColor;
         match chip {
@@ -157,9 +67,6 @@ pub mod theme {
     }
 }
 
-/// Public entry — carves `f.area()` via `layout::split_frame` and
-/// paints every region. Mascot fills the streaming area when the
-/// session is empty; otherwise the streaming log renders.
 pub fn render(
     f: &mut Frame<'_>,
     state: &ConversationState,
@@ -169,21 +76,6 @@ pub fn render(
 ) {
     let area = f.area();
 
-    // Ephemeral feedback has a TTL; clear expired entries at frame
-    // start so the info-row left slot returns to chrome once the
-    // window elapses. render() takes &ConversationState, so we thread
-    // through an explicit &mut via the interior-mutability choice
-    // below… actually it doesn't — prune_feedback mutates. We'd need
-    // &mut state here to call it from the renderer. For now prune is
-    // invoked by the event loop before each draw; see the Tick arm.
-
-    // Below-prompt slot sizing. Every overlay surface (autocomplete,
-    // panel menu, pending question, pending permission) now shares the
-    // same `slots.popup` strip below the prompt bar. The statusline +
-    // info + bottom pad collapse while any of them is active, mirroring
-    // how the autocomplete popup has always behaved. Mutual exclusion
-    // is enforced upstream by the state mutations — only one of the
-    // four fields is ever `Some` at a time.
     let popup_rows: u16 = {
         let remaining = area.height.saturating_sub(4 + 1 + 3 + 1);
         if let Some(p) = state.pending_permission.as_ref() {
@@ -213,11 +105,6 @@ pub fn render(
         popup_rows,
     );
 
-    // Streaming area owns the full top portion regardless of overlay
-    // state — the popup sits below the prompt now, not above it.
-    // After `/clear`, show the splash above the `⎿ (no content)`
-    // anchor (and any subsequent system notes) until the next user
-    // turn lands. Matches upstream: mascot persists through /clear.
     if state.messages.is_empty() && !state.streaming {
         draw_splash_centered(f, slots.streaming);
     } else if state.show_post_clear_splash {
@@ -244,11 +131,8 @@ pub fn render(
         draw_log(f, slots.streaming, state, spinner_tick);
     }
 
-    // Progress + tip rows only exist when streaming.
     if let (Some(pr), Some(tp)) = (slots.progress, slots.tip) {
-        // Verb is seeded once per turn in submit() and held stable
-        // under spinner-frame tick rotation. Fall back to "Thinking"
-        // on the off chance a draw fires before submit seeds the state.
+
         let verb = state.turn_verb.unwrap_or("Thinking");
         progress::draw(
             f,
@@ -264,23 +148,12 @@ pub fn render(
         tips::draw(f, tp, state.tip_rotation_index);
     }
 
-    // Queued messages (017 §4) — one dim `> <preview>` row per entry,
-    // rendered directly above the prompt top-pad so they read as the
-    // transcript bubble they represent. Matches upstream's trailing
-    // queue display (previously we collapsed the whole queue into a
-    // single counter chip — cosmetic regression, now fixed).
     if let Some(queue_area) = slots.queue {
         draw_queue_lines(f, queue_area, state);
     }
 
     draw_prompt(f, slots.prompt, state);
-    // Unified below-prompt overlay slot. Every modal surface
-    // (permission > question > menu > autocomplete) paints into
-    // `slots.popup`. Priority order matches the key routing in
-    // `tui::mod.rs::handle_key`. Chrome (statusline / info / bottom
-    // pad) is already suppressed by `split_frame` whenever
-    // `popup_rows > 0`, so the overlay takes over the bottom strip
-    // cleanly.
+
     if let Some(popup_rect) = slots.popup {
         if let Some(prompt) = state.pending_permission.as_ref() {
             super::menu::draw_permission_prompt(f, popup_rect, prompt);
@@ -293,8 +166,6 @@ pub fn render(
         }
     }
 
-    // Statusline + info row — suppressed while the popup is active
-    // (slots.*.height == 0 per layout::split_frame popup-takeover).
     let _ = provider_id;
     if slots.statusline.height > 0 {
         draw_statusline(f, slots.statusline, state, model, provider_id);
@@ -304,29 +175,14 @@ pub fn render(
     }
 }
 
-/// Hand `mascot::draw_splash` the full streaming area so it can own
-/// the top-pad / mascot / gap / banner / gap / tagline stack. The
-/// mascot module falls back to a short legend internally when the
-/// frame can't fit the full layout.
 fn draw_splash_centered(f: &mut Frame<'_>, area: Rect) {
     mascot::draw_splash(f, area);
 }
 
-/// Scrolling message log. Each finalized message is rendered as a
-/// role-prefix line followed by a single blank row of padding; the
-/// in-flight assistant buffer gets the same treatment while
-/// `streaming` is true. No horizontal rules — upstream log is a
-/// plain scrolling region, the prompt bar carries the borders.
 fn draw_log(f: &mut Frame<'_>, area: Rect, state: &ConversationState, spinner_tick: u64) {
     let mut lines: Vec<Line> = Vec::new();
     let width = area.width;
 
-    // Synthetic messages (auto-injected `<task-notification>` user
-    // turns) ride the wire so the model sees them, but the user
-    // never typed them — skip them in the chat paint to avoid
-    // exposing raw XML in the transcript. Mirrors upstream's
-    // `display: 'system'` queue items, which never show up as
-    // user turns in the chat log.
     let mut first_paint = true;
     for msg in state.messages.iter().filter(|m| !m.is_synthetic) {
         if !first_paint {
@@ -336,13 +192,6 @@ fn draw_log(f: &mut Frame<'_>, area: Rect, state: &ConversationState, spinner_ti
         lines.extend(render_message(msg.role, &msg.content, width));
     }
 
-    // Tool-call splice (015) — paint in-flight + finalized tool calls
-    // for the current turn BETWEEN finalized messages and the in-flight
-    // assistant buffer. Each entry's bullet color reflects its status:
-    // MUTED + SLOW_BLINK while Running, SUCCESS solid on Ok, ERROR
-    // solid on Error. Order = insertion order = upstream transcript
-    // ordering. active_tool_calls clears on submit so prior turns
-    // never double-paint.
     if !state.active_tool_calls.is_empty() {
         for entry in &state.active_tool_calls {
             lines.push(Line::raw(""));
@@ -364,11 +213,7 @@ fn draw_log(f: &mut Frame<'_>, area: Rect, state: &ConversationState, spinner_ti
     }
 
     if state.streaming {
-        // Only surface the assistant message once real content has
-        // started streaming — while we're still waiting for the first
-        // delta, the spinner band below the log owns the loading
-        // signal. Doubling up with a bulleted spinner up here reads
-        // like two separate states.
+
         if !state.current_assistant_buffer.is_empty() {
             if !state.messages.is_empty() || !state.active_tool_calls.is_empty() {
                 lines.push(Line::raw(""));
@@ -388,26 +233,13 @@ fn draw_log(f: &mut Frame<'_>, area: Rect, state: &ConversationState, spinner_ti
         )));
     }
 
-    // Bottom-anchor the conversation: when the log is shorter than
-    // the streaming area, paint it in the BOTTOM portion of the rect
-    // so empty space sits ABOVE the messages — mirrors upstream
-    // ScrollBox which anchors to the newest turn next to the prompt
-    // bar. When the log overflows, scroll so the latest line is on
-    // the bottom edge; a user-scrolled `scroll_offset` walks back up.
     let inner_h = area.height;
     let para = Paragraph::new(lines).wrap(Wrap { trim: false });
-    // Measure the VISUAL (wrapped) line count — logical `lines.len()`
-    // underestimates when any single line is wider than `area.width`.
-    // Using logical count clips the wrapped tail of the in-flight
-    // assistant buffer mid-stream, which is exactly what the user sees
-    // as "active LLM output disappears and only surfaces on the next
-    // turn" (next turn appends more lines, tips us into the overflow
-    // branch, which scrolls correctly — hiding the original bug).
+
     let total_lines = para.line_count(area.width) as u16;
 
     if total_lines <= inner_h {
-        // Fits entirely — render in a bottom-aligned sub-rect sized to
-        // the visual height so no wrapped rows are clipped.
+
         let render_area = Rect {
             x: area.x,
             y: area.y + inner_h.saturating_sub(total_lines),
@@ -416,37 +248,17 @@ fn draw_log(f: &mut Frame<'_>, area: Rect, state: &ConversationState, spinner_ti
         };
         f.render_widget(para, render_area);
     } else {
-        // Overflow — scroll so the newest line sits on the bottom edge.
-        // scroll_offset walks the view upward from there.
+
         let max_top = total_lines.saturating_sub(inner_h);
         let top = max_top.saturating_sub(state.scroll_offset as u16);
         f.render_widget(para.scroll((top, 0)), area);
     }
 }
 
-/// Produce one-or-more lines for a single message. Per upstream TUI
-/// convention (no `user:` / `assistant:` text labels), visual role
-/// cues are:
-///
-/// - **User** — dark-gray background that runs the full frame width
-///   (mirrors upstream's `userMessageBackground`) with a leading
-///   muted `)` chevron on the first line, 2-space indent on
-///   continuation lines. Every line carries a trailing filler span
-///   sized to `width - used` so the background reaches the frame
-///   edge (ratatui's `Wrap` does not pad to width by default).
-/// - **Assistant** — plain white text, no prefix, no background.
-/// - **System** — italic muted grey prefaced by `⎿ system:`.
-/// - **Tool** — muted grey prefaced by `⎿ tool:` (legacy path; the
-///   real tool-call render lives at `tui::tool_render`, wired via
-///   `ConversationState::active_tool_calls` per 015).
 fn render_message(role: OpenAiChatRole, content: &str, width: u16) -> Vec<Line<'static>> {
-    // Assistant content is markdown — render the whole block through
-    // `tui::markdown::render` so `**bold**`, backtick code, lists,
-    // headings, and links get their styled spans. Prefix the first
-    // rendered line with the assistant bullet. Every other role
-    // keeps the per-line path below.
+
     if role == OpenAiChatRole::Assistant {
-        let _ = width; // markdown carves its own widths
+        let _ = width;
         let mut rendered = super::markdown::render(content);
         let bullet = if cfg!(target_os = "macos") { "⏺ " } else { "● " };
         let bullet_span = Span::styled(
@@ -458,9 +270,7 @@ fn render_message(role: OpenAiChatRole, content: &str, width: u16) -> Vec<Line<'
         if rendered.is_empty() {
             return vec![Line::from(bullet_span)];
         }
-        // Splice the bullet into the first non-empty line so a leading
-        // blank paragraph (shouldn't happen in practice) doesn't push
-        // the bullet off-screen.
+
         let first_idx = rendered
             .iter()
             .position(|l| !l.spans.is_empty())
@@ -477,11 +287,7 @@ fn render_message(role: OpenAiChatRole, content: &str, width: u16) -> Vec<Line<'
     for (i, raw) in content.split('\n').enumerate() {
         match role {
             OpenAiChatRole::User => {
-                // 015 Bug B — match upstream's `userMessageBackground`
-                // fill with a muted `)` chevron. The background spans
-                // every span on every line via `Style::bg(USER_BG)`;
-                // a trailing filler extends the fill to the frame
-                // edge because ratatui's `Wrap` doesn't pad to width.
+
                 let prefix = if i == 0 { "❯ " } else { "  " };
                 let prefix_style = if i == 0 {
                     Style::default().fg(theme::MUTED).bg(theme::USER_BG)
@@ -503,15 +309,11 @@ fn render_message(role: OpenAiChatRole, content: &str, width: u16) -> Vec<Line<'
                 lines.push(Line::from(spans));
             }
             OpenAiChatRole::Assistant => {
-                // Handled above via markdown::render — unreachable
-                // because we early-return before the loop for Assistant.
+
                 unreachable!("Assistant role handled via markdown path");
             }
             OpenAiChatRole::System => {
-                // Anchor pair: push_anchor stamps the result line with a
-                // leading `⎿ `. Paint it dim + italic on its own, 2-space
-                // left pad, no `system:` label — matches upstream's
-                // command-result shape.
+
                 if raw.starts_with("⎿ ") && i == 0 {
                     lines.push(Line::from(vec![
                         Span::styled(
@@ -526,12 +328,7 @@ fn render_message(role: OpenAiChatRole, content: &str, width: u16) -> Vec<Line<'
                         ),
                     ]));
                 } else if raw.starts_with("✻ ") && i == 0 {
-                    // `✻ ` sentinel: upstream's header line that rides
-                    // above an anchor (`✻ Conversation compacted (ctrl+o
-                    // for history)`). Same dim+italic treatment as the
-                    // `⎿ ` branch, but flush-left with no `system:`
-                    // prefix and no 2-space indent — the header reads
-                    // as a distinct event marker, not a command result.
+
                     lines.push(Line::from(Span::styled(
                         raw.to_string(),
                         Style::default()
@@ -557,12 +354,7 @@ fn render_message(role: OpenAiChatRole, content: &str, width: u16) -> Vec<Line<'
                 }
             }
             OpenAiChatRole::Tool => {
-                // Role::Tool carries a JSON-serialized `ToolCallArchive`
-                // (see `state::format_tool_history_entry`). Deserialize
-                // and run through the same `render_tool_call` path the
-                // live stream uses, so archived tool calls keep the
-                // full `⎿` preview body (previously the pipe-delimited
-                // summary dropped the payload on archival).
+
                 if i > 0 {
                     continue;
                 }
@@ -574,9 +366,7 @@ fn render_message(role: OpenAiChatRole, content: &str, width: u16) -> Vec<Line<'
                         }
                     }
                     Err(_) => {
-                        // Legacy pre-JSON archived entries: fall back to
-                        // a bare header render so pre-upgrade sessions
-                        // still show something.
+
                         let bullet = if cfg!(target_os = "macos") { "⏺ " } else { "● " };
                         lines.push(Line::from(vec![
                             Span::styled(
@@ -598,10 +388,6 @@ fn render_message(role: OpenAiChatRole, content: &str, width: u16) -> Vec<Line<'
     lines
 }
 
-/// Paint the queue — each queued message rendered as a
-/// user-message bubble (same `❯ ` chevron + USER_BG fill as a live
-/// user row) with a 1-row margin above. Upstream renders NO hint
-/// row below — the bubble sits directly above the prompt bar.
 fn draw_queue_lines(f: &mut Frame<'_>, area: Rect, state: &ConversationState) {
     if area.height < 2 || state.queued_messages.is_empty() {
         return;
@@ -637,10 +423,6 @@ fn draw_queue_lines(f: &mut Frame<'_>, area: Rect, state: &ConversationState) {
     f.render_widget(para, area);
 }
 
-/// Build a user-style row (chevron + body + trailing filler) for the
-/// queue slot. Shape matches `render_message`'s User branch so the
-/// queued bubble is indistinguishable from a live user row at the
-/// pixel level.
 fn user_bubble_row(body: &str, width: u16) -> Line<'static> {
     let prefix = "❯ ";
     let prefix_style = Style::default().fg(theme::MUTED).bg(theme::USER_BG);
@@ -663,8 +445,6 @@ fn user_bubble_row(body: &str, width: u16) -> Line<'static> {
     Line::from(spans)
 }
 
-/// Full-width blank line with USER_BG fill — the margin-top row of
-/// the queue bubble.
 fn blank_user_bg_line(width: u16) -> Line<'static> {
     Line::from(Span::styled(
         " ".repeat(width as usize),
@@ -672,10 +452,6 @@ fn blank_user_bg_line(width: u16) -> Line<'static> {
     ))
 }
 
-/// Truncate `s` to fit `max_cols` terminal columns. Char-aware (not
-/// byte-aware) so multi-byte codepoints never land half-sliced. Appends
-/// `…` when truncation occurs; shrinks the visible prefix by one char
-/// to preserve the width budget.
 fn truncate_for_width(s: &str, max_cols: usize) -> String {
     if max_cols == 0 {
         return String::new();
@@ -690,19 +466,11 @@ fn truncate_for_width(s: &str, max_cols: usize) -> String {
     out
 }
 
-/// Prompt bar with upstream-style top + bottom rule lines (no left
-/// or right border box), a `❯` heavy-chevron prompt, and the live
-/// input buffer. During streaming the buffer stays visible but
-/// dimmed — upstream never substitutes copy, and swapping text flickers.
 fn draw_prompt(f: &mut Frame<'_>, area: Rect, state: &ConversationState) {
     let block = Block::default()
         .borders(Borders::TOP | Borders::BOTTOM)
         .border_style(Style::default().fg(theme::PROMPT_BORDER));
 
-    // Chevron + cursor share the prompt-bar rule color so the
-    // input band reads as one continuous element. Dim while the
-    // request is inflight — upstream keeps the input visible but
-    // muted so the user knows it's locked.
     let chevron_style = if state.streaming {
         Style::default()
             .fg(theme::PROMPT_BORDER)
@@ -727,14 +495,8 @@ fn draw_prompt(f: &mut Frame<'_>, area: Rect, state: &ConversationState) {
         .wrap(Wrap { trim: false });
     f.render_widget(para, area);
 
-    // Let the terminal paint its native block cursor at the input
-    // tail — upstream relies on the terminal caret shape (block by
-    // default) rather than a drawn `_` glyph. Skip while streaming
-    // so the inflight dimmed input doesn't show an active cursor.
     if !state.streaming {
-        // Chevron "❯ " is 2 columns wide; input flows from column 2.
-        // `.block(TOP|BOTTOM)` eats one row at top + bottom — the
-        // input sits on area.y + 1.
+
         let cx = area.x + 2 + state.input.chars().count() as u16;
         let cy = area.y + 1;
         let max_x = area.x + area.width.saturating_sub(1);
@@ -742,9 +504,6 @@ fn draw_prompt(f: &mut Frame<'_>, area: Rect, state: &ConversationState) {
     }
 }
 
-/// Statusline row — single muted line painted bottom-of-band.
-/// Dispatches through the statusline subsystem so a user-supplied
-/// `settings.statusline.command` can replace the native fallback.
 fn draw_statusline(
     f: &mut Frame<'_>,
     area: Rect,
@@ -763,12 +522,9 @@ fn draw_statusline(
     let home = directories::BaseDirs::new()
         .map(|b| b.home_dir().to_string_lossy().into_owned());
 
-    // Reuse the canonical stripper so display-layer matches wire-layer
-    // semantics (case-insensitive `[1m]` anywhere in the string).
     let (canonical, has_1m) =
         crate::translator::anthropic::strip_1m_suffix(model);
-    // Statusline uses the compact `[1M]` tag instead of the anchor-
-    // wording `(1M context)` so the line stays dense.
+
     let base = crate::inference::model_display::public_model_display_name(&canonical)
         .unwrap_or(&canonical)
         .to_string();
@@ -836,9 +592,6 @@ fn draw_statusline(
         custom_env: Default::default(),
     };
 
-    // TODO(012b/014b): thread the actual `settings.statusline` config
-    // through here once settings is wired into render state. For now the
-    // None path triggers the native emoji-prefixed fallback.
     let (line, _warn) = statusline::dispatch(&ctx, None);
     let stripped = strip_ansi(&line.content);
     let provider_label = crate::config::providers::ProviderId::from_slug(provider_id)
@@ -871,21 +624,6 @@ fn strip_ansi(s: &str) -> String {
     out
 }
 
-/// Info row — absolute bottom line. Mirrors upstream's shape:
-/// left side carries the permission-mode chip + shortcut text,
-/// right side carries token count + model. Context-driven hint
-/// flips based on state (streaming / autocomplete / idle).
-///
-/// Permission chip rendering follows upstream
-/// `components/PromptInput/PromptInputFooterLeftSide.tsx:348-367`:
-/// Default mode hides the chip entirely (upstream `hasActiveMode`
-/// gate); every other mode emits `<symbol> <label> on` in a
-/// mode-specific color token. The `(shift+tab to cycle)` hint is
-/// suffixed when `primaryItemCount < 2` (line 349). For 016 MVP the
-/// mode chip is the only "primary" chip, so the gate is effectively
-/// always-show — the counter is wired so future chips (tool-state /
-/// PR-status / tasks) automatically activate the hide-hint branch
-/// when they land. See 016 design.md §"Cycle hint visibility gate".
 fn draw_info_row(
     f: &mut Frame<'_>,
     area: Rect,
@@ -894,10 +632,6 @@ fn draw_info_row(
 ) {
     let _ = model;
 
-    // Feedback slot takes precedence over the permission chip while
-    // it's active (openspec 001 phase 4). "plan mode on", "copied 42
-    // turns", etc. render dim in the bottom-left until the TTL
-    // elapses.
     let left = if let Some((msg, _stamped)) = state.toggle_feedback.as_ref() {
         Line::from(Span::styled(
             msg.clone(),
@@ -915,22 +649,6 @@ fn draw_info_row(
         build_info_chip_line(state)
     };
 
-    // Right side: per-session token accounting. Raw count (no
-    // abbreviation) when the session is still within the safe
-    // buffer; swap to upstream-shape `N% until auto-compact` warning
-    // once usage crosses the warning threshold (context_window - 20k
-    // minus the 13k auto-compact buffer — see
-    // reconstructed/2.1.113/source/services/compact/autoCompact.ts).
-    //
-    // Formula matches upstream `tokenCountFromLastAPIResponse`
-    // (utils/tokens.ts:55) — take `input + cache_creation + cache_read
-    // + output` from the LAST assistant message, nothing else.
-    // `input_tokens` already folds the three input buckets at the
-    // translator; `output_tokens` holds the last message_delta total.
-    // `cumulative_output_tokens` is intentionally EXCLUDED here —
-    // prior sub-turns' output already rides in the next sub-turn's
-    // `input_tokens` via history, so adding cumulative would
-    // double-count across tool-call chains.
     let total = state.input_tokens.saturating_add(state.output_tokens);
     let right_text = build_token_right_chip(state, total);
 
@@ -957,19 +675,9 @@ fn draw_info_row(
     }
 }
 
-/// Upstream buffer constants from
-/// `reconstructed/2.1.113/source/services/compact/autoCompact.ts`
-/// lines 142-145. Port verbatim — same thresholds keep the warning
-/// band consistent with upstream UX. The auto-compact buffer is
-/// subtracted from the context window to derive the `threshold`; the
-/// warning appears once `usage >= threshold - WARNING_BUFFER`.
 const AUTOCOMPACT_BUFFER_TOKENS: u64 = 13_000;
 const WARNING_THRESHOLD_BUFFER_TOKENS: u64 = 20_000;
 
-/// Decide the bottom-right chip text. Raw token sum when the session
-/// is still below the warning band; swap to `N% until auto-compact`
-/// once upstream's threshold math trips. Empty string on a fresh
-/// session (zero tokens) so the right column disappears entirely.
 fn build_token_right_chip(state: &ConversationState, total: u64) -> String {
     if total == 0 {
         return String::new();
@@ -991,32 +699,21 @@ fn build_token_right_chip(state: &ConversationState, total: u64) -> String {
     }
 }
 
-/// Build the default (non-feedback) info-row left line: permission
-/// chip + optional cycle hint + context hint. Factored out so the
-/// feedback slot can take over the left column without duplicating
-/// the chip assembly.
 fn build_info_chip_line(state: &ConversationState) -> Line<'static> {
     let chip_opt = state.permission_mode_label();
     let has_chip = chip_opt.is_some();
-    // Background-task pill — byte-match upstream
-    // (`tasks/pillLabel.ts:10-67`). `None` when no active tasks OR
-    // when OTHERSIDE_DISABLE_BACKGROUND_TASKS=1 ⇒ segment skipped.
+
     let task_pill = if crate::tasks::is_disabled() {
         None
     } else {
         crate::tasks::pill_label::get_pill_label(state.tasks.counts_active())
     };
     let has_task_pill = task_pill.is_some();
-    // Hide cycle-hint once any other left-side segment is present so
-    // the row doesn't grow into a wrap-prone string.
+
     let primary_item_count: usize =
         (has_chip as usize) + (has_task_pill as usize);
     let show_cycle_hint = primary_item_count < 2;
 
-    // Prefer the "ctrl+b to background" hint when a foreground task
-    // is eligible to be backgrounded — mirrors upstream's context-
-    // sensitive footer hint. Falls through to "esc to interrupt"
-    // when streaming without a backgroundable task.
     let has_backgroundable = !crate::tasks::is_disabled()
         && state.tasks.any_running_foreground();
     let hint = if has_backgroundable {
@@ -1048,9 +745,7 @@ fn build_info_chip_line(state: &ConversationState) -> Line<'static> {
         }
     }
     if let Some(pill) = task_pill {
-        // Separator with preceding chip per capture
-        // `02-after-ctrl-b.txt`: ` · 1 shell`. Render even when no
-        // perm chip preceded — just no separator.
+
         let segment = if has_chip {
             format!(" · {pill}")
         } else {
@@ -1083,8 +778,6 @@ mod tests {
     fn strip_ansi_preserves_plain_text() {
         assert_eq!(strip_ansi("plain"), "plain");
     }
-
-    // --- 015 user-message background + chevron ---------------------------
 
     fn line_width(line: &Line<'_>) -> usize {
         line.spans.iter().map(|s| s.content.chars().count()).sum()
@@ -1123,20 +816,19 @@ mod tests {
     fn render_message_user_continuation_lines_indent_with_bg() {
         let lines = render_message(OpenAiChatRole::User, "line1\nline2", 80);
         assert_eq!(lines.len(), 2);
-        // First line carries the chevron.
+
         assert_eq!(lines[0].spans[0].content, "❯ ");
-        // Continuation line indents with two spaces — no chevron.
+
         assert_eq!(lines[1].spans[0].content, "  ");
         assert_eq!(lines[1].spans[0].style.bg, Some(theme::USER_BG));
-        // Both lines fill to the width.
+
         assert_eq!(line_width(&lines[0]), 80);
         assert_eq!(line_width(&lines[1]), 80);
     }
 
     #[test]
     fn render_message_user_wraps_under_width_still_fills() {
-        // Short message at narrow width — filler span handles the
-        // remaining cells so the bg covers every column.
+
         let lines = render_message(OpenAiChatRole::User, "x", 12);
         assert_eq!(line_width(&lines[0]), 12);
         for span in &lines[0].spans {
@@ -1146,8 +838,7 @@ mod tests {
 
     #[test]
     fn render_log_splices_tool_call_lines_between_messages_and_buffer() {
-        // Integration-level spot check — draw against a TestBackend
-        // and inspect the cell grid for the Running bullet.
+
         use crate::tui::state::{ConversationState, DisplayMessage};
         use crate::tui::tool_render::ToolStatus;
         use ratatui::backend::TestBackend;
@@ -1168,7 +859,7 @@ mod tests {
             "Glob".into(),
             serde_json::json!({ "pattern": "*.rs" }),
         );
-        // Running state expected.
+
         let backend = TestBackend::new(80, 20);
         let mut term = Terminal::new(backend).expect("terminal");
         term.draw(|f| {
@@ -1183,15 +874,12 @@ mod tests {
             .map(|c| c.symbol())
             .collect::<String>();
         assert!(content.contains("Glob"), "tool name absent: {content:?}");
-        // Header has no explicit "running" text now — upstream format
-        // conveys status via bullet color only. Test buffer lacks ANSI,
-        // so we only guarantee the name + bullet glyph are present.
+
         assert!(
             content.contains("●") || content.contains("⏺"),
             "bullet absent: {content:?}"
         );
 
-        // Transition to Ok — bullet color + status text flips.
         st.finish_tool_call("t1", Ok(serde_json::json!({ "numFiles": 5 })), 77);
         term.draw(|f| {
             let area = f.area();
@@ -1204,21 +892,15 @@ mod tests {
             .iter()
             .map(|c| c.symbol())
             .collect::<String>();
-        // Status "ok" + elapsed "77ms" no longer render on the header
-        // (upstream format). Color transition is in the span style,
-        // not the plain-text buffer. Preview line still shows the
-        // file count via the payload gutter.
+
         assert!(content.contains("5 file"));
 
-        // Sanity — status enum actually transitioned.
         assert_eq!(st.active_tool_calls[0].status, ToolStatus::Ok);
     }
 
     #[test]
     fn render_message_assistant_has_no_user_bg() {
-        // Guardrail: Bug B changes must NOT bleed into the Assistant
-        // branch. Assistant keeps a PRIMARY bullet + plain TEXT body
-        // with no background fill.
+
         let lines = render_message(OpenAiChatRole::Assistant, "reply", 80);
         for line in &lines {
             for span in &line.spans {
@@ -1237,13 +919,11 @@ mod tests {
         );
     }
 
-    // ----- 016: permission chip render wiring -----
-
     #[test]
     fn theme_color_for_plan_mode_is_sage() {
         use super::super::state::ChipColor;
         use ratatui::style::Color;
-        // Upstream `theme.ts:441` dark-theme `planMode` sage mirror.
+
         assert_eq!(theme::color_for(ChipColor::PlanMode), Color::Rgb(72, 150, 140));
     }
 
@@ -1251,8 +931,7 @@ mod tests {
     fn theme_color_for_auto_accept_is_teal_cyan_distinct_from_primary() {
         use super::super::state::ChipColor;
         use ratatui::style::Color;
-        // C69 distinct-hue — MUST NOT equal PRIMARY to keep the
-        // blue-violet family from collapsing into one visual cluster.
+
         let color = theme::color_for(ChipColor::AutoAccept);
         assert_eq!(color, Color::Rgb(72, 170, 170));
         assert_ne!(color, theme::PRIMARY);
@@ -1265,8 +944,6 @@ mod tests {
         assert_eq!(theme::color_for(ChipColor::Error), Color::Rgb(171, 43, 63));
     }
 
-    /// Render just the info-row rect into a `TestBackend`, then collect
-    /// the cells as a plain string so test asserts can grep the output.
     fn render_info_row_to_string(
         state: &super::super::state::ConversationState,
         width: u16,
@@ -1293,8 +970,7 @@ mod tests {
 
     #[test]
     fn default_mode_renders_no_chip() {
-        // Per upstream `hasActiveMode` gate, Default mode's info row
-        // must not carry any chip glyph or label.
+
         use super::super::state::ConversationState;
         use crate::config::PermissionMode;
         let mut st = ConversationState::new();
@@ -1337,7 +1013,7 @@ mod tests {
         st.session.permission_mode = PermissionMode::Yolo;
         let rendered = render_info_row_to_string(&st, 80);
         assert!(rendered.contains("⏵⏵"), "rendered: {rendered:?}");
-        // Identity-zone brand: `yolo on`, not `bypass permissions on`.
+
         assert!(rendered.contains("yolo on"), "rendered: {rendered:?}");
         assert!(
             !rendered.contains("bypass permissions"),
@@ -1347,8 +1023,7 @@ mod tests {
 
     #[test]
     fn cycle_hint_shown_when_only_mode_chip_is_primary() {
-        // 016 MVP: mode chip is the only primary item, so the hint is
-        // always shown for any non-Default mode.
+
         use super::super::state::ConversationState;
         use crate::config::PermissionMode;
         let mut st = ConversationState::new();
@@ -1362,8 +1037,7 @@ mod tests {
 
     #[test]
     fn cycle_hint_absent_in_default_mode() {
-        // No chip at all means no hint either — Default mode renders
-        // a truly empty info row (ignoring stream/input hints).
+
         use super::super::state::ConversationState;
         use crate::config::PermissionMode;
         let mut st = ConversationState::new();
@@ -1377,9 +1051,7 @@ mod tests {
 
     #[test]
     fn info_row_right_side_renders_raw_token_sum() {
-        // Per-session accounting: input + output as a single raw count.
-        // 12_345 + 6_789 = 19_134 → "19134 tokens" (no abbreviation,
-        // no sigil).
+
         use super::super::state::ConversationState;
         let mut st = ConversationState::new();
         st.input_tokens = 12_345;
@@ -1391,8 +1063,6 @@ mod tests {
         assert!(!rendered.contains("Σ"), "rendered: {rendered:?}");
         assert!(!rendered.contains("19k"), "rendered: {rendered:?}");
     }
-
-    // --- 017 §4 queue lines ---------------------------------------------
 
     fn render_queue_lines_to_string(
         state: &ConversationState,
@@ -1426,7 +1096,7 @@ mod tests {
         let mut st = ConversationState::new();
         st.queued_messages.push("first queued".into());
         st.queued_messages.push("second queued".into());
-        // 2 messages + 1 margin row = 3.
+
         let s = render_queue_lines_to_string(&st, 80, 3);
         assert!(s.contains("❯ first queued"), "rendered: {s:?}");
         assert!(s.contains("❯ second queued"), "rendered: {s:?}");
@@ -1439,7 +1109,7 @@ mod tests {
         for i in 0..7 {
             st.queued_messages.push(format!("msg-{i}"));
         }
-        // Height 4 → 3 message rows (margin + 3). Show 2 msgs + summary.
+
         let s = render_queue_lines_to_string(&st, 80, 4);
         assert!(s.contains("❯ msg-0"), "rendered: {s:?}");
         assert!(s.contains("❯ msg-1"), "rendered: {s:?}");
@@ -1452,7 +1122,7 @@ mod tests {
         let mut st = ConversationState::new();
         let long: String = "x".repeat(200);
         st.queued_messages.push(long);
-        // 1 message + 1 margin = 2 rows.
+
         let s = render_queue_lines_to_string(&st, 40, 2);
         assert!(s.contains("❯ "), "chevron missing: {s:?}");
         assert!(s.contains('…'), "ellipsis missing: {s:?}");
@@ -1478,7 +1148,7 @@ mod tests {
             }
             joined.push('\n');
         }
-        // No leading `> ` line between tip and prompt when queue empty.
+
         assert!(!joined.contains("❯ queued-"), "stray queue row: {joined:?}");
     }
 
@@ -1531,17 +1201,9 @@ mod tests {
         assert!(!joined.contains("❯ stranded"), "painted during idle: {joined:?}");
     }
 
-    // ----- bottom-right token chip — input + output, no cumulative -----
-
     #[test]
     fn token_chip_uses_input_plus_output_not_cumulative() {
-        // Upstream `tokenCountFromLastAPIResponse` shape: sum of the
-        // last assistant message's input + cache + output. Our state
-        // folds the three input buckets into `input_tokens`, so the
-        // formula collapses to `input + output`. Adding the
-        // `cumulative_output_tokens` bucket on top would double-count
-        // the prior sub-turn whose output is already folded into the
-        // next sub-turn's input via history.
+
         use super::super::state::ConversationState;
         let mut st = ConversationState::new();
         st.input_tokens = 23_298;
@@ -1558,45 +1220,36 @@ mod tests {
 
     #[test]
     fn token_chip_grows_across_tool_chain_sub_turns() {
-        // Regression: before the `update_usage` fold-on-message-start
-        // fix, a tool-call chain would lose sub-turn output tokens
-        // because Anthropic's `message_delta` fires once per message
-        // with the final output count, so the drop-based fold never
-        // triggered when N2 >= N1. Walk the full Anthropic SSE
-        // sequence (message_start → message_delta, repeated per
-        // sub-turn) and assert the displayed total is monotonically
-        // non-decreasing.
+
         use super::super::state::ConversationState;
         let mut st = ConversationState::new();
         let mut samples: Vec<u64> = Vec::new();
         let push_sample = |st: &ConversationState, samples: &mut Vec<u64>| {
             samples.push(st.input_tokens.saturating_add(st.output_tokens));
         };
-        // Sub-turn 1: tool call (small output).
+
         st.update_usage(Some(20_000), None);
         push_sample(&st, &mut samples);
         st.update_usage(None, Some(50));
         push_sample(&st, &mut samples);
-        // Sub-turn 2: tool call with larger output.
+
         st.update_usage(Some(21_000), None);
         push_sample(&st, &mut samples);
         st.update_usage(None, Some(120));
         push_sample(&st, &mut samples);
-        // Sub-turn 3: final assistant reply, largest.
+
         st.update_usage(Some(23_000), None);
         push_sample(&st, &mut samples);
         st.update_usage(None, Some(540));
         push_sample(&st, &mut samples);
-        // Chip = input + output; must never regress.
+
         for pair in samples.windows(2) {
             assert!(
                 pair[1] >= pair[0],
                 "chip total regressed: {pair:?} (full sequence: {samples:?})",
             );
         }
-        // Final chip total = last sub-turn's input + output (upstream
-        // parity). Prior sub-turns' output rides in `input_tokens` via
-        // history, so no separate bookkeeping needed for the chip.
+
         assert_eq!(samples.last().copied(), Some(23_000 + 540));
     }
 }

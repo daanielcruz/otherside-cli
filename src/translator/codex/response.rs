@@ -1,24 +1,4 @@
-//! Translator — ChatGPT `/responses` SSE stream → OpenAI canonical
-//! `OpenAiChunk`s.
-//!
-//! Codex emits typed SSE events (`response.output_text.delta`,
-//! `response.function_call_arguments.delta`, `response.completed`, …).
-//! We fold those into OpenAI chat-completion chunks so the outer TUI /
-//! agent loop keeps its provider-agnostic shape.
-//!
-//! Event mapping (source:
-//! `docs/design/codex-openai-auth-api.md §SSE`):
-//!
-//! | event `type`                                  | emit |
-//! |---|---|
-//! | `response.created`                            | first chunk with `role: assistant` |
-//! | `response.output_text.delta`                  | text delta chunk |
-//! | `response.custom_tool_call_input.delta`       | tool-call arguments delta |
-//! | `response.output_item.added` (function_call)  | tool-call id + name chunk |
-//! | `response.completed`                          | final chunk with finish_reason + usage |
-//! | `response.failed`                             | returned as an `Err` on the stream |
-//! | `response.incomplete`                         | finish_reason = "length" or similar |
-//! | everything else                               | silently ignored |
+
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -29,11 +9,6 @@ use crate::inference::{
     OpenAiToolCallFunctionDelta, OpenAiUsage,
 };
 
-/// Streaming state — consumers instantiate one per turn and feed raw
-/// SSE `event-type` + `data` pairs through [`State::ingest`]. The
-/// helper returns zero-or-more `OpenAiChunk`s to forward downstream,
-/// plus a `done` flag once `response.completed` / `response.failed`
-/// fires.
 #[derive(Debug, Default)]
 pub struct State {
     pub response_id: Option<String>,
@@ -52,8 +27,6 @@ impl State {
         }
     }
 
-    /// Absorb one `event: <type>\ndata: <payload>\n` frame. `payload`
-    /// is already JSON-parsed.
     pub fn ingest(&mut self, event: &str, payload: &Value) -> Vec<OpenAiChunk> {
         match event {
             "response.created" => {
@@ -66,10 +39,7 @@ impl State {
                 vec![self.first_chunk()]
             }
             "response.output_item.added" => {
-                // Only care about function_call items here — seeds a
-                // new tool-call entry with id + name so the agent
-                // loop can spawn the Running bullet before any args
-                // arrive.
+
                 let item = &payload["item"];
                 if item["type"] == "function_call" {
                     let call_id = item["call_id"].as_str().unwrap_or("").to_string();

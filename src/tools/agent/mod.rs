@@ -1,48 +1,4 @@
-//! `Agent` tool — subagent dispatch entry.
-//!
-//! The wire-advertised name stays `Agent` (R-20 training anchor; upstream
-//! capture 2026-04-18). 010 renamed the module from `task.rs` → `agent.rs`;
-//! 020 replaces the original stub with a real dispatcher.
-//!
-//! # Flow
-//!
-//! 1. Validate `description` + `prompt` + optional `subagent_type`.
-//!    `subagent_type` defaults to `general-purpose` (matches upstream).
-//! 2. Resolve the definition via [`crate::subagents::registry::resolve`].
-//!    Unknown types → [`ToolError::InvalidArgs`] listing the registered
-//!    names so the model can recover.
-//! 3. Push a recursion level via [`DepthGuard::try_push`]. Exceeding
-//!    `MAX_DEPTH` → [`ToolError::InvalidArgs`] (model-recoverable, not a
-//!    silent truncation).
-//! 4. Fetch the installed [`SubagentRunner`] and call `run(def, prompt,
-//!    depth)`. The runner is responsible for enforcing the tools allowlist
-//!    via [`crate::subagents::registry::tool_is_allowed`] on each nested
-//!    tool call.
-//! 5. Forward the runner's result JSON back to the agent loop. The result
-//!    shape matches upstream's `agentToolResultSchema` — `content` array,
-//!    `totalToolUseCount`, `totalDurationMs`, `totalTokens`, `usage` map —
-//!    so `tui::tool_render::agent_preview` renders `Done (N tool uses · M
-//!    tokens · Ts)` without further change.
-//!
-//! # Tool-subset enforcement
-//!
-//! The dispatcher itself does NOT touch nested tool calls — those happen
-//! inside the runner's inner [`crate::agent::AgentLoop`]. The runner MUST
-//! consult [`crate::subagents::registry::tool_is_allowed`] on every tool
-//! dispatched inside a subagent turn and surface a
-//! `ToolError::PermissionDenied` for disallowed calls (see
-//! [`SubagentToolGate`] helper below — the runner wires it into its
-//! [`crate::agent::ToolDispatcher`]).
-//!
-//! # No-runner path
-//!
-//! When the binary starts without installing a runner (e.g. unit tests
-//! that touch `tools::dispatch("Agent", ...)` before wiring), the
-//! dispatcher returns the historical `{status: "unavailable", reason: ...}`
-//! shape. That keeps existing call sites green and aligns with the
-//! tui-render fallback.
-//!
-//! Zone: identity (R-103). No upstream product name strings in copy.
+
 
 use std::sync::Arc;
 
@@ -52,10 +8,6 @@ use crate::subagents::{registry, AgentInvocation, DepthGuard, RunnerError, Subag
 
 use crate::tools::ToolError;
 
-/// Dispatch an `Agent` tool call. Sync because the harness-wide
-/// [`tools::dispatch`] signature is sync; the installed runner is
-/// responsible for bridging to async provider I/O internally (via
-/// `tokio::task::block_in_place` + `Handle::current().block_on` per R-107).
 pub fn agent(args: &Value) -> Result<Value, ToolError> {
     let description = args
         .get("description")
@@ -70,11 +22,6 @@ pub fn agent(args: &Value) -> Result<Value, ToolError> {
         .and_then(Value::as_str)
         .unwrap_or("general-purpose");
 
-    // Per-call overrides the schema advertises (openspec 003 A1):
-    // model / run_in_background / isolation. Plumb them into the
-    // runner via `AgentInvocation` so future runners can honor them
-    // without every dispatcher call-site changing. Today's lone fake
-    // runner ignores them — that's fine, the fields ride through.
     let invocation = AgentInvocation {
         model: args
             .get("model")
@@ -89,8 +36,6 @@ pub fn agent(args: &Value) -> Result<Value, ToolError> {
             .map(str::to_string),
     };
 
-    // Resolve the definition — unknown types surface as InvalidArgs with a
-    // hint listing registered names so the model can recover mid-turn.
     let Some(definition) = registry::resolve(subagent_type) else {
         let available: Vec<&str> = registry::all().iter().map(|d| d.name.as_str()).collect();
         return Err(ToolError::InvalidArgs(format!(
@@ -99,8 +44,6 @@ pub fn agent(args: &Value) -> Result<Value, ToolError> {
         )));
     };
 
-    // Bump recursion depth. `try_push` is the only surface that checks the
-    // cap — the guard Drops on function exit so pops happen automatically.
     let Some(_guard) = DepthGuard::try_push() else {
         return Err(ToolError::InvalidArgs(format!(
             "subagent recursion depth exceeded (max {})",
@@ -109,11 +52,6 @@ pub fn agent(args: &Value) -> Result<Value, ToolError> {
     };
     let depth_at_entry = crate::subagents::depth::current() - 1;
 
-    // If no runner is installed, fall back to the historical stub shape
-    // so older call sites (and unit tests that hit the dispatcher without
-    // wiring a runner) keep their existing behavior. Echo the invocation
-    // overrides back so the model sees its intent was recognized even
-    // when the runner can't honor it yet.
     let Some(runner) = crate::subagents::current_runner() else {
         return Ok(json!({
             "status": "unavailable",
@@ -127,13 +65,6 @@ pub fn agent(args: &Value) -> Result<Value, ToolError> {
         }));
     };
 
-    // Background route — when the caller sets `run_in_background:
-    // true` AND the env gate is off AND the TUI has installed the
-    // global TaskStore, detach the dispatch onto the blocking pool
-    // and return a synthetic tool_result immediately so the model
-    // can end its turn. Completion ships via `<task-notification>`
-    // XML on the next user turn (drained by the provider request
-    // builder from the same global store).
     let wants_background = matches!(invocation.run_in_background, Some(true));
     if wants_background && !crate::tasks::is_disabled() {
         if let Some(store) = crate::tasks::store::current_global() {
@@ -142,15 +73,7 @@ pub fn agent(args: &Value) -> Result<Value, ToolError> {
             } else {
                 description.to_string()
             };
-            // The originating LLM `tool_use_id` rides through the
-            // dispatcher via `crate::tools::current_tool_call_id`
-            // (set by the agent loop's `dispatch_with_prompt` scope).
-            // Stored on the `TaskRecord` so the next-turn
-            // `<task-notification>` XML can populate
-            // `<tool-use-id>` — the reconciliation key the model
-            // uses to match the notification back to its own
-            // `tool_use` block in history (upstream
-            // `tasks/LocalAgentTask/LocalAgentTask.tsx:247-257`).
+
             let tool_use_id = crate::tools::current_tool_call_id();
             let task_id = crate::tasks::spawn_background_agent(
                 runner,
@@ -162,15 +85,7 @@ pub fn agent(args: &Value) -> Result<Value, ToolError> {
                 display.clone(),
                 tool_use_id.clone(),
             );
-            // Synthetic `tool_result` text — byte-match upstream
-            // `tools/AgentTool/AgentTool.tsx:1339-1351`. The model
-            // is trained on this exact prose ("Async agent launched
-            // successfully.\nagentId: <id> (internal ID — do not
-            // mention to user. Use SendMessage with to: '<id>' to
-            // continue this agent.)\nThe agent is working in the
-            // background. You will be notified automatically when
-            // it completes."). Drift = the model can't recognize
-            // its own backgrounded dispatch.
+
             let upstream_text = format!(
                 "Async agent launched successfully.\nagentId: {agent_id} (internal ID - do not mention to user. Use SendMessage with to: '{agent_id}' to continue this agent.)\nThe agent is working in the background. You will be notified automatically when it completes.",
                 agent_id = task_id.as_str(),
@@ -192,9 +107,6 @@ pub fn agent(args: &Value) -> Result<Value, ToolError> {
     dispatch_with_runner(runner.as_ref(), definition, prompt, depth_at_entry, &invocation)
 }
 
-/// Internal dispatch once the runner is resolved. Split out so tests can
-/// exercise the error-mapping branch with an injected fake directly, without
-/// having to take the global runner.
 fn dispatch_with_runner(
     runner: &dyn SubagentRunner,
     definition: &registry::AgentDefinition,
@@ -220,13 +132,7 @@ fn dispatch_with_runner(
     }
 }
 
-/// Helper a runner wires into its inner [`crate::agent::ToolDispatcher`] to
-/// enforce the definition's tools allowlist on every nested tool call. The
-/// runner constructs this gate with the resolved definition then forwards
-/// permitted calls to the real `tools::dispatch` — disallowed ones produce
-/// a JSON-encoded `ToolError::PermissionDenied` the model sees in the tool
-/// result stream.
-#[allow(dead_code)] // Wired by the real runner at startup; not used inside the stub path.
+#[allow(dead_code)]
 pub struct SubagentToolGate {
     definition: Arc<registry::AgentDefinition>,
 }
@@ -236,8 +142,6 @@ impl SubagentToolGate {
         Self { definition }
     }
 
-    /// Returns the dispatched result or a `ToolError::PermissionDenied`
-    /// when the subagent is not allowed to call `tool_name`.
     pub fn gated_dispatch(&self, tool_name: &str, args: &Value) -> Result<Value, ToolError> {
         if !self.definition.allows_tool(tool_name) {
             return Err(ToolError::PermissionDenied(format!(
@@ -257,11 +161,9 @@ mod tests {
 
     fn once_install_fake() -> Arc<InlineFakeRunner> {
         let fake = Arc::new(InlineFakeRunner::new());
-        // First install wins — subsequent tests reuse the same fake since
-        // the global RUNNER is OnceLock.
+
         let _ = install_runner(fake.clone() as Arc<dyn SubagentRunner>);
-        // Whatever was actually installed: fetch it so tests that run
-        // after a different test's install still see a usable fake.
+
         fake
     }
 
@@ -284,7 +186,7 @@ mod tests {
             ToolError::InvalidArgs(m) => {
                 assert!(m.contains("unknown subagent_type"));
                 assert!(m.contains("not-a-real-type"));
-                assert!(m.contains("general-purpose")); // Registered type is listed.
+                assert!(m.contains("general-purpose"));
             }
             _ => panic!("expected InvalidArgs"),
         }
@@ -292,19 +194,17 @@ mod tests {
 
     #[test]
     fn default_subagent_type_is_general_purpose() {
-        // Install fake and tag it with something recognizable.
+
         let fake = once_install_fake();
         fake.set_content("ok-default");
         let res = agent(&json!({
             "description": "test",
             "prompt": "do it",
         }));
-        // If a prior test already set a different content, we still
-        // verify the subagent_type field is general-purpose.
+
         match res {
             Ok(v) => {
-                // Accept either the completed-shape from our fake or the
-                // unavailable-shape if a foreign runner was installed first.
+
                 if v["status"] == "completed" {
                     assert_eq!(v["subagent_type"], "general-purpose");
                 } else {
@@ -331,9 +231,7 @@ mod tests {
 
     #[test]
     fn tool_gate_allows_in_allowlist_calls() {
-        // Reader is allowed to call Glob — the call will bounce off Glob's
-        // own validation (empty args) but it should NOT return
-        // PermissionDenied, proving the gate let it through.
+
         let def = registry::resolve("reader").unwrap().clone();
         let gate = SubagentToolGate::new(Arc::new(def));
         let res = gate.gated_dispatch("Glob", &json!({}));
@@ -341,7 +239,7 @@ mod tests {
             Err(ToolError::PermissionDenied(_)) => {
                 panic!("gate rejected an allowlisted tool")
             }
-            _ => {} // Ok or other Err — fine.
+            _ => {}
         }
     }
 

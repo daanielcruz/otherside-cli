@@ -1,15 +1,4 @@
-//! `ToolSearch` tool — resolves deferred tools on demand.
-//!
-//! Captured upstream schema: `{ query: String, max_results?: number }`.
-//! The model uses `query = "select:<ToolName>"` for a direct fetch or a
-//! keyword for a substring search.
-//!
-//! 018 widened the search catalog: results now cover the 9 wire-
-//! advertised tools PLUS the deferred catalog (5 entries after wave 1).
-//! Deferred schemas are served via `schemas::all_schemas()` — wire body
-//! generation stays on `schemas::tool_schemas()` so the deferred surface
-//! never leaks into outbound requests. Broader catalogs (MCP,
-//! skills-graph-bound tools) arrive in later waves.
+
 
 use serde_json::{json, Value};
 
@@ -77,8 +66,7 @@ mod tests {
     fn tool_search_empty_query_returns_all_up_to_max() {
         let res = tool_search(&json!({"query": "", "max_results": 100})).unwrap();
         let tools = res["tools"].as_array().unwrap();
-        // 9 wire + 18 deferred (018 first wave + 019 web + wave 3 +
-        // AskUserQuestion).
+
         assert_eq!(tools.len(), 27);
     }
 

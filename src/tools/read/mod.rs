@@ -1,7 +1,4 @@
-//! Read tool — file contents with cat -n formatting. Mirrors the
-//! upstream tool behavior: absolute path, default 2000-line limit,
-//! optional offset + limit, images / PDFs / notebooks stubbed to a
-//! descriptive error for MVP.
+
 
 use std::fs;
 use std::io::{BufRead, BufReader};
@@ -16,13 +13,9 @@ use set as read_set;
 
 const DEFAULT_LIMIT: usize = 2000;
 const MAX_LINE_CHARS: usize = 2000;
-/// Hard cap on file size we'll read into memory before truncation.
-/// Matches upstream's MAX_OUTPUT_SIZE guard so a rogue `file_path`
-/// cannot blow the model's context window or OOM the agent process.
+
 const MAX_FILE_SIZE: u64 = 256 * 1024;
 
-/// Paths that hang the reader on Unix-likes — opening them blocks
-/// indefinitely or feeds terminal state into the agent loop.
 const BLOCKED_DEVICE_PATHS: &[&str] = &[
     "/dev/zero",
     "/dev/random",
@@ -38,10 +31,6 @@ const BLOCKED_DEVICE_PATHS: &[&str] = &[
     "/proc/self/fd/2",
 ];
 
-/// File extensions that are almost always binary and have no useful
-/// text content — rejecting pre-I/O avoids flooding the model with
-/// gibberish. Text-like extensions the reader IS expected to handle
-/// are absent from this list.
 const BLOCKED_EXTENSIONS: &[&str] = &[
     "exe", "dll", "so", "dylib", "a", "lib", "o",
     "bin", "dat", "class", "jar", "war",
@@ -64,9 +53,6 @@ pub fn read(args: &Value) -> Result<Value, ToolError> {
         ));
     }
 
-    // Blocked-device guard. Opening `/dev/zero` or `/dev/tty` hangs
-    // the agent loop waiting for bytes that never arrive; refuse
-    // the read before we touch the kernel.
     let canonical = path.to_string_lossy();
     if BLOCKED_DEVICE_PATHS.iter().any(|d| canonical == *d) {
         return Err(ToolError::InvalidArgs(format!(
@@ -74,7 +60,6 @@ pub fn read(args: &Value) -> Result<Value, ToolError> {
         )));
     }
 
-    // MVP: punt on images / PDFs / notebooks with an informative error.
     if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
         let ext = ext.to_ascii_lowercase();
         if matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp") {
@@ -92,9 +77,7 @@ pub fn read(args: &Value) -> Result<Value, ToolError> {
                 "notebook read not yet wired in this build".into(),
             ));
         }
-        // Binary-extension rejection. Reading an executable as text
-        // floods the model with mojibake and burns tokens. Upstream
-        // has the same gate.
+
         if BLOCKED_EXTENSIONS.iter().any(|b| *b == ext) {
             return Err(ToolError::InvalidArgs(format!(
                 "binary extension .{ext} cannot be read as text"
@@ -109,8 +92,6 @@ pub fn read(args: &Value) -> Result<Value, ToolError> {
         )));
     }
 
-    // Size gate — refuse files larger than MAX_FILE_SIZE so a rogue
-    // `file_path` cannot OOM the agent or flood the model context.
     if let Ok(meta) = fs::metadata(path) {
         if meta.len() > MAX_FILE_SIZE {
             return Err(ToolError::InvalidArgs(format!(
@@ -121,8 +102,6 @@ pub fn read(args: &Value) -> Result<Value, ToolError> {
         }
     }
 
-    // Record the read so the Edit tool's Read-before-Edit gate is
-    // satisfied for this session.
     read_set::global().insert(path);
 
     let offset = args
@@ -161,7 +140,6 @@ pub fn read(args: &Value) -> Result<Value, ToolError> {
         emitted += 1;
     }
 
-    // Consume the rest of the iterator to count total lines when we stopped early.
     if emitted == limit {
         let file_again = fs::File::open(path)?;
         let reader_again = BufReader::new(file_again);
@@ -264,7 +242,7 @@ mod tests {
 
     #[test]
     fn read_rejects_blocked_device_path() {
-        // /dev/zero would otherwise hang indefinitely — refuse pre-I/O.
+
         let err = read(&json!({ "file_path": "/dev/zero" })).unwrap_err();
         assert!(matches!(err, ToolError::InvalidArgs(_)));
     }
@@ -287,7 +265,7 @@ mod tests {
             "otherside-fake-big-{}.txt",
             std::process::id()
         ));
-        // Write just over the 256 KB cap.
+
         let blob = vec![b'a'; (MAX_FILE_SIZE as usize) + 1];
         fs::write(&tmp, &blob).unwrap();
         let err = read(&json!({ "file_path": tmp.to_str().unwrap() })).unwrap_err();

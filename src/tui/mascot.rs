@@ -1,8 +1,4 @@
-//! Splash mascot — rendered centered over the streaming area with a
-//! tagline, crate name + version, and working-directory line stacked
-//! below. No border, no banner — just the mascot composition.
-//! Canonical source for the ASCII is `docs/design/mascot.md` in the
-//! outer repo; the constant below is the embedded copy.
+
 
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -14,64 +10,39 @@ use ratatui::{
 
 use super::render::theme;
 
-/// Canonical ASCII mascot — 15 rows tall, 30 columns wide at full size.
-/// Uses Braille-density characters so every cell renders at width 1 in
-/// a monospaced terminal.
 pub const MASCOT: &str = "
-                               +++++++++                              
-                          +++++==-----=-==++++                        
-                        +++-::---:::...:------++                      
-                      ++=:--::.:..:::...:-:..--==+++                  
-                     ++---::..:==++ ++*=:...:::..-==++ +++            
-                   ++=-=-:.-+            *=-..:--:::-=-+++            
-                 +++-==:.:+                #=:....:----=====+*##      
-                ++=-=-:.=+                  ##+-:..::.....:+==+*#     
-              +++-+=-:.=*                    ##*+-..:::...:-=-+*#     
-           +++====-:..=##                     #*:.......::-++*##      
-         +=---::....-+*##                   +*=..::..::=++*###        
-       +=--:::..:..:-+##               ++=-::...::--=+*####           
-      ++-=-:.....:...::=++*###**====--:...::---=+*####                
-      #*+=-==-..:::::::..........::..:-==++**#######                  
-       ###***++==--=---------++******######  #+--++                   
-          %%###***####***#########        ##*-.:++                    
-               **##**+=:.:=*##          ##+-.:-++                     
-                    +++-::...:=+******+-:..:-++                       
-                       +++=::..........::-=++                         
-                           +++---:----+++*                            
-                                +++++                                  
+                               +++++++++
+                          +++++==-----=-==++++
+                        +++-::---:::...:------++
+                      ++=:--::.:..:::...:-:..--==+++
+                     ++---::..:==++ ++*=:...:::..-==++ +++
+                   ++=-=-:.-+            *=-..:--:::-=-+++
+                 +++-==:.:+                #=:....:----=====+*##
+                ++=-=-:.=+                  ##+-:..::.....:+==+*#
+              +++-+=-:.=*                    ##*+-..:::...:-=-+*#
+           +++====-:..=##                     #*:.......::-++*##
+         +=---::....-+*##                   +*=..::..::=++*###
+       +=--:::..:..:-+##               ++=-::...::--=+*####
+      ++-=-:.....:...::=++*###**====--:...::---=+*####
+      #*+=-==-..:::::::..........::..:-==++**#######
+       ###***++==--=---------++******######  #+--++
+          %%###***####***#########        ##*-.:++
+               **##**+=:.:=*##          ##+-.:-++
+                    +++-::...:=+******+-:..:-++
+                       +++=::..........::-=++
+                           +++---:----+++*
+                                +++++
 ";
 
-/// Tagline below the mascot — black-hole flavored RE pun. Every
-/// black hole swallows light; in otherside, the stack collapses the
-/// other way and return values escape anyway.
-///
-/// Rotation set (pick any; edit `TAGLINE` to swap):
-/// - "past the event horizon · where even returns escape"
-/// - "singularity where the stack unwinds backwards"
-/// - "no light escapes — but every return does"
-/// - "where the call graph folds into the accretion disk"
 pub const TAGLINE: &str = "past the event horizon · where even returns escape";
 
-/// Mascot dimensions — 21 content rows × 70 columns. The literal
-/// above starts with a newline for indentation; [`mascot_rows`]
-/// strips the empty leading line so consumers see the 21 visual
-/// rows only.
 pub const MASCOT_COLS: u16 = 70;
 pub const MASCOT_ROWS: u16 = 21;
 
-/// Return the visible mascot rows — drops the leading empty line
-/// that the raw string literal carries. Renderers and tests both
-/// go through this so layout math lines up with what paints.
 pub fn mascot_rows() -> Vec<&'static str> {
     MASCOT.lines().filter(|l| !l.is_empty()).collect()
 }
 
-/// Paint the splash — mascot centered over the streaming area with
-/// tagline, `otherside cli vX.Y.Z`, and the working-directory line
-/// stacked below. No border, no banner.
-///
-/// Falls back to a single-line legend when the terminal is too
-/// narrow / short to host the mascot.
 pub fn draw_splash(f: &mut Frame<'_>, area: Rect) {
     if area.width < MASCOT_COLS + 2 || area.height < MASCOT_ROWS + 6 {
         let line = Line::from(vec![
@@ -88,10 +59,6 @@ pub fn draw_splash(f: &mut Frame<'_>, area: Rect) {
         return;
     }
 
-    // Stack (top → bottom): mascot · gap · tagline · gap ·
-    // "otherside cli vX.Y.Z" · gap · cwd. Top third of remaining
-    // vertical space acts as breathing room so the block rides the
-    // upper half of the streaming area.
     let content_h: u16 = MASCOT_ROWS + 1 + 1 + 1 + 1 + 1 + 1;
     let top_pad = area.height.saturating_sub(content_h) / 3;
     let padded = Rect {
@@ -103,13 +70,13 @@ pub fn draw_splash(f: &mut Frame<'_>, area: Rect) {
     let slots = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(MASCOT_ROWS), // 0 — mascot
-            Constraint::Length(1),           // 1 — gap
-            Constraint::Length(1),           // 2 — tagline
-            Constraint::Length(1),           // 3 — gap
-            Constraint::Length(1),           // 4 — otherside cli vX.Y.Z
-            Constraint::Length(1),           // 5 — gap
-            Constraint::Length(1),           // 6 — cwd
+            Constraint::Length(MASCOT_ROWS),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
             Constraint::Min(0),
         ])
         .split(padded);
@@ -135,8 +102,7 @@ fn draw_mascot_block(f: &mut Frame<'_>, area: Rect) {
 }
 
 fn draw_name_and_version(f: &mut Frame<'_>, area: Rect) {
-    // Bold crate name + dim version, centered. Sits between tagline
-    // and cwd in the splash stack.
+
     let line = Line::from(vec![
         Span::styled(
             "otherside cli",
@@ -178,9 +144,6 @@ fn draw_tagline(f: &mut Frame<'_>, area: Rect) {
     f.render_widget(Paragraph::new(line).alignment(Alignment::Center), area);
 }
 
-/// `/clear` variant — same composition as [`draw_splash`] but tints
-/// the mascot core rows with the accent color to reinforce the fresh
-/// session visual.
 pub fn draw_splash_with_core_accent(f: &mut Frame<'_>, area: Rect) {
     if area.width < MASCOT_COLS + 2 || area.height < MASCOT_ROWS + 6 {
         let line = Line::from(vec![
@@ -234,9 +197,7 @@ fn draw_mascot_with_core_accent(f: &mut Frame<'_>, area: Rect) {
         .into_iter()
         .enumerate()
         .map(|(idx, row)| {
-            // Middle third of the mascot gets the accent tint on
-            // /clear — reinforces the fresh-session signal without
-            // swapping the whole glyph color.
+
             let color = if (band_start..band_end).contains(&idx) {
                 theme::ACCENT_AMBER
             } else {
@@ -255,11 +216,7 @@ mod tests {
 
     #[test]
     fn mascot_has_content_rows() {
-        // The art is user-curated — don't lock column widths here
-        // (rows may have uneven trailing whitespace). Just assert
-        // that `mascot_rows` strips the leading empty line and
-        // exposes at least the declared row count of non-empty
-        // rows so the renderer has something to paint.
+
         let rows = mascot_rows();
         assert!(
             rows.len() >= MASCOT_ROWS as usize,
@@ -274,8 +231,7 @@ mod tests {
     #[test]
     fn tagline_carries_black_hole_framing() {
         let lower = TAGLINE.to_lowercase();
-        // Any of these hint-words is enough; the rotation set all
-        // carry at least one. Lock the semantic field, not the copy.
+
         let hits = [
             "horizon",
             "singularity",

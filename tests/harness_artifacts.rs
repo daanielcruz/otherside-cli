@@ -1,12 +1,4 @@
-//! Per-artifact byte-match conformance: every file under
-//! `fingerprint_corpus/harness/` reconstructs the exact slice it was
-//! extracted from in
-//! `fingerprint_corpus/tools-glob-single/turn1/request.body.json`.
-//!
-//! This is the chain-of-trust anchor for change 009. If these tests are
-//! green, any downstream consumer (translator, provider body builder)
-//! that assembles its output from these artifacts is guaranteed to
-//! produce a capture-identical payload under capture-identical inputs.
+
 
 use std::path::PathBuf;
 
@@ -14,7 +6,7 @@ use otherside::{harness, translator};
 use serde_json::Value;
 
 fn capture_path() -> PathBuf {
-    // cargo test CWD = crate root (`otherside-cli/`); reach up one to outer.
+
     PathBuf::from("../fingerprint_corpus/tools-glob-single/turn1/request.body.json")
 }
 
@@ -25,15 +17,7 @@ fn capture_body() -> Value {
 
 #[test]
 fn system_prompt_keeps_core_anchors_and_verification_bullet() {
-    // V2 drift (2026-04-20, user-authored): system-prompt.md was
-    // edited to identify otherside instead of claude-code, introduces
-    // environment placeholders (_WORKSPACE_DIR_ etc.), and trims
-    // claude-code-specific help / feedback bullets. Byte-exact compare
-    // with the capture is gone — structural guardrails here:
-    //
-    //  - Verification bullet (added per upstream constants/prompts.ts:410).
-    //  - Core sections every agent system prompt must retain.
-    //  - Environment placeholders are present for substitution.
+
     assert!(
         harness::SYSTEM_PROMPT.contains("subagent_type=\"verification\""),
         "system-prompt.md must include the verification-contract bullet"
@@ -65,9 +49,7 @@ fn system_prompt_keeps_core_anchors_and_verification_bullet() {
 
 #[test]
 fn system_preamble_block0_matches_capture() {
-    // Block 0 (billing header) stays byte-identical to the capture.
-    // Blocks 1/2/3 carry user-authored V2 drifts (identity / preamble
-    // / prompt edits) and are asserted structurally below.
+
     let body = capture_body();
     let captured = body["system"][0].clone();
     let assembled = translator::anthropic::system::build_system_blocks();
@@ -76,11 +58,7 @@ fn system_preamble_block0_matches_capture() {
 
 #[test]
 fn system_preamble_block1_is_compat_identity_literal() {
-    // Block 1 is the compat identity marker the anthropic-oauth
-    // inference gate validates against. Rewording it causes the API
-    // to reject the OAuth token, so this assertion locks the literal
-    // to its compat-required shape. User-facing persona overrides
-    // belong in block 2 (agent preamble), never here.
+
     let assembled = translator::anthropic::system::build_system_blocks();
     let text = assembled[1]["text"].as_str().unwrap();
     assert_eq!(
@@ -91,9 +69,7 @@ fn system_preamble_block1_is_compat_identity_literal() {
 
 #[test]
 fn system_preamble_block2_keeps_cache_and_core_guidance() {
-    // Structural guardrail for the V2-drifted block 2:
-    //  - cache_control marker stays attached (upstream-required)
-    //  - core agent-guidance anchors remain present
+
     let assembled = translator::anthropic::system::build_system_blocks();
     let block2 = &assembled[2];
     assert_eq!(block2["cache_control"]["type"], "ephemeral");
@@ -115,9 +91,7 @@ fn system_preamble_block2_keeps_cache_and_core_guidance() {
 
 #[test]
 fn reminder_deferred_tools_is_capture_minus_gdrive() {
-    // V2 drift (2026-04-20, user-authored): GDrive auth tools removed
-    // from the deferred-tools reminder — they are not wired in
-    // otherside. All other entries must remain.
+
     let body = capture_body();
     let captured = body["messages"][0]["content"][0]["text"]
         .as_str()
@@ -148,9 +122,7 @@ fn reminder_deferred_tools_is_capture_minus_gdrive() {
 
 #[test]
 fn reminder_skills_is_capture_minus_removed() {
-    // V2 drift (2026-04-20, user-authored): removed skills without
-    // otherside equivalents (update-config, keybindings-help, simplify,
-    // fewer-permission-prompts, claude-api). Kept skills must remain.
+
     let body = capture_body();
     let captured = body["messages"][0]["content"][1]["text"]
         .as_str()
@@ -178,9 +150,7 @@ fn reminder_skills_is_capture_minus_removed() {
 
 #[test]
 fn reminder_user_context_matches_capture_after_substitution() {
-    // Placeholders in the .tmpl file are substituted at render-time.
-    // When we re-render with the capture's literal email + date, we
-    // must reproduce content[2].text byte-for-byte.
+
     let body = capture_body();
     let captured = body["messages"][0]["content"][2]["text"]
         .as_str()
@@ -207,7 +177,7 @@ fn envelope_matches_capture_defaults() {
             "envelope field `{key}` diverges from capture"
         );
     }
-    // Key order in bundled must match capture's order for these fields.
+
     let bundled_keys: Vec<&str> = bundled
         .as_object()
         .expect("envelope is an object")

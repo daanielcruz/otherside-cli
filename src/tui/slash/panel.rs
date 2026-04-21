@@ -1,37 +1,19 @@
-//! Panel handler — mount a modal overlay picker.
-//!
-//! Delegates to the existing overlay-menu primitive (`tui::menu::OverlayMenu`).
-//! Each `PanelKind` variant maps to a constructor that populates the
-//! picker with current state-derived options. The event loop captures
-//! focus until the user commits (Enter) or cancels (Esc).
-//!
-//! Info-style panels (`/config`, `/status`, `/skills`, etc.) use the
-//! `new_info` constructor with bullet hints — no commit outcome fires,
-//! the overlay just acknowledges on Enter.
+
 
 use super::super::menu;
 use super::super::state::ConversationState;
 use super::PanelKind;
 use super::SlashOutcome;
 
-/// Dispatch a Panel-category slash — mount the overlay matching `kind`
-/// and return `Handled`. Event loop routes subsequent key events through
-/// `handle_menu_key` until the overlay resolves.
 pub fn handle(kind: PanelKind, state: &mut ConversationState) -> SlashOutcome {
-    // Clear the input + autocomplete so the typed `/<name>` text doesn't
-    // linger in the prompt bar beneath the overlay.
+
     state.input.clear();
     state.autocomplete = None;
     let overlay = match kind {
         PanelKind::Effort => menu::OverlayMenu::new_effort(state.session.effort_label),
         PanelKind::Permissions => menu::OverlayMenu::new_permissions(state.session.permission_mode),
         PanelKind::Model => {
-            // Surface the session's effort level to the picker so
-            // upstream's inline `◉ {Level} effort (default) ← → to adjust`
-            // indicator renders (014 parity). Falls back to the active
-            // model's catalog default — opus yields `"xhigh"`, sonnet
-            // `"high"`, haiku `"auto"`. Avoids the old hardcoded
-            // `"xhigh"` that rendered wrong for sonnet/haiku sessions.
+
             let effort = state
                 .session
                 .effort_label
@@ -43,12 +25,7 @@ pub fn handle(kind: PanelKind, state: &mut ConversationState) -> SlashOutcome {
             "Slash commands".into(),
             help_hints(),
         ),
-        // Unified Settings panel — `/status`, `/config`, `/usage`
-        // collapse into one `PanelKind::Settings(tab)` per upstream
-        // `components/Settings/Settings.tsx` (008 evidence). Title,
-        // content body, and focus-initial depend on the default tab;
-        // the dismiss anchor is hardcoded `Status dialog dismissed`
-        // regardless of tab (see `emit_panel_dismiss_anchor`).
+
         PanelKind::Settings(tab) => menu::OverlayMenu::new_settings(tab, state),
         PanelKind::Skills => menu::OverlayMenu::new_info(
             PanelKind::Skills,
@@ -75,13 +52,7 @@ pub fn handle(kind: PanelKind, state: &mut ConversationState) -> SlashOutcome {
             ],
         ),
         PanelKind::Tasks => {
-            // Wave-1 §6: register the panel + dispatch via /tasks
-            // and /bashes alias, opening a list-style overlay.
-            // Detail-view + auto-skip-when-N=1 + `x` stop shortcut
-            // land in §7 with the dedicated BackgroundTasksDialog
-            // widget. For now `new_info` shows the list as muted
-            // hint rows mirroring the upstream empty-state +
-            // populated-state strings byte-match.
+
             menu::OverlayMenu::new_info(
                 PanelKind::Tasks,
                 "Background tasks".into(),
@@ -129,7 +100,7 @@ fn help_hints() -> Vec<String> {
         String::new(),
         "Slash commands".into(),
     ];
-    // Group by category; two columns per row for density.
+
     for kind in [
         SlashKind::Instant,
         SlashKind::Toggle,
@@ -158,7 +129,7 @@ fn help_hints() -> Vec<String> {
             slashes.join(" /")
         ));
     }
-    // Panel group separately since its discriminant carries data.
+
     let panel_names: Vec<&str> = CATALOG
         .iter()
         .filter(|e| matches!(e.kind, SlashKind::Panel(_)))
@@ -172,11 +143,6 @@ fn help_hints() -> Vec<String> {
     lines
 }
 
-// Settings panel rows (Status / Config / Usage tabs) live in
-// `tui::menu::new_settings` now — 009 moved them there so interactive
-// editing (bool toggle, enum cycle, provider switch) can read the
-// row's `SettingsRowKind` directly.
-
 fn hooks_hints(st: &ConversationState) -> Vec<String> {
     let Some(h) = st.settings.hooks.as_ref() else {
         return vec!["no hooks configured".into()];
@@ -189,16 +155,6 @@ fn hooks_hints(st: &ConversationState) -> Vec<String> {
     ]
 }
 
-/// Stringly hints rendered inside the `/tasks` info-style overlay
-/// (wave-1 §6 stub). `§7` replaces this with a real
-/// BackgroundTasksDialog widget with selection + detail view.
-///
-/// Empty state matches upstream byte-for-byte: `No tasks currently
-/// running` (capture `05-kill-confirm.txt:38`).
-///
-/// Populated state lists one row per active task: `<name> · <id>
-/// · running for <Ns>`. Format is local until §7 lands the
-/// upstream-shaped two-column row.
 fn tasks_hints(st: &ConversationState) -> Vec<String> {
     if crate::tasks::is_disabled() {
         return vec![

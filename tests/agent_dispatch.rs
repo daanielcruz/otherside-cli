@@ -1,37 +1,12 @@
-//! Integration test — 020 Agent tool dispatch end-to-end.
-//!
-//! Proves the full flow through the public `tools::dispatch` surface:
-//!
-//! 1. Unknown `subagent_type` returns `InvalidArgs` with the registered
-//!    names surfaced in the message (model-recoverable).
-//! 2. `Agent` dispatch with no runner installed falls back to the
-//!    `{status: "unavailable"}` shape used before 020.
-//! 3. With an installed fake runner, a happy-path `Agent` call returns
-//!    the upstream-shape result map (`status: completed`,
-//!    `totalToolUseCount`, `totalTokens`, `totalDurationMs`, `content`).
-//! 4. Default `subagent_type` resolves to `general-purpose`.
-//!
-//! The tests run in the single `cargo test --test agent_dispatch` binary
-//! so the global `SubagentRunner` `OnceLock` is shared — earlier tests
-//! must tolerate a fake already being installed, which they do by
-//! asserting on the completed-shape result rather than the absence of a
-//! runner.
+
 
 use otherside::subagents::{install_runner, InlineFakeRunner, SubagentRunner};
 use otherside::tools::{dispatch, ToolError};
 use serde_json::json;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
-// Process-wide fake — `SubagentRunner` lives in a `OnceLock` so only
-// the first `install_runner` call wins. Every test in this binary
-// mutates the same handle to avoid a disconnect where a fresh Arc was
-// returned but a stale one is what `dispatch` resolves.
 static FAKE: OnceLock<Arc<InlineFakeRunner>> = OnceLock::new();
 
-// cargo runs tests in parallel by default; the fake carries mutable
-// counters shared across every test in this binary. A process-wide
-// mutex serializes the tests that depend on specific counter values
-// so sibling writes can't race into each other.
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 fn ensure_runner() -> (Arc<InlineFakeRunner>, MutexGuard<'static, ()>) {
@@ -42,7 +17,7 @@ fn ensure_runner() -> (Arc<InlineFakeRunner>, MutexGuard<'static, ()>) {
             f
         })
         .clone();
-    // Acquire AFTER get_or_init so one-shot install races safely.
+
     let guard = TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     fake.set_content("");
     fake.set_tool_uses(0);
@@ -69,15 +44,12 @@ fn agent_happy_path_returns_completed_shape() {
     )
     .expect("Agent dispatch must succeed");
 
-    // The fake produces an upstream-shape result; verify the fields the
-    // tui::tool_render::agent_preview consumes.
     assert_eq!(res["status"], "completed");
     assert_eq!(res["subagent_type"], "general-purpose");
     assert_eq!(res["totalToolUseCount"], 3);
     assert_eq!(res["totalTokens"], 250);
     assert_eq!(res["totalDurationMs"], 1800);
 
-    // content must be an array of {type: "text", text: ...}
     let content = res["content"].as_array().expect("content array");
     assert_eq!(content.len(), 1);
     assert_eq!(content[0]["type"], "text");
@@ -96,8 +68,7 @@ fn agent_unknown_subagent_type_returns_invalid_args() {
         }),
     );
     let err = res.expect_err("unknown type must error");
-    // ToolDispatcher in the real agent loop maps ToolError → Error::Other;
-    // here we exercise the raw ToolError surface via `dispatch`.
+
     let err_str = err.to_string();
     assert!(
         err_str.contains("unknown subagent_type"),
@@ -128,9 +99,7 @@ fn agent_defaults_subagent_type_to_general_purpose() {
     if res["status"] == "completed" {
         assert_eq!(res["subagent_type"], "general-purpose");
     } else {
-        // If a different test installed a runner first that returns the
-        // unavailable shape, accept that — the key guarantee is dispatch
-        // did not panic.
+
         assert_eq!(res["status"], "unavailable");
     }
 }

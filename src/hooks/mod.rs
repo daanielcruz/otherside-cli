@@ -1,23 +1,4 @@
-//! Hooks — user-defined shell commands fired at well-known lifecycle
-//! events. Event names + env-var contract are byte-verbatim upstream
-//! (HARNESS fidelity — user scripts rely on them).
-//!
-//! # Events
-//!
-//! - `PreToolUse` — before a tool dispatches. env: TOOL_NAME, TOOL_INPUT
-//! - `PostToolUse` — after a tool returns. env: TOOL_NAME, TOOL_INPUT,
-//!   TOOL_EXIT
-//! - `UserPromptSubmit` — user hit Enter on a fresh prompt. env:
-//!   PROMPT_TEXT
-//! - `Stop` — end of turn (final assistant message committed). env:
-//!   SESSION_ID
-//! - `SubagentStop` — Task subagent ended. env: SESSION_ID,
-//!   SUBAGENT_ID
-//! - `PreCompact` — transcript compaction about to start. env:
-//!   SESSION_ID, TRANSCRIPT_PATH
-//!
-//! MVP semantics: advisory. Non-zero exit does NOT block the tool;
-//! outputs are captured for diagnostics only.
+
 
 pub mod events;
 pub mod exec;
@@ -27,7 +8,6 @@ pub use events::{Event, EventCtx, PreToolUseCtx, PostToolUseCtx, UserPromptSubmi
 
 use crate::config::settings::{HookEntry, HooksConfig};
 
-/// Outcome of firing a single hook entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HookOutcome {
     Ok {
@@ -44,11 +24,6 @@ pub enum HookOutcome {
     SpawnFailed(String),
 }
 
-/// Fire every hook registered for `event` whose matcher accepts the
-/// given context. Returns per-entry outcomes in registration order.
-///
-/// Managed-hooks-only gating (`settings.allowManagedHooksOnly`) is
-/// applied per-entry — entries with `source != Policy` are skipped.
 pub async fn fire(
     event: Event,
     ctx: &EventCtx,

@@ -1,11 +1,4 @@
-//! Session-scoped set of paths the user has Read in this conversation.
-//!
-//! The Edit tool requires a matching Read to have happened first —
-//! that's the upstream invariant. It's a safety net against the model
-//! hallucinating file contents and Edit'ing the wrong surface.
-//!
-//! Scope: one per session. The agent loop owns the instance; tests
-//! construct their own to avoid cross-talk.
+
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -21,14 +14,11 @@ impl ReadSet {
         Self::default()
     }
 
-    /// Mark `path` as read. Canonicalizes first so symlinks /
-    /// relative paths resolve to the same entry.
     pub fn insert(&self, path: &Path) {
         let key = canonicalize(path);
         self.inner.lock().unwrap().insert(key);
     }
 
-    /// Was `path` read earlier in this session?
     pub fn contains(&self, path: &Path) -> bool {
         let key = canonicalize(path);
         self.inner.lock().unwrap().contains(&key)
@@ -39,9 +29,6 @@ impl ReadSet {
     }
 }
 
-/// Process-wide default. The TUI event loop uses this so sibling
-/// Read / Edit dispatches route through the same set without
-/// plumbing a ctx struct through every call.
 pub fn global() -> &'static ReadSet {
     static GLOBAL: OnceLock<ReadSet> = OnceLock::new();
     GLOBAL.get_or_init(ReadSet::new)

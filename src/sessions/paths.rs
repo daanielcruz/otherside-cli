@@ -1,10 +1,4 @@
-//! Filesystem path layout for sessions.
-//!
-//! `<config_dir>/sessions/<uuid>/transcript.jsonl`
-//!
-//! One directory per session lets us evolve the on-disk shape
-//! (sidecar summary / state JSON / compacted artifacts) without
-//! breaking older sessions — everything stays co-located.
+
 
 use std::path::{Path, PathBuf};
 

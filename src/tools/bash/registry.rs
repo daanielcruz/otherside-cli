@@ -1,19 +1,4 @@
-//! Background bash shell registry.
-//!
-//! Tracks shells launched via `Bash(run_in_background=true)`. Each
-//! tracked shell pumps its stdout / stderr into in-memory buffers;
-//! `BashOutput` polls the buffers for new content since the last
-//! poll; `KillBash` SIGTERMs, reaps, and removes the entry.
-//!
-//! # Concurrency model
-//!
-//! - One background task per shell, spawned at `spawn`, drains both
-//!   readers into the buffers until EOF. Task exits on its own.
-//! - Each `BackgroundShell` stores a `last_polled` cursor per
-//!   stream; a poll returns the slice `buf[last_polled..]` then
-//!   advances.
-//! - The registry itself lives behind a `RwLock<HashMap>` so lookups
-//!   don't block writes for very long.
+
 
 use std::collections::HashMap;
 use std::process::Stdio;
@@ -25,11 +10,8 @@ use tokio::process::{Child, Command};
 
 use super::GRACE_PERIOD_MS;
 
-/// Registry-wide cap on concurrent background shells.
 pub const MAX_CONCURRENT: usize = 10;
 
-/// Shell id — UUID v4 first 8 hex chars. Short enough to type, long
-/// enough that collisions within a session are statistically zero.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ShellId(String);
 
@@ -55,7 +37,6 @@ impl std::fmt::Display for ShellId {
     }
 }
 
-/// Poll status for a tracked shell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShellStatus {
     Running,
@@ -71,9 +52,6 @@ impl ShellStatus {
     }
 }
 
-/// Per-shell bookkeeping. `Arc<BackgroundShell>` lives in the
-/// registry's map and inside the pump task so both can read/write
-/// the buffers.
 #[derive(Debug)]
 pub struct BackgroundShell {
     pub id: ShellId,
@@ -106,7 +84,6 @@ impl BufferState {
     }
 }
 
-/// Result of a poll against a tracked shell.
 #[derive(Debug, Clone)]
 pub struct PollResult {
     pub stdout: String,
@@ -115,8 +92,6 @@ pub struct PollResult {
     pub exit_code: Option<i32>,
 }
 
-/// Registry — one per process by default (via
-/// `super::shell_registry()`); tests may instantiate their own.
 #[derive(Debug)]
 pub struct ShellRegistry {
     max_concurrent: usize,
@@ -131,8 +106,6 @@ impl ShellRegistry {
         }
     }
 
-    /// Spawn a new background shell running `command`. Enforces the
-    /// concurrency cap. Returns the assigned [`ShellId`].
     pub fn spawn(&self, command: &str) -> std::io::Result<ShellId> {
         {
             let live = self.shells.read().unwrap();
@@ -170,7 +143,6 @@ impl ShellRegistry {
             child: Mutex::new(Some(child)),
         });
 
-        // Pump task: read both streams, then wait for exit.
         let shell_for_task = shell.clone();
         tokio::spawn(async move {
             if let Some(out) = stdout {
@@ -195,7 +167,7 @@ impl ShellRegistry {
                     }
                 });
             }
-            // Wait for exit on a separate handle.
+
             let waiter = {
                 let mut slot = shell_for_task.child.lock().unwrap();
                 slot.take()
@@ -214,7 +186,6 @@ impl ShellRegistry {
         Ok(shell_id)
     }
 
-    /// Poll for new output.
     pub fn poll(&self, shell_id: &str, filter: Option<&str>) -> std::io::Result<PollResult> {
         let shell = {
             let live = self.shells.read().unwrap();
@@ -243,7 +214,6 @@ impl ShellRegistry {
         })
     }
 
-    /// Kill a tracked shell. SIGTERM with grace, then SIGKILL via drop.
     pub fn kill(&self, shell_id: &str) -> std::io::Result<()> {
         let shell = {
             let mut live = self.shells.write().unwrap();
@@ -271,7 +241,6 @@ impl ShellRegistry {
         Ok(())
     }
 
-    /// Drop every tracked shell — called on session teardown.
     pub fn drop_all(&self) {
         let mut live = self.shells.write().unwrap();
         for (_, shell) in live.drain() {
@@ -310,7 +279,7 @@ mod tests {
     async fn spawn_echo_then_poll() {
         let reg = ShellRegistry::new(4);
         let id = reg.spawn("echo background").unwrap();
-        // Give the pump task a moment.
+
         tokio::time::sleep(Duration::from_millis(200)).await;
         let r = reg.poll(id.as_str(), None).unwrap();
         assert!(r.stdout.contains("background"));
@@ -324,7 +293,7 @@ mod tests {
         let r1 = reg.poll(id.as_str(), None).unwrap();
         let r2 = reg.poll(id.as_str(), None).unwrap();
         assert!(r1.stdout.contains("one") || r1.stdout.contains("two"));
-        // Second poll sees nothing new since first drained.
+
         assert!(r2.stdout.is_empty());
     }
 

@@ -1,12 +1,7 @@
-//! Hook event vocabulary + per-event context → env-var mapping.
-//!
-//! Env-var names are byte-verbatim upstream. User scripts rely on
-//! them; any drift breaks the hook integration contract.
+
 
 use serde::{Deserialize, Serialize};
 
-/// All hook events. Matches the six discriminants on
-/// `HooksConfig` (`pre_tool_use`, `post_tool_use`, etc.).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum Event {
@@ -63,8 +58,6 @@ pub enum EventCtx {
     PreCompact(PreCompactCtx),
 }
 
-/// Compile the context into the env-var pairs passed to the hook
-/// subprocess. Names and casing match upstream.
 pub fn env_for(ctx: &EventCtx) -> Vec<(String, String)> {
     match ctx {
         EventCtx::PreToolUse(c) => vec![

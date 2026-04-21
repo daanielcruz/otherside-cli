@@ -1,17 +1,7 @@
-//! Anthropic content-block shapes and per-variant JSON emitters.
-//!
-//! Emitted key order per variant matches the captured wire bytes exactly.
-//! Notable: `tool_result` carries `tool_use_id` BEFORE `type`, which is
-//! unusual JSON tooling order but matches every captured outbound body.
-//! `serde_json::Map` insertion order (with the `preserve_order` feature
-//! enabled crate-wide) is honored on serialization.
+
 
 use serde_json::{json, Map, Value};
 
-/// Message-level role for the Anthropic wire. On wire these are the
-/// lowercase strings `"user"` / `"assistant"` (per R-21). System content
-/// is not a message role in Anthropic — it travels via the envelope's
-/// `system[]` top-level field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
     User,
@@ -27,9 +17,6 @@ impl Role {
     }
 }
 
-/// Cache-control marker. Exactly one instance is attached to the last
-/// content block of the last message in an outbound body (revised R-53,
-/// per change 009).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CacheControl;
 
@@ -39,37 +26,26 @@ impl CacheControl {
     }
 }
 
-/// One Anthropic content block.
 #[derive(Debug, Clone)]
 pub enum Block {
-    /// `{ "type": "text", "text": "...", "cache_control"?: {...} }`
+
     Text {
         text: String,
         cache_control: Option<CacheControl>,
     },
-    /// `{ "type": "tool_use", "id": ..., "name": ..., "input": {...}, "caller": {"type":"direct"} }`
-    ///
-    /// `caller` is always emitted with the literal `{"type":"direct"}`;
-    /// future subagent-dispatch work will vary this value.
+
     ToolUse {
         id: String,
         name: String,
         input: Value,
     },
-    /// `{ "tool_use_id": ..., "type": "tool_result", "content": "...", "cache_control"?: {...} }`
-    ///
-    /// NB: `tool_use_id` BEFORE `type` — matches capture.
+
     ToolResult {
         tool_use_id: String,
         content: String,
         cache_control: Option<CacheControl>,
     },
-    /// `{ "type": "thinking", "thinking": "...", "signature": "..." }`
-    ///
-    /// `signature` is server-issued base64. Agent loop replay of signatures
-    /// on turn 2+ is deferred to a follow-up change — today the agent may
-    /// elide thinking blocks on subsequent turns until signature capture
-    /// lands.
+
     Thinking {
         thinking: String,
         signature: String,
@@ -121,8 +97,6 @@ impl Block {
         }
     }
 
-    /// Attach a cache-control marker to this block. Only Text and
-    /// ToolResult variants carry cache_control on the wire.
     pub fn attach_cache_control(&mut self) {
         match self {
             Block::Text { cache_control, .. } => *cache_control = Some(CacheControl),
@@ -136,7 +110,6 @@ impl Block {
     }
 }
 
-/// Anthropic message — role + content blocks.
 #[derive(Debug, Clone)]
 pub struct AnthropicMessage {
     pub role: Role,
@@ -204,7 +177,7 @@ mod tests {
 
     #[test]
     fn tool_result_block_emits_tool_use_id_before_type() {
-        // The unusual key order from capture.
+
         let b = Block::ToolResult {
             tool_use_id: "toolu_abc".into(),
             content: "out".into(),

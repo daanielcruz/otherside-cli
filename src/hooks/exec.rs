@@ -1,9 +1,4 @@
-//! Hook subprocess execution — spawn `sh -c <command>` with the
-//! event-specific env-var contract, capture stdout/stderr, enforce a
-//! timeout with SIGTERM → grace → SIGKILL.
-//!
-//! MVP is advisory: non-zero exit surfaces in the outcome but does
-//! NOT block the triggering tool.
+
 
 use std::process::Stdio;
 use std::time::Duration;
@@ -15,11 +10,8 @@ use super::events::{env_for, EventCtx};
 use super::HookOutcome;
 use crate::config::settings::HookEntry;
 
-/// Output capture cap per hook — prevents a misbehaving hook from
-/// ballooning memory.
 const OUTPUT_CAP_BYTES: usize = 64 * 1024;
 
-/// Grace period between SIGTERM and SIGKILL on timeout.
 const GRACE_PERIOD_MS: u64 = 2_000;
 
 pub async fn fire_entry(entry: &HookEntry, ctx: &EventCtx, timeout_ms: u64) -> HookOutcome {

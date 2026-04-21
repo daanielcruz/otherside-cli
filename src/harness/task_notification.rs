@@ -1,48 +1,7 @@
-//! `<task-notification>` XML envelope for completed background tasks.
-//!
-//! Compat zone (R-103). Tag names are TRAINING ANCHORS — byte-match
-//! mandatory with upstream `constants/xml.ts:28-38`. Drift breaks
-//! parity because the model sees this exact XML in upstream and
-//! has been trained on its shape.
-//!
-//! # Wire format (verbatim, from upstream `LocalAgentTask.tsx:252-257`)
-//!
-//! ```xml
-//! <task-notification>
-//! <task-id>{id}</task-id>
-//! <tool-use-id>{toolUseId}</tool-use-id>      (optional — only when present)
-//! <output-file>{outputPath}</output-file>
-//! <status>{completed|failed|stopped}</status>
-//! <summary>{summary}</summary>
-//! <result>{finalMessage}</result>             (optional)
-//! <usage>
-//!   <total_tokens>{N}</total_tokens>
-//!   <tool_uses>{N}</tool_uses>
-//!   <duration_ms>{N}</duration_ms>
-//! </usage>                                     (optional, single-line)
-//! <worktree>
-//!   <worktreePath>{path}</worktreePath>
-//!   <worktreeBranch>{branch}</worktreeBranch> (optional)
-//! </worktree>                                  (optional, single-line)
-//! </task-notification>
-//! ```
-//!
-//! Optional sections preserve insertion-order on the wire to match
-//! upstream's string concatenation order.
-//!
-//! # Summary line
-//!
-//! Per `LocalAgentTask.tsx:246`:
-//! - `completed` → `Agent "{description}" completed`
-//! - `failed`    → `Agent "{description}" failed: {error or "Unknown error"}`
-//! - `stopped`   → `Agent "{description}" was stopped`
-//!
-//! These three strings are byte-match — the model has been trained on
-//! their exact shape.
+
 
 use crate::tasks::{TaskRecord, TaskState};
 
-// Tag constants — byte-match constants/xml.ts:28-38.
 const TASK_NOTIFICATION_TAG: &str = "task-notification";
 const TASK_ID_TAG: &str = "task-id";
 const TOOL_USE_ID_TAG: &str = "tool-use-id";
@@ -55,9 +14,6 @@ const WORKTREE_TAG: &str = "worktree";
 const WORKTREE_PATH_TAG: &str = "worktreePath";
 const WORKTREE_BRANCH_TAG: &str = "worktreeBranch";
 
-/// Optional fields the model gets on the wire when present. Defaults
-/// keep most renders compact — pass `Default::default()` and selectively
-/// populate.
 #[derive(Debug, Default, Clone)]
 pub struct NotificationExtras<'a> {
     pub tool_use_id: Option<&'a str>,
@@ -79,12 +35,6 @@ pub struct NotificationWorktree<'a> {
     pub branch: Option<&'a str>,
 }
 
-/// Render the XML block for a single completed task.
-///
-/// `output_path` is upstream's `getTaskOutputPath(taskId)` — for
-/// otherside MVP we synthesize a sessions-folder path from the id;
-/// callers can pass any string the model can read back via
-/// `TaskOutput`.
 pub fn render(
     record: &TaskRecord,
     output_path: &str,
@@ -140,17 +90,11 @@ fn status_text(state: TaskState) -> &'static str {
         TaskState::Completed => "completed",
         TaskState::Failed => "failed",
         TaskState::Stopped => "stopped",
-        // Non-terminal states should never reach this renderer —
-        // callers gate on `state.is_terminal()` before draining.
-        // If we ever do, fall back to "stopped" so the model sees a
-        // valid value.
+
         _ => "stopped",
     }
 }
 
-/// Build the `<summary>` line per upstream `LocalAgentTask.tsx:246`.
-/// `final_message` is used for the `failed` branch's error text;
-/// when None, defaults to `"Unknown error"` (upstream behavior).
 fn summary_line(name: &str, state: TaskState, final_message: Option<&str>) -> String {
     match state {
         TaskState::Completed => format!(r#"Agent "{name}" completed"#),
@@ -310,10 +254,7 @@ mod tests {
                 }),
             },
         );
-        // Field ordering preserved per upstream string concat
-        // (LocalAgentTask.tsx:248-257):
-        //   task-id → tool-use-id → output-file → status → summary
-        //   → result → usage → worktree
+
         let positions: Vec<usize> = [
             "<task-id>",
             "<tool-use-id>",

@@ -1,25 +1,9 @@
-//! Bundled subagent definitions + lookup + tool-subset enforcement.
-//!
-//! Definitions ship with the binary via `include_str!` on files under
-//! `otherside-cli/agents/`. Each file is a YAML-frontmatter markdown doc (see
-//! [`super::frontmatter`] for the accepted shape). The registry is a
-//! process-global `OnceLock<Vec<AgentDefinition>>` initialized on first
-//! access; `load_bundled` panics on malformed frontmatter because a corrupt
-//! bundled file means the ship pipeline is broken — not a runtime edge case.
-//!
-//! Custom agent loading (from `~/.otherside/agents/` or project-local
-//! `.otherside/agents/`) is a later-wave concern. The registry is structured
-//! to accept additive sources (`load_bundled` + future `load_user_scope`)
-//! without churning the public API.
+
 
 use std::sync::OnceLock;
 
 use super::frontmatter::{self, ToolsField};
 
-/// A single subagent definition: its type name (wire-visible via
-/// `subagent_type` arg), the description surfaced in the `Agent` tool
-/// schema, the tools it's permitted to call, an optional model override, and
-/// the prompt body that becomes its system prompt.
 #[derive(Debug, Clone)]
 pub struct AgentDefinition {
     pub name: String,
@@ -30,7 +14,7 @@ pub struct AgentDefinition {
 }
 
 impl AgentDefinition {
-    /// True iff this definition permits the named tool. Wildcard grants all.
+
     pub fn allows_tool(&self, name: &str) -> bool {
         match &self.tools {
             ToolsField::Wildcard => true,
@@ -39,8 +23,6 @@ impl AgentDefinition {
     }
 }
 
-/// Parse a bundled markdown file into an [`AgentDefinition`]. Panics with
-/// context on malformed input — callers only hit this path at startup.
 fn parse_bundled(source_path: &str, src: &str) -> AgentDefinition {
     let parsed = frontmatter::parse(src).unwrap_or_else(|e| {
         panic!("bundled agent `{source_path}` has malformed frontmatter: {e}")
@@ -68,19 +50,12 @@ fn parse_bundled(source_path: &str, src: &str) -> AgentDefinition {
     }
 }
 
-// Bundled agent definitions. `include_str!` pulls the markdown at compile
-// time — zero filesystem lookups at runtime; zero chance the binary ships
-// with a missing definition.
 const GENERAL_PURPOSE_SRC: &str = include_str!("../../agents_corpus/general-purpose.md");
 const READER_SRC: &str = include_str!("../../agents_corpus/reader.md");
 const EXPLORE_SRC: &str = include_str!("../../agents_corpus/explore.md");
 const PLAN_SRC: &str = include_str!("../../agents_corpus/plan.md");
 const VERIFICATION_SRC: &str = include_str!("../../agents_corpus/verification.md");
 
-/// Lazy-initialized bundled registry. Scope rationale: the parsed
-/// `AgentDefinition` list is immutable at runtime (comes from
-/// `include_str!`ed markdown) and every dispatcher / UI call-site
-/// reads the same list. One-time parse amortized across all readers.
 fn bundled() -> &'static [AgentDefinition] {
     static CELL: OnceLock<Vec<AgentDefinition>> = OnceLock::new();
     CELL.get_or_init(|| {
@@ -95,31 +70,18 @@ fn bundled() -> &'static [AgentDefinition] {
     .as_slice()
 }
 
-/// Resolve a subagent type name to its definition. Returns `None` when no
-/// bundled (or future user-scoped) entry matches. Lookup is case-sensitive
-/// to match upstream behavior (`subagent_type: "general-purpose"` is not
-/// the same as `"General-Purpose"`).
 pub fn resolve(name: &str) -> Option<&'static AgentDefinition> {
     bundled().iter().find(|d| d.name == name)
 }
 
-/// Total number of loaded definitions. Useful for tests + the proposal
-/// scaffold's acceptance checks.
 pub fn len() -> usize {
     bundled().len()
 }
 
-/// Iterate every registered definition. Used by future tooling (e.g. a
-/// `/agents` slash command) and the tool-schema builder if it ever surfaces
-/// per-agent descriptions in the `Agent` schema `description` field.
 pub fn all() -> &'static [AgentDefinition] {
     bundled()
 }
 
-/// Check whether a given subagent is allowed to invoke the named tool.
-/// Separated from `AgentDefinition::allows_tool` so the dispatcher can
-/// enforce the subset without holding the definition reference any longer
-/// than it needs to.
 pub fn tool_is_allowed(def: &AgentDefinition, tool_name: &str) -> bool {
     def.allows_tool(tool_name)
 }

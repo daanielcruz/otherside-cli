@@ -1,18 +1,4 @@
-//! Two-stage OpenAI-history → Anthropic-messages pipeline.
-//!
-//! Mirrors upstream `utils/messages.ts::normalizeMessagesForAPI` followed by
-//! `services/api/claude.ts::addCacheBreakpoints`.
-//!
-//! Stage A — `normalize`: walk the OpenAI history and emit typed
-//! `AnthropicMessage` values. The first user turn receives the three
-//! `<system-reminder>` preamble blocks from `harness::reminders`; later
-//! user turns do not. Consecutive `role: "tool"` messages coalesce into a
-//! single Anthropic user turn with one `tool_result` block per coalesced
-//! result.
-//!
-//! Stage B — `add_cache_breakpoints`: attach exactly one
-//! `cache_control: {type:"ephemeral", ttl:"1h"}` marker to the last
-//! block of the last message. The invariant (count == 1) is unit-tested.
+
 
 use serde_json::Value;
 
@@ -22,16 +8,12 @@ use crate::inference::{OpenAiChatMessage, OpenAiChatRole};
 use super::blocks::{AnthropicMessage, Block, Role};
 use super::UserContext;
 
-/// Full pipeline: OpenAI messages + per-session context → serialized
-/// Anthropic `messages[]` array.
 pub fn build(messages: &[OpenAiChatMessage], ctx: &UserContext<'_>) -> Vec<Value> {
     let mut normalized = normalize(messages, ctx);
     add_cache_breakpoints(&mut normalized);
     normalized.iter().map(|m| m.to_json()).collect()
 }
 
-/// Stage A. Pure function: OpenAI history → typed Anthropic messages,
-/// no cache markers yet.
 pub fn normalize(messages: &[OpenAiChatMessage], ctx: &UserContext<'_>) -> Vec<AnthropicMessage> {
     let mut out: Vec<AnthropicMessage> = Vec::new();
     let mut pending_tool_results: Vec<Block> = Vec::new();
@@ -128,8 +110,6 @@ fn flush_tool_results(pending: &mut Vec<Block>, out: &mut Vec<AnthropicMessage>)
     }
 }
 
-/// Stage B. Attach exactly one cache_control marker to the last block of
-/// the last message. Revised R-53.
 pub fn add_cache_breakpoints(messages: &mut [AnthropicMessage]) {
     let Some(last) = messages.last_mut() else {
         tracing::error!("add_cache_breakpoints: empty messages array");
@@ -193,7 +173,7 @@ mod tests {
         assert_eq!(n.len(), 1);
         assert_eq!(n[0].role, Role::User);
         assert_eq!(n[0].content.len(), 4);
-        // Last block is the user prompt; first three are preamble.
+
         match &n[0].content[3] {
             Block::Text { text, .. } => assert_eq!(text, "hi"),
             _ => panic!("expected Text block"),
@@ -271,15 +251,15 @@ mod tests {
         ];
         let n = normalize(&msgs, &ctx());
         assert_eq!(n.len(), 3);
-        assert_eq!(n[0].content.len(), 4); // preamble + prompt
-        assert_eq!(n[2].content.len(), 1); // only prompt, no preamble
+        assert_eq!(n[0].content.len(), 4);
+        assert_eq!(n[2].content.len(), 1);
     }
 
     #[test]
     fn add_cache_breakpoints_marks_last_block_of_last_message() {
         let msgs = vec![user_msg("hi")];
         let built = build(&msgs, &ctx());
-        // messages[0].content[3] is the user prompt — cache marker must be here
+
         let first_msg = &built[0];
         let content = first_msg["content"].as_array().unwrap();
         assert_eq!(content.len(), 4);
@@ -316,7 +296,7 @@ mod tests {
             tool_result("t1", "r"),
         ];
         let built = build(&msgs, &ctx());
-        // Final message is the tool_result carrier
+
         let last = built.last().unwrap();
         let content = last["content"].as_array().unwrap();
         assert_eq!(content[0]["type"], "tool_result");
@@ -340,7 +320,7 @@ mod tests {
 
     #[test]
     fn orphan_tool_result_becomes_user_turn_with_empty_id() {
-        // Degenerate: role=tool without tool_call_id. Don't crash.
+
         let msgs = vec![OpenAiChatMessage {
             role: OpenAiChatRole::Tool,
             content: "orphan".to_string(),

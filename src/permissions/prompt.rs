@@ -1,10 +1,5 @@
-//! Permission prompt choices + scopes.
-//!
-//! Rendering the actual modal is TUI-surface (`tui::permission_prompt`);
-//! this module just owns the shared types so tests + the TUI can
-//! agree on the vocabulary.
 
-/// What the user picked when prompted.
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptChoice {
     Yes,
@@ -12,27 +7,21 @@ pub enum PromptChoice {
     AlwaysAllow(AllowScope),
 }
 
-/// Reply the TUI overlay sends back to the agent task after the user
-/// resolves an `ask`-policy prompt. Mirrors `PromptChoice` with session
-/// scope as the only persistence target for now — disk writeback to
-/// `settings.json` lands in spec 007.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PermissionResponse {
-    /// One-shot allow — dispatch this call, ask again next time.
+
     Allow,
-    /// Allow now AND add a rule to the session allowlist so every
-    /// subsequent call with the same `(tool, args)` prefix auto-allows.
+
     AllowSession,
-    /// Refuse — surface `ToolError::PermissionDenied` to the model.
+
     Deny,
 }
 
-/// Where to persist an `AlwaysAllow` rule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AllowScope {
-    /// `./.otherside/settings.json` (project-local).
+
     ProjectLocal,
-    /// `~/.otherside/settings.json` (user-global).
+
     UserGlobal,
 }
 

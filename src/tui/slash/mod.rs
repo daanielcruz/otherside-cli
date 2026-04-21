@@ -1,21 +1,4 @@
-//! Slash command dispatcher.
-//!
-//! Entry point for slash-prefix input handling. The module is organized
-//! as the canonical 6 categories from `docs/slashes.md`, one file per
-//! category:
-//!
-//! - [`catalog`] — single source of truth for names, briefs, kinds.
-//! - [`instant`] — silent immediate side-effect (`/clear`, `/exit`).
-//! - [`toggle`] — state flip + ephemeral confirmation (`/plan`, `/copy`…).
-//! - [`skill`] — bundled SKILL.md body → user turn (`/dream`, `/statusline`…).
-//! - [`anchor`] — user echo + `⎿` system anchor (`/compact`, `/branch`…).
-//! - [`panel`] — modal overlay picker (`/model`, `/effort`, `/help`…).
-//! - [`auth`] — provider login/logout dispatch (`/login`, `/logout`).
-//!
-//! `classify(input)` maps raw input into a [`SlashAction`]; the event
-//! loop routes each variant to its per-category handler. Unknown slashes
-//! and non-slash input converge on `Passthrough`, which the caller submits
-//! as a user turn.
+
 
 pub mod anchor;
 pub mod auth;
@@ -27,57 +10,40 @@ pub mod toggle;
 
 pub use catalog::{PanelKind, SlashEntry, SlashKind, CATALOG};
 
-/// What the event loop should do after the user presses Enter with a
-/// slash-prefixed input. Seven variants: six categories + `Passthrough`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SlashAction {
-    /// `instant` category — silent immediate side-effect. Handler may
-    /// signal app-wide exit via its return value.
+
     Instant { name: String, args: String },
-    /// `toggle` category — state flip, ephemeral feedback row.
+
     Toggle { name: String, args: String },
-    /// `skill` category — bundled SKILL.md body emitted as a user turn.
+
     Skill { name: String, args: String },
-    /// `anchor` category — user echo + dim `⎿` anchor line.
+
     Anchor { name: String, args: String },
-    /// `panel` category — mount an overlay picker (discriminator picks
-    /// which picker).
+
     Panel(PanelKind),
-    /// `auth` category — provider login/logout dispatch.
+
     Auth { name: String, args: String },
-    /// Empty input, non-slash input, or unknown slash. Caller submits
-    /// the original text verbatim (non-slash) or as a user turn (unknown
-    /// slash). Upstream's `type: 'prompt'` fallback shape.
+
     Passthrough,
 }
 
-/// Signal returned by per-category handlers. The event loop observes
-/// these to route second-order effects — exit the TUI, submit a user
-/// turn to the LLM, or nothing (handler already mutated state).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SlashOutcome {
-    /// Handler mutated state; event loop has nothing more to do.
+
     Handled,
-    /// Event loop should break out — TUI termination.
+
     ExitApp,
-    /// Handler produced a user turn body; event loop should submit it
-    /// to the provider.
+
     SendTurn(String),
 }
 
-/// Classify the input. Inputs that don't start with `/` fall through
-/// to `Passthrough`. Unknown slashes also return `Passthrough` so the
-/// caller submits them as a user turn (preserves upstream's "echo
-/// unknown slash at the model" behavior).
 pub fn classify(input: &str) -> SlashAction {
     let trimmed = input.trim_start();
     if !trimmed.starts_with('/') {
         return SlashAction::Passthrough;
     }
-    // Double-slash input is NOT a slash — treat it as a literal user
-    // turn. Observed during tmux parity: after Esc on autocomplete the
-    // leading `/` lingered in the buffer and a subsequent `/permissions`
-    // produced `//permissions`, escaping the dispatcher.
+
     if trimmed.starts_with("//") {
         return SlashAction::Passthrough;
     }
@@ -112,9 +78,6 @@ pub fn classify(input: &str) -> SlashAction {
     SlashAction::Passthrough
 }
 
-/// Split `/<name> <args>` body into (name, args). Name is the contiguous
-/// run of non-whitespace after the slash; args is the remainder, trimmed
-/// of leading whitespace.
 fn split_name_and_args(body: &str) -> (&str, &str) {
     match body.find(char::is_whitespace) {
         Some(idx) => (&body[..idx], body[idx..].trim_start()),
@@ -122,8 +85,6 @@ fn split_name_and_args(body: &str) -> (&str, &str) {
     }
 }
 
-/// Static help catalog shown by `/help`. Walks `CATALOG` so every entry
-/// surfaces — no separate list to drift.
 pub fn help_text() -> String {
     let mut out = String::from("slash commands\n");
     let mut max_name = 0usize;
@@ -163,23 +124,19 @@ mod tests {
 
     #[test]
     fn bye_is_passthrough_after_011_purge() {
-        // openspec 011 cut `/bye` — no upstream analogue (R-114).
-        // classify() now falls through to Passthrough; the caller
-        // submits it as a user turn verbatim.
+
         assert_eq!(classify("/bye"), SlashAction::Passthrough);
     }
 
     #[test]
     fn swarm_is_passthrough_after_011_purge() {
-        // openspec 011 cut `/swarm` — upstream has no slash by that
-        // name; swarm is multi-process orchestration infrastructure
-        // (RULES.md §14.1 cut).
+
         assert_eq!(classify("/swarm"), SlashAction::Passthrough);
     }
 
     #[test]
     fn exit_is_instant_no_confirmation() {
-        // docs/slashes.md promotes /exit to instant; no more confirm overlay.
+
         match classify("/exit") {
             SlashAction::Instant { name, .. } => assert_eq!(name, "exit"),
             other => panic!("expected Instant, got {other:?}"),
@@ -199,9 +156,7 @@ mod tests {
 
     #[test]
     fn loop_is_skill_after_011_reclass() {
-        // Upstream registers `/loop` as a bundled skill
-        // (`skills/bundled/loop.ts:79`, `userInvocable: true`);
-        // otherside matches that classification post-011.
+
         match classify("/loop 5m /check-prs") {
             SlashAction::Skill { name, args } => {
                 assert_eq!(name, "loop");
@@ -219,7 +174,7 @@ mod tests {
     #[test]
     fn model_routes_to_panel() {
         assert_eq!(classify("/model"), SlashAction::Panel(PanelKind::Model));
-        // Args do NOT flip the routing.
+
         assert_eq!(
             classify("/model claude-opus-4-7[1m]"),
             SlashAction::Panel(PanelKind::Model)

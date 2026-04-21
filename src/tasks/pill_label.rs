@@ -1,22 +1,7 @@
-//! Footer pill label — byte-match upstream.
-//!
-//! Source: `tasks/pillLabel.ts:10-67`. The strings here are TRAINING
-//! ANCHORS (R-20 corollary): the model and the user both see them in
-//! the upstream binary. Drift breaks parity.
-//!
-//! Forms (single-kind):
-//! - `1 shell` / `N shells`
-//! - `1 local agent` / `N local agents`
-//!
-//! Mixed (more than one kind active):
-//! - `1 background task` / `N background tasks`
-//!
-//! Empty state: returns `None` so render skips the chip entirely.
+
 
 use super::store::TaskCounts;
 
-/// Build the footer pill label from a counts snapshot. `None` ⇒
-/// no active tasks ⇒ chip not rendered.
 pub fn get_pill_label(counts: TaskCounts) -> Option<String> {
     let total = counts.total();
     if total == 0 {
@@ -32,8 +17,7 @@ pub fn get_pill_label(counts: TaskCounts) -> Option<String> {
         return Some(plural(counts.agents, "local agent", "local agents"));
     }
     if counts.generic > 0 {
-        // Single-kind generic — fall back to the aggregate form per
-        // upstream (no dedicated `N generics` label exists).
+
         return Some(plural(counts.generic, "background task", "background tasks"));
     }
     None
@@ -103,10 +87,7 @@ mod tests {
 
     #[test]
     fn mixed_singular_form_when_total_one() {
-        // (Defensive) is_mixed gates on >1 kind active. With one of
-        // each kind active we'd expect at least 2 total. But if a
-        // future record is ever single-kind generic with n=1, the
-        // generic fallback uses the singular form.
+
         assert_eq!(
             get_pill_label(counts(0, 0, 1)).as_deref(),
             Some("1 background task")

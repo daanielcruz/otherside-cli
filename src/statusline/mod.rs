@@ -1,19 +1,4 @@
-//! Statusline: native renderer + optional user-supplied shell-command
-//! override. Renders a single line in the TUI's bottom band.
-//!
-//! # Boundary
-//!
-//! The JSON payload piped to a user's custom `statusline.command` uses
-//! upstream-faithful field names (snake_case, shape byte-compatible
-//! with existing user `jq` pipelines). This is harness-level fidelity
-//! — the input is user-observable and user scripts parse those keys.
-//!
-//! The otherside-internal ctx (`StatuslineCtx`) uses otherside-native
-//! names and carries extra fields that never cross the subprocess
-//! boundary (terminal width, theme, permission mode). See
-//! `docs/decisions-log.md` C48/C49/C50/C51 for the dual-naming
-//! rationale and the privacy boundary (yolo state never leaks into
-//! user-script territory).
+
 
 pub mod render;
 pub mod subprocess;
@@ -27,12 +12,6 @@ pub use types::{
 
 use crate::config::{Scope, ValidationWarning, WarningKind};
 
-/// Top-level entry point: given render ctx + configured override (if
-/// any), produce the line to paint on the statusline row. On
-/// subprocess failure, falls back to the native renderer and emits a
-/// ValidationWarning so the UI can surface it on `/status`.
-///
-/// Single call site — R-30 analog applied to the statusline pipeline.
 pub fn dispatch(
     ctx: &StatuslineCtx,
     cfg: Option<&StatuslineConfig>,

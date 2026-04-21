@@ -1,15 +1,4 @@
-//! Scope path resolvers. All paths for user-global, project-local,
-//! managed, and drop-in scopes derive from a single `config_dir()`
-//! root (which is itself driven by `OTHERSIDE_CONFIG_DIR` or HOME).
-//!
-//! Why centralized: every loader in this module tree needs to know
-//! where its file lives, and every one of those lookups needs to
-//! honor the same `OTHERSIDE_CONFIG_DIR` override. Resolving paths
-//! in one place keeps the env-var plumbing narrow and testable.
-//!
-//! Project-local walk: project-scoped `./.otherside/settings.json` is
-//! discovered by walking CWD upward until we find one or hit the
-//! filesystem root. Same walk is used for `.mcp.json` (see `mcp.rs`).
+
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -18,28 +7,16 @@ use crate::error::Result;
 
 use super::{config_dir, settings_path};
 
-/// Directory name used for project-local overlay (./.otherside/).
 const PROJECT_DIR: &str = ".otherside";
 
-/// Filename of the workspace-scoped settings overlay.
 const PROJECT_SETTINGS: &str = "settings.json";
 
-/// Filename of the workspace-scoped MCP config.
 const MCP_JSON: &str = ".mcp.json";
 
-/// Filename of the admin/operator policy file.
 const MANAGED_SETTINGS: &str = "managed-settings.json";
 
-/// Directory of drop-in policy files, merged in filename order.
 const MANAGED_DROPIN_DIR: &str = "managed-settings.d";
 
-/// Known "shadow" env-var names the user might set by analogy to CLI
-/// flags or settings keys. Config is file-only (§3.6) — these are
-/// ignored with a one-time startup warning so users aren't silently
-/// surprised when their env export does nothing.
-///
-/// `OTHERSIDE_CONFIG_DIR` is deliberately excluded: it relocates the
-/// config home, not a field value.
 const SHADOW_ENV_VARS: &[&str] = &[
     "OTHERSIDE_PROVIDER",
     "OTHERSIDE_MODEL",
@@ -51,36 +28,26 @@ const SHADOW_ENV_VARS: &[&str] = &[
     "OTHERSIDE_DEFAULT_MODEL",
 ];
 
-/// Absolute path to the user-global `settings.json`.
-///
-/// Thin delegator to `super::settings_path()` so every caller inside
-/// the config module goes through the same resolver.
 pub fn user_settings_path() -> Result<PathBuf> {
     settings_path()
 }
 
-/// Absolute path to the user-global `projects.json`.
 pub fn projects_path() -> Result<PathBuf> {
     Ok(config_dir()?.join("projects.json"))
 }
 
-/// Absolute path to the user-global `state.json`.
 pub fn state_path() -> Result<PathBuf> {
     Ok(config_dir()?.join("state.json"))
 }
 
-/// Absolute path to `managed-settings.json` (operator policy).
 pub fn managed_settings_path() -> Result<PathBuf> {
     Ok(config_dir()?.join(MANAGED_SETTINGS))
 }
 
-/// Absolute path to `managed-settings.d/` drop-in directory.
 pub fn managed_dropin_dir() -> Result<PathBuf> {
     Ok(config_dir()?.join(MANAGED_DROPIN_DIR))
 }
 
-/// Walk from `cwd` upward until a project-local `.otherside/settings.json`
-/// is found. Returns `None` if none exists above CWD.
 pub fn project_settings_path(cwd: &Path) -> Option<PathBuf> {
     for ancestor in cwd.ancestors() {
         let candidate = ancestor.join(PROJECT_DIR).join(PROJECT_SETTINGS);
@@ -91,10 +58,6 @@ pub fn project_settings_path(cwd: &Path) -> Option<PathBuf> {
     None
 }
 
-/// Walk from `cwd` upward collecting every `.mcp.json` found. The
-/// returned Vec is ordered from the FARTHEST ancestor to the closest
-/// (i.e. walk-order for base→overlay merge: pass `.fold(base, merge)`
-/// and the closest file wins naturally).
 pub fn mcp_json_chain(cwd: &Path) -> Vec<PathBuf> {
     let mut hits: Vec<PathBuf> = cwd
         .ancestors()
@@ -103,19 +66,11 @@ pub fn mcp_json_chain(cwd: &Path) -> Vec<PathBuf> {
             candidate.is_file().then_some(candidate)
         })
         .collect();
-    // ancestors() yields closest-first; reverse so base→overlay order
-    // matches the five-scope resolver semantics (child wins).
+
     hits.reverse();
     hits
 }
 
-/// Scan the process env for known "shadow" `OTHERSIDE_*` vars and log
-/// a one-time warning pointing the user at the file they should be
-/// editing instead. No-op if none are set.
-///
-/// Called once from the bootstrap path (`load_all` or the CLI
-/// entrypoint). Uses `OnceLock` to guarantee we don't spam the log on
-/// repeated config reads within the same process.
 pub fn warn_shadow_env_vars() {
     static WARNED: OnceLock<()> = OnceLock::new();
     if WARNED.get().is_some() {
@@ -143,9 +98,6 @@ mod tests {
     use std::fs;
     use std::sync::Mutex;
 
-    // See mod.rs for env-guard rationale. Tests here race the same
-    // global OTHERSIDE_CONFIG_DIR as the outer module's tests, so we
-    // share an external sync primitive.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     struct EnvGuard {
@@ -218,11 +170,9 @@ mod tests {
         fs::write(root.join(PROJECT_DIR).join(PROJECT_SETTINGS), "{}").unwrap();
         fs::write(sub.join(PROJECT_DIR).join(PROJECT_SETTINGS), "{}").unwrap();
 
-        // CWD inside `deep/` — the nearest one is `deep/.otherside/settings.json`.
         let found = project_settings_path(&sub).unwrap();
         assert_eq!(found, sub.join(PROJECT_DIR).join(PROJECT_SETTINGS));
 
-        // CWD at root — finds the root overlay.
         let found = project_settings_path(&root).unwrap();
         assert_eq!(found, root.join(PROJECT_DIR).join(PROJECT_SETTINGS));
 
@@ -253,7 +203,7 @@ mod tests {
         fs::write(sub.join(MCP_JSON), r#"{"mcpServers":{}}"#).unwrap();
 
         let chain = mcp_json_chain(&sub);
-        // First is farthest ancestor (root), last is closest (sub).
+
         assert_eq!(chain.first().unwrap(), &root.join(MCP_JSON));
         assert_eq!(chain.last().unwrap(), &sub.join(MCP_JSON));
         assert_eq!(chain.len(), 2);
@@ -275,7 +225,7 @@ mod tests {
 
     #[test]
     fn shadow_env_vars_covers_expected_names() {
-        // Canary so renames to a shadow var stay in sync with the list.
+
         assert!(SHADOW_ENV_VARS.contains(&"OTHERSIDE_PROVIDER"));
         assert!(SHADOW_ENV_VARS.contains(&"OTHERSIDE_MODEL"));
         assert!(SHADOW_ENV_VARS.contains(&"OTHERSIDE_PERMISSION_MODE"));

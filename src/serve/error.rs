@@ -1,20 +1,4 @@
-//! Map library [`Error`](crate::error::Error) values into OpenAI-shaped
-//! HTTP error responses.
-//!
-//! Two concerns live here:
-//!
-//! 1. **HTTP status selection.** Every library variant maps to a single
-//!    status code. This is where the CLI-oriented `exit_code()` mapping is
-//!    adapted to HTTP semantics — they are related but distinct (401 vs
-//!    exit 10, 429 vs exit 30).
-//!
-//! 2. **Body shape.** OpenAI error bodies are always
-//!    `{"error": {"message", "type", "code"}}`. SDK clients parse exactly
-//!    those fields — drift breaks error handling in Cursor, aider, Cline.
-//!
-//! The `context` hint distinguishes a parse failure in the request body
-//! (user-caused → 400) from a parse failure mid-stream (upstream-caused →
-//! 502). Both are `Error::Parse` at the library level.
+
 
 use axum::{
     http::{header, HeaderMap, HeaderValue, StatusCode},
@@ -25,15 +9,11 @@ use serde::Serialize;
 
 use crate::error::Error;
 
-/// OpenAI-shape error body. Flat, three string fields — matches the exact
-/// JSON the real OpenAI API returns on 4xx/5xx.
 #[derive(Debug, Serialize)]
 pub struct OpenAiErrorBody {
     pub error: OpenAiErrorPayload,
 }
 
-/// Inner error object. `code` is a stable machine string; `type` is a
-/// broader category; `message` is free text for human display.
 #[derive(Debug, Serialize)]
 pub struct OpenAiErrorPayload {
     pub message: String,
@@ -42,26 +22,17 @@ pub struct OpenAiErrorPayload {
     pub code: &'static str,
 }
 
-/// Distinguish the origin of a parse failure. Same library variant, two
-/// very different HTTP statuses — a malformed request body is the client's
-/// fault, a malformed upstream SSE frame is ours.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParseOrigin {
-    /// Request body from the client — map to 400 Bad Request.
+
     Request,
-    /// Upstream response — map to 502 Bad Gateway.
+
     Upstream,
 }
 
-/// Convert a library [`Error`] into an axum [`Response`]. `origin` tells us
-/// how to bucket `Error::Parse` / `Error::Sse` between 400 and 502.
 pub fn error_response(err: &Error, origin: ParseOrigin) -> Response {
     let (status, ty, code, mut headers) = classify(err, origin);
 
-    // Surface the raw error message to the client. This is safe because
-    // the library's own Display impls don't leak secrets (bearer tokens
-    // etc. are masked at source), and OpenAI's own API includes detail
-    // here too.
     let body = OpenAiErrorBody {
         error: OpenAiErrorPayload {
             message: err.to_string(),
@@ -70,8 +41,6 @@ pub fn error_response(err: &Error, origin: ParseOrigin) -> Response {
         },
     };
 
-    // `Retry-After` is attached above for rate-limited responses. The
-    // other variants have no header annotations.
     let mut response = (status, Json(body)).into_response();
     for (k, v) in headers.drain() {
         if let Some(name) = k {
@@ -81,9 +50,6 @@ pub fn error_response(err: &Error, origin: ParseOrigin) -> Response {
     response
 }
 
-/// Pure classifier — chosen status + OpenAI `type`/`code` strings + any
-/// response headers to attach. Separated so the test suite can assert on
-/// the mapping without constructing full HTTP responses.
 pub fn classify(
     err: &Error,
     origin: ParseOrigin,
@@ -97,9 +63,7 @@ pub fn classify(
         ),
         Error::RateLimit { retry_after, .. } => {
             let mut headers = HeaderMap::new();
-            // `Retry-After` takes either seconds (integer) or an HTTP
-            // date. We always emit seconds — that's what upstream
-            // provider APIs give us and what OpenAI emits.
+
             if let Some(secs) = retry_after {
                 if let Ok(value) = HeaderValue::from_str(&secs.as_secs().to_string()) {
                     headers.insert(header::RETRY_AFTER, value);

@@ -1,6 +1,4 @@
-//! `WebSearch` — schema + per-provider dispatch. Today only the
-//! claude-code backend is wired; codex and gemini dispatch return a
-//! clear Unsupported so the nested model can adapt.
+
 
 pub mod claude_code;
 

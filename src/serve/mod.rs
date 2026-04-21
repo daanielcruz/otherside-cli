@@ -1,38 +1,4 @@
-//! `otherside serve` — OpenAI-compatible local HTTP proxy.
-//!
-//! The server exposes `/v1/chat/completions` and `/v1/models` on a loopback
-//! socket, accepts OpenAI-shape requests, and funnels them through the same
-//! [`Provider::stream`](crate::provider::Provider::stream) pipeline that
-//! powers `otherside -p`. Clients that only speak OpenAI (Cursor, Cline,
-//! aider, Continue) can therefore ride the user's upstream OAuth
-//! subscription by pointing at `http://localhost:<port>/v1` with a dummy
-//! API key.
-//!
-//! # Why a thin server
-//!
-//! The canonical request shape in otherside is already OpenAI's, so the
-//! server is almost an identity layer: parse JSON, hand off to the provider,
-//! re-emit chunks as OpenAI SSE. The only bespoke logic is
-//! streaming-vs-aggregate response selection and error mapping.
-//!
-//! # Layout
-//!
-//! - [`handlers`] — axum route handlers (`POST /v1/chat/completions`,
-//!   `GET /v1/models`).
-//! - [`sse`] — pure encoder for `data: <json>\n\n` frames plus the
-//!   `[DONE]` sentinel.
-//! - [`error`] — library [`crate::error::Error`] → axum `Response` mapping
-//!   in the OpenAI error body shape.
-//!
-//! # MVP scope (see change `002-serve-openai-compat`)
-//!
-//! - Streaming + non-streaming chat completions — both wired.
-//! - `/v1/models` stub listing.
-//! - Single registered provider (anthropic-oauth). Multi-provider routing
-//!   by model id is Phase 2.
-//! - No server-side auth. Binding defaults to `127.0.0.1`; remote binds are
-//!   allowed but explicitly undocumented for MVP because we don't yet
-//!   implement the spec's API-key gate for non-loopback.
+
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -50,22 +16,15 @@ pub mod sse;
 
 use handlers::ServeState;
 
-/// Build the axum router. Exposed so tests can exercise the routing layer
-/// with in-process HTTP rather than spinning up a real socket.
 pub fn router(state: ServeState) -> Router {
     Router::new()
         .route("/v1/chat/completions", post(handlers::chat_completions))
         .route("/v1/models", get(handlers::list_models))
-        // Trace layer gives us request spans for free — useful when
-        // debugging which clients are hitting us with what shape.
+
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
 
-/// Bind and serve until the process terminates.
-///
-/// Prints the actual bound address to stdout (per the serve spec) so the
-/// caller can confirm the ephemeral port when binding to `:0`.
 pub async fn run(
     bind: SocketAddr,
     registry: Arc<Registry>,
@@ -84,8 +43,6 @@ pub async fn run(
         .local_addr()
         .map_err(|e| Error::Other(format!("local_addr: {e}")))?;
 
-    // Emit to stdout — the spec requires this so shell scripts can parse
-    // the actual bind address (important when `--port 0` is used).
     println!("otherside serve: listening on http://{local}");
     println!("  POST /v1/chat/completions");
     println!("  GET  /v1/models");
@@ -111,9 +68,6 @@ mod tests {
     use std::pin::Pin;
     use tower::ServiceExt;
 
-    /// In-memory provider that emits a canned chunk sequence — lets the
-    /// router tests exercise the full request → response path without any
-    /// network hits.
     struct StubProvider;
 
     impl Provider for StubProvider {
@@ -201,8 +155,7 @@ mod tests {
         let bytes = to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
         let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["object"], "list");
-        // Catalog-driven listing: first claude-code row is the 1M variant
-        // (picker ordering per Slice U).
+
         assert_eq!(body["data"][0]["id"], "claude-opus-4-7[1m]");
         let ids: Vec<&str> = body["data"]
             .as_array()
@@ -273,9 +226,9 @@ mod tests {
         );
         let bytes = to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
         let text = std::str::from_utf8(&bytes).unwrap();
-        // Every compliant OpenAI SSE client keys on this sentinel.
+
         assert!(text.contains("data: [DONE]"), "body: {text}");
-        // At least one real chunk made it through.
+
         assert!(text.contains("\"chat.completion.chunk\""), "body: {text}");
     }
 
@@ -296,7 +249,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         let bytes = to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
         let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        // OpenAI error envelope — every SDK parses these fields.
+
         assert!(body["error"]["message"].is_string());
         assert_eq!(body["error"]["type"], "bad_request");
         assert_eq!(body["error"]["code"], "bad_request");

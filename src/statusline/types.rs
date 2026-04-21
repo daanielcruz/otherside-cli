@@ -1,17 +1,4 @@
-//! Statusline types. Two audiences:
-//!
-//! - **`StatuslineInput`** + its sub-structs — serialized to JSON and
-//!   piped on stdin to the user's custom `statusline.command`. Field
-//!   names are snake_case and match the upstream harness verbatim so
-//!   existing `jq` pipelines keep working when users migrate.
-//!
-//! - **`StatuslineCtx`** + everything else — otherside-internal types.
-//!   Otherside-native names. Can carry fields (terminal width, theme,
-//!   permission mode) that never cross the subprocess boundary.
-//!
-//! The boundary matters: user scripts observing the JSON must not see
-//! otherside-only state. Per C48, yolo posture stays on the internal
-//! side of the line.
+
 
 use std::collections::HashMap;
 
@@ -20,12 +7,6 @@ use serde_json::{Map, Value};
 
 use crate::config::settings::PermissionMode;
 
-// ---------------------------------------------------------------------
-// User-observable payload (harness fidelity — upstream-verbatim shape)
-// ---------------------------------------------------------------------
-
-/// Structured statusline input serialized to JSON and piped to the
-/// user's configured command. Field names + order match upstream.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct StatuslineInput {
     pub session_id: String,
@@ -58,7 +39,6 @@ pub struct StatuslineInput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree: Option<WorktreeInput>,
 
-    /// Round-trip passthrough for keys future versions may add.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -160,17 +140,10 @@ pub struct WorktreeInput {
     pub extra: Map<String, Value>,
 }
 
-// ---------------------------------------------------------------------
-// Settings wrapper (otherside-native — stored in `~/.otherside/settings.json`)
-// ---------------------------------------------------------------------
-
-/// Configured statusline behavior. Tagged union on `type`. Flatten-
-/// extras keep unknown sub-keys across round-trips (003 passthrough
-/// convention).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum StatuslineConfig {
-    /// Use the built-in otherside renderer. Default when no settings entry.
+
     Native {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         padding: Option<u8>,
@@ -179,7 +152,7 @@ pub enum StatuslineConfig {
         #[serde(flatten, default)]
         extra: Map<String, Value>,
     },
-    /// Pipe the payload to a user shell command, render its stdout.
+
     Command {
         command: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -199,8 +172,6 @@ impl Default for StatuslineConfig {
     }
 }
 
-/// Reserved theme slot for a later polish pass. Empty today; flatten
-/// keeps user-added sub-keys across round-trips.
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct StatuslineTheme {
@@ -208,12 +179,6 @@ pub struct StatuslineTheme {
     pub extra: Map<String, Value>,
 }
 
-// ---------------------------------------------------------------------
-// Internal render context + output (otherside-native names)
-// ---------------------------------------------------------------------
-
-/// Internal render input — built by the TUI state layer. Never
-/// serialized to the subprocess.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StatuslineCtx {
     pub payload: StatuslineInput,
@@ -224,9 +189,7 @@ pub struct StatuslineCtx {
 }
 
 impl StatuslineCtx {
-    /// Minimal ctx for unit tests — not a public API, but `pub(crate)`
-    /// would force callers into the same module tree. Keep pub and
-    /// annotate so no production caller reaches for it.
+
     pub fn minimal_for_test() -> Self {
         Self {
             payload: StatuslineInput {
@@ -283,7 +246,6 @@ impl StatuslineCtx {
     }
 }
 
-/// Single-line render output with pre-computed display width.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct StatuslineLine {
     pub content: String,
@@ -291,8 +253,7 @@ pub struct StatuslineLine {
 }
 
 impl StatuslineLine {
-    /// Build from an already-rendered string (subprocess output path
-    /// or direct native render).
+
     pub fn from_text(s: &str) -> Self {
         let content = s.trim_end_matches('\n').to_string();
         let width_cols = display_width(&content);
@@ -300,8 +261,6 @@ impl StatuslineLine {
     }
 }
 
-/// Column width of a string, counting ANSI escape sequences as zero-
-/// width so styled output doesn't over-pad the render.
 pub fn display_width(s: &str) -> u16 {
     use unicode_width::UnicodeWidthChar;
     let mut in_escape = false;
@@ -322,10 +281,6 @@ pub fn display_width(s: &str) -> u16 {
     u16::try_from(width).unwrap_or(u16::MAX)
 }
 
-// ---------------------------------------------------------------------
-// Error + cache
-// ---------------------------------------------------------------------
-
 #[derive(Debug, thiserror::Error)]
 pub enum StatuslineError {
     #[error("failed to spawn statusline command: {0}")]
@@ -342,10 +297,6 @@ pub enum StatuslineError {
     PayloadSerialize(#[from] serde_json::Error),
 }
 
-/// Per-session render cache. Re-rendering is cheap for the native
-/// path but expensive for the subprocess path (fork + exec). Cache
-/// keyed off the rendering-relevant ctx fields only, so transient
-/// changes (timestamps, API durations) don't bust it.
 #[derive(Debug, Clone, Default)]
 pub struct StatuslineCache {
     last_hash: Option<u64>,
@@ -357,7 +308,6 @@ impl StatuslineCache {
         Self::default()
     }
 
-    /// Returns cached line if `ctx` hashes to the same key as before.
     pub fn get(&self, key: u64) -> Option<&StatuslineLine> {
         if self.last_hash == Some(key) {
             self.last_line.as_ref()
@@ -377,10 +327,6 @@ impl StatuslineCache {
     }
 }
 
-/// Compute a cache key hashing only the ctx fields that affect
-/// rendering. Cost deltas, api durations, etc. are deliberately
-/// excluded to avoid churning the subprocess path every time a token
-/// counter ticks.
 pub fn render_key(ctx: &StatuslineCtx) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -411,7 +357,7 @@ mod tests {
 
     #[test]
     fn display_width_counts_multibyte_chars() {
-        // Korean `한` is width 2.
+
         assert_eq!(display_width("한"), 2);
     }
 
@@ -466,7 +412,7 @@ mod tests {
         .unwrap();
         let parsed: StatuslineInput = serde_json::from_str(&fixture).unwrap();
         let reemitted = serde_json::to_string_pretty(&parsed).unwrap();
-        // Re-parse the re-emitted string to confirm fidelity
+
         let reparsed: StatuslineInput = serde_json::from_str(&reemitted).unwrap();
         assert_eq!(parsed, reparsed);
         assert_eq!(parsed.model.id, "claude-opus-4-7");
@@ -500,16 +446,14 @@ mod tests {
 
     #[test]
     fn input_yolo_structurally_identical_to_mid_conversation() {
-        // C48: the payload MUST NOT carry permission state. Yolo
-        // fixture is schema-identical to mid-conversation — yolo lives
-        // only in the internal StatuslineCtx, never in the JSON.
+
         let fixture = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/config_corpus/statusline/input_yolo_active.json"
         ))
         .unwrap();
         let parsed: StatuslineInput = serde_json::from_str(&fixture).unwrap();
-        // No permission-mode-like field in extra either.
+
         assert!(!parsed.extra.contains_key("permission_mode"));
         assert!(!parsed.extra.contains_key("permissionMode"));
         assert!(!parsed.extra.contains_key("otherside_permission_mode"));

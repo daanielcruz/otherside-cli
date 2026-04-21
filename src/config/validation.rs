@@ -1,18 +1,7 @@
-//! Validation errors and warnings surfaced by the config layer.
-//!
-//! Why two channels: some invalid inputs must block the load
-//! (malformed JSON, wrong top-level type) and some must drop-and-
-//! continue (one bad permission rule in a list of good ones). The
-//! first set surfaces as `Error::Config`; the second accumulates as
-//! `ValidationWarning` attached to the successful load so callers
-//! can log them without failing the startup path.
+
 
 use std::fmt;
 
-/// A validation issue that does NOT fail the config load — the
-/// offending value was dropped or normalized and the rest is usable.
-/// Callers (typically `main.rs`) print warnings to stderr after a
-/// successful `load_all()`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidationWarning {
     pub scope: Scope,
@@ -20,9 +9,6 @@ pub struct ValidationWarning {
     pub detail: String,
 }
 
-/// Which of the five precedence scopes produced the warning. Policy
-/// warnings surface separately because admin-authored drift matters
-/// more than a user typo in their own file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
     UserGlobal,
@@ -32,20 +18,15 @@ pub enum Scope {
     McpChain,
 }
 
-/// Categorical reason for the warning. Keep the set small — callers
-/// group-by kind when aggregating for display.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WarningKind {
-    /// A permission rule missing `toolName` or `matchPattern` was
-    /// dropped; the remaining rules still applied.
+
     InvalidPermissionRule,
-    /// An unknown top-level key survived via `extra`; we flag it so
-    /// the user can spot typos.
+
     UnknownTopLevelKey,
-    /// A legacy key or value was auto-migrated. Informational only.
+
     LegacyValueMigrated,
-    /// An `OTHERSIDE_*` env var that looked like a per-field override
-    /// was ignored (config is file-only).
+
     IgnoredShadowEnv,
 }
 

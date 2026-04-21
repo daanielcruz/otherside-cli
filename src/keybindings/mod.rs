@@ -1,76 +1,31 @@
-//! Mini keybinding registry — port of upstream's
-//! `keybindings/defaultBindings.ts` shape.
-//!
-//! Why a registry instead of a hardcoded `match` block in the event
-//! loop:
-//!
-//! - Bindings carry a `context` (where the binding is active —
-//!   main TUI, dialog, input field) and an `is_active` predicate
-//!   (gate a binding on session state, e.g. Ctrl+B only when a
-//!   running foreground task exists). A registry centralizes both
-//!   so adding a binding is one line, and gating logic doesn't
-//!   sprawl across the keypress handler.
-//!
-//! - Upstream uses the same shape: `{action, keys, context,
-//!   isActive}` lookup at every keypress. Mirroring it keeps the
-//!   parity story honest — when upstream adds a new contextual
-//!   binding the port becomes a registry entry, not an event-loop
-//!   diff.
-//!
-//! # Scope
-//!
-//! Wave-1 (openspec 015) seeds two bindings:
-//! - `Ctrl+B` → `Action::TaskBackground` (context Tui, gated on
-//!   any running foreground task).
-//! - `Shift+↓` → `Action::OpenBackgroundTasksDialog` (context Tui,
-//!   gated on any backgrounded task — the navigation hint
-//!   `↓ to manage`).
-//!
-//! Future bindings register via [`default_bindings`] without
-//! touching dispatch.
+
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::tasks::TaskStore;
 
-/// User-facing actions the registry can dispatch. One enum value per
-/// keybinding the TUI honors. Add new variants here, never overload
-/// existing ones — the dispatch + handler match arms key off this.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
-    /// Ctrl+B — background every running foreground task.
-    /// Source: `keybindings/defaultBindings.ts:196-202`,
-    /// `LocalShellTask.tsx:400-429` `backgroundAll`.
+
     TaskBackground,
-    /// Shift+↓ — open the BackgroundTasksDialog directly when only
-    /// non-teammate backgrounded tasks exist. Source:
-    /// `hooks/useBackgroundTaskNavigation.ts:62-83`.
+
     OpenBackgroundTasksDialog,
 }
 
-/// Where a binding is reachable. Narrower contexts win in dispatch
-/// — a `Dialog` binding suppresses the same chord wired to `Tui`
-/// when a dialog has focus.
-///
-/// Mirrors upstream's `defaultBindings.ts:context` field. Only the
-/// variants we currently honor live here; expand as wave-2+
-/// bindings land.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Context {
-    /// Top-level TUI — prompt bar focused, no overlay open.
+
     Tui,
-    /// Modal dialog has focus (e.g. BackgroundTasksDialog).
+
     Dialog,
-    /// Input field-specific binding (rare). Highest priority.
+
     Input,
-    /// Any context. Lowest priority — fires only if no narrower
-    /// binding matched.
+
     Global,
 }
 
 impl Context {
-    /// Sort priority — lower numbers dispatch first. Input wins
-    /// over Dialog wins over Tui wins over Global.
+
     pub fn priority(self) -> u8 {
         match self {
             Self::Input => 0,
@@ -81,9 +36,6 @@ impl Context {
     }
 }
 
-/// One key combination — chord-free for now. Wave-1 has no
-/// chord bindings; the structure is forward-compat for `Ctrl+X
-/// Ctrl+K` later.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KeyCombo {
     pub code: KeyCode,
@@ -95,24 +47,17 @@ impl KeyCombo {
         Self { code, modifiers }
     }
 
-    /// True when `event` matches this combo.
     pub fn matches(&self, event: &KeyEvent) -> bool {
         event.code == self.code && event.modifiers == self.modifiers
     }
 }
 
-/// Snapshot of the bits of state a binding's `is_active` predicate
-/// can read. Kept as a slim view so the registry doesn't depend on
-/// the full `ConversationState` / `AppState` shape — easier to
-/// swap when the AppState aggregate (Fase 3 of state carve) lands.
 pub struct PredicateContext<'a> {
     pub tasks: &'a TaskStore,
-    /// True when an `OverlayMenu` (any flavor) currently captures
-    /// focus. Disambiguates `Tui` vs `Dialog` context.
+
     pub dialog_open: bool,
 }
 
-/// One registered binding.
 pub struct Binding {
     pub action: Action,
     pub keys: KeyCombo,
@@ -121,20 +66,16 @@ pub struct Binding {
 }
 
 impl Binding {
-    /// True when this binding should fire for `event` in the
-    /// current state. Used by [`dispatch`].
+
     fn fires(&self, event: &KeyEvent, ctx: &PredicateContext<'_>) -> bool {
         if !self.keys.matches(event) {
             return false;
         }
-        // Context gate: if a dialog is open and this binding's
-        // context is `Tui`, suppress (the dialog gets the chord).
-        // Conversely, if no dialog is open and this binding wants
-        // `Dialog`, suppress.
+
         let context_active = match self.context {
             Context::Tui => !ctx.dialog_open,
             Context::Dialog => ctx.dialog_open,
-            Context::Input => true, // input bindings are always Tui-shape
+            Context::Input => true,
             Context::Global => true,
         };
         if !context_active {
@@ -143,9 +84,6 @@ impl Binding {
         (self.is_active)(ctx)
     }
 }
-
-/// Predicates — kept as `fn` (not closure) so [`Binding`] is `Copy`-
-/// friendly + can live in a `&'static` slice.
 
 fn any_running_foreground(ctx: &PredicateContext<'_>) -> bool {
     if crate::tasks::is_disabled() {
@@ -164,8 +102,6 @@ fn any_backgrounded(ctx: &PredicateContext<'_>) -> bool {
         .any(|r| r.is_backgrounded)
 }
 
-/// Wave-1 binding seed. Ordering is irrelevant — dispatch sorts
-/// by [`Context::priority`].
 pub fn default_bindings() -> &'static [Binding] {
     use crossterm::event::{KeyCode::Char, KeyCode::Down};
     static BINDINGS: &[Binding] = &[
@@ -185,9 +121,6 @@ pub fn default_bindings() -> &'static [Binding] {
     BINDINGS
 }
 
-/// Pick the highest-priority matching binding for `event` given
-/// the current state. Returns the [`Action`] to dispatch, or
-/// `None` if no binding fires.
 pub fn dispatch(event: &KeyEvent, ctx: &PredicateContext<'_>) -> Option<Action> {
     let mut candidates: Vec<&Binding> = default_bindings()
         .iter()
@@ -203,8 +136,7 @@ mod tests {
     use crate::tasks::{TaskId, TaskRecord, TaskState};
 
     fn ctx_with_tasks(store: TaskStore, dialog_open: bool) -> PredicateContext<'static> {
-        // SAFETY shim for tests: PredicateContext borrows; for ergonomic
-        // tests we Box-leak a store so the borrow lasts. Test-only.
+
         let leaked: &'static TaskStore = Box::leak(Box::new(store));
         PredicateContext {
             tasks: leaked,
@@ -268,7 +200,7 @@ mod tests {
     #[test]
     fn shift_down_no_op_when_only_foreground_tasks() {
         let store = TaskStore::new();
-        store.insert(fresh_running_shell()); // foreground only
+        store.insert(fresh_running_shell());
         let ctx = ctx_with_tasks(store, false);
         assert_eq!(dispatch(&shift_down(), &ctx), None);
     }

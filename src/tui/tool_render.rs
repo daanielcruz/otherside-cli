@@ -1,27 +1,4 @@
-//! Tool-call render path — `⏺ <ToolName>  ⎿ <status|preview>`.
-//!
-//! 015 wires this module into the streaming log. `run_agent_turns`
-//! emits typed `StreamEvent::ToolCallStart` / `ToolCallFinish` events;
-//! `ConversationState` routes them into `active_tool_calls`; the log
-//! painter iterates that vector each frame and calls
-//! [`render_tool_call`] for every in-flight / finalized entry.
-//!
-//! The `Running` bullet animates by toggling the glyph on/off every
-//! [`BLINK_INTERVAL_TICKS`] frames (600ms @ 20fps ticker), mirroring
-//! upstream's `useBlink(600ms)` hook. Terminal `SLOW_BLINK` was
-//! unreliable (xterm/iTerm strip `ESC[5m`); glyph alternation is
-//! portable. `Ok` transitions to solid `theme::SUCCESS`, `Error` to
-//! solid `theme::ERROR`.
-//!
-//! [`payload_from_result`] picks a specialized sub-renderer based on
-//! tool name + result shape — Todos for TodoWrite, Diff for Edit/Write
-//! when a unified-diff string is surfaced, Preview for everything else.
-//!
-//! Per-tool parity (2026-04-19): [`summarize_args`] and
-//! [`payload_from_result`] carry tool-aware branches that mirror the
-//! upstream 2.1.113 `tools/*/UI.tsx` renderers. See
-//! `docs/design/tool-render-parity-2026-04-19.md` (outer repo) for the
-//! header/preview convention table.
+
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -30,24 +7,15 @@ use serde_json::Value;
 use super::render::theme;
 use super::{diff, todos};
 
-/// Per-tool bullet glyph. Upstream uses darwin-specific `⏺` and `●`
-/// elsewhere; we use the same so font fallback matches.
 #[cfg(target_os = "macos")]
 const BULLET: &str = "⏺";
 #[cfg(not(target_os = "macos"))]
 const BULLET: &str = "●";
 
-/// Space glyph used in place of the bullet on the "off" half of the
-/// blink cycle while Running. Matches upstream `ToolUseLoader` which
-/// substitutes `' '` for `BLACK_CIRCLE` when `isBlinking` is false.
 const BULLET_HIDDEN: &str = " ";
 
-/// How many spinner ticks make up one half of the blink cycle.
-/// Spinner ticker runs at 50ms, so 12 ticks = 600ms — the same
-/// interval upstream uses (`useBlink.ts::BLINK_INTERVAL_MS`).
 const BLINK_INTERVAL_TICKS: u64 = 12;
 
-/// Tool call status. Drives the badge color on the bullet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ToolStatus {
     Running,
@@ -56,26 +24,16 @@ pub enum ToolStatus {
 }
 
 impl ToolStatus {
-    /// Bullet color per status. Made `pub(crate)` in 015 so the
-    /// outer render module can spot-check the wired transition in
-    /// integration tests without reaching through the `Style`.
+
     pub(crate) fn color(self) -> ratatui::style::Color {
         match self {
-            // 011 fidelity: gray-blinking bullet during dispatch,
-            // solid green on tool_result, solid red on error. Matches
-            // upstream's semantic color assignment (palette differs
-            // deliberately — only roles line up).
+
             ToolStatus::Running => theme::MUTED,
             ToolStatus::Ok => theme::SUCCESS,
             ToolStatus::Error => theme::ERROR,
         }
     }
 
-    /// Extra text modifiers layered on top of the color. All three
-    /// states render BOLD. Blinking during `Running` is handled by
-    /// tick-driven glyph alternation in [`render_tool_call`] rather
-    /// than the terminal-native `SLOW_BLINK` (stripped by most
-    /// modern terminals).
     pub(crate) fn modifier(self) -> ratatui::style::Modifier {
         use ratatui::style::Modifier;
         let _ = self;
@@ -83,24 +41,15 @@ impl ToolStatus {
     }
 }
 
-/// Opaque payload attached to a tool call so the render path can pick
-/// a specialized sub-renderer (todos, diff, plain text) without
-/// parsing the JSON twice.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum ToolPayload {
-    /// Raw text preview (first N chars of stdout / first line of the
-    /// result JSON). Also used to surface a tool-dispatch error
-    /// string — the render path paints previews in MUTED, which reads
-    /// as muted-error under the ERROR-styled bullet without needing
-    /// a separate variant.
+
     Preview(String),
-    /// TodoWrite items — render with the todos module.
+
     Todos(Vec<todos::TodoItem>),
-    /// Edit/Write unified diff — render with the diff module.
+
     Diff(String),
-    /// Bash result — stdout rendered dim, stderr rendered in
-    /// `theme::ERROR` so error output reads as distinct from normal
-    /// program output. Matches upstream `BashToolResultMessage`.
+
     Bash {
         stdout: String,
         stderr: String,
@@ -108,19 +57,6 @@ pub enum ToolPayload {
     },
 }
 
-/// Serializable archive shape for a finished tool call. Used by
-/// [`super::state::format_tool_history_entry`] to serialize a
-/// [`super::state::ToolCallEntry`] into the `Role::Tool` message body
-/// so the archived render path can reconstruct the full header +
-/// payload via [`render_tool_call`], matching the live render.
-///
-/// `id` and `raw_result` are persisted so
-/// [`super::state::ConversationState::history_for_request`] can
-/// reconstruct the assistant `tool_use` / user `tool_result` pair
-/// the wire layer ships on the next turn — the LLM needs to see its
-/// own tool_use ids in history to reconcile against next-turn
-/// `<task-notification>` blocks. Both are `serde(default)` so older
-/// archives lacking the fields keep deserializing.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ToolCallArchive {
     pub status: ToolStatus,
@@ -129,26 +65,16 @@ pub struct ToolCallArchive {
     pub args: Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payload: Option<ToolPayload>,
-    /// LLM-emitted `tool_use_id`. Used as the Anthropic
-    /// `tool_use.id` and the matched `tool_result.tool_use_id` on the
-    /// next-turn wire body. Empty string for archives written before
-    /// this field landed (degraded but non-fatal — the history will
-    /// emit unpaired ids in that case).
+
     #[serde(default)]
     pub id: String,
-    /// Raw dispatcher result. Reshipped as the `tool_result.content`
-    /// on the next-turn wire body so the model sees what the tool
-    /// returned. `None` for archives written before this field
-    /// landed and for error paths (the error text already lives in
-    /// `payload`).
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw_result: Option<Value>,
 }
 
 impl ToolCallArchive {
-    /// Rebuild a [`ToolCallView`] pointing into `self`. Lifetime is
-    /// tied to the archive so the caller keeps the archive alive while
-    /// rendering.
+
     pub fn view(&self) -> ToolCallView<'_> {
         ToolCallView {
             name: &self.name,
@@ -156,55 +82,29 @@ impl ToolCallArchive {
             status: self.status,
             elapsed_ms: Some(self.elapsed_ms),
             payload: self.payload.as_ref(),
-            // Archived tool calls render with the compact
-            // (non-verbose) layout — we don't preserve per-entry
-            // verbose state across transcript serialization.
+
             verbose: false,
-            // Archived entries render solid (no blink); the call is
-            // already resolved.
+
             spinner_tick: 0,
         }
     }
 }
 
-/// Compact view the caller hands this module.
 pub struct ToolCallView<'a> {
     pub name: &'a str,
     pub args: &'a Value,
     pub status: ToolStatus,
     pub elapsed_ms: Option<u64>,
     pub payload: Option<&'a ToolPayload>,
-    /// Mirror the `verbose` render flag from upstream's `UI.tsx`
-    /// entry points. When `true`, per-tool branches expand headers
-    /// and previews (Glob/Grep file listings inline, Read `lines a-b`
-    /// qualifier, WebFetch appended body, Bash full output). Default
-    /// `false` keeps the compact render.
+
     pub verbose: bool,
-    /// Global animation clock — the 20fps spinner ticker threaded in
-    /// from `render::render`. Only consumed on `Running` status, where
-    /// even-indexed blink halves show the bullet glyph and odd halves
-    /// show a space. For finalized calls the value is irrelevant
-    /// (bullet renders solid).
+
     pub spinner_tick: u64,
 }
 
-/// Render a single tool call into owned Lines ready to splice into
-/// the streaming log.
-///
-/// Upstream-shape header: `⏺ ToolName(arg=value)`. Status is conveyed
-/// by the bullet color (MUTED+BLINK running → SUCCESS ok → ERROR err);
-/// no explicit status text or elapsed chip on the header row. Payload
-/// preview (when available) renders on the next line under a `⎿`
-/// gutter in MUTED.
 pub fn render_tool_call(view: &ToolCallView<'_>) -> Vec<Line<'static>> {
     let mut out: Vec<Line<'static>> = Vec::new();
 
-    // Header row: `⏺ ToolName(arg_summary)`.
-    // For the `Agent` tool we display the resolved subagent type
-    // (e.g. `Explore(...)`) instead of the wrapper tool name —
-    // mirrors upstream which paints `Explore(...)` even though the
-    // wire `tool_use.name` is `Agent` (R-20 anchor preserved on the
-    // wire side).
     let displayed_name: String = if view.name == "Agent" {
         view.args
             .as_object()
@@ -222,9 +122,7 @@ pub fn render_tool_call(view: &ToolCallView<'_>) -> Vec<Line<'static>> {
     } else {
         format!("({arg_summary})")
     };
-    // Running status alternates glyph to simulate blink — even
-    // 600ms windows show the bullet, odd windows show a space.
-    // Finalized calls (Ok/Error) render the bullet solid.
+
     let bullet_glyph = if matches!(view.status, ToolStatus::Running)
         && (view.spinner_tick / BLINK_INTERVAL_TICKS) % 2 == 1
     {
@@ -251,14 +149,9 @@ pub fn render_tool_call(view: &ToolCallView<'_>) -> Vec<Line<'static>> {
             Style::default().fg(theme::MUTED),
         ));
     }
-    let _ = view.elapsed_ms; // suppressed on the header per upstream format
+    let _ = view.elapsed_ms;
     out.push(Line::from(header_spans));
 
-    // Payload — indented under the gutter glyph. Upstream parity:
-    // only the FIRST line carries `  ⎿ `; continuation lines align
-    // under the label with a 4-space pad. Previously each wrapped
-    // line emitted its own `⎿`, producing a column of symbols
-    // rather than a tree-drawn preview.
     const GUTTER_HEAD: &str = "  ⎿ ";
     const GUTTER_CONT: &str = "    ";
     if let Some(payload) = view.payload {
@@ -322,22 +215,6 @@ pub fn render_tool_call(view: &ToolCallView<'_>) -> Vec<Line<'static>> {
     out
 }
 
-/// Summarize the tool-call `args` JSON into the compact header parens
-/// form. Tool-aware branches mirror upstream 2.1.113 `tools/*/UI.tsx`
-/// `renderToolUseMessage` conventions (see docs/design/
-/// tool-render-parity-2026-04-19.md):
-///
-/// - `Bash` → bare command value: `(ls -la /tmp)`
-/// - `Skill` → bare skill name: `(verifier-tui)`
-/// - `Agent` → bare description: `(Audit ship-readiness)`
-/// - `ToolSearch` → empty (upstream returns `null` from its render)
-/// - `Read` → `file_path=<path>` + optional `pages=` / `offset=` / `limit=`
-/// - `Edit` / `Write` → `file_path=<path>`
-/// - `Glob` / `Grep` → `pattern=<pat>` + optional `path=<p>`
-/// - fallback → `key=value[, key2=value2]` (first 1-2 fields)
-///
-/// Clips long strings, flattens newlines. Empty / non-object → empty
-/// string.
 pub fn summarize_args(name: &str, args: &Value, verbose: bool) -> String {
     let obj = match args.as_object() {
         Some(o) => o,
@@ -346,16 +223,9 @@ pub fn summarize_args(name: &str, args: &Value, verbose: bool) -> String {
     if obj.is_empty() {
         return String::new();
     }
-    // `verbose` currently feeds a handful of per-tool branches
-    // (WebSearch domain annotations, Read line range, Grep/Glob
-    // expansion). Suppressing the unused-var lint until every branch
-    // consumes it — documented as future-growth surface.
+
     let _ = verbose;
 
-    // Tools whose upstream `renderToolUseMessage` returns `null` —
-    // the header shows just `⏺ <Name>`, no args. Mirror the hide so
-    // TaskCreate/List/Get/Update + ToolSearch don't leak args into
-    // the transcript. See each tool's `UI.tsx`.
     if matches!(
         name,
         "ToolSearch" | "TaskCreate" | "TaskList" | "TaskGet" | "TaskUpdate"
@@ -363,9 +233,6 @@ pub fn summarize_args(name: &str, args: &Value, verbose: bool) -> String {
         return String::new();
     }
 
-    // Command-centric tools drop the key prefix — the single primary
-    // field *is* the identity of the call (Bash's command, Skill's
-    // skill name, Agent's description).
     if name == "Bash" {
         if let Some(cmd) = obj.get("command").and_then(|v| v.as_str()) {
             return clip_flat(cmd, 90);
@@ -382,9 +249,6 @@ pub fn summarize_args(name: &str, args: &Value, verbose: bool) -> String {
         }
     }
 
-    // Read upstream header: bare displayPath, optionally followed by
-    // ` · pages <X>` or ` · from line <N>` / ` · lines <a>-<b>`.
-    // See `tools/FileReadTool/UI.tsx`.
     if name == "Read" {
         if let Some(fp) = obj.get("file_path").and_then(|v| v.as_str()) {
             let mut header = clip_flat(fp, 80);
@@ -406,18 +270,13 @@ pub fn summarize_args(name: &str, args: &Value, verbose: bool) -> String {
             return header;
         }
     }
-    // Edit / Write upstream headers emit the bare `getDisplayPath` —
-    // no `file_path=` prefix. See `tools/FileEditTool/UI.tsx` and
-    // `tools/FileWriteTool/UI.tsx`.
+
     if name == "Edit" || name == "Write" {
         if let Some(fp) = obj.get("file_path").and_then(|v| v.as_str()) {
             return clip_flat(fp, 80);
         }
     }
 
-    // Glob / Grep upstream headers quote both values:
-    //   `pattern: "<pat>", path: "<path>"`
-    // Matches `tools/GlobTool/UI.tsx` + `tools/GrepTool/UI.tsx`.
     if name == "Glob" || name == "Grep" {
         let mut parts: Vec<String> = Vec::with_capacity(2);
         if let Some(pat) = obj.get("pattern").and_then(|v| v.as_str()) {
@@ -431,25 +290,18 @@ pub fn summarize_args(name: &str, args: &Value, verbose: bool) -> String {
         }
     }
 
-    // WebFetch upstream header = bare `url` (non-verbose). Mirror
-    // that — no `url=` prefix, no prompt echo.
-    // See `tools/WebFetchTool/UI.tsx::renderToolUseMessage:27`.
     if name == "WebFetch" {
         if let Some(u) = obj.get("url").and_then(|v| v.as_str()) {
             return clip_flat(u, 100);
         }
     }
 
-    // WebSearch upstream header = `"query"` (quoted).
-    // See `tools/WebSearchTool/UI.tsx::renderToolUseMessage:43`.
     if name == "WebSearch" {
         if let Some(q) = obj.get("query").and_then(|v| v.as_str()) {
             return format!("\"{}\"", clip_flat(q, 100));
         }
     }
 
-    // NotebookEdit upstream header = `<displayPath>@<cell_id>` (no
-    // prefix, no quotes). See `tools/NotebookEditTool/UI.tsx`.
     if name == "NotebookEdit" {
         let path = obj
             .get("notebook_path")
@@ -464,7 +316,6 @@ pub fn summarize_args(name: &str, args: &Value, verbose: bool) -> String {
         }
     }
 
-    // Generic fallback — first 2 fields as key=value pairs.
     let mut parts: Vec<String> = Vec::with_capacity(2);
     for (k, v) in obj.iter().take(2) {
         let rendered = match v {
@@ -489,15 +340,6 @@ fn clip_flat(s: &str, max: usize) -> String {
     }
 }
 
-/// Produce the render payload for a tool result given the tool name.
-///
-/// Dispatch is tool-name-aware so the log surfaces the richest
-/// rendering the result supports. `TodoWrite` yields structured todos;
-/// `Edit` / `Write` yield a unified diff when the result JSON carries
-/// a diff string; everything else degrades to a short text preview
-/// lifted from the first obvious field (stdout, content, first-array
-/// entry) so the reader sees proof of execution without needing to
-/// scroll.
 pub fn payload_from_result(name: &str, result: &Value, verbose: bool) -> Option<ToolPayload> {
     match name {
         "TodoWrite" => todos_payload(result),
@@ -517,16 +359,12 @@ pub fn payload_from_result(name: &str, result: &Value, verbose: bool) -> Option<
     }
 }
 
-/// Produce a render payload from a tool-dispatch error string.
-/// Hoisted into a helper so state.rs has a single call site mirroring
-/// [`payload_from_result`] for the `Err` arm.
 pub fn payload_from_error(err: &str) -> ToolPayload {
     ToolPayload::Preview(one_line_preview(err, 240))
 }
 
 fn todos_payload(result: &Value) -> Option<ToolPayload> {
-    // Upstream's TodoWrite returns the full todo list on the result;
-    // tests use `{"todos": [...]}` or a bare array.
+
     let items = result
         .get("todos")
         .or(Some(result))
@@ -544,8 +382,7 @@ fn todos_payload(result: &Value) -> Option<ToolPayload> {
 
 fn diff_payload(result: &Value) -> Option<ToolPayload> {
     let obj = result.as_object()?;
-    // Accept either `diff`, `unified_diff`, or a top-level string that
-    // starts with a hunk header — Edit/Write shapes vary by dispatcher.
+
     if let Some(s) = obj.get("diff").and_then(|v| v.as_str()) {
         if !s.is_empty() {
             return Some(ToolPayload::Diff(s.to_string()));
@@ -559,16 +396,9 @@ fn diff_payload(result: &Value) -> Option<ToolPayload> {
     None
 }
 
-/// Read result preview — upstream emits `Read N lines` / `Read N cells` /
-/// `Read image (size)` / `Read PDF (size)` / `Unchanged since last read`.
-/// Our dispatcher returns `{content, numLines, startLine, totalLines}`,
-/// so we surface the line count plus a short body excerpt.
 fn read_preview(result: &Value) -> Option<ToolPayload> {
     let obj = result.as_object()?;
-    // Type-aware dispatch — upstream's `FileReadTool` UI picks one of
-    // `Read <N> lines|cells|pages`, `Read image (<size>)`,
-    // `Read PDF (<size>)`, or `Unchanged since last read` based on
-    // the result discriminant. See `tools/FileReadTool/UI.tsx`.
+
     if obj
         .get("unchanged")
         .and_then(|v| v.as_bool())
@@ -626,8 +456,6 @@ fn read_preview(result: &Value) -> Option<ToolPayload> {
     Some(ToolPayload::Preview(head))
 }
 
-/// Format a byte count — same shape as `web_fetch_preview::format_file_size`
-/// so the UI reads consistently.
 fn format_byte_size(bytes: u64) -> String {
     const KB: u64 = 1024;
     const MB: u64 = 1024 * KB;
@@ -643,10 +471,6 @@ fn format_byte_size(bytes: u64) -> String {
     }
 }
 
-/// Edit fallback (non-diff) preview. Our dispatcher returns
-/// `{status, file_path, replaced}` when no diff is attached. Upstream
-/// only ever shows a diff — when none is available we at least surface
-/// the replacement count + target path.
 fn edit_preview(result: &Value) -> Option<ToolPayload> {
     let obj = result.as_object()?;
     let fp = obj.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
@@ -665,18 +489,10 @@ fn edit_preview(result: &Value) -> Option<ToolPayload> {
     }
 }
 
-/// Write fallback preview. Upstream emits `Wrote N lines to <path>`;
-/// our dispatcher returns `{status, file_path, created, bytes_written}`,
-/// so we pivot to bytes and preserve the `created` vs `updated` split.
 fn write_preview(result: &Value) -> Option<ToolPayload> {
     let obj = result.as_object()?;
     let fp = obj.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
-    // Upstream counts LINES written, not bytes. See
-    // `tools/FileWriteTool/UI.tsx::FileWriteToolCreatedMessage`.
-    // Prefer an explicit `numLines` field when the dispatcher
-    // provides it; otherwise derive from `content`. Fall back to
-    // `bytes_written` only as a last resort so the preview still
-    // renders something meaningful for legacy payloads.
+
     let lines = obj
         .get("numLines")
         .or_else(|| obj.get("lines"))
@@ -709,15 +525,6 @@ fn write_preview(result: &Value) -> Option<ToolPayload> {
     Some(ToolPayload::Preview(text))
 }
 
-/// Bash preview — split stdout/stderr so the render path can paint
-/// stderr in `theme::ERROR` while keeping stdout dim. Matches upstream
-/// `BashToolResultMessage` which renders `<OutputLine content=stdout>`
-/// followed by `<OutputLine content=stderr isError>`.
-///
-/// Accepts either the new separated shape (`stdout` + `stderr`) or the
-/// legacy single-`output` shape (for captured transcripts written
-/// before the split). When neither field is present returns None so
-/// the generic fallback takes over.
 fn bash_preview(result: &Value) -> Option<ToolPayload> {
     let obj = result.as_object()?;
     let stdout = obj.get("stdout").and_then(|v| v.as_str()).map(str::to_string);
@@ -727,9 +534,7 @@ fn bash_preview(result: &Value) -> Option<ToolPayload> {
         return None;
     }
     let exit = obj.get("exit_code").and_then(|v| v.as_i64()).unwrap_or(0);
-    // Legacy single-stream captures route through stderr when exit != 0
-    // so the render still reads the failure in red; otherwise they
-    // land in stdout.
+
     let (stdout, stderr) = match (stdout, stderr, legacy) {
         (so, se, _) if so.is_some() || se.is_some() => {
             (so.unwrap_or_default(), se.unwrap_or_default())
@@ -741,9 +546,7 @@ fn bash_preview(result: &Value) -> Option<ToolPayload> {
     let stdout = trim_multiline(&stdout, 20, 200);
     let stderr = trim_multiline(&stderr, 20, 200);
     if stdout.is_empty() && stderr.is_empty() && exit == 0 {
-        // Upstream shows `(No output)` in dim text when both streams
-        // are empty and the process succeeded. Surface the same note
-        // under the gutter so the reader doesn't think the call hung.
+
         return Some(ToolPayload::Bash {
             stdout: String::from("(No output)"),
             stderr: String::new(),
@@ -757,9 +560,6 @@ fn bash_preview(result: &Value) -> Option<ToolPayload> {
     })
 }
 
-/// Glob preview — `Found N files`, with the filename list only in
-/// verbose mode. Mirrors upstream `GlobTool/UI.tsx` which hides the
-/// `SearchResultSummary` body unless the user ran with `--verbose`.
 fn glob_preview(result: &Value, verbose: bool) -> Option<ToolPayload> {
     let obj = result.as_object()?;
     let n = obj.get("numFiles").and_then(|v| v.as_u64())?;
@@ -781,12 +581,6 @@ fn glob_preview(result: &Value, verbose: bool) -> Option<ToolPayload> {
     Some(ToolPayload::Preview(head))
 }
 
-/// Grep preview — mode-aware per upstream `GrepTool/UI.tsx`.
-/// - `files_with_matches` (default): `Found N match(es)` + up to 10 paths.
-/// - `content`: `Found N line(s)`.
-/// - `count`: `Found N match(es) across M file(s)`.
-/// Our dispatcher emits `{mode, matches, truncated, exit}` — `matches`
-/// is a string list whose meaning depends on `mode`.
 fn grep_preview(result: &Value, verbose: bool) -> Option<ToolPayload> {
     let obj = result.as_object()?;
     let matches = obj.get("matches").and_then(|v| v.as_array())?;
@@ -798,9 +592,7 @@ fn grep_preview(result: &Value, verbose: bool) -> Option<ToolPayload> {
     let head = match mode {
         "content" => format!("Found {n} {}", if n == 1 { "line" } else { "lines" }),
         "count" => {
-            // Count mode: matches[] entries are `path:count` strings. Sum
-            // totals and count distinct files to emit upstream's
-            // `Found <total> match(es) across <files> file(s)` shape.
+
             let (total, file_count) = matches
                 .iter()
                 .filter_map(|v| v.as_str())
@@ -820,9 +612,7 @@ fn grep_preview(result: &Value, verbose: bool) -> Option<ToolPayload> {
         _ => format!("Found {n} {}", if n == 1 { "match" } else { "matches" }),
     };
     if matches.is_empty() || !verbose {
-        // Non-verbose: only the head count, matching upstream's
-        // `GrepTool/UI.tsx` default render. Body list re-emerges
-        // when `verbose` is set (`/verbose` slash or settings.json).
+
         return Some(ToolPayload::Preview(head));
     }
     let list: Vec<String> = matches
@@ -837,15 +627,6 @@ fn grep_preview(result: &Value, verbose: bool) -> Option<ToolPayload> {
     Some(ToolPayload::Preview(format!("{head}\n{body}")))
 }
 
-/// Skill preview — upstream emits `Successfully loaded skill` + optional
-/// tool count + model. Our dispatcher returns `{skill, args, content}`
-/// where `content` is the skill's SKILL.md body. Surface the first few
-/// lines so the reader sees what the skill actually does.
-/// Skill preview — upstream's `Byline` emits middot-joined segments:
-/// `Successfully loaded skill · <N> tools allowed · <model>`.
-/// Matches `tools/SkillTool/UI.tsx`. We stop surfacing the SKILL.md
-/// body excerpt — upstream never shows it, and it noisily duplicates
-/// content the skill itself will produce on its own.
 fn skill_preview(result: &Value) -> Option<ToolPayload> {
     let obj = result.as_object()?;
     if obj.get("forked").and_then(|v| v.as_bool()).unwrap_or(false) {
@@ -873,9 +654,6 @@ fn skill_preview(result: &Value) -> Option<ToolPayload> {
     Some(ToolPayload::Preview(parts.join(" · ")))
 }
 
-/// ToolSearch preview — upstream renders tool_reference blocks. Our
-/// dispatcher returns `{query, max_results, tools}` where `tools` is a
-/// list of `{name, description, input_schema}`. Surface count + names.
 fn tool_search_preview(result: &Value) -> Option<ToolPayload> {
     let obj = result.as_object()?;
     let tools = obj.get("tools").and_then(|v| v.as_array())?;
@@ -895,8 +673,7 @@ fn tool_search_preview(result: &Value) -> Option<ToolPayload> {
     if names.is_empty() {
         return Some(ToolPayload::Preview(head));
     }
-    // Upstream lists tool names inline; we cap at 10 so long result
-    // lists stay one-line.
+
     let shown: Vec<String> = names.iter().take(10).cloned().collect();
     let tail = if names.len() > shown.len() {
         format!(", +{} more", names.len() - shown.len())
@@ -909,14 +686,6 @@ fn tool_search_preview(result: &Value) -> Option<ToolPayload> {
     )))
 }
 
-/// Agent preview — upstream emits `Done (N tool uses · M tokens · T)`.
-/// Our dispatcher stub returns `{status, subagent_type_requested,
-/// description, prompt_preview, reason}` because subagent execution is
-/// not wired yet. Surface the `reason` (when status != "completed") so
-/// the user sees why nothing happened.
-/// Preview line for WebFetch — matches upstream's
-/// `Received <formatted_size> (<code> <codeText>)` shape.
-/// See `tools/WebFetchTool/UI.tsx::renderToolResultMessage:57-61`.
 fn web_fetch_preview(result: &Value) -> Option<ToolPayload> {
     let obj = result.as_object()?;
     let bytes = obj.get("bytes").and_then(|v| v.as_u64());
@@ -938,9 +707,6 @@ fn web_fetch_preview(result: &Value) -> Option<ToolPayload> {
     }
 }
 
-/// Format a byte count the way upstream does — `formatFileSize`
-/// produces `"24 KB"` / `"1.2 MB"` rounded to single digits, matches
-/// `utils/format.ts`.
 fn format_file_size(bytes: u64) -> String {
     const KB: u64 = 1024;
     const MB: u64 = 1024 * KB;
@@ -956,19 +722,10 @@ fn format_file_size(bytes: u64) -> String {
     }
 }
 
-/// Preview line for WebSearch — matches upstream's
-/// `Did N search(es) in <timeDisplay>` shape.
-/// See `tools/WebSearchTool/UI.tsx::renderToolResultMessage:79-92`.
-/// Unavailable-backend stub is surfaced verbatim so the user sees
-/// the configuration hint instead of an empty "Did 0 searches" line.
 fn web_search_preview(result: &Value) -> Option<ToolPayload> {
     let obj = result.as_object()?;
     let results = obj.get("results").and_then(|v| v.as_array())?;
 
-    // Unavailable backend path — single string entry that starts
-    // with `web_search_unavailable`. Surface it directly so the
-    // preview reads as `⎿ web_search_unavailable - configure …`
-    // instead of `Did 0 searches`.
     if results.len() == 1 {
         if let Some(s) = results[0].as_str() {
             if s.starts_with("web_search_unavailable") {
@@ -977,9 +734,6 @@ fn web_search_preview(result: &Value) -> Option<ToolPayload> {
         }
     }
 
-    // Upstream `getSearchSummary`: only non-string entries count as a
-    // "search". String entries are the unavailable markers + error
-    // messages the model sees mid-transcript.
     let search_count = results
         .iter()
         .filter(|v| !v.is_string() && !v.is_null())
@@ -999,10 +753,6 @@ fn web_search_preview(result: &Value) -> Option<ToolPayload> {
     )))
 }
 
-/// Preview for NotebookEdit — matches upstream's
-/// `Updated cell <cell_id>:` header followed by a peek at the new
-/// source. See `tools/NotebookEditTool/UI.tsx`. Falls through to the
-/// generic `preview_payload` when the dispatcher returned an error.
 fn notebook_edit_preview(result: &Value) -> Option<ToolPayload> {
     let obj = result.as_object()?;
     if let Some(err) = obj.get("error").and_then(|v| v.as_str()) {
@@ -1034,10 +784,7 @@ fn agent_preview(result: &Value) -> Option<ToolPayload> {
         .get("status")
         .and_then(|v| v.as_str())
         .unwrap_or("unknown");
-    // Completion path — upstream-shape summary:
-    //   `Done (<N> tool uses · <formatNumber(tokens)> tokens · <formatDuration(ms)>)`
-    // with thousands separators on tokens and `Xm Ys` / `Xs` on
-    // duration per `tools/AgentTool/UI.tsx`.
+
     if status == "completed" {
         let tool_uses = obj
             .get("totalToolUseCount")
@@ -1056,20 +803,13 @@ fn agent_preview(result: &Value) -> Option<ToolPayload> {
             format_duration_ms(duration_ms),
         )));
     }
-    // Background-route synthetic result — byte-match upstream
-    // `tools/AgentTool/UI.tsx:345-358`:
-    // `Backgrounded agent (↓ to manage · ctrl+o to expand)`.
-    // The `↓ to manage` hint references the background tasks
-    // dialog; `ctrl+o to expand` reveals the full agent prompt
-    // in transcript mode (not wired yet, but the hint is anchor
-    // text the user has been trained to recognize upstream).
+
     if status == "backgrounded" {
         return Some(ToolPayload::Preview(
             "Backgrounded agent (↓ to manage · ctrl+o to expand)".to_string(),
         ));
     }
-    // Stubbed path — show the reason string so callers understand the
-    // dispatcher didn't actually run the subagent.
+
     let reason = obj
         .get("reason")
         .and_then(|v| v.as_str())
@@ -1077,9 +817,6 @@ fn agent_preview(result: &Value) -> Option<ToolPayload> {
     Some(ToolPayload::Preview(one_line_preview(reason, 240)))
 }
 
-/// Render an integer with comma thousands separators — matches
-/// upstream's `formatNumber` at `utils/format.ts`. Not locale-aware
-/// on purpose: upstream hard-codes `,` too.
 fn format_number_thousands(n: u64) -> String {
     let raw = n.to_string();
     let bytes = raw.as_bytes();
@@ -1095,9 +832,6 @@ fn format_number_thousands(n: u64) -> String {
     out.chars().rev().collect()
 }
 
-/// Render an elapsed millisecond count as `Xs` (<60s) or `Xm Ys`
-/// (>=60s). Matches upstream's `formatDuration` shape used by Agent
-/// + other tool previews — seconds only, no fractional component.
 fn format_duration_ms(ms: u64) -> String {
     let total_s = ms / 1000;
     if total_s < 60 {
@@ -1114,9 +848,7 @@ fn format_duration_ms(ms: u64) -> String {
 }
 
 fn preview_payload(result: &Value) -> Option<ToolPayload> {
-    // Mirror the textual shapes `mod.rs::summarize_tool_result` already
-    // handles so render and legacy-summary agree on what counts as the
-    // "headline" field.
+
     let text = match result {
         Value::String(s) => one_line_preview(s, 240),
         Value::Array(items) => format!("{} item{}", items.len(), if items.len() == 1 { "" } else { "s" }),
@@ -1148,17 +880,14 @@ fn preview_payload(result: &Value) -> Option<ToolPayload> {
                 } else {
                     format!("exit {exit}:\n")
                 };
-                // Keep multi-line — upstream Bash renders first N lines
-                // of stdout under the gutter, one ⎿-prefixed line each.
-                // Cap at 20 lines * 200 chars each so a chatty command
-                // doesn't flood the log.
+
                 let trimmed = trim_multiline(output, 20, 200);
                 return Some(ToolPayload::Preview(format!("{prefix}{trimmed}")));
             }
             if let Some(s) = obj.get("content").and_then(|v| v.as_str()) {
                 return Some(ToolPayload::Preview(one_line_preview(s, 240)));
             }
-            // Nothing recognizable — fall back to a compact field count.
+
             format!("{} field{}", obj.len(), if obj.len() == 1 { "" } else { "s" })
         }
         Value::Null => String::new(),
@@ -1182,10 +911,6 @@ fn one_line_preview(s: &str, max: usize) -> String {
     }
 }
 
-/// Preserve up to `max_lines` lines of `s`, clipping each to
-/// `max_chars`. Appends a `… (N more lines)` tail when truncation
-/// happens. Used by Bash-shape previews where multi-line structure
-/// is the point.
 fn trim_multiline(s: &str, max_lines: usize, max_chars: usize) -> String {
     let all_lines: Vec<&str> = s.lines().collect();
     let total = all_lines.len();
@@ -1243,8 +968,7 @@ mod tests {
         };
         let lines = render_tool_call(&view);
         let text = collect_text(&lines);
-        // Upstream shape: `⏺ Read(/tmp/x.rs)` — bare displayPath, no
-        // key=value prefix, no status text, no elapsed chip.
+
         assert!(text.contains("Read"));
         assert!(text.contains("/tmp/x.rs"));
         assert!(!text.contains("file_path="));
@@ -1254,9 +978,7 @@ mod tests {
 
     #[test]
     fn running_bullet_alternates_with_spinner_tick() {
-        // 50ms ticker × BLINK_INTERVAL_TICKS(12) = 600ms per half —
-        // mirrors upstream `useBlink`. Ticks 0..=11 show the bullet,
-        // 12..=23 show the blank, 24..=35 show the bullet again.
+
         let args = serde_json::json!({});
         let mk_view = |tick: u64| ToolCallView {
             name: "Bash",
@@ -1290,7 +1012,7 @@ mod tests {
 
     #[test]
     fn resolved_bullet_ignores_spinner_tick() {
-        // Ok / Error render solid regardless of the animation clock.
+
         let args = serde_json::json!({});
         for status in [ToolStatus::Ok, ToolStatus::Error] {
             let view = ToolCallView {
@@ -1300,7 +1022,7 @@ mod tests {
                 elapsed_ms: Some(10),
                 payload: None,
                 verbose: false,
-                spinner_tick: BLINK_INTERVAL_TICKS, // would blink if Running
+                spinner_tick: BLINK_INTERVAL_TICKS,
             };
             let text = collect_text(&render_tool_call(&view));
             assert!(
@@ -1449,11 +1171,6 @@ mod tests {
         }
     }
 
-    // ------------------------------------------------------------------
-    // Per-tool parity tests (2026-04-19). See
-    // docs/design/tool-render-parity-2026-04-19.md (outer).
-    // ------------------------------------------------------------------
-
     fn expect_preview(p: ToolPayload) -> String {
         match p {
             ToolPayload::Preview(s) => s,
@@ -1518,9 +1235,7 @@ mod tests {
 
     #[test]
     fn payload_from_result_bash_legacy_output_on_success_maps_to_stdout() {
-        // Backward compat: transcripts written before the split only
-        // carried `output`. Dispatcher is gone but captured sessions
-        // still replay through the render path.
+
         let v = serde_json::json!({
             "status": "ok",
             "exit_code": 0,
@@ -1566,7 +1281,7 @@ mod tests {
             spinner_tick: 0,
         };
         let lines = render_tool_call(&view);
-        // Find the stderr line and confirm its text span carries ERROR color.
+
         let err_line = lines
             .iter()
             .find(|l| {
@@ -1581,7 +1296,7 @@ mod tests {
             .find(|s| s.content.as_ref() == "err line")
             .unwrap();
         assert_eq!(text_span.style.fg, Some(theme::ERROR));
-        // And the stdout line should carry MUTED.
+
         let ok_line = lines
             .iter()
             .find(|l| {
@@ -1602,8 +1317,7 @@ mod tests {
     fn summarize_args_read_renders_file_path_and_window() {
         let a = serde_json::json!({"file_path": "/tmp/x.rs", "offset": 10, "limit": 50});
         let out = summarize_args("Read", &a, false);
-        // Upstream shape: `<displayPath> · lines <a>-<b>` —
-        // middot-joined qualifier, bare path.
+
         assert!(out.starts_with("/tmp/x.rs"), "got: {out}");
         assert!(out.contains(" · lines 10-59"), "got: {out}");
     }
@@ -1643,7 +1357,7 @@ mod tests {
 
     #[test]
     fn summarize_args_glob_grep_emit_pattern_and_path() {
-        // Upstream quotes both values and uses `: ` separator.
+
         let a = serde_json::json!({"pattern": "*.rs", "path": "/tmp"});
         assert!(summarize_args("Glob", &a, false).contains(r#"pattern: "*.rs""#));
         assert!(summarize_args("Glob", &a, false).contains(r#"path: "/tmp""#));
@@ -1715,8 +1429,7 @@ mod tests {
 
     #[test]
     fn payload_from_result_glob_compact_is_head_only() {
-        // Non-verbose mirrors upstream GlobTool/UI.tsx — head count,
-        // no filename list. Reader uses `/verbose` to expand.
+
         let v = serde_json::json!({
             "numFiles": 2,
             "filenames": ["/a.rs", "/b.rs"],
@@ -1792,7 +1505,7 @@ mod tests {
 
     #[test]
     fn payload_from_result_skill_shows_byline() {
-        // Upstream `Successfully loaded skill · N tools allowed · model`.
+
         let v = serde_json::json!({
             "skill": "verifier-tui",
             "tools": ["Read", "Glob", "Bash"],

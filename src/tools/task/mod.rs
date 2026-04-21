@@ -1,34 +1,4 @@
-//! `TaskCreate`, `TaskList`, `TaskGet`, `TaskUpdate` — in-memory task registry.
-//!
-//! # Status
-//!
-//! Schemas in this module are **otherside-native** — NOT byte-fidelity
-//! against a captured upstream `ToolSearch` response. The shapes mirror
-//! the Zod definitions in upstream source (`tools/TaskCreateTool/`,
-//! `tools/TaskListTool/`, `tools/TaskGetTool/`, `tools/TaskUpdateTool/`);
-//! our live capture did not exercise `ToolSearch`, so no wire bytes exist
-//! to anchor against. When a future capture records a real response for
-//! any of these names, the corresponding `TOOL_TASK_*_JSON` const gets
-//! swapped byte-verbatim — one-file edit.
-//!
-//! # Registry lifetime
-//!
-//! Single-process, in-memory. Task records live for the duration of the
-//! otherside process and vanish on exit. Disk persistence is a follow-up
-//! ticket — upstream backs tasks with per-file JSON blobs under a
-//! task-list directory, which needs a task-list session anchor +
-//! filesystem-budget policy we don't have yet.
-//!
-//! # Id format
-//!
-//! Zero-padded 4-digit decimal (`"0001"`, `"0002"`, …) from a process-
-//! wide `AtomicU64`. Stable across tests (unlike uuid) and readable in
-//! the gutter. Overflow past 9999 implicitly widens (format does not
-//! clip), so realistic session volumes round-trip fine.
-//!
-//! Zone: identity — R-103 identity-zone discipline applies, no upstream
-//! product name strings in identifiers or copy (schemas describe
-//! behavior, not provenance).
+
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -38,8 +8,6 @@ use serde_json::{json, Map, Value};
 
 use crate::tools::ToolError;
 
-/// Status of a task in the registry. Stable lowercase-snake wire form
-/// via [`TaskStatus::as_str`] matches upstream's Zod `TaskStatusSchema`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskStatus {
     Pending,
@@ -69,9 +37,6 @@ impl TaskStatus {
     }
 }
 
-/// Bookkeeping record for a registered task. Mirrors the fields upstream
-/// exposes via the four `Task*` dispatchers; owner + blocks + blockedBy
-/// stay empty by default and only populate through `TaskUpdate`.
 #[derive(Debug, Clone)]
 pub struct Task {
     pub id: String,
@@ -85,16 +50,11 @@ pub struct Task {
     pub metadata: Map<String, Value>,
 }
 
-/// Process-wide task registry. `OnceLock` gates one-time init; `Mutex`
-/// serializes mutation. Contention is negligible in practice — tools
-/// fire sequentially inside one agent turn.
 fn registry() -> &'static Mutex<HashMap<String, Task>> {
     static TASK_REGISTRY: OnceLock<Mutex<HashMap<String, Task>>> = OnceLock::new();
     TASK_REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Next task id as a zero-padded 4-digit decimal string. Counter starts
-/// at 1 so the first task is `"0001"`.
 fn next_id() -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(1);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -121,8 +81,6 @@ fn task_to_full_json(t: &Task) -> Value {
     })
 }
 
-/// Register a new task. `subject` + `description` required; `activeForm`
-/// optional spinner verb. Returns the new id + echo of subject.
 pub fn task_create(args: &Value) -> Result<Value, ToolError> {
     let subject = require_str(args, "subject")?.to_string();
     let description = require_str(args, "description")?.to_string();
@@ -159,9 +117,6 @@ pub fn task_create(args: &Value) -> Result<Value, ToolError> {
     }))
 }
 
-/// List every registered task, sorted ascending by id. Projects the
-/// fields upstream's `TaskList` renders (id, subject, status, owner,
-/// blockedBy).
 pub fn task_list(_args: &Value) -> Result<Value, ToolError> {
     let guard = registry()
         .lock()
@@ -185,9 +140,6 @@ pub fn task_list(_args: &Value) -> Result<Value, ToolError> {
     Ok(json!({ "tasks": tasks }))
 }
 
-/// Fetch one task by id. Returns `{"task": null}` when the id is
-/// unknown — mirrors upstream's nullable output shape rather than
-/// erroring.
 pub fn task_get(args: &Value) -> Result<Value, ToolError> {
     let task_id = require_str(args, "taskId")?;
     let guard = registry()
@@ -199,10 +151,6 @@ pub fn task_get(args: &Value) -> Result<Value, ToolError> {
     }
 }
 
-/// Mutate fields on an existing task. Fields absent from the args are
-/// left alone. Returns `{success, taskId, updatedFields, statusChange?}`.
-/// `status: "deleted"` removes the entry from the registry and reports
-/// `updatedFields: ["deleted"]`.
 pub fn task_update(args: &Value) -> Result<Value, ToolError> {
     let task_id = require_str(args, "taskId")?.to_string();
 
@@ -210,16 +158,11 @@ pub fn task_update(args: &Value) -> Result<Value, ToolError> {
         .lock()
         .map_err(|e| ToolError::InvalidArgs(format!("registry lock poisoned: {e}")))?;
 
-    // Handle the deletion pseudo-status first — pull the entry out and
-    // return early so subsequent TaskGet sees it gone.
     if let Some(status) = args.get("status").and_then(Value::as_str) {
         if status == "deleted" {
             let existed = guard.remove(&task_id).is_some();
             let from_status = if existed { "pending" } else { "unknown" };
-            // `from` is best-effort — registry already pulled the entry,
-            // so we can only be approximate. Consumers should rely on
-            // `updatedFields` rather than `statusChange.from` for the
-            // delete path.
+
             return Ok(json!({
                 "success": existed,
                 "taskId": task_id,
@@ -349,8 +292,6 @@ pub fn task_update(args: &Value) -> Result<Value, ToolError> {
     }))
 }
 
-/// Reset the registry. Test-only — production code mutates through the
-/// dispatchers or `TaskUpdate(status: "deleted")`.
 #[cfg(test)]
 pub fn clear_registry() {
     if let Ok(mut guard) = registry().lock() {
@@ -358,45 +299,115 @@ pub fn clear_registry() {
     }
 }
 
-// ---------------------------------------------------------------------
-// Schemas — otherside-native synthesis of the upstream Zod shapes.
-// ---------------------------------------------------------------------
-
-/// `TaskCreate` schema. Mirrors upstream's Zod strict object with
-/// `subject` + `description` required, `activeForm` optional.
 pub const TOOL_TASK_CREATE_JSON: &str =
     include_str!("../../../harness_corpus/tools/TaskCreate.json");
 
-/// `TaskList` schema. Zero required fields — enumerate the whole list.
 pub const TOOL_TASK_LIST_JSON: &str =
     include_str!("../../../harness_corpus/tools/TaskList.json");
 
-/// `TaskGet` schema. Single required field.
 pub const TOOL_TASK_GET_JSON: &str =
     include_str!("../../../harness_corpus/tools/TaskGet.json");
 
-/// `TaskUpdate` schema. Only `taskId` required; every mutation field is
-/// optional and fields absent from the call do not change state. The
-/// pseudo-status `"deleted"` removes the entry from the registry.
 pub const TOOL_TASK_UPDATE_JSON: &str =
     include_str!("../../../harness_corpus/tools/TaskUpdate.json");
+
+pub const TOOL_TASK_OUTPUT_JSON: &str =
+    include_str!("../../../harness_corpus/tools/TaskOutput.json");
+
+pub const TOOL_TASK_STOP_JSON: &str =
+    include_str!("../../../harness_corpus/tools/TaskStop.json");
+
+pub fn task_output(args: &Value) -> Result<Value, ToolError> {
+    let task_id = args
+        .get("taskId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ToolError::InvalidArgs("`taskId` is required".into()))?;
+    if let Some(store) = crate::tasks::store::current_global() {
+        let bg_id = crate::tasks::TaskId::from_string(task_id.to_string());
+        if let Some(record) = store.get(&bg_id) {
+            let status_str = match record.state {
+                crate::tasks::TaskState::Pending => "pending",
+                crate::tasks::TaskState::Running => "running",
+                crate::tasks::TaskState::Backgrounded => "backgrounded",
+                crate::tasks::TaskState::Completed => "completed",
+                crate::tasks::TaskState::Failed => "failed",
+                crate::tasks::TaskState::Stopped => "stopped",
+            };
+            let output = if record.output.is_empty() {
+                String::new()
+            } else {
+                record.output.iter().cloned().collect::<Vec<_>>().join("\n")
+            };
+            return Ok(json!({
+                "taskId": task_id,
+                "status": status_str,
+                "output": output,
+                "tool_use_id": record.tool_use_id,
+                "exit_code": record.exit_code,
+            }));
+        }
+    }
+    let got = task_get(&json!({ "taskId": task_id }))?;
+    if got["task"].is_null() {
+        return Ok(json!({
+            "taskId": task_id,
+            "output": null,
+            "error": "task not found",
+        }));
+    }
+    let task = &got["task"];
+    let mut lines: Vec<String> = Vec::new();
+    lines.push(format!(
+        "[{}] {}",
+        task["status"].as_str().unwrap_or("unknown"),
+        task["subject"].as_str().unwrap_or("")
+    ));
+    if let Some(desc) = task["description"].as_str() {
+        if !desc.is_empty() {
+            lines.push(desc.to_string());
+        }
+    }
+    for key in ["output", "logs", "stdout"] {
+        if let Some(v) = task["metadata"].get(key) {
+            let text = match v {
+                Value::String(s) => s.clone(),
+                other => other.to_string(),
+            };
+            if !text.is_empty() {
+                lines.push(text);
+            }
+        }
+    }
+    Ok(json!({
+        "taskId": task_id,
+        "status": task["status"].clone(),
+        "output": lines.join("\n"),
+    }))
+}
+
+pub fn task_stop(args: &Value) -> Result<Value, ToolError> {
+    let task_id = args
+        .get("taskId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ToolError::InvalidArgs("`taskId` is required".into()))?;
+    let out = task_update(&json!({
+        "taskId": task_id,
+        "status": "cancelled",
+    }))?;
+    Ok(json!({
+        "taskId": task_id,
+        "success": out["success"].clone(),
+        "statusChange": out["statusChange"].clone(),
+    }))
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // Every test acquires the global registry. Serialize with a local
-    // lock + clear-at-entry so cases don't leak across each other.
     fn fresh_registry() {
         clear_registry();
-        // Reset the id counter via a sentinel approach: clear leaves
-        // the counter at its next value; tests that assert id "0001"
-        // must be the first create in the current process. Since the
-        // full test file runs in parallel against a shared static, we
-        // accept that individual id values drift — the tests that
-        // assert a specific id guard against that by running inside
-        // `cargo test -- --test-threads=1` or by only asserting
-        // monotone ordering rather than absolute values.
+
     }
 
     #[test]
@@ -419,7 +430,6 @@ mod tests {
         assert!(!id.is_empty());
         assert_eq!(out["task"]["subject"], "wave 1");
 
-        // Confirm it's in the registry.
         let got = task_get(&json!({ "taskId": id })).unwrap();
         assert_eq!(got["task"]["subject"], "wave 1");
         assert_eq!(got["task"]["status"], "pending");
@@ -450,7 +460,7 @@ mod tests {
 
         let list = task_list(&json!({})).unwrap();
         let tasks = list["tasks"].as_array().unwrap();
-        // Find our three ids in the list and confirm relative ordering.
+
         let mut idx_map: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
         for (i, t) in tasks.iter().enumerate() {
             if let Some(id) = t["id"].as_str() {
@@ -580,7 +590,6 @@ mod tests {
         assert_eq!(got["task"]["metadata"]["k1"], "v1");
         assert_eq!(got["task"]["metadata"]["k2"], 2);
 
-        // Nullify k1 — should be removed.
         task_update(&json!({
             "taskId": id,
             "metadata": { "k1": null },

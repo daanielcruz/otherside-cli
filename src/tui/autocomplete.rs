@@ -1,7 +1,4 @@
-//! Slash-command autocomplete popup. Triggers when the input starts
-//! with `/` and the partial after it matches one or more catalog
-//! entries. Arrow keys navigate, Enter commits the highlighted choice,
-//! Esc closes.
+
 
 use ratatui::{
     layout::Rect,
@@ -14,27 +11,20 @@ use ratatui::{
 use super::render::theme;
 use super::slash::catalog;
 
-/// Maximum popup rows rendered at once. The matches vector carries
-/// EVERY entry that prefix-matches the partial (up to the whole
-/// catalog when the partial is empty) — this constant only caps the
-/// visible window so the overlay doesn't dwarf the log. Movement past
-/// the window scrolls via `ListState::offset`.
 pub const MAX_POPUP_ROWS: usize = 10;
 
-/// State for an open autocomplete popup.
 #[derive(Debug, Clone, Default)]
 pub struct Autocomplete {
-    /// The partial after the leading `/` (not including the slash).
+
     pub partial: String,
-    /// Highlighted row index into the filtered matches.
+
     pub selected: usize,
-    /// Matches from the catalog whose slash name prefix-matches `partial`.
+
     pub matches: Vec<&'static catalog::SlashEntry>,
 }
 
 impl Autocomplete {
-    /// Build from the current input buffer. Returns `None` when the
-    /// input does not begin with `/` or the partial has no matches.
+
     pub fn from_input(input: &str) -> Option<Self> {
         let trimmed = input.strip_prefix('/')?;
         if trimmed.contains(char::is_whitespace) {
@@ -44,10 +34,7 @@ impl Autocomplete {
         if matches.is_empty() {
             return None;
         }
-        // When the partial is an exact catalog entry, highlight that
-        // entry first. Prevents `/status` from committing `statusline`
-        // (catalog-order prefix match) when the user typed the exact
-        // panel name. Case-insensitive exact compare.
+
         let selected = matches
             .iter()
             .position(|e| e.name.eq_ignore_ascii_case(trimmed))
@@ -71,19 +58,11 @@ impl Autocomplete {
         }
     }
 
-    /// Return the full slash name of the currently highlighted entry,
-    /// sans the leading `/`. Callers replace the input buffer with
-    /// `/<returned>` on Enter.
     pub fn commit(&self) -> Option<String> {
         self.matches.get(self.selected).map(|e| e.name.to_string())
     }
 }
 
-/// Prefix-match the catalog for entries whose slash name starts with
-/// `partial`. Case-insensitive. Alphabetized by slash name to match
-/// upstream — catalog-file order would surface rows in an opaque
-/// sequence that reads arbitrary to users comparing the two TUIs
-/// (2026-04-20 parity sweep flagged this).
 fn prefix_filter(partial: &str) -> Vec<&'static catalog::SlashEntry> {
     let lower = partial.to_ascii_lowercase();
     let mut matches: Vec<&'static catalog::SlashEntry> =
@@ -92,22 +71,12 @@ fn prefix_filter(partial: &str) -> Vec<&'static catalog::SlashEntry> {
     matches
 }
 
-/// Popup name-column width in columns. 40% of the rect width clamped
-/// to `[20, 40]` so narrow and ultra-wide terminals still read cleanly.
 pub fn name_col_width(area_width: u16) -> u16 {
     ((area_width as u32 * 4 / 10) as u16).clamp(20, 40)
 }
 
-/// Paint the popup inside `area`. Two-column layout mirroring upstream
-/// autocomplete: slash name left, brief right. `Clear` is rendered
-/// first so the rect is opaque — without it the retained-cell buffer
-/// bleeds prior log content through empty rows beyond the last
-/// suggestion.
 pub fn draw(f: &mut Frame<'_>, area: Rect, ac: &Autocomplete) {
-    // Zero the rect before painting so underlying streaming content
-    // never bleeds through popup rows or row tails. Ratatui is
-    // retained-cell; unlike Ink's full-row blit it does NOT clear
-    // cells for widgets that render shorter than their area.
+
     f.render_widget(Clear, area);
 
     let name_col_w = name_col_width(area.width) as usize;
@@ -138,10 +107,7 @@ pub fn draw(f: &mut Frame<'_>, area: Rect, ac: &Autocomplete) {
 
     let mut list_state = ListState::default();
     list_state.select(Some(ac.selected));
-    // Keep the highlighted row visible inside the fixed MAX_POPUP_ROWS
-    // window. ratatui's `ListState::offset` sets the first visible
-    // index; without it, scrolling past row 10 hides the cursor off
-    // the bottom while the match vector still grows underneath.
+
     let area_rows = area.height as usize;
     let window = area_rows.min(MAX_POPUP_ROWS).max(1);
     let total = ac.matches.len();
@@ -177,7 +143,7 @@ mod tests {
 
     #[test]
     fn name_col_width_follows_40_percent_rule() {
-        // Upstream `Math.floor(columns * 0.4)` with clamp [20, 40].
+
         assert_eq!(name_col_width(80), 32);
         assert_eq!(name_col_width(100), 40);
         assert_eq!(name_col_width(200), 40, "upper clamp hit");
@@ -188,8 +154,7 @@ mod tests {
 
     #[test]
     fn from_input_matches_multiple_prefix() {
-        // openspec 011 dropped `/swarm` — `/s` prefix now surfaces
-        // the remaining `s` slashes only.
+
         let ac = Autocomplete::from_input("/s").unwrap();
         let names: Vec<&str> = ac.matches.iter().map(|e| e.name).collect();
         assert!(names.contains(&"status"));
@@ -218,9 +183,7 @@ mod tests {
 
     #[test]
     fn exact_match_is_preselected_over_longer_prefix() {
-        // Regression: `/status` commits `status` (panel), not
-        // `statusline` (skill) — even though `statusline` appears
-        // earlier in the catalog.
+
         let ac = Autocomplete::from_input("/status").unwrap();
         assert_eq!(
             ac.matches[ac.selected].name, "status",
@@ -264,10 +227,7 @@ mod tests {
 
     #[test]
     fn catalog_surfaces_newly_added_slashes() {
-        // Regression guard: before the single-source-of-truth refactor,
-        // `config`, `model`, `login`, etc. were missing from the tips
-        // list and thus the popup. They must now appear. Names below
-        // are the docs/slashes.md 33-row subset (R-114) post-011 purge.
+
         for name in ["config", "model", "login", "logout", "init", "mcp",
                      "effort", "plan", "permissions", "diff", "skills",
                      "agents", "context", "keybindings",
@@ -277,11 +237,9 @@ mod tests {
             let ac = Autocomplete::from_input(&format!("/{prefix}"))
                 .unwrap_or_else(|| panic!("no matches for prefix /{prefix}"));
             let names: Vec<&str> = ac.matches.iter().map(|e| e.name).collect();
-            // The popup caps at MAX_POPUP_ROWS so a single prefix may
-            // hide an entry; walk all letters if needed.
+
             if !names.contains(&name) {
-                // Fall back to checking the catalog directly — the
-                // popup hides it due to row cap but it still exists.
+
                 assert!(
                     catalog::lookup(name).is_some(),
                     "/{name} missing from catalog"

@@ -1,5 +1,4 @@
-//! `SessionId` newtype — UUID v4 rendered as lowercase hex with
-//! hyphens.
+
 
 use std::fmt;
 
@@ -15,10 +14,6 @@ impl SessionId {
         uuid::Uuid::parse_str(s).ok().map(Self)
     }
 
-    /// Fallback for directory-name parsing when the on-disk folder
-    /// doesn't look like a canonical UUID. Exposes the raw string
-    /// without validation — callers that care should use
-    /// [`from_hex`] instead.
     pub fn from_hex_unchecked(s: &str) -> Self {
         match uuid::Uuid::parse_str(s) {
             Ok(u) => Self(u),

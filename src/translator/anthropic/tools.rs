@@ -1,14 +1,4 @@
-//! Build the `tools[]` array for the outbound body.
-//!
-//! Nine tools, in canonical upstream order
-//! (`Agent, Bash, Edit, Glob, Grep, Read, Skill, ToolSearch, Write`),
-//! each loaded byte-verbatim from
-//! `fingerprint_corpus/harness/tools/<Name>.json`.
-//!
-//! This module becomes the source of truth for advertised schemas when
-//! change 010 lands. Today `otherside-cli/src/tools/schemas.rs` reads
-//! from the legacy `tool_corpus/` — 010 flips that to
-//! [`build_tools_array`] and deletes `tool_corpus/`.
+
 
 use serde_json::Value;
 
@@ -17,9 +7,6 @@ use crate::harness::{
     TOOL_READ_JSON, TOOL_SKILL_JSON, TOOL_TOOL_SEARCH_JSON, TOOL_WRITE_JSON,
 };
 
-/// Canonical 9-tool `tools[]` array ready to splice into the outbound
-/// body. Key order inside each entry matches capture
-/// (`name, description, input_schema`).
 pub fn build_tools_array() -> Vec<Value> {
     [
         TOOL_AGENT_JSON,
@@ -64,7 +51,7 @@ mod tests {
 
     #[test]
     fn training_anchor_tool_names_preserved() {
-        // R-20: tool names are training anchors. Canonical upstream set.
+
         let tools = build_tools_array();
         let names: Vec<&str> = tools
             .iter()

@@ -1,37 +1,13 @@
-//! Deep-merge engine for config overlays: recursive object merge,
-//! array concat + order-preserving dedupe, scalar last-wins.
-//!
-//! Why centralized: the five-scope resolver, the managed drop-in
-//! loader, and the `.mcp.json` parent walk all need the same merge
-//! semantics. A single `deep_merge(base, overlay)` keeps the rule set
-//! consistent — change the rules here and every caller picks it up.
-//!
-//! Why array concat + dedupe: permission rules, hook entries, and MCP
-//! server lists all compose additively across scopes. User-global adds
-//! a rule, project-local adds two more — the user sees all three, not
-//! the last list to win. Dedupe keeps the composite clean when the
-//! same rule appears in multiple scopes.
-//!
-//! `null` semantics: overlay value of `null` is treated as a scalar
-//! (last-wins), setting the key to JSON null rather than deleting it.
-//! This matches the conservative default discussed in design.md; if a
-//! future user decision flips to delete-on-null, touch this one
-//! function and every caller picks it up.
+
 
 use serde_json::Value;
 
-/// Merge `overlay` into `base`, returning the effective value.
-///
-/// - Both objects → recursive merge on every key present in either.
-/// - Both arrays  → concat `base ++ overlay` with first-seen dedupe.
-/// - Anything else → overlay wins (scalar last-wins).
 pub fn deep_merge(base: Value, overlay: Value) -> Value {
     match (base, overlay) {
         (Value::Object(mut base_map), Value::Object(overlay_map)) => {
             for (k, v) in overlay_map {
                 let existing = base_map.remove(&k).unwrap_or(Value::Null);
-                // If the base lacked the key entirely, `existing` is Null and
-                // overlay wins by last-wins. If both had it, recurse.
+
                 let merged = if matches!(existing, Value::Null) {
                     v
                 } else {
@@ -54,8 +30,6 @@ pub fn deep_merge(base: Value, overlay: Value) -> Value {
     }
 }
 
-/// Fold a chain of overlays onto a base: applied left-to-right,
-/// later entries win on scalar collisions.
 pub fn deep_merge_chain(base: Value, chain: impl IntoIterator<Item = Value>) -> Value {
     chain.into_iter().fold(base, deep_merge)
 }
@@ -130,8 +104,7 @@ mod tests {
 
     #[test]
     fn null_in_overlay_sets_key_to_null_not_delete() {
-        // §9.4: conservative default. delete semantics would require
-        // tooling; null as scalar keeps the merge invariant simple.
+
         let base = json!({"x": 42});
         let overlay = json!({"x": null});
         let merged = deep_merge(base, overlay);
@@ -163,7 +136,7 @@ mod tests {
 
     #[test]
     fn permission_list_composition_across_scopes() {
-        // Real-world shape: two scopes each add to permissions.deny.
+
         let base = json!({"permissions": {"deny": [{"toolName": "Bash", "matchPattern": "rm -rf *"}]}});
         let overlay = json!({"permissions": {"deny": [
             {"toolName": "Bash", "matchPattern": "sudo *"},

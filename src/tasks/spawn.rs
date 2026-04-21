@@ -1,36 +1,4 @@
-//! Backgroundable spawn — bridge from the (sync) `SubagentRunner`
-//! trait into the [`TaskStore`] without blocking the caller.
-//!
-//! Wave-1 §3 of openspec 015. The existing `SubagentRunner::run` is
-//! sync (returns Result<Value, RunnerError>); the inner loop drives
-//! itself through a `block_in_place + block_on` bridge inside the
-//! runner. For backgrounding we need a path that returns immediately
-//! to the TUI event loop and continues work on a tokio task.
-//!
-//! Solution: [`spawn_background_agent`] — generates a fresh
-//! [`TaskId`], inserts a `Running`+`Agent`-kind record into the
-//! store, then `tokio::task::spawn_blocking`s the runner's sync
-//! `run` method. On completion the closure mutates the record into
-//! a terminal state, sets `is_backgrounded = true`, flips
-//! `inject_on_next_turn = true` so the wire layer ships a
-//! `<task-notification>` block on the next user turn.
-//!
-//! Why `spawn_blocking` (not `tokio::spawn`):
-//! the runner's `run` uses `block_in_place + Handle::current().
-//! block_on(...)`, which only behaves correctly on a multi-thread
-//! runtime AND only when the calling task itself is blocking. On
-//! the main runtime worker the pattern is fine, but inside a normal
-//! `tokio::spawn` it deadlocks on single-threaded runtimes. The
-//! blocking pool is the safe home.
-//!
-//! # Returned id
-//!
-//! The caller (Agent tool dispatch with
-//! `AgentInvocation.run_in_background = Some(true)`) gets the
-//! id back immediately so the assistant message can render the
-//! `Started in background as <id>. I'll be notified when it
-//! completes.` line per upstream
-//! `LocalAgentTask.tsx:246-261`.
+
 
 use std::sync::Arc;
 
@@ -40,23 +8,6 @@ use crate::subagents::{registry::AgentDefinition, AgentInvocation, SubagentRunne
 
 use super::{id::TaskId, state::TaskRecord, state::TaskState, store::TaskStore};
 
-/// Spawn an agent dispatch in the background.
-///
-/// Returns immediately with a fresh [`TaskId`]. The runner work
-/// continues on the tokio blocking pool; on completion the store
-/// transitions the record to a terminal state.
-///
-/// `display_name` is the human label rendered in the pill / dialog
-/// — typically the subagent name (`definition.name`) or a short
-/// summary derived from the prompt.
-///
-/// `tool_use_id` is the originating LLM `tool_use_id` of the
-/// `Agent` call that triggered this spawn. Upstream tracks this
-/// alongside the generated `agentId` so the `<task-notification>`
-/// XML can populate `<tool-use-id>` — the reconciliation key the
-/// model uses to match the notification back to its own
-/// `tool_use` block in history (`tasks/LocalAgentTask/
-/// LocalAgentTask.tsx:247-257`).
 pub fn spawn_background_agent(
     runner: Arc<dyn SubagentRunner>,
     definition: AgentDefinition,
@@ -69,9 +20,7 @@ pub fn spawn_background_agent(
 ) -> TaskId {
     let id = TaskId::generate();
     let mut record = TaskRecord::new_agent(id.clone(), display_name, prompt.clone());
-    // Background spawn → already in Backgrounded from frame zero.
-    // The "Ctrl+B during a foreground turn" flow uses a different
-    // path (`TaskStore::background_all_running_foreground`).
+
     record.state = TaskState::Backgrounded;
     record.is_backgrounded = true;
     record.tool_use_id = tool_use_id;
@@ -87,8 +36,6 @@ pub fn spawn_background_agent(
     id
 }
 
-/// Mutate the record per the runner's outcome — terminal state,
-/// captured output, exit code, inject flag.
 fn finalize(
     store: &TaskStore,
     id: &TaskId,
@@ -119,8 +66,6 @@ fn finalize(
     });
 }
 
-/// Pull the final assistant text from the upstream-shape result.
-/// Mirrors what `tui::tool_render::agent_preview` reads.
 fn extract_assistant_text(v: &Value) -> String {
     v.get("content")
         .and_then(Value::as_array)
@@ -138,9 +83,6 @@ mod tests {
     use crate::subagents::{registry::AgentDefinition, AgentInvocation, RunnerError};
     use std::sync::Mutex;
 
-    /// Deterministic fake — records call args, returns a canned
-    /// result. Lets us drive `spawn_background_agent` end-to-end
-    /// without spinning a real provider.
     struct FakeRunner {
         result: Mutex<Result<Value, RunnerError>>,
         last_prompt: Mutex<Option<String>>,
@@ -174,10 +116,7 @@ mod tests {
             _invocation: &AgentInvocation,
         ) -> Result<Value, RunnerError> {
             *self.last_prompt.lock().unwrap() = Some(prompt.to_string());
-            // Replace with a default Ok so subsequent calls (tests
-            // that only spawn once) get a consistent value if we
-            // ever loop. For our single-shot tests this just means
-            // we read the original.
+
             std::mem::replace(
                 &mut *self.result.lock().unwrap(),
                 Err(RunnerError::Internal("already consumed".into())),
@@ -210,13 +149,9 @@ mod tests {
             "test-agent".into(),
             Some("toolu_test".into()),
         );
-        // Caller-visible latency: spawn_blocking returns the moment
-        // the closure is scheduled — well under the 100ms gate.
+
         assert!(started.elapsed().as_millis() < 100);
-        // Record exists in the store immediately. State may already
-        // have transitioned to terminal because the fake runner is
-        // instant on a multi-thread runtime — checking persistence
-        // not transient state.
+
         let r = store.get(&id).expect("record present immediately");
         assert!(r.is_backgrounded, "background spawn always sets is_backgrounded");
     }
@@ -235,8 +170,7 @@ mod tests {
             "test-agent".into(),
             Some("toolu_test".into()),
         );
-        // Wait for the blocking task to settle. 200ms is plenty for
-        // the fake runner — it doesn't await anything.
+
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         let r = store.get(&id).expect("record");
         assert_eq!(r.state, TaskState::Completed);
@@ -267,14 +201,6 @@ mod tests {
         assert!(r.inject_on_next_turn);
     }
 
-    /// Regression: mirrors `InnerLoopRunner::run_inner`'s sync→async
-    /// bridge — `block_in_place` + `Handle::current().block_on`. This
-    /// pattern panics on the blocking-pool thread `spawn_blocking`
-    /// schedules its closures on (`block_in_place` requires a multi-
-    /// thread runtime worker thread). The panic was being swallowed by
-    /// the dropped `JoinHandle`, leaving the record stuck in
-    /// `Backgrounded` and the inject flag never set — the user-facing
-    /// symptom that drove this fix.
     struct BlockInPlaceRunner;
 
     impl SubagentRunner for BlockInPlaceRunner {

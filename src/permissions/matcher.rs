@@ -1,31 +1,17 @@
-//! Permission-rule matcher — `Tool(pattern)` and `*` syntax.
-//!
-//! Grammar:
-//! - `*`  → match any tool, any input
-//! - `Tool(pattern)` — match tool name exactly, apply pattern to the
-//!   stringified input (Bash commands are the `command` field;
-//!   other tools are the full args JSON).
-//!
-//! Pattern semantics:
-//! - `prefix:*` — prefix match with a token boundary (see
-//!   [`prefix_matches`])
-//! - otherwise — literal equality (trimmed)
 
-/// Tool selector — either `Any` (the `*` shorthand) or a named tool.
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MatcherTool {
     Any,
     Named(String),
 }
 
-/// Parsed rule.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MatcherRule {
     pub tool: MatcherTool,
     pub pattern: Option<String>,
 }
 
-/// Parse error surface.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum MatcherParseError {
     #[error("unclosed parenthesis in rule: {0:?}")]
@@ -36,7 +22,6 @@ pub enum MatcherParseError {
     EmptyPattern(String),
 }
 
-/// Parse a rule string. Returns `Err` for malformed shapes.
 pub fn parse(src: &str) -> Result<MatcherRule, MatcherParseError> {
     let src = src.trim();
     if src == "*" {
@@ -75,7 +60,7 @@ pub fn parse(src: &str) -> Result<MatcherRule, MatcherParseError> {
 }
 
 impl MatcherRule {
-    /// Does this rule match the given tool invocation?
+
     pub fn matches(&self, tool_name: &str, tool_input: &str) -> bool {
         let tool_ok = match &self.tool {
             MatcherTool::Any => true,
@@ -91,8 +76,6 @@ impl MatcherRule {
     }
 }
 
-/// `prefix:*` → prefix match with delimiter boundary.
-/// bare pattern → exact equality (trimmed).
 pub fn prefix_matches(pattern: &str, target: &str) -> bool {
     if let Some(prefix) = pattern.strip_suffix(":*") {
         let prefix = prefix.trim();

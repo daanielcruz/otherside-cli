@@ -1,42 +1,21 @@
-//! Canonical slash catalog — single source of truth for names, briefs, kinds.
-//!
-//! Categories follow `docs/slashes.md`: six kinds (`instant`, `toggle`,
-//! `skill`, `anchor`, `panel`, `auth`). This file is a strict subset of
-//! that doc (R-114). Adds / renames / removes land in `docs/slashes.md`
-//! first, then ride into code via a dedicated openspec change.
-//!
-//! openspec 011 (2026-04-20) purged `/bye` and `/swarm` (no upstream
-//! analogue — R-114 violation) and reclassified `/loop` from Anchor to
-//! Skill (upstream is `registerBundledSkill({ name: 'loop' })` at
-//! `skills/bundled/loop.ts:79`). Net catalog shrinks 35 → 33 rows.
 
-/// High-level classification for a slash command.
-///
-/// One variant per category in `docs/slashes.md`. `Panel` is the only
-/// data-carrying variant — the `PanelKind` discriminator tells the
-/// overlay layer which picker to mount. The other five categories
-/// dispatch by slash name inside their handler module.
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SlashKind {
-    /// Silent immediate side-effect (e.g. `/clear`, `/exit`).
+
     Instant,
-    /// State flip + ephemeral confirmation row (e.g. `/plan`).
+
     Toggle,
-    /// Bundled SKILL.md body → user turn (e.g. `/dream`, `/loop`).
+
     Skill,
-    /// User echo + `⎿` system-anchor render (e.g. `/compact`).
+
     Anchor,
-    /// Overlay menu — 13 panel slashes. Discriminator picks the picker.
+
     Panel(PanelKind),
-    /// Provider auth flow (`/login`, `/logout`).
+
     Auth,
 }
 
-/// Tab discriminator for the unified Settings panel. Upstream's
-/// `components/Settings/Settings.tsx` serves `/status`, `/config`,
-/// `/usage` as a single component that lands on a different default
-/// tab depending on which slash opened it (R-92 evidence:
-/// `commands/config/dashboard.tsx:10`; live capture 2026-04-20).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsTab {
     Status,
@@ -45,7 +24,7 @@ pub enum SettingsTab {
 }
 
 impl SettingsTab {
-    /// The slash whose invocation lands on this default tab.
+
     pub fn slash_name(self) -> &'static str {
         match self {
             SettingsTab::Status => "status",
@@ -55,9 +34,6 @@ impl SettingsTab {
     }
 }
 
-/// Discriminator for the Panel slashes. `Settings` is parameterized
-/// by default-tab (one upstream panel, three entry points); other
-/// variants are 1:1 with their slash.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PanelKind {
     Help,
@@ -72,15 +48,12 @@ pub enum PanelKind {
     Skills,
     Agents,
     Mcp,
-    /// `/tasks` (alias `/bashes`) — BackgroundTasksDialog. SEPARATE
-    /// from `/agents` (the agent CONFIG panel). Source:
-    /// `commands/tasks/index.ts:3-9`.
+
     Tasks,
 }
 
 impl PanelKind {
-    /// Canonical slash name for this panel. Used by overlay constructors
-    /// and the classifier regression tests.
+
     pub fn slash_name(self) -> &'static str {
         match self {
             PanelKind::Help => "help",
@@ -100,22 +73,18 @@ impl PanelKind {
     }
 }
 
-/// One slash command in the catalog.
 #[derive(Debug, Clone, Copy)]
 pub struct SlashEntry {
-    /// Slash name without the leading `/`. Lowercase ASCII.
+
     pub name: &'static str,
-    /// User-facing brief shown in `/help` and the autocomplete popup.
+
     pub brief: &'static str,
-    /// Dispatch classification.
+
     pub kind: SlashKind,
 }
 
-/// Full catalog — strict subset of `docs/slashes.md` (R-114). 33 rows
-/// across 6 categories. Order here is the display order (help,
-/// autocomplete, tips rotation all walk this slice as-is).
 pub const CATALOG: &[SlashEntry] = &[
-    // ── instant (2) ─────────────────────────────────────────────
+
     SlashEntry {
         name: "exit",
         brief: "exit the TUI",
@@ -127,7 +96,6 @@ pub const CATALOG: &[SlashEntry] = &[
         kind: SlashKind::Instant,
     },
 
-    // ── toggle (5) ──────────────────────────────────────────────
     SlashEntry {
         name: "plan",
         brief: "enable plan mode",
@@ -154,7 +122,6 @@ pub const CATALOG: &[SlashEntry] = &[
         kind: SlashKind::Toggle,
     },
 
-    // ── skill (7) ───────────────────────────────────────────────
     SlashEntry {
         name: "dream",
         brief: "reflective memory consolidation",
@@ -191,7 +158,6 @@ pub const CATALOG: &[SlashEntry] = &[
         kind: SlashKind::Skill,
     },
 
-    // ── anchor (3) ──────────────────────────────────────────────
     SlashEntry {
         name: "branch",
         brief: "fork the conversation from here",
@@ -208,7 +174,6 @@ pub const CATALOG: &[SlashEntry] = &[
         kind: SlashKind::Anchor,
     },
 
-    // ── panel (13) ──────────────────────────────────────────────
     SlashEntry {
         name: "help",
         brief: "show slash command catalog",
@@ -290,7 +255,6 @@ pub const CATALOG: &[SlashEntry] = &[
         kind: SlashKind::Panel(PanelKind::Tasks),
     },
 
-    // ── auth (2) ────────────────────────────────────────────────
     SlashEntry {
         name: "login",
         brief: "sign in to a provider",
@@ -303,20 +267,16 @@ pub const CATALOG: &[SlashEntry] = &[
     },
 ];
 
-/// Look up an entry by name (case-insensitive, no leading `/`).
 pub fn lookup(name: &str) -> Option<&'static SlashEntry> {
     CATALOG.iter().find(|e| e.name.eq_ignore_ascii_case(name))
 }
 
-/// Walk entries filtered by a lowercase prefix. Preserves catalog order.
 pub fn prefix_matches(prefix_lower: &str) -> impl Iterator<Item = &'static SlashEntry> + use<'_> {
     CATALOG
         .iter()
         .filter(move |e| e.name.to_ascii_lowercase().starts_with(prefix_lower))
 }
 
-/// Render one entry as the `/<name> — <brief>` string used by tips and
-/// autocomplete display logic.
 pub fn display_line(entry: &SlashEntry) -> String {
     format!("/{} — {}", entry.name, entry.brief)
 }
@@ -327,9 +287,7 @@ mod tests {
 
     #[test]
     fn panel_kind_enumerates_all_variants() {
-        // `Settings(tab)` collapses three pre-008 variants into one
-        // payload-carrying variant — 10 panel kinds now, three of
-        // them surfaced via the same kind with different tab payload.
+
         let variants = [
             PanelKind::Help,
             PanelKind::Resume,
@@ -346,19 +304,13 @@ mod tests {
             PanelKind::Agents,
             PanelKind::Mcp,
         ];
-        // Three of these land the same `PanelKind::Settings` arm,
-        // differing only in the `SettingsTab` payload — the slash
-        // catalog still carries 14 Panel rows.
+
         assert_eq!(variants.len(), 14);
     }
 
     #[test]
     fn settings_tab_slash_names_match_catalog() {
-        // R-92 evidence: `commands/config/dashboard.tsx:10` shows
-        // `/config` sets `defaultTab: "Status"` — the SLASH NAME and
-        // the DEFAULT TAB don't share wording, but every
-        // `SettingsTab` variant MUST map to the slash that lands on
-        // it as its default.
+
         assert_eq!(SettingsTab::Status.slash_name(), "status");
         assert_eq!(SettingsTab::Config.slash_name(), "config");
         assert_eq!(SettingsTab::Usage.slash_name(), "usage");
@@ -366,8 +318,7 @@ mod tests {
 
     #[test]
     fn slash_kind_has_six_variants() {
-        // Exhaustive match — compilation fails if a seventh variant is
-        // added without this test being updated.
+
         let samples = [
             SlashKind::Instant,
             SlashKind::Toggle,
@@ -433,8 +384,7 @@ mod tests {
 
     #[test]
     fn prefix_matches_finds_s_group() {
-        // openspec 011 dropped `/swarm` — prefix matchers now see
-        // the remaining `s` slashes only.
+
         let names: Vec<&str> = prefix_matches("s").map(|e| e.name).collect();
         assert!(names.contains(&"status"));
         assert!(names.contains(&"statusline"));
@@ -451,10 +401,7 @@ mod tests {
 
     #[test]
     fn panel_kind_slash_names_match_catalog() {
-        // Every PanelKind variant reachable from CATALOG produces the
-        // same slash name as the entry that carries it. Aliases
-        // (e.g. /bashes → PanelKind::Tasks) are exempt — the canonical
-        // slash_name() returns the primary name only.
+
         const ALIAS_NAMES: &[&str] = &["bashes"];
         for entry in CATALOG {
             if ALIAS_NAMES.contains(&entry.name) {
@@ -474,11 +421,7 @@ mod tests {
 
     #[test]
     fn catalog_row_count_matches_docs() {
-        // openspec 011 (2026-04-20) purged `/bye` + `/swarm` and
-        // reclassified `/loop` (35 → 33). openspec 015 (2026-04-20)
-        // added `/tasks` + `/bashes` alias for the BackgroundTasks
-        // dialog (33 → 35). Target holds until another slash joins
-        // or leaves the catalog.
+
         assert_eq!(
             CATALOG.len(),
             35,
@@ -488,11 +431,7 @@ mod tests {
 
     #[test]
     fn catalog_contains_no_cut_slashes() {
-        // Cut slashes live in RULES.md §14 — they must NEVER ship in
-        // the autocomplete catalog. Also guards against legacy names
-        // from the pre-marco-zero era coming back by accident.
-        // openspec 011 added `"bye"` + `"swarm"` (no upstream
-        // analogue; cut per R-114).
+
         let cuts = [
             "bye",
             "swarm",
@@ -521,20 +460,18 @@ mod tests {
 
     #[test]
     fn catalog_category_assignment_lock() {
-        // Table-driven lock: every CATALOG row maps to its expected
-        // SlashKind. Drift in either the name OR the kind names the
-        // offender. Mirror of `docs/slashes.md`.
+
         let expected: &[(&str, SlashKind)] = &[
-            // instant
+
             ("exit", SlashKind::Instant),
             ("clear", SlashKind::Instant),
-            // toggle
+
             ("plan", SlashKind::Toggle),
             ("tag", SlashKind::Toggle),
             ("copy", SlashKind::Toggle),
             ("export", SlashKind::Toggle),
             ("keybindings", SlashKind::Toggle),
-            // skill
+
             ("dream", SlashKind::Skill),
             ("statusline", SlashKind::Skill),
             ("init-verifiers", SlashKind::Skill),
@@ -542,11 +479,11 @@ mod tests {
             ("init", SlashKind::Skill),
             ("security-review", SlashKind::Skill),
             ("loop", SlashKind::Skill),
-            // anchor
+
             ("branch", SlashKind::Anchor),
             ("compact", SlashKind::Anchor),
             ("context", SlashKind::Anchor),
-            // panel
+
             ("help", SlashKind::Panel(PanelKind::Help)),
             ("resume", SlashKind::Panel(PanelKind::Resume)),
             ("rewind", SlashKind::Panel(PanelKind::Rewind)),
@@ -563,7 +500,7 @@ mod tests {
             ("mcp", SlashKind::Panel(PanelKind::Mcp)),
             ("tasks", SlashKind::Panel(PanelKind::Tasks)),
             ("bashes", SlashKind::Panel(PanelKind::Tasks)),
-            // auth
+
             ("login", SlashKind::Auth),
             ("logout", SlashKind::Auth),
         ];
