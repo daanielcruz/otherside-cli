@@ -1,4 +1,4 @@
-//! `SessionState` — identity of the running TUI session.
+//! `Session` — identity of the running TUI session.
 //!
 //! Owns the four "which" facts: which model, which effort level, which
 //! permission mode, and the context window those imply. Every read in
@@ -33,7 +33,7 @@ const CONTEXT_WINDOW_1M: u64 = 1_000_000;
 const CONTEXT_WINDOW_200K: u64 = 200_000;
 
 #[derive(Debug, Clone)]
-pub struct SessionState {
+pub struct Session {
     /// Model alias with `[1m]` suffix retained. Wire layer strips.
     pub model: String,
     /// Active thinking level ("high" / "xhigh" / "max" / …). `None` =
@@ -45,7 +45,7 @@ pub struct SessionState {
     pub context_window: u64,
 }
 
-impl SessionState {
+impl Session {
     /// Fresh session sized by the model alias. `[1m]` in the raw
     /// string selects the 1M context window.
     pub fn new(raw_model: &str, permission_mode: PermissionMode) -> Self {
@@ -129,7 +129,7 @@ impl SessionState {
     }
 }
 
-impl Default for SessionState {
+impl Default for Session {
     fn default() -> Self {
         Self::new("", PermissionMode::Default)
     }
@@ -151,21 +151,21 @@ mod tests {
 
     #[test]
     fn new_picks_1m_on_suffix() {
-        let s = SessionState::new("claude-opus-4-7[1m]", PermissionMode::AcceptEdits);
+        let s = Session::new("claude-opus-4-7[1m]", PermissionMode::AcceptEdits);
         assert_eq!(s.context_window, CONTEXT_WINDOW_1M);
         assert_eq!(s.context_window_label(), "1M");
     }
 
     #[test]
     fn new_defaults_to_200k() {
-        let s = SessionState::new("claude-sonnet-4-6", PermissionMode::AcceptEdits);
+        let s = Session::new("claude-sonnet-4-6", PermissionMode::AcceptEdits);
         assert_eq!(s.context_window, CONTEXT_WINDOW_200K);
         assert_eq!(s.context_window_label(), "200K");
     }
 
     #[test]
     fn set_model_reconciles_context_window() {
-        let mut s = SessionState::new("claude-opus-4-7", PermissionMode::AcceptEdits);
+        let mut s = Session::new("claude-opus-4-7", PermissionMode::AcceptEdits);
         s.set_model("claude-opus-4-7[1m]");
         assert_eq!(s.context_window, CONTEXT_WINDOW_1M);
         s.set_model("claude-haiku-4-5");
@@ -174,7 +174,7 @@ mod tests {
 
     #[test]
     fn cycle_permission_mode_skips_default() {
-        let mut s = SessionState::new("", PermissionMode::AcceptEdits);
+        let mut s = Session::new("", PermissionMode::AcceptEdits);
         s.cycle_permission_mode();
         assert_eq!(s.permission_mode, PermissionMode::Plan);
         s.cycle_permission_mode();
@@ -185,21 +185,21 @@ mod tests {
 
     #[test]
     fn cycle_from_hidden_default_lands_on_accept() {
-        let mut s = SessionState::new("", PermissionMode::Default);
+        let mut s = Session::new("", PermissionMode::Default);
         s.cycle_permission_mode();
         assert_eq!(s.permission_mode, PermissionMode::AcceptEdits);
     }
 
     #[test]
     fn is_active_model_tracks_exact_alias() {
-        let s = SessionState::new("claude-opus-4-7[1m]", PermissionMode::AcceptEdits);
+        let s = Session::new("claude-opus-4-7[1m]", PermissionMode::AcceptEdits);
         assert!(s.is_active_model("claude-opus-4-7[1m]"));
         assert!(!s.is_active_model("claude-opus-4-7"));
     }
 
     #[test]
     fn context_used_percent_clamps_at_100() {
-        let s = SessionState::new("claude-opus-4-7", PermissionMode::AcceptEdits);
+        let s = Session::new("claude-opus-4-7", PermissionMode::AcceptEdits);
         assert_eq!(s.context_used_percent(500_000), 100);
     }
 }

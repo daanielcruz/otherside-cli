@@ -48,11 +48,11 @@ pub mod error;
 pub mod handlers;
 pub mod sse;
 
-use handlers::AppState;
+use handlers::ServeState;
 
 /// Build the axum router. Exposed so tests can exercise the routing layer
 /// with in-process HTTP rather than spinning up a real socket.
-pub fn router(state: AppState) -> Router {
+pub fn router(state: ServeState) -> Router {
     Router::new()
         .route("/v1/chat/completions", post(handlers::chat_completions))
         .route("/v1/models", get(handlers::list_models))
@@ -71,7 +71,7 @@ pub async fn run(
     registry: Arc<Registry>,
     default_provider: String,
 ) -> Result<()> {
-    let state = AppState {
+    let state = ServeState {
         registry,
         default_provider,
     };
@@ -179,7 +179,7 @@ mod tests {
                 .with(Arc::new(StubProvider))
                 .build(),
         );
-        router(AppState {
+        router(ServeState {
             registry,
             default_provider: "anthropic-oauth".into(),
         })

@@ -41,7 +41,7 @@ use super::sse::{done_terminator, encode_chunk};
 /// Held as `Arc` because axum clones the state per request — we want cheap
 /// clones, not copies.
 #[derive(Clone)]
-pub struct AppState {
+pub struct ServeState {
     pub registry: Arc<Registry>,
     /// Fallback provider id when the request's `model` doesn't disambiguate.
     /// MVP: any model id routes here, since only `anthropic-oauth` is
@@ -58,7 +58,7 @@ pub struct AppState {
 /// surface as a 400 instead of axum's default 422 extractor error — OpenAI
 /// clients expect 400 with the OpenAI error shape.
 pub async fn chat_completions(
-    State(state): State<AppState>,
+    State(state): State<ServeState>,
     body: axum::body::Bytes,
 ) -> Response {
     let req: OpenAiChatRequest = match serde_json::from_slice(&body) {

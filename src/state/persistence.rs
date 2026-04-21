@@ -3,7 +3,7 @@
 //! Consolidates the scattered `persist_settings(&st)` calls (5 sites
 //! in `src/tui/mod.rs` before Fase 2) behind a single
 //! [`PersistenceState::commit_session_defaults`] method that takes
-//! the authoritative [`SessionState`] and writes the matching fields
+//! the authoritative [`Session`] and writes the matching fields
 //! to `~/.otherside/settings.json`.
 //!
 //! # Scope
@@ -22,7 +22,7 @@
 
 use crate::config::settings::Settings;
 use crate::error::Result;
-use crate::state::SessionState;
+use crate::state::Session;
 
 #[derive(Debug, Clone, Default)]
 pub struct PersistenceState {
@@ -51,7 +51,7 @@ impl PersistenceState {
     /// here is structurally safer.
     pub fn commit_session_defaults(
         &mut self,
-        session: &SessionState,
+        session: &Session,
         provider_id: &str,
     ) -> Result<()> {
         self.settings.default_provider = Some(provider_id.to_string());
@@ -95,7 +95,7 @@ mod tests {
     #[test]
     fn commit_session_defaults_mirrors_session_into_settings() {
         let mut p = PersistenceState::default();
-        let s = SessionState::new("claude-opus-4-7[1m]", PermissionMode::Yolo);
+        let s = Session::new("claude-opus-4-7[1m]", PermissionMode::Yolo);
         // Only checks the in-memory mirror — actual flush needs a
         // tempdir / fake paths facility that doesn't exist yet.
         p.settings.default_model = None;
@@ -121,7 +121,7 @@ mod tests {
         // the session value.
         let mut p = PersistenceState::default();
         p.settings.permission_mode = None; // was unset
-        let s = SessionState::new("opus", PermissionMode::Yolo);
+        let s = Session::new("opus", PermissionMode::Yolo);
         // We can't call commit_session_defaults without touching disk,
         // but the implementation above explicitly doesn't set
         // permission_mode — this test compiles as a reminder: if you

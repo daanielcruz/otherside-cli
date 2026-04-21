@@ -13,13 +13,13 @@
 //! 1. **Um fato = um dono.** Any field representing an identity
 //!    consumed by UI render, wire request, or persistence
 //!    (`model`, `provider_id`, `effort_label`, `permission_mode`,
-//!    `context_window`) lives on [`SessionState`] ONLY. Render paths,
+//!    `context_window`) lives on [`Session`] ONLY. Render paths,
 //!    overlay constructors, statusline **look up** via `state.session.*`
 //!    or `state.session.is_active_*()` — they never copy to a snapshot
 //!    local.
 //!
 //! 2. **Overlays são view-only.** Overlay constructors take
-//!    `&SessionState`, read the relevant field at mount time, and
+//!    `&Session`, read the relevant field at mount time, and
 //!    store its `action_id` string on the overlay for the ✔ check.
 //!    Cursor moves freely with arrow keys; the active indicator only
 //!    changes when the event loop calls an `AppState::commit_*`
@@ -42,10 +42,10 @@
 //!
 //! # Migration status
 //!
-//! Fase 1 (current): [`SessionState`] carves out {model, effort_label,
+//! Fase 1 (current): [`Session`] carves out {model, effort_label,
 //! permission_mode, context_window} from the legacy `ConversationState`
 //! in `src/tui/state.rs`. ConversationState now carries
-//! `pub session: SessionState`; callers migrate from `st.model` to
+//! `pub session: Session`; callers migrate from `st.model` to
 //! `st.session.model` mechanically.
 //!
 //! Fase 2 (planned): fold `PersistenceState` over {Settings, State,
@@ -59,4 +59,4 @@ pub mod persistence;
 pub mod session;
 
 pub use persistence::PersistenceState;
-pub use session::SessionState;
+pub use session::Session;

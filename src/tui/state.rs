@@ -313,10 +313,10 @@ pub struct ConversationState {
 
     /// Session identity (model, effort_label, permission_mode,
     /// context_window). Single source of truth — see
-    /// `crate::state::SessionState` rustdoc. Render paths, overlay
+    /// `crate::state::Session` rustdoc. Render paths, overlay
     /// constructors, and the statusline look up via `st.session.*`;
     /// they never copy these fields into locals.
-    pub session: crate::state::SessionState,
+    pub session: crate::state::Session,
 
     /// Cumulative thinking-block duration for the in-flight response,
     /// in ms. Reset on each submit.
@@ -692,7 +692,7 @@ impl ConversationState {
     /// Fresh state with no messages, empty input, scroll pinned to bottom.
     pub fn new() -> Self {
         Self {
-            session: crate::state::SessionState::new(
+            session: crate::state::Session::new(
                 "",
                 crate::config::PermissionMode::Default,
             ),
@@ -715,14 +715,14 @@ impl ConversationState {
         mode: crate::config::PermissionMode,
     ) -> Self {
         Self {
-            session: crate::state::SessionState::new(raw_model, mode),
+            session: crate::state::Session::new(raw_model, mode),
             sticky_bottom: true,
             ..Self::default()
         }
     }
 
     /// Percentage of the context window currently consumed. Delegates
-    /// to [`SessionState::context_used_percent`] — Session owns the
+    /// to [`Session::context_used_percent`] — Session owns the
     /// budget, Conversation owns the consumption counter.
     pub fn context_used_percent(&self) -> u32 {
         self.session.context_used_percent(self.input_tokens)
@@ -734,7 +734,7 @@ impl ConversationState {
     }
 
     /// Render the context-window total — delegates to
-    /// [`SessionState::context_window_label`].
+    /// [`Session::context_window_label`].
     pub fn context_window_label(&self) -> String {
         self.session.context_window_label()
     }
