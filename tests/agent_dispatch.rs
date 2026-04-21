@@ -1,6 +1,6 @@
 
 
-use otherside::subagents::{install_runner, InlineFakeRunner, SubagentRunner};
+use otherside::agent::subagents::{install_runner, InlineFakeRunner, SubagentRunner};
 use otherside::tools::{dispatch, ToolError};
 use serde_json::json;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};

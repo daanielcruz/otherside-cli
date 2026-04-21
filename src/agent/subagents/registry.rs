@@ -50,11 +50,11 @@ fn parse_bundled(source_path: &str, src: &str) -> AgentDefinition {
     }
 }
 
-const GENERAL_PURPOSE_SRC: &str = include_str!("../../agents_corpus/general-purpose.md");
-const READER_SRC: &str = include_str!("../../agents_corpus/reader.md");
-const EXPLORE_SRC: &str = include_str!("../../agents_corpus/explore.md");
-const PLAN_SRC: &str = include_str!("../../agents_corpus/plan.md");
-const VERIFICATION_SRC: &str = include_str!("../../agents_corpus/verification.md");
+const GENERAL_PURPOSE_SRC: &str = include_str!("../../../agents_corpus/general-purpose.md");
+const READER_SRC: &str = include_str!("../../../agents_corpus/reader.md");
+const EXPLORE_SRC: &str = include_str!("../../../agents_corpus/explore.md");
+const PLAN_SRC: &str = include_str!("../../../agents_corpus/plan.md");
+const VERIFICATION_SRC: &str = include_str!("../../../agents_corpus/verification.md");
 
 fn bundled() -> &'static [AgentDefinition] {
     static CELL: OnceLock<Vec<AgentDefinition>> = OnceLock::new();

@@ -176,7 +176,7 @@ impl SubagentRunner for InnerLoopRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::subagents::frontmatter::ToolsField;
+    use crate::agent::subagents::frontmatter::ToolsField;
 
     #[test]
     fn gated_dispatcher_wildcard_allows_any_tool() {

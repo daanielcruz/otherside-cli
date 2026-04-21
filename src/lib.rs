@@ -16,7 +16,6 @@ pub mod sessions;
 pub mod serve;
 pub mod state;
 pub mod statusline;
-pub mod subagents;
 pub mod tasks;
 pub mod thinking;
 

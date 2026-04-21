@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
-use crate::subagents::{registry::AgentDefinition, AgentInvocation, SubagentRunner};
+use crate::agent::subagents::{registry::AgentDefinition, AgentInvocation, SubagentRunner};
 
 use super::{id::TaskId, state::TaskRecord, state::TaskState, store::TaskStore};
 
@@ -39,7 +39,7 @@ pub fn spawn_background_agent(
 fn finalize(
     store: &TaskStore,
     id: &TaskId,
-    result: Result<Value, crate::subagents::RunnerError>,
+    result: Result<Value, crate::agent::subagents::RunnerError>,
 ) {
     store.update_with(id, |r| {
         match result {
@@ -79,8 +79,8 @@ fn extract_assistant_text(v: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::subagents::frontmatter::ToolsField;
-    use crate::subagents::{registry::AgentDefinition, AgentInvocation, RunnerError};
+    use crate::agent::subagents::frontmatter::ToolsField;
+    use crate::agent::subagents::{registry::AgentDefinition, AgentInvocation, RunnerError};
     use std::sync::Mutex;
 
     struct FakeRunner {

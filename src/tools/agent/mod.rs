@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use serde_json::{json, Value};
 
-use crate::subagents::{registry, AgentInvocation, DepthGuard, RunnerError, SubagentRunner};
+use crate::agent::subagents::{registry, AgentInvocation, DepthGuard, RunnerError, SubagentRunner};
 
 use crate::tools::ToolError;
 
@@ -47,12 +47,12 @@ pub fn agent(args: &Value) -> Result<Value, ToolError> {
     let Some(_guard) = DepthGuard::try_push() else {
         return Err(ToolError::InvalidArgs(format!(
             "subagent recursion depth exceeded (max {})",
-            crate::subagents::MAX_DEPTH
+            crate::agent::subagents::MAX_DEPTH
         )));
     };
-    let depth_at_entry = crate::subagents::depth::current() - 1;
+    let depth_at_entry = crate::agent::subagents::depth::current() - 1;
 
-    let Some(runner) = crate::subagents::current_runner() else {
+    let Some(runner) = crate::agent::subagents::current_runner() else {
         return Ok(json!({
             "status": "unavailable",
             "subagent_type_requested": subagent_type,
@@ -156,7 +156,7 @@ impl SubagentToolGate {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::subagents::{install_runner, InlineFakeRunner};
+    use crate::agent::subagents::{install_runner, InlineFakeRunner};
     use std::sync::Arc;
 
     fn once_install_fake() -> Arc<InlineFakeRunner> {

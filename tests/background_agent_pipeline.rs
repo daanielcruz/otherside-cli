@@ -4,8 +4,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use otherside::inference::OpenAiChatRequest;
-use otherside::subagents::frontmatter::ToolsField;
-use otherside::subagents::{
+use otherside::agent::subagents::frontmatter::ToolsField;
+use otherside::agent::subagents::{
     registry::AgentDefinition, AgentInvocation, RunnerError, SubagentRunner,
 };
 use otherside::tasks::{

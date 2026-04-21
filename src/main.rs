@@ -340,8 +340,8 @@ async fn cmd_tui(cli: &Cli) -> Result<()> {
     let registry = Arc::new(registry);
 
     if let Some(provider) = registry.get(&provider_id) {
-        let _ = otherside::subagents::install_runner(
-            otherside::subagents::InnerLoopRunner::new(
+        let _ = otherside::agent::subagents::install_runner(
+            otherside::agent::subagents::InnerLoopRunner::new(
                 provider.clone(),
                 raw_model.clone(),
             ),
