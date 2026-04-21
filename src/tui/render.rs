@@ -913,9 +913,17 @@ fn draw_info_row(
     // once usage crosses the warning threshold (context_window - 20k
     // minus the 13k auto-compact buffer — see
     // reconstructed/2.1.113/source/services/compact/autoCompact.ts).
-    let total = state
-        .input_tokens
-        .saturating_add(state.total_output_tokens());
+    //
+    // Formula matches upstream `tokenCountFromLastAPIResponse`
+    // (utils/tokens.ts:55) — take `input + cache_creation + cache_read
+    // + output` from the LAST assistant message, nothing else.
+    // `input_tokens` already folds the three input buckets at the
+    // translator; `output_tokens` holds the last message_delta total.
+    // `cumulative_output_tokens` is intentionally EXCLUDED here —
+    // prior sub-turns' output already rides in the next sub-turn's
+    // `input_tokens` via history, so adding cumulative would
+    // double-count across tool-call chains.
+    let total = state.input_tokens.saturating_add(state.output_tokens);
     let right_text = build_token_right_chip(state, total);
 
     if right_text.is_empty() {
@@ -1479,5 +1487,74 @@ mod tests {
             joined.push('\n');
         }
         assert!(!joined.contains("❯ stranded"), "painted during idle: {joined:?}");
+    }
+
+    // ----- bottom-right token chip — input + output, no cumulative -----
+
+    #[test]
+    fn token_chip_uses_input_plus_output_not_cumulative() {
+        // Upstream `tokenCountFromLastAPIResponse` shape: sum of the
+        // last assistant message's input + cache + output. Our state
+        // folds the three input buckets into `input_tokens`, so the
+        // formula collapses to `input + output`. Adding the
+        // `cumulative_output_tokens` bucket on top would double-count
+        // the prior sub-turn whose output is already folded into the
+        // next sub-turn's input via history.
+        use super::super::state::ConversationState;
+        let mut st = ConversationState::new();
+        st.input_tokens = 23_298;
+        st.output_tokens = 539;
+        st.cumulative_output_tokens = 170;
+        let total = st.input_tokens.saturating_add(st.output_tokens);
+        let chip = build_token_right_chip(&st, total);
+        assert_eq!(chip, "23837 tokens");
+        assert!(
+            !chip.contains("24007"),
+            "cumulative leaked into chip: {chip:?}"
+        );
+    }
+
+    #[test]
+    fn token_chip_grows_across_tool_chain_sub_turns() {
+        // Regression: before the `update_usage` fold-on-message-start
+        // fix, a tool-call chain would lose sub-turn output tokens
+        // because Anthropic's `message_delta` fires once per message
+        // with the final output count, so the drop-based fold never
+        // triggered when N2 >= N1. Walk the full Anthropic SSE
+        // sequence (message_start → message_delta, repeated per
+        // sub-turn) and assert the displayed total is monotonically
+        // non-decreasing.
+        use super::super::state::ConversationState;
+        let mut st = ConversationState::new();
+        let mut samples: Vec<u64> = Vec::new();
+        let push_sample = |st: &ConversationState, samples: &mut Vec<u64>| {
+            samples.push(st.input_tokens.saturating_add(st.output_tokens));
+        };
+        // Sub-turn 1: tool call (small output).
+        st.update_usage(Some(20_000), None);
+        push_sample(&st, &mut samples);
+        st.update_usage(None, Some(50));
+        push_sample(&st, &mut samples);
+        // Sub-turn 2: tool call with larger output.
+        st.update_usage(Some(21_000), None);
+        push_sample(&st, &mut samples);
+        st.update_usage(None, Some(120));
+        push_sample(&st, &mut samples);
+        // Sub-turn 3: final assistant reply, largest.
+        st.update_usage(Some(23_000), None);
+        push_sample(&st, &mut samples);
+        st.update_usage(None, Some(540));
+        push_sample(&st, &mut samples);
+        // Chip = input + output; must never regress.
+        for pair in samples.windows(2) {
+            assert!(
+                pair[1] >= pair[0],
+                "chip total regressed: {pair:?} (full sequence: {samples:?})",
+            );
+        }
+        // Final chip total = last sub-turn's input + output (upstream
+        // parity). Prior sub-turns' output rides in `input_tokens` via
+        // history, so no separate bookkeeping needed for the chip.
+        assert_eq!(samples.last().copied(), Some(23_000 + 540));
     }
 }

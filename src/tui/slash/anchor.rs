@@ -97,7 +97,11 @@ fn run_compact(state: &mut ConversationState) {
 }
 
 fn context_result(state: &ConversationState) -> String {
-    let used = state.input_tokens + state.total_output_tokens();
+    // Same formula as the info-row chip (render.rs:build_token_right_chip):
+    // input + output from the last assistant message. `cumulative_output_tokens`
+    // is intentionally excluded — prior sub-turn output already rides in
+    // `input_tokens` via history.
+    let used = state.input_tokens + state.output_tokens;
     let pct = if state.session.context_window == 0 {
         0
     } else {

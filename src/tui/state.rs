@@ -256,18 +256,25 @@ pub struct ConversationState {
     pub request_started_at: Option<Instant>,
 
     /// Output tokens for the CURRENT in-flight assistant message
-    /// only — Anthropic's `message_delta` events ship the running
-    /// cumulative count within the same message, so this holds the
-    /// latest value for that message (not a session total). Reset
-    /// to 0 on each new message (detected via value-drop in
+    /// only — Anthropic's `message_delta` carries the final output
+    /// count for a message (one event at message end, not running
+    /// deltas). Reset to 0 on a new-message boundary (detected via
+    /// the next `message_start`'s `input_tokens` landing in
     /// [`ConversationState::update_usage`]); the prior message's
-    /// final count folds into [`ConversationState::cumulative_output_tokens`].
+    /// final count folds into [`ConversationState::cumulative_output_tokens`]
+    /// before the reset.
     pub output_tokens: u64,
 
     /// Output tokens finalized on prior messages in the current
-    /// agent-loop turn (tool-call sub-turns accumulate here). Added
-    /// to the current `output_tokens` for display via
-    /// [`ConversationState::total_output_tokens`].
+    /// agent-loop turn (tool-call sub-turns accumulate here). Used
+    /// for the in-turn progress line via
+    /// [`ConversationState::total_output_tokens`]. Deliberately NOT
+    /// included in the bottom-right info-row chip formula — that
+    /// mirrors upstream `tokenCountFromLastAPIResponse` which reads
+    /// only the last message's `input + cache + output`; the prior
+    /// sub-turns' output already rides in the next sub-turn's
+    /// `input_tokens` via history, so summing cumulative on top
+    /// would double-count.
     pub cumulative_output_tokens: u64,
 
     /// Input tokens consumed so far this session. Maps to the
@@ -1067,26 +1074,39 @@ impl ConversationState {
     /// - **Input** REPLACES — the API's `input_tokens` is already
     ///   cumulative for the turn (cache-creation / cache-read adders
     ///   are folded in upstream of this call at the translator).
-    /// - **Output** accumulates ACROSS MESSAGES, not within a single
-    ///   message's deltas. Anthropic's `message_delta` events carry
-    ///   the running cumulative output_tokens WITHIN a message, so a
-    ///   naive `+=` would double-count mid-message deltas. We detect
-    ///   a new message by a DROP in value (next message_start resets
-    ///   output_tokens to 0) and roll the prior message's final
-    ///   into `cumulative_output_tokens`; display reads `cumulative +
-    ///   latest`.
+    ///   An `input_tokens` update ALSO signals a new assistant
+    ///   message is starting: Anthropic's SSE fires one `message_start`
+    ///   per assistant message, and that's the only carrier of input
+    ///   usage. When we see one with non-zero `output_tokens` still
+    ///   in state, the prior message's final output count folds into
+    ///   `cumulative_output_tokens` and `output_tokens` resets to 0.
+    /// - **Output** is REPLACED — Anthropic's `message_delta` fires
+    ///   once per message at the end, carrying the final cumulative
+    ///   output count for that message. Within a message there's only
+    ///   one datapoint, so REPLACE is correct (not `+=`). Across
+    ///   messages, the input-side fold above archives the prior value
+    ///   before it gets overwritten.
+    ///
+    /// Why not fold on an output-side DROP instead? Anthropic delivers
+    /// exactly one `message_delta.usage` per message, at the end. The
+    /// next message's first (and only) `message_delta` often has a
+    /// higher output_tokens than the prior message's, so a drop-based
+    /// fold silently loses sub-turn output across tool-call chains.
+    /// The `message_start` signal is the reliable boundary.
     pub fn update_usage(&mut self, input_tokens: Option<u64>, output_tokens: Option<u64>) {
         if let Some(v) = input_tokens {
+            // New message boundary — archive the prior message's
+            // final output count before the next message starts
+            // accruing from 0.
+            if self.output_tokens > 0 {
+                self.cumulative_output_tokens = self
+                    .cumulative_output_tokens
+                    .saturating_add(self.output_tokens);
+                self.output_tokens = 0;
+            }
             self.input_tokens = v;
         }
         if let Some(v) = output_tokens {
-            // Drop signals a new message — fold the prior message's
-            // final count into the cumulative bucket before the
-            // new message starts accruing from 0.
-            if v < self.output_tokens {
-                self.cumulative_output_tokens =
-                    self.cumulative_output_tokens.saturating_add(self.output_tokens);
-            }
             self.output_tokens = v;
         }
     }
@@ -1619,28 +1639,45 @@ mod tests {
     }
 
     #[test]
-    fn update_usage_overwrites_input_side_only() {
-        // Latest-wins per side: passing `input_tokens=Some` and
-        // `output_tokens=None` must NOT zero the previously-set
-        // output count. Anthropic's stream ships the two values on
-        // different events so they arrive independently.
+    fn update_usage_on_fresh_state_sets_input_only() {
+        // First `message_start` of a user turn arrives with
+        // `output_tokens == 0` (just been reset by `submit()`). Must
+        // set input and leave output / cumulative at zero.
         let mut st = ConversationState::new();
-        st.output_tokens = 42;
+        assert_eq!(st.output_tokens, 0);
         st.update_usage(Some(1234), None);
         assert_eq!(st.input_tokens, 1234);
-        assert_eq!(st.output_tokens, 42, "output side must be untouched");
+        assert_eq!(st.output_tokens, 0);
+        assert_eq!(st.cumulative_output_tokens, 0);
     }
 
     #[test]
-    fn update_usage_sets_output_when_monotonic_within_message() {
-        // Within a single message, Anthropic's message_delta events
-        // ship the running cumulative count. `update_usage` treats
-        // non-decreasing values as in-message progress and replaces.
+    fn update_usage_input_update_archives_prior_output() {
+        // An `input_tokens` update signals a new assistant message
+        // is starting (Anthropic's `message_start`). The prior
+        // message's final `output_tokens` folds into cumulative so
+        // the turn-wide count survives into the next sub-turn.
+        let mut st = ConversationState::new();
+        st.update_usage(Some(1000), None); // sub-turn 1 start
+        st.update_usage(None, Some(42)); // sub-turn 1 final
+        st.update_usage(Some(1200), None); // sub-turn 2 start
+        assert_eq!(st.input_tokens, 1200);
+        assert_eq!(st.output_tokens, 0, "output resets on boundary");
+        assert_eq!(st.cumulative_output_tokens, 42, "prior output archived");
+    }
+
+    #[test]
+    fn update_usage_replaces_output_within_message() {
+        // Anthropic's `message_delta` carries the FINAL output count
+        // for that message (single event at end of message, not
+        // running deltas). Within a message there's at most one
+        // output update — REPLACE, not accumulate.
         let mut st = ConversationState::new();
         st.input_tokens = 555;
         st.update_usage(None, Some(77));
         assert_eq!(st.output_tokens, 77);
         assert_eq!(st.cumulative_output_tokens, 0);
+        // Defensive: a second output-only update (rare) still replaces.
         st.update_usage(None, Some(140));
         assert_eq!(st.output_tokens, 140);
         assert_eq!(st.cumulative_output_tokens, 0);
@@ -1648,21 +1685,60 @@ mod tests {
     }
 
     #[test]
-    fn update_usage_rolls_prior_message_on_output_drop() {
-        // A DROP in output_tokens marks a new message — the prior
-        // message's final count folds into `cumulative_output_tokens`
-        // so the progress line surfaces full agent-loop output
-        // pressure via `total_output_tokens`.
+    fn update_usage_folds_prior_output_on_new_message_start() {
+        // Boundary between sub-turns in a tool-call chain is marked
+        // by a fresh `message_start` (carrier of input_tokens). On
+        // that boundary the prior message's final output folds into
+        // `cumulative_output_tokens` and `output_tokens` resets to
+        // 0 so the new message accrues from scratch. This is the
+        // regression guard for the bug where tool-chain sub-turn
+        // output silently dropped (the prior drop-based heuristic
+        // fired only when N2 < N1, but message_delta fires once
+        // per message, so in-practice N2 often >= N1).
         let mut st = ConversationState::new();
-        st.update_usage(None, Some(200)); // message 1 final
-        st.update_usage(None, Some(50)); // message 2 starts small
-        assert_eq!(st.output_tokens, 50);
+        // Sub-turn 1.
+        st.update_usage(Some(10_000), None); // message_start
+        st.update_usage(None, Some(200)); // message_delta final
+        assert_eq!(st.output_tokens, 200);
+        assert_eq!(st.cumulative_output_tokens, 0);
+        // Sub-turn 2 starts — new message_start with input update.
+        st.update_usage(Some(12_000), None);
+        assert_eq!(
+            st.output_tokens, 0,
+            "output resets on new-message boundary"
+        );
+        assert_eq!(
+            st.cumulative_output_tokens, 200,
+            "prior message's output folded"
+        );
+        assert_eq!(st.input_tokens, 12_000);
+        st.update_usage(None, Some(540)); // sub-turn 2 final — higher than N1
+        assert_eq!(st.output_tokens, 540);
         assert_eq!(st.cumulative_output_tokens, 200);
-        assert_eq!(st.total_output_tokens(), 250);
-        st.update_usage(None, Some(125)); // message 2 continues
-        assert_eq!(st.output_tokens, 125);
-        assert_eq!(st.cumulative_output_tokens, 200);
-        assert_eq!(st.total_output_tokens(), 325);
+        assert_eq!(st.total_output_tokens(), 740, "turn-wide output preserved");
+    }
+
+    #[test]
+    fn update_usage_total_preserves_output_across_tool_chain() {
+        // Regression: before the input-start fold, a three-sub-turn
+        // tool chain with monotonically-growing output_tokens per
+        // message lost every prior sub-turn's output (cumulative
+        // stayed at 0). The progress-line `↓ Nk tokens` then
+        // UNDER-reported the turn-wide output. Assert the full
+        // chain now preserves every sub-turn.
+        let mut st = ConversationState::new();
+        // Sub-turn 1 — tool call, small output (just the JSON).
+        st.update_usage(Some(20_000), None);
+        st.update_usage(None, Some(50));
+        // Sub-turn 2 — another tool call, slightly larger.
+        st.update_usage(Some(21_000), None);
+        st.update_usage(None, Some(120));
+        // Sub-turn 3 — final assistant reply.
+        st.update_usage(Some(23_000), None);
+        st.update_usage(None, Some(540));
+        assert_eq!(st.cumulative_output_tokens, 50 + 120);
+        assert_eq!(st.output_tokens, 540);
+        assert_eq!(st.total_output_tokens(), 50 + 120 + 540);
     }
 
     #[test]
