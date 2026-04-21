@@ -286,74 +286,9 @@ impl SubagentRunner for InlineFakeRunner {
     }
 }
 
-/// Boot-time runner wired by the binary when no full inner-`AgentLoop`
-/// runner is yet available. Returns a synthetic result advertising which
-/// subagent was invoked plus a clear `productive-stub` marker so the
-/// model and the user see that the dispatch was recognized but not yet
-/// backed by real inference. Honors the `AgentInvocation` overrides by
-/// echoing them back in the result so future runners know what the
-/// caller intended.
-pub struct ProductiveStubRunner;
-
-impl ProductiveStubRunner {
-    pub fn new() -> Arc<dyn SubagentRunner> {
-        Arc::new(ProductiveStubRunner)
-    }
-}
-
-impl SubagentRunner for ProductiveStubRunner {
-    fn run(
-        &self,
-        definition: &registry::AgentDefinition,
-        prompt: &str,
-        depth: u32,
-        invocation: &AgentInvocation,
-    ) -> Result<Value, RunnerError> {
-        let preview: String = prompt.chars().take(240).collect();
-        let text = format!(
-            "[productive-stub] subagent `{}` received the prompt. Full inner AgentLoop runner is pending — the dispatch path, allowlist, and depth guard all exercise correctly, but no real inference ran. Prompt preview: {}",
-            definition.name, preview
-        );
-        Ok(serde_json::json!({
-            "status": "completed",
-            "marker": "productive-stub",
-            "subagent_type": definition.name,
-            "agentType": definition.name,
-            "content": [{"type": "text", "text": text}],
-            "totalToolUseCount": 0,
-            "totalTokens": 0,
-            "totalDurationMs": 0,
-            "depth": depth,
-            "invocation": {
-                "model_requested": invocation.model,
-                "run_in_background_requested": invocation.run_in_background,
-                "isolation_requested": invocation.isolation,
-            },
-            "usage": {
-                "input_tokens": 0,
-                "output_tokens": 0,
-            },
-        }))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn productive_stub_carries_marker_and_subagent_type() {
-        let runner = ProductiveStubRunner;
-        let def = registry::resolve("Explore").unwrap();
-        let inv = AgentInvocation::default();
-        let res = runner.run(def, "find me something", 0, &inv).unwrap();
-        assert_eq!(res["marker"], "productive-stub");
-        assert_eq!(res["subagent_type"], "Explore");
-        assert_eq!(res["status"], "completed");
-        let text = res["content"][0]["text"].as_str().unwrap();
-        assert!(text.contains("productive-stub"));
-        assert!(text.contains("Explore"));
-    }
 
     #[test]
     fn depth_push_and_pop_round_trip() {
