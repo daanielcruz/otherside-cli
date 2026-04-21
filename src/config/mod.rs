@@ -66,7 +66,7 @@ pub mod paths;
 pub mod projects;
 pub mod providers;
 pub mod settings;
-pub mod state;
+pub mod user_state;
 pub mod validation;
 
 pub use settings::{
@@ -126,7 +126,7 @@ pub enum SettingsSource {
 pub struct EffectiveConfig {
     pub settings: Settings,
     pub projects: projects::ProjectsConfig,
-    pub state: state::State,
+    pub state: user_state::StartupCounters,
     pub mcp: mcp::McpJsonConfig,
     pub warnings: Vec<ValidationWarning>,
 }
@@ -247,7 +247,7 @@ pub fn load_all(cwd: &Path, cli_flags: Value) -> Result<EffectiveConfig> {
 
     let (settings, warnings) = resolve(&sources);
     let projects = projects::load().unwrap_or_default();
-    let state = state::load().unwrap_or_default();
+    let state = user_state::load().unwrap_or_default();
     let mcp = mcp::load_effective(cwd).unwrap_or_default();
 
     let effective = EffectiveConfig {

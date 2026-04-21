@@ -1778,7 +1778,7 @@ async fn run_agent_turns(
     tx: mpsc::Sender<StreamEvent>,
     mut settings: crate::config::settings::Settings,
     mode: crate::config::settings::PermissionMode,
-    session_allowlist: crate::permissions::SessionAllowlist,
+    session_allowlist: crate::permissions::RuntimePermissionGrants,
 ) {
     use crate::agent::{tool_result_message, Turn, MAX_AUTO_TURNS};
     use crate::inference::{OpenAiChatMessage, OpenAiChatRole};
@@ -1950,7 +1950,7 @@ async fn dispatch_with_prompt(
     tool_call_id: &str,
     settings: &mut crate::config::settings::Settings,
     mode: crate::config::settings::PermissionMode,
-    session_allowlist: &crate::permissions::SessionAllowlist,
+    session_allowlist: &crate::permissions::RuntimePermissionGrants,
     tx: &mpsc::Sender<StreamEvent>,
 ) -> std::result::Result<serde_json::Value, crate::tools::ToolError> {
     use crate::permissions::{self, Decision, PermissionResponse};
@@ -2069,7 +2069,7 @@ async fn ask_user_question_async(
 /// session rules never write back to disk.
 fn overlay_session_allowlist(
     settings: &mut crate::config::settings::Settings,
-    session: &crate::permissions::SessionAllowlist,
+    session: &crate::permissions::RuntimePermissionGrants,
 ) {
     use crate::config::settings::{PermissionRule, PermissionsConfig};
     use crate::permissions::{matcher, MatcherTool};

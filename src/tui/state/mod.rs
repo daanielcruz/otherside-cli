@@ -374,7 +374,7 @@ pub struct ConversationState {
     /// Session-scoped allowlist shared with the agent task. When the
     /// user picks "Allow and don't ask again" we push the rule here;
     /// every subsequent dispatch consults the snapshot in-line.
-    pub session_allowlist: crate::permissions::SessionAllowlist,
+    pub session_allowlist: crate::permissions::RuntimePermissionGrants,
 
     /// JSONL transcript writer — set at TUI bootstrap when sessions
     /// persistence is enabled (spec 008). `None` for tests or when

@@ -89,8 +89,8 @@ pub struct Task {
 /// serializes mutation. Contention is negligible in practice — tools
 /// fire sequentially inside one agent turn.
 fn registry() -> &'static Mutex<HashMap<String, Task>> {
-    static REGISTRY: OnceLock<Mutex<HashMap<String, Task>>> = OnceLock::new();
-    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+    static TASK_REGISTRY: OnceLock<Mutex<HashMap<String, Task>>> = OnceLock::new();
+    TASK_REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// Next task id as a zero-padded 4-digit decimal string. Counter starts

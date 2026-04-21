@@ -21,31 +21,39 @@ use std::sync::{Arc, RwLock};
 
 use crate::config::settings::{PermissionMode, PermissionRule, PermissionsConfig, Settings};
 
-/// Session-scoped allowlist — rules the user picked "allow, and don't
-/// ask again" for. Shared between the event loop (mutator on overlay
-/// commit) and the agent task (reader on every dispatch) via `Arc`.
+/// Runtime-only permission grants — rules the user picked "allow,
+/// and don't ask again" for during this process. NOT persisted; a
+/// fresh `otherside tui` launch starts empty. Shared between the
+/// event loop (mutator on overlay commit) and the agent task
+/// (reader on every dispatch) via `Arc`.
+///
+/// Renamed from `SessionAllowlist` to disambiguate: "session" is
+/// already saturated in this codebase (`crate::state::Session`
+/// identity, `crate::sessions::` transcript writer, `sessionId` on
+/// wire). "Runtime" communicates that these grants live in-memory
+/// only.
 ///
 /// Each entry is a raw matcher rule string (same grammar as
 /// `settings.json::permissions.allow`). The permission gate OR's
-/// these rules into the resolve step so a session allow trumps a
+/// these rules into the resolve step so a runtime allow trumps a
 /// settings-file ask.
 #[derive(Debug, Clone, Default)]
-pub struct SessionAllowlist(Arc<RwLock<Vec<String>>>);
+pub struct RuntimePermissionGrants(Arc<RwLock<Vec<String>>>);
 
-impl SessionAllowlist {
+impl RuntimePermissionGrants {
     pub fn new() -> Self {
         Self(Arc::new(RwLock::new(Vec::new())))
     }
 
     pub fn push_rule(&self, rule: String) {
-        let mut w = self.0.write().expect("SessionAllowlist lock poisoned");
+        let mut w = self.0.write().expect("RuntimePermissionGrants lock poisoned");
         if !w.contains(&rule) {
             w.push(rule);
         }
     }
 
     pub fn snapshot(&self) -> Vec<String> {
-        let r = self.0.read().expect("SessionAllowlist lock poisoned");
+        let r = self.0.read().expect("RuntimePermissionGrants lock poisoned");
         r.clone()
     }
 }
