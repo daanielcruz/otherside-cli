@@ -109,22 +109,52 @@ impl InnerLoopRunner {
             &self.default_model,
         );
 
-        let history: Vec<OpenAiChatMessage> = vec![
-            OpenAiChatMessage {
-                role: OpenAiChatRole::System,
-                content: definition.system_prompt.clone(),
-                name: None,
-                tool_calls: Vec::new(),
-                tool_call_id: None,
-            },
-            OpenAiChatMessage {
-                role: OpenAiChatRole::User,
-                content: prompt.to_string(),
-                name: None,
-                tool_calls: Vec::new(),
-                tool_call_id: None,
-            },
-        ];
+        // Provider-guarded System seed — the `definition.system_prompt`
+        // string reaches the wire only on providers whose translator
+        // consumes role=system input into a canonical instructions slot:
+        //
+        //   - `codex` (`translator/codex/request.rs::extract_instructions`)
+        //     pulls the first System message onto top-level
+        //     `instructions`. Skipping the seed would drop the subagent
+        //     prompt off the wire. Keep it.
+        //   - `anthropic-oauth`
+        //     (`translator/anthropic/message_builder.rs::normalize`)
+        //     discards every System message ("harness provides
+        //     system[]"). The seed is dead bytes there, so skip it and
+        //     document the behavior: anthropic subagents currently
+        //     inherit the main harness system prompt verbatim. Making
+        //     the subagent's own `.md` system_prompt reach the anthropic
+        //     wire requires an evidence-grounded change folder (R-92)
+        //     with a live upstream capture of a subagent turn.
+        //
+        // Zero wire change for either provider — this gate just stops
+        // building a seed message that translator::anthropic would
+        // discard downstream anyway. Codex path is untouched.
+        let mut history: Vec<OpenAiChatMessage> = Vec::with_capacity(2);
+        match self.provider.id() {
+            "codex" => {
+                history.push(OpenAiChatMessage {
+                    role: OpenAiChatRole::System,
+                    content: definition.system_prompt.clone(),
+                    name: None,
+                    tool_calls: Vec::new(),
+                    tool_call_id: None,
+                });
+            }
+            other => {
+                tracing::debug!(
+                    provider = other,
+                    "subagent system_prompt seed skipped; translator discards role=system"
+                );
+            }
+        }
+        history.push(OpenAiChatMessage {
+            role: OpenAiChatRole::User,
+            content: prompt.to_string(),
+            name: None,
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+        });
 
         let dispatcher = GatedToolDispatcher::new(definition.tools.clone());
         let loop_ = AgentLoop {
