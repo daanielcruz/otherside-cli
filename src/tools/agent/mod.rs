@@ -142,6 +142,16 @@ pub fn agent(args: &Value) -> Result<Value, ToolError> {
             } else {
                 description.to_string()
             };
+            // The originating LLM `tool_use_id` rides through the
+            // dispatcher via `crate::tools::current_tool_call_id`
+            // (set by the agent loop's `dispatch_with_prompt` scope).
+            // Stored on the `TaskRecord` so the next-turn
+            // `<task-notification>` XML can populate
+            // `<tool-use-id>` — the reconciliation key the model
+            // uses to match the notification back to its own
+            // `tool_use` block in history (upstream
+            // `tasks/LocalAgentTask/LocalAgentTask.tsx:247-257`).
+            let tool_use_id = crate::tools::current_tool_call_id();
             let task_id = crate::tasks::spawn_background_agent(
                 runner,
                 definition.clone(),
@@ -150,25 +160,31 @@ pub fn agent(args: &Value) -> Result<Value, ToolError> {
                 invocation.clone(),
                 store,
                 display.clone(),
+                tool_use_id.clone(),
+            );
+            // Synthetic `tool_result` text — byte-match upstream
+            // `tools/AgentTool/AgentTool.tsx:1339-1351`. The model
+            // is trained on this exact prose ("Async agent launched
+            // successfully.\nagentId: <id> (internal ID — do not
+            // mention to user. Use SendMessage with to: '<id>' to
+            // continue this agent.)\nThe agent is working in the
+            // background. You will be notified automatically when
+            // it completes."). Drift = the model can't recognize
+            // its own backgrounded dispatch.
+            let upstream_text = format!(
+                "Async agent launched successfully.\nagentId: {agent_id} (internal ID - do not mention to user. Use SendMessage with to: '{agent_id}' to continue this agent.)\nThe agent is working in the background. You will be notified automatically when it completes.",
+                agent_id = task_id.as_str(),
             );
             return Ok(json!({
                 "status": "backgrounded",
                 "task_id": task_id.as_str(),
+                "tool_use_id": tool_use_id,
                 "subagent_type": subagent_type,
                 "description": description,
                 "model_requested": invocation.model,
                 "run_in_background_requested": invocation.run_in_background,
                 "isolation_requested": invocation.isolation,
-                // Human-facing line the model echoes back so the
-                // user sees a deterministic confirmation. Byte-match
-                // upstream `LocalAgentTask.tsx:246-261` idiom.
-                "content": [{
-                    "type": "text",
-                    "text": format!(
-                        "Started in background as {}. I'll be notified when it completes.",
-                        task_id.as_str()
-                    )
-                }],
+                "content": [{"type": "text", "text": upstream_text}],
             }));
         }
     }

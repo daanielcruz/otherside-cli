@@ -175,6 +175,38 @@ pub fn task_output(args: &Value) -> Result<Value, ToolError> {
         .get("taskId")
         .and_then(Value::as_str)
         .ok_or_else(|| ToolError::InvalidArgs("`taskId` is required".into()))?;
+    // Background-task fast path: when the id matches a record in the
+    // process-global TaskStore (BG agent / shell spawn), surface its
+    // output + state. Without this fallback the model gets a "task
+    // not found" answer immediately after a `<task-notification>` it
+    // just received, and concludes the notification was wrong —
+    // contradicting the wire evidence and pushing the model to
+    // disregard its own training on the notification format.
+    if let Some(store) = crate::tasks::store::current_global() {
+        let bg_id = crate::tasks::TaskId::from_string(task_id.to_string());
+        if let Some(record) = store.get(&bg_id) {
+            let status_str = match record.state {
+                crate::tasks::TaskState::Pending => "pending",
+                crate::tasks::TaskState::Running => "running",
+                crate::tasks::TaskState::Backgrounded => "backgrounded",
+                crate::tasks::TaskState::Completed => "completed",
+                crate::tasks::TaskState::Failed => "failed",
+                crate::tasks::TaskState::Stopped => "stopped",
+            };
+            let output = if record.output.is_empty() {
+                String::new()
+            } else {
+                record.output.iter().cloned().collect::<Vec<_>>().join("\n")
+            };
+            return Ok(json!({
+                "taskId": task_id,
+                "status": status_str,
+                "output": output,
+                "tool_use_id": record.tool_use_id,
+                "exit_code": record.exit_code,
+            }));
+        }
+    }
     let got = super::task::task_get(&json!({ "taskId": task_id }))?;
     if got["task"].is_null() {
         return Ok(json!({

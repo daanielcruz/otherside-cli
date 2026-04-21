@@ -1744,6 +1744,7 @@ async fn run_agent_turns(
                 let dispatch_outcome = dispatch_with_prompt(
                     &call.function.name,
                     &args_value,
+                    &call.id,
                     &mut settings,
                     mode,
                     &session_allowlist,
@@ -1810,6 +1811,7 @@ async fn run_agent_turns(
 async fn dispatch_with_prompt(
     tool_name: &str,
     args: &serde_json::Value,
+    tool_call_id: &str,
     settings: &mut crate::config::settings::Settings,
     mode: crate::config::settings::PermissionMode,
     session_allowlist: &crate::permissions::SessionAllowlist,
@@ -1836,8 +1838,18 @@ async fn dispatch_with_prompt(
     // for this one resolve call.
     let mut composed = settings.clone();
     overlay_session_allowlist(&mut composed, session_allowlist);
+    // Wrap each sync dispatch in the tool_call_id scope so tools
+    // that need it (today: `Agent`'s BG route) can read it via
+    // `crate::tools::current_tool_call_id` without a signature
+    // change. Three call-sites because the permission gate fans
+    // into Allow / Allow-after-prompt / AllowSession-after-prompt.
+    let dispatch_scoped = |tool_name: &str, args: &serde_json::Value| {
+        crate::tools::with_tool_call_id(tool_call_id.to_string(), || {
+            crate::tools::dispatch(tool_name, args)
+        })
+    };
     match permissions::resolve(tool_name, &input_str, &composed, mode) {
-        Decision::Allow => crate::tools::dispatch(tool_name, args),
+        Decision::Allow => dispatch_scoped(tool_name, args),
         Decision::Deny { rule } => Err(ToolError::PermissionDenied(rule)),
         Decision::Ask { rule } => {
             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
@@ -1857,11 +1869,11 @@ async fn dispatch_with_prompt(
                 ));
             }
             match reply_rx.await {
-                Ok(PermissionResponse::Allow) => crate::tools::dispatch(tool_name, args),
+                Ok(PermissionResponse::Allow) => dispatch_scoped(tool_name, args),
                 Ok(PermissionResponse::AllowSession) => {
                     // Rule was already pushed to the allowlist by the
                     // event loop's Enter handler. Dispatch immediately.
-                    crate::tools::dispatch(tool_name, args)
+                    dispatch_scoped(tool_name, args)
                 }
                 Ok(PermissionResponse::Deny) => Err(ToolError::PermissionDenied(
                     rule.unwrap_or_else(|| "user declined".into()),

@@ -53,6 +53,40 @@ pub use read::set as read_set;
 
 use serde_json::Value;
 
+thread_local! {
+    /// Tool-call id of the in-flight dispatch, scoped to the current
+    /// thread. Set by [`with_tool_call_id`] around each dispatch so
+    /// tools that need to associate side-effects with the originating
+    /// `tool_use` block (today: `Agent`'s background route, which
+    /// stores it on the `TaskRecord` so the next-turn
+    /// `<task-notification>` XML can populate `<tool-use-id>`) can
+    /// read it without changing the public sync `dispatch`
+    /// signature. Empty `None` outside a dispatch — callers MUST
+    /// treat it as an optional hint, not a contract.
+    static CURRENT_TOOL_CALL_ID: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Run `f` with `tool_call_id` made available to the dispatch via
+/// [`current_tool_call_id`]. The previous value is restored on
+/// return so re-entrant dispatches (e.g. a subagent inner loop
+/// calling tools) keep their own scope.
+pub fn with_tool_call_id<R>(tool_call_id: String, f: impl FnOnce() -> R) -> R {
+    CURRENT_TOOL_CALL_ID.with(|cell| {
+        let prev = cell.borrow_mut().replace(tool_call_id);
+        let out = f();
+        *cell.borrow_mut() = prev;
+        out
+    })
+}
+
+/// Read the in-flight tool-call id set by [`with_tool_call_id`].
+/// `None` when called outside a dispatch scope (or when the
+/// installer didn't wire the helper — degraded but non-fatal).
+pub fn current_tool_call_id() -> Option<String> {
+    CURRENT_TOOL_CALL_ID.with(|cell| cell.borrow().clone())
+}
+
 /// Tool execution error surface. Serializes to the ToolResult the
 /// agent loop feeds back to the model.
 #[derive(Debug, thiserror::Error)]

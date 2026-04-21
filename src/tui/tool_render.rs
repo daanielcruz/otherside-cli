@@ -113,6 +113,14 @@ pub enum ToolPayload {
 /// [`super::state::ToolCallEntry`] into the `Role::Tool` message body
 /// so the archived render path can reconstruct the full header +
 /// payload via [`render_tool_call`], matching the live render.
+///
+/// `id` and `raw_result` are persisted so
+/// [`super::state::ConversationState::history_for_request`] can
+/// reconstruct the assistant `tool_use` / user `tool_result` pair
+/// the wire layer ships on the next turn — the LLM needs to see its
+/// own tool_use ids in history to reconcile against next-turn
+/// `<task-notification>` blocks. Both are `serde(default)` so older
+/// archives lacking the fields keep deserializing.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ToolCallArchive {
     pub status: ToolStatus,
@@ -121,6 +129,20 @@ pub struct ToolCallArchive {
     pub args: Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payload: Option<ToolPayload>,
+    /// LLM-emitted `tool_use_id`. Used as the Anthropic
+    /// `tool_use.id` and the matched `tool_result.tool_use_id` on the
+    /// next-turn wire body. Empty string for archives written before
+    /// this field landed (degraded but non-fatal — the history will
+    /// emit unpaired ids in that case).
+    #[serde(default)]
+    pub id: String,
+    /// Raw dispatcher result. Reshipped as the `tool_result.content`
+    /// on the next-turn wire body so the model sees what the tool
+    /// returned. `None` for archives written before this field
+    /// landed and for error paths (the error text already lives in
+    /// `payload`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_result: Option<Value>,
 }
 
 impl ToolCallArchive {

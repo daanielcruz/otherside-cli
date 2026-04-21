@@ -143,10 +143,22 @@ impl Provider for AnthropicProvider {
                                 "~/.otherside/tasks/{}.log",
                                 record.id.as_str()
                             );
+                            // Populate <tool-use-id> from the record so
+                            // the model can match the notification to
+                            // its own `tool_use(id=…)` block in
+                            // history. Mirrors upstream's
+                            // `LocalAgentTask.tsx:247-257` ternary —
+                            // omit the line entirely when no id is
+                            // present (sync-spawned shells, legacy
+                            // records without the field).
+                            let extras = crate::harness::task_notification::NotificationExtras {
+                                tool_use_id: record.tool_use_id.as_deref(),
+                                ..Default::default()
+                            };
                             crate::harness::task_notification::render(
                                 &record,
                                 &output_path,
-                                Default::default(),
+                                extras,
                             )
                         })
                         .collect()

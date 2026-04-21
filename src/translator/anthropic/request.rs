@@ -175,22 +175,41 @@ pub fn build_request_body(
     //    preamble blocks; later turns do not.
     //
     //    4a. `<task-notification>` injection for completed background
-    //    tasks. Mirrors upstream queueProcessor.ts: the XML blocks
-    //    prepend the LAST user message's text so the model sees the
-    //    completion envelope inside its next turn. Harmless no-op
-    //    when ctx.task_notifications is empty.
+    //    tasks. Mirrors upstream `queueProcessor.ts:33-87` — each
+    //    drained notification rides as ITS OWN user-role message
+    //    inserted immediately before the last user turn. Upstream
+    //    `messages.ts:2109` then merges consecutive user messages
+    //    into one Anthropic turn with multiple `text` blocks; the
+    //    model interprets the discrete `<task-notification>` block
+    //    as a completion event rather than a textual prefix on the
+    //    user's next prompt. Inlining the XML into the user text
+    //    (the pre-fix behavior) produced false negatives where the
+    //    model treated the XML as part of the question and replied
+    //    "no notification yet" despite the body carrying it.
     let req_with_notifications = if ctx.task_notifications.is_empty() {
         None
     } else {
         let mut r = req.clone();
-        if let Some(last_user) = r
+        let last_user_idx = r
             .messages
-            .iter_mut()
+            .iter()
+            .enumerate()
             .rev()
-            .find(|m| matches!(m.role, OpenAiChatRole::User))
-        {
-            let joined = ctx.task_notifications.join("\n");
-            last_user.content = format!("{joined}\n{}", last_user.content);
+            .find(|(_, m)| matches!(m.role, OpenAiChatRole::User))
+            .map(|(i, _)| i);
+        if let Some(idx) = last_user_idx {
+            for (offset, xml) in ctx.task_notifications.iter().enumerate() {
+                r.messages.insert(
+                    idx + offset,
+                    crate::inference::OpenAiChatMessage {
+                        role: OpenAiChatRole::User,
+                        content: xml.clone(),
+                        name: None,
+                        tool_calls: Vec::new(),
+                        tool_call_id: None,
+                    },
+                );
+            }
         }
         Some(r)
     };
@@ -364,13 +383,18 @@ mod tests {
     }
 
     #[test]
-    fn task_notifications_prepend_to_last_user_message() {
-        // §8.2: completed-background-task XML blocks inject into
-        // the outbound last user turn. Harmless no-op when the
-        // slice is empty (the mvp_request path covers that).
+    fn task_notifications_inject_as_separate_user_message() {
+        // §8.2 (revised 2026-04-21 to mirror upstream
+        // queueProcessor.ts:33-87): each drained completion
+        // notification rides as ITS OWN user message inserted
+        // immediately before the next user prompt — not inlined
+        // into the prompt's text. The model needs the XML to
+        // appear as a discrete user turn so its training kicks in
+        // (`<task-notification>` is a notification frame, not a
+        // user-typed prompt).
         let req = mvp_request();
         let notifications = [
-            "<task-notification>\n<task-id>aaa111bbb</task-id>\n<status>completed</status>\n</task-notification>".to_string(),
+            "<task-notification>\n<task-id>aaa111bbb</task-id>\n<tool-use-id>toolu_xxx</tool-use-id>\n<status>completed</status>\n</task-notification>".to_string(),
         ];
         let ctx = UserContext {
             task_notifications: &notifications,
@@ -378,23 +402,45 @@ mod tests {
         };
         let bytes = build_request_body(&req, &ctx).unwrap();
         let body: Value = serde_json::from_slice(&bytes).unwrap();
-        // User message block text must start with the XML envelope.
-        let user_text = body["messages"]
-            .as_array()
-            .unwrap()
+        let messages = body["messages"].as_array().expect("messages array");
+        // Two consecutive user turns: notification block then the
+        // user prompt. message_builder normalize emits each as its
+        // own AnthropicMessage; Anthropic's 1P API merges
+        // consecutive user turns into a single user message with
+        // multiple blocks (`utils/messages.ts:2109`).
+        let user_messages: Vec<&Value> = messages
             .iter()
-            .find(|m| m["role"] == "user")
-            .and_then(|m| m["content"].as_array())
-            .and_then(|blocks| blocks.last())
-            .and_then(|b| b["text"].as_str())
-            .expect("user message text present");
-        assert!(
-            user_text.contains("<task-notification>"),
-            "inject failed: {user_text:?}"
+            .filter(|m| m["role"] == "user")
+            .collect();
+        assert_eq!(
+            user_messages.len(),
+            2,
+            "expected notification + prompt as two user messages, got {}: {messages:#?}",
+            user_messages.len()
         );
-        assert!(user_text.contains("<task-id>aaa111bbb</task-id>"));
-        // Original user text ("hi") must survive after the inject.
-        assert!(user_text.contains("hi"));
+        // First user message (notification) — last text block holds the XML.
+        let notif_text = user_messages[0]["content"]
+            .as_array()
+            .and_then(|b| b.last())
+            .and_then(|b| b["text"].as_str())
+            .expect("notification text block");
+        assert!(
+            notif_text.contains("<task-notification>"),
+            "first user message must carry the notification XML: {notif_text:?}"
+        );
+        assert!(notif_text.contains("<task-id>aaa111bbb</task-id>"));
+        assert!(notif_text.contains("<tool-use-id>toolu_xxx</tool-use-id>"));
+        // Second user message — the original prompt, untouched.
+        let prompt_text = user_messages[1]["content"]
+            .as_array()
+            .and_then(|b| b.last())
+            .and_then(|b| b["text"].as_str())
+            .expect("prompt text block");
+        assert_eq!(prompt_text, "hi");
+        assert!(
+            !prompt_text.contains("<task-notification>"),
+            "prompt must NOT carry the notification inline (regression guard)"
+        );
     }
 
     #[test]

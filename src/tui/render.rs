@@ -1151,6 +1151,8 @@ mod tests {
             content: "list files".into(),
             wire_override: None,
             origin: crate::tui::state::DisplayOrigin::Transcript,
+            tool_calls: Vec::new(),
+            tool_call_id: None,
         });
         st.begin_tool_call(
             "t1".into(),

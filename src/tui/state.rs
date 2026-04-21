@@ -131,6 +131,24 @@ pub struct DisplayMessage {
     /// on panel / hint emissions (R-92 evidence: `reconstructed/
     /// 2.1.114/source/components/Settings/Settings.tsx:46`).
     pub origin: DisplayOrigin,
+    /// Assistant rows: the `tool_use` blocks the model emitted in
+    /// this turn. Empty for non-assistant rows. Preserved across
+    /// turns so the next-turn `messages[]` carries the assistant
+    /// `tool_use` blocks the model needs to reconcile against any
+    /// `<task-notification>` injected later (upstream parity:
+    /// every BG dispatch must round-trip the original tool_use_id
+    /// in history; see `tasks/LocalAgentTask/
+    /// LocalAgentTask.tsx:247-257`). Currently populated only by
+    /// the Role::Tool synthesis path in `history_for_request`;
+    /// the `finish_stream` archival continues to coalesce
+    /// tool calls into Role::Tool DisplayMessages.
+    #[allow(dead_code)] // populated synthesis-side; reserved for future archival path
+    pub tool_calls: Vec<crate::inference::OpenAiToolCall>,
+    /// Tool rows: id of the originating `tool_use` this row
+    /// resolves. None for non-tool rows. Populated synthesis-side
+    /// in `history_for_request` from the archive's `id` field.
+    #[allow(dead_code)] // populated synthesis-side
+    pub tool_call_id: Option<String>,
 }
 
 /// One tool-call entry on the active list.
@@ -174,6 +192,8 @@ pub fn format_tool_history_entry(entry: &ToolCallEntry) -> String {
         elapsed_ms: entry.elapsed_ms,
         args: entry.args.clone(),
         payload: entry.payload.clone(),
+        id: entry.id.clone(),
+        raw_result: entry.raw_result.clone(),
     };
     serde_json::to_string(&archive).unwrap_or_default()
 }
@@ -617,6 +637,8 @@ mod feedback_tests {
             content: "prior turn".into(),
             wire_override: None,
             origin: DisplayOrigin::Transcript,
+            tool_calls: Vec::new(),
+            tool_call_id: None,
         });
         assert!(!st.show_post_clear_splash);
         st.clear_conversation();
@@ -638,6 +660,8 @@ mod feedback_tests {
             content: "hi".into(),
             wire_override: None,
             origin: DisplayOrigin::Transcript,
+            tool_calls: Vec::new(),
+            tool_call_id: None,
         });
         st.clear_conversation();
         assert_eq!(st.input_tokens, 0);
@@ -793,6 +817,8 @@ impl ConversationState {
             content,
             wire_override,
             origin: DisplayOrigin::Transcript,
+            tool_calls: Vec::new(),
+            tool_call_id: None,
         });
         self.input.clear();
         self.streaming = true;
@@ -997,6 +1023,8 @@ impl ConversationState {
             content: text.into(),
             wire_override: None,
             origin: DisplayOrigin::Chrome,
+            tool_calls: Vec::new(),
+            tool_call_id: None,
         });
         self.input.clear();
         self.autocomplete = None;
@@ -1034,6 +1062,8 @@ impl ConversationState {
             content: echo,
             wire_override: None,
             origin,
+            tool_calls: Vec::new(),
+            tool_call_id: None,
         });
         self.messages.push(DisplayMessage {
             role: OpenAiChatRole::System,
@@ -1043,6 +1073,8 @@ impl ConversationState {
             content: format!("⎿  {}", result.into()),
             wire_override: None,
             origin,
+            tool_calls: Vec::new(),
+            tool_call_id: None,
         });
         self.input.clear();
         self.autocomplete = None;
@@ -1137,22 +1169,95 @@ impl ConversationState {
     /// Snapshot `messages` as a `Vec<OpenAiChatMessage>` suitable for the
     /// canonical request. Kept separate from [`submit`](Self::submit) so
     /// tests and future slash commands can peek without side-effects.
+    ///
+    /// `Role::Tool` rows carry a JSON-serialized [`tool_render::ToolCallArchive`]
+    /// (the same shape the local render layer reads). For wire output,
+    /// each archive expands into the canonical OpenAI shape — one
+    /// `Role::Assistant` carrying a `tool_calls` entry, then one
+    /// `Role::Tool` with the matching `tool_call_id` and the raw
+    /// dispatcher result as content. The translator turns those into
+    /// the Anthropic `tool_use` / `tool_result` block pair upstream
+    /// expects (`tasks/LocalAgentTask/LocalAgentTask.tsx:247-257`,
+    /// `tools/AgentTool/AgentTool.tsx:1339-1351`). Without this
+    /// reconstruction the model loses every tool_use_id across turn
+    /// boundaries — fatal for backgrounded `Agent` dispatches whose
+    /// `<task-notification>` reconciliation depends on the LLM
+    /// matching `<tool-use-id>` against its own prior tool_use block.
     pub fn history_for_request(&self) -> Vec<OpenAiChatMessage> {
-        self.messages
-            .iter()
-            .filter(|m| m.role != OpenAiChatRole::Tool)
-            .filter(|m| m.origin == DisplayOrigin::Transcript)
-            .map(|m| OpenAiChatMessage {
+        let mut out: Vec<OpenAiChatMessage> = Vec::with_capacity(self.messages.len());
+        for m in &self.messages {
+            if m.origin != DisplayOrigin::Transcript {
+                continue;
+            }
+            if m.role == OpenAiChatRole::Tool {
+                // Reconstruct the assistant tool_use + user tool_result
+                // pair from the archived ToolCallArchive. Older
+                // archives (pre-id/raw_result fields) fall back to the
+                // legacy single-Tool emission so historical sessions
+                // don't break — degraded fidelity, but no crash.
+                if let Ok(archive) =
+                    serde_json::from_str::<tool_render::ToolCallArchive>(&m.content)
+                {
+                    if !archive.id.is_empty() {
+                        let args_json =
+                            serde_json::to_string(&archive.args).unwrap_or_else(|_| "{}".into());
+                        out.push(OpenAiChatMessage {
+                            role: OpenAiChatRole::Assistant,
+                            content: String::new(),
+                            name: None,
+                            tool_calls: vec![crate::inference::OpenAiToolCall {
+                                id: archive.id.clone(),
+                                kind: "function".into(),
+                                function: crate::inference::OpenAiToolCallFunction {
+                                    name: archive.name.clone(),
+                                    arguments: args_json,
+                                },
+                            }],
+                            tool_call_id: None,
+                        });
+                        let result_text = match &archive.raw_result {
+                            Some(v) => serde_json::to_string(v).unwrap_or_else(|_| "{}".into()),
+                            None => m.content.clone(),
+                        };
+                        out.push(OpenAiChatMessage {
+                            role: OpenAiChatRole::Tool,
+                            content: result_text,
+                            name: None,
+                            tool_calls: Vec::new(),
+                            tool_call_id: Some(archive.id),
+                        });
+                        continue;
+                    }
+                }
+                // Legacy / unparseable archive: emit a degraded
+                // user-text fallback so the model still sees a
+                // breadcrumb (without tool_use it can't reconcile a
+                // later notification, but at least history doesn't
+                // silently drop the row).
+                out.push(OpenAiChatMessage {
+                    role: OpenAiChatRole::User,
+                    content: m
+                        .wire_override
+                        .clone()
+                        .unwrap_or_else(|| m.content.clone()),
+                    name: None,
+                    tool_calls: Vec::new(),
+                    tool_call_id: None,
+                });
+                continue;
+            }
+            out.push(OpenAiChatMessage {
                 role: m.role,
                 content: m
                     .wire_override
                     .clone()
                     .unwrap_or_else(|| m.content.clone()),
                 name: None,
-                tool_calls: Vec::new(),
-                tool_call_id: None,
-            })
-            .collect()
+                tool_calls: m.tool_calls.clone(),
+                tool_call_id: m.tool_call_id.clone(),
+            });
+        }
+        out
     }
 
     /// Overwrite whichever of `input_tokens` / `output_tokens` is
@@ -1264,6 +1369,8 @@ impl ConversationState {
                 content: format_tool_history_entry(&entry),
                 wire_override: None,
                 origin: DisplayOrigin::Transcript,
+                tool_calls: Vec::new(),
+                tool_call_id: None,
             });
         }
         if !self.current_assistant_buffer.is_empty() {
@@ -1273,6 +1380,8 @@ impl ConversationState {
                 content,
                 wire_override: None,
                 origin: DisplayOrigin::Transcript,
+                tool_calls: Vec::new(),
+                tool_call_id: None,
             });
         } else {
             self.current_assistant_buffer.clear();
@@ -1302,6 +1411,8 @@ impl ConversationState {
                 content: format_tool_history_entry(&entry),
                 wire_override: None,
                 origin: DisplayOrigin::Transcript,
+                tool_calls: Vec::new(),
+                tool_call_id: None,
             });
         }
         if !self.current_assistant_buffer.is_empty() {
@@ -1311,6 +1422,8 @@ impl ConversationState {
                 content,
                 wire_override: None,
                 origin: DisplayOrigin::Transcript,
+                tool_calls: Vec::new(),
+                tool_call_id: None,
             });
         }
         self.last_error = Some(err);
@@ -1343,6 +1456,8 @@ impl ConversationState {
                 content,
                 wire_override: None,
                 origin: DisplayOrigin::Transcript,
+                tool_calls: Vec::new(),
+                tool_call_id: None,
             });
         }
         self.streaming = false;
@@ -2222,5 +2337,104 @@ mod tests {
             vec!["   padded   ".to_string()],
             "padding preserved verbatim — the user typed it intentionally"
         );
+    }
+
+    /// Regression: openspec 015 §9 — the next user turn after a BG
+    /// `Agent` dispatch must carry the assistant `tool_use` block so
+    /// the model can match the eventual `<task-notification>` to its
+    /// own prior call. Confirmed under tmux (2026-04-21) that without
+    /// this the model hallucinates and re-spawns. See
+    /// `tasks/LocalAgentTask/LocalAgentTask.tsx:247-257`.
+    #[test]
+    fn history_for_request_reconstructs_tool_use_pair_from_archived_role_tool() {
+        use crate::inference::OpenAiChatRole;
+        let mut st = ConversationState::new();
+        // Turn N: user asked, assistant chose to call Agent BG, the
+        // synchronous tool result came back as `status: backgrounded`.
+        // The TUI's finish_stream archives that as a Role::Tool entry
+        // carrying the JSON-serialized ToolCallArchive.
+        st.messages.push(DisplayMessage {
+            role: OpenAiChatRole::User,
+            content: "spawn an Explore subagent in the background".into(),
+            wire_override: None,
+            origin: DisplayOrigin::Transcript,
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+        });
+        let archive = tool_render::ToolCallArchive {
+            status: tool_render::ToolStatus::Ok,
+            name: "Agent".into(),
+            elapsed_ms: 12,
+            args: serde_json::json!({
+                "description": "summarize",
+                "subagent_type": "Explore",
+                "run_in_background": true,
+                "prompt": "summarize roadmap.md",
+            }),
+            payload: None,
+            id: "toolu_test_id_001".into(),
+            raw_result: Some(serde_json::json!({
+                "status": "backgrounded",
+                "task_id": "abc123def",
+            })),
+        };
+        st.messages.push(DisplayMessage {
+            role: OpenAiChatRole::Tool,
+            content: serde_json::to_string(&archive).unwrap(),
+            wire_override: None,
+            origin: DisplayOrigin::Transcript,
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+        });
+        st.messages.push(DisplayMessage {
+            role: OpenAiChatRole::Assistant,
+            content: "Async agent launched successfully.".into(),
+            wire_override: None,
+            origin: DisplayOrigin::Transcript,
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+        });
+        // Turn N+1: user asks "did it finish?".
+        st.messages.push(DisplayMessage {
+            role: OpenAiChatRole::User,
+            content: "did it finish?".into(),
+            wire_override: None,
+            origin: DisplayOrigin::Transcript,
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+        });
+        let hist = st.history_for_request();
+        // Expect: user(spawn), assistant(tool_use), tool(result),
+        // assistant("launched..."), user(did it finish).
+        assert_eq!(
+            hist.len(),
+            5,
+            "5 messages in expanded history; got {}: {hist:#?}",
+            hist.len()
+        );
+        assert_eq!(hist[0].role, OpenAiChatRole::User);
+        assert_eq!(hist[0].content, "spawn an Explore subagent in the background");
+        assert_eq!(hist[1].role, OpenAiChatRole::Assistant);
+        assert_eq!(hist[1].tool_calls.len(), 1, "tool_use preserved");
+        assert_eq!(hist[1].tool_calls[0].id, "toolu_test_id_001");
+        assert_eq!(hist[1].tool_calls[0].function.name, "Agent");
+        assert!(
+            hist[1].tool_calls[0].function.arguments.contains("Explore"),
+            "tool_use arguments preserved"
+        );
+        assert_eq!(hist[2].role, OpenAiChatRole::Tool);
+        assert_eq!(
+            hist[2].tool_call_id.as_deref(),
+            Some("toolu_test_id_001"),
+            "tool_result paired by id"
+        );
+        assert!(
+            hist[2].content.contains("backgrounded"),
+            "raw_result body preserved"
+        );
+        assert_eq!(hist[3].role, OpenAiChatRole::Assistant);
+        assert_eq!(hist[3].content, "Async agent launched successfully.");
+        assert_eq!(hist[4].role, OpenAiChatRole::User);
+        assert_eq!(hist[4].content, "did it finish?");
     }
 }

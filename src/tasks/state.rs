@@ -90,6 +90,18 @@ pub struct TaskRecord {
     /// (exit code N)`. `None` for tasks that never terminated or
     /// for non-Shell kinds where exit code doesn't apply.
     pub exit_code: Option<i32>,
+    /// LLM-emitted `tool_use_id` of the originating tool call. Set
+    /// when the task was spawned via the Agent tool's BG route so
+    /// the `<task-notification>` injected on the next turn can
+    /// populate `<tool-use-id>` — the model uses that tag to
+    /// reconcile the notification against its own `tool_use` block
+    /// in history. Mirrors upstream's `taskId` (this `id`) +
+    /// `toolUseId` (this field) twin tracked on
+    /// `LocalAgentTaskState` (`tasks/LocalAgentTask/
+    /// LocalAgentTask.tsx:466-514`). `None` for shell tasks
+    /// (no originating tool_use) and tasks created before this
+    /// field landed.
+    pub tool_use_id: Option<String>,
 }
 
 impl TaskRecord {
@@ -109,6 +121,7 @@ impl TaskRecord {
             output: VecDeque::with_capacity(Self::OUTPUT_CAPACITY),
             inject_on_next_turn: false,
             exit_code: None,
+            tool_use_id: None,
         }
     }
 
@@ -124,6 +137,7 @@ impl TaskRecord {
             output: VecDeque::with_capacity(Self::OUTPUT_CAPACITY),
             inject_on_next_turn: false,
             exit_code: None,
+            tool_use_id: None,
         }
     }
 

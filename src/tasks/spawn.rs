@@ -49,6 +49,14 @@ use super::{id::TaskId, state::TaskRecord, state::TaskState, store::TaskStore};
 /// `display_name` is the human label rendered in the pill / dialog
 /// — typically the subagent name (`definition.name`) or a short
 /// summary derived from the prompt.
+///
+/// `tool_use_id` is the originating LLM `tool_use_id` of the
+/// `Agent` call that triggered this spawn. Upstream tracks this
+/// alongside the generated `agentId` so the `<task-notification>`
+/// XML can populate `<tool-use-id>` — the reconciliation key the
+/// model uses to match the notification back to its own
+/// `tool_use` block in history (`tasks/LocalAgentTask/
+/// LocalAgentTask.tsx:247-257`).
 pub fn spawn_background_agent(
     runner: Arc<dyn SubagentRunner>,
     definition: AgentDefinition,
@@ -57,6 +65,7 @@ pub fn spawn_background_agent(
     invocation: AgentInvocation,
     store: TaskStore,
     display_name: String,
+    tool_use_id: Option<String>,
 ) -> TaskId {
     let id = TaskId::generate();
     let mut record = TaskRecord::new_agent(id.clone(), display_name, prompt.clone());
@@ -65,6 +74,7 @@ pub fn spawn_background_agent(
     // path (`TaskStore::background_all_running_foreground`).
     record.state = TaskState::Backgrounded;
     record.is_backgrounded = true;
+    record.tool_use_id = tool_use_id;
     store.insert(record);
 
     let id_for_task = id.clone();
@@ -198,6 +208,7 @@ mod tests {
             AgentInvocation::default(),
             store.clone(),
             "test-agent".into(),
+            Some("toolu_test".into()),
         );
         // Caller-visible latency: spawn_blocking returns the moment
         // the closure is scheduled — well under the 100ms gate.
@@ -222,6 +233,7 @@ mod tests {
             AgentInvocation::default(),
             store.clone(),
             "test-agent".into(),
+            Some("toolu_test".into()),
         );
         // Wait for the blocking task to settle. 200ms is plenty for
         // the fake runner — it doesn't await anything.
@@ -246,11 +258,70 @@ mod tests {
             AgentInvocation::default(),
             store.clone(),
             "test-agent".into(),
+            Some("toolu_test".into()),
         );
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         let r = store.get(&id).expect("record");
         assert_eq!(r.state, TaskState::Failed);
         assert_eq!(r.exit_code, Some(1));
         assert!(r.inject_on_next_turn);
+    }
+
+    /// Regression: mirrors `InnerLoopRunner::run_inner`'s sync→async
+    /// bridge — `block_in_place` + `Handle::current().block_on`. This
+    /// pattern panics on the blocking-pool thread `spawn_blocking`
+    /// schedules its closures on (`block_in_place` requires a multi-
+    /// thread runtime worker thread). The panic was being swallowed by
+    /// the dropped `JoinHandle`, leaving the record stuck in
+    /// `Backgrounded` and the inject flag never set — the user-facing
+    /// symptom that drove this fix.
+    struct BlockInPlaceRunner;
+
+    impl SubagentRunner for BlockInPlaceRunner {
+        fn run(
+            &self,
+            _definition: &AgentDefinition,
+            _prompt: &str,
+            _depth: u32,
+            _invocation: &AgentInvocation,
+        ) -> Result<Value, RunnerError> {
+            tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(async move {
+                    Ok(serde_json::json!({
+                        "status": "completed",
+                        "content": [{"type": "text", "text": "block_in_place ok"}],
+                    }))
+                })
+            })
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn spawn_handles_block_in_place_runner_pattern() {
+        let store = TaskStore::new();
+        let runner: Arc<dyn SubagentRunner> = Arc::new(BlockInPlaceRunner);
+        let id = spawn_background_agent(
+            runner,
+            def(),
+            "hi".into(),
+            0,
+            AgentInvocation::default(),
+            store.clone(),
+            "test-agent".into(),
+            Some("toolu_test".into()),
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let r = store.get(&id).expect("record present");
+        assert_eq!(
+            r.state,
+            TaskState::Completed,
+            "runner using block_in_place must reach Completed; if stuck in Backgrounded the spawn pivot panicked silently"
+        );
+        assert!(
+            r.inject_on_next_turn,
+            "completion must flag inject_on_next_turn so the next user turn ships <task-notification>"
+        );
+        let captured: Vec<&str> = r.output.iter().map(String::as_str).collect();
+        assert_eq!(captured, vec!["block_in_place ok"]);
     }
 }
