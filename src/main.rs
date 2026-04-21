@@ -203,17 +203,21 @@ async fn run(cli: Cli) -> Result<()> {
 
 /// `otherside login --provider <id>` — drive the OAuth flow.
 async fn cmd_login(provider: &str) -> Result<()> {
-    match provider {
-        "anthropic-oauth" => {
+    use config::providers::ProviderId;
+    let id = ProviderId::from_slug(provider).ok_or_else(|| {
+        Error::Other(format!("provider {provider:?} is not a known id"))
+    })?;
+    match id {
+        ProviderId::ClaudeCode => {
             let creds = auth::anthropic::login_interactive().await?;
             // Report non-sensitive summary — never print the bearer.
             // Scopes + expiry help a user confirm the flow succeeded.
-            println!("\nLogged in to anthropic-oauth.");
+            println!("\nLogged in to {}.", id.slug());
             println!("  scopes: {}", creds.scopes.join(", "));
             println!("  expires_at (epoch ms): {}", creds.expires_at);
             Ok(())
         }
-        "codex" => {
+        ProviderId::Codex => {
             let creds = auth::codex::login_interactive().await?;
             println!("\nLogged in to codex (ChatGPT OAuth).");
             if let Some(acct) = creds.account_id.as_ref() {
@@ -223,27 +227,31 @@ async fn cmd_login(provider: &str) -> Result<()> {
             println!("  expires_at (epoch ms): {}", creds.expires_at);
             Ok(())
         }
-        other => Err(Error::Other(format!(
-            "provider {other:?} has no login flow — try `anthropic-oauth` or `codex`"
+        ProviderId::GeminiCli | ProviderId::OpenAiCustom => Err(Error::Other(format!(
+            "provider {provider:?} has no login flow — try `anthropic-oauth` or `codex`"
         ))),
     }
 }
 
 /// `otherside logout --provider <id>` — clear persisted credentials.
 fn cmd_logout(provider: &str) -> Result<()> {
-    match provider {
-        "anthropic-oauth" => {
+    use config::providers::ProviderId;
+    let id = ProviderId::from_slug(provider).ok_or_else(|| {
+        Error::Other(format!("provider {provider:?} not known"))
+    })?;
+    match id {
+        ProviderId::ClaudeCode => {
             auth::anthropic::clear_credentials()?;
-            println!("Cleared cached credentials for anthropic-oauth.");
+            println!("Cleared cached credentials for {}.", id.slug());
             Ok(())
         }
-        "codex" => {
+        ProviderId::Codex => {
             auth::codex::clear_credentials()?;
             println!("Cleared cached credentials for codex.");
             Ok(())
         }
-        other => Err(Error::Other(format!(
-            "provider {other:?} not known"
+        ProviderId::GeminiCli | ProviderId::OpenAiCustom => Err(Error::Other(format!(
+            "provider {provider:?} has no credential store to clear"
         ))),
     }
 }
