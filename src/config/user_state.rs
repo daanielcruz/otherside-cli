@@ -48,23 +48,15 @@ pub fn load() -> Result<StartupCounters> {
     })
 }
 
-/// Write `~/.otherside/state.json`. §12 upgrades this to atomic.
+/// Write `~/.otherside/state.json` via [`super::write_atomic`] — temp
+/// file + fsync + rename so a crash mid-write never leaves a
+/// truncated blob.
 pub fn save(state: &StartupCounters) -> Result<()> {
     let path = paths::state_path()?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| {
-            Error::Config(format!(
-                "failed to create {}: {e}",
-                parent.display()
-            ))
-        })?;
-    }
     let bytes = serde_json::to_vec_pretty(state).map_err(|e| {
         Error::Config(format!("failed to serialize state: {e}"))
     })?;
-    std::fs::write(&path, bytes).map_err(|e| {
-        Error::Config(format!("failed to write {}: {e}", path.display()))
-    })
+    super::write_atomic(&path, &bytes, false)
 }
 
 #[cfg(test)]

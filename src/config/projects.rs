@@ -70,23 +70,15 @@ pub fn load() -> Result<ProjectsConfig> {
 }
 
 /// Write `~/.otherside/projects.json`. Creates the config dir if
-/// missing. §12 upgrades this to an atomic rename + mode-0600 write.
+/// missing. Atomic rename via [`super::write_atomic`] so a crash mid-
+/// write leaves either the old file or the new one, never a truncated
+/// in-between state.
 pub fn save(cfg: &ProjectsConfig) -> Result<()> {
     let path = paths::projects_path()?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| {
-            Error::Config(format!(
-                "failed to create {}: {e}",
-                parent.display()
-            ))
-        })?;
-    }
     let bytes = serde_json::to_vec_pretty(cfg).map_err(|e| {
         Error::Config(format!("failed to serialize projects: {e}"))
     })?;
-    std::fs::write(&path, bytes).map_err(|e| {
-        Error::Config(format!("failed to write {}: {e}", path.display()))
-    })
+    super::write_atomic(&path, &bytes, false)
 }
 
 /// Is the workspace marked trusted?
