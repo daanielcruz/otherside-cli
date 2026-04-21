@@ -91,10 +91,9 @@ bug — file it.
 ## status
 
 Pre-1.0. Scaffolded and streaming. The Anthropic provider works end-to-end;
-the rest are scheduled. The agent loop (tools, permissions, hooks, sessions)
-is landing in phases — see `openspec/changes/` for what's in flight.
+the rest are scheduled. Open work lives in the outer repo's `docs/roadmap.md`.
 
-Tests: `cargo test` is the gate. Floor 413 as of 2026-04-18. Count drifts with feature work — all-green is the contract per RULES.md R-112.
+Tests: `cargo test` is the gate. All-green is the contract.
 
 ## notes for the curious
 
