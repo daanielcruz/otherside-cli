@@ -61,11 +61,10 @@ impl Provider for AnthropicProvider {
 
             let bearer = auth::authorization_header().await?;
 
-            let (email, date) = resolve_user_context();
-            let env = resolve_session_env();
+            let env = crate::harness::session_env::resolve();
             let ctx = UserContext {
-                email: &email,
-                current_date: &date,
+                email: &env.email,
+                current_date: &env.current_date,
                 cwd: &env.cwd,
                 is_git_repo: env.is_git_repo,
                 platform: &env.platform,
@@ -120,87 +119,6 @@ impl Provider for AnthropicProvider {
             Ok(chunk_stream)
         })
     }
-}
-
-fn resolve_user_context() -> (String, String) {
-    let email = std::env::var("OTHERSIDE_USER_EMAIL").unwrap_or_else(|_| "user@local".to_string());
-
-    let date = chrono::Local::now()
-        .date_naive()
-        .format("%Y-%m-%d")
-        .to_string();
-    (email, date)
-}
-
-struct SessionEnv {
-    cwd: String,
-    is_git_repo: bool,
-    platform: String,
-    shell: String,
-    os_version: String,
-}
-
-fn resolve_session_env() -> SessionEnv {
-    let cwd = std::env::current_dir()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|_| "/".to_string());
-    let is_git_repo = detect_git_repo(&cwd);
-    let platform = detect_platform();
-    let shell = detect_shell();
-    let os_version = detect_os_version();
-    SessionEnv {
-        cwd,
-        is_git_repo,
-        platform,
-        shell,
-        os_version,
-    }
-}
-
-fn detect_git_repo(cwd: &str) -> bool {
-    let mut dir = std::path::PathBuf::from(cwd);
-    loop {
-        if dir.join(".git").exists() {
-            return true;
-        }
-        if !dir.pop() {
-            return false;
-        }
-    }
-}
-
-fn detect_platform() -> String {
-
-    match std::env::consts::OS {
-        "macos" => "darwin".to_string(),
-        "windows" => "win32".to_string(),
-        other => other.to_string(),
-    }
-}
-
-fn detect_shell() -> String {
-
-    std::env::var("SHELL")
-        .ok()
-        .as_deref()
-        .and_then(|s| s.rsplit('/').next())
-        .map(str::to_string)
-        .unwrap_or_else(|| "bash".to_string())
-}
-
-fn detect_os_version() -> String {
-    std::process::Command::new("uname")
-        .arg("-sr")
-        .output()
-        .ok()
-        .and_then(|o| {
-            if o.status.success() {
-                Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
-            } else {
-                None
-            }
-        })
-        .unwrap_or_else(|| std::env::consts::OS.to_string())
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -387,21 +305,6 @@ mod tests {
     fn provider_id_is_stable_constant() {
 
         assert_eq!(ID, "anthropic-oauth");
-    }
-
-    #[test]
-    fn resolve_user_context_uses_env_override() {
-
-        let prev = std::env::var("OTHERSIDE_USER_EMAIL").ok();
-
-        unsafe { std::env::set_var("OTHERSIDE_USER_EMAIL", "override@example.com") };
-        let (email, _date) = resolve_user_context();
-        assert_eq!(email, "override@example.com");
-
-        match prev {
-            Some(v) => unsafe { std::env::set_var("OTHERSIDE_USER_EMAIL", v) },
-            None => unsafe { std::env::remove_var("OTHERSIDE_USER_EMAIL") },
-        }
     }
 
     #[test]

@@ -1,6 +1,7 @@
 
 
 pub mod reminders;
+pub mod session_env;
 pub mod task_notification;
 
 pub const SYSTEM_BILLING_HEADER: &str =
