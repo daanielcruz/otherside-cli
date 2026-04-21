@@ -1005,7 +1005,15 @@ fn build_info_chip_line(state: &ConversationState) -> Line<'static> {
         (has_chip as usize) + (has_task_pill as usize);
     let show_cycle_hint = primary_item_count < 2;
 
-    let hint = if state.streaming {
+    // Prefer the "ctrl+b to background" hint when a foreground task
+    // is eligible to be backgrounded — mirrors upstream's context-
+    // sensitive footer hint. Falls through to "esc to interrupt"
+    // when streaming without a backgroundable task.
+    let has_backgroundable = !crate::tasks::is_disabled()
+        && state.tasks.any_running_foreground();
+    let hint = if has_backgroundable {
+        "ctrl+b to background · esc to interrupt"
+    } else if state.streaming {
         "esc to interrupt"
     } else if state.autocomplete.is_some() {
         "enter run · esc close"

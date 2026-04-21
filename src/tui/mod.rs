@@ -65,7 +65,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crossterm::event::{
-    DisableMouseCapture, EnableMouseCapture, Event as CtEvent, EventStream, KeyCode, KeyEvent,
+    DisableMouseCapture, Event as CtEvent, EventStream, KeyCode, KeyEvent,
     KeyEventKind, KeyModifiers,
 };
 use crossterm::execute;
@@ -2004,10 +2004,16 @@ impl TerminalGuard {
     fn enter() -> Result<Self> {
         enable_raw_mode().map_err(|e| Error::Other(format!("tui raw mode: {e}")))?;
         let mut out = io::stdout();
-        // Enable mouse capture so crossterm parses click/scroll bytes
-        // as MouseEvent (which the loop discards) instead of letting
-        // them leak into the input stream as pseudo-keys.
-        execute!(out, EnterAlternateScreen, EnableMouseCapture)
+        // NO mouse capture — upstream claude-code doesn't grab mouse
+        // either, and capturing breaks the terminal's native text
+        // selection (users reported: "nao consigo selecionar o texto
+        // na tela" 2026-04-20). Trade-off: if a legacy terminal
+        // emits bare click escape sequences they'd leak to the input
+        // stream, but modern terminals (macOS Terminal, iTerm2,
+        // Wezterm, kitty) are quiet by default. Defensive
+        // DisableMouseCapture on exit stays in `restore()` so we
+        // always clear any capture state inherited from a prior app.
+        execute!(out, EnterAlternateScreen)
             .map_err(|e| Error::Other(format!("tui enter altscreen: {e}")))?;
         let backend = CrosstermBackend::new(out);
         let terminal = Terminal::new(backend)
