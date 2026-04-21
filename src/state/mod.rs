@@ -55,6 +55,8 @@
 //! aggregate; cross-bucket mutators (`submit`, `finish_stream`,
 //! `fail_stream`, `commit_*`) move there.
 
+pub mod persistence;
 pub mod session;
 
+pub use persistence::PersistenceState;
 pub use session::SessionState;

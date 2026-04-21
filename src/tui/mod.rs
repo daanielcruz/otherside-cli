@@ -1045,14 +1045,14 @@ fn models_for_provider(p: crate::config::providers::ProviderId) -> &'static [&'s
     }
 }
 
-/// Write the current `state.settings` to `~/.otherside/settings.json`
-/// atomically. Surfaces the `Err` to the caller for error rendering.
+/// Flush `state.settings` to disk via the state-module persistence
+/// facade. Kept as a thin wrapper at the call-site layer so the 5
+/// existing call sites don't churn; the real work lives in
+/// [`crate::state::PersistenceState::flush`]. Fase 3 folds this
+/// into `AppState::persistence` and the wrapper goes away.
 fn persist_settings(st: &ConversationState) -> Result<()> {
-    let path = crate::config::settings_path()?;
-    let json = serde_json::to_vec_pretty(&st.settings)
-        .map_err(|e| crate::error::Error::Config(format!("serialize settings: {e}")))?;
-    crate::config::write_atomic(&path, &json, false)?;
-    Ok(())
+    let pers = crate::state::PersistenceState::new(st.settings.clone());
+    pers.flush()
 }
 
 /// Rotate the active Settings tab by `direction` (±1). Rebuilds the

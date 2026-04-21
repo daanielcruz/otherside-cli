@@ -173,7 +173,12 @@ async fn run(cli: Cli) -> Result<()> {
     // once per invocation so the tier-aware defaults (opus[1m] gating,
     // /model picker opus row) see the real plan. Silent no-op on
     // endpoint error or already-hydrated creds.
-    if let Err(e) = otherside::auth::anthropic::hydrate_subscription_if_missing().await {
+    //
+    // Call goes through the state facade so identity zone owns the
+    // orchestration surface; the fetch / endpoint / mapping logic
+    // stays in `auth::anthropic` (compat zone) — see
+    // [`otherside::state::PersistenceState::hydrate_subscription_on_boot`].
+    if let Err(e) = otherside::state::PersistenceState::hydrate_subscription_on_boot().await {
         tracing::warn!(?e, "subscription hydrate failed (non-fatal)");
     }
 
