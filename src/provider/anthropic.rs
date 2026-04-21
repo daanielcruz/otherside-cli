@@ -205,7 +205,7 @@ fn static_header(h: &mut HeaderMap, name: &'static str, value: &str) -> Result<(
 }
 
 fn bad_header<E: std::fmt::Display>(e: E) -> Error {
-    Error::Other(format!("invalid header value: {e}"))
+    Error::Header(format!("invalid header value: {e}"))
 }
 
 struct AnthropicChunkStream {

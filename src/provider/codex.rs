@@ -200,7 +200,7 @@ fn build_responses_headers(
     h.insert(
         reqwest::header::AUTHORIZATION,
         HeaderValue::from_str(bearer)
-            .map_err(|e| Error::Other(format!("auth header: {e}")))?,
+            .map_err(|e| Error::Header(format!("auth header: {e}")))?,
     );
     h.insert(
         reqwest::header::CONTENT_TYPE,
@@ -213,7 +213,7 @@ fn build_responses_headers(
     h.insert(
         reqwest::header::USER_AGENT,
         HeaderValue::from_str(&fp::user_agent())
-            .map_err(|e| Error::Other(format!("ua header: {e}")))?,
+            .map_err(|e| Error::Header(format!("ua header: {e}")))?,
     );
     h.insert(
         HeaderName::from_static("originator"),
@@ -222,23 +222,23 @@ fn build_responses_headers(
     h.insert(
         HeaderName::from_static("session_id"),
         HeaderValue::from_str(session_id)
-            .map_err(|e| Error::Other(format!("session_id header: {e}")))?,
+            .map_err(|e| Error::Header(format!("session_id header: {e}")))?,
     );
     h.insert(
         HeaderName::from_static("x-codex-installation-id"),
         HeaderValue::from_str(&fp::installation_id())
-            .map_err(|e| Error::Other(format!("installation-id header: {e}")))?,
+            .map_err(|e| Error::Header(format!("installation-id header: {e}")))?,
     );
     h.insert(
         HeaderName::from_static("x-codex-window-id"),
         HeaderValue::from_str(&fp::window_id())
-            .map_err(|e| Error::Other(format!("window-id header: {e}")))?,
+            .map_err(|e| Error::Header(format!("window-id header: {e}")))?,
     );
     if let Some(acct) = account_id {
         h.insert(
             HeaderName::from_static("chatgpt-account-id"),
             HeaderValue::from_str(acct)
-                .map_err(|e| Error::Other(format!("account-id header: {e}")))?,
+                .map_err(|e| Error::Header(format!("account-id header: {e}")))?,
         );
     }
     Ok(h)

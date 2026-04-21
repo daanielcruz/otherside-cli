@@ -21,6 +21,15 @@ pub enum Error {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 
+    #[error("header error: {0}")]
+    Header(String),
+
+    #[error("tui error: {0}")]
+    Tui(String),
+
+    #[error("oauth exchange ({provider}): {detail}")]
+    OauthExchange { provider: &'static str, detail: String },
+
     #[error("malformed response: {0}")]
     Parse(String),
 

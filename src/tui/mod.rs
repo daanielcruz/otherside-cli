@@ -179,7 +179,7 @@ async fn event_loop(
     st.prune_feedback();
     terminal
         .draw(|f| render::render(f, &st, &st.session.model, &provider_id, spinner_tick))
-        .map_err(|e| Error::Other(format!("tui draw: {e}")))?;
+        .map_err(|e| Error::Tui(format!("draw: {e}")))?;
 
     loop {
         tokio::select! {
@@ -318,7 +318,7 @@ async fn event_loop(
 
                     }
                     Some(Err(e)) => {
-                        return Err(Error::Other(format!("tui event: {e}")));
+                        return Err(Error::Tui(format!("event: {e}")));
                     }
                     None => {
 
@@ -331,7 +331,7 @@ async fn event_loop(
         st.prune_feedback();
         terminal
             .draw(|f| render::render(f, &st, &st.session.model, &provider_id, spinner_tick))
-            .map_err(|e| Error::Other(format!("tui draw: {e}")))?;
+            .map_err(|e| Error::Tui(format!("draw: {e}")))?;
     }
 
     Ok(())
@@ -1609,14 +1609,14 @@ struct TerminalGuard {
 
 impl TerminalGuard {
     fn enter() -> Result<Self> {
-        enable_raw_mode().map_err(|e| Error::Other(format!("tui raw mode: {e}")))?;
+        enable_raw_mode().map_err(|e| Error::Tui(format!("raw mode: {e}")))?;
         let mut out = io::stdout();
 
         execute!(out, EnterAlternateScreen)
-            .map_err(|e| Error::Other(format!("tui enter altscreen: {e}")))?;
+            .map_err(|e| Error::Tui(format!("enter altscreen: {e}")))?;
         let backend = CrosstermBackend::new(out);
         let terminal = Terminal::new(backend)
-            .map_err(|e| Error::Other(format!("tui terminal init: {e}")))?;
+            .map_err(|e| Error::Tui(format!("terminal init: {e}")))?;
         Ok(Self {
             terminal,
             active: true,

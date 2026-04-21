@@ -90,19 +90,19 @@ pub async fn exchange_code_for_tokens(
         .form(&form)
         .send()
         .await
-        .map_err(|e| Error::Other(format!("codex token exchange: {e}")))?;
+        .map_err(|e| Error::OauthExchange { provider: "codex", detail: format!("token exchange: {e}") })?;
     let status = resp.status();
     let body = resp
         .text()
         .await
-        .map_err(|e| Error::Other(format!("codex token body: {e}")))?;
+        .map_err(|e| Error::OauthExchange { provider: "codex", detail: format!("token body: {e}") })?;
     if !status.is_success() {
         return Err(Error::Other(format!(
             "codex token exchange {status}: {body}"
         )));
     }
     serde_json::from_str::<ExchangedTokens>(&body)
-        .map_err(|e| Error::Other(format!("codex token parse: {e} — body {body}")))
+        .map_err(|e| Error::OauthExchange { provider: "codex", detail: format!("token parse: {e} — body {body}") })
 }
 
 pub async fn refresh_tokens(refresh_token: &str) -> Result<RefreshedTokens> {
@@ -122,17 +122,17 @@ pub async fn refresh_tokens(refresh_token: &str) -> Result<RefreshedTokens> {
         .json(&body)
         .send()
         .await
-        .map_err(|e| Error::Other(format!("codex refresh: {e}")))?;
+        .map_err(|e| Error::OauthExchange { provider: "codex", detail: format!("refresh: {e}") })?;
     let status = resp.status();
     let body = resp
         .text()
         .await
-        .map_err(|e| Error::Other(format!("codex refresh body: {e}")))?;
+        .map_err(|e| Error::OauthExchange { provider: "codex", detail: format!("refresh body: {e}") })?;
     if !status.is_success() {
-        return Err(Error::Other(format!("codex refresh {status}: {body}")));
+        return Err(Error::OauthExchange { provider: "codex", detail: format!("refresh {status}: {body}") });
     }
     serde_json::from_str::<RefreshedTokens>(&body)
-        .map_err(|e| Error::Other(format!("codex refresh parse: {e} — body {body}")))
+        .map_err(|e| Error::OauthExchange { provider: "codex", detail: format!("refresh parse: {e} — body {body}") })
 }
 
 fn codex_user_agent() -> String {

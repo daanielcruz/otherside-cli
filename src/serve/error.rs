@@ -97,7 +97,11 @@ pub fn classify(
             "internal",
             HeaderMap::new(),
         ),
-        Error::Other(_) | Error::Io(_) => (
+        Error::Other(_)
+        | Error::Io(_)
+        | Error::Header(_)
+        | Error::Tui(_)
+        | Error::OauthExchange { .. } => (
             StatusCode::INTERNAL_SERVER_ERROR,
             "internal",
             "internal",
