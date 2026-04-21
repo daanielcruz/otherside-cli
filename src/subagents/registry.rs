@@ -77,7 +77,10 @@ const EXPLORE_SRC: &str = include_str!("../../agents_corpus/explore.md");
 const PLAN_SRC: &str = include_str!("../../agents_corpus/plan.md");
 const VERIFICATION_SRC: &str = include_str!("../../agents_corpus/verification.md");
 
-/// Lazy-initialized bundled registry.
+/// Lazy-initialized bundled registry. Scope rationale: the parsed
+/// `AgentDefinition` list is immutable at runtime (comes from
+/// `include_str!`ed markdown) and every dispatcher / UI call-site
+/// reads the same list. One-time parse amortized across all readers.
 fn bundled() -> &'static [AgentDefinition] {
     static CELL: OnceLock<Vec<AgentDefinition>> = OnceLock::new();
     CELL.get_or_init(|| {

@@ -130,6 +130,14 @@ pub fn current_runner() -> Option<Arc<dyn SubagentRunner>> {
     RUNNER.get().cloned()
 }
 
+// Per-thread subagent recursion depth. Thread-local (not process-global)
+// because nested dispatch only needs per-task isolation: the original
+// turn runs on the TUI event loop thread; each `Agent` tool dispatch
+// bumps depth on the same thread, pops when the call returns. Cross-
+// thread nesting is impossible today (dispatcher is sync). Scope
+// rationale: global state within a thread because the depth guard
+// must be observable from every `dispatch` call on the stack without
+// threading it through every intermediate function.
 thread_local! {
     static DEPTH: Cell<u32> = const { Cell::new(0) };
 }

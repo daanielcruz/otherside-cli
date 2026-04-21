@@ -88,6 +88,12 @@ pub fn exit_plan_mode(_args: &Value) -> Result<Value, ToolError> {
 pub mod worktree {
     use super::*;
 
+    /// Process-wide worktree cwd stack. Scope rationale: EnterWorktree /
+    /// ExitWorktree need balanced push/pop across tool calls that may
+    /// span different turns; threading a handle through every dispatch
+    /// would require changing the public `dispatch(name, args)` shape
+    /// for one feature. `Mutex` inner because the dispatcher is sync
+    /// and contention is negligible (one push / pop per turn).
     fn stack() -> &'static Mutex<Vec<PathBuf>> {
         static STACK: OnceLock<Mutex<Vec<PathBuf>>> = OnceLock::new();
         STACK.get_or_init(|| Mutex::new(Vec::new()))
@@ -279,6 +285,10 @@ pub struct CronEntry {
     pub last_fired_at: Option<u64>,
 }
 
+/// Process-wide cron registry. Scope rationale: cron entries outlive
+/// any single tool dispatch; the tick poller reads the whole set on
+/// each interval. Per-session plumbing would leak state across reruns
+/// since cron state is inherently session-independent.
 fn cron_registry() -> &'static Mutex<HashMap<String, CronEntry>> {
     static REG: OnceLock<Mutex<HashMap<String, CronEntry>>> = OnceLock::new();
     REG.get_or_init(|| Mutex::new(HashMap::new()))
@@ -413,6 +423,10 @@ pub struct WakeupEntry {
     pub created_at: u64,
 }
 
+/// Process-wide wakeup schedule. Scope rationale: same as cron —
+/// pending wakeups outlive the dispatch that scheduled them, and the
+/// TUI tick poller drains ripe entries from the whole set. Per-
+/// session plumbing would silently drop scheduled wakeups on resume.
 fn wakeup_registry() -> &'static Mutex<Vec<WakeupEntry>> {
     static REG: OnceLock<Mutex<Vec<WakeupEntry>>> = OnceLock::new();
     REG.get_or_init(|| Mutex::new(Vec::new()))

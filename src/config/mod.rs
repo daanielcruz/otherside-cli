@@ -212,8 +212,11 @@ fn prune_invalid(
     }
 }
 
-// Session-scoped cache for `load_all`. `reset_cache()` clears it so a
-// writer can force the next read to pick up fresh disk state.
+/// Session-scoped cache for `load_all`. Scope rationale: every tool
+/// dispatch and TUI render path reads resolved config; re-parsing the
+/// 5-scope merge on each call would thrash I/O. `reset_cache()` clears
+/// so a writer can force the next read to pick up fresh disk state.
+/// `RwLock` because reads dominate by ~100:1 vs writes.
 static CACHE: RwLock<Option<EffectiveConfig>> = RwLock::new(None);
 
 /// Top-level entry that does the five-scope merge in one call.
