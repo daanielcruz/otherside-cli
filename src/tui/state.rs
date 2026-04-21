@@ -397,6 +397,14 @@ pub struct ConversationState {
     /// Session id — `None` when `session_writer` is `None`.
     pub session_id: Option<crate::sessions::SessionId>,
 
+    /// Background task store — populated by Ctrl+B (foreground →
+    /// background) and by tools that spawn agents in background.
+    /// Read by the footer pill render and the `/tasks` dialog.
+    /// `Arc<RwLock<...>>` internally so cheap to clone for the
+    /// runner-side `tokio::spawn_blocking` closures (see
+    /// `crate::tasks::spawn_background_agent`).
+    pub tasks: crate::tasks::TaskStore,
+
     /// Ephemeral toggle feedback shown in the bottom-left info slot
     /// (openspec 001 phase 4). Present only for FEEDBACK_TTL after a
     /// toggle-category slash fires; the prune_feedback helper clears

@@ -990,7 +990,15 @@ fn build_token_right_chip(state: &ConversationState, total: u64) -> String {
 fn build_info_chip_line(state: &ConversationState) -> Line<'static> {
     let chip_opt = state.permission_mode_label();
     let has_chip = chip_opt.is_some();
-    let primary_item_count: usize = if has_chip { 1 } else { 0 };
+    // Background-task pill — byte-match upstream
+    // (`tasks/pillLabel.ts:10-67`). `None` when no active tasks ⇒
+    // segment skipped.
+    let task_pill = crate::tasks::pill_label::get_pill_label(state.tasks.counts_active());
+    let has_task_pill = task_pill.is_some();
+    // Hide cycle-hint once any other left-side segment is present so
+    // the row doesn't grow into a wrap-prone string.
+    let primary_item_count: usize =
+        (has_chip as usize) + (has_task_pill as usize);
     let show_cycle_hint = primary_item_count < 2;
 
     let hint = if state.streaming {
@@ -1019,8 +1027,19 @@ fn build_info_chip_line(state: &ConversationState) -> Line<'static> {
             ));
         }
     }
+    if let Some(pill) = task_pill {
+        // Separator with preceding chip per capture
+        // `02-after-ctrl-b.txt`: ` · 1 shell`. Render even when no
+        // perm chip preceded — just no separator.
+        let segment = if has_chip {
+            format!(" · {pill}")
+        } else {
+            pill
+        };
+        spans.push(Span::styled(segment, Style::default().fg(theme::MUTED)));
+    }
     if !hint.is_empty() {
-        let text = if has_chip {
+        let text = if has_chip || has_task_pill {
             format!(" · {hint}")
         } else {
             hint.to_string()
