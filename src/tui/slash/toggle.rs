@@ -28,11 +28,6 @@ pub fn handle(name: &str, args: &str, state: &mut ConversationState) -> SlashOut
         "export" => {
             state.set_feedback("/export: transcript export lands with persistence (spec 008)");
         }
-        "keybindings" => {
-            state.set_feedback(
-                "keys: Enter · Shift+Enter · Tab · Shift+Tab · Esc · Ctrl+C",
-            );
-        }
         other => {
             state.set_feedback(format!("unhandled toggle slash: /{other}"));
         }

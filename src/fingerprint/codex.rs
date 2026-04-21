@@ -19,12 +19,34 @@ pub fn user_agent() -> String {
 
 pub fn installation_id() -> String {
     static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    ID.get_or_init(|| Uuid::new_v4().to_string()).clone()
+    ID.get_or_init(load_or_seed_installation_id).clone()
 }
 
 pub fn window_id() -> String {
     static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    ID.get_or_init(|| Uuid::new_v4().to_string()).clone()
+    ID.get_or_init(load_or_seed_window_id).clone()
+}
+
+fn load_or_seed_installation_id() -> String {
+    let mut state = crate::config::user_state::load().unwrap_or_default();
+    if let Some(id) = state.codex_installation_id.clone() {
+        return id;
+    }
+    let fresh = Uuid::new_v4().to_string();
+    state.codex_installation_id = Some(fresh.clone());
+    let _ = crate::config::user_state::save(&state);
+    fresh
+}
+
+fn load_or_seed_window_id() -> String {
+    let mut state = crate::config::user_state::load().unwrap_or_default();
+    if let Some(id) = state.codex_window_id.clone() {
+        return id;
+    }
+    let fresh = Uuid::new_v4().to_string();
+    state.codex_window_id = Some(fresh.clone());
+    let _ = crate::config::user_state::save(&state);
+    fresh
 }
 
 pub fn new_session_id() -> String {

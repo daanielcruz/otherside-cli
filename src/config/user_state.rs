@@ -14,6 +14,8 @@ pub struct StartupCounters {
     pub num_startups: u64,
     pub first_startup_date: Option<String>,
     pub last_startup_date: Option<String>,
+    pub codex_installation_id: Option<String>,
+    pub codex_window_id: Option<String>,
 
     #[serde(flatten)]
     pub extra: Map<String, Value>,
