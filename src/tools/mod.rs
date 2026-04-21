@@ -7,6 +7,7 @@ pub mod cron;
 pub mod edit;
 pub mod glob;
 pub mod grep;
+pub mod http;
 pub mod notebook;
 pub mod plan_mode;
 pub mod read;

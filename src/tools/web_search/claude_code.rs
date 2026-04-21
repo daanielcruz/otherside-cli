@@ -1,6 +1,6 @@
 
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use serde_json::{json, Value};
 
@@ -132,12 +132,7 @@ impl WebSearchBackend for AnthropicServerToolBackend {
                     .await
                     .map_err(|e| ToolError::InvalidArgs(format!("auth: {e}")))?;
 
-                let client = reqwest::Client::builder()
-                    .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
-                    .build()
-                    .map_err(|e| {
-                        ToolError::InvalidArgs(format!("failed to build http client: {e}"))
-                    })?;
+                let client = crate::tools::http::default_client(REQUEST_TIMEOUT_SECS)?;
 
                 let mut headers = crate::provider::anthropic::build_inference_headers(
                     &bearer,  false,

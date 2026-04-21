@@ -1,7 +1,5 @@
 
 
-use std::time::Duration;
-
 use serde_json::{json, Value};
 
 use crate::tools::ToolError;
@@ -48,11 +46,7 @@ pub fn web_fetch(args: &Value) -> Result<Value, ToolError> {
 }
 
 async fn fetch_impl(url: String) -> Result<Value, ToolError> {
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::limited(MAX_REDIRECTS))
-        .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
-        .build()
-        .map_err(|e| ToolError::InvalidArgs(format!("failed to build http client: {e}")))?;
+    let client = crate::tools::http::client_with_redirects(REQUEST_TIMEOUT_SECS, MAX_REDIRECTS)?;
 
     let resp = client
         .get(&url)
