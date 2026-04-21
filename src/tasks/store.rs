@@ -17,7 +17,7 @@
 //! - Never await while holding either guard (R-107 corollary).
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 use super::id::TaskId;
 use super::state::{TaskKind, TaskRecord, TaskState};
@@ -50,6 +50,32 @@ impl TaskCounts {
 #[derive(Debug, Clone, Default)]
 pub struct TaskStore {
     inner: Arc<RwLock<HashMap<TaskId, TaskRecord>>>,
+}
+
+/// Process-global [`TaskStore`] handle installed by the TUI boot
+/// path. Tool dispatchers (Agent tool's background route, the
+/// deferred Task* tools landing in §9) and the provider request
+/// builder (for draining pending `<task-notification>` injections
+/// on the next turn) reach the live store through this OnceLock.
+/// Mirrors the `crate::subagents::current_runner` pattern.
+static GLOBAL: OnceLock<TaskStore> = OnceLock::new();
+
+/// Install the process-global store. First call wins — subsequent
+/// calls return the existing store (OnceLock semantics) so
+/// re-entering the TUI within a test harness doesn't double-install.
+pub fn install_global(store: TaskStore) -> TaskStore {
+    if let Err(existing) = GLOBAL.set(store.clone()) {
+        let _ = existing;
+        return GLOBAL.get().cloned().expect("OnceLock populated");
+    }
+    store
+}
+
+/// Access the process-global store. `None` when the TUI boot path
+/// didn't install one (test-harness dispatchers + the `serve`
+/// subcommand currently skip installation).
+pub fn current_global() -> Option<TaskStore> {
+    GLOBAL.get().cloned()
 }
 
 impl TaskStore {

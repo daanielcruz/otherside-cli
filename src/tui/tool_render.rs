@@ -1018,6 +1018,15 @@ fn agent_preview(result: &Value) -> Option<ToolPayload> {
             format_duration_ms(duration_ms),
         )));
     }
+    // Background-route synthetic result — rendered as upstream's
+    // `Running in the background (↓ to manage)` line so the tool
+    // bubble collapses from a result dump to a one-line status.
+    // Byte-match capture `02-after-ctrl-b.txt:21`.
+    if status == "backgrounded" {
+        return Some(ToolPayload::Preview(
+            "Running in the background (↓ to manage)".to_string(),
+        ));
+    }
     // Stubbed path — show the reason string so callers understand the
     // dispatcher didn't actually run the subagent.
     let reason = obj

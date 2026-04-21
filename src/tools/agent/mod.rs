@@ -127,6 +127,52 @@ pub fn agent(args: &Value) -> Result<Value, ToolError> {
         }));
     };
 
+    // Background route — when the caller sets `run_in_background:
+    // true` AND the env gate is off AND the TUI has installed the
+    // global TaskStore, detach the dispatch onto the blocking pool
+    // and return a synthetic tool_result immediately so the model
+    // can end its turn. Completion ships via `<task-notification>`
+    // XML on the next user turn (drained by the provider request
+    // builder from the same global store).
+    let wants_background = matches!(invocation.run_in_background, Some(true));
+    if wants_background && !crate::tasks::is_disabled() {
+        if let Some(store) = crate::tasks::store::current_global() {
+            let display = if description.is_empty() {
+                subagent_type.to_string()
+            } else {
+                description.to_string()
+            };
+            let task_id = crate::tasks::spawn_background_agent(
+                runner,
+                definition.clone(),
+                prompt.to_string(),
+                depth_at_entry,
+                invocation.clone(),
+                store,
+                display.clone(),
+            );
+            return Ok(json!({
+                "status": "backgrounded",
+                "task_id": task_id.as_str(),
+                "subagent_type": subagent_type,
+                "description": description,
+                "model_requested": invocation.model,
+                "run_in_background_requested": invocation.run_in_background,
+                "isolation_requested": invocation.isolation,
+                // Human-facing line the model echoes back so the
+                // user sees a deterministic confirmation. Byte-match
+                // upstream `LocalAgentTask.tsx:246-261` idiom.
+                "content": [{
+                    "type": "text",
+                    "text": format!(
+                        "Started in background as {}. I'll be notified when it completes.",
+                        task_id.as_str()
+                    )
+                }],
+            }));
+        }
+    }
+
     dispatch_with_runner(runner.as_ref(), definition, prompt, depth_at_entry, &invocation)
 }
 

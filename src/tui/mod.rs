@@ -217,6 +217,11 @@ async fn event_loop(
 ) -> Result<()> {
     let mut st =
         ConversationState::new_for_model_with_mode(&base_model, initial_permission_mode);
+    // Publish the TaskStore to the process global so the Agent
+    // tool's background route + provider-side <task-notification>
+    // drainage can reach the live store without threading it
+    // through every dispatcher signature.
+    let _ = crate::tasks::store::install_global(st.tasks.clone());
     // Seed the render-verbose flag from settings.json so the user's
     // persistent preference survives across sessions. `/verbose`
     // toggles the flag in memory; settings-file writeback is
