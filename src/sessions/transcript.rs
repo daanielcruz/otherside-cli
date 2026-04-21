@@ -5,7 +5,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
 use super::record::Record;
-use crate::error::{Error, Result};
+use crate::error::Result;
 
 #[derive(Debug)]
 pub struct Writer {
@@ -16,7 +16,7 @@ pub struct Writer {
 impl Writer {
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e: std::io::Error| Error::Other(format!("io: {e}")))?;
+            std::fs::create_dir_all(parent)?;
         }
         let mut opts = OpenOptions::new();
         opts.create(true).append(true);
@@ -25,7 +25,7 @@ impl Writer {
             use std::os::unix::fs::OpenOptionsExt;
             opts.mode(0o600);
         }
-        let file = opts.open(path).map_err(|e: std::io::Error| Error::Other(format!("io: {e}")))?;
+        let file = opts.open(path)?;
         Ok(Self {
             path: path.to_path_buf(),
             file,
@@ -34,11 +34,10 @@ impl Writer {
 
     pub fn append(&mut self, record: &Record) -> Result<()> {
         let line = record.to_line();
-        self.file
-            .write_all(line.as_bytes())
-            .and_then(|_| self.file.write_all(b"\n"))
-            .and_then(|_| self.file.sync_data())
-            .map_err(|e: std::io::Error| Error::Other(format!("io: {e}")))
+        self.file.write_all(line.as_bytes())?;
+        self.file.write_all(b"\n")?;
+        self.file.sync_data()?;
+        Ok(())
     }
 
     pub fn path(&self) -> &Path {
@@ -53,7 +52,7 @@ impl Reader {
         if !path.exists() {
             return Ok(Vec::new());
         }
-        let file = File::open(path).map_err(|e: std::io::Error| Error::Other(format!("io: {e}")))?;
+        let file = File::open(path)?;
         let reader = BufReader::new(file);
         let mut out: Vec<Record> = Vec::new();
         for line in reader.lines() {

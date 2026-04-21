@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 
 #[derive(Debug, Clone, Default)]
 pub struct SweepReport {
@@ -24,7 +24,7 @@ pub fn sweep(config_dir: &Path, retention_days: u64) -> Result<SweepReport> {
     let now = SystemTime::now();
     let threshold = Duration::from_secs(retention_days * 86_400);
 
-    for entry in std::fs::read_dir(&root).map_err(|e: std::io::Error| Error::Other(format!("io: {e}")))? {
+    for entry in std::fs::read_dir(&root)? {
         let entry = match entry {
             Ok(e) => e,
             Err(e) => {

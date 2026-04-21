@@ -18,6 +18,9 @@ pub enum Error {
     #[error("network error: {0}")]
     Network(#[from] reqwest::Error),
 
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
+
     #[error("malformed response: {0}")]
     Parse(String),
 

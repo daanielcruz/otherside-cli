@@ -11,7 +11,7 @@ pub use record::Record;
 
 use std::path::PathBuf;
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 
 pub struct SessionHandle {
     pub id: SessionId,
@@ -22,7 +22,7 @@ pub struct SessionHandle {
 pub fn open_new(config_dir: &std::path::Path) -> Result<SessionHandle> {
     let id = SessionId::new();
     let dir = paths::session_dir(config_dir, &id);
-    std::fs::create_dir_all(&dir).map_err(|e: std::io::Error| Error::Other(format!("io: {e}")))?;
+    std::fs::create_dir_all(&dir)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -60,9 +60,9 @@ pub fn resume_latest(config_dir: &std::path::Path) -> Result<Option<(SessionHand
         return Ok(None);
     }
     let mut candidates: Vec<(std::time::SystemTime, SessionId)> = Vec::new();
-    for entry in std::fs::read_dir(&root).map_err(|e: std::io::Error| Error::Other(format!("io: {e}")))? {
-        let entry = entry.map_err(|e: std::io::Error| Error::Other(format!("io: {e}")))?;
-        if !entry.file_type().map_err(|e: std::io::Error| Error::Other(format!("io: {e}")))?.is_dir() {
+    for entry in std::fs::read_dir(&root)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
             continue;
         }
         let name = match entry.file_name().into_string() {

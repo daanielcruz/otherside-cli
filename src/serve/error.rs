@@ -97,7 +97,7 @@ pub fn classify(
             "internal",
             HeaderMap::new(),
         ),
-        Error::Other(_) => (
+        Error::Other(_) | Error::Io(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             "internal",
             "internal",
