@@ -201,65 +201,16 @@ impl AnthropicServerToolBackend {
     }
 
     /// Build the non-streaming Messages API body that drives a single
-    /// search turn. Prompt text mirrors upstream's
-    /// `tools/WebSearchTool/WebSearchTool.ts:258-259`
-    /// ("Perform a web search for the query: <q>") so server-side
-    /// routing behaves the same as upstream.
+    /// search turn. Delegates to the centralized assembler at
+    /// `translator::anthropic::request::build_web_search_body` (R-34) —
+    /// the backend owns only its domain-filter state and the server
+    /// tool config; the wire shape lives in one place alongside the
+    /// inference body builder.
     fn build_request_body(&self, query: &str) -> Vec<u8> {
-        // Shape mirrors the 2026-04-19 capture at
-        // `fingerprint_corpus/tools-websearch-single/raw/flow-41-scrubbed.txt`.
-        // Every field here is load-bearing: dropping any of `system[0]`
-        // (billing header), `metadata.user_id`, `thinking`,
-        // `context_management`, `output_config`, or `cache_control`
-        // causes Anthropic to reject with a 429 rate-limit-error.
-        // Reuse the main-inference billing marker — Anthropic's
-        // analytics path treats any CC-shaped `cc_version=<hash>;
-        // cc_entrypoint=<entrypoint>; cch=<hash>;` as authentic.
-        let billing_header = crate::fingerprint::anthropic::BILLING_HEADER_TEXT.to_string();
-        // The `metadata.user_id` nests a JSON string carrying device /
-        // account / session identifiers — upstream's analytics path
-        // consumes this for rate-limit scoping. Empty placeholders are
-        // fine; Anthropic accepts them as long as the field is present.
-        let user_id = json!({
-            "device_id": "",
-            "account_uuid": "",
-            "session_id": "",
-        })
-        .to_string();
-        let body = json!({
-            "model": "claude-opus-4-7",
-            "messages": [{
-                "role": "user",
-                "content": [{
-                    "type": "text",
-                    "text": format!("Perform a web search for the query: {query}"),
-                    "cache_control": {"type": "ephemeral"},
-                }],
-            }],
-            "system": [
-                {"type": "text", "text": billing_header},
-                {
-                    "type": "text",
-                    "text": "You are Claude Code, Anthropic's official CLI for Claude.",
-                    "cache_control": {"type": "ephemeral"},
-                },
-                {
-                    "type": "text",
-                    "text": "You are an assistant for performing a web search tool use",
-                    "cache_control": {"type": "ephemeral"},
-                },
-            ],
-            "tools": [self.build_server_tool_config()],
-            "metadata": {"user_id": user_id},
-            "max_tokens": 64000,
-            "thinking": {"type": "adaptive"},
-            "context_management": {
-                "edits": [{"type": "clear_thinking_20251015", "keep": "all"}]
-            },
-            "output_config": {"effort": "xhigh"},
-            "stream": true,
-        });
-        serde_json::to_vec(&body).expect("web_search request body serializes")
+        crate::translator::anthropic::request::build_web_search_body(
+            query,
+            self.build_server_tool_config(),
+        )
     }
 }
 
@@ -1186,6 +1137,83 @@ mod tests {
         assert_eq!(obj.len(), 2);
         assert!(obj.contains_key("title"));
         assert!(obj.contains_key("url"));
+    }
+
+    /// Replace volatile fields (billing header version/hash, scrubbed
+    /// user_id placeholders) with sentinels so capture bodies compare
+    /// structurally against live builder output.
+    fn normalize_volatile_fields(v: &mut Value) {
+        if let Some(slot) = v.pointer_mut("/system/0/text") {
+            *slot = Value::String("BILLING_HEADER_SENTINEL".into());
+        }
+        if let Some(slot) = v.pointer_mut("/metadata/user_id") {
+            *slot = Value::String("USER_ID_SENTINEL".into());
+        }
+    }
+
+    #[test]
+    fn request_body_matches_websearch_capture_structurally() {
+        // Lock the wire shape against
+        // `fingerprint_corpus/tools-websearch-single/raw/flow-41-scrubbed.txt`.
+        // Volatile fields (billing version hash, scrubbed user_id
+        // placeholders) are replaced with sentinels — everything else
+        // must byte-match. Parity gate for Slice C — do not loosen.
+        let capture_json = r#"{
+          "model": "claude-opus-4-7",
+          "messages": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Perform a web search for the query: claude mythos",
+                  "cache_control": {"type": "ephemeral"}
+                }
+              ]
+            }
+          ],
+          "system": [
+            {
+              "type": "text",
+              "text": "x-anthropic-billing-header: cc_version=2.1.113.280; cc_entrypoint=cli; cch=8b3dc;"
+            },
+            {
+              "type": "text",
+              "text": "You are Claude Code, Anthropic's official CLI for Claude.",
+              "cache_control": {"type": "ephemeral"}
+            },
+            {
+              "type": "text",
+              "text": "You are an assistant for performing a web search tool use",
+              "cache_control": {"type": "ephemeral"}
+            }
+          ],
+          "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 8}],
+          "metadata": {
+            "user_id": "{\"device_id\":\"XXX_DEVICE_ID_XXX\",\"account_uuid\":\"XXX_ACCOUNT_UUID_XXX\",\"session_id\":\"XXX_SESSION_ID_XXX\"}"
+          },
+          "max_tokens": 64000,
+          "thinking": {"type": "adaptive"},
+          "context_management": {"edits": [{"type": "clear_thinking_20251015", "keep": "all"}]},
+          "output_config": {"effort": "xhigh"},
+          "stream": true
+        }"#;
+        let mut expected: Value = serde_json::from_str(capture_json).unwrap();
+
+        let backend = AnthropicServerToolBackend {
+            allowed_domains: vec![],
+            blocked_domains: vec![],
+        };
+        let body = backend.build_request_body("claude mythos");
+        let mut actual: Value = serde_json::from_slice(&body).unwrap();
+
+        normalize_volatile_fields(&mut expected);
+        normalize_volatile_fields(&mut actual);
+
+        assert_eq!(
+            actual, expected,
+            "web_search body drifted from the 2026-04-19 capture"
+        );
     }
 
     #[test]
