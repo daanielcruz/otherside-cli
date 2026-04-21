@@ -75,6 +75,13 @@ pub struct UserContext<'a> {
     pub platform: &'a str,
     pub shell: &'a str,
     pub os_version: &'a str,
+    /// Completed-background-task XML blocks to prepend to the last
+    /// user message on the next turn. Each entry is a complete
+    /// `<task-notification>…</task-notification>` produced by
+    /// [`crate::harness::task_notification::render`]. Empty slice ⇒
+    /// no injection (default). Source:
+    /// `utils/queueProcessor.ts` + `LocalAgentTask.tsx:246-261`.
+    pub task_notifications: &'a [String],
 }
 
 impl UserContext<'_> {
@@ -91,6 +98,7 @@ impl UserContext<'_> {
             platform: "linux",
             shell: "bash",
             os_version: "Linux 6.12.76-linuxkit",
+            task_notifications: &[],
         }
     }
 }
@@ -165,7 +173,29 @@ pub fn build_request_body(
     // 4. Messages — two-stage pipeline (normalize → cache-breakpoint).
     //    The first user turn gets the three `<system-reminder>`
     //    preamble blocks; later turns do not.
-    let messages = message_builder::build(&req.messages, ctx);
+    //
+    //    4a. `<task-notification>` injection for completed background
+    //    tasks. Mirrors upstream queueProcessor.ts: the XML blocks
+    //    prepend the LAST user message's text so the model sees the
+    //    completion envelope inside its next turn. Harmless no-op
+    //    when ctx.task_notifications is empty.
+    let req_with_notifications = if ctx.task_notifications.is_empty() {
+        None
+    } else {
+        let mut r = req.clone();
+        if let Some(last_user) = r
+            .messages
+            .iter_mut()
+            .rev()
+            .find(|m| matches!(m.role, OpenAiChatRole::User))
+        {
+            let joined = ctx.task_notifications.join("\n");
+            last_user.content = format!("{joined}\n{}", last_user.content);
+        }
+        Some(r)
+    };
+    let messages_source = req_with_notifications.as_ref().unwrap_or(req);
+    let messages = message_builder::build(&messages_source.messages, ctx);
 
     // 5. Assemble in capture top-level key order:
     //    model < messages < system < tools < metadata < max_tokens
@@ -331,6 +361,59 @@ mod tests {
         assert!(env_block.contains("- OS Version: Darwin 25.3.0"));
         assert!(!env_block.contains("/workspace"));
         assert!(!env_block.contains("Linux 6.12.76-linuxkit"));
+    }
+
+    #[test]
+    fn task_notifications_prepend_to_last_user_message() {
+        // §8.2: completed-background-task XML blocks inject into
+        // the outbound last user turn. Harmless no-op when the
+        // slice is empty (the mvp_request path covers that).
+        let req = mvp_request();
+        let notifications = [
+            "<task-notification>\n<task-id>aaa111bbb</task-id>\n<status>completed</status>\n</task-notification>".to_string(),
+        ];
+        let ctx = UserContext {
+            task_notifications: &notifications,
+            ..UserContext::capture_defaults()
+        };
+        let bytes = build_request_body(&req, &ctx).unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        // User message block text must start with the XML envelope.
+        let user_text = body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["role"] == "user")
+            .and_then(|m| m["content"].as_array())
+            .and_then(|blocks| blocks.last())
+            .and_then(|b| b["text"].as_str())
+            .expect("user message text present");
+        assert!(
+            user_text.contains("<task-notification>"),
+            "inject failed: {user_text:?}"
+        );
+        assert!(user_text.contains("<task-id>aaa111bbb</task-id>"));
+        // Original user text ("hi") must survive after the inject.
+        assert!(user_text.contains("hi"));
+    }
+
+    #[test]
+    fn empty_notifications_leaves_request_untouched() {
+        let req = mvp_request();
+        let ctx = UserContext::capture_defaults(); // empty slice
+        let bytes = build_request_body(&req, &ctx).unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        let user_text = body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["role"] == "user")
+            .and_then(|m| m["content"].as_array())
+            .and_then(|blocks| blocks.last())
+            .and_then(|b| b["text"].as_str())
+            .expect("user message text present");
+        assert!(!user_text.contains("<task-notification>"));
+        assert!(user_text.contains("hi"));
     }
 
     #[test]

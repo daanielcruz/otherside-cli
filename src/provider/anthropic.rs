@@ -134,6 +134,13 @@ impl Provider for AnthropicProvider {
                 platform: &env.platform,
                 shell: &env.shell,
                 os_version: &env.os_version,
+                // Background-task completion envelopes inject into
+                // the next user turn via the state-owned TaskStore.
+                // Provider-layer stream() doesn't hold the store yet
+                // — §9/§11 wire-thread plumb it here. For now ship
+                // empty; the envelope is still RENDERED correctly
+                // (§8.1 tests), just not injected.
+                task_notifications: &[],
             };
             let body = build_request_body(&req, &ctx)?;
 
