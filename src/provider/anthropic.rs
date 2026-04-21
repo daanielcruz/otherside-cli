@@ -124,46 +124,11 @@ impl Provider for AnthropicProvider {
 
             // Pull session context from env/clock. Template placeholders
             // get substituted with these values in the body builder.
+            // `<task-notification>` drain moved to the TUI-side
+            // auto-trigger in
+            // `ConversationState::consume_pending_notifications`.
             let (email, date) = resolve_user_context();
             let env = resolve_session_env();
-            // Drain any completed-background-task <task-notification>
-            // envelopes from the global TaskStore. Each drained record
-            // renders to one XML block via
-            // `crate::harness::task_notification::render` and the
-            // request builder prepends them to the last user-message
-            // text. Empty when no backgrounded tasks have terminated
-            // since the previous turn — harmless no-op.
-            let task_notifications: Vec<String> = crate::tasks::store::current_global()
-                .map(|store| {
-                    store
-                        .drain_pending_notifications()
-                        .into_iter()
-                        .map(|record| {
-                            let output_path = format!(
-                                "~/.otherside/tasks/{}.log",
-                                record.id.as_str()
-                            );
-                            // Populate <tool-use-id> from the record so
-                            // the model can match the notification to
-                            // its own `tool_use(id=…)` block in
-                            // history. Mirrors upstream's
-                            // `LocalAgentTask.tsx:247-257` ternary —
-                            // omit the line entirely when no id is
-                            // present (sync-spawned shells, legacy
-                            // records without the field).
-                            let extras = crate::harness::task_notification::NotificationExtras {
-                                tool_use_id: record.tool_use_id.as_deref(),
-                                ..Default::default()
-                            };
-                            crate::harness::task_notification::render(
-                                &record,
-                                &output_path,
-                                extras,
-                            )
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
             let ctx = UserContext {
                 email: &email,
                 current_date: &date,
@@ -172,7 +137,6 @@ impl Provider for AnthropicProvider {
                 platform: &env.platform,
                 shell: &env.shell,
                 os_version: &env.os_version,
-                task_notifications: &task_notifications,
             };
             let body = build_request_body(&req, &ctx)?;
 

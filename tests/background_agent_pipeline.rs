@@ -1,34 +1,36 @@
 //! Integration test — openspec 015 §9 background-agent pipeline,
-//! end-to-end from spawn through the next-turn `<task-notification>`
-//! injection into the outgoing `/v1/messages` body.
+//! end-to-end through the auto-trigger path that mirrors upstream
+//! `useQueueProcessor` + `processQueueIfReady` semantics
+//! (`hooks/useQueueProcessor.ts`, `utils/queueProcessor.ts`).
 //!
 //! Stages exercised:
 //!
 //! 1. Install the process-global [`TaskStore`].
 //! 2. Spawn an agent dispatch via [`spawn_background_agent`] with a
-//!    test runner that mirrors the real [`InnerLoopRunner`] sync→async
+//!    runner that mirrors the real [`InnerLoopRunner`] sync→async
 //!    pattern (`tokio::task::block_in_place` +
 //!    `Handle::current().block_on`).
-//! 3. Poll the store until the record reaches `Completed` —
-//!    proves the spawn pivot didn't swallow a panic.
-//! 4. Replicate `provider::anthropic::stream`'s drain step:
-//!    `current_global() → drain_pending_notifications() → render`.
+//! 3. Poll the store until the record reaches `Completed` and
+//!    `inject_on_next_turn = true`.
+//! 4. Call `ConversationState::submit_auto_notification_turn(&store)` —
+//!    the TUI-side helper the event-loop auto-trigger uses. Assert
+//!    it returns `Some(history)` AND streaming flipped true AND a
+//!    synthetic user message with the XML landed in the message
+//!    log.
 //! 5. Build the `/v1/messages` body via [`build_request_body`] with
-//!    a synthetic next user turn ("did it finish?").
-//! 6. Assert the body string contains:
-//!    - the `<task-notification>` envelope
-//!    - the spawned task id
-//!    - the next-turn user content (proves no clobber)
+//!    the returned history. Assert the body contains the
+//!    `<task-notification>` XML + `<tool-use-id>` + user prompt of
+//!    the notification (as an Anthropic user turn).
 //!
-//! Failure mode this test guards against: silent breakage anywhere
-//! along the spawn → finalize → drain → inject chain. Earlier unit
-//! tests cover each link in isolation; this one wires them together.
+//! Failure mode this guards: silent regression on the auto-trigger
+//! chain (spawn → finalize → consume_pending_notifications →
+//! submit_auto_notification_turn → build_request_body). The unit
+//! tests cover each link; this wires them together.
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use otherside::harness::task_notification;
-use otherside::inference::{OpenAiChatMessage, OpenAiChatRequest, OpenAiChatRole};
+use otherside::inference::OpenAiChatRequest;
 use otherside::subagents::frontmatter::ToolsField;
 use otherside::subagents::{
     registry::AgentDefinition, AgentInvocation, RunnerError, SubagentRunner,
@@ -39,12 +41,12 @@ use otherside::tasks::{
     TaskState, TaskStore,
 };
 use otherside::translator::anthropic::request::{build_request_body, UserContext};
+use otherside::tui::state::ConversationState;
 use serde_json::{json, Value};
 
 /// Mirrors the real `InnerLoopRunner::run_inner` sync→async bridge
 /// — `block_in_place` + `Handle::current().block_on`. Keeps the
-/// spawn-thread shape honest: if the production runner pattern
-/// breaks the spawn pivot, this test catches it.
+/// spawn-thread shape honest.
 struct BlockOnRunner {
     text: String,
 }
@@ -95,7 +97,7 @@ fn def() -> AgentDefinition {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn background_agent_pipeline_emits_task_notification_on_next_turn() {
+async fn background_agent_auto_trigger_pipeline() {
     let store = install_global(TaskStore::new());
 
     let runner: Arc<dyn SubagentRunner> = Arc::new(BlockOnRunner {
@@ -111,88 +113,102 @@ async fn background_agent_pipeline_emits_task_notification_on_next_turn() {
         "test-agent".into(),
         Some("toolu_test_pipeline".into()),
     );
-
     let id_str = id.as_str().to_string();
 
-    let mut state = None;
+    // Wait for BG runner to complete and flip inject_on_next_turn.
+    let mut done = false;
     for _ in 0..50 {
         if let Some(r) = store.get(&id) {
-            if r.state == TaskState::Completed {
-                state = Some(r);
+            if r.state == TaskState::Completed && r.inject_on_next_turn {
+                done = true;
                 break;
             }
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    let record =
-        state.expect("background agent never reached Completed state — spawn pivot likely broken");
     assert!(
-        record.inject_on_next_turn,
-        "completion must flag inject_on_next_turn for the next-turn drain"
+        done,
+        "BG runner never reached Completed + inject_on_next_turn=true"
     );
 
-    let task_notifications: Vec<String> = current_global()
-        .map(|s| {
-            s.drain_pending_notifications()
-                .into_iter()
-                .map(|r| {
-                    let output_path = format!("~/.otherside/tasks/{}.log", r.id.as_str());
-                    task_notification::render(&r, &output_path, Default::default())
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    // Auto-trigger path: emulate what the event-loop tick does when
+    // !streaming && input.is_empty() && has_pending_notifications().
+    let mut st = ConversationState::new();
+    let global = current_global().expect("global store installed");
+    assert!(global.has_pending_notifications());
+
+    let history = st
+        .submit_auto_notification_turn(&global)
+        .expect("auto-trigger should fire when pendings exist");
+
+    assert!(st.streaming, "streaming must flip true after auto-trigger");
     assert!(
-        !task_notifications.is_empty(),
-        "drain_pending_notifications returned empty after Completed record"
-    );
-    let xml = &task_notifications[0];
-    assert!(
-        xml.contains("<task-notification>"),
-        "rendered XML missing envelope"
+        st.request_started_at.is_some(),
+        "request_started_at must be set"
     );
     assert!(
-        xml.contains(&id_str),
-        "rendered XML missing task id `{id_str}`: `{xml}`"
-    );
-    assert!(
-        xml.contains("<status>completed</status>"),
-        "rendered XML missing completed status: `{xml}`"
+        !global.has_pending_notifications(),
+        "drain must clear the flag"
     );
 
+    // Synthetic user message was appended with the XML payload.
+    let last_msg = st.messages.last().expect("synthetic user message present");
+    assert!(
+        last_msg.is_synthetic,
+        "notification message must be flagged synthetic so render skips it"
+    );
+    assert!(
+        last_msg.content.contains("<task-notification>"),
+        "XML envelope missing from synthetic message content: {:?}",
+        last_msg.content
+    );
+    assert!(
+        last_msg.content.contains(&id_str),
+        "task_id `{id_str}` missing from XML: {:?}",
+        last_msg.content
+    );
+    assert!(
+        last_msg.content.contains("<tool-use-id>toolu_test_pipeline"),
+        "tool-use-id missing from XML: {:?}",
+        last_msg.content
+    );
+
+    // Build the outbound body from the returned history — should
+    // carry the notification as its own user turn (Anthropic shape).
     let req = OpenAiChatRequest {
         model: "test-model".into(),
-        messages: vec![OpenAiChatMessage {
-            role: OpenAiChatRole::User,
-            content: "did it finish?".into(),
-            ..Default::default()
-        }],
+        messages: history,
         ..Default::default()
     };
     let ctx = UserContext {
         email: "test@example.com",
-        current_date: "2026-04-20",
+        current_date: "2026-04-21",
         cwd: "/tmp/work",
         is_git_repo: false,
         platform: "darwin",
         shell: "bash",
         os_version: "Darwin 25.3.0",
-        task_notifications: &task_notifications,
     };
     let body = build_request_body(&req, &ctx).expect("build_request_body");
     let body_str = std::str::from_utf8(&body).expect("body utf8");
 
     assert!(
         body_str.contains("<task-notification>"),
-        "outgoing body missing notification envelope; first 500 bytes: `{}`",
-        &body_str.chars().take(500).collect::<String>()
+        "outbound body missing notification envelope"
     );
     assert!(
         body_str.contains(&id_str),
-        "outgoing body missing task id `{id_str}`"
+        "outbound body missing task id `{id_str}`"
     );
     assert!(
-        body_str.contains("did it finish?"),
-        "outgoing body lost the next-turn user prompt"
+        body_str.contains("toolu_test_pipeline"),
+        "outbound body missing tool_use_id"
+    );
+
+    // Second call after drain should be a no-op.
+    let second = st.submit_auto_notification_turn(&global);
+    assert!(
+        second.is_none(),
+        "second auto-trigger with empty pendings must return None"
     );
 }

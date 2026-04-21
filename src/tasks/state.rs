@@ -102,6 +102,14 @@ pub struct TaskRecord {
     /// (no originating tool_use) and tasks created before this
     /// field landed.
     pub tool_use_id: Option<String>,
+    /// `true` once the TUI has emitted the ephemeral completion
+    /// line into the transcript (e.g. `Background command "<name>"
+    /// completed`). Detector flips this on first paint to ensure
+    /// the line shows once even though the tick poll runs every
+    /// 50 ms. Cannot push from `spawn::finalize` (the runner runs
+    /// on `spawn_blocking` and has no handle on the TUI thread);
+    /// state.rs ticker owns the push + flag transition.
+    pub rendered_completion_line: bool,
 }
 
 impl TaskRecord {
@@ -122,6 +130,7 @@ impl TaskRecord {
             inject_on_next_turn: false,
             exit_code: None,
             tool_use_id: None,
+            rendered_completion_line: false,
         }
     }
 
@@ -138,6 +147,7 @@ impl TaskRecord {
             inject_on_next_turn: false,
             exit_code: None,
             tool_use_id: None,
+            rendered_completion_line: false,
         }
     }
 

@@ -320,6 +320,31 @@ async fn event_loop(
                 for entry in crate::tools::deferred::drain_due_wakeups() {
                     st.push_system_note(format!("⏰ wakeup: {}", entry.message));
                 }
+                // Surface ephemeral completion lines for every
+                // terminal background task that hasn't been painted
+                // yet. Pushed as Chrome-origin so they DON'T leak
+                // into the wire — they're transcript chrome only.
+                // Mirrors upstream's React effect that emits a
+                // `Background command "<name>" completed` line on
+                // terminal transition.
+                if let Some(store) = crate::tasks::store::current_global() {
+                    for record in store.drain_unrendered_completions() {
+                        let line = render_completion_line(&record);
+                        st.push_system_note(line);
+                    }
+                }
+                // Catch BG agents that completed AFTER the prior
+                // stream's Done/Error already drained the queue.
+                // Cheap reads (`!streaming && input.is_empty() &&
+                // store.has_pending_notifications()` short-circuit).
+                // Without this, a backgrounded task that lands while
+                // the user sits idle never fires its notification
+                // turn — match upstream `useQueueProcessor` reactive
+                // behavior with a 50 ms poll instead of a React
+                // signal subscription.
+                let _ = auto_trigger_pending_notifications(
+                    &mut st, &provider, &base_model, &thinking, &tx,
+                );
             }
 
             // Chunk / done / error from the inference task.
@@ -361,13 +386,13 @@ async fn event_loop(
                         // 017 §4 — if the user queued messages while
                         // streaming, pop the head and fire it as the
                         // next turn. No-op when queue empty.
-                        drain_queue_head_if_any(
+                        drain_pending_inputs(
                             &mut st, &provider, &base_model, &thinking, &provider_id, &tx,
                         );
                     }
                     Some(StreamEvent::Error(e)) => {
                         st.fail_stream(e);
-                        drain_queue_head_if_any(
+                        drain_pending_inputs(
                             &mut st, &provider, &base_model, &thinking, &provider_id, &tx,
                         );
                     }
@@ -1495,6 +1520,102 @@ fn spawn_agent_turn(
 /// queue storage is verbatim, re-classification on drain). A slash
 /// typed during streaming gets its handler fired now, on drain,
 /// which is upstream's behavior for queued slashes.
+/// One-line ephemeral transcript caption for a terminal-state
+/// background task. Mirrors upstream's React effect that paints
+/// `Background command "<name>" completed (exit code N)` for
+/// shells and `Agent "<name>" completed` for backgrounded agents
+/// (`tasks/LocalShellTask/LocalShellTask.tsx` +
+/// `tasks/LocalAgentTask/LocalAgentTask.tsx:246`).
+fn render_completion_line(r: &crate::tasks::TaskRecord) -> String {
+    let kind_label = match r.kind {
+        crate::tasks::TaskKind::Agent => "Agent",
+        crate::tasks::TaskKind::Shell => "Background command",
+        crate::tasks::TaskKind::Generic => "Background task",
+    };
+    let status_phrase = match r.state {
+        crate::tasks::TaskState::Completed => "completed",
+        crate::tasks::TaskState::Failed => "failed",
+        crate::tasks::TaskState::Stopped => "was stopped",
+        // Non-terminal states never reach this path — the drain
+        // helper filters by `is_terminal()`. Defensive default
+        // keeps the line shape stable if the matrix changes.
+        _ => "ended",
+    };
+    let exit_suffix = r
+        .exit_code
+        .filter(|_| matches!(r.kind, crate::tasks::TaskKind::Shell))
+        .map(|c| format!(" (exit code {c})"))
+        .unwrap_or_default();
+    format!("{kind_label} \"{}\" {status_phrase}{exit_suffix}", r.name)
+}
+
+/// Combined "what's next" pump for between-turn idle moments.
+///
+/// Priority mirrors upstream `messageQueueManager.PRIORITY_ORDER`:
+/// `now > next > later`. otherside maps this to:
+///   1. `now`/`next` — user-queued text typed during the prior
+///      stream → [`drain_queue_head_if_any`] (unchanged).
+///   2. `later` — completed background-task `<task-notification>`
+///      envelopes drained from [`crate::tasks::TaskStore`] →
+///      [`auto_trigger_pending_notifications`].
+///
+/// Returns `true` when something was dispatched. Caller need not
+/// branch on the return — both paths spawn their own turn task.
+fn drain_pending_inputs(
+    st: &mut ConversationState,
+    provider: &Arc<dyn Provider>,
+    base_model: &str,
+    thinking: &Option<ThinkingConfig>,
+    provider_id: &str,
+    tx: &mpsc::Sender<StreamEvent>,
+) -> bool {
+    if drain_queue_head_if_any(st, provider, base_model, thinking, provider_id, tx) {
+        return true;
+    }
+    auto_trigger_pending_notifications(st, provider, base_model, thinking, tx)
+}
+
+/// Auto-fire a turn whose user content is one or more
+/// `<task-notification>` XML envelopes drained from the global
+/// [`crate::tasks::TaskStore`]. No-op (`false`) when:
+///   - a stream is already in flight,
+///   - the user has typed input the next submit will consume, OR
+///   - no record carries `inject_on_next_turn = true`.
+///
+/// Mirrors upstream `useQueueProcessor` reactive hook +
+/// `processQueueIfReady` for `mode: 'task-notification'` items
+/// (`hooks/useQueueProcessor.ts`, `utils/queueProcessor.ts`).
+fn auto_trigger_pending_notifications(
+    st: &mut ConversationState,
+    provider: &Arc<dyn Provider>,
+    base_model: &str,
+    thinking: &Option<ThinkingConfig>,
+    tx: &mpsc::Sender<StreamEvent>,
+) -> bool {
+    if st.streaming {
+        return false;
+    }
+    if !st.input.is_empty() {
+        return false;
+    }
+    let Some(store) = crate::tasks::store::current_global() else {
+        return false;
+    };
+    if !store.has_pending_notifications() {
+        return false;
+    }
+    let Some(history) = st.submit_auto_notification_turn(&store) else {
+        return false;
+    };
+    tracing::info!(
+        target: "otherside::queue",
+        history_len = history.len(),
+        "auto-trigger: notifications drained, dispatching synthetic turn"
+    );
+    spawn_agent_turn(st, provider, base_model, thinking, tx, history);
+    true
+}
+
 fn drain_queue_head_if_any(
     st: &mut ConversationState,
     provider: &Arc<dyn Provider>,

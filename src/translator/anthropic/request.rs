@@ -66,6 +66,13 @@ const PLACEHOLDER_OS_VERSION: &str = "_OS_VERSION_";
 
 /// Per-session context the assembler injects into the captured body.
 /// Email and current_date are always session-live — never hardcoded.
+///
+/// `<task-notification>` injection no longer rides this struct — it
+/// lives on the TUI side now via
+/// [`crate::tui::state::ConversationState::consume_pending_notifications`]
+/// + the auto-trigger detector in the event loop. Single drain
+/// point eliminates a class of double-inject bugs that the
+/// previous build-time drain path enabled.
 #[derive(Debug, Clone)]
 pub struct UserContext<'a> {
     pub email: &'a str,
@@ -75,13 +82,6 @@ pub struct UserContext<'a> {
     pub platform: &'a str,
     pub shell: &'a str,
     pub os_version: &'a str,
-    /// Completed-background-task XML blocks to prepend to the last
-    /// user message on the next turn. Each entry is a complete
-    /// `<task-notification>…</task-notification>` produced by
-    /// [`crate::harness::task_notification::render`]. Empty slice ⇒
-    /// no injection (default). Source:
-    /// `utils/queueProcessor.ts` + `LocalAgentTask.tsx:246-261`.
-    pub task_notifications: &'a [String],
 }
 
 impl UserContext<'_> {
@@ -98,7 +98,6 @@ impl UserContext<'_> {
             platform: "linux",
             shell: "bash",
             os_version: "Linux 6.12.76-linuxkit",
-            task_notifications: &[],
         }
     }
 }
@@ -174,47 +173,13 @@ pub fn build_request_body(
     //    The first user turn gets the three `<system-reminder>`
     //    preamble blocks; later turns do not.
     //
-    //    4a. `<task-notification>` injection for completed background
-    //    tasks. Mirrors upstream `queueProcessor.ts:33-87` — each
-    //    drained notification rides as ITS OWN user-role message
-    //    inserted immediately before the last user turn. Upstream
-    //    `messages.ts:2109` then merges consecutive user messages
-    //    into one Anthropic turn with multiple `text` blocks; the
-    //    model interprets the discrete `<task-notification>` block
-    //    as a completion event rather than a textual prefix on the
-    //    user's next prompt. Inlining the XML into the user text
-    //    (the pre-fix behavior) produced false negatives where the
-    //    model treated the XML as part of the question and replied
-    //    "no notification yet" despite the body carrying it.
-    let req_with_notifications = if ctx.task_notifications.is_empty() {
-        None
-    } else {
-        let mut r = req.clone();
-        let last_user_idx = r
-            .messages
-            .iter()
-            .enumerate()
-            .rev()
-            .find(|(_, m)| matches!(m.role, OpenAiChatRole::User))
-            .map(|(i, _)| i);
-        if let Some(idx) = last_user_idx {
-            for (offset, xml) in ctx.task_notifications.iter().enumerate() {
-                r.messages.insert(
-                    idx + offset,
-                    crate::inference::OpenAiChatMessage {
-                        role: OpenAiChatRole::User,
-                        content: xml.clone(),
-                        name: None,
-                        tool_calls: Vec::new(),
-                        tool_call_id: None,
-                    },
-                );
-            }
-        }
-        Some(r)
-    };
-    let messages_source = req_with_notifications.as_ref().unwrap_or(req);
-    let messages = message_builder::build(&messages_source.messages, ctx);
+    //    4a. `<task-notification>` injection used to live here at
+    //    build time. It now rides on the TUI side as a synthetic
+    //    user `DisplayMessage` pushed by
+    //    `ConversationState::consume_pending_notifications` at the
+    //    event-loop tick that auto-fires the next turn. Single
+    //    drain point — `request.rs` is wire-shape only now.
+    let messages = message_builder::build(&req.messages, ctx);
 
     // 5. Assemble in capture top-level key order:
     //    model < messages < system < tools < metadata < max_tokens
@@ -383,70 +348,18 @@ mod tests {
     }
 
     #[test]
-    fn task_notifications_inject_as_separate_user_message() {
-        // §8.2 (revised 2026-04-21 to mirror upstream
-        // queueProcessor.ts:33-87): each drained completion
-        // notification rides as ITS OWN user message inserted
-        // immediately before the next user prompt — not inlined
-        // into the prompt's text. The model needs the XML to
-        // appear as a discrete user turn so its training kicks in
-        // (`<task-notification>` is a notification frame, not a
-        // user-typed prompt).
+    fn build_request_body_no_longer_injects_task_notifications() {
+        // Regression guard: the §8.2 build-time inject path was
+        // removed in the §9 auto-trigger refactor (2026-04-21). The
+        // body builder is wire-shape only now — synthetic user
+        // messages carrying `<task-notification>` are pushed by
+        // `ConversationState::consume_pending_notifications` on
+        // the TUI side BEFORE this builder runs. If a caller hands
+        // us a request whose `messages` already contain a
+        // `<task-notification>` user turn, we ship it verbatim;
+        // we no longer rewrite the message slice ourselves.
         let req = mvp_request();
-        let notifications = [
-            "<task-notification>\n<task-id>aaa111bbb</task-id>\n<tool-use-id>toolu_xxx</tool-use-id>\n<status>completed</status>\n</task-notification>".to_string(),
-        ];
-        let ctx = UserContext {
-            task_notifications: &notifications,
-            ..UserContext::capture_defaults()
-        };
-        let bytes = build_request_body(&req, &ctx).unwrap();
-        let body: Value = serde_json::from_slice(&bytes).unwrap();
-        let messages = body["messages"].as_array().expect("messages array");
-        // Two consecutive user turns: notification block then the
-        // user prompt. message_builder normalize emits each as its
-        // own AnthropicMessage; Anthropic's 1P API merges
-        // consecutive user turns into a single user message with
-        // multiple blocks (`utils/messages.ts:2109`).
-        let user_messages: Vec<&Value> = messages
-            .iter()
-            .filter(|m| m["role"] == "user")
-            .collect();
-        assert_eq!(
-            user_messages.len(),
-            2,
-            "expected notification + prompt as two user messages, got {}: {messages:#?}",
-            user_messages.len()
-        );
-        // First user message (notification) — last text block holds the XML.
-        let notif_text = user_messages[0]["content"]
-            .as_array()
-            .and_then(|b| b.last())
-            .and_then(|b| b["text"].as_str())
-            .expect("notification text block");
-        assert!(
-            notif_text.contains("<task-notification>"),
-            "first user message must carry the notification XML: {notif_text:?}"
-        );
-        assert!(notif_text.contains("<task-id>aaa111bbb</task-id>"));
-        assert!(notif_text.contains("<tool-use-id>toolu_xxx</tool-use-id>"));
-        // Second user message — the original prompt, untouched.
-        let prompt_text = user_messages[1]["content"]
-            .as_array()
-            .and_then(|b| b.last())
-            .and_then(|b| b["text"].as_str())
-            .expect("prompt text block");
-        assert_eq!(prompt_text, "hi");
-        assert!(
-            !prompt_text.contains("<task-notification>"),
-            "prompt must NOT carry the notification inline (regression guard)"
-        );
-    }
-
-    #[test]
-    fn empty_notifications_leaves_request_untouched() {
-        let req = mvp_request();
-        let ctx = UserContext::capture_defaults(); // empty slice
+        let ctx = UserContext::capture_defaults();
         let bytes = build_request_body(&req, &ctx).unwrap();
         let body: Value = serde_json::from_slice(&bytes).unwrap();
         let user_text = body["messages"]

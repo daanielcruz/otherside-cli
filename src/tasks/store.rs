@@ -192,6 +192,41 @@ impl TaskStore {
         flipped
     }
 
+    /// Drain records that are in a terminal state but haven't yet
+    /// surfaced an ephemeral completion line in the transcript.
+    /// Returns owned snapshots; callers are responsible for the
+    /// actual paint. The flag flip happens here so a follow-up tick
+    /// finds them already accounted for and doesn't double-paint.
+    ///
+    /// Mirrors upstream's React effect that watches task state and
+    /// emits a `Background command "<name>" completed` line once on
+    /// the transition to terminal — but otherside polls every tick
+    /// (50 ms) instead of subscribing to a signal.
+    pub fn drain_unrendered_completions(&self) -> Vec<TaskRecord> {
+        let mut map = self.inner.write().expect("task store rwlock poisoned");
+        let mut out = Vec::new();
+        for r in map.values_mut() {
+            if r.state.is_terminal() && !r.rendered_completion_line {
+                r.rendered_completion_line = true;
+                out.push(r.clone());
+            }
+        }
+        out
+    }
+
+    /// Read-only predicate — true when at least one record is
+    /// flagged `inject_on_next_turn = true`. Cheaper than
+    /// [`Self::drain_pending_notifications`] for the auto-trigger
+    /// detector that polls every tick (50 ms) — we don't want to
+    /// drain on a poll, just to know whether to fire.
+    pub fn has_pending_notifications(&self) -> bool {
+        self.inner
+            .read()
+            .expect("task store rwlock poisoned")
+            .values()
+            .any(|r| r.inject_on_next_turn)
+    }
+
     /// Drain records flagged `inject_on_next_turn = true`,
     /// clearing the flag on each. Returns owned snapshots so the
     /// caller can render `<task-notification>` blocks without
@@ -283,6 +318,23 @@ mod tests {
         assert!(!s.any_running_foreground(), "backgrounded must NOT count");
         s.insert(shell("fg"));
         assert!(s.any_running_foreground(), "fresh foreground task counts");
+    }
+
+    #[test]
+    fn has_pending_notifications_returns_true_only_when_flag_set() {
+        let s = TaskStore::new();
+        assert!(!s.has_pending_notifications(), "empty store has no pendings");
+        s.insert(shell("running"));
+        assert!(!s.has_pending_notifications(), "running task without inject flag is not a pending");
+        let id = s.insert({
+            let mut r = shell("done");
+            r.state = TaskState::Completed;
+            r.inject_on_next_turn = true;
+            r
+        });
+        assert!(s.has_pending_notifications(), "completed + flag => pending");
+        s.update_with(&id, |r| r.inject_on_next_turn = false);
+        assert!(!s.has_pending_notifications(), "flag cleared => no longer pending");
     }
 
     #[test]

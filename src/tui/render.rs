@@ -321,10 +321,18 @@ fn draw_log(f: &mut Frame<'_>, area: Rect, state: &ConversationState, spinner_ti
     let mut lines: Vec<Line> = Vec::new();
     let width = area.width;
 
-    for (i, msg) in state.messages.iter().enumerate() {
-        if i > 0 {
+    // Synthetic messages (auto-injected `<task-notification>` user
+    // turns) ride the wire so the model sees them, but the user
+    // never typed them — skip them in the chat paint to avoid
+    // exposing raw XML in the transcript. Mirrors upstream's
+    // `display: 'system'` queue items, which never show up as
+    // user turns in the chat log.
+    let mut first_paint = true;
+    for msg in state.messages.iter().filter(|m| !m.is_synthetic) {
+        if !first_paint {
             lines.push(Line::raw(""));
         }
+        first_paint = false;
         lines.extend(render_message(msg.role, &msg.content, width));
     }
 
@@ -1153,6 +1161,7 @@ mod tests {
             origin: crate::tui::state::DisplayOrigin::Transcript,
             tool_calls: Vec::new(),
             tool_call_id: None,
+            is_synthetic: false,
         });
         st.begin_tool_call(
             "t1".into(),

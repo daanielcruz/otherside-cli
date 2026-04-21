@@ -149,6 +149,16 @@ pub struct DisplayMessage {
     /// in `history_for_request` from the archive's `id` field.
     #[allow(dead_code)] // populated synthesis-side
     pub tool_call_id: Option<String>,
+    /// `true` when the row was injected by the system (not typed
+    /// by the user, not produced by the model). Today populated
+    /// only by [`Self::consume_pending_notifications`] for the
+    /// `<task-notification>` user messages auto-fired between
+    /// turns. The render layer skips synthetic rows so the user
+    /// doesn't see XML in the chat log; `history_for_request`
+    /// includes them so the model receives the notification on
+    /// the wire. Mirrors upstream's queue items rendered with
+    /// `display: 'system'` semantics.
+    pub is_synthetic: bool,
 }
 
 /// One tool-call entry on the active list.
@@ -639,6 +649,7 @@ mod feedback_tests {
             origin: DisplayOrigin::Transcript,
             tool_calls: Vec::new(),
             tool_call_id: None,
+            is_synthetic: false,
         });
         assert!(!st.show_post_clear_splash);
         st.clear_conversation();
@@ -662,6 +673,7 @@ mod feedback_tests {
             origin: DisplayOrigin::Transcript,
             tool_calls: Vec::new(),
             tool_call_id: None,
+            is_synthetic: false,
         });
         st.clear_conversation();
         assert_eq!(st.input_tokens, 0);
@@ -819,6 +831,7 @@ impl ConversationState {
             origin: DisplayOrigin::Transcript,
             tool_calls: Vec::new(),
             tool_call_id: None,
+            is_synthetic: false,
         });
         self.input.clear();
         self.streaming = true;
@@ -1025,6 +1038,7 @@ impl ConversationState {
             origin: DisplayOrigin::Chrome,
             tool_calls: Vec::new(),
             tool_call_id: None,
+            is_synthetic: false,
         });
         self.input.clear();
         self.autocomplete = None;
@@ -1064,6 +1078,7 @@ impl ConversationState {
             origin,
             tool_calls: Vec::new(),
             tool_call_id: None,
+            is_synthetic: false,
         });
         self.messages.push(DisplayMessage {
             role: OpenAiChatRole::System,
@@ -1075,6 +1090,7 @@ impl ConversationState {
             origin,
             tool_calls: Vec::new(),
             tool_call_id: None,
+            is_synthetic: false,
         });
         self.input.clear();
         self.autocomplete = None;
@@ -1164,6 +1180,119 @@ impl ConversationState {
     /// `openspec/changes/016-permission-cycle-4-mode/` + R-104).
     pub fn cycle_permission_mode(&mut self) {
         self.session.cycle_permission_mode();
+    }
+
+    /// Auto-fire a turn whose user input is ONLY drained
+    /// `<task-notification>` envelopes — no user-typed prompt. The
+    /// event-loop tick calls this when (`!streaming &&
+    /// input.is_empty() && store.has_pending_notifications()`) AND
+    /// the user-queued head drain returned nothing (priority:
+    /// queued user input `next` > notifications `later`).
+    ///
+    /// Returns `Some(history)` for the caller to dispatch when
+    /// notifications were drained, `None` when the store had
+    /// nothing pending (no-op, safe to call from any tick).
+    ///
+    /// Mirror of [`Self::submit`] side-effects on the streaming
+    /// path (no input echo, no input clear — `input` is already
+    /// empty when this is gated). Drained notifications are also
+    /// appended to the session JSONL as `Record::UserMessage`
+    /// entries so `--resume` reload reconstructs the conversation
+    /// with the notification turns intact.
+    pub fn submit_auto_notification_turn(
+        &mut self,
+        store: &crate::tasks::TaskStore,
+    ) -> Option<Vec<OpenAiChatMessage>> {
+        let count = self.consume_pending_notifications(store);
+        if count == 0 {
+            return None;
+        }
+        // Persist each synthetic notification user message to the
+        // session JSONL so a `--resume` reload sees the same
+        // history the model saw on the live wire. The freshly
+        // pushed messages are the last `count` entries — pull
+        // their content out + append a Record::UserMessage each.
+        let new_msg_start = self.messages.len().saturating_sub(count);
+        let to_persist: Vec<String> = self.messages[new_msg_start..]
+            .iter()
+            .map(|m| m.content.clone())
+            .collect();
+        for content in to_persist {
+            self.append_record(crate::sessions::Record::UserMessage {
+                ts: crate::sessions::record::now_iso(),
+                content,
+            });
+        }
+        // Mirror the relevant streaming-start side-effects of
+        // submit() — without the input echo or input clear.
+        self.streaming = true;
+        self.current_assistant_buffer.clear();
+        self.last_error = None;
+        self.request_started_at = Some(Instant::now());
+        self.output_tokens = 0;
+        self.cumulative_output_tokens = 0;
+        self.thought_ms = 0;
+        self.tip_rotation_index = self.tip_rotation_index.wrapping_add(1);
+        self.autocomplete = None;
+        self.scroll_to_bottom();
+        self.turn_verb = Some(super::progress::pick_verb_for_turn(
+            super::progress::next_turn_seed(),
+        ));
+        self.active_tool_calls.clear();
+        Some(self.history_for_request())
+    }
+
+    /// Drain every record in `store` flagged
+    /// `inject_on_next_turn = true`, render each as a
+    /// `<task-notification>` XML envelope (with `<tool-use-id>` from
+    /// the record), and push one synthetic user `DisplayMessage` per
+    /// drained record. Returns the count drained.
+    ///
+    /// Synthetic rows ride the wire (`history_for_request` includes
+    /// them) but the render layer skips them — match upstream's
+    /// queue-injected `task-notification` items, which the model
+    /// sees as user turns but the user never types.
+    ///
+    /// Idempotent: a second call after a successful drain finds no
+    /// pendings and returns 0. Safe to poll from the event-loop tick
+    /// without locking churn (the cheap [`crate::tasks::TaskStore::has_pending_notifications`]
+    /// gate is the recommended pre-check).
+    ///
+    /// Mirrors upstream `enqueuePendingNotification` →
+    /// `processQueueIfReady` → `executeInput` chain
+    /// (`utils/queueProcessor.ts:33-87`,
+    /// `tasks/LocalAgentTask/LocalAgentTask.tsx:247-262`).
+    pub fn consume_pending_notifications(
+        &mut self,
+        store: &crate::tasks::TaskStore,
+    ) -> usize {
+        let drained = store.drain_pending_notifications();
+        if drained.is_empty() {
+            return 0;
+        }
+        let count = drained.len();
+        for record in drained {
+            let output_path = format!("~/.otherside/tasks/{}.log", record.id.as_str());
+            let extras = crate::harness::task_notification::NotificationExtras {
+                tool_use_id: record.tool_use_id.as_deref(),
+                ..Default::default()
+            };
+            let xml = crate::harness::task_notification::render(
+                &record,
+                &output_path,
+                extras,
+            );
+            self.messages.push(DisplayMessage {
+                role: OpenAiChatRole::User,
+                content: xml,
+                wire_override: None,
+                origin: DisplayOrigin::Transcript,
+                tool_calls: Vec::new(),
+                tool_call_id: None,
+                is_synthetic: true,
+            });
+        }
+        count
     }
 
     /// Snapshot `messages` as a `Vec<OpenAiChatMessage>` suitable for the
@@ -1371,6 +1500,7 @@ impl ConversationState {
                 origin: DisplayOrigin::Transcript,
                 tool_calls: Vec::new(),
                 tool_call_id: None,
+                is_synthetic: false,
             });
         }
         if !self.current_assistant_buffer.is_empty() {
@@ -1382,6 +1512,7 @@ impl ConversationState {
                 origin: DisplayOrigin::Transcript,
                 tool_calls: Vec::new(),
                 tool_call_id: None,
+                is_synthetic: false,
             });
         } else {
             self.current_assistant_buffer.clear();
@@ -1413,6 +1544,7 @@ impl ConversationState {
                 origin: DisplayOrigin::Transcript,
                 tool_calls: Vec::new(),
                 tool_call_id: None,
+                is_synthetic: false,
             });
         }
         if !self.current_assistant_buffer.is_empty() {
@@ -1424,6 +1556,7 @@ impl ConversationState {
                 origin: DisplayOrigin::Transcript,
                 tool_calls: Vec::new(),
                 tool_call_id: None,
+                is_synthetic: false,
             });
         }
         self.last_error = Some(err);
@@ -1458,6 +1591,7 @@ impl ConversationState {
                 origin: DisplayOrigin::Transcript,
                 tool_calls: Vec::new(),
                 tool_call_id: None,
+                is_synthetic: false,
             });
         }
         self.streaming = false;
@@ -2339,6 +2473,90 @@ mod tests {
         );
     }
 
+    /// Regression: openspec 015 §9 — `consume_pending_notifications`
+    /// drains the store, renders XML with tool_use_id extras, and
+    /// pushes a synthetic user message that includes the
+    /// `<tool-use-id>` reconciliation key.
+    #[test]
+    fn consume_pending_notifications_pushes_synthetic_user_with_xml() {
+        use crate::tasks::{TaskId, TaskRecord, TaskState as TS, TaskStore};
+        let store = TaskStore::new();
+        let id = TaskId::generate();
+        let mut record = TaskRecord::new_agent(
+            id.clone(),
+            "summarize roadmap".into(),
+            "do it".into(),
+        );
+        record.state = TS::Completed;
+        record.is_backgrounded = true;
+        record.inject_on_next_turn = true;
+        record.tool_use_id = Some("toolu_unit_test".into());
+        store.insert(record);
+
+        let mut st = ConversationState::new();
+        let count = st.consume_pending_notifications(&store);
+        assert_eq!(count, 1);
+        assert!(!store.has_pending_notifications(), "drain clears flag");
+
+        let last = st.messages.last().expect("synthetic message present");
+        assert!(last.is_synthetic);
+        assert_eq!(last.role, OpenAiChatRole::User);
+        assert!(last.content.contains("<task-notification>"));
+        assert!(last.content.contains(id.as_str()));
+        assert!(last.content.contains("<tool-use-id>toolu_unit_test"));
+        assert!(last.content.contains("<status>completed</status>"));
+    }
+
+    /// Regression: `submit_auto_notification_turn` returns `None` when
+    /// the store has no pendings and DOES NOT mutate state (no streaming
+    /// flip, no message push). This is the safety net for the
+    /// 50ms-tick poll path.
+    #[test]
+    fn submit_auto_notification_turn_is_noop_when_store_empty() {
+        use crate::tasks::TaskStore;
+        let store = TaskStore::new();
+        let mut st = ConversationState::new();
+        let before_messages = st.messages.len();
+        let before_streaming = st.streaming;
+        let result = st.submit_auto_notification_turn(&store);
+        assert!(result.is_none());
+        assert_eq!(st.messages.len(), before_messages);
+        assert_eq!(st.streaming, before_streaming);
+    }
+
+    /// Regression: when pendings exist, `submit_auto_notification_turn`
+    /// flips streaming, sets request_started_at, returns history that
+    /// includes the synthetic notification user message at the end.
+    #[test]
+    fn submit_auto_notification_turn_flips_streaming_and_returns_history() {
+        use crate::tasks::{TaskId, TaskRecord, TaskState as TS, TaskStore};
+        let store = TaskStore::new();
+        let id = TaskId::generate();
+        let mut record = TaskRecord::new_agent(
+            id.clone(),
+            "summarize roadmap".into(),
+            "do it".into(),
+        );
+        record.state = TS::Completed;
+        record.is_backgrounded = true;
+        record.inject_on_next_turn = true;
+        record.tool_use_id = Some("toolu_auto".into());
+        store.insert(record);
+
+        let mut st = ConversationState::new();
+        assert!(!st.streaming);
+        let history = st
+            .submit_auto_notification_turn(&store)
+            .expect("auto turn dispatched");
+        assert!(st.streaming, "streaming must flip true");
+        assert!(st.request_started_at.is_some());
+        assert!(st.turn_verb.is_some(), "turn_verb seeded");
+        let last = history.last().expect("history non-empty");
+        assert_eq!(last.role, OpenAiChatRole::User);
+        assert!(last.content.contains("<task-notification>"));
+        assert!(last.content.contains("<tool-use-id>toolu_auto"));
+    }
+
     /// Regression: openspec 015 §9 — the next user turn after a BG
     /// `Agent` dispatch must carry the assistant `tool_use` block so
     /// the model can match the eventual `<task-notification>` to its
@@ -2360,6 +2578,7 @@ mod tests {
             origin: DisplayOrigin::Transcript,
             tool_calls: Vec::new(),
             tool_call_id: None,
+            is_synthetic: false,
         });
         let archive = tool_render::ToolCallArchive {
             status: tool_render::ToolStatus::Ok,
@@ -2385,6 +2604,7 @@ mod tests {
             origin: DisplayOrigin::Transcript,
             tool_calls: Vec::new(),
             tool_call_id: None,
+            is_synthetic: false,
         });
         st.messages.push(DisplayMessage {
             role: OpenAiChatRole::Assistant,
@@ -2393,6 +2613,7 @@ mod tests {
             origin: DisplayOrigin::Transcript,
             tool_calls: Vec::new(),
             tool_call_id: None,
+            is_synthetic: false,
         });
         // Turn N+1: user asks "did it finish?".
         st.messages.push(DisplayMessage {
@@ -2402,6 +2623,7 @@ mod tests {
             origin: DisplayOrigin::Transcript,
             tool_calls: Vec::new(),
             tool_call_id: None,
+            is_synthetic: false,
         });
         let hist = st.history_for_request();
         // Expect: user(spawn), assistant(tool_use), tool(result),

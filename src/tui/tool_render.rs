@@ -200,6 +200,22 @@ pub fn render_tool_call(view: &ToolCallView<'_>) -> Vec<Line<'static>> {
     let mut out: Vec<Line<'static>> = Vec::new();
 
     // Header row: `⏺ ToolName(arg_summary)`.
+    // For the `Agent` tool we display the resolved subagent type
+    // (e.g. `Explore(...)`) instead of the wrapper tool name —
+    // mirrors upstream which paints `Explore(...)` even though the
+    // wire `tool_use.name` is `Agent` (R-20 anchor preserved on the
+    // wire side).
+    let displayed_name: String = if view.name == "Agent" {
+        view.args
+            .as_object()
+            .and_then(|o| o.get("subagent_type"))
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| view.name.to_string())
+    } else {
+        view.name.to_string()
+    };
     let arg_summary = summarize_args(view.name, view.args, view.verbose);
     let parens = if arg_summary.is_empty() {
         String::new()
@@ -224,7 +240,7 @@ pub fn render_tool_call(view: &ToolCallView<'_>) -> Vec<Line<'static>> {
             .add_modifier(view.status.modifier()),
     ));
     header_spans.push(Span::styled(
-        view.name.to_string(),
+        displayed_name,
         Style::default()
             .fg(theme::TEXT)
             .add_modifier(Modifier::BOLD),
@@ -1040,13 +1056,16 @@ fn agent_preview(result: &Value) -> Option<ToolPayload> {
             format_duration_ms(duration_ms),
         )));
     }
-    // Background-route synthetic result — rendered as upstream's
-    // `Running in the background (↓ to manage)` line so the tool
-    // bubble collapses from a result dump to a one-line status.
-    // Byte-match capture `02-after-ctrl-b.txt:21`.
+    // Background-route synthetic result — byte-match upstream
+    // `tools/AgentTool/UI.tsx:345-358`:
+    // `Backgrounded agent (↓ to manage · ctrl+o to expand)`.
+    // The `↓ to manage` hint references the background tasks
+    // dialog; `ctrl+o to expand` reveals the full agent prompt
+    // in transcript mode (not wired yet, but the hint is anchor
+    // text the user has been trained to recognize upstream).
     if status == "backgrounded" {
         return Some(ToolPayload::Preview(
-            "Running in the background (↓ to manage)".to_string(),
+            "Backgrounded agent (↓ to manage · ctrl+o to expand)".to_string(),
         ));
     }
     // Stubbed path — show the reason string so callers understand the
