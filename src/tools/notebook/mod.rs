@@ -134,8 +134,7 @@ fn serialize_ipynb(v: &Value) -> Result<String, ToolError> {
     })
 }
 
-pub const TOOL_NOTEBOOK_EDIT_JSON: &str =
-    include_str!("../../../harness_corpus/tools/NotebookEdit.json");
+pub use crate::harness::TOOL_NOTEBOOK_EDIT_JSON;
 
 #[cfg(test)]
 mod tests {

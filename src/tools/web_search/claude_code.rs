@@ -492,8 +492,7 @@ pub fn web_search(args: &Value) -> Result<Value, ToolError> {
     Ok(out)
 }
 
-pub const TOOL_WEB_SEARCH_JSON: &str =
-    include_str!("../../../harness_corpus/tools/WebSearch.json");
+pub use crate::harness::TOOL_WEB_SEARCH_JSON;
 
 #[cfg(test)]
 mod tests {

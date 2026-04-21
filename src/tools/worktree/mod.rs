@@ -76,11 +76,7 @@ pub fn exit_worktree(_args: &Value) -> Result<Value, ToolError> {
     }
 }
 
-pub const TOOL_ENTER_WORKTREE_JSON: &str =
-    include_str!("../../../harness_corpus/tools/EnterWorktree.json");
-
-pub const TOOL_EXIT_WORKTREE_JSON: &str =
-    include_str!("../../../harness_corpus/tools/ExitWorktree.json");
+pub use crate::harness::{TOOL_ENTER_WORKTREE_JSON, TOOL_EXIT_WORKTREE_JSON};
 
 #[cfg(test)]
 mod tests {

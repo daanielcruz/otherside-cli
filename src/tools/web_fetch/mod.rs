@@ -126,8 +126,7 @@ fn is_rejected_content_type(ct: &str) -> bool {
         .any(|needle| lower.contains(needle))
 }
 
-pub const TOOL_WEB_FETCH_JSON: &str =
-    include_str!("../../../harness_corpus/tools/WebFetch.json");
+pub use crate::harness::TOOL_WEB_FETCH_JSON;
 
 #[cfg(test)]
 mod tests {

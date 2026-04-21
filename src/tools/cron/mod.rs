@@ -210,17 +210,9 @@ pub fn clear_wakeup_registry() {
     }
 }
 
-pub const TOOL_CRON_CREATE_JSON: &str =
-    include_str!("../../../harness_corpus/tools/CronCreate.json");
-
-pub const TOOL_CRON_DELETE_JSON: &str =
-    include_str!("../../../harness_corpus/tools/CronDelete.json");
-
-pub const TOOL_CRON_LIST_JSON: &str =
-    include_str!("../../../harness_corpus/tools/CronList.json");
-
-pub const TOOL_SCHEDULE_WAKEUP_JSON: &str =
-    include_str!("../../../harness_corpus/tools/ScheduleWakeup.json");
+pub use crate::harness::{
+    TOOL_CRON_CREATE_JSON, TOOL_CRON_DELETE_JSON, TOOL_CRON_LIST_JSON, TOOL_SCHEDULE_WAKEUP_JSON,
+};
 
 #[cfg(test)]
 mod tests {

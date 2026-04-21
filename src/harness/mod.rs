@@ -48,6 +48,60 @@ pub const TOOL_TOOL_SEARCH_JSON: &str =
 pub const TOOL_WRITE_JSON: &str =
     include_str!("../../harness_corpus/tools/Write.json");
 
+pub const TOOL_TASK_CREATE_JSON: &str =
+    include_str!("../../harness_corpus/tools/TaskCreate.json");
+
+pub const TOOL_TASK_LIST_JSON: &str =
+    include_str!("../../harness_corpus/tools/TaskList.json");
+
+pub const TOOL_TASK_GET_JSON: &str =
+    include_str!("../../harness_corpus/tools/TaskGet.json");
+
+pub const TOOL_TASK_UPDATE_JSON: &str =
+    include_str!("../../harness_corpus/tools/TaskUpdate.json");
+
+pub const TOOL_TASK_OUTPUT_JSON: &str =
+    include_str!("../../harness_corpus/tools/TaskOutput.json");
+
+pub const TOOL_TASK_STOP_JSON: &str =
+    include_str!("../../harness_corpus/tools/TaskStop.json");
+
+pub const TOOL_NOTEBOOK_EDIT_JSON: &str =
+    include_str!("../../harness_corpus/tools/NotebookEdit.json");
+
+pub const TOOL_WEB_FETCH_JSON: &str =
+    include_str!("../../harness_corpus/tools/WebFetch.json");
+
+pub const TOOL_WEB_SEARCH_JSON: &str =
+    include_str!("../../harness_corpus/tools/WebSearch.json");
+
+pub const TOOL_ENTER_PLAN_MODE_JSON: &str =
+    include_str!("../../harness_corpus/tools/EnterPlanMode.json");
+
+pub const TOOL_EXIT_PLAN_MODE_JSON: &str =
+    include_str!("../../harness_corpus/tools/ExitPlanMode.json");
+
+pub const TOOL_ENTER_WORKTREE_JSON: &str =
+    include_str!("../../harness_corpus/tools/EnterWorktree.json");
+
+pub const TOOL_EXIT_WORKTREE_JSON: &str =
+    include_str!("../../harness_corpus/tools/ExitWorktree.json");
+
+pub const TOOL_CRON_CREATE_JSON: &str =
+    include_str!("../../harness_corpus/tools/CronCreate.json");
+
+pub const TOOL_CRON_DELETE_JSON: &str =
+    include_str!("../../harness_corpus/tools/CronDelete.json");
+
+pub const TOOL_CRON_LIST_JSON: &str =
+    include_str!("../../harness_corpus/tools/CronList.json");
+
+pub const TOOL_SCHEDULE_WAKEUP_JSON: &str =
+    include_str!("../../harness_corpus/tools/ScheduleWakeup.json");
+
+pub const TOOL_ASK_USER_QUESTION_JSON: &str =
+    include_str!("../../harness_corpus/tools/AskUserQuestion.json");
+
 pub const TOOL_ORDER: [&str; 9] = [
     "Agent",
     "Bash",

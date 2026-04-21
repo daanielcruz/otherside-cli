@@ -299,23 +299,10 @@ pub fn clear_registry() {
     }
 }
 
-pub const TOOL_TASK_CREATE_JSON: &str =
-    include_str!("../../../harness_corpus/tools/TaskCreate.json");
-
-pub const TOOL_TASK_LIST_JSON: &str =
-    include_str!("../../../harness_corpus/tools/TaskList.json");
-
-pub const TOOL_TASK_GET_JSON: &str =
-    include_str!("../../../harness_corpus/tools/TaskGet.json");
-
-pub const TOOL_TASK_UPDATE_JSON: &str =
-    include_str!("../../../harness_corpus/tools/TaskUpdate.json");
-
-pub const TOOL_TASK_OUTPUT_JSON: &str =
-    include_str!("../../../harness_corpus/tools/TaskOutput.json");
-
-pub const TOOL_TASK_STOP_JSON: &str =
-    include_str!("../../../harness_corpus/tools/TaskStop.json");
+pub use crate::harness::{
+    TOOL_TASK_CREATE_JSON, TOOL_TASK_GET_JSON, TOOL_TASK_LIST_JSON, TOOL_TASK_OUTPUT_JSON,
+    TOOL_TASK_STOP_JSON, TOOL_TASK_UPDATE_JSON,
+};
 
 pub fn task_output(args: &Value) -> Result<Value, ToolError> {
     let task_id = args

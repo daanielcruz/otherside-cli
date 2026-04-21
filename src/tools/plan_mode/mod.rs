@@ -35,11 +35,7 @@ pub fn exit_plan_mode(_args: &Value) -> Result<Value, ToolError> {
     }))
 }
 
-pub const TOOL_ENTER_PLAN_MODE_JSON: &str =
-    include_str!("../../../harness_corpus/tools/EnterPlanMode.json");
-
-pub const TOOL_EXIT_PLAN_MODE_JSON: &str =
-    include_str!("../../../harness_corpus/tools/ExitPlanMode.json");
+pub use crate::harness::{TOOL_ENTER_PLAN_MODE_JSON, TOOL_EXIT_PLAN_MODE_JSON};
 
 #[cfg(test)]
 mod tests {

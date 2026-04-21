@@ -1,5 +1,4 @@
-pub const TOOL_ASK_USER_QUESTION_JSON: &str =
-    include_str!("../../../harness_corpus/tools/AskUserQuestion.json");
+pub use crate::harness::TOOL_ASK_USER_QUESTION_JSON;
 
 #[cfg(test)]
 mod tests {
