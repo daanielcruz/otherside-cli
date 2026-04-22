@@ -226,11 +226,33 @@ async fn cmd_print(cli: &Cli, prompt: &str) -> Result<()> {
         .or(settings.default_provider.clone())
         .unwrap_or_else(|| DEFAULT_PROVIDER.to_string());
 
+    // Resolve the fallback model against the resolved provider so
+    // `--provider=codex` without `--model` doesn't wedge a claude slug (or
+    // any other provider's slug) into codex /responses (which 400s with
+    // "model is not supported when using Codex with a ChatGPT account").
+    // Settings-level `default_model` only wins when it belongs to the
+    // chosen provider — otherwise fall back to the provider's declared
+    // default, and only then to the universal claude-opus fallback.
+    let chosen_provider =
+        otherside::config::providers::ProviderId::from_slug(&provider_id);
+    let provider_default_model = chosen_provider
+        .map(|p| p.default_model().to_string())
+        .unwrap_or_else(|| DEFAULT_MODEL.to_string());
+    let settings_model = settings
+        .default_model
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .filter(|slug| match (chosen_provider, otherside::models::catalog::by_id(slug)) {
+            (Some(chosen), Some(model)) => model.provider == chosen,
+            // unknown slug or unknown provider: keep whatever settings said
+            // and let the backend surface its own error.
+            _ => true,
+        });
     let raw_model = cli
         .model
         .clone()
-        .or_else(|| settings.default_model.clone().filter(|s| !s.trim().is_empty()))
-        .unwrap_or_else(|| DEFAULT_MODEL.to_string());
+        .or(settings_model)
+        .unwrap_or(provider_default_model);
 
     let (base_model, thinking) = parse_suffix(&raw_model)
         .map_err(|e| Error::Other(format!("invalid model suffix: {e}")))?;

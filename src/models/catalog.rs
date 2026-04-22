@@ -77,17 +77,36 @@ pub const CATALOG: &[Model] = &[
         display_hint: "Haiku 4.5 · Fastest for quick answers",
     },
 
+    // Codex / ChatGPT OAuth account catalog.
+    // Upstream removed its static preset list (see
+    // `openai/codex:codex-rs/models-manager/src/model_presets.rs`) in favor
+    // of a live `GET /models` fetch. We carry a small static fallback here,
+    // limited to slugs the ChatGPT OAuth flow actually serves — empirically
+    // probed against a live account: other `gpt-5*` slugs 400 with "not
+    // supported when using Codex with a ChatGPT account".
     Model {
         id: "gpt-5.4",
         display_name: "GPT 5.4",
         supports_1m: false,
         provider: ProviderId::Codex,
-        family_alias: None,
-        primary_for_family: false,
-        supported_efforts: &["auto"],
+        family_alias: Some("gpt-5"),
+        primary_for_family: true,
+        supported_efforts: &["auto", "low", "medium", "high"],
         default_effort: "auto",
-        context_window: 200_000,
-        display_hint: "",
+        context_window: 272_000,
+        display_hint: "GPT 5.4 · Codex default · Responses API",
+    },
+    Model {
+        id: "gpt-5.3-codex",
+        display_name: "GPT 5.3 Codex",
+        supports_1m: false,
+        provider: ProviderId::Codex,
+        family_alias: Some("gpt-5"),
+        primary_for_family: false,
+        supported_efforts: &["auto", "low", "medium", "high"],
+        default_effort: "auto",
+        context_window: 272_000,
+        display_hint: "GPT 5.3 Codex · coding-tuned · Responses API",
     },
 
     Model {
@@ -216,6 +235,20 @@ mod tests {
     fn codex_has_gpt54() {
         let ms = models_for(ProviderId::Codex);
         assert!(ms.iter().any(|m| m.id == "gpt-5.4"));
+    }
+
+    #[test]
+    fn codex_catalog_carries_the_two_oauth_servable_slugs() {
+        // ChatGPT OAuth backend only serves gpt-5.4 and gpt-5.3-codex today;
+        // other gpt-5* slugs return {"detail":"… model is not supported
+        // when using Codex with a ChatGPT account."}. Keep the catalog pinned
+        // to what actually works until we wire a live /models fetch.
+        let ms = models_for(ProviderId::Codex);
+        let slugs: Vec<&str> = ms.iter().map(|m| m.id).collect();
+        assert!(slugs.contains(&"gpt-5.4"), "{slugs:?}");
+        assert!(slugs.contains(&"gpt-5.3-codex"), "{slugs:?}");
+        let primary = ms.iter().find(|m| m.primary_for_family).unwrap();
+        assert_eq!(primary.id, "gpt-5.4", "gpt-5.4 is the default model slug");
     }
 
     #[test]
