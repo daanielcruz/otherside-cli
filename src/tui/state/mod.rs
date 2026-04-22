@@ -1147,6 +1147,7 @@ impl ConversationState {
                                 },
                             }],
                             tool_call_id: None,
+                            reasoning_content: None,
                         });
                         let result_text = match &archive.raw_result {
                             Some(v) => serde_json::to_string(v).unwrap_or_else(|_| "{}".into()),
@@ -1158,6 +1159,7 @@ impl ConversationState {
                             name: None,
                             tool_calls: Vec::new(),
                             tool_call_id: Some(archive.id),
+                            reasoning_content: None,
                         });
                         continue;
                     }
@@ -1172,6 +1174,7 @@ impl ConversationState {
                     name: None,
                     tool_calls: Vec::new(),
                     tool_call_id: None,
+                    reasoning_content: None,
                 });
                 continue;
             }
@@ -1184,6 +1187,7 @@ impl ConversationState {
                 name: None,
                 tool_calls: m.tool_calls.clone(),
                 tool_call_id: m.tool_call_id.clone(),
+                reasoning_content: None,
             });
         }
         out

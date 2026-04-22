@@ -654,5 +654,110 @@ mod tests {
                 "shim scope is tool-call messages only, not blanket every assistant turn",
             );
         }
+
+        fn history_with_captured_reasoning(
+            captured: &str,
+        ) -> Vec<OpenAiChatMessage> {
+            vec![
+                OpenAiChatMessage {
+                    role: OpenAiChatRole::User,
+                    content: "list files".to_string(),
+                    ..Default::default()
+                },
+                OpenAiChatMessage {
+                    role: OpenAiChatRole::Assistant,
+                    content: String::new(),
+                    tool_calls: vec![OpenAiToolCall {
+                        id: "toolu_kimi1".into(),
+                        kind: "function".into(),
+                        function: OpenAiToolCallFunction {
+                            name: "Glob".into(),
+                            arguments: r#"{"pattern":"*.rs"}"#.into(),
+                        },
+                    }],
+                    reasoning_content: Some(captured.to_string()),
+                    ..Default::default()
+                },
+                OpenAiChatMessage {
+                    role: OpenAiChatRole::Tool,
+                    content: "a.rs\nb.rs".into(),
+                    tool_call_id: Some("toolu_kimi1".into()),
+                    ..Default::default()
+                },
+                OpenAiChatMessage {
+                    role: OpenAiChatRole::User,
+                    content: "now read a.rs".to_string(),
+                    ..Default::default()
+                },
+            ]
+        }
+
+        #[test]
+        fn request_emits_real_reasoning_content_when_history_has_it() {
+            // When the source OpenAiChatMessage carries captured content
+            // (from the fold_chunk path), the request body must emit that
+            // real content — NOT the empty-string fallback. This is what
+            // satisfies kimi's validator when it checks the value (not
+            // just field presence).
+            let captured = "Let me think: I should Glob for *.rs first.";
+            let cfg = ThinkingConfig::level(ThinkingLevel::On);
+            let body = build(
+                history_with_captured_reasoning(captured),
+                SystemFlavor::ThirdParty,
+                Some(&cfg),
+            );
+            let msg = find_assistant_tool_use(&body);
+            let rc = msg
+                .get("reasoning_content")
+                .expect("reasoning_content sibling present");
+            assert_eq!(
+                rc.as_str(),
+                Some(captured),
+                "real captured reasoning must round-trip; empty-string shim is fallback-only",
+            );
+        }
+
+        #[test]
+        fn anthropic_flavor_never_emits_reasoning_content_even_when_history_has_captured_it() {
+            // Regression guard for the mid-session switch kimi→anthropic
+            // scenario: even if history carries `reasoning_content` (because
+            // a prior kimi turn captured it), the Anthropic wire must NOT
+            // smuggle it into the request body. Anthropic's /v1/messages
+            // rejects this field entirely.
+            let cfg = ThinkingConfig::level(ThinkingLevel::High);
+            let body = build(
+                history_with_captured_reasoning("kimi-era thought"),
+                SystemFlavor::ClaudeCode,
+                Some(&cfg),
+            );
+            let msg = find_assistant_tool_use(&body);
+            assert!(
+                msg.get("reasoning_content").is_none(),
+                "Anthropic flavor must strip reasoning_content even when source history carries captured content (mid-session kimi→anthropic switch safety)",
+            );
+        }
+
+        #[test]
+        fn request_falls_back_to_empty_string_when_history_missing_reasoning_content() {
+            // Regression: assistant tool-call message loaded from disk
+            // pre-this-field, or produced by a non-kimi provider before a
+            // mid-session switch — reasoning_content is None on the source.
+            // The shim must still emit "" so the kimi validator passes.
+            let cfg = ThinkingConfig::level(ThinkingLevel::On);
+            let body = build(
+                history_with_tool_use_turn(), // reasoning_content defaults to None
+                SystemFlavor::ThirdParty,
+                Some(&cfg),
+            );
+            let msg = find_assistant_tool_use(&body);
+            let rc = msg
+                .get("reasoning_content")
+                .expect("reasoning_content sibling present as empty-string fallback");
+            assert_eq!(
+                rc.as_str(),
+                Some(""),
+                "fallback to empty string preserves validator pass when no real content was captured",
+            );
+        }
     }
 }

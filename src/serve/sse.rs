@@ -33,6 +33,7 @@ mod tests {
                     role: Some(OpenAiChatRole::Assistant),
                     content: Some("Hi".to_string()),
                     tool_calls: Vec::new(),
+                    ..Default::default()
                 },
                 finish_reason: None,
             }],

@@ -199,6 +199,7 @@ impl AnthropicStreamTranslator {
                     arguments: Some(String::new()),
                 }),
             }],
+            ..Default::default()
         };
         Ok(Some(self.build_chunk(delta, None)))
     }
@@ -243,6 +244,7 @@ impl AnthropicStreamTranslator {
                 role: Some(OpenAiChatRole::Assistant),
                 content: None,
                 tool_calls: Vec::new(),
+                ..Default::default()
             },
             None,
             usage,
@@ -269,6 +271,7 @@ impl AnthropicStreamTranslator {
                         role: None,
                         content: Some(text),
                         tool_calls: Vec::new(),
+                        ..Default::default()
                     },
                     None,
                 )))
@@ -276,25 +279,51 @@ impl AnthropicStreamTranslator {
             // Kimi-specific: when `thinking` is on, reasoning flows as either
             // `thinking_delta` (reusing Anthropic's shape; field name `thinking`)
             // or a speculative `reasoning_content_delta` (field name
-            // `reasoning_content`). Both variants feed one buffer; if neither
-            // lands, the request-side gate still emits `""` to satisfy the
-            // kimi validator. Wire shape uncertain until Proxyman capture —
-            // shipping both decoders keeps the follow-up one match-arm away.
+            // `reasoning_content`). Both variants feed one buffer AND emit a
+            // chunk with `delta.reasoning_content` set — the agent loop folds
+            // those chunks into `OpenAiChatMessage.reasoning_content` so the
+            // next request body round-trips the real content. The buffer is
+            // retained for direct `take_reasoning_content()` callers (unit
+            // tests today; tomorrow perhaps a non-streaming code path). Wire
+            // shape still needs a Proxyman capture to confirm the exact
+            // event name kimi emits — shipping both decoders keeps the
+            // follow-up one match-arm away.
             "thinking_delta" => {
-                if let Some(chunk) = delta_obj.get("thinking").and_then(Value::as_str) {
-                    self.reasoning_content_buf.push_str(chunk);
+                let chunk = delta_obj
+                    .get("thinking")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                if chunk.is_empty() {
+                    return Ok(None);
                 }
-                Ok(None)
+                self.reasoning_content_buf.push_str(&chunk);
+                Ok(Some(self.build_chunk(
+                    OpenAiDelta {
+                        reasoning_content: Some(chunk),
+                        ..Default::default()
+                    },
+                    None,
+                )))
             }
             "reasoning_content_delta" => {
-                if let Some(chunk) = delta_obj
+                let chunk = delta_obj
                     .get("reasoning_content")
                     .and_then(Value::as_str)
                     .or_else(|| delta_obj.get("text").and_then(Value::as_str))
-                {
-                    self.reasoning_content_buf.push_str(chunk);
+                    .unwrap_or("")
+                    .to_string();
+                if chunk.is_empty() {
+                    return Ok(None);
                 }
-                Ok(None)
+                self.reasoning_content_buf.push_str(&chunk);
+                Ok(Some(self.build_chunk(
+                    OpenAiDelta {
+                        reasoning_content: Some(chunk),
+                        ..Default::default()
+                    },
+                    None,
+                )))
             }
             "input_json_delta" => {
                 let anthropic_index = value
@@ -328,6 +357,7 @@ impl AnthropicStreamTranslator {
                                 arguments: Some(partial),
                             }),
                         }],
+                        ..Default::default()
                     },
                     None,
                 )))
@@ -379,6 +409,7 @@ impl AnthropicStreamTranslator {
                 role: None,
                 content: None,
                 tool_calls: Vec::new(),
+                ..Default::default()
             },
             Some(finish_reason),
         )))
@@ -557,17 +588,28 @@ mod tests {
 
     #[test]
     fn thinking_delta_accumulates_into_reasoning_content_buffer() {
-        // Historical `thinking_delta_ignored_in_mvp`: the event still emits
-        // no downstream chunk (reasoning content never rides the OpenAI
-        // delta stream), but it now feeds the reasoning_content
-        // accumulator so kimi re-emission can round-trip it.
+        // The event now BOTH feeds the internal buffer (backward-compat
+        // for direct `take_reasoning_content` callers) AND emits a chunk
+        // with `delta.reasoning_content` set so the data flows through
+        // the agent loop's fold_chunk path for round-trip to kimi.
         let mut t = AnthropicStreamTranslator::new();
         let ev = SseEvent {
             event: "content_block_delta".into(),
             data: r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"reasoning..."}}"#.into(),
             ..Default::default()
         };
-        assert!(t.on_event(&ev).unwrap().is_none());
+        let chunk = t
+            .on_event(&ev)
+            .unwrap()
+            .expect("thinking_delta emits a chunk carrying reasoning_content");
+        assert_eq!(
+            chunk.choices[0].delta.reasoning_content.as_deref(),
+            Some("reasoning..."),
+            "streamed chunk must carry the delta content for fold_chunk",
+        );
+        assert!(chunk.choices[0].delta.content.is_none());
+        assert!(chunk.choices[0].delta.tool_calls.is_empty());
+        // Internal buffer still populated for backward compat.
         assert_eq!(t.take_reasoning_content().as_deref(), Some("reasoning..."));
     }
 

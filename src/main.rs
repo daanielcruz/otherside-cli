@@ -272,6 +272,7 @@ async fn cmd_print(cli: &Cli, prompt: &str) -> Result<()> {
             name: None,
             tool_calls: Vec::new(),
             tool_call_id: None,
+            reasoning_content: None,
         }],
         stream: Some(true),
         max_tokens: None,

@@ -77,6 +77,15 @@ pub struct OpenAiChatMessage {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+
+    // Kimi round-trip: when `thinking` is on, every assistant tool-call
+    // message must carry a `reasoning_content` sibling on the NEXT
+    // request. Captured from the SSE delta stream during the turn that
+    // produced the tool_calls, then re-emitted by the request builder.
+    // None for turns that didn't carry reasoning (non-kimi providers,
+    // thinking-off turns, or history loaded from disk pre-this-field).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -127,6 +136,14 @@ pub struct OpenAiDelta {
 
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<OpenAiToolCallDelta>,
+
+    // Streaming carrier for kimi `reasoning_content` deltas. The translator
+    // emits one chunk per `thinking_delta` / `reasoning_content_delta`
+    // SSE event with this field set; the agent loop folds them into
+    // `OpenAiChatMessage.reasoning_content` so the next request body
+    // can round-trip it on the assistant tool-call message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -247,6 +264,7 @@ mod tests {
                     role: Some(OpenAiChatRole::Assistant),
                     content: Some("Hi".to_string()),
                     tool_calls: Vec::new(),
+                    ..Default::default()
                 },
                 finish_reason: None,
             }],

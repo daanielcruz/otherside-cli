@@ -194,6 +194,7 @@ async fn aggregate_response(
                 name: None,
                 tool_calls: Vec::new(),
                 tool_call_id: None,
+                reasoning_content: None,
             },
             finish_reason,
         }],
@@ -266,6 +267,7 @@ mod tests {
                     },
                     content: content.map(|s| s.to_string()),
                     tool_calls: Vec::new(),
+                    ..Default::default()
                 },
                 finish_reason: finish.map(|s| s.to_string()),
             }],

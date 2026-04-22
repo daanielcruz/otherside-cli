@@ -59,6 +59,7 @@ impl State {
                                     arguments: None,
                                 }),
                             }],
+                            ..Default::default()
                         })]
                     }
                     // Codex `/responses` server-side web_search: emits a
@@ -77,6 +78,7 @@ impl State {
                                 role: None,
                                 content: Some(note),
                                 tool_calls: Vec::new(),
+                                ..Default::default()
                             })]
                         }
                     }
@@ -89,6 +91,7 @@ impl State {
                         role: None,
                         content: Some(delta.to_string()),
                         tool_calls: Vec::new(),
+                        ..Default::default()
                     })]
                 } else {
                     Vec::new()
@@ -111,6 +114,7 @@ impl State {
                                 arguments: Some(delta.to_string()),
                             }),
                         }],
+                        ..Default::default()
                     })]
                 } else {
                     Vec::new()
@@ -158,6 +162,7 @@ impl State {
                     role: Some(OpenAiChatRole::Assistant),
                     content: None,
                     tool_calls: Vec::new(),
+                    ..Default::default()
                 },
                 finish_reason: None,
             }],

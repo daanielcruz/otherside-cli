@@ -29,6 +29,13 @@ pub struct Turn {
     pub finish_reason: Option<String>,
 
     pub pending_usage: Option<crate::inference::OpenAiUsage>,
+
+    // Accumulates `reasoning_content` deltas from the stream (kimi
+    // `thinking_delta` / `reasoning_content_delta`). At end-of-turn, a
+    // non-empty buffer is attached to the assistant tool-call message
+    // so the next request round-trips it back to kimi (required by its
+    // validator when `thinking` is on).
+    pub reasoning_content: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -92,6 +99,11 @@ impl Turn {
             if !text.is_empty() {
                 self.assistant_text.push_str(&text);
                 emitted = Some(text);
+            }
+        }
+        if let Some(rc) = delta.reasoning_content {
+            if !rc.is_empty() {
+                self.reasoning_content.push_str(&rc);
             }
         }
         for tc in delta.tool_calls {
@@ -288,6 +300,7 @@ pub fn tool_result_message(call_id: &str, result: &Value) -> OpenAiChatMessage {
         name: None,
         tool_calls: Vec::new(),
         tool_call_id: Some(call_id.to_string()),
+        reasoning_content: None,
     }
 }
 
@@ -406,12 +419,18 @@ impl<D: ToolDispatcher, O: LoopObserver> AgentLoop<D, O> {
 
             if turn.wants_tool_dispatch() && turn.has_pending_calls() {
                 let tool_calls = turn.drain_calls();
+                let captured_reasoning = if turn.reasoning_content.is_empty() {
+                    None
+                } else {
+                    Some(std::mem::take(&mut turn.reasoning_content))
+                };
                 let assistant_msg = OpenAiChatMessage {
                     role: OpenAiChatRole::Assistant,
                     content: turn.assistant_text.clone(),
                     name: None,
                     tool_calls: tool_calls.clone(),
                     tool_call_id: None,
+                    reasoning_content: captured_reasoning,
                 };
                 history.push(assistant_msg);
                 for call in &tool_calls {
@@ -482,6 +501,7 @@ impl<D: ToolDispatcher, O: LoopObserver> AgentLoop<D, O> {
                     name: None,
                     tool_calls: Vec::new(),
                     tool_call_id: None,
+                    reasoning_content: None,
                 });
             }
             return Ok(LoopResult {
@@ -549,6 +569,7 @@ mod tests {
                     role: None,
                     content: Some(text.to_string()),
                     tool_calls: Vec::new(),
+                    ..Default::default()
                 },
                 finish_reason: finish.map(|s| s.to_string()),
             }],
@@ -568,6 +589,7 @@ mod tests {
                     role: None,
                     content: None,
                     tool_calls: vec![delta],
+                    ..Default::default()
                 },
                 finish_reason: finish.map(|s| s.to_string()),
             }],
@@ -661,6 +683,123 @@ mod tests {
         assert_eq!(drained.output_tokens, Some(56));
 
         assert!(t.take_usage().is_none());
+    }
+
+    fn reasoning_chunk(text: &str) -> OpenAiChunk {
+        OpenAiChunk {
+            id: "chatcmpl-t".into(),
+            object: OpenAiChunk::OBJECT.into(),
+            created: 0,
+            model: "m".into(),
+            choices: vec![OpenAiChoice {
+                index: 0,
+                delta: OpenAiDelta {
+                    reasoning_content: Some(text.to_string()),
+                    ..Default::default()
+                },
+                finish_reason: None,
+            }],
+            usage: None,
+        }
+    }
+
+    #[test]
+    fn turn_fold_captures_reasoning_content_from_stream() {
+        // Simulate the translator emitting `thinking_delta` / `reasoning_content_delta`
+        // chunks (shape: `OpenAiDelta.reasoning_content = Some(...)`).
+        // Turn::fold_chunk must accumulate into `turn.reasoning_content`
+        // so the agent loop can attach it to the assistant tool-call
+        // message and round-trip to kimi.
+        let mut t = Turn::new();
+        t.fold_chunk(reasoning_chunk("Let me think "));
+        t.fold_chunk(reasoning_chunk("about this. "));
+        t.fold_chunk(reasoning_chunk("I'll Glob first."));
+        // Interleave with text + a tool call to prove the fold coexists.
+        t.fold_chunk(text_chunk("Reading files now.", None));
+        t.fold_chunk(tool_chunk(
+            0,
+            OpenAiToolCallDelta {
+                index: 0,
+                id: Some("tu_rc".into()),
+                kind: Some("function".into()),
+                function: Some(OpenAiToolCallFunctionDelta {
+                    name: Some("Glob".into()),
+                    arguments: Some("{}".into()),
+                }),
+            },
+            Some("tool_calls"),
+        ));
+
+        assert_eq!(
+            t.reasoning_content, "Let me think about this. I'll Glob first.",
+            "Turn accumulator must concatenate reasoning_content deltas in order",
+        );
+        assert_eq!(t.assistant_text, "Reading files now.");
+        assert!(t.wants_tool_dispatch());
+    }
+
+    #[tokio::test]
+    async fn agent_loop_attaches_reasoning_content_to_tool_call_assistant_msg() {
+        // End-to-end check: reasoning chunks flow through the stream,
+        // Turn folds them, and the assistant tool-call message pushed
+        // into history carries the captured content. This is what lets
+        // the next request body emit the real reasoning instead of "".
+        let turn1: Vec<std::result::Result<OpenAiChunk, Error>> = vec![
+            Ok(reasoning_chunk("kimi-think-step-1 ")),
+            Ok(reasoning_chunk("kimi-think-step-2")),
+            Ok(tool_chunk(
+                0,
+                OpenAiToolCallDelta {
+                    index: 0,
+                    id: Some("tu_rc1".into()),
+                    kind: Some("function".into()),
+                    function: Some(OpenAiToolCallFunctionDelta {
+                        name: Some("Glob".into()),
+                        arguments: Some("{}".into()),
+                    }),
+                },
+                Some("tool_calls"),
+            )),
+        ];
+        let turn2: Vec<std::result::Result<OpenAiChunk, Error>> =
+            vec![Ok(text_chunk("done", Some("stop")))];
+        let mut inbox = vec![turn1, turn2];
+
+        let loop_ = AgentLoop {
+            model: "kimi".into(),
+            thinking: None,
+            max_turns: 5,
+            tools: Vec::new(),
+            tool_choice: None,
+            dispatcher: FakeDispatcher,
+            observer: NoOpObserver,
+        };
+        let initial = vec![OpenAiChatMessage {
+            role: OpenAiChatRole::User,
+            content: "list rs".into(),
+            ..Default::default()
+        }];
+        let result = loop_
+            .run(initial, |_req, _t| {
+                let chunks = inbox.remove(0);
+                async move {
+                    let s: ChunkStream = Box::pin(stream::iter(chunks));
+                    Ok(s)
+                }
+            })
+            .await
+            .unwrap();
+
+        let assistant_tool_msg = result
+            .history
+            .iter()
+            .find(|m| m.role == OpenAiChatRole::Assistant && !m.tool_calls.is_empty())
+            .expect("assistant tool-call message landed in history");
+        assert_eq!(
+            assistant_tool_msg.reasoning_content.as_deref(),
+            Some("kimi-think-step-1 kimi-think-step-2"),
+            "captured reasoning must ride on the tool-call assistant message",
+        );
     }
 
     #[derive(Default)]

@@ -266,6 +266,7 @@ pub async fn compact_conversation(
         name: None,
         tool_calls: Vec::new(),
         tool_call_id: None,
+        reasoning_content: None,
     });
 
     let req = OpenAiChatRequest {
@@ -481,6 +482,7 @@ mod tests {
                     role: None,
                     content: Some(delta.into()),
                     tool_calls: Vec::new(),
+                    ..Default::default()
                 },
                 finish_reason: None,
             }],
@@ -495,6 +497,7 @@ mod tests {
             name: None,
             tool_calls: Vec::new(),
             tool_call_id: None,
+            reasoning_content: None,
         }]
     }
 

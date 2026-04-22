@@ -99,6 +99,7 @@ mod tests {
                                 role: Some(OpenAiChatRole::Assistant),
                                 content: None,
                                 tool_calls: Vec::new(),
+                                ..Default::default()
                             },
                             finish_reason: None,
                         }],
@@ -115,6 +116,7 @@ mod tests {
                                 role: None,
                                 content: Some("pong".into()),
                                 tool_calls: Vec::new(),
+                                ..Default::default()
                             },
                             finish_reason: Some("stop".into()),
                         }],

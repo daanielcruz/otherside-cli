@@ -125,10 +125,22 @@ pub fn normalize_with_flavor(
                     });
                 }
                 if !blocks.is_empty() {
+                    // Forward captured reasoning ONLY for third-party
+                    // flavors (kimi). Anthropic's own /v1/messages rejects
+                    // the field outright, and a mid-session provider
+                    // switch kimi→anthropic would otherwise smuggle the
+                    // kimi-era reasoning into an anthropic request and 400.
+                    // The shim (attach_reasoning_content_shim) is also
+                    // flavor-gated at the caller, so anthropic flavors
+                    // never see this field.
+                    let forwarded_reasoning = match flavor {
+                        SystemFlavor::ThirdParty => msg.reasoning_content.clone(),
+                        SystemFlavor::ClaudeCode => None,
+                    };
                     out.push(AnthropicMessage {
                         role: Role::Assistant,
                         content: blocks,
-                        reasoning_content: None,
+                        reasoning_content: forwarded_reasoning,
                     });
                 }
             }
@@ -160,13 +172,18 @@ fn flush_tool_results(pending: &mut Vec<Block>, out: &mut Vec<AnthropicMessage>)
 }
 
 /// For every assistant message that carries at least one `tool_use`
-/// block, attach `reasoning_content: ""` as an empty-string shim. The
-/// kimi validator only checks for field PRESENCE; the value content
-/// is irrelevant until we wire the response-side capture back through
-/// `OpenAiChatMessage` (blocked on agent/* scope). Assistant turns
-/// with no tool_use (plain text answers) are left untouched — the
-/// upstream error message ("in assistant tool call message") scopes
-/// the requirement to tool-carrying turns only.
+/// block, ensure a `reasoning_content` sibling exists. When the source
+/// `OpenAiChatMessage` carried captured reasoning (kimi round-trip from
+/// `thinking_delta` / `reasoning_content_delta` SSE deltas), that value
+/// has already been forwarded into `AnthropicMessage.reasoning_content`
+/// by `normalize_with_flavor`. This pass only fills in an empty-string
+/// fallback when no real content was captured — e.g. history loaded
+/// from disk pre-this-field, or assistant turns produced by a non-kimi
+/// provider mid-session before a switch. The empty string keeps the
+/// kimi validator passing ("field present") even without real content.
+/// Assistant turns with no tool_use (plain text answers) are left
+/// untouched — the upstream error message ("in assistant tool call
+/// message") scopes the requirement to tool-carrying turns only.
 fn attach_reasoning_content_shim(messages: &mut [AnthropicMessage]) {
     for msg in messages.iter_mut() {
         if msg.role != Role::Assistant {
