@@ -6,6 +6,8 @@ pub struct UserEnvelope {
     pub platform: String,
     pub shell: String,
     pub os_version: String,
+    pub memory_dir: String,
+    pub git_status: String,
 }
 
 pub fn resolve() -> UserEnvelope {
@@ -17,6 +19,12 @@ pub fn resolve() -> UserEnvelope {
     let platform = detect_platform();
     let shell = detect_shell();
     let os_version = detect_os_version();
+    let memory_dir = resolve_memory_dir(&cwd);
+    let git_status = if is_git_repo {
+        resolve_git_status(&cwd).unwrap_or_default()
+    } else {
+        String::new()
+    };
     UserEnvelope {
         email,
         current_date,
@@ -25,7 +33,82 @@ pub fn resolve() -> UserEnvelope {
         platform,
         shell,
         os_version,
+        memory_dir,
+        git_status,
     }
+}
+
+const MAX_STATUS_CHARS: usize = 2000;
+
+pub fn resolve_git_status(cwd: &str) -> Option<String> {
+    let branch = git_output(cwd, &["branch", "--show-current"])?;
+    let main_branch = detect_default_branch(cwd);
+    let status_raw = git_output(cwd, &["--no-optional-locks", "status", "--short"])?;
+    let log = git_output(cwd, &["--no-optional-locks", "log", "--oneline", "-n", "5"])?;
+    let user_name = git_output(cwd, &["config", "user.name"]).unwrap_or_default();
+
+    let truncated_status = if status_raw.len() > MAX_STATUS_CHARS {
+        let mut cut = status_raw[..MAX_STATUS_CHARS].to_string();
+        cut.push_str(
+            "\n... (truncated because it exceeds 2k characters. If you need more information, run \"git status\" using BashTool)",
+        );
+        cut
+    } else {
+        status_raw
+    };
+    let status_display = if truncated_status.is_empty() {
+        "(clean)".to_string()
+    } else {
+        truncated_status
+    };
+
+    let mut parts = vec![
+        "This is the git status at the start of the conversation. Note that this status is a snapshot in time, and will not update during the conversation.".to_string(),
+        format!("Current branch: {branch}"),
+        format!("Main branch (you will usually use this for PRs): {main_branch}"),
+    ];
+    if !user_name.is_empty() {
+        parts.push(format!("Git user: {user_name}"));
+    }
+    parts.push(format!("Status:\n{status_display}"));
+    parts.push(format!("Recent commits:\n{log}"));
+    Some(parts.join("\n\n"))
+}
+
+fn git_output(cwd: &str, args: &[&str]) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+fn detect_default_branch(cwd: &str) -> String {
+    git_output(cwd, &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
+        .map(|s| s.trim_start_matches("origin/").to_string())
+        .or_else(|| {
+            let candidates = ["main", "master"];
+            candidates.iter().find_map(|b| {
+                git_output(cwd, &["rev-parse", "--verify", &format!("refs/heads/{b}")]).map(|_| (*b).to_string())
+            })
+        })
+        .unwrap_or_else(|| "main".to_string())
+}
+
+pub fn resolve_memory_dir(cwd: &str) -> String {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
+    let sanitized = sanitize_path(cwd);
+    format!("{home}/.otherside/projects/{sanitized}/memory/")
+}
+
+fn sanitize_path(name: &str) -> String {
+    name.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect()
 }
 
 fn resolve_user_context() -> (String, String) {

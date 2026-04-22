@@ -5,16 +5,38 @@ use serde_json::{json, Value};
 use super::{REMINDER_DEFERRED_TOOLS, REMINDER_SKILLS, REMINDER_USER_CONTEXT_TMPL};
 
 pub fn render_user_context(email: &str, current_date: &str) -> String {
+    render_user_context_with_git(email, current_date, "")
+}
+
+pub fn render_user_context_with_git(
+    email: &str,
+    current_date: &str,
+    git_status: &str,
+) -> String {
+    let git_section = if git_status.is_empty() {
+        String::new()
+    } else {
+        format!("# gitStatus\n{git_status}\n")
+    };
     REMINDER_USER_CONTEXT_TMPL
         .replace("{{email}}", email)
         .replace("{{current_date}}", current_date)
+        .replace("{{git_status_section}}", &git_section)
 }
 
 pub fn build_preamble_blocks(email: &str, current_date: &str) -> [Value; 3] {
+    build_preamble_blocks_with_git(email, current_date, "")
+}
+
+pub fn build_preamble_blocks_with_git(
+    email: &str,
+    current_date: &str,
+    git_status: &str,
+) -> [Value; 3] {
     [
         json!({ "type": "text", "text": REMINDER_DEFERRED_TOOLS }),
         json!({ "type": "text", "text": REMINDER_SKILLS }),
-        json!({ "type": "text", "text": render_user_context(email, current_date) }),
+        json!({ "type": "text", "text": render_user_context_with_git(email, current_date, git_status) }),
     ]
 }
 
@@ -64,5 +86,25 @@ mod tests {
         let blocks = build_preamble_blocks("e", "d");
         let text = blocks[2]["text"].as_str().unwrap();
         assert!(text.ends_with("</system-reminder>\n\n"));
+    }
+
+    #[test]
+    fn git_status_section_absent_when_empty() {
+        let rendered = render_user_context_with_git("a@b.com", "2026-04-22", "");
+        assert!(!rendered.contains("# gitStatus"));
+        assert!(!rendered.contains("{{git_status_section}}"));
+    }
+
+    #[test]
+    fn git_status_section_present_when_populated() {
+        let rendered = render_user_context_with_git(
+            "a@b.com",
+            "2026-04-22",
+            "Current branch: main\n\nStatus:\n(clean)",
+        );
+        assert!(rendered.contains("# gitStatus"));
+        assert!(rendered.contains("Current branch: main"));
+        assert!(rendered.contains("Status:\n(clean)"));
+        assert!(!rendered.contains("{{git_status_section}}"));
     }
 }

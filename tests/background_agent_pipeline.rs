@@ -152,6 +152,8 @@ async fn background_agent_auto_trigger_pipeline() {
         platform: "darwin",
         shell: "bash",
         os_version: "Darwin 25.3.0",
+        memory_dir: "/root/.otherside/projects/-tmp-work/memory/",
+        git_status: "",
     };
     let body = build_request_body(&req, &ctx).expect("build_request_body");
     let body_str = std::str::from_utf8(&body).expect("body utf8");

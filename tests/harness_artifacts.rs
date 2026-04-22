@@ -23,7 +23,7 @@ fn system_prompt_keeps_core_anchors_and_verification_bullet() {
         "system-prompt.md must include the verification-contract bullet"
     );
     for anchor in [
-        "# Text output",
+        "# Output efficiency",
         "# Session-specific guidance",
         "# auto memory",
         "# Environment",
@@ -39,6 +39,7 @@ fn system_prompt_keeps_core_anchors_and_verification_bullet() {
         "_PLATFORM_",
         "_SHELL_",
         "_OS_VERSION_",
+        "_MEMORY_DIR_",
     ] {
         assert!(
             harness::SYSTEM_PROMPT.contains(placeholder),

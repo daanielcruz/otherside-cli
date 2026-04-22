@@ -2,7 +2,7 @@
 
 use serde_json::Value;
 
-use crate::harness::reminders::build_preamble_blocks;
+use crate::harness::reminders::build_preamble_blocks_with_git;
 use crate::inference::{OpenAiChatMessage, OpenAiChatRole};
 
 use super::blocks::{AnthropicMessage, Block, Role};
@@ -30,7 +30,8 @@ pub fn normalize(messages: &[OpenAiChatMessage], ctx: &UserContext<'_>) -> Vec<A
                 flush_tool_results(&mut pending_tool_results, &mut out);
                 let mut blocks: Vec<Block> = Vec::new();
                 if first_user {
-                    let preamble = build_preamble_blocks(ctx.email, ctx.current_date);
+                    let preamble =
+                        build_preamble_blocks_with_git(ctx.email, ctx.current_date, ctx.git_status);
                     for p in preamble {
                         blocks.push(Block::Text {
                             text: p["text"]

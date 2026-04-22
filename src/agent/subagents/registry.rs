@@ -51,7 +51,6 @@ fn parse_bundled(source_path: &str, src: &str) -> AgentDefinition {
 }
 
 const GENERAL_PURPOSE_SRC: &str = include_str!("../../../agents_corpus/general-purpose.md");
-const READER_SRC: &str = include_str!("../../../agents_corpus/reader.md");
 const EXPLORE_SRC: &str = include_str!("../../../agents_corpus/explore.md");
 const PLAN_SRC: &str = include_str!("../../../agents_corpus/plan.md");
 const VERIFICATION_SRC: &str = include_str!("../../../agents_corpus/verification.md");
@@ -63,7 +62,6 @@ fn bundled() -> &'static [AgentDefinition] {
     CELL.get_or_init(|| {
         vec![
             parse_bundled("general-purpose.md", GENERAL_PURPOSE_SRC),
-            parse_bundled("reader.md", READER_SRC),
             parse_bundled("explore.md", EXPLORE_SRC),
             parse_bundled("plan.md", PLAN_SRC),
             parse_bundled("verification.md", VERIFICATION_SRC),
@@ -103,12 +101,12 @@ mod tests {
     fn registry_contains_expected_bundled_set() {
         let names: Vec<&str> = all().iter().map(|d| d.name.as_str()).collect();
         assert!(names.contains(&"general-purpose"));
-        assert!(names.contains(&"reader"));
         assert!(names.contains(&"Explore"));
         assert!(names.contains(&"Plan"));
         assert!(names.contains(&"verification"));
         assert!(names.contains(&"claude-code-guide"));
         assert!(names.contains(&"statusline-setup"));
+        assert!(!names.contains(&"reader"));
     }
 
     #[test]
@@ -151,21 +149,6 @@ mod tests {
     }
 
     #[test]
-    fn resolves_reader() {
-        let d = resolve("reader").expect("reader must load");
-        assert_eq!(d.name, "reader");
-        match &d.tools {
-            ToolsField::List(list) => {
-                assert!(list.iter().any(|t| t == "Read"));
-                assert!(!list.iter().any(|t| t == "Write"));
-                assert!(!list.iter().any(|t| t == "Edit"));
-                assert!(!list.iter().any(|t| t == "Bash"));
-            }
-            _ => panic!("reader must carry an explicit tool list, not wildcard"),
-        }
-    }
-
-    #[test]
     fn returns_none_for_unknown_type() {
         assert!(resolve("nonexistent-xyz").is_none());
     }
@@ -177,17 +160,6 @@ mod tests {
         assert!(tool_is_allowed(d, "Bash"));
         assert!(tool_is_allowed(d, "Write"));
         assert!(tool_is_allowed(d, "Agent"));
-    }
-
-    #[test]
-    fn reader_rejects_bash_and_write() {
-        let d = resolve("reader").unwrap();
-        assert!(tool_is_allowed(d, "Read"));
-        assert!(tool_is_allowed(d, "Glob"));
-        assert!(tool_is_allowed(d, "Grep"));
-        assert!(!tool_is_allowed(d, "Bash"));
-        assert!(!tool_is_allowed(d, "Write"));
-        assert!(!tool_is_allowed(d, "Edit"));
     }
 
     #[test]

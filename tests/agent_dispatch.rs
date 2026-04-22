@@ -105,24 +105,6 @@ fn agent_defaults_subagent_type_to_general_purpose() {
 }
 
 #[test]
-fn agent_reader_subagent_resolves() {
-    let (fake, _guard) = ensure_runner();
-    fake.set_content("reader-ok");
-    let res = dispatch(
-        "Agent",
-        &json!({
-            "description": "Read-only probe",
-            "prompt": "find main.rs",
-            "subagent_type": "reader",
-        }),
-    )
-    .unwrap();
-    if res["status"] == "completed" {
-        assert_eq!(res["subagent_type"], "reader");
-    }
-}
-
-#[test]
 fn agent_requires_description_and_prompt() {
     let _g = ensure_runner();
     let err = dispatch("Agent", &json!({})).unwrap_err();

@@ -22,6 +22,7 @@ const PLACEHOLDER_IS_GIT: &str = "_IS_GIT_REPO_";
 const PLACEHOLDER_PLATFORM: &str = "_PLATFORM_";
 const PLACEHOLDER_SHELL: &str = "_SHELL_";
 const PLACEHOLDER_OS_VERSION: &str = "_OS_VERSION_";
+const PLACEHOLDER_MEMORY_DIR: &str = "_MEMORY_DIR_";
 
 #[derive(Debug, Clone)]
 pub struct UserContext<'a> {
@@ -32,6 +33,8 @@ pub struct UserContext<'a> {
     pub platform: &'a str,
     pub shell: &'a str,
     pub os_version: &'a str,
+    pub memory_dir: &'a str,
+    pub git_status: &'a str,
 }
 
 impl UserContext<'_> {
@@ -45,6 +48,8 @@ impl UserContext<'_> {
             platform: "linux",
             shell: "bash",
             os_version: "Linux 6.12.76-linuxkit",
+            memory_dir: "/root/.otherside/projects/-workspace/memory/",
+            git_status: "",
         }
     }
 }
@@ -54,7 +59,7 @@ fn substitute_environment_in_system(system: &mut [Value], ctx: &UserContext<'_>)
         let Some(text) = block.get("text").and_then(|v| v.as_str()) else {
             continue;
         };
-        if !text.contains(PLACEHOLDER_CWD) {
+        if !text.contains(PLACEHOLDER_CWD) && !text.contains(PLACEHOLDER_MEMORY_DIR) {
             continue;
         }
         let replaced = text
@@ -62,7 +67,8 @@ fn substitute_environment_in_system(system: &mut [Value], ctx: &UserContext<'_>)
             .replace(PLACEHOLDER_IS_GIT, &ctx.is_git_repo.to_string())
             .replace(PLACEHOLDER_PLATFORM, ctx.platform)
             .replace(PLACEHOLDER_SHELL, ctx.shell)
-            .replace(PLACEHOLDER_OS_VERSION, ctx.os_version);
+            .replace(PLACEHOLDER_OS_VERSION, ctx.os_version)
+            .replace(PLACEHOLDER_MEMORY_DIR, ctx.memory_dir);
         if replaced != text {
             if let Some(slot) = block.get_mut("text") {
                 *slot = Value::String(replaced);

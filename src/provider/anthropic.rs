@@ -70,6 +70,8 @@ impl Provider for AnthropicProvider {
                 platform: &env.platform,
                 shell: &env.shell,
                 os_version: &env.os_version,
+                memory_dir: &env.memory_dir,
+                git_status: &env.git_status,
             };
             let body = build_request_body(&req, &ctx)?;
 
