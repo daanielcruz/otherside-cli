@@ -14,8 +14,9 @@ use crate::error::{Error, Result};
 use crate::fingerprint::codex as fp;
 use crate::inference::{OpenAiChatRequest, OpenAiChunk};
 use crate::thinking::ThinkingConfig;
+use crate::translator::anthropic::UserContext;
 use crate::translator::codex::response;
-use crate::translator::codex::request::{build_responses_body, openai_tools_to_codex_tools};
+use crate::translator::codex::request::{build_responses_body_with_ctx, openai_tools_to_codex_tools};
 use crate::translator::sse::SseBuffer;
 
 use super::{ChunkStream, Provider};
@@ -58,7 +59,25 @@ impl Provider for CodexProvider {
             let bearer = format!("Bearer {}", creds.access_token);
 
             let tools_json = openai_tools_to_codex_tools(&req.tools);
-            let body = build_responses_body(&req, tools_json, thinking.as_ref());
+
+            let env = crate::harness::session_env::resolve();
+            let user_ctx = UserContext {
+                email: &env.email,
+                current_date: &env.current_date,
+                cwd: &env.cwd,
+                is_git_repo: env.is_git_repo,
+                platform: &env.platform,
+                shell: &env.shell,
+                os_version: &env.os_version,
+                memory_dir: &env.memory_dir,
+                git_status: &env.git_status,
+            };
+            let body = build_responses_body_with_ctx(
+                &req,
+                tools_json,
+                thinking.as_ref(),
+                Some(&user_ctx),
+            );
             let body_bytes = serde_json::to_vec(&body)
                 .map_err(|e| Error::Other(format!("codex body serialize: {e}")))?;
 

@@ -2,8 +2,11 @@
 
 use serde_json::{json, Map, Value};
 
+use crate::harness::reminders::render_user_context_with_git;
+use crate::harness::{REMINDER_DEFERRED_TOOLS, REMINDER_SKILLS};
 use crate::inference::{OpenAiChatMessage, OpenAiChatRequest, OpenAiChatRole, OpenAiToolDef};
 use crate::thinking::{ThinkingConfig, ThinkingLevel, ThinkingMode};
+use crate::translator::anthropic::UserContext;
 
 /// Convert the OpenAI-chat-style `tools[]` (OpenAiToolDef, nested
 /// `{type, function:{name, description, parameters}}`) into the flat
@@ -78,6 +81,23 @@ pub fn build_responses_body(
     tools_json: Vec<Value>,
     thinking: Option<&ThinkingConfig>,
 ) -> Value {
+    build_responses_body_with_ctx(req, tools_json, thinking, None)
+}
+
+/// Like `build_responses_body` but threads the harness reminder context
+/// (email, date, git status) so the first user input carries the
+/// `<available-deferred-tools>`, `<skills>`, and `<user-context>` reminder
+/// blocks the Anthropic translator injects via `message_builder::normalize`.
+/// Without these reminders Codex would see preamble + main prompt only,
+/// missing the per-turn operational context (deferred tools availability,
+/// user identity, current date, git status). User ask 2026-04-22:
+/// "mandar todo harness claude code, só excluímos billing header e opener".
+pub fn build_responses_body_with_ctx(
+    req: &OpenAiChatRequest,
+    tools_json: Vec<Value>,
+    thinking: Option<&ThinkingConfig>,
+    user_ctx: Option<&UserContext<'_>>,
+) -> Value {
     let mut body = Map::new();
     body.insert("model".into(), Value::String(req.model.clone()));
     // Always lead with the claude-code harness preamble + main prompt so
@@ -94,7 +114,10 @@ pub fn build_responses_body(
         _ => DEFAULT_INSTRUCTIONS.to_string(),
     };
     body.insert("instructions".into(), Value::String(instructions));
-    body.insert("input".into(), Value::Array(messages_to_input(&req.messages)));
+    body.insert(
+        "input".into(),
+        Value::Array(messages_to_input(&req.messages, user_ctx)),
+    );
     if !tools_json.is_empty() {
         body.insert("tools".into(), Value::Array(tools_json));
         body.insert("tool_choice".into(), Value::String("auto".into()));
@@ -124,16 +147,49 @@ fn extract_instructions(messages: &[OpenAiChatMessage]) -> Option<String> {
     None
 }
 
-fn messages_to_input(messages: &[OpenAiChatMessage]) -> Vec<Value> {
+fn messages_to_input(
+    messages: &[OpenAiChatMessage],
+    user_ctx: Option<&UserContext<'_>>,
+) -> Vec<Value> {
     let mut out: Vec<Value> = Vec::new();
+    let mut first_user = true;
     for msg in messages {
         match msg.role {
             OpenAiChatRole::System => {}
             OpenAiChatRole::User => {
+                let mut content: Vec<Value> = Vec::new();
+                if first_user {
+                    if let Some(ctx) = user_ctx {
+                        // Mirror the anthropic `build_preamble_blocks_with_git`
+                        // contract (deferred-tools + skills + user-context) on
+                        // the /responses wire. Upstream Codex doesn't ship
+                        // these, but Otherside needs them so the Codex-backed
+                        // agent loop matches Anthropic behavior for tool
+                        // discovery, skill catalog, and per-turn context.
+                        content.push(json!({
+                            "type": "input_text",
+                            "text": REMINDER_DEFERRED_TOOLS,
+                        }));
+                        content.push(json!({
+                            "type": "input_text",
+                            "text": REMINDER_SKILLS,
+                        }));
+                        content.push(json!({
+                            "type": "input_text",
+                            "text": render_user_context_with_git(
+                                ctx.email,
+                                ctx.current_date,
+                                ctx.git_status,
+                            ),
+                        }));
+                    }
+                    first_user = false;
+                }
+                content.push(json!({"type": "input_text", "text": msg.content}));
                 out.push(json!({
                     "type": "message",
                     "role": "user",
-                    "content": [{"type": "input_text", "text": msg.content}],
+                    "content": content,
                 }));
             }
             OpenAiChatRole::Assistant => {
@@ -202,6 +258,98 @@ mod tests {
             content: content.into(),
             ..Default::default()
         }
+    }
+
+    fn user_ctx() -> UserContext<'static> {
+        UserContext {
+            email: "user@example.com",
+            current_date: "2026-04-22",
+            cwd: "/tmp/smoke",
+            is_git_repo: true,
+            platform: "darwin",
+            shell: "zsh",
+            os_version: "Darwin 25.3.0",
+            memory_dir: "/tmp/smoke/memory/",
+            git_status: "Current branch: main\n\nStatus:\n(clean)",
+        }
+    }
+
+    #[test]
+    fn body_with_ctx_prepends_reminders_on_first_user_only() {
+        let req = OpenAiChatRequest {
+            model: "gpt-5-codex".into(),
+            messages: vec![
+                user("first turn"),
+                OpenAiChatMessage {
+                    role: OpenAiChatRole::Assistant,
+                    content: "ok".into(),
+                    ..Default::default()
+                },
+                user("second turn"),
+            ],
+            ..Default::default()
+        };
+        let ctx = user_ctx();
+        let body = build_responses_body_with_ctx(&req, vec![], None, Some(&ctx));
+        let input = body["input"].as_array().unwrap();
+
+        // first user: reminder blocks + user content
+        assert_eq!(input[0]["role"], "user");
+        let first_content = input[0]["content"].as_array().unwrap();
+        assert_eq!(
+            first_content.len(),
+            4,
+            "first user must carry 3 reminder blocks + 1 user text"
+        );
+        let first_texts: Vec<&str> = first_content
+            .iter()
+            .map(|b| b["text"].as_str().unwrap_or(""))
+            .collect();
+        assert!(
+            first_texts[0].contains("<available-deferred-tools>"),
+            "block 0 must be deferred-tools reminder: {:?}",
+            &first_texts[0][..first_texts[0].len().min(80)]
+        );
+        assert!(
+            first_texts[1].contains("</system-reminder>"),
+            "block 1 must be skills reminder with closing system-reminder tag"
+        );
+        assert!(
+            first_texts[2].contains("user@example.com"),
+            "block 2 must carry user email substitution"
+        );
+        assert!(
+            first_texts[2].contains("2026-04-22"),
+            "block 2 must carry current_date substitution"
+        );
+        assert!(
+            first_texts[2].contains("Current branch: main"),
+            "block 2 must carry git_status when populated"
+        );
+        assert_eq!(first_texts[3], "first turn");
+
+        // second user: only user content, no reminders
+        assert_eq!(input[2]["role"], "user");
+        let second_content = input[2]["content"].as_array().unwrap();
+        assert_eq!(
+            second_content.len(),
+            1,
+            "second user must NOT carry reminders"
+        );
+        assert_eq!(second_content[0]["text"], "second turn");
+    }
+
+    #[test]
+    fn body_without_ctx_keeps_legacy_shape_no_reminders() {
+        let req = OpenAiChatRequest {
+            model: "gpt-5-codex".into(),
+            messages: vec![user("hi")],
+            ..Default::default()
+        };
+        let body = build_responses_body(&req, vec![], None);
+        let input = body["input"].as_array().unwrap();
+        assert_eq!(input[0]["content"].as_array().unwrap().len(), 1);
+        assert_eq!(input[0]["content"][0]["text"], "hi");
     }
 
     #[test]
