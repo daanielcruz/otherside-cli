@@ -1,7 +1,5 @@
 
 
-use std::hash::{DefaultHasher, Hash, Hasher};
-
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use serde_json::Value;
@@ -19,18 +17,6 @@ const BULLET_HIDDEN: &str = " ";
 const BLINK_INTERVAL_TICKS: u64 = 12;
 
 const MAX_PROGRESS_MESSAGES_TO_SHOW: usize = 3;
-
-const TURN_COMPLETION_VERBS: &[&str] = &[
-    "Baked", "Brewed", "Churned", "Cogitated", "Cooked", "Crunched", "Sautéed", "Worked",
-];
-
-fn pick_turn_completion_verb(args: &Value, elapsed_ms: u64) -> &'static str {
-    let mut h = DefaultHasher::new();
-    args.to_string().hash(&mut h);
-    elapsed_ms.hash(&mut h);
-    let idx = (h.finish() as usize) % TURN_COMPLETION_VERBS.len();
-    TURN_COMPLETION_VERBS[idx]
-}
 
 fn relativize_path(fp: &str) -> String {
     if fp.is_empty() || fp.starts_with('~') {
@@ -1860,30 +1846,6 @@ mod tests {
         assert_eq!(format_number_compact(79_070), "79.1k");
         assert_eq!(format_number_compact(1_000_000), "1m");
         assert_eq!(format_number_compact(1_500_000), "1.5m");
-    }
-
-    #[test]
-    fn pick_turn_completion_verb_is_stable_per_input_and_from_pool() {
-        let args = serde_json::json!({"subagent_type":"general-purpose","description":"foo"});
-        let v1 = pick_turn_completion_verb(&args, 12_000);
-        let v2 = pick_turn_completion_verb(&args, 12_000);
-        assert_eq!(v1, v2);
-        assert!(TURN_COMPLETION_VERBS.contains(&v1));
-    }
-
-    #[test]
-    fn pick_turn_completion_verb_covers_pool_across_inputs() {
-        use std::collections::HashSet;
-        let mut seen: HashSet<&'static str> = HashSet::new();
-        for i in 0..64u64 {
-            let args = serde_json::json!({"subagent_type": format!("t{i}"), "description": format!("d{i}")});
-            seen.insert(pick_turn_completion_verb(&args, i * 100));
-        }
-        assert!(
-            seen.len() >= 4,
-            "verb pool coverage too low — only {} distinct verbs across 64 inputs",
-            seen.len()
-        );
     }
 
     #[test]

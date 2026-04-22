@@ -4,8 +4,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
-use super::state::{AgentsPanelState, CompletedRow, Tab};
-use crate::tasks::TaskState;
+use super::state::{AgentsPanelState, Tab};
 use crate::tui::render::theme;
 
 const FOOTER_HINT: &str = "←/→ switch tabs · ↑↓ navigate · Enter select · Esc close";
@@ -103,19 +102,6 @@ fn running_body(state: &AgentsPanelState) -> Vec<Line<'static>> {
     let _ = state.recently_completed;
 
     lines
-}
-
-fn completed_row_line(row: &CompletedRow) -> Line<'static> {
-    let (glyph, glyph_color) = match row.status {
-        TaskState::Completed => ("✓ ", theme::SUCCESS),
-        TaskState::Failed => ("✗ ", theme::ERROR),
-        TaskState::Stopped => ("■ ", theme::MUTED),
-        _ => ("  ", theme::MUTED),
-    };
-    Line::from(vec![
-        Span::styled(glyph.to_string(), Style::default().fg(glyph_color)),
-        Span::styled(row.name.clone(), Style::default().fg(theme::MUTED)),
-    ])
 }
 
 fn library_body(state: &AgentsPanelState) -> Vec<Line<'static>> {
