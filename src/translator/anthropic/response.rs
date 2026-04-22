@@ -13,6 +13,15 @@ use crate::inference::{
 
 use crate::translator::sse::SseEvent;
 
+fn truncate_for_log(s: &str, cap: usize) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= cap {
+        return s.to_string();
+    }
+    let head: String = chars.into_iter().take(cap - 1).collect();
+    format!("{head}…")
+}
+
 #[derive(Debug, Clone)]
 struct ToolBlock {
 
@@ -91,7 +100,20 @@ impl AnthropicStreamTranslator {
                 Err(Error::Sse(format!("server: {msg}")))
             }
 
-            _ => Ok(None),
+            other => {
+                // Kimi subagent-hang debug hook (2026-04-22): log unknown
+                // events so a Proxyman-free probe can still spot when the
+                // provider emits a sentinel we ignore — e.g. `ping`,
+                // keepalive, or provider-specific extensions.
+                tracing::debug!(
+                    target: "otherside::stream",
+                    hop = "translator_unknown_event",
+                    event = other,
+                    data_preview = %truncate_for_log(&event.data, 120),
+                    "AnthropicStreamTranslator dropping unrecognized SSE event"
+                );
+                Ok(None)
+            }
         };
         if let Ok(Some(_)) = &result {
             tracing::trace!(

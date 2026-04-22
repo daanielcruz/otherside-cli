@@ -42,6 +42,21 @@ pub struct Settings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub show_tips: Option<bool>,
 
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefers_reduced_motion: Option<bool>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_checkpointing_enabled: Option<bool>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_style: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_connect_ide: Option<bool>,
+
     pub strict_plugin_only_customization: Option<bool>,
 
     pub allow_managed_hooks_only: Option<bool>,

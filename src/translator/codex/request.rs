@@ -3,7 +3,7 @@
 use serde_json::{json, Map, Value};
 
 use crate::harness::reminders::render_user_context_with_git;
-use crate::harness::{REMINDER_DEFERRED_TOOLS, REMINDER_SKILLS};
+use crate::harness::REMINDER_SKILLS;
 use crate::inference::{OpenAiChatMessage, OpenAiChatRequest, OpenAiChatRole, OpenAiToolDef};
 use crate::thinking::{ThinkingConfig, ThinkingLevel, ThinkingMode};
 use crate::translator::anthropic::UserContext;
@@ -74,6 +74,12 @@ fn claude_harness_instructions() -> String {
     let preamble = crate::harness::SYSTEM_AGENT_PREAMBLE.trim_end();
     let main = crate::harness::SYSTEM_PROMPT.trim_end();
     format!("{preamble}\n\n{main}")
+}
+
+/// Codex uses the shared third-party clarifier prepended to the raw
+/// `<available-deferred-tools>` tag. Same fix as Kimi ThirdParty flavor.
+fn codex_deferred_tools_reminder() -> String {
+    crate::harness::reminders::third_party_deferred_tools_reminder()
 }
 
 pub fn build_responses_body(
@@ -166,9 +172,17 @@ fn messages_to_input(
                         // these, but Otherside needs them so the Codex-backed
                         // agent loop matches Anthropic behavior for tool
                         // discovery, skill catalog, and per-turn context.
+                        // Codex tool regression (2026-04-22): GPT-5 reads
+                        // raw `<available-deferred-tools>` as an exclusive
+                        // list ("these are the only tools available") and
+                        // refuses Bash fluently. Upstream Claude is tuned
+                        // to the tag and treats it as additive; Codex is
+                        // not. Prepend an explanatory clarifier on the
+                        // codex wire ONLY — anthropic + kimi still see the
+                        // raw tag for byte-fidelity with upstream.
                         content.push(json!({
                             "type": "input_text",
-                            "text": REMINDER_DEFERRED_TOOLS,
+                            "text": codex_deferred_tools_reminder(),
                         }));
                         content.push(json!({
                             "type": "input_text",
@@ -231,6 +245,11 @@ fn reasoning_json(cfg: &ThinkingConfig) -> Option<Value> {
         ThinkingLevel::Medium => "medium",
         ThinkingLevel::High => "high",
         ThinkingLevel::XHigh | ThinkingLevel::Max => "xhigh",
+        // Kimi's On/Off ladder doesn't exist on Codex; `/responses`
+        // reasoning takes numeric levels only. Map On→xhigh (best effort)
+        // and Off→drop the reasoning block.
+        ThinkingLevel::On => "xhigh",
+        ThinkingLevel::Off => return None,
         ThinkingLevel::None | ThinkingLevel::Auto => return None,
     };
     Some(json!({
@@ -307,7 +326,7 @@ mod tests {
             .collect();
         assert!(
             first_texts[0].contains("<available-deferred-tools>"),
-            "block 0 must be deferred-tools reminder: {:?}",
+            "block 0 must retain the deferred-tools tag: {:?}",
             &first_texts[0][..first_texts[0].len().min(80)]
         );
         assert!(
@@ -325,6 +344,18 @@ mod tests {
         assert!(
             first_texts[2].contains("Current branch: main"),
             "block 2 must carry git_status when populated"
+        );
+        // Codex-only clarifier: model must see "ADDITIVE" framing so it
+        // doesn't refuse Bash calls on the grounds that Bash isn't listed
+        // in <available-deferred-tools>. Parity fix 2026-04-22.
+        assert!(
+            first_texts[0].contains("ADDITIVE"),
+            "codex deferred-tools reminder must prepend the additive clarifier: {:?}",
+            first_texts[0],
+        );
+        assert!(
+            first_texts[0].contains("Do NOT refuse"),
+            "codex deferred-tools reminder must explicitly forbid refusal of tools in the main tools[] array",
         );
         assert_eq!(first_texts[3], "first turn");
 

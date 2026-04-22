@@ -371,8 +371,36 @@ async fn event_loop(
                                 content,
                                 thinking: None,
                                 usage,
+                                provider: Some(st.provider_id.slug().to_string()),
+                                model: Some(st.session.model.clone()),
                             });
                         }
+
+                        // Persist lifetime per-(provider, model) usage in
+                        // `~/.otherside/projects.json` so /config Usage can
+                        // surface a cross-session view. Upstream parity:
+                        // `utils/config.ts:95-105` `lastModelUsage`.
+                        if let Ok(cwd) = std::env::current_dir() {
+                            let provider_slug = st.provider_id.slug().to_string();
+                            let model = st.session.model.clone();
+                            let input = st.input_tokens;
+                            let output = st.output_tokens;
+                            let session_id =
+                                st.session_id.as_ref().map(|s| s.as_str().to_string());
+                            let ts = crate::sessions::record::now_iso();
+                            if let Err(e) = crate::config::projects::record_turn_usage(
+                                &cwd,
+                                &provider_slug,
+                                &model,
+                                input,
+                                output,
+                                session_id,
+                                ts,
+                            ) {
+                                tracing::warn!(?e, "projects usage write failed");
+                            }
+                        }
+
                         st.finish_stream();
 
                         drain_pending_inputs(
@@ -394,12 +422,33 @@ async fn event_loop(
                         if crate::tools::is_hidden_tool(&name) {
                             continue;
                         }
+                        // If the model emitted assistant text BEFORE the
+                        // tool call (refusal prose, "let me check X" prefix,
+                        // etc.), `flush_assistant_buffer` moves it onto
+                        // `messages[]` for render but LEAVES the transcript
+                        // empty — `StreamEvent::Done` then skips the
+                        // AssistantMessage record because the buffer is
+                        // already drained. Persist the text here so
+                        // session.jsonl replays preserve the prose.
+                        if !st.current_assistant_buffer.is_empty() {
+                            let prose = st.current_assistant_buffer.clone();
+                            st.append_record(crate::sessions::Record::AssistantMessage {
+                                ts: crate::sessions::record::now_iso(),
+                                content: prose,
+                                thinking: None,
+                                usage: None,
+                                provider: Some(st.provider_id.slug().to_string()),
+                                model: Some(st.session.model.clone()),
+                            });
+                        }
                         st.flush_assistant_buffer();
                         st.append_record(crate::sessions::Record::ToolCall {
                             ts: crate::sessions::record::now_iso(),
                             tool_name: name.clone(),
                             args: args.clone(),
                             call_id: id.clone(),
+                            provider: Some(st.provider_id.slug().to_string()),
+                            model: Some(st.session.model.clone()),
                         });
                         st.begin_tool_call(id, name, args);
                     }
@@ -485,6 +534,8 @@ async fn event_loop(
                         st.append_record(crate::sessions::Record::CompactionMark {
                             ts: crate::sessions::record::now_iso(),
                             summary_ref: format!("kept={kept};auto={is_auto}"),
+                            provider: Some(st.provider_id.slug().to_string()),
+                            model: Some(st.session.model.clone()),
                         });
                         st.compact_history_with_summary(Some(summary));
                         st.streaming = false;
@@ -574,6 +625,11 @@ fn handle_key(
         return false;
     }
 
+    if st.active_tasks_panel.is_some() {
+        handle_tasks_panel_key(k, st);
+        return false;
+    }
+
     if st.active_agents_panel.is_some() {
         handle_agents_panel_key(k, st);
         return false;
@@ -601,13 +657,27 @@ fn handle_key(
         if let Some(action) = kb_dispatch(&k, &pred_ctx) {
             match action {
                 Action::TaskBackground => {
-                    // Upstream feedback: no chat note — the tool-result row
-                    // mutates in place to "Backgrounded agent (↓ to manage)"
-                    // and the statusline picks up the `N local agent` pill.
-                    // Emitting an extra `⎿ N tasks sent to background` line
-                    // was otherside-only drift; D25 polish drops it.
-                    let _ = st.tasks.background_all_running_foreground();
-                    let _ = crate::tools::background_signal::signal_all();
+                    // Upstream binds `chat:taskBackground` to Ctrl+B Ctrl+B
+                    // (doubled) — a single press arms, a second press within
+                    // `CTRL_B_DOUBLE_TAP_WINDOW_MS` backgrounds. Prevents
+                    // fat-finger flip while typing.
+                    use std::time::Instant;
+                    let now = Instant::now();
+                    let armed = match st.ctrl_b_armed_at {
+                        Some(at) => {
+                            now.duration_since(at).as_millis()
+                                < crate::tui::state::CTRL_B_DOUBLE_TAP_WINDOW_MS
+                        }
+                        None => false,
+                    };
+                    if armed {
+                        st.ctrl_b_armed_at = None;
+                        let _ = st.tasks.background_all_running_foreground();
+                        let _ = crate::tools::background_signal::signal_all();
+                    } else {
+                        st.ctrl_b_armed_at = Some(now);
+                        st.set_feedback("press Ctrl+B again to background");
+                    }
                     return false;
                 }
                 Action::OpenBackgroundTasksDialog => {
@@ -635,7 +705,9 @@ fn handle_key(
         }
 
         KeyCode::Esc => {
-            if st.autocomplete.is_some() {
+            if st.pill_focused {
+                st.pill_focused = false;
+            } else if st.autocomplete.is_some() {
 
                 st.close_autocomplete();
                 st.clear_input();
@@ -696,14 +768,24 @@ fn handle_key(
             } else if !st.streaming
                 && st.input.is_empty()
                 && st.tasks.any_backgrounded()
+                && st.active_tasks_panel.is_none()
                 && st.active_agents_panel.is_none()
             {
-                st.active_agents_panel = Some(
-                    crate::tui::slash::agents_panel::AgentsPanelState::new(
-                        &st.tasks,
-                        crate::agent::subagents::registry::all(),
-                    ),
-                );
+                // Upstream two-stage: first ↓ at prompt bottom focuses the
+                // pill (PromptInput.tsx:410-419 decrements coordinatorTaskIndex
+                // 0 → -1). Second ↓ or Enter opens `BackgroundTasksDialog`
+                // — the task manager, NOT AgentsMenu (parity fix 5,
+                // 2026-04-22). `/agents` remains on AgentsPanel.
+                if !st.pill_focused {
+                    st.pill_focused = true;
+                } else {
+                    st.pill_focused = false;
+                    st.active_tasks_panel = Some(
+                        crate::tui::slash::tasks_panel::TasksPanelState::new(
+                            &st.tasks,
+                        ),
+                    );
+                }
             }
         }
 
@@ -730,6 +812,20 @@ fn handle_key(
             if shift {
                 st.input_push_newline();
                 st.refresh_autocomplete();
+            } else if st.pill_focused
+                && !st.streaming
+                && st.input.is_empty()
+                && st.tasks.any_backgrounded()
+                && st.active_tasks_panel.is_none()
+                && st.active_agents_panel.is_none()
+            {
+                // Two-stage pill Enter: open BackgroundTasksDialog (not AgentsMenu).
+                st.pill_focused = false;
+                st.active_tasks_panel = Some(
+                    crate::tui::slash::tasks_panel::TasksPanelState::new(
+                        &st.tasks,
+                    ),
+                );
             } else if st.streaming {
                 let trimmed = st.input.trim();
                 if !trimmed.is_empty() {
@@ -757,15 +853,18 @@ fn handle_key(
         }
 
         KeyCode::Backspace => {
+            st.pill_focused = false;
             st.input_backspace();
             st.refresh_autocomplete();
         }
         KeyCode::Char('h') if ctrl => {
+            st.pill_focused = false;
             st.input_backspace();
             st.refresh_autocomplete();
         }
 
         KeyCode::Char(c) if !ctrl => {
+            st.pill_focused = false;
             st.input_push_char(c);
             st.refresh_autocomplete();
         }
@@ -882,6 +981,20 @@ fn handle_menu_key(
             .map(|o| o.action_id.clone())
             .unwrap_or_default();
 
+        if cursor_model_id == menu::PROVIDER_CYCLE_ACTION {
+            let _ = menu_state;
+            let next = crate::config::providers::cycle(st.provider_id, dir);
+            st.switch_provider(next);
+            let mut fresh = menu::OverlayMenu::new_model_with_effort_for_provider(
+                &st.session.model,
+                st.session.effort_label,
+                next,
+            );
+            fresh.cursor = 0;
+            st.active_menu = Some(fresh);
+            return false;
+        }
+
         let next_effort: Option<&'static str> =
             crate::models::catalog::by_id(&cursor_model_id).and_then(|m| {
                 let real: Vec<&'static str> = m
@@ -904,13 +1017,16 @@ fn handle_menu_key(
         if let Some(next) = next_effort {
             apply_effort_outcome(st, thinking, next, next);
 
-            let mut fresh =
-                menu::OverlayMenu::new_model_with_effort(&st.session.model, st.session.effort_label);
+            let mut fresh = menu::OverlayMenu::new_model_with_effort_for_provider(
+                &st.session.model,
+                st.session.effort_label,
+                st.provider_id,
+            );
             fresh.cursor = fresh
                 .options
                 .iter()
                 .position(|o| o.action_id == cursor_model_id)
-                .unwrap_or(0);
+                .unwrap_or(2);
             st.active_menu = Some(fresh);
         }
         return false;
@@ -923,7 +1039,13 @@ fn handle_menu_key(
         KeyCode::Enter => {
             let outcome = menu_state.commit_outcome();
             let menu = st.active_menu.take().expect("active_menu present");
-            emit_panel_dismiss_anchor(st, &menu, outcome.as_ref());
+            let is_cycle = matches!(
+                outcome,
+                Some(menu::OverlayMenuOutcome::CycleProvider { .. })
+            );
+            if !is_cycle {
+                emit_panel_dismiss_anchor(st, &menu, outcome.as_ref());
+            }
             if let Some(outcome) = outcome {
                 return apply_menu_outcome(st, thinking, outcome);
             }
@@ -1013,6 +1135,19 @@ fn edit_settings_row(st: &mut ConversationState, direction: i32) {
                 "auto_compact" => st.persistence.settings.auto_compact.unwrap_or(true),
                 "show_tips" => st.persistence.settings.show_tips.unwrap_or(true),
                 "verbose" => st.render_verbose,
+                "prefers_reduced_motion" => st
+                    .persistence
+                    .settings
+                    .prefers_reduced_motion
+                    .unwrap_or(false),
+                "file_checkpointing_enabled" => st
+                    .persistence
+                    .settings
+                    .file_checkpointing_enabled
+                    .unwrap_or(false),
+                "auto_connect_ide" => {
+                    st.persistence.settings.auto_connect_ide.unwrap_or(false)
+                }
                 _ => return,
             };
             let next = !current;
@@ -1022,6 +1157,15 @@ fn edit_settings_row(st: &mut ConversationState, direction: i32) {
                 "verbose" => {
                     st.render_verbose = next;
                     st.persistence.settings.verbose = Some(next);
+                }
+                "prefers_reduced_motion" => {
+                    st.persistence.settings.prefers_reduced_motion = Some(next)
+                }
+                "file_checkpointing_enabled" => {
+                    st.persistence.settings.file_checkpointing_enabled = Some(next)
+                }
+                "auto_connect_ide" => {
+                    st.persistence.settings.auto_connect_ide = Some(next)
                 }
                 _ => return,
             }
@@ -1222,6 +1366,40 @@ fn handle_agents_panel_key(k: KeyEvent, st: &mut ConversationState) {
     }
 }
 
+fn handle_tasks_panel_key(k: KeyEvent, st: &mut ConversationState) {
+    use slash::tasks_panel::{handle_key, KeyOutcome};
+    let Some(panel) = st.active_tasks_panel.as_mut() else {
+        return;
+    };
+    // Refresh each tick so row runtime + output grow as tasks run.
+    panel.refresh(&st.tasks);
+    match handle_key(k, panel) {
+        KeyOutcome::Dismiss => {
+            st.active_tasks_panel = None;
+            st.push_anchor(
+                "tasks",
+                "",
+                "Background tasks dialog dismissed",
+                DisplayOrigin::Chrome,
+            );
+        }
+        KeyOutcome::StopFocused => {
+            // Upstream `x` from detail: kill the task. Otherside signals
+            // the background-cancel channel for the focused tool_use_id,
+            // matching the Ctrl+B-handle path. The TaskStore flips the
+            // record to Stopped when the runner observes the signal.
+            if let Some(tool_use_id) = panel
+                .focused_row()
+                .and_then(|r| r.tool_use_id.clone())
+            {
+                let _ = crate::tools::background_signal::signal(&tool_use_id);
+            }
+            // Leave the panel open — user returns to list with updated state.
+        }
+        KeyOutcome::Consumed => {}
+    }
+}
+
 fn handle_permission_key(k: KeyEvent, st: &mut ConversationState) {
     use crate::permissions::PermissionResponse;
     match k.code {
@@ -1326,6 +1504,17 @@ fn apply_menu_outcome(
         }
         menu::OverlayMenuOutcome::SetModel { model_id } => {
             apply_model_outcome(st, thinking, &model_id);
+        }
+        menu::OverlayMenuOutcome::CycleProvider { direction } => {
+            let next = crate::config::providers::cycle(st.provider_id, direction);
+            st.switch_provider(next);
+            let mut fresh = menu::OverlayMenu::new_model_with_effort_for_provider(
+                &st.session.model,
+                st.session.effort_label,
+                next,
+            );
+            fresh.cursor = 0; // keep cursor on Provider row so rapid Enter re-cycles
+            st.active_menu = Some(fresh);
         }
     }
     false
@@ -1432,6 +1621,16 @@ fn spawn_agent_turn(
     let tx = tx.clone();
 
     let model = st.session.model.clone();
+
+    tracing::info!(
+        target: "otherside::dispatch",
+        provider = provider_id.slug(),
+        model = %model,
+        effort = %st.session.effort_label.unwrap_or("auto"),
+        permission_mode = ?st.session.permission_mode,
+        history_len = history.len(),
+        "turn dispatched"
+    );
 
     let settings = st.persistence.settings.clone();
     let mode = st.session.permission_mode;
@@ -1609,6 +1808,7 @@ fn dispatch_slash(
     thinking: &Option<ThinkingConfig>,
     tx: &mpsc::Sender<StreamEvent>,
 ) -> bool {
+    let provider_before = st.provider_id;
     let action = slash::classify(&st.input);
     let outcome = match action {
         slash::SlashAction::Instant { name, args } => {
@@ -1645,6 +1845,19 @@ fn dispatch_slash(
             return false;
         }
     };
+
+    // `/provider` flips `st.provider_id` but leaves the subagent runner
+    // holding the boot-time provider Arc. Sync here so `Task(...)` /
+    // `Agent(...)` from the *next* turn onward dispatches against the
+    // freshly-selected provider. `update_provider` has a default no-op in
+    // the trait so test fakes don't care.
+    if st.provider_id != provider_before {
+        if let Some(runner) = crate::agent::subagents::current_runner() {
+            if let Some(new_provider) = registry.get(st.provider_id.slug()) {
+                runner.update_provider(new_provider);
+            }
+        }
+    }
     match outcome {
         slash::SlashOutcome::Handled => {
             st.input.clear();
@@ -1680,6 +1893,8 @@ fn submit_current_input(
         st.append_record(crate::sessions::Record::UserMessage {
             ts: crate::sessions::record::now_iso(),
             content: submitted_text,
+            provider: Some(st.provider_id.slug().to_string()),
+            model: Some(st.session.model.clone()),
         });
         spawn_agent_turn(st, registry, base_model, thinking, tx, history);
     }
@@ -2246,8 +2461,8 @@ mod settings_edit_tests {
             .unwrap();
         assert_eq!(
             kimi_efforts,
-            &["auto"],
-            "Kimi effort catalog must dominate post-switch; got {kimi_efforts:?}"
+            &["on", "off"],
+            "Kimi reasoning is binary on/off post 2026-04-22 catalog reshape; got {kimi_efforts:?}"
         );
 
         st.session.effort_label = None;
@@ -2256,10 +2471,10 @@ mod settings_edit_tests {
             focus_row(m, "Effort");
         }
         edit_settings_row(&mut st, 1);
-        assert_eq!(
-            st.session.effort_label,
-            Some("auto"),
-            "Kimi only supports auto — Effort cycle must land on it"
+        assert!(
+            matches!(st.session.effort_label, Some("on") | Some("off")),
+            "Kimi effort cycle must land on one of on/off; got {:?}",
+            st.session.effort_label
         );
     }
 

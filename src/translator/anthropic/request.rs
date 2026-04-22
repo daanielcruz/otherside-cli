@@ -22,6 +22,11 @@ fn thinking_to_effort(cfg: Option<&ThinkingConfig>) -> Option<&'static str> {
         ThinkingLevel::High => "high",
         ThinkingLevel::XHigh => "xhigh",
         ThinkingLevel::Max => "max",
+        // Kimi binary ladder: On keeps the default adaptive envelope
+        // (translator drops `output_config.effort` via `matches!` gate),
+        // Off propagates "off" so the strip branch fires.
+        ThinkingLevel::On => "on",
+        ThinkingLevel::Off => "off",
         ThinkingLevel::None | ThinkingLevel::Auto => return None,
     })
 }
@@ -164,7 +169,7 @@ fn build_request_body_full(
 
     let tools = super::tools::build_tools_array();
 
-    let messages = message_builder::build(&req.messages, ctx);
+    let messages = message_builder::build_with_flavor(&req.messages, ctx, flavor);
 
     let mut body = Map::with_capacity(10);
     body.insert("model".to_string(), Value::String(req.model.clone()));
@@ -195,7 +200,11 @@ fn build_request_body_full(
         .unwrap_or_else(|| crate::models::catalog::default_effort_for(&stripped_for_effort));
 
     if let Some(out_cfg) = body.get_mut("output_config").and_then(|v| v.as_object_mut()) {
-        if selected_effort == "auto" {
+        // Numeric levels ride on `output_config.effort`. Kimi's on/off
+        // binary + claude's `auto` bucket are non-numeric and handled by
+        // stripping the field (claude defaults) or by the thinking
+        // envelope strip below (kimi).
+        if matches!(selected_effort, "auto" | "on" | "off") {
             out_cfg.remove("effort");
         } else {
             out_cfg.insert(
@@ -208,7 +217,13 @@ fn build_request_body_full(
     let efforts = crate::models::catalog::by_id(&stripped_for_effort)
         .map(|m| m.supported_efforts)
         .unwrap_or(&[]);
-    if efforts == ["auto"] || efforts.is_empty() {
+    // Three paths that strip the `thinking` + `context_management`
+    // envelope blocks:
+    //   1. Model advertises only `auto` (claude haiku class).
+    //   2. Catalog is empty / unknown slug (defensive fallback).
+    //   3. Kimi `effort=off` — explicit user request to skip reasoning.
+    let kimi_effort_off = efforts == ["on", "off"] && selected_effort == "off";
+    if efforts == ["auto"] || efforts.is_empty() || kimi_effort_off {
         body.remove("thinking");
 
         body.remove("context_management");
@@ -424,6 +439,16 @@ mod tests {
             ("claude-opus-4-7".to_string(), false)
         );
     }
+
+    // NOTE: kimi effort on/off wire-strip unit test is pending a follow-up
+    // plumbing pass. The gate (`selected_effort == "off"` strips `thinking`
+    // + `context_management`) is coded in `build_request_body_full`, but
+    // `selected_effort` is derived from `ThinkingConfig` which has no
+    // matching variant yet. Effort-label → ThinkingConfig translation
+    // needs to land first (state consolidation task). When it lands, these
+    // tests should assert:
+    //   - kimi + effort "off": body["thinking"] absent, body["context_management"] absent
+    //   - kimi + effort "on":  body["thinking"] present with adaptive envelope
 
     #[test]
     fn advertises_nine_tools_in_canonical_order() {

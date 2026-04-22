@@ -10,6 +10,8 @@ use ratatui::{
 
 use super::render::theme;
 use super::slash::catalog::PanelKind;
+
+pub const PROVIDER_CYCLE_ACTION: &str = "__provider_cycle__";
 #[cfg(test)]
 use super::slash::catalog::SettingsTab;
 
@@ -190,44 +192,88 @@ impl OverlayMenu {
     }
 
     pub fn new_model_with_effort(current: &str, current_effort: Option<&str>) -> Self {
-
-        let has_1m = crate::models::defaults::SubscriptionTier::from_subscription_type(
-            crate::auth::anthropic::load_credentials()
-                .ok()
-                .flatten()
-                .and_then(|c| c.subscription_type)
-                .as_deref(),
+        Self::new_model_with_effort_for_provider(
+            current,
+            current_effort,
+            crate::config::providers::ProviderId::ClaudeCode,
         )
-        .has_opus_1m();
+    }
 
-        let opus_id = if has_1m {
-            "claude-opus-4-7[1m]"
-        } else {
-            "claude-opus-4-7"
+    pub fn new_model_with_effort_for_provider(
+        current: &str,
+        current_effort: Option<&str>,
+        provider: crate::config::providers::ProviderId,
+    ) -> Self {
+        use crate::config::providers::ProviderId;
+
+        let provider_row = MenuOption {
+            label: format!("Provider — {}", provider.label()),
+            action_id: PROVIDER_CYCLE_ACTION.to_string(),
+            hint: Some("← → to change".to_string()),
+            settings_kind: Some(SettingsRowKind::Provider),
+            ..Default::default()
         };
-        let rows: [(&str, &str); 3] = [
-            (opus_id, "Default (recommended)"),
-            ("claude-sonnet-4-6", "Sonnet"),
-            ("claude-haiku-4-5", "Haiku"),
-        ];
-        let options: Vec<MenuOption> = rows
-            .iter()
-            .map(|(id, label)| {
-                let hint = crate::models::catalog::by_id(id)
-                    .map(|m| m.display_hint.to_string())
-                    .filter(|h| !h.is_empty());
-                MenuOption {
-                    label: (*label).to_string(),
-                    action_id: (*id).to_string(),
-                    hint,
+        let separator = MenuOption {
+            label: String::new(),
+            action_id: "__line__".into(),
+            ..Default::default()
+        };
+
+        let model_rows: Vec<MenuOption> = match provider {
+            ProviderId::ClaudeCode => {
+                let has_1m = crate::models::defaults::SubscriptionTier::from_subscription_type(
+                    crate::auth::anthropic::load_credentials()
+                        .ok()
+                        .flatten()
+                        .and_then(|c| c.subscription_type)
+                        .as_deref(),
+                )
+                .has_opus_1m();
+
+                let opus_id = if has_1m {
+                    "claude-opus-4-7[1m]"
+                } else {
+                    "claude-opus-4-7"
+                };
+                let rows: [(&str, &str); 3] = [
+                    (opus_id, "Default (recommended)"),
+                    ("claude-sonnet-4-6", "Sonnet"),
+                    ("claude-haiku-4-5", "Haiku"),
+                ];
+                rows.iter()
+                    .map(|(id, label)| {
+                        let hint = crate::models::catalog::by_id(id)
+                            .map(|m| m.display_hint.to_string())
+                            .filter(|h| !h.is_empty());
+                        MenuOption {
+                            label: (*label).to_string(),
+                            action_id: (*id).to_string(),
+                            hint,
+                            ..Default::default()
+                        }
+                    })
+                    .collect()
+            }
+            _ => crate::models::catalog::models_for(provider)
+                .iter()
+                .map(|m| MenuOption {
+                    label: m.display_name.to_string(),
+                    action_id: m.id.to_string(),
+                    hint: Some(m.display_hint.to_string()).filter(|h| !h.is_empty()),
                     ..Default::default()
-                }
-            })
-            .collect();
+                })
+                .collect(),
+        };
+
+        let mut options = Vec::with_capacity(2 + model_rows.len());
+        options.push(provider_row);
+        options.push(separator);
+        options.extend(model_rows);
+
         let cursor = options
             .iter()
             .position(|o| o.action_id == current)
-            .unwrap_or(0);
+            .unwrap_or(2); // first model row (skip provider + separator)
 
         let effort_indicator = current_effort.map(|lvl| EffortIndicator {
             level: lvl.to_string(),
@@ -251,8 +297,45 @@ impl OverlayMenu {
     }
 
     pub fn new_effort(current: Option<&str>) -> Self {
-        const LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
-        let options: Vec<MenuOption> = LEVELS
+        // Legacy entry — assumes a claude-tier effort ladder. Prefer
+        // `new_effort_for_model` in production so kimi/haiku don't lie
+        // to the user about levels their model rejects on the wire.
+        const CLAUDE_LEVELS: &[&str] =
+            &["low", "medium", "high", "xhigh", "max"];
+        Self::new_effort_for_levels(current, CLAUDE_LEVELS, 2)
+    }
+
+    pub fn new_effort_for_model(current: Option<&str>, model_id: &str) -> Self {
+        // Intersect the panel ladder with the catalog-declared supported
+        // efforts so Kimi's `[on, off]` surface doesn't advertise
+        // claude-native levels. Haiku (`["auto"]`) still lands on
+        // "auto". Unknown model → claude ladder (safe default).
+        let catalog_levels = crate::models::catalog::by_id(model_id)
+            .map(|m| m.supported_efforts)
+            .unwrap_or(&["low", "medium", "high", "xhigh", "max"]);
+        // Drop the synthetic `auto` bucket from the panel — it's only
+        // reachable via `/effort auto` CLI arg per upstream discipline.
+        let filtered: Vec<&'static str> = catalog_levels
+            .iter()
+            .copied()
+            .filter(|l| *l != "auto")
+            .collect();
+        let levels: &[&str] = if filtered.is_empty() {
+            &["low", "medium", "high", "xhigh", "max"]
+        } else {
+            // SAFETY: leak a small static slice matching catalog lifetime.
+            Box::leak(filtered.into_boxed_slice())
+        };
+        let default_cursor = levels.len() / 2;
+        Self::new_effort_for_levels(current, levels, default_cursor)
+    }
+
+    fn new_effort_for_levels(
+        current: Option<&str>,
+        levels: &'static [&'static str],
+        default_cursor: usize,
+    ) -> Self {
+        let options: Vec<MenuOption> = levels
             .iter()
             .map(|id| MenuOption {
                 label: (*id).to_string(),
@@ -263,11 +346,11 @@ impl OverlayMenu {
             .collect();
         let cursor = current
             .map(str::to_lowercase)
-            .and_then(|c| LEVELS.iter().position(|&l| l == c))
-            .unwrap_or(2);
+            .and_then(|c| levels.iter().position(|&l| l == c))
+            .unwrap_or(default_cursor);
         let active_id = current
             .map(str::to_lowercase)
-            .filter(|c| LEVELS.iter().any(|l| *l == c.as_str()));
+            .filter(|c| levels.iter().any(|l| *l == c.as_str()));
         Self {
             kind: PanelKind::Effort,
             title: "Set effort level".into(),
@@ -356,9 +439,15 @@ impl OverlayMenu {
             PanelKind::Permissions => Some(OverlayMenuOutcome::SetPermissionMode {
                 action_id: selected.action_id.clone(),
             }),
-            PanelKind::Model => Some(OverlayMenuOutcome::SetModel {
-                model_id: selected.action_id.clone(),
-            }),
+            PanelKind::Model => {
+                if selected.action_id == PROVIDER_CYCLE_ACTION {
+                    Some(OverlayMenuOutcome::CycleProvider { direction: 1 })
+                } else {
+                    Some(OverlayMenuOutcome::SetModel {
+                        model_id: selected.action_id.clone(),
+                    })
+                }
+            }
             _ => None,
         }
     }
@@ -372,6 +461,8 @@ pub enum OverlayMenuOutcome {
     SetPermissionMode { action_id: String },
 
     SetModel { model_id: String },
+
+    CycleProvider { direction: i32 },
 }
 
 pub struct PendingPermissionPrompt {
@@ -1060,16 +1151,137 @@ fn config_rows(state: &super::state::ConversationState) -> Vec<MenuOption> {
             ..Default::default()
         },
 
+        bool_row(
+            "Reduce motion",
+            "prefers_reduced_motion",
+            state.persistence.settings.prefers_reduced_motion,
+            false,
+        ),
+        bool_row(
+            "Rewind code (checkpoints)",
+            "file_checkpointing_enabled",
+            state.persistence.settings.file_checkpointing_enabled,
+            false,
+        ),
+
+        MenuOption {
+            label: "Output style".into(),
+            action_id: "setting-ro:output_style".into(),
+            value_display: Some(
+                state
+                    .persistence
+                    .settings
+                    .output_style
+                    .clone()
+                    .unwrap_or_else(|| "default".to_string()),
+            ),
+            settings_kind: Some(SettingsRowKind::ReadOnly),
+            hint: Some("picker submenu pending".into()),
+            ..Default::default()
+        },
+
+        MenuOption {
+            label: "Language".into(),
+            action_id: "setting-ro:language".into(),
+            value_display: Some(
+                state
+                    .persistence
+                    .settings
+                    .language
+                    .clone()
+                    .unwrap_or_else(|| "Default (English)".to_string()),
+            ),
+            settings_kind: Some(SettingsRowKind::ReadOnly),
+            hint: Some("picker submenu pending".into()),
+            ..Default::default()
+        },
+
+        bool_row(
+            "Auto-connect to IDE (external terminal)",
+            "auto_connect_ide",
+            state.persistence.settings.auto_connect_ide,
+            false,
+        ),
+
     ]
 }
 
 fn usage_rows() -> Vec<MenuOption> {
-    vec![
-        settings_ro("Current session", "(tracker pending)"),
-        settings_ro("Current week", "(tracker pending)"),
-        settings_blank(),
-        settings_ro("Status", "Usage telemetry lands with 010-usage-tracking"),
-    ]
+    let project = current_project_entry();
+    let mut rows: Vec<MenuOption> = Vec::new();
+
+    let last_in = project
+        .as_ref()
+        .and_then(|e| e.last_total_input_tokens)
+        .unwrap_or(0);
+    let last_out = project
+        .as_ref()
+        .and_then(|e| e.last_total_output_tokens)
+        .unwrap_or(0);
+    rows.push(settings_ro(
+        "Last session input",
+        humanize_tokens(last_in),
+    ));
+    rows.push(settings_ro(
+        "Last session output",
+        humanize_tokens(last_out),
+    ));
+
+    rows.push(settings_blank());
+
+    if let Some(entry) = project.as_ref() {
+        if entry.last_model_usage.is_empty() {
+            rows.push(settings_ro(
+                "Lifetime usage",
+                "(no turns recorded for this workspace yet)",
+            ));
+        } else {
+            let mut pairs: Vec<(&String, &crate::config::projects::ModelUsage)> =
+                entry.last_model_usage.iter().collect();
+            pairs.sort_by(|a, b| b.1.turns.cmp(&a.1.turns).then_with(|| a.0.cmp(b.0)));
+            for (key, usage) in pairs {
+                let value = format!(
+                    "in {} · out {} · {} turn{}",
+                    humanize_tokens(usage.input_tokens),
+                    humanize_tokens(usage.output_tokens),
+                    usage.turns,
+                    if usage.turns == 1 { "" } else { "s" },
+                );
+                rows.push(settings_ro(key, value));
+            }
+        }
+    } else {
+        rows.push(settings_ro(
+            "Lifetime usage",
+            "(projects.json not readable — empty on first boot)",
+        ));
+    }
+
+    rows.push(settings_blank());
+    rows.push(settings_ro(
+        "Storage",
+        "~/.otherside/projects.json keyed by workspace abs-path",
+    ));
+
+    rows
+}
+
+fn current_project_entry() -> Option<crate::config::projects::ProjectEntry> {
+    let cfg = crate::config::projects::load().ok()?;
+    let cwd = std::env::current_dir().ok()?;
+    cfg.projects
+        .get(&cwd.to_string_lossy().into_owned())
+        .cloned()
+}
+
+fn humanize_tokens(n: u64) -> String {
+    if n < 1_000 {
+        format!("{n}")
+    } else if n < 1_000_000 {
+        format!("{:.1}k", n as f64 / 1_000.0)
+    } else {
+        format!("{:.2}M", n as f64 / 1_000_000.0)
+    }
 }
 
 fn settings_ro(label: &str, value: impl Into<String>) -> MenuOption {
@@ -1245,6 +1457,27 @@ mod tests {
     }
 
     #[test]
+    fn new_effort_for_kimi_lists_on_off_only() {
+        let m = OverlayMenu::new_effort_for_model(None, "kimi-for-coding");
+        let ids: Vec<&str> = m.options.iter().map(|o| o.action_id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["on", "off"],
+            "Kimi /effort panel must surface on/off only, not claude levels: {ids:?}"
+        );
+    }
+
+    #[test]
+    fn new_effort_for_haiku_falls_back_to_claude_ladder_when_only_auto() {
+        // Haiku catalog row advertises `["auto"]` alone. Upstream shows a
+        // disabled indicator but otherside degrades to the claude ladder so
+        // the panel is never empty.
+        let m = OverlayMenu::new_effort_for_model(None, "claude-haiku-4-5");
+        let ids: Vec<&str> = m.options.iter().map(|o| o.action_id.as_str()).collect();
+        assert_eq!(ids, vec!["low", "medium", "high", "xhigh", "max"]);
+    }
+
+    #[test]
     fn new_effort_drops_invented_auto_row() {
         let m = OverlayMenu::new_effort(Some("auto"));
         let has_auto = m.options.iter().any(|o| o.action_id == "auto");
@@ -1290,43 +1523,46 @@ mod tests {
     }
 
     #[test]
-    fn new_model_has_three_rows_per_upstream() {
+    fn new_model_has_provider_row_plus_three_anthropic_rows() {
 
         let m = OverlayMenu::new_model_with_effort("claude-opus-4-7[1m]", Some("xhigh"));
         assert_eq!(
             m.options.len(),
-            3,
-            "upstream shows 3 rows per /tmp/parity-20260420-tmux/04-model-panel/upstream-open.txt lines 32-34"
+            5,
+            "provider row + separator + 3 anthropic models"
         );
-        assert_eq!(m.options[0].label, "Default (recommended)");
+        assert_eq!(m.options[0].action_id, PROVIDER_CYCLE_ACTION);
+        assert!(m.options[0].label.starts_with("Provider — "));
+        assert_eq!(m.options[1].action_id, "__line__");
+        assert_eq!(m.options[2].label, "Default (recommended)");
 
         assert!(
-            m.options[0].action_id == "claude-opus-4-7"
-                || m.options[0].action_id == "claude-opus-4-7[1m]",
+            m.options[2].action_id == "claude-opus-4-7"
+                || m.options[2].action_id == "claude-opus-4-7[1m]",
             "opus row action_id must be one of the two variants, got {}",
-            m.options[0].action_id
+            m.options[2].action_id
         );
         assert!(
-            m.options[0]
+            m.options[2]
                 .hint
                 .as_deref()
                 .map(|h| h.starts_with("Opus 4.7"))
                 .unwrap_or(false)
         );
-        assert_eq!(m.options[1].label, "Sonnet");
-        assert_eq!(m.options[1].action_id, "claude-sonnet-4-6");
+        assert_eq!(m.options[3].label, "Sonnet");
+        assert_eq!(m.options[3].action_id, "claude-sonnet-4-6");
         assert_eq!(
-            m.options[1].hint.as_deref(),
+            m.options[3].hint.as_deref(),
             Some("Sonnet 4.6 · Best for everyday tasks")
         );
-        assert_eq!(m.options[2].label, "Haiku");
-        assert_eq!(m.options[2].action_id, "claude-haiku-4-5");
+        assert_eq!(m.options[4].label, "Haiku");
+        assert_eq!(m.options[4].action_id, "claude-haiku-4-5");
         assert_eq!(
-            m.options[2].hint.as_deref(),
+            m.options[4].hint.as_deref(),
             Some("Haiku 4.5 · Fastest for quick answers")
         );
 
-        assert_eq!(m.cursor, 0);
+        assert_eq!(m.cursor, 2, "cursor lands on first model row by default");
     }
 
     #[test]
@@ -1345,10 +1581,10 @@ mod tests {
     }
 
     #[test]
-    fn new_model_cursor_defaults_to_zero_for_unknown() {
+    fn new_model_cursor_defaults_to_first_model_row_for_unknown() {
 
         let m = OverlayMenu::new_model("some-unknown-alias");
-        assert_eq!(m.cursor, 0);
+        assert_eq!(m.cursor, 2);
     }
 
     #[test]
@@ -1424,7 +1660,7 @@ mod tests {
             other => panic!("unexpected outcome: {other:?}"),
         }
         let mut m = OverlayMenu::new_model("claude-opus-4-7[1m]");
-        m.cursor = 1;
+        m.cursor = 3; // Sonnet row (0 provider, 1 sep, 2 opus, 3 sonnet)
         match m.commit_outcome().expect("outcome") {
             OverlayMenuOutcome::SetModel { model_id } => {
                 assert_eq!(model_id, "claude-sonnet-4-6");
@@ -1432,13 +1668,47 @@ mod tests {
             other => panic!("unexpected outcome: {other:?}"),
         }
         let mut m = OverlayMenu::new_model("claude-opus-4-7[1m]");
-        m.cursor = 2;
+        m.cursor = 4; // Haiku row
         match m.commit_outcome().expect("outcome") {
             OverlayMenuOutcome::SetModel { model_id } => {
                 assert_eq!(model_id, "claude-haiku-4-5");
             }
             other => panic!("unexpected outcome: {other:?}"),
         }
+    }
+
+    #[test]
+    fn commit_provider_row_yields_cycle_provider() {
+        let mut m = OverlayMenu::new_model("claude-opus-4-7[1m]");
+        m.cursor = 0; // Provider row
+        match m.commit_outcome().expect("outcome") {
+            OverlayMenuOutcome::CycleProvider { direction } => {
+                assert_eq!(direction, 1);
+            }
+            other => panic!("unexpected outcome: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn new_model_for_codex_lists_codex_catalog() {
+        use crate::config::providers::ProviderId;
+        let m = OverlayMenu::new_model_with_effort_for_provider(
+            "gpt-5.4",
+            None,
+            ProviderId::Codex,
+        );
+        assert_eq!(m.options[0].action_id, PROVIDER_CYCLE_ACTION);
+        assert!(m.options[0].label.contains("Codex"));
+        let codex_models: Vec<&str> = m
+            .options
+            .iter()
+            .skip(2)
+            .map(|o| o.action_id.as_str())
+            .collect();
+        assert!(
+            codex_models.iter().any(|id| id.starts_with("gpt-")),
+            "codex model rows missing gpt-* ids: {codex_models:?}"
+        );
     }
 
     #[test]
@@ -1573,6 +1843,47 @@ mod tests {
         assert!(
             joined.contains("Enter to confirm · Esc to exit"),
             "model footer must read `Esc to exit` per capture line 38"
+        );
+    }
+
+    #[test]
+    fn settings_search_query_filters_rendered_rows() {
+        use crate::tui::slash::catalog::SettingsTab;
+        use ratatui::{backend::TestBackend, Terminal};
+
+        let st = crate::tui::state::ConversationState::default();
+        let mut m = OverlayMenu::new_settings(SettingsTab::Config, &st);
+        // Prove the filter actually prunes unrelated rows — typing `permiss`
+        // should leave only the `Default permission mode` row visible.
+        m.settings_search_query = "permiss".into();
+
+        let backend = TestBackend::new(120, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                draw_overlay(f, area, &m);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let width = buf.area.width;
+        let height = buf.area.height;
+        let mut joined = String::new();
+        for y in 0..height {
+            for x in 0..width {
+                joined.push_str(buf[(x, y)].symbol());
+            }
+            joined.push('\n');
+        }
+
+        let lc = joined.to_lowercase();
+        assert!(
+            lc.contains("permission"),
+            "filter must keep the Permission row visible, got:\n{joined}"
+        );
+        assert!(
+            !lc.contains("auto-compact"),
+            "filter must prune unrelated `Auto-compact` row when query=`permiss`, got:\n{joined}"
         );
     }
 }

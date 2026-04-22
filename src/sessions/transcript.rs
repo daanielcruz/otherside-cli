@@ -93,18 +93,10 @@ mod tests {
         let path = tmp_path();
         {
             let mut w = Writer::open(&path).unwrap();
-            w.append(&Record::UserMessage {
-                ts: now_iso(),
-                content: "hi".into(),
-            })
-            .unwrap();
-            w.append(&Record::AssistantMessage {
-                ts: now_iso(),
-                content: "hello".into(),
-                thinking: None,
-                usage: None,
-            })
-            .unwrap();
+            w.append(&Record::user_message(now_iso(), "hi"))
+                .unwrap();
+            w.append(&Record::assistant_message(now_iso(), "hello"))
+                .unwrap();
         }
         let records = Reader::read_all(&path).unwrap();
         assert_eq!(records.len(), 2);
@@ -116,11 +108,8 @@ mod tests {
         let path = tmp_path();
         {
             let mut w = Writer::open(&path).unwrap();
-            w.append(&Record::UserMessage {
-                ts: now_iso(),
-                content: "first".into(),
-            })
-            .unwrap();
+            w.append(&Record::user_message(now_iso(), "first"))
+                .unwrap();
         }
 
         {

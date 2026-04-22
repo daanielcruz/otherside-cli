@@ -2,19 +2,38 @@
 
 use serde_json::Value;
 
-use crate::harness::reminders::build_preamble_blocks_with_git;
+use crate::harness::reminders::{
+    build_preamble_blocks_third_party, build_preamble_blocks_with_git,
+};
 use crate::inference::{OpenAiChatMessage, OpenAiChatRole};
 
 use super::blocks::{AnthropicMessage, Block, Role};
+use super::system::SystemFlavor;
 use super::UserContext;
 
 pub fn build(messages: &[OpenAiChatMessage], ctx: &UserContext<'_>) -> Vec<Value> {
-    let mut normalized = normalize(messages, ctx);
+    build_with_flavor(messages, ctx, SystemFlavor::ClaudeCode)
+}
+
+pub fn build_with_flavor(
+    messages: &[OpenAiChatMessage],
+    ctx: &UserContext<'_>,
+    flavor: SystemFlavor,
+) -> Vec<Value> {
+    let mut normalized = normalize_with_flavor(messages, ctx, flavor);
     add_cache_breakpoints(&mut normalized);
     normalized.iter().map(|m| m.to_json()).collect()
 }
 
 pub fn normalize(messages: &[OpenAiChatMessage], ctx: &UserContext<'_>) -> Vec<AnthropicMessage> {
+    normalize_with_flavor(messages, ctx, SystemFlavor::ClaudeCode)
+}
+
+pub fn normalize_with_flavor(
+    messages: &[OpenAiChatMessage],
+    ctx: &UserContext<'_>,
+    flavor: SystemFlavor,
+) -> Vec<AnthropicMessage> {
     let mut out: Vec<AnthropicMessage> = Vec::new();
     let mut pending_tool_results: Vec<Block> = Vec::new();
     let mut first_user = true;
@@ -30,8 +49,18 @@ pub fn normalize(messages: &[OpenAiChatMessage], ctx: &UserContext<'_>) -> Vec<A
                 flush_tool_results(&mut pending_tool_results, &mut out);
                 let mut blocks: Vec<Block> = Vec::new();
                 if first_user {
-                    let preamble =
-                        build_preamble_blocks_with_git(ctx.email, ctx.current_date, ctx.git_status);
+                    let preamble = match flavor {
+                        SystemFlavor::ClaudeCode => build_preamble_blocks_with_git(
+                            ctx.email,
+                            ctx.current_date,
+                            ctx.git_status,
+                        ),
+                        SystemFlavor::ThirdParty => build_preamble_blocks_third_party(
+                            ctx.email,
+                            ctx.current_date,
+                            ctx.git_status,
+                        ),
+                    };
                     for p in preamble {
                         blocks.push(Block::Text {
                             text: p["text"]

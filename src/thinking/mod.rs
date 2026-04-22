@@ -26,6 +26,11 @@ pub enum ThinkingLevel {
     High,
     XHigh,
     Max,
+    /// Binary reasoning toggle used by Kimi. `On` leaves the
+    /// `thinking:{type:"adaptive"}` envelope; `Off` strips it. Non-claude
+    /// families that wire through the anthropic translator ride these.
+    On,
+    Off,
 }
 
 impl ThinkingLevel {
@@ -40,6 +45,8 @@ impl ThinkingLevel {
             Self::High => "high",
             Self::XHigh => "xhigh",
             Self::Max => "max",
+            Self::On => "on",
+            Self::Off => "off",
         }
     }
 }
@@ -57,8 +64,10 @@ impl FromStr for ThinkingLevel {
             "high" => Ok(Self::High),
             "xhigh" => Ok(Self::XHigh),
             "max" => Ok(Self::Max),
+            "on" => Ok(Self::On),
+            "off" => Ok(Self::Off),
             other => Err(Error::Parse(format!(
-                "unknown thinking level `{other}` — expected one of: none, auto, minimal, low, medium, high, xhigh, max"
+                "unknown thinking level `{other}` — expected one of: none, auto, minimal, low, medium, high, xhigh, max, on, off"
             ))),
         }
     }

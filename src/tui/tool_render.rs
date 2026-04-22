@@ -361,7 +361,7 @@ pub fn render_tool_call(view: &ToolCallView<'_>) -> Vec<Line<'static>> {
         out.push(Line::from(vec![
             Span::styled(GUTTER_CONT.to_string(), Style::default().fg(theme::MUTED)),
             Span::styled(
-                "(ctrl+b to run in background)".to_string(),
+                "(ctrl+b ctrl+b (twice) to run in background)".to_string(),
                 Style::default().fg(theme::MUTED),
             ),
         ]));
@@ -606,13 +606,10 @@ fn read_preview(result: &Value) -> Option<ToolPayload> {
     }
 
     let num = obj.get("numLines").and_then(|v| v.as_u64())?;
+    // Upstream (FileReadTool/UI.tsx:129-135) renders a single-line summary
+    // `Read <N> line(s)` with no inline body; full content is reachable via
+    // ctrl+o expand. Emit just the head to match.
     let head = format!("Read {num} {}", if num == 1 { "line" } else { "lines" });
-    if let Some(content) = obj.get("content").and_then(|v| v.as_str()) {
-        if !content.is_empty() {
-            let body = trim_multiline(content, 5, 180);
-            return Some(ToolPayload::Preview(format!("{head}\n{body}")));
-        }
-    }
     Some(ToolPayload::Preview(head))
 }
 
@@ -1587,8 +1584,10 @@ mod tests {
             "totalLines": 2,
         });
         let s = expect_preview(payload_from_result("Read", &v, false, &serde_json::Value::Null).unwrap());
-        assert!(s.starts_with("Read 2 lines"), "got: {s}");
-        assert!(s.contains("alpha"), "body excerpt present: {s}");
+        assert_eq!(
+            s, "Read 2 lines",
+            "upstream collapses Read to a single-line summary (FileReadTool/UI.tsx:129-135) — no inline body; full preview only via ctrl+o expand",
+        );
     }
 
     #[test]
@@ -2065,7 +2064,7 @@ mod tests {
         };
         let text = collect_text(&render_tool_call(&view));
         assert!(
-            text.contains("(ctrl+b to run in background)"),
+            text.contains("(ctrl+b ctrl+b (twice) to run in background)"),
             "Agent block must emit inline ctrl+b hint per upstream BashTool/UI.tsx:63-73: {text:?}"
         );
     }
@@ -2107,7 +2106,7 @@ mod tests {
         };
         let text = collect_text(&render_tool_call(&view));
         assert!(
-            text.contains("(ctrl+b to run in background)"),
+            text.contains("(ctrl+b ctrl+b (twice) to run in background)"),
             "Bash running block must emit inline ctrl+b hint: {text:?}"
         );
     }

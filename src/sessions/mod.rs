@@ -212,10 +212,10 @@ mod tests {
         let cwd = scratch_cwd();
         let h1 = open_new(&cfg, &cwd).unwrap();
         let mut w1 = h1.writer;
-        w1.append(&Record::UserMessage {
-            ts: "2026-04-22T00:00:00.000Z".into(),
-            content: "first turn — here is the user prompt".into(),
-        })
+        w1.append(&Record::user_message(
+            "2026-04-22T00:00:00.000Z",
+            "first turn — here is the user prompt",
+        ))
         .unwrap();
         drop(w1);
 
@@ -224,10 +224,10 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(20));
         let h2 = open_new(&cfg, &cwd).unwrap();
         let mut w2 = h2.writer;
-        w2.append(&Record::UserMessage {
-            ts: "2026-04-22T00:01:00.000Z".into(),
-            content: "second session prompt".into(),
-        })
+        w2.append(&Record::user_message(
+            "2026-04-22T00:01:00.000Z",
+            "second session prompt",
+        ))
         .unwrap();
         drop(w2);
 

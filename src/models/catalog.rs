@@ -124,27 +124,20 @@ pub const CATALOG: &[Model] = &[
 
     Model {
         id: "kimi-for-coding",
-        display_name: "Kimi K2 (for coding)",
+        display_name: "Kimi K2.6",
         supports_1m: false,
         provider: ProviderId::Kimi,
         family_alias: Some("kimi"),
         primary_for_family: true,
-        supported_efforts: &["auto"],
-        default_effort: "auto",
+        // Kimi reasoning is binary: `thinking: {type:"adaptive"}` envelope
+        // rides when on, strips when off. Probe 2026-04-22 against
+        // api.kimi.com/coding/v1/models returned a single row — the
+        // previously-listed `kimi-k2-thinking` ghost is rejected by the
+        // backend and has been removed.
+        supported_efforts: &["on", "off"],
+        default_effort: "on",
         context_window: 262_144,
-        display_hint: "Kimi K2 · 262k window · anthropic-compatible",
-    },
-    Model {
-        id: "kimi-k2-thinking",
-        display_name: "Kimi K2 Thinking",
-        supports_1m: false,
-        provider: ProviderId::Kimi,
-        family_alias: Some("kimi"),
-        primary_for_family: false,
-        supported_efforts: &["auto"],
-        default_effort: "auto",
-        context_window: 262_144,
-        display_hint: "Kimi K2 Thinking · reasoning-tuned variant",
+        display_hint: "Kimi K2.6 · 262k window · anthropic-compatible",
     },
 ];
 
@@ -252,21 +245,30 @@ mod tests {
     }
 
     #[test]
-    fn kimi_has_two_rows_and_primary_is_for_coding() {
+    fn kimi_single_row_is_for_coding() {
+        // Live probe 2026-04-22 against api.kimi.com/coding/v1/models
+        // returned exactly one row — `kimi-for-coding`. The previously-
+        // shipped `kimi-k2-thinking` slug was a ghost the backend refuses;
+        // dropping it keeps /model panel honest.
         let ms = models_for(ProviderId::Kimi);
-        assert_eq!(ms.len(), 2, "kimi catalog carries for-coding + thinking");
+        assert_eq!(ms.len(), 1, "kimi catalog ships only kimi-for-coding");
         let primary = ms.iter().find(|m| m.primary_for_family).unwrap();
         assert_eq!(primary.id, "kimi-for-coding");
-        assert!(ms.iter().any(|m| m.id == "kimi-k2-thinking"));
+        assert_eq!(primary.display_name, "Kimi K2.6");
+        assert!(!ms.iter().any(|m| m.id == "kimi-k2-thinking"));
     }
 
     #[test]
-    fn kimi_models_advertise_262k_window_and_no_1m() {
+    fn kimi_reasoning_is_binary_on_off() {
+        // Kimi wire: effort=on keeps `thinking:{type:"adaptive"}` envelope,
+        // effort=off strips thinking + context_management. No numeric
+        // levels (anthropic's low/medium/high/xhigh/max don't apply).
         let ms = models_for(ProviderId::Kimi);
         for m in ms {
-            assert_eq!(m.context_window, 262_144, "Kimi context window = 262k");
-            assert!(!m.supports_1m, "Kimi does not speak the anthropic 1m beta");
-            assert_eq!(m.supported_efforts, &["auto"]);
+            assert_eq!(m.context_window, 262_144);
+            assert!(!m.supports_1m);
+            assert_eq!(m.supported_efforts, &["on", "off"]);
+            assert_eq!(m.default_effort, "on");
         }
     }
 

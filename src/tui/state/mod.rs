@@ -117,6 +117,8 @@ pub struct ConversationState {
 
     pub active_agents_panel: Option<super::slash::agents_panel::AgentsPanelState>,
 
+    pub active_tasks_panel: Option<super::slash::tasks_panel::TasksPanelState>,
+
     pub pending_permission: Option<super::menu::PendingPermissionPrompt>,
 
     pub pending_question: Option<super::menu::PendingQuestion>,
@@ -130,7 +132,24 @@ pub struct ConversationState {
     pub tasks: crate::tasks::TaskStore,
 
     pub toggle_feedback: Option<(String, Instant)>,
+
+    /// Two-stage pill focus flag. Upstream PromptInput.tsx:410-419 decrements
+    /// `coordinatorTaskIndex` from 0 to -1 on the first ↓ at prompt bottom
+    /// (when a bg-task pill exists) — ink re-renders the pill with `inverse=
+    /// true`. A second ↓ / Enter opens the panel. Otherside mirrors that
+    /// state: `false` at rest → pill paints flat; `true` after first ↓ →
+    /// pill paints with inverse fg/bg and next ↓ / Enter opens `/tasks`.
+    pub pill_focused: bool,
+
+    /// Upstream binds `chat:taskBackground` to **Ctrl+B Ctrl+B** (doubled)
+    /// rather than a single keystroke — prevents accidental background when
+    /// user fat-fingers Ctrl+B while typing. Set on the first press, cleared
+    /// after the short window or on any other key. Second Ctrl+B within
+    /// `CTRL_B_DOUBLE_TAP_WINDOW_MS` fires the TaskBackground action.
+    pub ctrl_b_armed_at: Option<Instant>,
 }
+
+pub const CTRL_B_DOUBLE_TAP_WINDOW_MS: u128 = 1_000;
 
 impl ConversationState {
 
@@ -1013,10 +1032,14 @@ impl ConversationState {
             .iter()
             .map(|m| m.content.clone())
             .collect();
+        let provider_slug = self.provider_id.slug().to_string();
+        let model_id = self.session.model.clone();
         for content in to_persist {
             self.append_record(crate::sessions::Record::UserMessage {
                 ts: crate::sessions::record::now_iso(),
                 content,
+                provider: Some(provider_slug.clone()),
+                model: Some(model_id.clone()),
             });
         }
 
@@ -2345,10 +2368,7 @@ mod tests {
         use crate::sessions::Record;
         let mut st = ConversationState::new();
         let records = vec![
-            Record::UserMessage {
-                ts: "2026-04-22T10:00:00.000Z".into(),
-                content: "hello".into(),
-            },
+            Record::user_message("2026-04-22T10:00:00.000Z", "hello"),
             Record::AssistantMessage {
                 ts: "2026-04-22T10:00:01.000Z".into(),
                 content: "hi there".into(),
@@ -2358,6 +2378,8 @@ mod tests {
                     "output_tokens": 56,
                     "cumulative_output_tokens": 56,
                 })),
+                provider: None,
+                model: None,
             },
         ];
         super::hydrate_from_records(&mut st, &records);
@@ -2377,28 +2399,20 @@ mod tests {
         use crate::sessions::Record;
         let mut st = ConversationState::new();
         let records = vec![
-            Record::UserMessage {
-                ts: "2026-04-22T10:00:00.000Z".into(),
-                content: "run ls".into(),
-            },
-            Record::ToolCall {
-                ts: "2026-04-22T10:00:00.100Z".into(),
-                tool_name: "Bash".into(),
-                args: serde_json::json!({"command": "ls"}),
-                call_id: "toolu_1".into(),
-            },
+            Record::user_message("2026-04-22T10:00:00.000Z", "run ls"),
+            Record::tool_call(
+                "2026-04-22T10:00:00.100Z",
+                "Bash",
+                serde_json::json!({"command": "ls"}),
+                "toolu_1",
+            ),
             Record::ToolResult {
                 ts: "2026-04-22T10:00:00.500Z".into(),
                 call_id: "toolu_1".into(),
                 result: serde_json::json!({"stdout": "a.txt\nb.txt", "exit_code": 0}),
                 is_error: false,
             },
-            Record::AssistantMessage {
-                ts: "2026-04-22T10:00:01.000Z".into(),
-                content: "two files".into(),
-                thinking: None,
-                usage: None,
-            },
+            Record::assistant_message("2026-04-22T10:00:01.000Z", "two files"),
         ];
         super::hydrate_from_records(&mut st, &records);
         assert_eq!(st.messages.len(), 3);
@@ -2413,12 +2427,12 @@ mod tests {
         use crate::sessions::Record;
         let mut st = ConversationState::new();
         let records = vec![
-            Record::ToolCall {
-                ts: "2026-04-22T10:00:00.100Z".into(),
-                tool_name: "Bash".into(),
-                args: serde_json::json!({"command": "nope"}),
-                call_id: "toolu_1".into(),
-            },
+            Record::tool_call(
+                "2026-04-22T10:00:00.100Z",
+                "Bash",
+                serde_json::json!({"command": "nope"}),
+                "toolu_1",
+            ),
             Record::ToolResult {
                 ts: "2026-04-22T10:00:00.500Z".into(),
                 call_id: "toolu_1".into(),
@@ -2439,12 +2453,12 @@ mod tests {
         use crate::sessions::Record;
         let mut st = ConversationState::new();
         let records = vec![
-            Record::ToolCall {
-                ts: "2026-04-22T10:00:00.100Z".into(),
-                tool_name: "Bash".into(),
-                args: serde_json::json!({"command": "hung"}),
-                call_id: "toolu_orphan".into(),
-            },
+            Record::tool_call(
+                "2026-04-22T10:00:00.100Z",
+                "Bash",
+                serde_json::json!({"command": "hung"}),
+                "toolu_orphan",
+            ),
         ];
         super::hydrate_from_records(&mut st, &records);
         assert_eq!(st.messages.len(), 1, "orphan tool call flushed as Running");
@@ -2481,18 +2495,9 @@ mod tests {
         use crate::sessions::Record;
         let mut st = ConversationState::new();
         let records = vec![
-            Record::UserMessage {
-                ts: "2026-04-22T09:00:00.000Z".into(),
-                content: "earlier user turn".into(),
-            },
-            Record::CompactionMark {
-                ts: "2026-04-22T09:05:00.000Z".into(),
-                summary_ref: "kept=5;auto=false".into(),
-            },
-            Record::UserMessage {
-                ts: "2026-04-22T09:06:00.000Z".into(),
-                content: "post-compact continuation".into(),
-            },
+            Record::user_message("2026-04-22T09:00:00.000Z", "earlier user turn"),
+            Record::compaction_mark("2026-04-22T09:05:00.000Z", "kept=5;auto=false"),
+            Record::user_message("2026-04-22T09:06:00.000Z", "post-compact continuation"),
         ];
         super::hydrate_from_records(&mut st, &records);
         for m in &st.messages {

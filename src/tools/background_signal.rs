@@ -35,6 +35,22 @@ pub fn signal_all() -> Vec<String> {
     ids
 }
 
+/// Signal a single tool_call_id. Returns `true` when a receiver was
+/// registered and notified; `false` when nothing matched (already
+/// unregistered / spurious id). Used by `/tasks` detail `x` to kill one
+/// specific task without affecting siblings.
+pub fn signal(tool_call_id: &str) -> bool {
+    let mut map = registry()
+        .lock()
+        .expect("background_signal registry poisoned");
+    if let Some(tx) = map.remove(tool_call_id) {
+        let _: std::result::Result<(), watch::error::SendError<bool>> = tx.send(true);
+        true
+    } else {
+        false
+    }
+}
+
 pub fn is_registered(tool_call_id: &str) -> bool {
     registry()
         .lock()

@@ -37,9 +37,13 @@ pub fn native(ctx: &StatuslineCtx) -> StatuslineLine {
 fn provider_short(provider_id: &str) -> String {
     match provider_id {
         "" => String::new(),
-        "anthropic" | "anthropic-oauth" | "anthropic-api" | "claude-code" => "anthropic".to_string(),
-        "codex" | "openai" | "openai-api" => "codex".to_string(),
-        "gemini" | "gemini-cli" => "gemini".to_string(),
+        "anthropic" | "anthropic-oauth" | "anthropic-api" | "claude-code" => {
+            "Anthropic (OAuth)".to_string()
+        }
+        "codex" | "codex-oauth" | "openai" | "openai-api" => "Codex (OAuth)".to_string(),
+        "gemini" | "gemini-oauth" | "gemini-cli" => "Gemini (OAuth)".to_string(),
+        "kimi" | "kimi-code" | "moonshot" => "Kimi (API Key)".to_string(),
+        "openai-custom" => "OpenAI Custom".to_string(),
         other => other.to_string(),
     }
 }
@@ -141,8 +145,8 @@ mod tests {
         ctx.provider_id = "anthropic-oauth".into();
         let line = native(&ctx);
         assert!(
-            line.content.ends_with(" · anthropic"),
-            "expected provider tail `· anthropic`, got: {}",
+            line.content.ends_with(" · Anthropic (OAuth)"),
+            "expected provider tail `· Anthropic (OAuth)`, got: {}",
             line.content
         );
     }

@@ -104,6 +104,15 @@ pub fn render(
                 }
             };
             (body_rows + 5).min(remaining).max(8)
+        } else if let Some(panel) = state.active_tasks_panel.as_ref() {
+            use super::slash::tasks_panel::state::Mode;
+            let body_rows: u16 = match panel.mode {
+                Mode::List => {
+                    if panel.rows.is_empty() { 3 } else { panel.rows.len() as u16 + 2 }
+                }
+                Mode::Detail(_) => 16,
+            };
+            (body_rows + 3).min(remaining).max(8)
         } else if let Some(m) = state.active_menu.as_ref() {
             super::menu::overlay_rows(m).min(remaining)
         } else if let Some(ac) = state.autocomplete.as_ref() {
@@ -203,6 +212,7 @@ pub fn render(
     let overlay_hides_prompt = state.pending_permission.is_some()
         || state.pending_question.is_some()
         || state.active_agents_panel.is_some()
+        || state.active_tasks_panel.is_some()
         || state.active_menu.is_some();
     if !overlay_hides_prompt {
         draw_prompt(f, slots.prompt, state);
@@ -215,6 +225,8 @@ pub fn render(
             super::menu::draw_question_prompt(f, popup_rect, q);
         } else if let Some(panel) = state.active_agents_panel.as_ref() {
             super::slash::agents_panel::draw_panel(f, popup_rect, panel);
+        } else if let Some(panel) = state.active_tasks_panel.as_ref() {
+            super::slash::tasks_panel::draw_panel(f, popup_rect, panel);
         } else if let Some(menu_state) = state.active_menu.as_ref() {
             super::menu::draw_overlay(f, popup_rect, menu_state);
         } else if let Some(ac) = state.autocomplete.as_ref() {
@@ -839,27 +851,26 @@ fn build_info_chip_line(state: &ConversationState) -> Line<'static> {
         } else {
             pill
         };
-        // Bug Q: upstream highlights the `N background tasks` pill with a
-        // cyan background to cue the user that ↓ + Enter opens the panel.
-        // Show the separator dot in muted but the pill itself in accent.
+        // Upstream SummaryPill (BackgroundTaskStatus.tsx:378-398) renders
+        // `<Text color="background" inverse={selected || hover}>` — flat at
+        // rest, fg/bg swapped ("chip-like") only when the pill is focused
+        // via ↓ at prompt bottom. Mirror by gating the inverse-style paint
+        // on `state.pill_focused`; rest-state paints the pill in MUTED,
+        // visually inline with the statusline.
+        let pill_style = if state.pill_focused {
+            Style::default()
+                .fg(theme::TEXT)
+                .bg(theme::AUTO_ACCEPT)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme::MUTED)
+        };
         if has_chip {
             let (sep, body) = segment.split_at(3); // " · "
             spans.push(Span::styled(sep.to_string(), Style::default().fg(theme::MUTED)));
-            spans.push(Span::styled(
-                body.to_string(),
-                Style::default()
-                    .fg(theme::TEXT)
-                    .bg(theme::AUTO_ACCEPT)
-                    .add_modifier(Modifier::BOLD),
-            ));
+            spans.push(Span::styled(body.to_string(), pill_style));
         } else {
-            spans.push(Span::styled(
-                segment,
-                Style::default()
-                    .fg(theme::TEXT)
-                    .bg(theme::AUTO_ACCEPT)
-                    .add_modifier(Modifier::BOLD),
-            ));
+            spans.push(Span::styled(segment, pill_style));
         }
     }
     if !hint.is_empty() {
@@ -910,8 +921,8 @@ mod tests {
             rendered.push_str(buf[(x, 0)].symbol());
         }
         assert!(
-            rendered.contains("kimi"),
-            "statusline must show `kimi` after provider_id flip; got {rendered:?}"
+            rendered.contains("Kimi"),
+            "statusline must show `Kimi` after provider_id flip; got {rendered:?}"
         );
 
         st.provider_id = ProviderId::Codex;
@@ -929,12 +940,12 @@ mod tests {
             rendered2.push_str(buf2[(x, 0)].symbol());
         }
         assert!(
-            rendered2.contains("codex"),
-            "statusline must show `codex` after flip; got {rendered2:?}"
+            rendered2.contains("Codex"),
+            "statusline must show `Codex` after flip; got {rendered2:?}"
         );
         assert!(
-            !rendered2.contains("kimi"),
-            "statusline must NOT show stale `kimi` after flip; got {rendered2:?}"
+            !rendered2.contains("Kimi"),
+            "statusline must NOT show stale `Kimi` after flip; got {rendered2:?}"
         );
     }
 

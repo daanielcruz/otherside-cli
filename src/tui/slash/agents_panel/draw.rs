@@ -9,6 +9,12 @@ use crate::tui::render::theme;
 
 const FOOTER_HINT: &str = "←/→ switch tabs · ↑↓ navigate · Enter select · Esc close";
 
+/// Upstream AgentsList + BackgroundTasksDialog indent body rows 4 cols
+/// from pane edge (tab bar + headers indent with 2, content rows with 4).
+/// Matches `pngs/02-agents-frame2-library.png` + `frame3-running.png`.
+const BODY_INDENT: &str = "    ";
+const BODY_HEADER_INDENT: &str = "  ";
+
 pub fn draw_panel(f: &mut Frame<'_>, area: Rect, state: &AgentsPanelState) {
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(6 + state.running.len() + state.library.len());
 
@@ -72,11 +78,14 @@ fn chip(label: String, selected: bool) -> Span<'static> {
 
 fn running_body(state: &AgentsPanelState) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
-    if state.running.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "No subagents are currently running.",
-            Style::default().fg(theme::MUTED),
-        )));
+    if state.running.is_empty() && state.recently_completed.is_empty() {
+        lines.push(Line::from(vec![
+            Span::raw(BODY_HEADER_INDENT),
+            Span::styled(
+                "No subagents are currently running.",
+                Style::default().fg(theme::MUTED),
+            ),
+        ]));
     } else {
         for (i, row) in state.running.iter().enumerate() {
             let selected = i == state.running_cursor;
@@ -86,38 +95,144 @@ fn running_body(state: &AgentsPanelState) -> Vec<Line<'static>> {
             } else {
                 Style::default().fg(theme::TEXT)
             };
-            let mut segments: Vec<String> = vec![row.name.clone()];
+            // Upstream row format (AsyncAgentDetailDialog.tsx:106):
+            // `{subagent_type} · {description} · {elapsed}s · {tokens} tokens`.
+            // `subagent_type` leads — `name` was otherside's legacy stand-in.
+            let mut segments: Vec<String> = Vec::with_capacity(4);
+            let lead = row
+                .subagent_type
+                .clone()
+                .unwrap_or_else(|| row.name.clone());
+            segments.push(lead);
             if let Some(desc) = &row.description {
                 segments.push(desc.clone());
             }
             segments.push(format!("{}s", row.runtime_secs));
-            segments.push(format!("{} tokens", crate::tui::tool_render::format_number_compact(row.tokens)));
+            segments.push(format!(
+                "{} tokens",
+                crate::tui::tool_render::format_number_compact(row.tokens),
+            ));
             lines.push(Line::from(vec![
-                Span::styled(prefix.to_string(), style),
+                Span::styled(
+                    format!("{BODY_HEADER_INDENT}{prefix}"),
+                    style,
+                ),
                 Span::styled(segments.join(" · "), style),
             ]));
         }
-    }
 
-    let _ = state.recently_completed;
+        if !state.recently_completed.is_empty() {
+            if !state.running.is_empty() {
+                lines.push(Line::from(""));
+            }
+            lines.push(Line::from(vec![
+                Span::raw(BODY_HEADER_INDENT),
+                Span::styled(
+                    "Recently completed".to_string(),
+                    Style::default().fg(theme::TEXT),
+                ),
+            ]));
+            for row in &state.recently_completed {
+                let lead = row
+                    .subagent_type
+                    .clone()
+                    .unwrap_or_else(|| row.name.clone());
+                let mut segments: Vec<String> = vec![lead];
+                if let Some(msg) = row
+                    .final_message
+                    .as_ref()
+                    .filter(|s| !s.trim().is_empty())
+                {
+                    segments.push(truncate_completed(msg));
+                }
+                lines.push(Line::from(vec![
+                    Span::raw(BODY_INDENT),
+                    Span::styled(
+                        "✔ ".to_string(),
+                        Style::default().fg(theme::SUCCESS),
+                    ),
+                    Span::styled(
+                        segments.join(" · "),
+                        Style::default().fg(theme::TEXT),
+                    ),
+                ]));
+            }
+        }
+    }
 
     lines
 }
 
+fn truncate_completed(s: &str) -> String {
+    // Upstream Recently-completed shows the first line of final_message,
+    // capped. We cap at 80 chars to keep the row in a single terminal row.
+    let first_line = s.lines().next().unwrap_or("");
+    const CAP: usize = 80;
+    if first_line.chars().count() <= CAP {
+        first_line.to_string()
+    } else {
+        let head: String = first_line.chars().take(CAP - 1).collect();
+        format!("{head}…")
+    }
+}
+
 fn library_body(state: &AgentsPanelState) -> Vec<Line<'static>> {
-    let mut lines: Vec<Line<'static>> = Vec::with_capacity(state.library.len() + 2);
-    lines.push(Line::from(Span::styled(
-        "Built-in agents (always available)",
-        Style::default()
-            .fg(theme::MUTED)
-            .add_modifier(Modifier::BOLD),
-    )));
+    let mut lines: Vec<Line<'static>> =
+        Vec::with_capacity(state.library.len() + state.user_agents.len() + 8);
+
+    // Upstream ordering (AgentsList.tsx): Create new agent → User agents →
+    // Plugin agents → Built-in agents. Sections separated by blank rows.
+
+    // Create new agent (visual placeholder — actual creation flow pending).
+    lines.push(Line::from(vec![
+        Span::raw(BODY_INDENT),
+        Span::styled(
+            "Create new agent".to_string(),
+            Style::default().fg(theme::MUTED).add_modifier(Modifier::DIM),
+        ),
+    ]));
+    lines.push(Line::from(""));
+
+    // User agents: scanned from ~/.claude/agents/*.md via frontmatter.
+    if !state.user_agents.is_empty() {
+        let header = match state.user_agents_dir.as_ref() {
+            Some(p) => format!("User agents ({})", p.display()),
+            None => "User agents".to_string(),
+        };
+        lines.push(Line::from(vec![
+            Span::raw(BODY_HEADER_INDENT),
+            Span::styled(header, Style::default().fg(theme::TEXT)),
+        ]));
+        for row in &state.user_agents {
+            lines.push(Line::from(vec![
+                Span::raw(BODY_INDENT),
+                Span::styled(
+                    format!("{} · {} · user memory", row.name, row.model),
+                    Style::default().fg(theme::TEXT),
+                ),
+            ]));
+        }
+        lines.push(Line::from(""));
+    }
+
+    // Plugin agents section is gated behind plugin-manifest discovery
+    // (Phase 3). Emit a placeholder header only when state surfaces some
+    // future `plugin_agents` vector — for now skip.
+
+    // Built-in agents (always available) — closes the section list.
+    lines.push(Line::from(vec![
+        Span::raw(BODY_HEADER_INDENT),
+        Span::styled(
+            "Built-in agents (always available)".to_string(),
+            Style::default().fg(theme::TEXT),
+        ),
+    ]));
     for row in &state.library {
         let mut spans: Vec<Span<'static>> = vec![
-            Span::styled("  ".to_string(), Style::default().fg(theme::MUTED)),
+            Span::raw(BODY_INDENT),
             Span::styled(
                 format!("{} · {}", row.name, row.model),
-                Style::default().fg(theme::MUTED),
+                Style::default().fg(theme::TEXT),
             ),
         ];
         if row.running_count > 0 {
@@ -154,15 +269,33 @@ mod tests {
     fn running_body_prints_empty_notice_when_no_tasks() {
         let s = AgentsPanelState::new(&TaskStore::new(), registry::all());
         let lines = running_body(&s);
-        assert_eq!(collect_text(&lines), "No subagents are currently running.");
+        let text = collect_text(&lines);
+        assert!(
+            text.trim_start().starts_with("No subagents are currently running."),
+            "empty-state notice missing or shifted: {text:?}"
+        );
     }
 
     #[test]
-    fn library_body_leads_with_built_in_header() {
+    fn library_body_contains_built_in_header() {
         let s = AgentsPanelState::new(&TaskStore::new(), registry::all());
         let lines = library_body(&s);
         let text = collect_text(&lines);
-        assert!(text.starts_with("Built-in agents (always available)"));
+        assert!(
+            text.contains("Built-in agents (always available)"),
+            "built-in section header missing: {text:?}"
+        );
+    }
+
+    #[test]
+    fn library_body_leads_with_create_new_agent() {
+        let s = AgentsPanelState::new(&TaskStore::new(), registry::all());
+        let lines = library_body(&s);
+        let text = collect_text(&lines);
+        assert!(
+            text.trim_start().starts_with("Create new agent"),
+            "library tab must open with `Create new agent` selectable row (upstream AgentsList.tsx:33,47-52): {text:?}"
+        );
     }
 
     #[test]
@@ -202,5 +335,56 @@ mod tests {
         let line = tab_bar(Tab::Running, 0);
         let joined: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(!joined.contains("(0)"), "should not render (0): {joined:?}");
+    }
+
+    #[test]
+    fn recently_completed_section_renders_when_populated() {
+        use crate::tasks::TaskState;
+        let mut s = AgentsPanelState::new(&TaskStore::new(), registry::all());
+        s.recently_completed.push(super::super::state::CompletedRow {
+            name: "call1".into(),
+            status: TaskState::Completed,
+            subagent_type: Some("general-purpose".into()),
+            final_message: Some(
+                "Monitor is running. I'll wait for the notification.".into(),
+            ),
+        });
+        let lines = running_body(&s);
+        let text = collect_text(&lines);
+        assert!(
+            text.contains("Recently completed"),
+            "section header missing: {text}"
+        );
+        assert!(
+            text.contains("✔"),
+            "completed marker missing: {text}"
+        );
+        assert!(
+            text.contains("general-purpose"),
+            "subagent_type missing from completed row: {text}"
+        );
+        assert!(
+            text.contains("Monitor is running"),
+            "final_message excerpt missing: {text}"
+        );
+    }
+
+    #[test]
+    fn running_row_leads_with_subagent_type_when_present() {
+        let mut s = AgentsPanelState::new(&TaskStore::new(), registry::all());
+        s.running.push(super::super::state::RunningRow {
+            name: "ignored-name".into(),
+            runtime_secs: 19,
+            description: Some("Sleep 200 echo ok".into()),
+            tokens: 22_300,
+            subagent_type: Some("general-purpose".into()),
+        });
+        let lines = running_body(&s);
+        let text = collect_text(&lines);
+        // Upstream row: `{subagent_type} · {description} · {elapsed}s · {tokens}`
+        assert!(
+            text.contains("general-purpose · Sleep 200 echo ok · 19s"),
+            "row must lead with subagent_type then description: {text}"
+        );
     }
 }

@@ -67,6 +67,14 @@ fn finalize(
                         disk_payload = Some((agent_id.clone(), text));
                     }
                 }
+                // Propagate runner-reported totalTokens into the record so
+                // the /agents Running row + Recently-completed section show
+                // real numbers instead of 0 (Fix 8 from parity 2026-04-22).
+                // Runner shape: `{"totalTokens": n, …}` per
+                // `agent/subagents/runner.rs:199`.
+                if let Some(total) = v.get("totalTokens").and_then(Value::as_u64) {
+                    r.tokens = total;
+                }
                 let status = v.get("status").and_then(Value::as_str).unwrap_or("");
                 r.state = match status {
                     "completed" => TaskState::Completed,
@@ -209,6 +217,46 @@ mod tests {
         assert_eq!(r.exit_code, Some(0));
         let captured: Vec<&str> = r.output.iter().map(String::as_str).collect();
         assert_eq!(captured, vec!["agent output"]);
+    }
+
+    struct TokenRunner;
+
+    impl SubagentRunner for TokenRunner {
+        fn run(
+            &self,
+            _definition: &AgentDefinition,
+            _prompt: &str,
+            _depth: u32,
+            _invocation: &AgentInvocation,
+        ) -> Result<Value, RunnerError> {
+            Ok(serde_json::json!({
+                "status": "completed",
+                "content": [{"type": "text", "text": "done"}],
+                "totalTokens": 22_345u64,
+            }))
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn finalize_propagates_total_tokens_into_record() {
+        let store = TaskStore::new();
+        let runner: Arc<dyn SubagentRunner> = Arc::new(TokenRunner);
+        let SpawnOutcome { task_id: id, .. } = spawn_background_agent(
+            runner,
+            def(),
+            "hi".into(),
+            0,
+            AgentInvocation::default(),
+            store.clone(),
+            "test-agent".into(),
+            Some("toolu_test".into()),
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let r = store.get(&id).expect("record");
+        assert_eq!(
+            r.tokens, 22_345,
+            "finalize must carry runner totalTokens into TaskRecord.tokens — parity Fix 8"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

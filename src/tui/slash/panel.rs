@@ -10,7 +10,10 @@ pub fn handle(kind: PanelKind, state: &mut ConversationState) -> SlashOutcome {
     state.input.clear();
     state.autocomplete = None;
     let overlay = match kind {
-        PanelKind::Effort => menu::OverlayMenu::new_effort(state.session.effort_label),
+        PanelKind::Effort => menu::OverlayMenu::new_effort_for_model(
+            state.session.effort_label,
+            &state.session.model,
+        ),
         PanelKind::Permissions => menu::OverlayMenu::new_permissions(state.session.permission_mode),
         PanelKind::Model => {
 
@@ -18,7 +21,11 @@ pub fn handle(kind: PanelKind, state: &mut ConversationState) -> SlashOutcome {
                 .session
                 .effort_label
                 .unwrap_or_else(|| crate::models::catalog::default_effort_for(&state.session.model));
-            menu::OverlayMenu::new_model_with_effort(&state.session.model, Some(effort))
+            menu::OverlayMenu::new_model_with_effort_for_provider(
+                &state.session.model,
+                Some(effort),
+                state.provider_id,
+            )
         }
         PanelKind::Help => menu::OverlayMenu::new_info(
             PanelKind::Help,
@@ -51,12 +58,14 @@ pub fn handle(kind: PanelKind, state: &mut ConversationState) -> SlashOutcome {
             ],
         ),
         PanelKind::Tasks => {
-
-            menu::OverlayMenu::new_info(
-                PanelKind::Tasks,
-                "Background tasks".into(),
-                tasks_hints(state),
-            )
+            // Open the full list-or-detail surface that mirrors upstream's
+            // BackgroundTasksDialog + AsyncAgentDetailDialog. Flat
+            // OverlayMenu::new_info was legacy; parity capture 2026-04-22
+            // (Target 3) required a drill-in + prompt preview.
+            state.active_tasks_panel = Some(
+                super::tasks_panel::TasksPanelState::new(&state.tasks),
+            );
+            return SlashOutcome::Handled;
         }
         PanelKind::Hooks => menu::OverlayMenu::new_info(
             PanelKind::Hooks,
@@ -127,6 +136,10 @@ fn help_hints() -> Vec<String> {
         "  Ctrl+C         arm exit (2× to quit)     Ctrl+D        exit when input empty".into(),
         "  !              bash passthrough line".into(),
         String::new(),
+        "Terminal tips".into(),
+        "  Option+drag    select text (macOS)       Alt+drag     select text (Linux)".into(),
+        "  altscreen locks native scrollback — use PgUp/PgDn + Shift+↑/↓".into(),
+        String::new(),
         "Slash commands".into(),
     ];
 
@@ -173,28 +186,6 @@ fn hooks_hints(st: &ConversationState) -> Vec<String> {
     ]
 }
 
-fn tasks_hints(st: &ConversationState) -> Vec<String> {
-    if crate::tasks::is_disabled() {
-        return vec![
-            "Background tasks disabled via OTHERSIDE_DISABLE_BACKGROUND_TASKS".into(),
-        ];
-    }
-    let active = st.tasks.list_active();
-    if active.is_empty() {
-        return vec!["No tasks currently running".into()];
-    }
-    active
-        .into_iter()
-        .map(|r| {
-            format!(
-                "{} · {} · running for {}s",
-                r.name,
-                r.id.as_str(),
-                r.runtime_secs(),
-            )
-        })
-        .collect()
-}
 
 #[cfg(test)]
 mod help_hints_tests {

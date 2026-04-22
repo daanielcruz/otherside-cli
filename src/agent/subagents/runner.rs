@@ -63,16 +63,20 @@ impl LoopObserver for NestedObserver {
 pub const SUBAGENT_MAX_TURNS: u32 = MAX_AUTO_TURNS;
 
 pub struct InnerLoopRunner {
-    provider: Arc<dyn Provider>,
+    provider: std::sync::RwLock<Arc<dyn Provider>>,
     default_model: String,
 }
 
 impl InnerLoopRunner {
     pub fn new(provider: Arc<dyn Provider>, default_model: String) -> Arc<dyn SubagentRunner> {
         Arc::new(Self {
-            provider,
+            provider: std::sync::RwLock::new(provider),
             default_model,
         })
+    }
+
+    fn current_provider(&self) -> Arc<dyn Provider> {
+        self.provider.read().expect("InnerLoopRunner provider lock poisoned").clone()
     }
 
     fn run_inner(
@@ -89,8 +93,17 @@ impl InnerLoopRunner {
             &self.default_model,
         );
 
+        let provider = self.current_provider();
+        tracing::info!(
+            target: "otherside::dispatch",
+            provider = provider.id(),
+            model = %model,
+            subagent_type = %definition.name,
+            depth,
+            "subagent dispatched"
+        );
         let mut history: Vec<OpenAiChatMessage> = Vec::with_capacity(2);
-        match self.provider.id() {
+        match provider.id() {
             "codex" => {
                 history.push(OpenAiChatMessage {
                     role: OpenAiChatRole::System,
@@ -115,7 +128,7 @@ impl InnerLoopRunner {
             tool_call_id: None,
         });
 
-        let provider_id = crate::config::providers::ProviderId::from_slug(self.provider.id())
+        let provider_id = crate::config::providers::ProviderId::from_slug(provider.id())
             .unwrap_or(crate::config::providers::ProviderId::ClaudeCode);
         let dispatcher = GatedDispatcher::from_tools_field_with_provider(
             definition.tools.clone(),
@@ -142,8 +155,6 @@ impl InnerLoopRunner {
             dispatcher,
             observer,
         };
-
-        let provider = self.provider.clone();
 
         let loop_result = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async move {
@@ -212,6 +223,13 @@ impl SubagentRunner for InnerLoopRunner {
         invocation: &AgentInvocation,
     ) -> Result<Value, RunnerError> {
         self.run_inner(definition, prompt, depth, invocation)
+    }
+
+    fn update_provider(&self, provider: Arc<dyn Provider>) {
+        *self
+            .provider
+            .write()
+            .expect("InnerLoopRunner provider lock poisoned") = provider;
     }
 }
 

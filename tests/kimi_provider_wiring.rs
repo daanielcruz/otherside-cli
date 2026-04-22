@@ -57,17 +57,20 @@ fn kimi_default_model_is_for_coding() {
 fn kimi_catalog_carries_two_rows_both_at_262k() {
     use otherside::models::catalog;
     let ms = catalog::models_for(ProviderId::Kimi);
-    assert_eq!(ms.len(), 2);
+    assert_eq!(ms.len(), 1, "live probe 2026-04-22 returned one row");
     for m in &ms {
         assert_eq!(m.context_window, 262_144);
         assert!(!m.supports_1m);
     }
 
     assert!(ms.iter().any(|m| m.id == "kimi-for-coding"));
-    assert!(ms.iter().any(|m| m.id == "kimi-k2-thinking"));
+    assert!(
+        !ms.iter().any(|m| m.id == "kimi-k2-thinking"),
+        "kimi-k2-thinking is a ghost — backend rejects the slug"
+    );
 }
 
 #[test]
 fn kimi_provider_label_is_user_readable() {
-    assert_eq!(ProviderId::Kimi.label(), "Kimi (API key)");
+    assert_eq!(ProviderId::Kimi.label(), "Kimi (API Key)");
 }

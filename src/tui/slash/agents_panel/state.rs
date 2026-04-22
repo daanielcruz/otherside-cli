@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use crate::agent::subagents::registry::AgentDefinition;
 use crate::tasks::{TaskKind, TaskState, TaskStore};
 
@@ -24,12 +26,15 @@ pub struct RunningRow {
     pub runtime_secs: u64,
     pub description: Option<String>,
     pub tokens: u64,
+    pub subagent_type: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub struct CompletedRow {
     pub name: String,
     pub status: TaskState,
+    pub subagent_type: Option<String>,
+    pub final_message: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -39,6 +44,64 @@ pub struct LibraryRow {
     pub running_count: usize,
 }
 
+/// User-defined agent discovered on disk under `~/.claude/agents/*.md`.
+/// Upstream surfaces these under the `User agents (<path>)` section in
+/// the Library tab (AgentsList.tsx). Parsed via the shared frontmatter
+/// parser.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserAgentRow {
+    pub name: String,
+    pub model: String,
+}
+
+pub fn discover_user_agents_dir() -> Option<PathBuf> {
+    let base = directories::BaseDirs::new()?;
+    Some(base.home_dir().join(".claude").join("agents"))
+}
+
+pub fn discover_user_agents() -> Vec<UserAgentRow> {
+    let Some(dir) = discover_user_agents_dir() else {
+        return Vec::new();
+    };
+    let Ok(iter) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut rows: Vec<UserAgentRow> = Vec::new();
+    for entry in iter.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("md") {
+            continue;
+        }
+        let Ok(src) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(parsed) = crate::agent::subagents::frontmatter::parse(&src) else {
+            continue;
+        };
+        let name = parsed
+            .fields
+            .get("name")
+            .cloned()
+            .or_else(|| {
+                path.file_stem()
+                    .and_then(|s| s.to_str())
+                    .map(ToString::to_string)
+            })
+            .unwrap_or_default();
+        if name.is_empty() {
+            continue;
+        }
+        let model = parsed
+            .fields
+            .get("model")
+            .cloned()
+            .unwrap_or_else(|| "inherit".to_string());
+        rows.push(UserAgentRow { name, model });
+    }
+    rows.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    rows
+}
+
 #[derive(Debug, Clone)]
 pub struct AgentsPanelState {
     pub tab: Tab,
@@ -46,6 +109,8 @@ pub struct AgentsPanelState {
     pub running: Vec<RunningRow>,
     pub recently_completed: Vec<CompletedRow>,
     pub library: Vec<LibraryRow>,
+    pub user_agents: Vec<UserAgentRow>,
+    pub user_agents_dir: Option<PathBuf>,
 }
 
 fn short_model_name(model: Option<&str>) -> String {
@@ -78,6 +143,7 @@ impl AgentsPanelState {
                 runtime_secs: r.runtime_secs(),
                 description: r.description.clone(),
                 tokens: r.tokens,
+                subagent_type: r.subagent_type.clone(),
             })
             .collect();
 
@@ -95,6 +161,8 @@ impl AgentsPanelState {
             .map(|r| CompletedRow {
                 name: r.name.clone(),
                 status: r.state,
+                subagent_type: r.subagent_type.clone(),
+                final_message: r.description.clone(),
             })
             .collect();
 
@@ -114,6 +182,8 @@ impl AgentsPanelState {
             running,
             recently_completed,
             library,
+            user_agents: discover_user_agents(),
+            user_agents_dir: discover_user_agents_dir(),
         }
     }
 
@@ -136,6 +206,7 @@ impl AgentsPanelState {
                 runtime_secs: r.runtime_secs(),
                 description: r.description.clone(),
                 tokens: r.tokens,
+                subagent_type: r.subagent_type.clone(),
             })
             .collect();
         if self.running_cursor >= self.running.len() {
@@ -156,6 +227,8 @@ impl AgentsPanelState {
             .map(|r| CompletedRow {
                 name: r.name.clone(),
                 status: r.state,
+                subagent_type: r.subagent_type.clone(),
+                final_message: r.description.clone(),
             })
             .collect();
 

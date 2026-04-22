@@ -29,10 +29,10 @@ impl ProviderId {
 
     pub fn label(self) -> &'static str {
         match self {
-            ProviderId::ClaudeCode => "Anthropic OAuth",
-            ProviderId::Codex => "Codex OAuth",
-            ProviderId::GeminiCli => "Gemini OAuth",
-            ProviderId::Kimi => "Kimi (API key)",
+            ProviderId::ClaudeCode => "Anthropic (OAuth)",
+            ProviderId::Codex => "Codex (OAuth)",
+            ProviderId::GeminiCli => "Gemini (OAuth)",
+            ProviderId::Kimi => "Kimi (API Key)",
             ProviderId::OpenAiCustom => "OpenAI Custom",
         }
     }

@@ -7,6 +7,7 @@ pub mod catalog;
 pub mod instant;
 pub mod panel;
 pub mod skill;
+pub mod tasks_panel;
 pub mod toggle;
 
 pub use catalog::{PanelKind, SlashEntry, SlashKind, CATALOG};

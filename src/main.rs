@@ -363,20 +363,44 @@ async fn cmd_tui(cli: &Cli) -> Result<()> {
         .or(settings.default_provider.clone())
         .unwrap_or_else(|| DEFAULT_PROVIDER.to_string());
 
-    let tier_default = {
-        use otherside::models::defaults::{default_claude_code_for_tier, SubscriptionTier};
-        let tier_str = otherside::auth::anthropic::load_credentials()
-            .ok()
-            .flatten()
-            .and_then(|c| c.subscription_type.clone());
-        let tier = SubscriptionTier::from_subscription_type(tier_str.as_deref());
-        default_claude_code_for_tier(tier).to_string()
+    // Resolve model against the chosen provider. Rules:
+    //   1. `--model` wins unconditionally (user knows what they're typing).
+    //   2. Settings `default_model` wins only if it belongs to the chosen
+    //      provider — otherwise it would wedge e.g. a claude slug into codex
+    //      and 404. Unknown-slug / unknown-provider keeps the setting and
+    //      lets the backend surface its own error.
+    //   3. Anthropic falls back to the subscription-tier default
+    //      (`default_claude_code_for_tier`); other providers fall back to
+    //      their declared `default_model`.
+    let chosen_provider =
+        otherside::config::providers::ProviderId::from_slug(&provider_id);
+    let provider_default_model = match chosen_provider {
+        Some(p @ otherside::config::providers::ProviderId::ClaudeCode) => {
+            use otherside::models::defaults::{default_claude_code_for_tier, SubscriptionTier};
+            let tier_str = otherside::auth::anthropic::load_credentials()
+                .ok()
+                .flatten()
+                .and_then(|c| c.subscription_type.clone());
+            let tier = SubscriptionTier::from_subscription_type(tier_str.as_deref());
+            let _ = p;
+            default_claude_code_for_tier(tier).to_string()
+        }
+        Some(p) => p.default_model().to_string(),
+        None => DEFAULT_MODEL.to_string(),
     };
+    let settings_model = settings
+        .default_model
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .filter(|slug| match (chosen_provider, otherside::models::catalog::by_id(slug)) {
+            (Some(chosen), Some(model)) => model.provider == chosen,
+            _ => true,
+        });
     let raw_model = cli
         .model
         .clone()
-        .or_else(|| settings.default_model.clone().filter(|s| !s.trim().is_empty()))
-        .unwrap_or(tier_default);
+        .or(settings_model)
+        .unwrap_or(provider_default_model);
 
     let registry = Registry::builder()
         .with(AnthropicProvider::arc()?)

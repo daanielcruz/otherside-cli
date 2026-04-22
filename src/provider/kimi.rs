@@ -33,8 +33,14 @@ pub struct KimiProvider {
 impl KimiProvider {
 
     pub fn new() -> Result<Self> {
+        // Hard cap on total request time so a silently-stuck Kimi stream
+        // can't wedge a subagent loop forever (Kimi subagent-dispatch
+        // hang, 2026-04-22). 10 minutes is generous enough for long
+        // reasoning turns but finite — loops now fail-fast with an
+        // error the inner agent can surface instead of hanging.
         let http = reqwest::Client::builder()
             .pool_idle_timeout(Duration::from_secs(90))
+            .timeout(Duration::from_secs(600))
             .build()?;
         Ok(Self { http })
     }

@@ -494,8 +494,7 @@ fn format_err(e: &Error) -> String {
 #[cfg(test)]
 mod panic_regression_tests {
     //! Regression guard for the "JoinHandle polled after completion" panic
-    //! surfaced by parity agents #1 + #3 (docs/evidence/live-bugs-2026-04-22/
-    //! frames/d1-otherside-T25s.txt and neighbours).
+    //! surfaced by 2026-04-22 parity probes (bug I on the commit ledger).
     //!
     //! The original shape lost the JoinResult inside the select! branch and
     //! then re-awaited the handle, which panics in tokio's task core. This
