@@ -102,18 +102,13 @@ pub const CATALOG: &[SlashEntry] = &[
         kind: SlashKind::Toggle,
     },
     SlashEntry {
-        name: "tag",
-        brief: "tag the current turn for later recall",
-        kind: SlashKind::Toggle,
-    },
-    SlashEntry {
         name: "copy",
-        brief: "export the session to clipboard",
+        brief: "copy the last assistant response to clipboard",
         kind: SlashKind::Toggle,
     },
     SlashEntry {
         name: "export",
-        brief: "write the session to a file",
+        brief: "export the current conversation to a file or clipboard",
         kind: SlashKind::Toggle,
     },
 
@@ -419,7 +414,7 @@ mod tests {
 
         assert_eq!(
             CATALOG.len(),
-            34,
+            33,
             "CATALOG must be a strict subset of docs/slashes.md"
         );
     }
@@ -462,7 +457,6 @@ mod tests {
             ("clear", SlashKind::Instant),
 
             ("plan", SlashKind::Toggle),
-            ("tag", SlashKind::Toggle),
             ("copy", SlashKind::Toggle),
             ("export", SlashKind::Toggle),
 

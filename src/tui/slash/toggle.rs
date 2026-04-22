@@ -19,14 +19,11 @@ pub fn handle(name: &str, args: &str, state: &mut ConversationState) -> SlashOut
 
             state.push_anchor("plan", args, anchor_result, DisplayOrigin::Chrome);
         }
-        "tag" => {
-            state.set_feedback("/tag: turn tagging lands with persistence (spec 008)");
-        }
         "copy" => {
-            state.set_feedback("/copy: clipboard export lands with persistence (spec 008)");
+            state.set_feedback("/copy: not implemented — clipboard export not wired yet");
         }
         "export" => {
-            state.set_feedback("/export: transcript export lands with persistence (spec 008)");
+            state.set_feedback("/export: not implemented — transcript export not wired yet");
         }
         other => {
             state.set_feedback(format!("unhandled toggle slash: /{other}"));
