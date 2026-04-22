@@ -47,8 +47,8 @@ pub trait SubagentRunner: Send + Sync {
 }
 
 pub trait NestedEmitter: Send + Sync {
-    fn on_tool_start(&self, name: &str, args_preview: &str);
-    fn on_tool_finish(&self, success: bool, elapsed_ms: u64);
+    fn on_tool_start(&self, name: &str, args: &Value);
+    fn on_tool_finish(&self, success: bool);
 }
 
 thread_local! {

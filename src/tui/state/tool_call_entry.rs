@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use serde_json::Value;
 
-use crate::tui::tool_render::{self, ToolPayload, ToolStatus};
+use crate::tui::tool_render::{self, NestedEntry, ToolPayload, ToolStatus};
 
 #[derive(Debug, Clone)]
 pub struct ToolCallEntry {
@@ -18,7 +18,7 @@ pub struct ToolCallEntry {
 
     pub raw_result: Option<Value>,
 
-    pub nested_lines: Vec<String>,
+    pub nested_entries: Vec<NestedEntry>,
 }
 
 pub fn format_tool_history_entry(entry: &ToolCallEntry) -> String {

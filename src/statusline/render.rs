@@ -19,13 +19,28 @@ pub fn native(ctx: &StatuslineCtx) -> StatuslineLine {
     let avail_fmt = format_tokens(avail, window);
     let pct = ctx.payload.context_window.used_percentage;
 
-    let content =
-        format!("🤖 {display_name} | 📉 {avail_fmt} available | 🧠 {pct}% used");
+    let mut content =
+        format!("🤖 {display_name} · 📉 {avail_fmt} available · 🧠 {pct}% used");
+    let provider_display = provider_short(&ctx.provider_id);
+    if !provider_display.is_empty() {
+        content.push_str(" · ");
+        content.push_str(&provider_display);
+    }
     let truncated = truncate_to_width(&content, ctx.terminal_width);
     let width_cols = display_width(&truncated);
     StatuslineLine {
         content: truncated,
         width_cols,
+    }
+}
+
+fn provider_short(provider_id: &str) -> String {
+    match provider_id {
+        "" => String::new(),
+        "anthropic" | "anthropic-oauth" | "anthropic-api" | "claude-code" => "anthropic".to_string(),
+        "codex" | "openai" | "openai-api" => "codex".to_string(),
+        "gemini" | "gemini-cli" => "gemini".to_string(),
+        other => other.to_string(),
     }
 }
 
@@ -92,17 +107,25 @@ mod tests {
             line.content
         );
         assert!(
-            line.content.contains(" | 📉 "),
+            line.content.contains(" · 📉 "),
             "missing chart-decreasing segment: {}",
             line.content
         );
         assert!(
-            line.content.contains(" | 🧠 "),
+            line.content.contains(" · 🧠 "),
             "missing brain segment: {}",
             line.content
         );
         assert!(line.content.contains("available"));
         assert!(line.content.contains("% used"));
+    }
+
+    #[test]
+    fn native_uses_middot_separator_not_pipe() {
+        let ctx = StatuslineCtx::minimal_for_test();
+        let line = native(&ctx);
+        assert!(!line.content.contains(" | "));
+        assert!(line.content.contains(" · "));
     }
 
     #[test]
@@ -113,16 +136,26 @@ mod tests {
     }
 
     #[test]
-    fn native_contains_no_provider_identifier() {
+    fn native_appends_provider_when_supplied() {
+        let mut ctx = StatuslineCtx::minimal_for_test();
+        ctx.provider_id = "anthropic-oauth".into();
+        let line = native(&ctx);
+        assert!(
+            line.content.ends_with(" · anthropic"),
+            "expected provider tail `· anthropic`, got: {}",
+            line.content
+        );
+    }
+
+    #[test]
+    fn native_omits_provider_when_empty() {
         let ctx = StatuslineCtx::minimal_for_test();
         let line = native(&ctx);
-        for banned in ["provider:", "anthropic-oauth", "openai-api", "provider_id"] {
-            assert!(
-                !line.content.contains(banned),
-                "banned substring {banned} in: {}",
-                line.content
-            );
-        }
+        assert!(
+            line.content.ends_with("% used"),
+            "expected percent tail when provider empty, got: {}",
+            line.content
+        );
     }
 
     #[test]

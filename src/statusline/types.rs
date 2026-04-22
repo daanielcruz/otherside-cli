@@ -186,6 +186,7 @@ pub struct StatuslineCtx {
     pub home_dir: Option<String>,
     pub permission_mode: PermissionMode,
     pub custom_env: HashMap<String, String>,
+    pub provider_id: String,
 }
 
 impl StatuslineCtx {
@@ -242,6 +243,7 @@ impl StatuslineCtx {
             home_dir: Some("/tmp".into()),
             permission_mode: PermissionMode::Default,
             custom_env: HashMap::new(),
+            provider_id: String::new(),
         }
     }
 }

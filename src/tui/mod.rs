@@ -79,12 +79,11 @@ enum StreamEvent {
 
     NestedToolStart {
         name: String,
-        args_preview: String,
+        args: serde_json::Value,
     },
 
     NestedToolFinish {
         success: bool,
-        elapsed_ms: u64,
     },
 }
 
@@ -306,11 +305,11 @@ async fn event_loop(
                             reply,
                         ));
                     }
-                    Some(StreamEvent::NestedToolStart { name, args_preview }) => {
-                        st.push_nested_tool_start(&name, &args_preview);
+                    Some(StreamEvent::NestedToolStart { name, args }) => {
+                        st.push_nested_tool_start(&name, args);
                     }
-                    Some(StreamEvent::NestedToolFinish { success, elapsed_ms }) => {
-                        st.push_nested_tool_finish(success, elapsed_ms);
+                    Some(StreamEvent::NestedToolFinish { success }) => {
+                        st.push_nested_tool_finish(success);
                     }
                     None => {
 

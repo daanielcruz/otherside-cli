@@ -219,7 +219,7 @@ fn draw_log(f: &mut Frame<'_>, area: Rect, state: &ConversationState, spinner_ti
                 payload: entry.payload.as_ref(),
                 verbose: state.render_verbose,
                 spinner_tick,
-                nested_lines: &entry.nested_lines,
+                nested_entries: &entry.nested_entries,
             };
             lines.extend(super::tool_render::render_tool_call(&view));
         }
@@ -608,11 +608,11 @@ fn draw_statusline(
         home_dir: home,
         permission_mode: PermissionMode::Default,
         custom_env: Default::default(),
+        provider_id: provider_id.to_string(),
     };
 
     let (line, _warn) = statusline::dispatch(&ctx, None);
     let stripped = strip_ansi(&line.content);
-    let _ = provider_id;
     let para = Paragraph::new(Line::from(Span::styled(
         stripped,
         Style::default().fg(theme::MUTED),

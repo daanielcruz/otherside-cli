@@ -22,10 +22,10 @@ impl LoopObserver for NestedObserver {
         name: &'a str,
         args: &'a Value,
     ) -> impl std::future::Future<Output = ControlFlow> + Send + 'a {
-        let preview = preview_args(args);
         let name = name.to_string();
+        let args = args.clone();
         async move {
-            self.emitter.on_tool_start(&name, &preview);
+            self.emitter.on_tool_start(&name, &args);
             ControlFlow::Continue
         }
     }
@@ -35,41 +35,17 @@ impl LoopObserver for NestedObserver {
         _id: &'a str,
         _name: &'a str,
         result: std::result::Result<&'a Value, &'a str>,
-        elapsed_ms: u64,
+        _elapsed_ms: u64,
     ) -> impl std::future::Future<Output = ControlFlow> + Send + 'a {
         let success = result.is_ok();
         async move {
-            self.emitter.on_tool_finish(success, elapsed_ms);
+            self.emitter.on_tool_finish(success);
             ControlFlow::Continue
         }
     }
 
     fn on_stream_error<'a>(&'a self, _err: &'a Error) -> impl std::future::Future<Output = ()> + Send + 'a {
         async move {}
-    }
-}
-
-fn preview_args(args: &Value) -> String {
-    let obj = match args.as_object() {
-        Some(o) => o,
-        None => return String::new(),
-    };
-    for key in ["command", "file_path", "pattern", "description", "query", "url", "path"] {
-        if let Some(v) = obj.get(key).and_then(|v| v.as_str()) {
-            return clip(v, 80);
-        }
-    }
-    clip(&serde_json::to_string(args).unwrap_or_default(), 80)
-}
-
-fn clip(s: &str, cap: usize) -> String {
-    let flat = s.replace('\n', " ");
-    if flat.chars().count() <= cap {
-        flat
-    } else {
-        let mut out: String = flat.chars().take(cap).collect();
-        out.push('…');
-        out
     }
 }
 
@@ -218,7 +194,7 @@ impl SubagentRunner for InnerLoopRunner {
 struct NullEmitter;
 
 impl NestedEmitter for NullEmitter {
-    fn on_tool_start(&self, _name: &str, _args_preview: &str) {}
-    fn on_tool_finish(&self, _success: bool, _elapsed_ms: u64) {}
+    fn on_tool_start(&self, _name: &str, _args: &Value) {}
+    fn on_tool_finish(&self, _success: bool) {}
 }
 

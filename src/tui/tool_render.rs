@@ -153,9 +153,16 @@ impl ToolCallArchive {
 
             spinner_tick: 0,
 
-            nested_lines: &[],
+            nested_entries: &[],
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct NestedEntry {
+    pub tool_name: String,
+    pub args: Value,
+    pub running: bool,
 }
 
 pub struct ToolCallView<'a> {
@@ -169,7 +176,7 @@ pub struct ToolCallView<'a> {
 
     pub spinner_tick: u64,
 
-    pub nested_lines: &'a [String],
+    pub nested_entries: &'a [NestedEntry],
 }
 
 pub fn render_tool_call(view: &ToolCallView<'_>) -> Vec<Line<'static>> {
@@ -217,7 +224,7 @@ pub fn render_tool_call(view: &ToolCallView<'_>) -> Vec<Line<'static>> {
 
     if view.name == "Agent"
         && matches!(view.status, ToolStatus::Running)
-        && view.nested_lines.is_empty()
+        && view.nested_entries.is_empty()
     {
         out.push(Line::from(vec![
             Span::styled(GUTTER_HEAD.to_string(), Style::default().fg(theme::MUTED)),
@@ -228,11 +235,36 @@ pub fn render_tool_call(view: &ToolCallView<'_>) -> Vec<Line<'static>> {
         ]));
     }
 
-    for line in view.nested_lines {
-        out.push(Line::from(vec![
-            Span::styled(GUTTER_HEAD.to_string(), Style::default().fg(theme::MUTED)),
-            Span::styled(line.clone(), Style::default().fg(theme::MUTED)),
-        ]));
+    let nested_count = view.nested_entries.len();
+    for (idx, entry) in view.nested_entries.iter().enumerate() {
+        let (label, inner) = format_nested_entry(entry);
+        let prefix = if idx == 0 { GUTTER_HEAD } else { GUTTER_CONT };
+        let mut spans: Vec<Span<'static>> = Vec::with_capacity(4);
+        spans.push(Span::styled(
+            prefix.to_string(),
+            Style::default().fg(theme::MUTED),
+        ));
+        spans.push(Span::styled(
+            label.clone(),
+            Style::default()
+                .fg(theme::TEXT)
+                .add_modifier(Modifier::BOLD),
+        ));
+        if !inner.is_empty() {
+            spans.push(Span::styled(
+                format!("({inner})"),
+                Style::default().fg(theme::MUTED),
+            ));
+        }
+        out.push(Line::from(spans));
+
+        let is_last = idx + 1 == nested_count;
+        if is_last && entry.running {
+            out.push(Line::from(vec![
+                Span::styled(GUTTER_CONT.to_string(), Style::default().fg(theme::MUTED)),
+                Span::styled("Running…".to_string(), Style::default().fg(theme::MUTED)),
+            ]));
+        }
     }
 
     if let Some(payload) = view.payload {
@@ -1010,6 +1042,19 @@ fn trim_multiline(s: &str, max_lines: usize, max_chars: usize) -> String {
     out.join("\n")
 }
 
+pub fn format_nested_entry(entry: &NestedEntry) -> (String, String) {
+    let label = nested_display_name(&entry.tool_name);
+    let inner = summarize_args(&entry.tool_name, &entry.args, false);
+    (label, inner)
+}
+
+fn nested_display_name(tool_name: &str) -> String {
+    match tool_name {
+        "Glob" => "Search".to_string(),
+        other => other.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1039,7 +1084,7 @@ mod tests {
             payload: None,
                     verbose: false,
                     spinner_tick: 0,
-            nested_lines: &[],
+            nested_entries: &[],
         };
         let lines = render_tool_call(&view);
         let text = collect_text(&lines);
@@ -1063,7 +1108,7 @@ mod tests {
             payload: None,
             verbose: false,
             spinner_tick: tick,
-            nested_lines: &[],
+            nested_entries: &[],
         };
         let on_text = collect_text(&render_tool_call(&mk_view(0)));
         let off_text = collect_text(&render_tool_call(&mk_view(BLINK_INTERVAL_TICKS)));
@@ -1099,7 +1144,7 @@ mod tests {
                 payload: None,
                 verbose: false,
                 spinner_tick: BLINK_INTERVAL_TICKS,
-                nested_lines: &[],
+                nested_entries: &[],
             };
             let text = collect_text(&render_tool_call(&view));
             assert!(
@@ -1121,7 +1166,7 @@ mod tests {
             payload: Some(&preview),
                     verbose: false,
                     spinner_tick: 0,
-            nested_lines: &[],
+            nested_entries: &[],
         };
         let lines = render_tool_call(&view);
         let text = collect_text(&lines);
@@ -1154,7 +1199,7 @@ mod tests {
             payload: Some(&payload),
                     verbose: false,
                     spinner_tick: 0,
-            nested_lines: &[],
+            nested_entries: &[],
         };
         let lines = render_tool_call(&view);
         let text = collect_text(&lines);
@@ -1176,7 +1221,7 @@ mod tests {
             payload: Some(&payload),
                     verbose: false,
                     spinner_tick: 0,
-            nested_lines: &[],
+            nested_entries: &[],
         };
         let lines = render_tool_call(&view);
         let text = collect_text(&lines);
@@ -1359,7 +1404,7 @@ mod tests {
             payload: Some(&payload),
             verbose: false,
             spinner_tick: 0,
-            nested_lines: &[],
+            nested_entries: &[],
         };
         let lines = render_tool_call(&view);
 
@@ -1713,7 +1758,7 @@ mod tests {
             payload: None,
             verbose: false,
             spinner_tick: 0,
-            nested_lines: &[],
+            nested_entries: &[],
         };
         let text = collect_text(&render_tool_call(&view));
         assert!(
@@ -1725,7 +1770,11 @@ mod tests {
     #[test]
     fn agent_running_with_nested_skips_initializing_placeholder() {
         let args = serde_json::json!({"subagent_type":"general-purpose","description":"do x"});
-        let nested = vec!["Bash · 1s".to_string()];
+        let nested = vec![NestedEntry {
+            tool_name: "Bash".to_string(),
+            args: serde_json::json!({"command": "ls"}),
+            running: true,
+        }];
         let view = ToolCallView {
             name: "Agent",
             args: &args,
@@ -1734,12 +1783,128 @@ mod tests {
             payload: None,
             verbose: false,
             spinner_tick: 0,
-            nested_lines: &nested,
+            nested_entries: &nested,
         };
         let text = collect_text(&render_tool_call(&view));
         assert!(
             !text.contains("Initializing"),
             "Initializing must disappear once progress arrives: {text:?}"
+        );
+    }
+
+    #[test]
+    fn nested_glob_renders_as_search() {
+        let entry = NestedEntry {
+            tool_name: "Glob".to_string(),
+            args: serde_json::json!({"pattern": "*.rs"}),
+            running: true,
+        };
+        let (label, _) = format_nested_entry(&entry);
+        assert_eq!(label, "Search");
+    }
+
+    #[test]
+    fn nested_bash_carries_command_in_parens() {
+        let entry = NestedEntry {
+            tool_name: "Bash".to_string(),
+            args: serde_json::json!({"command": "git status"}),
+            running: true,
+        };
+        let (label, inner) = format_nested_entry(&entry);
+        assert_eq!(label, "Bash");
+        assert!(inner.contains("git status"));
+    }
+
+    #[test]
+    fn nested_running_line_only_under_last_entry_when_running() {
+        let args = serde_json::json!({"subagent_type":"general-purpose","description":"x"});
+        let nested = vec![
+            NestedEntry {
+                tool_name: "Bash".to_string(),
+                args: serde_json::json!({"command": "echo 1"}),
+                running: false,
+            },
+            NestedEntry {
+                tool_name: "Read".to_string(),
+                args: serde_json::json!({"file_path": "/tmp/a.rs"}),
+                running: true,
+            },
+        ];
+        let view = ToolCallView {
+            name: "Agent",
+            args: &args,
+            status: ToolStatus::Running,
+            elapsed_ms: None,
+            payload: None,
+            verbose: false,
+            spinner_tick: 0,
+            nested_entries: &nested,
+        };
+        let text = collect_text(&render_tool_call(&view));
+        assert_eq!(
+            text.matches("Running…").count(),
+            1,
+            "Running… must render once, under last unresolved entry: {text:?}"
+        );
+    }
+
+    #[test]
+    fn nested_running_line_absent_when_all_resolved() {
+        let args = serde_json::json!({"subagent_type":"general-purpose","description":"x"});
+        let nested = vec![NestedEntry {
+            tool_name: "Bash".to_string(),
+            args: serde_json::json!({"command": "ls"}),
+            running: false,
+        }];
+        let view = ToolCallView {
+            name: "Agent",
+            args: &args,
+            status: ToolStatus::Running,
+            elapsed_ms: None,
+            payload: None,
+            verbose: false,
+            spinner_tick: 0,
+            nested_entries: &nested,
+        };
+        let text = collect_text(&render_tool_call(&view));
+        assert!(!text.contains("Running…"));
+    }
+
+    #[test]
+    fn nested_gutter_emits_once_for_multi_entry_block() {
+        let args = serde_json::json!({"subagent_type":"general-purpose","description":"x"});
+        let nested = vec![
+            NestedEntry {
+                tool_name: "Bash".to_string(),
+                args: serde_json::json!({"command": "echo 1"}),
+                running: false,
+            },
+            NestedEntry {
+                tool_name: "Read".to_string(),
+                args: serde_json::json!({"file_path": "/tmp/a.rs"}),
+                running: false,
+            },
+            NestedEntry {
+                tool_name: "Grep".to_string(),
+                args: serde_json::json!({"pattern": "TODO"}),
+                running: false,
+            },
+        ];
+        let view = ToolCallView {
+            name: "Agent",
+            args: &args,
+            status: ToolStatus::Running,
+            elapsed_ms: None,
+            payload: None,
+            verbose: false,
+            spinner_tick: 0,
+            nested_entries: &nested,
+        };
+        let text = collect_text(&render_tool_call(&view));
+        assert_eq!(
+            text.matches("⎿ ").count(),
+            1,
+            "⎿ gutter must only render on the first nested entry: {text:?}"
         );
     }
 
@@ -1754,7 +1919,7 @@ mod tests {
             payload: None,
             verbose: false,
             spinner_tick: 0,
-            nested_lines: &[],
+            nested_entries: &[],
         };
         let text = collect_text(&render_tool_call(&view));
         assert!(

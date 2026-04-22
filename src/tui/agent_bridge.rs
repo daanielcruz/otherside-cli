@@ -18,18 +18,15 @@ struct StreamEmitter {
 }
 
 impl NestedEmitter for StreamEmitter {
-    fn on_tool_start(&self, name: &str, args_preview: &str) {
+    fn on_tool_start(&self, name: &str, args: &Value) {
         let _ = self.tx.try_send(StreamEvent::NestedToolStart {
             name: name.to_string(),
-            args_preview: args_preview.to_string(),
+            args: args.clone(),
         });
     }
 
-    fn on_tool_finish(&self, success: bool, elapsed_ms: u64) {
-        let _ = self.tx.try_send(StreamEvent::NestedToolFinish {
-            success,
-            elapsed_ms,
-        });
+    fn on_tool_finish(&self, success: bool) {
+        let _ = self.tx.try_send(StreamEvent::NestedToolFinish { success });
     }
 }
 
