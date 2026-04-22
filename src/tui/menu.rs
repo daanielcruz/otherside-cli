@@ -2,11 +2,14 @@
 
 use ratatui::{
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Clear, Paragraph},
     Frame,
 };
+
+#[cfg(test)]
+use ratatui::style::Color;
 
 use super::render::theme;
 use super::slash::catalog::PanelKind;
@@ -928,77 +931,57 @@ fn build_tab_rows(
 }
 
 fn draw_model_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
-    use crate::config::providers::{ProviderId, PROVIDER_ORDER};
+    use super::panel_frame::{body_row, PanelFrame, TabSpec};
+    use crate::config::providers::ProviderId;
 
     let Some(active_tab) = menu.active_model_tab() else {
         return;
     };
 
-    // Chrome: top rule + title + tab row + blank line.
-    let mut lines: Vec<Line<'static>> = Vec::with_capacity(16);
+    // Tabs — one chip per provider. PanelFrame owns the active-chip paint.
+    let tab_labels: Vec<&str> = menu
+        .model_tab_rows
+        .iter()
+        .map(|b| model_tab_label(b.provider))
+        .collect();
+    let tabs: Vec<TabSpec<'_>> = tab_labels
+        .iter()
+        .map(|label| TabSpec { label })
+        .collect();
 
-    // Top rule — blue accent per spec wireframe line `──── (blue rule)`.
-    let rule: String = "\u{2500}".repeat(area.width.max(1) as usize);
-    lines.push(Line::from(Span::styled(
-        rule,
-        Style::default().fg(theme::SUGGESTION),
-    )));
+    // Body. Keep byte-exact row content from the legacy renderer so the
+    // downstream tests (login CTA text, custom hint, catalog layout) remain
+    // valid. Chevron prefix moves to `body_row` for rows where keyboard nav
+    // lands (body_focused + matching row index).
+    let mut body: Vec<Line<'static>> = Vec::new();
 
-    // Tab chips. Active chip = theme::SUGGESTION bg when tabs focused, theme::TEXT
-    // bold when body focused.
-    let mut tab_spans: Vec<Span<'static>> = Vec::with_capacity(PROVIDER_ORDER.len() * 2);
-    for (i, body) in menu.model_tab_rows.iter().enumerate() {
-        if i > 0 {
-            tab_spans.push(Span::raw("  "));
-        }
-        let label = model_tab_label(body.provider);
-        let is_active = i == menu.model_tab_index;
-        let body_text = format!(" {label} ");
-        let style = match (is_active, menu.model_tabs_focused) {
-            (false, _) => Style::default().fg(theme::MUTED),
-            (true, true) => Style::default()
-                .fg(Color::Black)
-                .bg(theme::SUGGESTION)
-                .add_modifier(Modifier::BOLD),
-            (true, false) => Style::default()
-                .fg(Color::Black)
-                .bg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        };
-        tab_spans.push(Span::styled(body_text, style));
-    }
-    lines.push(Line::from(tab_spans));
-    lines.push(Line::raw(""));
-
-    // Body.
     if active_tab.authed {
-        // Catalog rows + separator + Logout.
-        let mut catalog_rows: Vec<&ModelTabRow> = Vec::new();
-        let mut logout_idx: Option<usize> = None;
-        for (i, row) in active_tab.rows.iter().enumerate() {
-            match row {
-                ModelTabRow::Model { .. } => catalog_rows.push(row),
-                ModelTabRow::Logout => {
-                    logout_idx = Some(i);
-                }
-                _ => {}
-            }
-        }
+        // Compute logout separator insertion point.
+        let logout_idx: Option<usize> = active_tab
+            .rows
+            .iter()
+            .position(|r| matches!(r, ModelTabRow::Logout));
+        let has_catalog = active_tab
+            .rows
+            .iter()
+            .any(|r| matches!(r, ModelTabRow::Model { .. }));
 
-        // Compute the display id column width budget.
         const ROW_WIDTH: usize = 66;
         for (row_idx, row) in active_tab.rows.iter().enumerate() {
             let is_cursor = !menu.model_tabs_focused && row_idx == menu.model_body_cursor;
             match row {
-                ModelTabRow::Model { raw_id, display_name, active } => {
+                ModelTabRow::Model {
+                    raw_id,
+                    display_name,
+                    active,
+                } => {
                     let marker = if *active { "\u{25CF} " } else { "  " };
                     let marker_style = if *active {
-                        Style::default().fg(theme::SUGGESTION)
+                        Style::default().fg(theme::PRIMARY)
                     } else {
                         Style::default().fg(theme::MUTED)
                     };
-                    let left = format!("{marker}{display_name}");
-                    let left_cols = left.chars().count();
+                    let left_cols = marker.chars().count() + display_name.chars().count();
                     let right_cols = raw_id.chars().count();
                     let pad = ROW_WIDTH.saturating_sub(left_cols + right_cols).max(2);
                     let name_style = if is_cursor {
@@ -1008,25 +991,24 @@ fn draw_model_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
                     } else {
                         Style::default().fg(theme::TEXT)
                     };
-                    lines.push(Line::from(vec![
-                        Span::styled("  ".to_string(), Style::default()),
-                        Span::styled(marker.to_string(), marker_style),
-                        Span::styled(display_name.clone(), name_style),
-                        Span::raw(" ".repeat(pad)),
-                        Span::styled(
-                            raw_id.clone(),
-                            Style::default()
-                                .fg(theme::MUTED)
-                                .add_modifier(Modifier::DIM),
-                        ),
-                    ]));
+                    // Chevron prefix comes from PanelFrame's `body_row` so
+                    // keyboard-nav/selected paint matches chrome.md §"Selection
+                    // chevron system". `active` == session model → `selected`.
+                    let prefix_line = body_row("", is_cursor, *active);
+                    let mut spans: Vec<Span<'static>> =
+                        prefix_line.spans.iter().cloned().collect();
+                    spans.push(Span::styled(marker.to_string(), marker_style));
+                    spans.push(Span::styled(display_name.clone(), name_style));
+                    spans.push(Span::raw(" ".repeat(pad)));
+                    spans.push(Span::styled(
+                        raw_id.clone(),
+                        Style::default()
+                            .fg(theme::MUTED)
+                            .add_modifier(Modifier::DIM),
+                    ));
+                    body.push(Line::from(spans));
                 }
                 ModelTabRow::Logout => {
-                    if !catalog_rows.is_empty() {
-                        // Prepend a dim-gray rule between catalog and logout.
-                        // Only emit once — when we reach the Logout row and
-                        // there were catalog rows above it.
-                    }
                     let label_style = if is_cursor {
                         Style::default()
                             .fg(theme::ERROR)
@@ -1036,17 +1018,18 @@ fn draw_model_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
                             .fg(theme::ERROR)
                             .add_modifier(Modifier::DIM)
                     };
-                    lines.push(Line::from(vec![
-                        Span::raw("  "),
-                        Span::styled("Logout".to_string(), label_style),
-                    ]));
+                    let prefix_line = body_row("", is_cursor, false);
+                    let mut spans: Vec<Span<'static>> =
+                        prefix_line.spans.iter().cloned().collect();
+                    spans.push(Span::styled("Logout".to_string(), label_style));
+                    body.push(Line::from(spans));
                 }
                 _ => {}
             }
-            // Insert separator rule right before the Logout row.
+            // Insert dim separator rule right before the Logout row.
             if let Some(li) = logout_idx {
-                if row_idx + 1 == li {
-                    lines.push(Line::from(Span::styled(
+                if row_idx + 1 == li && has_catalog {
+                    body.push(Line::from(Span::styled(
                         "  ".to_string() + &"\u{2500}".repeat(50),
                         Style::default().fg(theme::SUBTLE),
                     )));
@@ -1054,7 +1037,6 @@ fn draw_model_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
             }
         }
     } else {
-        // Unauthenticated / Custom.
         let label = match active_tab.provider {
             ProviderId::ClaudeCode => "Anthropic",
             ProviderId::Codex => "Codex",
@@ -1064,56 +1046,44 @@ fn draw_model_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
         };
         match active_tab.rows.first() {
             Some(ModelTabRow::CustomHint) => {
-                lines.push(Line::raw(""));
-                lines.push(Line::from(Span::styled(
+                body.push(Line::raw(""));
+                body.push(Line::from(Span::styled(
                     "  Custom (OpenAI-compatible) requires base URL + API key in settings."
                         .to_string(),
                     Style::default().fg(theme::MUTED),
                 )));
-                lines.push(Line::raw(""));
-                lines.push(Line::from(Span::styled(
-                    "  Open /config \u{2192} Providers \u{2192} Custom to configure.".to_string(),
+                body.push(Line::raw(""));
+                body.push(Line::from(Span::styled(
+                    "  Open /config \u{2192} Providers \u{2192} Custom to configure."
+                        .to_string(),
                     Style::default().fg(theme::MUTED),
                 )));
             }
             Some(ModelTabRow::LoginCta) => {
-                lines.push(Line::raw(""));
-                lines.push(Line::from(Span::styled(
+                body.push(Line::raw(""));
+                body.push(Line::from(Span::styled(
                     format!("  You are not logged in to {label}."),
                     Style::default().fg(theme::MUTED),
                 )));
-                lines.push(Line::raw(""));
+                body.push(Line::raw(""));
                 let cta_focused = !menu.model_tabs_focused;
                 let border_style = if cta_focused {
                     Style::default()
-                        .fg(theme::SUGGESTION)
+                        .fg(theme::PRIMARY)
                         .add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(theme::SUGGESTION)
+                    Style::default().fg(theme::PRIMARY)
                 };
                 let cta_label = format!("Login to {label}");
                 let pad = 2;
-                let inner = format!(
-                    "{}{}{}",
-                    " ".repeat(pad),
-                    cta_label,
-                    " ".repeat(pad)
-                );
-                let inner_cols = inner.chars().count();
-                let top: String = format!(
-                    "\u{256D}{}\u{256E}",
-                    "\u{2500}".repeat(inner_cols)
-                );
-                let mid = format!("\u{2502}{inner}\u{2502}");
-                let bot: String = format!(
-                    "\u{2570}{}\u{256F}",
-                    "\u{2500}".repeat(inner_cols)
-                );
-                lines.push(Line::from(vec![
+                let inner_cols = pad * 2 + cta_label.chars().count();
+                let top = format!("\u{256D}{}\u{256E}", "\u{2500}".repeat(inner_cols));
+                let bot = format!("\u{2570}{}\u{256F}", "\u{2500}".repeat(inner_cols));
+                body.push(Line::from(vec![
                     Span::raw("  "),
                     Span::styled(top, border_style),
                 ]));
-                lines.push(Line::from(vec![
+                body.push(Line::from(vec![
                     Span::raw("  "),
                     Span::styled("\u{2502}".to_string(), border_style),
                     Span::styled(
@@ -1124,32 +1094,43 @@ fn draw_model_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
                     ),
                     Span::styled("\u{2502}".to_string(), border_style),
                 ]));
-                // mid already placed; bot:
-                lines.push(Line::from(vec![
+                body.push(Line::from(vec![
                     Span::raw("  "),
                     Span::styled(bot, border_style),
                 ]));
-                let _ = mid; // avoid unused warning on manual three-row assembly
             }
             _ => {}
         }
     }
 
-    // Blank + footer.
-    lines.push(Line::raw(""));
-    let footer = match (active_tab.authed, active_tab.rows.first()) {
-        (true, _) => "  \u{2190}/\u{2192} switch tabs \u{00B7} \u{2191}\u{2193} navigate \u{00B7} Enter select \u{00B7} Esc close",
+    let footer: &[(&str, &str)] = match (active_tab.authed, active_tab.rows.first()) {
+        (true, _) => &[
+            ("\u{2190}/\u{2192}", "switch tabs"),
+            ("\u{2191}\u{2193}", "navigate"),
+            ("Enter", "select"),
+            ("Esc", "close"),
+        ],
         (false, Some(ModelTabRow::CustomHint)) => {
-            "  \u{2190}/\u{2192} switch tabs \u{00B7} Esc close"
+            &[("\u{2190}/\u{2192}", "switch tabs"), ("Esc", "close")]
         }
-        (false, _) => "  \u{2190}/\u{2192} switch tabs \u{00B7} Enter to login \u{00B7} Esc close",
+        (false, _) => &[
+            ("\u{2190}/\u{2192}", "switch tabs"),
+            ("Enter", "to login"),
+            ("Esc", "close"),
+        ],
     };
-    lines.push(Line::from(Span::styled(
-        footer.to_string(),
-        Style::default().fg(theme::MUTED),
-    )));
 
-    f.render_widget(Paragraph::new(lines), area);
+    let panel = PanelFrame {
+        title: None,
+        tabs: Some(&tabs),
+        active_tab: menu.model_tab_index,
+        tabs_focused: menu.model_tabs_focused,
+        search: None,
+        body,
+        footer_hints: footer,
+        pagination_hint: None,
+    };
+    panel.render(f, area);
 }
 
 fn draw_effort_slider(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
@@ -1481,6 +1462,7 @@ fn settings_blank() -> MenuOption {
 }
 
 fn draw_settings_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
+    use super::panel_frame::{body_row, PanelFrame, SearchSpec, TabSpec};
     use crate::tui::slash::catalog::SettingsTab;
     let active_tab = match menu.kind {
         PanelKind::Settings(t) => t,
@@ -1489,65 +1471,29 @@ fn draw_settings_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
     let header_focused = menu.settings_header_focused.unwrap_or(false);
     let body_focused = menu.settings_body_focused;
 
-    let mut lines: Vec<Line<'static>> = Vec::with_capacity(
-        1 + 3 + 3 + menu.options.len() + 2,
-    );
-
-    // Top rule — blue accent header line, static chrome. Rendered before the
-    // tab row so it stays visible regardless of search/body focus state.
-    let rule: String = "\u{2500}".repeat(area.width.max(1) as usize);
-    lines.push(Line::from(Span::styled(
-        rule,
-        Style::default().fg(theme::SUGGESTION),
-    )));
-
-    let tabs: [(SettingsTab, &str); 3] = [
+    let tab_order: [(SettingsTab, &str); 3] = [
         (SettingsTab::Status, "Status"),
         (SettingsTab::Config, "Config"),
         (SettingsTab::Usage, "Usage"),
     ];
-    let mut tab_spans: Vec<Span<'static>> = vec![Span::raw("   ")];
-    for (i, (tab, label)) in tabs.iter().enumerate() {
-        let is_current = *tab == active_tab;
-        let style = if is_current && header_focused {
-            // Tab row has focus → blue/purple accent chip.
-            Style::default()
-                .bg(theme::SUGGESTION)
-                .fg(Color::Black)
-                .add_modifier(Modifier::BOLD)
-        } else if is_current {
-            // Active tab, row not focused → white chip.
-            Style::default()
-                .bg(Color::White)
-                .fg(Color::Black)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(theme::MUTED)
-        };
-        tab_spans.push(Span::styled(format!(" {label} "), style));
-        if i < tabs.len() - 1 {
-            tab_spans.push(Span::raw("  "));
-        }
-    }
-    lines.push(Line::from(tab_spans));
-    lines.push(Line::raw(""));
+    let tabs: Vec<TabSpec<'_>> = tab_order
+        .iter()
+        .map(|(_, label)| TabSpec { label })
+        .collect();
+    let active_tab_idx = tab_order
+        .iter()
+        .position(|(t, _)| *t == active_tab)
+        .unwrap_or(0);
 
-    let inner_width = area.width.saturating_sub(4) as usize;
-    let top = format!("  ╭{}╮", "─".repeat(inner_width.saturating_sub(2)));
     let query = menu.settings_search_query.as_str();
-    let mid_text = if query.is_empty() {
-        " ⌕ Search settings…".to_string()
-    } else {
-        format!(" ⌕ {query}")
+    // Search-region is "focused" whenever neither tabs nor body has focus.
+    let search_focused = !header_focused && !body_focused;
+    let search = SearchSpec {
+        query,
+        placeholder: "Search settings\u{2026}",
+        focused: search_focused,
+        cursor_pos: query.len(),
     };
-    let mid_pad = inner_width.saturating_sub(mid_text.chars().count() + 2);
-    let mid = format!("  │{mid_text}{} │", " ".repeat(mid_pad));
-    let bot = format!("  ╰{}╯", "─".repeat(inner_width.saturating_sub(2)));
-    let search_border_style = Style::default().fg(theme::SUGGESTION);
-    lines.push(Line::from(Span::styled(top, search_border_style)));
-    lines.push(Line::from(Span::styled(mid, search_border_style)));
-    lines.push(Line::from(Span::styled(bot, search_border_style)));
-    lines.push(Line::raw(""));
 
     let lc_query = query.to_lowercase();
     let options_to_render: Vec<(usize, &MenuOption)> = menu
@@ -1559,91 +1505,98 @@ fn draw_settings_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
         })
         .collect();
 
+    let mut body: Vec<Line<'static>> = Vec::with_capacity(menu.options.len() + 4);
+
     if !lc_query.is_empty() && options_to_render.is_empty() {
-        lines.push(Line::raw(""));
-        lines.push(Line::from(Span::styled(
+        body.push(Line::raw(""));
+        body.push(Line::from(Span::styled(
             format!("  No settings match \"{query}\""),
             Style::default().fg(theme::MUTED),
         )));
-        let para = Paragraph::new(lines);
-        f.render_widget(Clear, area);
-        f.render_widget(para, area);
-        return;
-    }
-
-    const LABEL_PAD: usize = 43;
-    // When a filter is active and the stored cursor points at a row that is
-    // now hidden, visually fall back to the first visible row so the `❯`
-    // marker is never orphaned.
-    let cursor_visible = options_to_render
-        .iter()
-        .any(|(idx, _)| *idx == menu.cursor);
-    let effective_cursor: Option<usize> = if body_focused {
-        if cursor_visible {
-            Some(menu.cursor)
-        } else {
-            options_to_render.first().map(|(idx, _)| *idx)
-        }
     } else {
-        None
-    };
-    for (i, opt) in options_to_render.iter().map(|(i, o)| (*i, *o)) {
-
-        if opt.label.is_empty() && opt.value_display.is_none() {
-            lines.push(Line::raw(""));
-            continue;
+        const LABEL_PAD: usize = 43;
+        let cursor_visible = options_to_render
+            .iter()
+            .any(|(idx, _)| *idx == menu.cursor);
+        let effective_cursor: Option<usize> = if body_focused {
+            if cursor_visible {
+                Some(menu.cursor)
+            } else {
+                options_to_render.first().map(|(idx, _)| *idx)
+            }
+        } else {
+            None
+        };
+        for (i, opt) in options_to_render.iter().map(|(i, o)| (*i, *o)) {
+            if opt.label.is_empty() && opt.value_display.is_none() {
+                body.push(Line::raw(""));
+                continue;
+            }
+            let is_cursor = effective_cursor == Some(i);
+            let label_style = if is_cursor {
+                Style::default()
+                    .fg(theme::PERMISSION)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme::TEXT)
+            };
+            let value_style = if is_cursor {
+                Style::default()
+                    .fg(theme::PERMISSION)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme::TEXT)
+            };
+            // Chevron + 1 space prefix delegated to `body_row`. Settings rows
+            // are never "selected" in the committed-row sense (commits happen
+            // on Enter via the outer loop), so `selected=false` throughout.
+            let prefix_line = body_row("", is_cursor, false);
+            let mut spans: Vec<Span<'static>> =
+                prefix_line.spans.iter().cloned().collect();
+            spans.push(Span::styled(opt.label.clone(), label_style));
+            if let Some(value) = opt.value_display.as_ref() {
+                let label_len = opt.label.chars().count();
+                let pad = LABEL_PAD.saturating_sub(label_len);
+                spans.push(Span::raw(" ".repeat(pad)));
+                spans.push(Span::styled(value.clone(), value_style));
+            }
+            body.push(Line::from(spans));
         }
-        let is_cursor = effective_cursor == Some(i);
-        let marker = if is_cursor { "  ❯ " } else { "    " };
-        let marker_style = if is_cursor {
-            Style::default()
-                .fg(theme::PERMISSION)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(theme::MUTED)
-        };
-        let label_style = if is_cursor {
-            Style::default()
-                .fg(theme::PERMISSION)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(theme::TEXT)
-        };
-        let value_style = if is_cursor {
-            Style::default()
-                .fg(theme::PERMISSION)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(theme::TEXT)
-        };
-
-        let mut spans: Vec<Span<'static>> = vec![
-            Span::styled(marker.to_string(), marker_style),
-            Span::styled(opt.label.clone(), label_style),
-        ];
-        if let Some(value) = opt.value_display.as_ref() {
-            let label_len = opt.label.chars().count();
-            let pad = LABEL_PAD.saturating_sub(label_len);
-            spans.push(Span::raw(" ".repeat(pad)));
-            spans.push(Span::styled(value.clone(), value_style));
-        }
-        lines.push(Line::from(spans));
     }
-    lines.push(Line::raw(""));
 
-    let legend = if header_focused {
-        "  ← → or Tab to switch tabs · ↓ to search · Esc to cancel"
+    let footer: &[(&str, &str)] = if header_focused {
+        &[
+            ("\u{2190}/\u{2192}", "switch tabs"),
+            ("\u{2193}", "search"),
+            ("Esc", "cancel"),
+        ]
     } else if body_focused {
-        "  ↑ ↓ to move · Enter/← → to edit · ↑ at top to search · Esc to close"
+        &[
+            ("\u{2191}\u{2193}", "move"),
+            ("Enter", "edit"),
+            ("\u{2191}", "search"),
+            ("Esc", "close"),
+        ]
     } else {
-        "  Type to filter · Enter/↓ to select · ↑ to tabs · Esc to clear"
+        &[
+            ("Type", "filter"),
+            ("Enter/\u{2193}", "select"),
+            ("\u{2191}", "tabs"),
+            ("Esc", "clear"),
+        ]
     };
-    lines.push(Line::from(Span::styled(
-        legend.to_string(),
-        Style::default().fg(theme::MUTED),
-    )));
 
-    f.render_widget(Paragraph::new(lines), area);
+    let panel = PanelFrame {
+        title: None,
+        tabs: Some(&tabs),
+        active_tab: active_tab_idx,
+        tabs_focused: header_focused,
+        search: Some(search),
+        body,
+        footer_hints: footer,
+        pagination_hint: None,
+    };
+    panel.render(f, area);
 }
 
 #[cfg(test)]
@@ -2058,42 +2011,47 @@ mod tests {
     }
 
     #[test]
-    fn tab_chip_paint_differs_by_focus() {
-        // Active Config chip: WHITE bg when tabs unfocused; theme::SUGGESTION bg
-        // when tabs focused. Assert by inspecting the rendered buffer cell
-        // background over the `Config` chip glyph.
+    fn tab_chip_paint_is_identical_across_focus_states() {
+        // Post task #20b: `PanelFrame::chip_span` (src/tui/panel_frame.rs:201)
+        // paints the active chip identically regardless of `tabs_focused` —
+        // chrome.md §"Tab row FSM" now mandates `theme::PRIMARY` bg + white fg
+        // + bold in both states. The legacy White-vs-SUGGESTION split is
+        // retired. This test is the inverted form of the previous
+        // `tab_chip_paint_differs_by_focus`.
         let st = crate::tui::state::ConversationState::default();
         let mut m = OverlayMenu::new_settings(SettingsTab::Config, &st);
 
-        // Case 1: tabs unfocused (default) → white.
         m.settings_header_focused = Some(false);
         let (joined_a, buf_a) = render_settings(&m, 140, 30);
         let (row_a, col_a) = locate_substring(&joined_a, "Config").expect("Config chip visible");
-        // `Config` in the chip is preceded by one space inside the chip, so the
-        // label glyph `C` is at col+1 relative to chip start. Sample that cell.
         let cell_a = buf_a[(col_a as u16, row_a as u16)].clone();
         let bg_a = cell_a.bg;
+        let fg_a = cell_a.fg;
 
-        // Case 2: tabs focused → theme::SUGGESTION.
         m.settings_header_focused = Some(true);
         let (joined_b, buf_b) = render_settings(&m, 140, 30);
         let (row_b, col_b) = locate_substring(&joined_b, "Config").expect("Config chip visible");
         let cell_b = buf_b[(col_b as u16, row_b as u16)].clone();
         let bg_b = cell_b.bg;
+        let fg_b = cell_b.fg;
 
-        assert_ne!(
+        assert_eq!(
             bg_a, bg_b,
-            "tab chip bg must differ between tabs_focused=false and tabs_focused=true"
+            "active chip bg must be identical across tabs_focused states (chrome.md §Tab row FSM)"
+        );
+        assert_eq!(
+            fg_a, fg_b,
+            "active chip fg must be identical across tabs_focused states"
         );
         assert_eq!(
             bg_a,
-            Color::White,
-            "tabs unfocused → active chip bg must be White, got {bg_a:?}"
+            theme::PRIMARY,
+            "active chip bg must be theme::PRIMARY in both focus states, got {bg_a:?}"
         );
         assert_eq!(
-            bg_b,
-            theme::SUGGESTION,
-            "tabs focused → active chip bg must be theme::SUGGESTION, got {bg_b:?}"
+            fg_a,
+            Color::White,
+            "active chip fg must be White in both focus states, got {fg_a:?}"
         );
     }
 
@@ -2368,7 +2326,10 @@ mod tests {
     // -----------------------------------------------------------------
 
     #[test]
-    fn config_panel_renders_top_rule_row_in_suggestion() {
+    fn config_panel_renders_top_rule_row_in_primary() {
+        // Post task #20b: top rule is rendered by `PanelFrame::render` in
+        // `theme::PRIMARY` (chrome.md 2026-04-23 directive unified the panel
+        // accent on teal PRIMARY — see src/tui/panel_frame.rs:11-16).
         let st = crate::tui::state::ConversationState::default();
         let m = OverlayMenu::new_settings(SettingsTab::Config, &st);
         let (joined, buf) = render_settings(&m, 120, 30);
@@ -2384,7 +2345,7 @@ mod tests {
             "/config y=0 must NOT be the tab row — rule comes first, got:\n{first_row}"
         );
 
-        // Sample a cell mid-row: fg must be theme::SUGGESTION.
+        // Sample a cell mid-row: fg must be theme::PRIMARY.
         let mid_col = buf.area.width / 2;
         let cell = buf[(mid_col, 0u16)].clone();
         assert_eq!(
@@ -2395,14 +2356,16 @@ mod tests {
         );
         assert_eq!(
             cell.fg,
-            theme::SUGGESTION,
-            "top rule fg must be theme::SUGGESTION (rgb 177,185,249), got {:?}",
+            theme::PRIMARY,
+            "top rule fg must be theme::PRIMARY (rgb 0x3E,0xA0,0xC3), got {:?}",
             cell.fg
         );
     }
 
     #[test]
-    fn model_panel_renders_top_rule_row_in_suggestion() {
+    fn model_panel_renders_top_rule_row_in_primary() {
+        // Post task #20b: top rule is rendered by `PanelFrame::render` in
+        // `theme::PRIMARY` (chrome.md 2026-04-23 directive).
         let settings = crate::config::settings::Settings::default();
         let m = OverlayMenu::new_model_tabbed(
             "claude-opus-4-7",
@@ -2422,7 +2385,7 @@ mod tests {
             .unwrap();
         let buf = terminal.backend().buffer().clone();
 
-        // y=0 cell at the middle column: ─ glyph, theme::SUGGESTION fg.
+        // y=0 cell at the middle column: ─ glyph, theme::PRIMARY fg.
         let mid_col = buf.area.width / 2;
         let cell = buf[(mid_col, 0u16)].clone();
         assert_eq!(
@@ -2433,8 +2396,8 @@ mod tests {
         );
         assert_eq!(
             cell.fg,
-            theme::SUGGESTION,
-            "/model top rule fg must be theme::SUGGESTION, got {:?}",
+            theme::PRIMARY,
+            "/model top rule fg must be theme::PRIMARY, got {:?}",
             cell.fg
         );
     }
@@ -2463,5 +2426,98 @@ mod tests {
             !src.contains(&forbidden_rgb),
             "the wrong rgb literal `{forbidden_rgb}` must not reappear — upstream value is rgb(177,185,249)"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // Task #20b — `/config` + `/model` migrated to PanelFrame::render.
+    // These tests lock the chrome contract: y=0 = top rule painted by
+    // PanelFrame in `theme::PRIMARY`, y=1 = mandatory blank padding row
+    // (see src/tui/panel_frame.rs:82-83 and chrome.md §"Headline padding").
+    // If either assertion breaks, the panel reimplemented chrome locally
+    // instead of delegating to PanelFrame.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn config_panel_uses_panel_frame_chrome() {
+        let st = crate::tui::state::ConversationState::default();
+        let m = OverlayMenu::new_settings(SettingsTab::Config, &st);
+        let (_joined, buf) = render_settings(&m, 120, 30);
+
+        // y=0 must be the PanelFrame top rule in theme::PRIMARY.
+        let rule_cell = buf[(0u16, 0u16)].clone();
+        assert_eq!(
+            rule_cell.symbol(),
+            "\u{2500}",
+            "config y=0 x=0 must be the top-rule ─ glyph, got {:?}",
+            rule_cell.symbol()
+        );
+        assert_eq!(
+            rule_cell.fg,
+            theme::PRIMARY,
+            "config top rule must be painted by PanelFrame in theme::PRIMARY, got {:?}",
+            rule_cell.fg
+        );
+
+        // y=1 must be the mandatory headline-padding blank row owned by
+        // PanelFrame. Sweep the whole row — every cell must be ` `.
+        for x in 0..buf.area.width {
+            let cell = buf[(x, 1u16)].clone();
+            assert_eq!(
+                cell.symbol(),
+                " ",
+                "config y=1 must be the blank headline-padding row (chrome.md), \
+                 but x={x} contains {:?}",
+                cell.symbol()
+            );
+        }
+    }
+
+    #[test]
+    fn model_panel_uses_panel_frame_chrome() {
+        let settings = crate::config::settings::Settings::default();
+        let m = OverlayMenu::new_model_tabbed(
+            "claude-opus-4-7",
+            &settings,
+            0,
+            true,
+            0,
+        );
+        use ratatui::{backend::TestBackend, Terminal};
+        let backend = TestBackend::new(120u16, 20u16);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                draw_overlay(f, area, &m);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+
+        // y=0 must be the PanelFrame top rule in theme::PRIMARY.
+        let rule_cell = buf[(0u16, 0u16)].clone();
+        assert_eq!(
+            rule_cell.symbol(),
+            "\u{2500}",
+            "model y=0 x=0 must be the top-rule ─ glyph, got {:?}",
+            rule_cell.symbol()
+        );
+        assert_eq!(
+            rule_cell.fg,
+            theme::PRIMARY,
+            "model top rule must be painted by PanelFrame in theme::PRIMARY, got {:?}",
+            rule_cell.fg
+        );
+
+        // y=1 must be the mandatory headline-padding blank row.
+        for x in 0..buf.area.width {
+            let cell = buf[(x, 1u16)].clone();
+            assert_eq!(
+                cell.symbol(),
+                " ",
+                "model y=1 must be the blank headline-padding row (chrome.md), \
+                 but x={x} contains {:?}",
+                cell.symbol()
+            );
+        }
     }
 }
