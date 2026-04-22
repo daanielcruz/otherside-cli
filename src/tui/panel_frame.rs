@@ -6,14 +6,14 @@ use ratatui::Frame;
 
 use crate::tui::render::theme;
 
-// Spec literal: docs/ui-panels/chrome.md § "Top rule" says
-// `Color::Rgb(140, 150, 255)` — theme::PROMPT_BORDER is gray, theme::PRIMARY
-// is a teal. Neither matches the documented blue, so the panel chrome owns
-// its own accent until a shared theme slot lands.
-const PANEL_ACCENT: Color = Color::Rgb(140, 150, 255);
-
+// Panel chrome accent (top rule, search bar border, active-focused tab
+// chip bg). Maps to upstream `darkTheme.permission` / `darkTheme.suggestion`
+// = `rgb(177,185,249)` (light blue-purple). See
+// reconstructed/2.1.117/source/utils/theme.ts:447,458. Our palette exposes
+// this exact value as `theme::SUGGESTION`.
+//
 // Near-black used as foreground on chip backgrounds. Matches the existing
-// `Color::Black` used by agents_panel chips on PRIMARY bg.
+// `Color::Black` used by agents_panel chips on accent bg.
 const CHIP_FG: Color = Color::Black;
 
 // U+26B2 SAGITTARIUS-like magnifier glyph used as the search prefix.
@@ -149,7 +149,7 @@ fn draw_top_rule(f: &mut Frame<'_>, area: Rect) {
     let rule: String = "\u{2500}".repeat(area.width as usize);
     let para = Paragraph::new(Line::from(Span::styled(
         rule,
-        Style::default().fg(PANEL_ACCENT),
+        Style::default().fg(theme::SUGGESTION),
     )));
     f.render_widget(para, area);
 }
@@ -192,7 +192,7 @@ fn chip_span(label: &str, active: bool, tabs_focused: bool) -> Span<'static> {
             .add_modifier(Modifier::BOLD),
         (true, true) => Style::default()
             .fg(CHIP_FG)
-            .bg(PANEL_ACCENT)
+            .bg(theme::SUGGESTION)
             .add_modifier(Modifier::BOLD),
     };
     Span::styled(body, style)
@@ -200,7 +200,7 @@ fn chip_span(label: &str, active: bool, tabs_focused: bool) -> Span<'static> {
 
 fn draw_search_bar(f: &mut Frame<'_>, area: Rect, spec: &SearchSpec<'_>) {
     let border_color = if spec.focused || !spec.query.is_empty() {
-        PANEL_ACCENT
+        theme::SUGGESTION
     } else {
         theme::MUTED
     };
@@ -253,7 +253,7 @@ fn draw_search_bar(f: &mut Frame<'_>, area: Rect, spec: &SearchSpec<'_>) {
             let cursor_area = Rect::new(cursor_x, inner.y, 1, 1);
             let block_glyph = Paragraph::new(Span::styled(
                 "\u{2588}",
-                Style::default().fg(PANEL_ACCENT),
+                Style::default().fg(theme::SUGGESTION),
             ));
             f.render_widget(block_glyph, cursor_area);
         }
@@ -394,7 +394,7 @@ mod tests {
 
         // Tab row is the second row (y=1) — top rule at y=0.
         // Active chip "A" occupies cells around x=0..3 (" A ").
-        // WHITE bg when unfocused, PANEL_ACCENT bg when focused → bg cells
+        // WHITE bg when unfocused, theme::SUGGESTION bg when focused → bg cells
         // must differ at the chip body cell.
         let probe_x = 1;
         let probe_y = 1;
@@ -402,7 +402,7 @@ mod tests {
         let cell_focused = focused[(probe_x, probe_y)].clone();
         assert_ne!(
             cell_unfocused.bg, cell_focused.bg,
-            "active-tab bg must differ between tabs_focused=false (WHITE) and true (PANEL_ACCENT); got unfocused={:?} focused={:?}",
+            "active-tab bg must differ between tabs_focused=false (WHITE) and true (theme::SUGGESTION); got unfocused={:?} focused={:?}",
             cell_unfocused, cell_focused
         );
     }
