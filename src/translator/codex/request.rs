@@ -49,6 +49,17 @@ fn web_search_server_tool(_schema: &Value) -> Value {
     })
 }
 
+/// Upstream's fallback header when no explicit base instructions are supplied.
+/// Mirrors `DEFAULT_PERSONALITY_HEADER` at
+/// `openai/codex:codex-rs/models-manager/src/model_info.rs:17`.
+/// The /responses endpoint rejects requests with missing or empty
+/// `instructions` ({"detail":"Instructions are required"}), so we always
+/// emit a non-empty string — see `build_responses_request` at
+/// `codex-rs/core/src/client.rs:831-874` where upstream clones
+/// `prompt.base_instructions.text` unconditionally into the request body.
+pub const DEFAULT_INSTRUCTIONS: &str =
+    "You are Codex, a coding agent based on GPT-5. You and the user share the same workspace and collaborate to achieve the user's goals.";
+
 pub fn build_responses_body(
     req: &OpenAiChatRequest,
     tools_json: Vec<Value>,
@@ -56,9 +67,9 @@ pub fn build_responses_body(
 ) -> Value {
     let mut body = Map::new();
     body.insert("model".into(), Value::String(req.model.clone()));
-    if let Some(instr) = extract_instructions(&req.messages) {
-        body.insert("instructions".into(), Value::String(instr));
-    }
+    let instructions = extract_instructions(&req.messages)
+        .unwrap_or_else(|| DEFAULT_INSTRUCTIONS.to_string());
+    body.insert("instructions".into(), Value::String(instructions));
     body.insert("input".into(), Value::Array(messages_to_input(&req.messages)));
     if !tools_json.is_empty() {
         body.insert("tools".into(), Value::Array(tools_json));
@@ -69,7 +80,12 @@ pub fn build_responses_body(
         body.insert("reasoning".into(), reasoning);
     }
 
-    body.insert("store".into(), Value::Bool(true));
+    // ChatGPT /responses rejects `store:true` with HTTP 400
+    // ({"detail":"Store must be set to false"}). Upstream mirrors this:
+    // `store: provider.is_azure_responses_endpoint()` at
+    // `openai/codex:codex-rs/core/src/client.rs:880` — false on ChatGPT,
+    // true only on Azure Responses. We target ChatGPT exclusively.
+    body.insert("store".into(), Value::Bool(false));
     body.insert("stream".into(), Value::Bool(true));
     body.insert("include".into(), Value::Array(Vec::new()));
     Value::Object(body)
@@ -181,6 +197,19 @@ mod tests {
     }
 
     #[test]
+    fn body_injects_default_instructions_when_no_system_message() {
+        let req = OpenAiChatRequest {
+            model: "gpt-5.4".into(),
+            messages: vec![user("hi")],
+            ..Default::default()
+        };
+        let body = build_responses_body(&req, vec![], None);
+        let instr = body["instructions"].as_str().expect("instructions present");
+        assert!(!instr.is_empty(), "upstream /responses rejects empty instructions");
+        assert_eq!(instr, DEFAULT_INSTRUCTIONS);
+    }
+
+    #[test]
     fn body_encodes_stream_and_store() {
         let req = OpenAiChatRequest {
             model: "gpt-5-codex".into(),
@@ -189,7 +218,10 @@ mod tests {
         };
         let body = build_responses_body(&req, vec![], None);
         assert_eq!(body["stream"], true);
-        assert_eq!(body["store"], true);
+        assert_eq!(
+            body["store"], false,
+            "ChatGPT /responses rejects store:true — upstream only flips true on Azure"
+        );
         assert!(body["include"].as_array().unwrap().is_empty());
     }
 
