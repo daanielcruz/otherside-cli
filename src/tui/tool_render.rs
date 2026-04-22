@@ -882,7 +882,7 @@ fn agent_preview(result: &Value) -> Option<ToolPayload> {
 
     if status == "backgrounded" {
         return Some(ToolPayload::Preview(
-            "Backgrounded agent".to_string(),
+            "Backgrounded agent (↓ to manage · ctrl+o to expand)".to_string(),
         ));
     }
 
@@ -1683,7 +1683,10 @@ mod tests {
     fn agent_backgrounded_preview_matches_upstream_string() {
         let v = serde_json::json!({"status":"backgrounded"});
         let s = expect_preview(payload_from_result("Agent", &v, false).unwrap());
-        assert_eq!(s, "Backgrounded agent");
+        assert_eq!(
+            s,
+            "Backgrounded agent (↓ to manage · ctrl+o to expand)"
+        );
     }
 
     #[test]
