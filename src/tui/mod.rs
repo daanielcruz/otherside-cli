@@ -129,7 +129,20 @@ pub async fn run(
     )
     .await;
     guard.restore();
-    res
+    match res {
+        Ok(session_id) => {
+            if let Some(id) = session_id {
+                use std::io::Write as _;
+                let mut stdout = std::io::stdout();
+                let _ = writeln!(
+                    stdout,
+                    "\n\x1b[2mResume this session with:\notherside --resume {id}\x1b[0m"
+                );
+            }
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
 }
 
 async fn event_loop(
@@ -141,7 +154,7 @@ async fn event_loop(
     initial_permission_mode: crate::config::PermissionMode,
     settings: crate::config::settings::Settings,
     resume_intent: ResumeIntent,
-) -> Result<()> {
+) -> Result<Option<crate::sessions::SessionId>> {
     let mut st =
         ConversationState::new_for_model_with_mode(&base_model, initial_permission_mode);
 
@@ -415,7 +428,7 @@ async fn event_loop(
             .map_err(|e| Error::Tui(format!("draw: {e}")))?;
     }
 
-    Ok(())
+    Ok(st.session_id.clone())
 }
 
 fn handle_key(
