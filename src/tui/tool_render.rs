@@ -484,11 +484,16 @@ fn clip_flat(s: &str, max: usize) -> String {
     }
 }
 
-pub fn payload_from_result(name: &str, result: &Value, verbose: bool) -> Option<ToolPayload> {
+pub fn payload_from_result(
+    name: &str,
+    result: &Value,
+    verbose: bool,
+    args: &Value,
+) -> Option<ToolPayload> {
     match name {
         "TodoWrite" => todos_payload(result),
         "Edit" => diff_payload(result).or_else(|| edit_preview(result)),
-        "Write" => diff_payload(result).or_else(|| write_preview(result)),
+        "Write" => diff_payload(result).or_else(|| write_preview(result, args)),
         "Read" => read_preview(result).or_else(|| preview_payload(result)),
         "Bash" => bash_preview(result).or_else(|| preview_payload(result)),
         "Glob" => glob_preview(result, verbose).or_else(|| preview_payload(result)),
@@ -634,24 +639,26 @@ fn edit_preview(result: &Value) -> Option<ToolPayload> {
     }
 }
 
-fn write_preview(result: &Value) -> Option<ToolPayload> {
+const WRITE_MAX_LINES_TO_RENDER: usize = 10;
+
+fn write_preview(result: &Value, args: &Value) -> Option<ToolPayload> {
     let obj = result.as_object()?;
-    let raw_fp = obj.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
+    let raw_fp = obj
+        .get("file_path")
+        .and_then(|v| v.as_str())
+        .or_else(|| args.get("file_path").and_then(|v| v.as_str()))
+        .unwrap_or("");
     let fp = relativize_path(raw_fp);
 
+    let args_content = args.get("content").and_then(|v| v.as_str());
     let lines = obj
         .get("numLines")
         .or_else(|| obj.get("lines"))
         .and_then(|v| v.as_u64())
-        .or_else(|| {
-            obj.get("content")
-                .and_then(|v| v.as_str())
-                .map(|s| s.lines().count() as u64)
-        });
+        .or_else(|| args_content.map(|s| count_lines(s) as u64));
     let bytes = obj.get("bytes_written").and_then(|v| v.as_u64());
-    let _ = obj.get("created");
     let verb = "Wrote";
-    let text = match (lines, bytes, fp.is_empty()) {
+    let header = match (lines, bytes, fp.is_empty()) {
         (Some(n), _, false) => format!("{verb} {n} lines to {fp}"),
         (Some(n), _, true) => format!("{verb} {n} lines"),
         (None, Some(n), false) => format!(
@@ -662,7 +669,38 @@ fn write_preview(result: &Value) -> Option<ToolPayload> {
         (None, None, false) => format!("{verb} {fp}"),
         (None, None, true) => return None,
     };
+
+    let body = args_content.unwrap_or("");
+    if body.is_empty() {
+        return Some(ToolPayload::Preview(header));
+    }
+    let total = count_lines(body);
+    let preview_lines: Vec<&str> = body.split('\n').take(WRITE_MAX_LINES_TO_RENDER).collect();
+    let preview = preview_lines.join("\n");
+    let plus = total.saturating_sub(WRITE_MAX_LINES_TO_RENDER);
+    let mut text = header;
+    text.push('\n');
+    text.push_str(&preview);
+    if plus > 0 {
+        text.push('\n');
+        text.push_str(&format!(
+            "… +{plus} {}",
+            if plus == 1 { "line" } else { "lines" }
+        ));
+    }
     Some(ToolPayload::Preview(text))
+}
+
+fn count_lines(content: &str) -> usize {
+    if content.is_empty() {
+        return 0;
+    }
+    let parts = content.split('\n').count();
+    if content.ends_with('\n') {
+        parts - 1
+    } else {
+        parts
+    }
 }
 
 fn bash_preview(result: &Value) -> Option<ToolPayload> {
@@ -1257,7 +1295,7 @@ mod tests {
                 {"content": "second", "status": "completed"},
             ]
         });
-        let payload = payload_from_result("TodoWrite", &value, false).expect("todos payload");
+        let payload = payload_from_result("TodoWrite", &value, false, &serde_json::Value::Null).expect("todos payload");
         match payload {
             ToolPayload::Todos(items) => {
                 assert_eq!(items.len(), 2);
@@ -1270,7 +1308,7 @@ mod tests {
     #[test]
     fn payload_from_result_read_returns_preview() {
         let value = serde_json::json!({ "content": "line one\nline two" });
-        let payload = payload_from_result("Read", &value, false).expect("preview");
+        let payload = payload_from_result("Read", &value, false, &serde_json::Value::Null).expect("preview");
         match payload {
             ToolPayload::Preview(s) => {
                 assert!(s.starts_with("line one"));
@@ -1287,7 +1325,7 @@ mod tests {
             "filenames": ["a.rs", "b.rs", "c.rs"],
             "truncated": false,
         });
-        let payload = payload_from_result("Glob", &value, false).expect("preview");
+        let payload = payload_from_result("Glob", &value, false, &serde_json::Value::Null).expect("preview");
         match payload {
             ToolPayload::Preview(s) => assert!(s.contains("3 file")),
             other => panic!("expected Preview, got {other:?}"),
@@ -1299,7 +1337,7 @@ mod tests {
         let value = serde_json::json!({
             "diff": "@@ -1 +1 @@\n-a\n+b",
         });
-        let payload = payload_from_result("Edit", &value, false).expect("diff");
+        let payload = payload_from_result("Edit", &value, false, &serde_json::Value::Null).expect("diff");
         assert!(matches!(payload, ToolPayload::Diff(_)));
     }
 
@@ -1339,7 +1377,7 @@ mod tests {
             "elapsed_ms": 2,
         });
         let (stdout, stderr, exit) = expect_bash(
-            payload_from_result("Bash", &v, false).expect("bash payload"),
+            payload_from_result("Bash", &v, false, &serde_json::Value::Null).expect("bash payload"),
         );
         assert_eq!(stdout, "hello");
         assert!(stderr.is_empty());
@@ -1355,7 +1393,7 @@ mod tests {
             "stderr": "bad thing happened",
         });
         let (stdout, stderr, exit) = expect_bash(
-            payload_from_result("Bash", &v, false).expect("bash payload"),
+            payload_from_result("Bash", &v, false, &serde_json::Value::Null).expect("bash payload"),
         );
         assert!(stdout.is_empty());
         assert!(stderr.contains("bad thing happened"));
@@ -1371,7 +1409,7 @@ mod tests {
             "stderr": "",
         });
         let (stdout, stderr, _) = expect_bash(
-            payload_from_result("Bash", &v, false).expect("bash payload"),
+            payload_from_result("Bash", &v, false, &serde_json::Value::Null).expect("bash payload"),
         );
         assert_eq!(stdout, "(No output)");
         assert!(stderr.is_empty());
@@ -1386,7 +1424,7 @@ mod tests {
             "output": "line-one\nline-two",
         });
         let (stdout, stderr, _) = expect_bash(
-            payload_from_result("Bash", &v, false).expect("bash payload"),
+            payload_from_result("Bash", &v, false, &serde_json::Value::Null).expect("bash payload"),
         );
         assert!(stdout.contains("line-one"));
         assert!(stderr.is_empty());
@@ -1400,7 +1438,7 @@ mod tests {
             "output": "command not found",
         });
         let (stdout, stderr, exit) = expect_bash(
-            payload_from_result("Bash", &v, false).expect("bash payload"),
+            payload_from_result("Bash", &v, false, &serde_json::Value::Null).expect("bash payload"),
         );
         assert!(stdout.is_empty());
         assert!(stderr.contains("command not found"));
@@ -1517,7 +1555,7 @@ mod tests {
             "startLine": 1,
             "totalLines": 2,
         });
-        let s = expect_preview(payload_from_result("Read", &v, false).unwrap());
+        let s = expect_preview(payload_from_result("Read", &v, false, &serde_json::Value::Null).unwrap());
         assert!(s.starts_with("Read 2 lines"), "got: {s}");
         assert!(s.contains("alpha"), "body excerpt present: {s}");
     }
@@ -1530,7 +1568,7 @@ mod tests {
             "startLine": 1,
             "totalLines": 1,
         });
-        let s = expect_preview(payload_from_result("Read", &v, false).unwrap());
+        let s = expect_preview(payload_from_result("Read", &v, false, &serde_json::Value::Null).unwrap());
         assert!(s.starts_with("Read 1 line"), "got: {s}");
     }
 
@@ -1542,7 +1580,7 @@ mod tests {
             "created": true,
             "bytes_written": 42,
         });
-        let s = expect_preview(payload_from_result("Write", &v, false).unwrap());
+        let s = expect_preview(payload_from_result("Write", &v, false, &serde_json::Value::Null).unwrap());
         assert!(s.contains("Wrote"), "got: {s}");
         assert!(s.contains("42 bytes"), "got: {s}");
         assert!(s.contains("/tmp/out.txt"), "got: {s}");
@@ -1556,8 +1594,55 @@ mod tests {
             "created": false,
             "bytes_written": 1,
         });
-        let s = expect_preview(payload_from_result("Write", &v, false).unwrap());
+        let s = expect_preview(payload_from_result("Write", &v, false, &serde_json::Value::Null).unwrap());
         assert!(s.starts_with("Wrote 1 byte "), "singular: {s}");
+    }
+
+    #[test]
+    fn write_preview_embeds_first_10_lines_of_content_from_args() {
+        let body = (1..=15)
+            .map(|n| format!("line{n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let args = serde_json::json!({
+            "file_path": "/tmp/fifteen.txt",
+            "content": body,
+        });
+        let result = serde_json::json!({
+            "status": "ok",
+            "file_path": "/tmp/fifteen.txt",
+        });
+        let s = expect_preview(payload_from_result("Write", &result, false, &args).unwrap());
+        let lines: Vec<&str> = s.lines().collect();
+        assert!(lines[0].contains("Wrote 15 lines to"), "header: {s}");
+        assert_eq!(lines[1], "line1");
+        assert_eq!(lines[10], "line10", "cut at 10 lines: {s}");
+        assert_eq!(lines[11], "… +5 lines", "plus indicator: {s}");
+    }
+
+    #[test]
+    fn write_preview_no_plus_indicator_under_10_lines() {
+        let body = "only\ntwo".to_string();
+        let args = serde_json::json!({
+            "file_path": "/tmp/short.txt",
+            "content": body,
+        });
+        let result = serde_json::json!({ "file_path": "/tmp/short.txt" });
+        let s = expect_preview(payload_from_result("Write", &result, false, &args).unwrap());
+        assert!(!s.contains("… +"), "no plus when under 10: {s}");
+        assert!(s.contains("Wrote 2 lines"), "header infers from content: {s}");
+        assert!(s.contains("only"), "body included: {s}");
+    }
+
+    #[test]
+    fn write_preview_singular_line_wording() {
+        let args = serde_json::json!({
+            "file_path": "/tmp/x.txt",
+            "content": "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\neleven",
+        });
+        let result = serde_json::json!({ "file_path": "/tmp/x.txt" });
+        let s = expect_preview(payload_from_result("Write", &result, false, &args).unwrap());
+        assert!(s.contains("… +1 line"), "singular plus: {s}");
     }
 
     #[test]
@@ -1567,7 +1652,7 @@ mod tests {
             "file_path": "/tmp/x.rs",
             "replaced": 3,
         });
-        let s = expect_preview(payload_from_result("Edit", &v, false).unwrap());
+        let s = expect_preview(payload_from_result("Edit", &v, false, &serde_json::Value::Null).unwrap());
         assert!(s.contains("3 replacements"), "got: {s}");
         assert!(s.contains("/tmp/x.rs"), "got: {s}");
     }
@@ -1581,7 +1666,7 @@ mod tests {
             "truncated": false,
             "durationMs": 12,
         });
-        let s = expect_preview(payload_from_result("Glob", &v, false).unwrap());
+        let s = expect_preview(payload_from_result("Glob", &v, false, &serde_json::Value::Null).unwrap());
         assert_eq!(s, "Found 2 files");
     }
 
@@ -1593,7 +1678,7 @@ mod tests {
             "truncated": false,
             "durationMs": 12,
         });
-        let s = expect_preview(payload_from_result("Glob", &v, true).unwrap());
+        let s = expect_preview(payload_from_result("Glob", &v, true, &serde_json::Value::Null).unwrap());
         assert!(s.starts_with("Found 2 files\n"), "got: {s}");
         assert!(s.contains("/a.rs"), "list body: {s}");
         assert!(s.contains("/b.rs"), "list body: {s}");
@@ -1607,7 +1692,7 @@ mod tests {
             "truncated": false,
             "durationMs": 1,
         });
-        let s = expect_preview(payload_from_result("Glob", &v, false).unwrap());
+        let s = expect_preview(payload_from_result("Glob", &v, false, &serde_json::Value::Null).unwrap());
         assert_eq!(s, "Found 1 file");
     }
 
@@ -1619,7 +1704,7 @@ mod tests {
             "truncated": false,
             "exit": 0,
         });
-        let s = expect_preview(payload_from_result("Grep", &v, false).unwrap());
+        let s = expect_preview(payload_from_result("Grep", &v, false, &serde_json::Value::Null).unwrap());
         assert_eq!(s, "Found 3 matches");
     }
 
@@ -1631,7 +1716,7 @@ mod tests {
             "truncated": false,
             "exit": 0,
         });
-        let s = expect_preview(payload_from_result("Grep", &v, true).unwrap());
+        let s = expect_preview(payload_from_result("Grep", &v, true, &serde_json::Value::Null).unwrap());
         assert!(s.starts_with("Found 3 matches\n"), "got: {s}");
         assert!(s.contains("/a.rs"), "paths listed: {s}");
     }
@@ -1644,7 +1729,7 @@ mod tests {
             "truncated": false,
             "exit": 0,
         });
-        let s = expect_preview(payload_from_result("Grep", &v, false).unwrap());
+        let s = expect_preview(payload_from_result("Grep", &v, false, &serde_json::Value::Null).unwrap());
         assert!(s.starts_with("Found 2 lines"), "got: {s}");
     }
 
@@ -1656,7 +1741,7 @@ mod tests {
             "tools": ["Read", "Glob", "Bash"],
             "model": "claude-sonnet-4-6",
         });
-        let s = expect_preview(payload_from_result("Skill", &v, false).unwrap());
+        let s = expect_preview(payload_from_result("Skill", &v, false, &serde_json::Value::Null).unwrap());
         assert!(
             s.starts_with("Successfully loaded skill"),
             "got: {s}"
@@ -1676,7 +1761,7 @@ mod tests {
                 {"name": "ReadFoo", "description": "d", "input_schema": {}},
             ]
         });
-        let s = expect_preview(payload_from_result("ToolSearch", &v, false).unwrap());
+        let s = expect_preview(payload_from_result("ToolSearch", &v, false, &serde_json::Value::Null).unwrap());
         assert!(s.contains("Found 2 tools"), "got: {s}");
         assert!(s.contains("Read"), "got: {s}");
         assert!(s.contains("ReadFoo"), "got: {s}");
@@ -1685,7 +1770,7 @@ mod tests {
     #[test]
     fn payload_from_result_tool_search_empty_reports_zero() {
         let v = serde_json::json!({"query": "zz", "max_results": 5, "tools": []});
-        let s = expect_preview(payload_from_result("ToolSearch", &v, false).unwrap());
+        let s = expect_preview(payload_from_result("ToolSearch", &v, false, &serde_json::Value::Null).unwrap());
         assert!(s.contains("Found 0 tools"), "got: {s}");
     }
 
@@ -1698,7 +1783,7 @@ mod tests {
             "prompt_preview": "p",
             "reason": "subagents registry not yet wired",
         });
-        let s = expect_preview(payload_from_result("Agent", &v, false).unwrap());
+        let s = expect_preview(payload_from_result("Agent", &v, false, &serde_json::Value::Null).unwrap());
         assert!(s.contains("subagents registry"), "got: {s}");
     }
 
@@ -1710,7 +1795,7 @@ mod tests {
             "totalTokens": 12345,
             "totalDurationMs": 135000,
         });
-        let s = expect_preview(payload_from_result("Agent", &v, false).unwrap());
+        let s = expect_preview(payload_from_result("Agent", &v, false, &serde_json::Value::Null).unwrap());
         assert!(s.starts_with("Done ("), "got: {s}");
         assert!(s.contains("5 tool uses"), "got: {s}");
         assert!(s.contains("12.3k tokens"), "got: {s}");
@@ -1759,7 +1844,7 @@ mod tests {
     #[test]
     fn agent_backgrounded_preview_matches_upstream_string() {
         let v = serde_json::json!({"status":"backgrounded"});
-        let s = expect_preview(payload_from_result("Agent", &v, false).unwrap());
+        let s = expect_preview(payload_from_result("Agent", &v, false, &serde_json::Value::Null).unwrap());
         assert_eq!(
             s,
             "Backgrounded agent (↓ to manage · ctrl+o to expand)"
@@ -2115,7 +2200,7 @@ mod tests {
     fn write_preview_mirrors_upstream_plural_bug() {
         let args = serde_json::json!({});
         let v = serde_json::json!({"file_path":"stub.md","lines":1,"created":false});
-        let s = expect_preview(payload_from_result("Write", &v, false).unwrap());
+        let s = expect_preview(payload_from_result("Write", &v, false, &serde_json::Value::Null).unwrap());
         let _ = args;
         assert!(
             s.contains("Wrote 1 lines"),

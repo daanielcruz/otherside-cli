@@ -228,6 +228,7 @@ pub fn hydrate_from_records(
                         &entry.name,
                         result,
                         st.render_verbose,
+                        &entry.args,
                     );
                     entry.raw_result = Some(result.clone());
                 }
@@ -708,7 +709,12 @@ impl ConversationState {
         match &result {
             Ok(value) => {
                 entry.status = ToolStatus::Ok;
-                entry.payload = tool_render::payload_from_result(&entry.name, value, verbose);
+                entry.payload = tool_render::payload_from_result(
+                    &entry.name,
+                    value,
+                    verbose,
+                    &entry.args,
+                );
                 entry.raw_result = Some(value.clone());
             }
             Err(err) => {
@@ -743,8 +749,12 @@ impl ConversationState {
         self.render_verbose = !self.render_verbose;
         for entry in self.active_tool_calls.iter_mut() {
             if let Some(raw) = &entry.raw_result {
-                entry.payload =
-                    tool_render::payload_from_result(&entry.name, raw, self.render_verbose);
+                entry.payload = tool_render::payload_from_result(
+                    &entry.name,
+                    raw,
+                    self.render_verbose,
+                    &entry.args,
+                );
             }
         }
         self.render_verbose
