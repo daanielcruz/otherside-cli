@@ -358,8 +358,27 @@ async fn dispatch_agent_cancellable(
     // Emit an upstream-shape agentId (`a<16hex>`) to the model instead of the
     // Anthropic tool_use_id. Reusing `toolu_…` leaked the wire identifier into
     // user-visible text and the agent-log path, neither of which match
-    // upstream (`utils/uuid.ts:24 createAgentId`).
-    let agent_id = crate::tasks::id::create_agent_id(None);
+    // upstream (`utils/uuid.ts:24 createAgentId`). Reuse the agent_id the
+    // TUI pre-generated in begin_tool_call when available — keeps the same
+    // identifier on "Async agent launched" text, disk-mirror path, and the
+    // later BackgroundAgentCompleted render.
+    let agent_id = {
+        let task_id = crate::tasks::TaskId::from_string(tool_call_id.to_string());
+        let store_opt = crate::tasks::store::current_global();
+        let existing = store_opt
+            .as_ref()
+            .and_then(|s| s.get(&task_id))
+            .and_then(|r| r.agent_id.clone());
+        existing.unwrap_or_else(|| {
+            let generated = crate::tasks::id::create_agent_id(None);
+            if let Some(store) = store_opt.as_ref() {
+                store.update_with(&task_id, |r| {
+                    r.agent_id.get_or_insert(generated.clone());
+                });
+            }
+            generated
+        })
+    };
     let upstream_text = format!(
         "Async agent launched successfully.\nagentId: {agent_id} (internal ID - do not mention to user. The agent is working in the background. You will be notified automatically when it completes.)\n\nDo not call TaskOutput or any other tool to check status — wait for the completion notification.",
     );

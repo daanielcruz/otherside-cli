@@ -299,6 +299,19 @@ async fn event_loop(
             _ = ticker.tick() => {
                 spinner_tick = spinner_tick.wrapping_add(1);
 
+                // Keep the /agents panel live: if it's open, re-pull the
+                // TaskStore snapshot so a subagent dispatched AFTER the panel
+                // opened surfaces immediately, a completion flips the row to
+                // the Recent tab, and the per-library `running_count` column
+                // stays current. Previously the panel was built ONCE when
+                // opened → "No subagents currently running" even when one was.
+                if let Some(panel) = st.active_agents_panel.as_mut() {
+                    panel.refresh(
+                        &st.tasks,
+                        crate::agent::subagents::registry::all(),
+                    );
+                }
+
                 for entry in crate::tools::cron::drain_due_wakeups() {
                     st.push_system_note(format!("⏰ wakeup: {}", entry.message));
                 }
@@ -437,10 +450,20 @@ async fn event_loop(
                     }
                     Some(StreamEvent::BackgroundAgentCompleted { tool_call_id, summary }) => {
                         let trimmed: String = summary.chars().take(160).collect();
+                        // Prefer the upstream-shape agent_id we stored on the
+                        // record at begin_tool_call time. Falling back to
+                        // tool_call_id leaks the Anthropic `toolu_*` prefix
+                        // into user-visible chat + breaks the model's expected
+                        // `a<16hex>` identifier.
+                        let task_id = crate::tasks::TaskId::from_string(tool_call_id.clone());
+                        let display_id = st
+                            .tasks
+                            .get(&task_id)
+                            .and_then(|r| r.agent_id.clone())
+                            .unwrap_or_else(|| tool_call_id.clone());
                         st.push_system_note(format!(
-                            "⎿  Background agent {tool_call_id} completed: {trimmed}"
+                            "⎿  Background agent {display_id} completed: {trimmed}"
                         ));
-                        let task_id = crate::tasks::TaskId::from_string(tool_call_id);
                         st.tasks.update_with(&task_id, |r| {
                             if !r.state.is_terminal() {
                                 r.state = crate::tasks::TaskState::Completed;

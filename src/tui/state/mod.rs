@@ -609,7 +609,18 @@ impl ConversationState {
             };
             record.state = crate::tasks::TaskState::Running;
             record.is_backgrounded = false;
+            record.tool_use_id = Some(id.clone());
             if matches!(kind, crate::tasks::TaskKind::Agent) {
+                // Generate an upstream-shape agent_id up-front so that:
+                // (1) Ctrl+B -> BackgroundAgentCompleted render shows
+                //     `a<16hex>` not `toolu_*`,
+                // (2) the disk-mirror path under tasks/<agent_id>.output
+                //     uses the same identifier regardless of whether the
+                //     subagent was dispatched via run_in_background=true
+                //     (tools::agent::agent sets it too via
+                //     spawn_background_agent) or via the foreground +
+                //     Ctrl+B path (agent_bridge::dispatch_agent_cancellable).
+                record.agent_id = Some(crate::tasks::id::create_agent_id(None));
                 record.subagent_type = args
                     .get("subagent_type")
                     .and_then(|v| v.as_str())

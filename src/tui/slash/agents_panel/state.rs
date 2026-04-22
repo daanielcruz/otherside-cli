@@ -117,6 +117,60 @@ impl AgentsPanelState {
         }
     }
 
+    /// Re-pull live state from the TaskStore without dropping user UI
+    /// selection (tab + cursor). Called each draw tick so a subagent
+    /// dispatched AFTER the panel opened surfaces immediately, and a
+    /// completion flips the row into the Recent tab without the user
+    /// needing to /agents again.
+    pub fn refresh(&mut self, tasks: &TaskStore, defs: &[AgentDefinition]) {
+        let active_agents: Vec<_> = tasks
+            .list_active()
+            .into_iter()
+            .filter(|r| matches!(r.kind, TaskKind::Agent))
+            .collect();
+
+        self.running = active_agents
+            .iter()
+            .map(|r| RunningRow {
+                name: r.name.clone(),
+                runtime_secs: r.runtime_secs(),
+                description: r.description.clone(),
+                tokens: r.tokens,
+            })
+            .collect();
+        if self.running_cursor >= self.running.len() {
+            self.running_cursor = self.running.len().saturating_sub(1);
+        }
+
+        use std::collections::HashMap;
+        let mut running_by_type: HashMap<String, usize> = HashMap::new();
+        for r in &active_agents {
+            if let Some(st) = r.subagent_type.as_deref() {
+                *running_by_type.entry(st.to_string()).or_insert(0) += 1;
+            }
+        }
+
+        self.recently_completed = tasks
+            .list_recent_terminal(TaskKind::Agent, RECENTLY_COMPLETED_LIMIT)
+            .into_iter()
+            .map(|r| CompletedRow {
+                name: r.name.clone(),
+                status: r.state,
+            })
+            .collect();
+
+        self.library = defs
+            .iter()
+            .map(|d| LibraryRow {
+                name: d.name.clone(),
+                model: short_model_name(d.model.as_deref()),
+                running_count: *running_by_type.get(&d.name).unwrap_or(&0),
+            })
+            .collect();
+        self.library
+            .sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    }
+
     pub fn cursor_up(&mut self) {
         if matches!(self.tab, Tab::Running) && !self.running.is_empty() {
             if self.running_cursor > 0 {
