@@ -184,9 +184,14 @@ async fn event_loop(
                 crate::error::Error,
             > = match &resume_intent {
                 ResumeIntent::None => Ok(None),
-                ResumeIntent::Picker | ResumeIntent::Latest => {
-                    crate::sessions::resume_latest(&cfg_dir, &cwd)
-                }
+                ResumeIntent::Latest => crate::sessions::resume_latest(&cfg_dir, &cwd),
+                ResumeIntent::Picker => match pick_session_pre_tui(&cfg_dir, &cwd) {
+                    PickerOutcome::Resume(id) => {
+                        crate::sessions::resume(&cfg_dir, &cwd, &id).map(Some)
+                    }
+                    PickerOutcome::Latest => crate::sessions::resume_latest(&cfg_dir, &cwd),
+                    PickerOutcome::Fresh => Ok(None),
+                },
                 ResumeIntent::Specific(id_hex) => {
                     match crate::sessions::id::SessionId::from_hex(id_hex) {
                         Some(id) => crate::sessions::resume(&cfg_dir, &cwd, &id).map(Some),
@@ -1639,6 +1644,102 @@ fn spawn_compact_turn(
         };
         let _ = tx.send(event).await;
     });
+}
+
+/// Pre-TUI resume picker outcome. Kept narrow on purpose: the full
+/// ratatui overlay (upstream `screens/ResumeConversation.tsx`, ~400 LOC)
+/// is post-MVP — for now we print a numbered list to stderr and read one
+/// line from stdin before dropping into altscreen.
+enum PickerOutcome {
+    Resume(crate::sessions::SessionId),
+    Latest,
+    Fresh,
+}
+
+fn pick_session_pre_tui(
+    cfg_dir: &std::path::Path,
+    cwd: &std::path::Path,
+) -> PickerOutcome {
+    let sessions = match crate::sessions::list_for_cwd(cfg_dir, cwd) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("(otherside) listing sessions failed: {e} — starting fresh");
+            return PickerOutcome::Fresh;
+        }
+    };
+    if sessions.is_empty() {
+        return PickerOutcome::Fresh;
+    }
+    if sessions.len() == 1 {
+        return PickerOutcome::Resume(sessions[0].id.clone());
+    }
+
+    // Cap at 20 rows so the prompt stays terminal-sized. Newest first
+    // (matches upstream — newest-first is what users reach for).
+    const MAX_ROWS: usize = 20;
+    let shown = sessions.iter().take(MAX_ROWS).enumerate();
+
+    eprintln!();
+    eprintln!("Resume session — pick one for this directory:");
+    for (idx, summary) in shown {
+        let when = format_mtime_rel(summary.modified);
+        let preview = summary
+            .first_user_preview
+            .as_deref()
+            .unwrap_or("(no user messages yet)");
+        let short_id = summary.id.to_string();
+        let short = short_id.chars().take(8).collect::<String>();
+        eprintln!("  [{:>2}] {when:<16} {short}  {preview}", idx + 1);
+    }
+    if sessions.len() > MAX_ROWS {
+        eprintln!(
+            "  … {} older sessions hidden — pass --resume <id> to resume by UUID.",
+            sessions.len() - MAX_ROWS,
+        );
+    }
+    eprintln!();
+    eprint!("Enter number (1-{}), l=latest, n=fresh, q=quit [n]: ", sessions.len().min(MAX_ROWS));
+    use std::io::Write;
+    let _ = std::io::stderr().flush();
+
+    let mut line = String::new();
+    if std::io::stdin().read_line(&mut line).is_err() {
+        return PickerOutcome::Fresh;
+    }
+    let choice = line.trim();
+    if choice.is_empty() || choice.eq_ignore_ascii_case("n") {
+        return PickerOutcome::Fresh;
+    }
+    if choice.eq_ignore_ascii_case("q") {
+        std::process::exit(0);
+    }
+    if choice.eq_ignore_ascii_case("l") {
+        return PickerOutcome::Latest;
+    }
+    match choice.parse::<usize>() {
+        Ok(n) if n >= 1 && n <= sessions.len().min(MAX_ROWS) => {
+            PickerOutcome::Resume(sessions[n - 1].id.clone())
+        }
+        _ => {
+            eprintln!("(otherside) unrecognized choice {choice:?} — starting fresh");
+            PickerOutcome::Fresh
+        }
+    }
+}
+
+fn format_mtime_rel(mtime: std::time::SystemTime) -> String {
+    let now = std::time::SystemTime::now();
+    let secs = now
+        .duration_since(mtime)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    match secs {
+        0..=59 => "just now".to_string(),
+        s if s < 3600 => format!("{}m ago", s / 60),
+        s if s < 86_400 => format!("{}h ago", s / 3600),
+        s if s < 2_592_000 => format!("{}d ago", s / 86_400),
+        s => format!("{}w ago", s / 604_800),
+    }
 }
 
 async fn run_agent_turns(

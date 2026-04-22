@@ -56,6 +56,71 @@ pub fn resume(
     ))
 }
 
+/// Lightweight summary used by the `--resume` picker. Cheap to build: only
+/// scans each transcript until the first user message (or 4 KB, whichever
+/// comes first) to avoid loading the whole session.
+#[derive(Debug, Clone)]
+pub struct SessionSummary {
+    pub id: SessionId,
+    pub modified: std::time::SystemTime,
+    pub first_user_preview: Option<String>,
+}
+
+pub fn list_for_cwd(config_dir: &Path, cwd: &Path) -> Result<Vec<SessionSummary>> {
+    let project = paths::project_dir(config_dir, cwd);
+    if !project.exists() {
+        return Ok(Vec::new());
+    }
+    let mut out: Vec<SessionSummary> = Vec::new();
+    for entry in std::fs::read_dir(&project)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let name = match entry.file_name().into_string() {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let Some(stem) = name.strip_suffix(".jsonl") else {
+            continue;
+        };
+        let Some(id) = SessionId::from_hex(stem) else {
+            continue;
+        };
+        let modified = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        let first_user_preview = sniff_first_user_message(&entry.path());
+        out.push(SessionSummary {
+            id,
+            modified,
+            first_user_preview,
+        });
+    }
+    out.sort_by(|a, b| b.modified.cmp(&a.modified));
+    Ok(out)
+}
+
+fn sniff_first_user_message(path: &Path) -> Option<String> {
+    use std::io::{BufRead, BufReader};
+    let file = std::fs::File::open(path).ok()?;
+    let reader = BufReader::new(file);
+    for line in reader.lines().take(50).flatten() {
+        let value: serde_json::Value = match serde_json::from_str(&line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if value.get("type").and_then(|v| v.as_str()) == Some("user_message") {
+            return value
+                .get("content")
+                .and_then(|c| c.as_str())
+                .map(|s| s.trim().chars().take(80).collect::<String>());
+        }
+    }
+    None
+}
+
 pub fn resume_latest(
     config_dir: &Path,
     cwd: &Path,
@@ -137,6 +202,56 @@ mod tests {
         let cwd = scratch_cwd();
         let result = resume_latest(&cfg, &cwd).unwrap();
         assert!(result.is_none());
+        std::fs::remove_dir_all(&cfg).ok();
+        std::fs::remove_dir_all(&cwd).ok();
+    }
+
+    #[test]
+    fn list_for_cwd_returns_newest_first_with_preview() {
+        let cfg = scratch_root();
+        let cwd = scratch_cwd();
+        let h1 = open_new(&cfg, &cwd).unwrap();
+        let mut w1 = h1.writer;
+        w1.append(&Record::UserMessage {
+            ts: "2026-04-22T00:00:00.000Z".into(),
+            content: "first turn — here is the user prompt".into(),
+        })
+        .unwrap();
+        drop(w1);
+
+        // Touch the second session after the first so mtime ordering is
+        // deterministic on filesystems with coarse mtime resolution.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let h2 = open_new(&cfg, &cwd).unwrap();
+        let mut w2 = h2.writer;
+        w2.append(&Record::UserMessage {
+            ts: "2026-04-22T00:01:00.000Z".into(),
+            content: "second session prompt".into(),
+        })
+        .unwrap();
+        drop(w2);
+
+        let listed = list_for_cwd(&cfg, &cwd).unwrap();
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].id, h2.id, "newest session sorts first");
+        assert_eq!(
+            listed[0].first_user_preview.as_deref(),
+            Some("second session prompt"),
+        );
+        assert!(listed[1]
+            .first_user_preview
+            .as_deref()
+            .unwrap()
+            .starts_with("first turn"));
+        std::fs::remove_dir_all(&cfg).ok();
+        std::fs::remove_dir_all(&cwd).ok();
+    }
+
+    #[test]
+    fn list_for_cwd_empty_when_project_absent() {
+        let cfg = scratch_root();
+        let cwd = scratch_cwd();
+        assert!(list_for_cwd(&cfg, &cwd).unwrap().is_empty());
         std::fs::remove_dir_all(&cfg).ok();
         std::fs::remove_dir_all(&cwd).ok();
     }
