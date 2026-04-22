@@ -714,6 +714,10 @@ fn draw_info_row(
 const AUTOCOMPACT_BUFFER_TOKENS: u64 = 13_000;
 const WARNING_THRESHOLD_BUFFER_TOKENS: u64 = 20_000;
 
+fn auto_compact_enabled(state: &ConversationState) -> bool {
+    state.persistence.settings.auto_compact.unwrap_or(true)
+}
+
 fn build_token_right_chip(state: &ConversationState, total: u64) -> String {
     if total == 0 {
         return String::new();
@@ -726,12 +730,15 @@ fn build_token_right_chip(state: &ConversationState, total: u64) -> String {
         .context_window
         .saturating_sub(AUTOCOMPACT_BUFFER_TOKENS);
     let warning_threshold = threshold.saturating_sub(WARNING_THRESHOLD_BUFFER_TOKENS);
-    if state.input_tokens >= warning_threshold && threshold > 0 {
-        let remaining = threshold.saturating_sub(state.input_tokens);
-        let percent_left = ((remaining as u128 * 100) / threshold as u128) as u64;
+    if state.input_tokens < warning_threshold || threshold == 0 {
+        return format!("{total} tokens");
+    }
+    let remaining = threshold.saturating_sub(state.input_tokens);
+    let percent_left = ((remaining as u128 * 100) / threshold as u128) as u64;
+    if auto_compact_enabled(state) {
         format!("{percent_left}% until auto-compact")
     } else {
-        format!("{total} tokens")
+        format!("Context low ({percent_left}% remaining) · Run /compact")
     }
 }
 
@@ -1266,6 +1273,33 @@ mod tests {
             joined.push('\n');
         }
         assert!(!joined.contains("❯ stranded"), "painted during idle: {joined:?}");
+    }
+
+    #[test]
+    fn token_chip_shows_until_auto_compact_past_warning_threshold() {
+        use super::super::state::ConversationState;
+        let mut st = ConversationState::new();
+        st.session.context_window = 200_000;
+        st.input_tokens = 170_000;
+        let chip = build_token_right_chip(&st, st.input_tokens);
+        assert!(
+            chip.contains("until auto-compact"),
+            "warning state missing: {chip:?}"
+        );
+    }
+
+    #[test]
+    fn token_chip_shows_context_low_when_auto_compact_disabled_past_threshold() {
+        use super::super::state::ConversationState;
+        let mut st = ConversationState::new();
+        st.session.context_window = 200_000;
+        st.input_tokens = 175_000;
+        st.persistence.settings.auto_compact = Some(false);
+        let chip = build_token_right_chip(&st, st.input_tokens);
+        assert!(
+            chip.contains("Context low") && chip.contains("Run /compact"),
+            "error state missing: {chip:?}"
+        );
     }
 
     #[test]
