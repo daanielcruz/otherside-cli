@@ -11,11 +11,6 @@ use ratatui::{
 use super::render::theme;
 use super::slash::catalog::PanelKind;
 
-/// Blue accent used on the active tab chip when the tab row has focus.
-/// Duplicated literal — see `panel_frame::PANEL_ACCENT`; we deliberately
-/// do not cross-reference the other module per the in-progress panel
-/// migration discipline.
-pub const PANEL_ACCENT: Color = Color::Rgb(140, 150, 255);
 #[cfg(test)]
 use super::slash::catalog::SettingsTab;
 
@@ -946,10 +941,10 @@ fn draw_model_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
     let rule: String = "\u{2500}".repeat(area.width.max(1) as usize);
     lines.push(Line::from(Span::styled(
         rule,
-        Style::default().fg(PANEL_ACCENT),
+        Style::default().fg(theme::SUGGESTION),
     )));
 
-    // Tab chips. Active chip = PANEL_ACCENT bg when tabs focused, theme::TEXT
+    // Tab chips. Active chip = theme::SUGGESTION bg when tabs focused, theme::TEXT
     // bold when body focused.
     let mut tab_spans: Vec<Span<'static>> = Vec::with_capacity(PROVIDER_ORDER.len() * 2);
     for (i, body) in menu.model_tab_rows.iter().enumerate() {
@@ -963,7 +958,7 @@ fn draw_model_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
             (false, _) => Style::default().fg(theme::MUTED),
             (true, true) => Style::default()
                 .fg(Color::Black)
-                .bg(PANEL_ACCENT)
+                .bg(theme::SUGGESTION)
                 .add_modifier(Modifier::BOLD),
             (true, false) => Style::default()
                 .fg(Color::Black)
@@ -998,7 +993,7 @@ fn draw_model_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
                 ModelTabRow::Model { raw_id, display_name, active } => {
                     let marker = if *active { "\u{25CF} " } else { "  " };
                     let marker_style = if *active {
-                        Style::default().fg(PANEL_ACCENT)
+                        Style::default().fg(theme::SUGGESTION)
                     } else {
                         Style::default().fg(theme::MUTED)
                     };
@@ -1091,10 +1086,10 @@ fn draw_model_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
                 let cta_focused = !menu.model_tabs_focused;
                 let border_style = if cta_focused {
                     Style::default()
-                        .fg(PANEL_ACCENT)
+                        .fg(theme::SUGGESTION)
                         .add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(PANEL_ACCENT)
+                    Style::default().fg(theme::SUGGESTION)
                 };
                 let cta_label = format!("Login to {label}");
                 let pad = 2;
@@ -1498,6 +1493,14 @@ fn draw_settings_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
         1 + 3 + 3 + menu.options.len() + 2,
     );
 
+    // Top rule — blue accent header line, static chrome. Rendered before the
+    // tab row so it stays visible regardless of search/body focus state.
+    let rule: String = "\u{2500}".repeat(area.width.max(1) as usize);
+    lines.push(Line::from(Span::styled(
+        rule,
+        Style::default().fg(theme::SUGGESTION),
+    )));
+
     let tabs: [(SettingsTab, &str); 3] = [
         (SettingsTab::Status, "Status"),
         (SettingsTab::Config, "Config"),
@@ -1509,7 +1512,7 @@ fn draw_settings_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
         let style = if is_current && header_focused {
             // Tab row has focus → blue/purple accent chip.
             Style::default()
-                .bg(PANEL_ACCENT)
+                .bg(theme::SUGGESTION)
                 .fg(Color::Black)
                 .add_modifier(Modifier::BOLD)
         } else if is_current {
@@ -1540,7 +1543,7 @@ fn draw_settings_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
     let mid_pad = inner_width.saturating_sub(mid_text.chars().count() + 2);
     let mid = format!("  │{mid_text}{} │", " ".repeat(mid_pad));
     let bot = format!("  ╰{}╯", "─".repeat(inner_width.saturating_sub(2)));
-    let search_border_style = Style::default().fg(PANEL_ACCENT);
+    let search_border_style = Style::default().fg(theme::SUGGESTION);
     lines.push(Line::from(Span::styled(top, search_border_style)));
     lines.push(Line::from(Span::styled(mid, search_border_style)));
     lines.push(Line::from(Span::styled(bot, search_border_style)));
@@ -2056,7 +2059,7 @@ mod tests {
 
     #[test]
     fn tab_chip_paint_differs_by_focus() {
-        // Active Config chip: WHITE bg when tabs unfocused; PANEL_ACCENT bg
+        // Active Config chip: WHITE bg when tabs unfocused; theme::SUGGESTION bg
         // when tabs focused. Assert by inspecting the rendered buffer cell
         // background over the `Config` chip glyph.
         let st = crate::tui::state::ConversationState::default();
@@ -2071,7 +2074,7 @@ mod tests {
         let cell_a = buf_a[(col_a as u16, row_a as u16)].clone();
         let bg_a = cell_a.bg;
 
-        // Case 2: tabs focused → PANEL_ACCENT.
+        // Case 2: tabs focused → theme::SUGGESTION.
         m.settings_header_focused = Some(true);
         let (joined_b, buf_b) = render_settings(&m, 140, 30);
         let (row_b, col_b) = locate_substring(&joined_b, "Config").expect("Config chip visible");
@@ -2089,8 +2092,8 @@ mod tests {
         );
         assert_eq!(
             bg_b,
-            PANEL_ACCENT,
-            "tabs focused → active chip bg must be PANEL_ACCENT, got {bg_b:?}"
+            theme::SUGGESTION,
+            "tabs focused → active chip bg must be theme::SUGGESTION, got {bg_b:?}"
         );
     }
 
@@ -2355,6 +2358,110 @@ mod tests {
         assert!(
             m.settings_search_query.is_empty(),
             "tabbed model panel has no search bar — Esc must close, never clear"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Panel top-rule chrome — user directive 2026-04-23:
+    // "a linha que fica como header do panel nao existe".
+    // /config + /model MUST paint a full-width ─ rule as y=0.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn config_panel_renders_top_rule_row_in_suggestion() {
+        let st = crate::tui::state::ConversationState::default();
+        let m = OverlayMenu::new_settings(SettingsTab::Config, &st);
+        let (joined, buf) = render_settings(&m, 120, 30);
+
+        // y=0 must be a contiguous run of ─ glyphs, not the tab row.
+        let first_row: String = joined.lines().next().unwrap_or("").to_string();
+        assert!(
+            first_row.contains('\u{2500}'),
+            "/config y=0 must carry ─ glyphs (top rule), got:\n{first_row}"
+        );
+        assert!(
+            !first_row.contains("Status") && !first_row.contains("Config"),
+            "/config y=0 must NOT be the tab row — rule comes first, got:\n{first_row}"
+        );
+
+        // Sample a cell mid-row: fg must be theme::SUGGESTION.
+        let mid_col = buf.area.width / 2;
+        let cell = buf[(mid_col, 0u16)].clone();
+        assert_eq!(
+            cell.symbol(),
+            "\u{2500}",
+            "mid-row cell at y=0 must be a ─ glyph, got {:?}",
+            cell.symbol()
+        );
+        assert_eq!(
+            cell.fg,
+            theme::SUGGESTION,
+            "top rule fg must be theme::SUGGESTION (rgb 177,185,249), got {:?}",
+            cell.fg
+        );
+    }
+
+    #[test]
+    fn model_panel_renders_top_rule_row_in_suggestion() {
+        let settings = crate::config::settings::Settings::default();
+        let m = OverlayMenu::new_model_tabbed(
+            "claude-opus-4-7",
+            &settings,
+            0,
+            true,
+            0,
+        );
+        use ratatui::{backend::TestBackend, Terminal};
+        let backend = TestBackend::new(120u16, 20u16);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                draw_overlay(f, area, &m);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+
+        // y=0 cell at the middle column: ─ glyph, theme::SUGGESTION fg.
+        let mid_col = buf.area.width / 2;
+        let cell = buf[(mid_col, 0u16)].clone();
+        assert_eq!(
+            cell.symbol(),
+            "\u{2500}",
+            "/model y=0 mid-row must be a ─ glyph, got {:?}",
+            cell.symbol()
+        );
+        assert_eq!(
+            cell.fg,
+            theme::SUGGESTION,
+            "/model top rule fg must be theme::SUGGESTION, got {:?}",
+            cell.fg
+        );
+    }
+
+    #[test]
+    fn panel_accent_const_is_gone() {
+        // Sanity: the duplicate const (the wrong rgb literal) must not
+        // re-enter menu.rs — it diverged from upstream's permission /
+        // suggestion color. Grep the source at test time so a well-meaning
+        // refactor cannot silently re-seed the literal.
+        //
+        // Both the forbidden identifier and the forbidden rgb tuple are
+        // assembled at runtime so this test body does not itself contain
+        // the substrings it rejects.
+        let forbidden_ident: String = ["PANEL", "_", "ACCENT"].concat();
+        let forbidden_rgb: String = format!("Rgb({}, {}, {})", 140, 150, 255);
+        let src = std::fs::read_to_string(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/src/tui/menu.rs"),
+        )
+        .expect("menu.rs readable from test sandbox");
+        assert!(
+            !src.contains(&forbidden_ident),
+            "`{forbidden_ident}` must not appear in src/tui/menu.rs — use theme::SUGGESTION"
+        );
+        assert!(
+            !src.contains(&forbidden_rgb),
+            "the wrong rgb literal `{forbidden_rgb}` must not reappear — upstream value is rgb(177,185,249)"
         );
     }
 }
