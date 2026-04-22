@@ -1,13 +1,14 @@
 
 
 use std::collections::HashMap;
+use std::future::Future;
 
 use serde_json::Value;
 
 use crate::error::{Error, Result};
 use crate::inference::{
     OpenAiChatMessage, OpenAiChatRequest, OpenAiChatRole, OpenAiChunk, OpenAiToolCall,
-    OpenAiToolCallDelta, OpenAiToolCallFunction,
+    OpenAiToolCallDelta, OpenAiToolCallFunction, OpenAiToolDef,
 };
 use crate::provider::{ChunkStream, Provider};
 use crate::thinking::ThinkingConfig;
@@ -126,9 +127,67 @@ impl Turn {
     }
 }
 
-pub trait ToolDispatcher {
-    fn dispatch(&self, name: &str, args: &Value) -> Result<Value>;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ControlFlow {
+    Continue,
+    Abort,
 }
+
+pub trait ToolDispatcher: Send + Sync {
+    fn dispatch<'a>(
+        &'a self,
+        tool_call_id: &'a str,
+        name: &'a str,
+        args: &'a Value,
+    ) -> impl Future<Output = Result<Value>> + Send + 'a;
+}
+
+pub trait LoopObserver: Send + Sync {
+    fn on_delta<'a>(&'a self, delta: &'a str) -> impl Future<Output = ControlFlow> + Send + 'a {
+        let _ = delta;
+        async { ControlFlow::Continue }
+    }
+    fn on_usage(
+        &self,
+        input_tokens: Option<u64>,
+        output_tokens: Option<u64>,
+    ) -> impl Future<Output = ControlFlow> + Send + '_ {
+        let _ = (input_tokens, output_tokens);
+        async { ControlFlow::Continue }
+    }
+    fn on_tool_start<'a>(
+        &'a self,
+        id: &'a str,
+        name: &'a str,
+        args: &'a Value,
+    ) -> impl Future<Output = ControlFlow> + Send + 'a {
+        let _ = (id, name, args);
+        async { ControlFlow::Continue }
+    }
+    fn on_tool_finish<'a>(
+        &'a self,
+        id: &'a str,
+        name: &'a str,
+        result: std::result::Result<&'a Value, &'a str>,
+        elapsed_ms: u64,
+    ) -> impl Future<Output = ControlFlow> + Send + 'a {
+        let _ = (id, name, result, elapsed_ms);
+        async { ControlFlow::Continue }
+    }
+    fn on_turn_limit(&self, max_turns: u32) -> impl Future<Output = ()> + Send + '_ {
+        let _ = max_turns;
+        async {}
+    }
+    fn on_stream_error<'a>(&'a self, err: &'a Error) -> impl Future<Output = ()> + Send + 'a {
+        let _ = err;
+        async {}
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct NoOpObserver;
+
+impl LoopObserver for NoOpObserver {}
 
 #[derive(Debug, Clone)]
 enum Gate {
@@ -168,13 +227,20 @@ impl Default for GatedDispatcher {
 }
 
 impl ToolDispatcher for GatedDispatcher {
-    fn dispatch(&self, name: &str, args: &Value) -> Result<Value> {
-        if !self.allows(name) {
-            return Err(Error::Other(format!(
-                "subagent cannot call tool `{name}` (not in allowlist)"
-            )));
+    fn dispatch<'a>(
+        &'a self,
+        _tool_call_id: &'a str,
+        name: &'a str,
+        args: &'a Value,
+    ) -> impl Future<Output = Result<Value>> + Send + 'a {
+        async move {
+            if !self.allows(name) {
+                return Err(Error::Other(format!(
+                    "subagent cannot call tool `{name}` (not in allowlist)"
+                )));
+            }
+            tools::dispatch(name, args).map_err(|e| Error::Other(format!("tool `{name}`: {e}")))
         }
-        tools::dispatch(name, args).map_err(|e| Error::Other(format!("tool `{name}`: {e}")))
     }
 }
 
@@ -195,11 +261,14 @@ pub fn tool_result_message(call_id: &str, result: &Value) -> OpenAiChatMessage {
     }
 }
 
-pub struct AgentLoop<D: ToolDispatcher> {
+pub struct AgentLoop<D: ToolDispatcher, O: LoopObserver = NoOpObserver> {
     pub model: String,
     pub thinking: Option<ThinkingConfig>,
     pub max_turns: u32,
+    pub tools: Vec<OpenAiToolDef>,
+    pub tool_choice: Option<Value>,
     pub dispatcher: D,
+    pub observer: O,
 }
 
 #[derive(Debug, Default)]
@@ -210,9 +279,11 @@ pub struct LoopResult {
     pub turns: u32,
 
     pub hit_turn_limit: bool,
+
+    pub aborted: bool,
 }
 
-impl<D: ToolDispatcher> AgentLoop<D> {
+impl<D: ToolDispatcher, O: LoopObserver> AgentLoop<D, O> {
 
     pub async fn run<F, Fut>(
         &self,
@@ -220,8 +291,8 @@ impl<D: ToolDispatcher> AgentLoop<D> {
         mut stream_fn: F,
     ) -> Result<LoopResult>
     where
-        F: FnMut(OpenAiChatRequest, Option<ThinkingConfig>) -> Fut,
-        Fut: std::future::Future<Output = Result<ChunkStream>>,
+        F: FnMut(OpenAiChatRequest, Option<ThinkingConfig>) -> Fut + Send,
+        Fut: std::future::Future<Output = Result<ChunkStream>> + Send,
     {
         use futures::StreamExt;
 
@@ -234,13 +305,59 @@ impl<D: ToolDispatcher> AgentLoop<D> {
                 model: self.model.clone(),
                 messages: history.clone(),
                 stream: Some(true),
-                ..Default::default()
+                max_tokens: None,
+                temperature: None,
+                top_p: None,
+                stop: None,
+                tools: self.tools.clone(),
+                tool_choice: self.tool_choice.clone(),
+                extra: serde_json::Map::new(),
             };
-            let mut stream = stream_fn(req, self.thinking).await?;
+            let mut stream = match stream_fn(req, self.thinking).await {
+                Ok(s) => s,
+                Err(e) => {
+                    self.observer.on_stream_error(&e).await;
+                    return Err(e);
+                }
+            };
             let mut turn = Turn::new();
             while let Some(item) = stream.next().await {
-                let chunk = item?;
-                let _ = turn.fold_chunk(chunk);
+                match item {
+                    Ok(chunk) => {
+                        let emitted = turn.fold_chunk(chunk);
+                        if let Some(usage) = turn.take_usage() {
+                            if self
+                                .observer
+                                .on_usage(usage.input_tokens, usage.output_tokens)
+                                .await
+                                == ControlFlow::Abort
+                            {
+                                return Ok(LoopResult {
+                                    history,
+                                    turns,
+                                    hit_turn_limit: false,
+                                    aborted: true,
+                                });
+                            }
+                        }
+                        if let Some(text) = emitted {
+                            if !text.is_empty()
+                                && self.observer.on_delta(&text).await == ControlFlow::Abort
+                            {
+                                return Ok(LoopResult {
+                                    history,
+                                    turns,
+                                    hit_turn_limit: false,
+                                    aborted: true,
+                                });
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        self.observer.on_stream_error(&e).await;
+                        return Err(e);
+                    }
+                }
             }
 
             if turn.wants_tool_dispatch() && turn.has_pending_calls() {
@@ -256,11 +373,56 @@ impl<D: ToolDispatcher> AgentLoop<D> {
                 for call in &tool_calls {
                     let args_value: Value = serde_json::from_str(&call.function.arguments)
                         .unwrap_or_else(|_| Value::String(call.function.arguments.clone()));
-                    let result = match self.dispatcher.dispatch(&call.function.name, &args_value) {
-                        Ok(v) => v,
-                        Err(e) => Value::String(format!("tool error: {e}")),
+                    let started = std::time::Instant::now();
+                    if self
+                        .observer
+                        .on_tool_start(&call.id, &call.function.name, &args_value)
+                        .await
+                        == ControlFlow::Abort
+                    {
+                        return Ok(LoopResult {
+                            history,
+                            turns,
+                            hit_turn_limit: false,
+                            aborted: true,
+                        });
+                    }
+                    let dispatch_outcome = self
+                        .dispatcher
+                        .dispatch(&call.id, &call.function.name, &args_value)
+                        .await;
+                    let elapsed_ms = started.elapsed().as_millis() as u64;
+                    let (history_value, observer_payload) = match &dispatch_outcome {
+                        Ok(v) => (v.clone(), Ok(v)),
+                        Err(e) => {
+                            let s = format!("tool error: {e}");
+                            (Value::String(s.clone()), Err(s))
+                        }
                     };
-                    history.push(tool_result_message(&call.id, &result));
+                    let observer_result: std::result::Result<&Value, &str> =
+                        match &observer_payload {
+                            Ok(v) => Ok(*v),
+                            Err(s) => Err(s.as_str()),
+                        };
+                    if self
+                        .observer
+                        .on_tool_finish(
+                            &call.id,
+                            &call.function.name,
+                            observer_result,
+                            elapsed_ms,
+                        )
+                        .await
+                        == ControlFlow::Abort
+                    {
+                        return Ok(LoopResult {
+                            history,
+                            turns,
+                            hit_turn_limit: false,
+                            aborted: true,
+                        });
+                    }
+                    history.push(tool_result_message(&call.id, &history_value));
                 }
                 continue;
             }
@@ -278,13 +440,16 @@ impl<D: ToolDispatcher> AgentLoop<D> {
                 history,
                 turns,
                 hit_turn_limit: false,
+                aborted: false,
             });
         }
 
+        self.observer.on_turn_limit(self.max_turns).await;
         Ok(LoopResult {
             history,
             turns,
             hit_turn_limit: true,
+            aborted: false,
         })
     }
 }
@@ -299,7 +464,10 @@ pub async fn run_with_provider<P: Provider + ?Sized>(
         model,
         thinking,
         max_turns: MAX_AUTO_TURNS,
+        tools: Vec::new(),
+        tool_choice: None,
         dispatcher: GatedDispatcher::unrestricted(),
+        observer: NoOpObserver,
     };
     loop_
         .run(history, |req, thinking_cfg| async move {
@@ -446,8 +614,14 @@ mod tests {
     #[derive(Default)]
     struct FakeDispatcher;
     impl ToolDispatcher for FakeDispatcher {
-        fn dispatch(&self, name: &str, _args: &Value) -> Result<Value> {
-            Ok(json!({"ok": name}))
+        fn dispatch<'a>(
+            &'a self,
+            _tool_call_id: &'a str,
+            name: &'a str,
+            _args: &'a Value,
+        ) -> impl Future<Output = Result<Value>> + Send + 'a {
+            let name = name.to_string();
+            async move { Ok(json!({"ok": name})) }
         }
     }
 
@@ -478,7 +652,10 @@ mod tests {
             model: "m".into(),
             thinking: None,
             max_turns: 5,
+            tools: Vec::new(),
+            tool_choice: None,
             dispatcher: FakeDispatcher,
+            observer: NoOpObserver,
         };
         let initial = vec![OpenAiChatMessage {
             role: OpenAiChatRole::User,
@@ -514,7 +691,10 @@ mod tests {
             model: "m".into(),
             thinking: None,
             max_turns: 3,
+            tools: Vec::new(),
+            tool_choice: None,
             dispatcher: FakeDispatcher,
+            observer: NoOpObserver,
         };
         let initial = vec![OpenAiChatMessage {
             role: OpenAiChatRole::User,
@@ -599,12 +779,13 @@ mod tests {
         assert!(!g.allows("Edit"));
     }
 
-    #[test]
-    fn gated_dispatcher_denies_out_of_allowlist_with_error() {
+    #[tokio::test]
+    async fn gated_dispatcher_denies_out_of_allowlist_with_error() {
         use crate::agent::subagents::frontmatter::ToolsField;
         let g = GatedDispatcher::from_tools_field(ToolsField::List(vec!["Read".into()]));
         let err = g
-            .dispatch("Bash", &json!({"command": "ls"}))
+            .dispatch("", "Bash", &json!({"command": "ls"}))
+            .await
             .unwrap_err();
         let msg = format!("{err}");
         assert!(msg.contains("Bash"));

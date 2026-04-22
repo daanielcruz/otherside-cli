@@ -18,10 +18,10 @@ use ratatui::Terminal;
 use tokio::sync::mpsc;
 
 use crate::error::{Error, Result};
-use crate::inference::OpenAiChatRequest;
 use crate::provider::{Provider, Registry};
 use crate::thinking::{parse_suffix, ThinkingConfig};
 
+mod agent_bridge;
 pub mod autocomplete;
 pub mod diff;
 pub mod layout;
@@ -1287,319 +1287,40 @@ async fn run_agent_turns(
     thinking: Option<ThinkingConfig>,
     initial_history: Vec<crate::inference::OpenAiChatMessage>,
     tx: mpsc::Sender<StreamEvent>,
-    mut settings: crate::config::settings::Settings,
+    settings: crate::config::settings::Settings,
     mode: crate::config::settings::PermissionMode,
     session_allowlist: crate::permissions::RuntimePermissionGrants,
 ) {
-    use crate::agent::{tool_result_message, Turn, MAX_AUTO_TURNS};
-    use crate::inference::{OpenAiChatMessage, OpenAiChatRole};
-    use crate::tools;
+    use crate::agent::{AgentLoop, MAX_AUTO_TURNS};
+    use agent_bridge::{TuiDispatcher, TuiObserver};
 
-    let mut history = initial_history;
-    let mut turns_taken = 0u32;
+    let dispatcher = TuiDispatcher {
+        tx: tx.clone(),
+        settings: Arc::new(settings),
+        mode,
+        session_allowlist,
+    };
+    let observer = TuiObserver { tx: tx.clone() };
 
-    while turns_taken < MAX_AUTO_TURNS {
-        turns_taken += 1;
-        let req = OpenAiChatRequest {
-            model: model.clone(),
-            messages: history.clone(),
-            stream: Some(true),
-            max_tokens: None,
-            temperature: None,
-            top_p: None,
-            stop: None,
-            tools: tools::openai_tools(),
-            tool_choice: None,
-            extra: serde_json::Map::new(),
-        };
-        let mut stream = match provider.stream(req, thinking).await {
-            Ok(s) => s,
-            Err(e) => {
-                let _ = tx.send(StreamEvent::Error(format_err(&e))).await;
-                return;
-            }
-        };
+    let loop_ = AgentLoop {
+        model,
+        thinking,
+        max_turns: MAX_AUTO_TURNS,
+        tools: crate::tools::openai_tools(),
+        tool_choice: None,
+        dispatcher,
+        observer,
+    };
 
-        let mut turn = Turn::new();
-        while let Some(item) = stream.next().await {
-            match item {
-                Ok(chunk) => {
-                    let emitted = turn.fold_chunk(chunk);
+    let provider = provider.clone();
+    let _ = loop_
+        .run(initial_history, |req, thinking_cfg| {
+            let provider = provider.clone();
+            async move { provider.stream(req, thinking_cfg).await }
+        })
+        .await;
 
-                    if let Some(usage) = turn.take_usage() {
-                        if tx
-                            .send(StreamEvent::Usage {
-                                input_tokens: usage.input_tokens,
-                                output_tokens: usage.output_tokens,
-                            })
-                            .await
-                            .is_err()
-                        {
-                            return;
-                        }
-                    }
-                    if let Some(delta) = emitted {
-                        if !delta.is_empty() {
-                            tracing::trace!(
-                                target: "otherside::stream",
-                                hop = "tui_delta_send",
-                                len = delta.len(),
-                                "StreamEvent::Delta dispatching to TUI rx"
-                            );
-                            if tx.send(StreamEvent::Delta(delta)).await.is_err() {
-                                return;
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    let _ = tx.send(StreamEvent::Error(format_err(&e))).await;
-                    return;
-                }
-            }
-        }
-
-        if turn.wants_tool_dispatch() && turn.has_pending_calls() {
-            let assistant_text = turn.assistant_text.clone();
-            let calls = turn.drain_calls();
-            history.push(OpenAiChatMessage {
-                role: OpenAiChatRole::Assistant,
-                content: assistant_text,
-                name: None,
-                tool_calls: calls.clone(),
-                tool_call_id: None,
-            });
-            for call in calls {
-                let args_value: serde_json::Value =
-                    serde_json::from_str(&call.function.arguments)
-                        .unwrap_or_else(|_| serde_json::Value::String(call.function.arguments.clone()));
-                let started = std::time::Instant::now();
-                if tx
-                    .send(StreamEvent::ToolCallStart {
-                        id: call.id.clone(),
-                        name: call.function.name.clone(),
-                        args: args_value.clone(),
-                    })
-                    .await
-                    .is_err()
-                {
-                    return;
-                }
-                let dispatch_outcome = dispatch_with_prompt(
-                    &call.function.name,
-                    &args_value,
-                    &call.id,
-                    &mut settings,
-                    mode,
-                    &session_allowlist,
-                    &tx,
-                )
-                .await;
-                let elapsed_ms = started.elapsed().as_millis() as u64;
-
-                let (history_value, finish_result) = match dispatch_outcome {
-                    Ok(v) => (v.clone(), Ok(v)),
-                    Err(e) => {
-                        let err_string = format!("tool error: {e}");
-                        (
-                            serde_json::Value::String(err_string.clone()),
-                            Err(err_string),
-                        )
-                    }
-                };
-                if tx
-                    .send(StreamEvent::ToolCallFinish {
-                        id: call.id.clone(),
-                        result: finish_result,
-                        elapsed_ms,
-                    })
-                    .await
-                    .is_err()
-                {
-                    return;
-                }
-                history.push(tool_result_message(&call.id, &history_value));
-            }
-            continue;
-        }
-
-        break;
-    }
-
-    if turns_taken >= MAX_AUTO_TURNS {
-        let _ = tx
-            .send(StreamEvent::Delta(format!(
-                "\n(auto-turn limit of {MAX_AUTO_TURNS} reached — returning control)\n"
-            )))
-            .await;
-    }
     let _ = tx.send(StreamEvent::Done).await;
-}
-
-async fn dispatch_with_prompt(
-    tool_name: &str,
-    args: &serde_json::Value,
-    tool_call_id: &str,
-    settings: &mut crate::config::settings::Settings,
-    mode: crate::config::settings::PermissionMode,
-    session_allowlist: &crate::permissions::RuntimePermissionGrants,
-    tx: &mpsc::Sender<StreamEvent>,
-) -> std::result::Result<serde_json::Value, crate::tools::ToolError> {
-    use crate::permissions::{self, Decision, PermissionResponse};
-    use crate::tools::ToolError;
-
-    if tool_name == "AskUserQuestion" {
-        return ask_user_question_async(args, tx).await;
-    }
-
-    let input_str = crate::tools::matcher_input_for(tool_name, args);
-
-    let mut composed = settings.clone();
-    overlay_session_allowlist(&mut composed, session_allowlist);
-
-    let dispatch_scoped = |tool_name: &str, args: &serde_json::Value| {
-        crate::tools::with_tool_call_id(tool_call_id.to_string(), || {
-            crate::tools::dispatch(tool_name, args)
-        })
-    };
-    match permissions::resolve(tool_name, &input_str, &composed, mode) {
-        Decision::Allow => dispatch_scoped(tool_name, args),
-        Decision::Deny { rule } => Err(ToolError::PermissionDenied(rule)),
-        Decision::Ask { rule } => {
-            let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-            let args_preview = preview_args_for_prompt(tool_name, args);
-            if tx
-                .send(StreamEvent::PermissionAsk {
-                    tool_name: tool_name.to_string(),
-                    args_preview,
-                    rule: rule.clone(),
-                    reply: reply_tx,
-                })
-                .await
-                .is_err()
-            {
-                return Err(ToolError::PermissionDenied(
-                    "user interface gone — aborting call".into(),
-                ));
-            }
-            match reply_rx.await {
-                Ok(PermissionResponse::Allow) => dispatch_scoped(tool_name, args),
-                Ok(PermissionResponse::AllowSession) => {
-
-                    dispatch_scoped(tool_name, args)
-                }
-                Ok(PermissionResponse::Deny) => Err(ToolError::PermissionDenied(
-                    rule.unwrap_or_else(|| "user declined".into()),
-                )),
-                Err(_) => Err(ToolError::PermissionDenied(
-                    "permission prompt cancelled".into(),
-                )),
-            }
-        }
-    }
-}
-
-async fn ask_user_question_async(
-    args: &serde_json::Value,
-    tx: &mpsc::Sender<StreamEvent>,
-) -> std::result::Result<serde_json::Value, crate::tools::ToolError> {
-    use crate::tools::ToolError;
-    let question = args
-        .get("question")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| ToolError::InvalidArgs("`question` is required".into()))?
-        .to_string();
-    let hint = args
-        .get("hint")
-        .and_then(|v| v.as_str())
-        .map(str::to_string);
-    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-    if tx
-        .send(StreamEvent::AskUserQuestion {
-            question,
-            hint,
-            reply: reply_tx,
-        })
-        .await
-        .is_err()
-    {
-        return Err(ToolError::InvalidArgs(
-            "user interface gone — AskUserQuestion aborted".into(),
-        ));
-    }
-    let answer = reply_rx
-        .await
-        .map_err(|_| ToolError::InvalidArgs("AskUserQuestion cancelled".into()))?;
-    Ok(serde_json::json!({
-        "answer": answer,
-        "declined": answer.is_empty(),
-    }))
-}
-
-fn overlay_session_allowlist(
-    settings: &mut crate::config::settings::Settings,
-    session: &crate::permissions::RuntimePermissionGrants,
-) {
-    use crate::config::settings::{PermissionRule, PermissionsConfig};
-    use crate::permissions::{matcher, MatcherTool};
-    let rules = session.snapshot();
-    if rules.is_empty() {
-        return;
-    }
-    let mut existing = settings.permissions.take().unwrap_or_else(PermissionsConfig::default);
-    for raw in rules {
-
-        let parsed = match matcher::parse(&raw) {
-            Ok(p) => p,
-            Err(_) => continue,
-        };
-        let tool_name = match parsed.tool {
-            MatcherTool::Any => "*".to_string(),
-            MatcherTool::Named(n) => n,
-        };
-        let rule = PermissionRule {
-            tool_name: Some(tool_name),
-            match_pattern: parsed.pattern.clone(),
-            extra: Default::default(),
-        };
-        existing.allow.push(rule);
-    }
-    settings.permissions = Some(existing);
-}
-
-fn preview_args_for_prompt(tool_name: &str, args: &serde_json::Value) -> String {
-    let obj = match args.as_object() {
-        Some(o) => o,
-        None => return String::new(),
-    };
-    if tool_name == "Bash" {
-        if let Some(cmd) = obj.get("command").and_then(|v| v.as_str()) {
-            return truncate_preview(cmd, 200);
-        }
-    }
-    for key in ["file_path", "path", "command", "description", "query", "url"] {
-        if let Some(v) = obj.get(key).and_then(|v| v.as_str()) {
-            return truncate_preview(v, 200);
-        }
-    }
-    truncate_preview(&serde_json::to_string(args).unwrap_or_default(), 200)
-}
-
-fn truncate_preview(s: &str, cap: usize) -> String {
-    let collapsed = s.replace('\n', " ");
-    if collapsed.chars().count() <= cap {
-        collapsed
-    } else {
-        let mut out: String = collapsed.chars().take(cap).collect();
-        out.push('…');
-        out
-    }
-}
-
-fn format_err(e: &Error) -> String {
-    let mut s = e.to_string();
-    s = s.replace('\n', " ");
-    s
 }
 
 struct TerminalGuard {

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use serde_json::{json, Value};
 
-use crate::agent::{AgentLoop, GatedDispatcher, MAX_AUTO_TURNS};
+use crate::agent::{AgentLoop, GatedDispatcher, NoOpObserver, MAX_AUTO_TURNS};
 use crate::inference::{OpenAiChatMessage, OpenAiChatRole};
 use crate::provider::Provider;
 
@@ -70,7 +70,10 @@ impl InnerLoopRunner {
             model: model.clone(),
             thinking: None,
             max_turns: SUBAGENT_MAX_TURNS,
+            tools: Vec::new(),
+            tool_choice: None,
             dispatcher,
+            observer: NoOpObserver,
         };
 
         let provider = self.provider.clone();
