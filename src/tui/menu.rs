@@ -55,6 +55,8 @@ pub struct OverlayMenu {
     pub effort_indicator: Option<EffortIndicator>,
 
     pub active_action_id: Option<String>,
+
+    pub settings_search_query: String,
 }
 
 #[derive(Debug, Clone)]
@@ -106,6 +108,7 @@ impl OverlayMenu {
             settings_header_focused,
             effort_indicator: None,
             active_action_id: None,
+            settings_search_query: String::new(),
         }
     }
 
@@ -136,6 +139,7 @@ impl OverlayMenu {
             settings_header_focused: Some(!matches!(default_tab, SettingsTab::Config)),
             effort_indicator: None,
             active_action_id: None,
+            settings_search_query: String::new(),
         }
     }
 
@@ -181,6 +185,7 @@ impl OverlayMenu {
             settings_header_focused: None,
             effort_indicator: None,
             active_action_id: Some(active_id),
+            settings_search_query: String::new(),
         }
     }
 
@@ -237,6 +242,7 @@ impl OverlayMenu {
             effort_indicator,
 
             active_action_id: Some(current.to_string()),
+            settings_search_query: String::new(),
         }
     }
 
@@ -270,6 +276,7 @@ impl OverlayMenu {
             settings_header_focused: None,
             effort_indicator: None,
             active_action_id: active_id,
+            settings_search_query: String::new(),
         }
     }
 
@@ -1123,11 +1130,14 @@ fn draw_settings_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
 
     let inner_width = area.width.saturating_sub(4) as usize;
     let top = format!("  ╭{}╮", "─".repeat(inner_width.saturating_sub(2)));
-    let mid_pad = inner_width.saturating_sub(" ⌕ Search settings…".len() + 2);
-    let mid = format!(
-        "  │ ⌕ Search settings…{} │",
-        " ".repeat(mid_pad)
-    );
+    let query = menu.settings_search_query.as_str();
+    let mid_text = if query.is_empty() {
+        " ⌕ Search settings…".to_string()
+    } else {
+        format!(" ⌕ {query}")
+    };
+    let mid_pad = inner_width.saturating_sub(mid_text.chars().count() + 2);
+    let mid = format!("  │{mid_text}{} │", " ".repeat(mid_pad));
     let bot = format!("  ╰{}╯", "─".repeat(inner_width.saturating_sub(2)));
     let permission_style = Style::default().fg(theme::PERMISSION);
     lines.push(Line::from(Span::styled(top, permission_style)));
@@ -1135,8 +1145,30 @@ fn draw_settings_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
     lines.push(Line::from(Span::styled(bot, permission_style)));
     lines.push(Line::raw(""));
 
+    let lc_query = query.to_lowercase();
+    let options_to_render: Vec<(usize, &MenuOption)> = menu
+        .options
+        .iter()
+        .enumerate()
+        .filter(|(_, opt)| {
+            lc_query.is_empty() || opt.label.to_lowercase().contains(&lc_query)
+        })
+        .collect();
+
+    if !lc_query.is_empty() && options_to_render.is_empty() {
+        lines.push(Line::raw(""));
+        lines.push(Line::from(Span::styled(
+            format!("  No settings match \"{query}\""),
+            Style::default().fg(theme::MUTED),
+        )));
+        let para = Paragraph::new(lines);
+        f.render_widget(Clear, area);
+        f.render_widget(para, area);
+        return;
+    }
+
     const LABEL_PAD: usize = 43;
-    for (i, opt) in menu.options.iter().enumerate() {
+    for (i, opt) in options_to_render.iter().map(|(i, o)| (*i, *o)) {
 
         if opt.label.is_empty() && opt.value_display.is_none() {
             lines.push(Line::raw(""));

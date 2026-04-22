@@ -589,6 +589,15 @@ fn handle_menu_key(
 ) -> bool {
     use crate::tui::slash::catalog::PanelKind;
     if matches!(k.code, KeyCode::Esc) {
+        if let Some(menu) = st.active_menu.as_mut() {
+            if matches!(menu.kind, PanelKind::Settings(_))
+                && !menu.settings_search_query.is_empty()
+            {
+                menu.settings_search_query.clear();
+                menu.cursor = 0;
+                return false;
+            }
+        }
         if let Some(menu) = st.active_menu.take() {
             emit_panel_dismiss_anchor(st, &menu, None);
         }
@@ -622,9 +631,24 @@ fn handle_menu_key(
                 edit_settings_row(st, direction);
                 return false;
             }
-            KeyCode::Char(' ') if !header_focused => {
+            KeyCode::Backspace if !header_focused && !menu_state.settings_search_query.is_empty() => {
+                menu_state.settings_search_query.pop();
+                menu_state.cursor = 0;
+                return false;
+            }
+            KeyCode::Char(' ') if !header_focused && menu_state.settings_search_query.is_empty() => {
 
                 edit_settings_row(st, 1);
+                return false;
+            }
+            KeyCode::Char(c)
+                if !header_focused
+                    && !k.modifiers.contains(KeyModifiers::CONTROL)
+                    && !k.modifiers.contains(KeyModifiers::ALT)
+                    && (c.is_alphanumeric() || c == ' ' || c == '-' || c == '_') =>
+            {
+                menu_state.settings_search_query.push(c);
+                menu_state.cursor = 0;
                 return false;
             }
             KeyCode::Up if !header_focused && menu_state.cursor == 0 => {
