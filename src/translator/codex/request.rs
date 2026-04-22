@@ -2,8 +2,52 @@
 
 use serde_json::{json, Map, Value};
 
-use crate::inference::{OpenAiChatMessage, OpenAiChatRequest, OpenAiChatRole};
+use crate::inference::{OpenAiChatMessage, OpenAiChatRequest, OpenAiChatRole, OpenAiToolDef};
 use crate::thinking::{ThinkingConfig, ThinkingLevel, ThinkingMode};
+
+/// Convert the OpenAI-chat-style `tools[]` (OpenAiToolDef, nested
+/// `{type, function:{name, description, parameters}}`) into the flat
+/// Responses-API shape codex expects:
+/// `{type:"function", name, description, strict:false, parameters}`.
+/// See openai/codex `codex-rs/tools/src/responses_api.rs:26-38` (struct
+/// ResponsesApiTool) and `codex-rs/tools/src/tool_spec.rs:20-58`
+/// (enum ToolSpec with `#[serde(tag = "type")]`).
+///
+/// WebSearch is special-cased: codex's RL-trained path uses a server-side
+/// `{"type":"web_search", ...}` tool (see `tool_spec.rs:43-55` +
+/// `create_web_search_tool` at `tool_spec.rs:93-129`). When a WebSearch
+/// function tool is present, we replace it with the server tool spec so
+/// the model picks it up natively. The `allowed_domains` filter maps to
+/// `filters.allowed_domains`; `blocked_domains` has no codex counterpart
+/// and is dropped.
+pub fn openai_tools_to_codex_tools(tools: &[OpenAiToolDef]) -> Vec<Value> {
+    let mut out: Vec<Value> = Vec::with_capacity(tools.len());
+    for t in tools {
+        if t.function.name == "WebSearch" {
+            out.push(web_search_server_tool(&t.function.parameters));
+            continue;
+        }
+        out.push(json!({
+            "type": "function",
+            "name": t.function.name,
+            "description": t.function.description,
+            "strict": false,
+            "parameters": t.function.parameters,
+        }));
+    }
+    out
+}
+
+/// Build the `{"type":"web_search", ...}` server-tool entry.
+/// `schema` is the claude-anchor WebSearch input_schema — we mine
+/// `allowed_domains` off it (request-side filter) if the caller passed
+/// a non-empty default through the schema. Live flag is always on.
+fn web_search_server_tool(_schema: &Value) -> Value {
+    json!({
+        "type": "web_search",
+        "external_web_access": true,
+    })
+}
 
 pub fn build_responses_body(
     req: &OpenAiChatRequest,
@@ -253,5 +297,68 @@ mod tests {
         assert_eq!(input[0]["type"], "function_call_output");
         assert_eq!(input[0]["call_id"], "call-1");
         assert_eq!(input[0]["output"], "exit=0\nhello");
+    }
+
+    fn tool(name: &str) -> OpenAiToolDef {
+        OpenAiToolDef {
+            kind: "function".into(),
+            function: crate::inference::OpenAiFunctionDef {
+                name: name.into(),
+                description: format!("{name} does the thing"),
+                parameters: json!({"type":"object","properties":{},"required":[]}),
+            },
+        }
+    }
+
+    #[test]
+    fn openai_tools_flatten_to_responses_api_shape() {
+        let tools = vec![tool("Bash"), tool("Read")];
+        let out = openai_tools_to_codex_tools(&tools);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0]["type"], "function");
+        assert_eq!(out[0]["name"], "Bash");
+        assert_eq!(out[0]["description"], "Bash does the thing");
+        assert_eq!(out[0]["strict"], false);
+        assert!(out[0]["parameters"].is_object());
+        assert_eq!(out[1]["type"], "function");
+        assert_eq!(out[1]["name"], "Read");
+    }
+
+    #[test]
+    fn openai_tools_preserve_order_across_all_nine_anchors() {
+        let anchors = ["Agent", "Bash", "Edit", "Glob", "Grep", "Read", "Skill", "ToolSearch", "Write"];
+        let tools: Vec<OpenAiToolDef> = anchors.iter().map(|n| tool(n)).collect();
+        let out = openai_tools_to_codex_tools(&tools);
+        let names: Vec<&str> = out.iter().map(|v| v["name"].as_str().unwrap()).collect();
+        assert_eq!(names, anchors.to_vec());
+    }
+
+    #[test]
+    fn websearch_becomes_server_tool_not_function() {
+        let tools = vec![tool("WebSearch")];
+        let out = openai_tools_to_codex_tools(&tools);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0]["type"], "web_search");
+        assert_eq!(out[0]["external_web_access"], true);
+        assert!(out[0].get("name").is_none(),
+            "server-side web_search tool must not carry function-style `name`");
+    }
+
+    #[test]
+    fn mixed_tools_keep_websearch_as_server_and_rest_as_function() {
+        let tools = vec![tool("Bash"), tool("WebSearch"), tool("Read")];
+        let out = openai_tools_to_codex_tools(&tools);
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0]["type"], "function");
+        assert_eq!(out[0]["name"], "Bash");
+        assert_eq!(out[1]["type"], "web_search");
+        assert_eq!(out[2]["type"], "function");
+        assert_eq!(out[2]["name"], "Read");
+    }
+
+    #[test]
+    fn empty_tools_produce_empty_vec() {
+        let out = openai_tools_to_codex_tools(&[]);
+        assert!(out.is_empty());
     }
 }

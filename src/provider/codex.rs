@@ -15,7 +15,7 @@ use crate::fingerprint::codex as fp;
 use crate::inference::{OpenAiChatRequest, OpenAiChunk};
 use crate::thinking::ThinkingConfig;
 use crate::translator::codex::response;
-use crate::translator::codex::request::build_responses_body;
+use crate::translator::codex::request::{build_responses_body, openai_tools_to_codex_tools};
 use crate::translator::sse::SseBuffer;
 
 use super::{ChunkStream, Provider};
@@ -57,7 +57,8 @@ impl Provider for CodexProvider {
             let creds = auth::current_credentials().await?;
             let bearer = format!("Bearer {}", creds.access_token);
 
-            let body = build_responses_body(&req, Vec::new(), thinking.as_ref());
+            let tools_json = openai_tools_to_codex_tools(&req.tools);
+            let body = build_responses_body(&req, tools_json, thinking.as_ref());
             let body_bytes = serde_json::to_vec(&body)
                 .map_err(|e| Error::Other(format!("codex body serialize: {e}")))?;
 
