@@ -167,6 +167,21 @@ pub struct NestedEntry {
     pub running: bool,
 }
 
+fn user_facing_tool_name(tool_name: &str, args: &Value) -> String {
+    if tool_name == "Agent" {
+        if let Some(sub) = args
+            .as_object()
+            .and_then(|o| o.get("subagent_type"))
+            .and_then(|v| v.as_str())
+        {
+            if sub != "general-purpose" && sub != "worker" {
+                return sub.to_string();
+            }
+        }
+    }
+    tool_name.to_string()
+}
+
 pub struct ToolCallView<'a> {
     pub name: &'a str,
     pub args: &'a Value,
@@ -184,7 +199,7 @@ pub struct ToolCallView<'a> {
 pub fn render_tool_call(view: &ToolCallView<'_>) -> Vec<Line<'static>> {
     let mut out: Vec<Line<'static>> = Vec::new();
 
-    let displayed_name: String = view.name.to_string();
+    let displayed_name: String = user_facing_tool_name(view.name, view.args);
     let arg_summary = summarize_args(view.name, view.args, view.verbose);
     let parens = if arg_summary.is_empty() {
         String::new()
