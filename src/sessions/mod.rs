@@ -1,5 +1,3 @@
-
-
 pub mod id;
 pub mod paths;
 pub mod record;
@@ -9,7 +7,7 @@ pub mod transcript;
 pub use id::SessionId;
 pub use record::Record;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::error::Result;
 
@@ -19,19 +17,19 @@ pub struct SessionHandle {
     pub writer: transcript::Writer,
 }
 
-pub fn open_new(config_dir: &std::path::Path) -> Result<SessionHandle> {
+pub fn open_new(config_dir: &Path, cwd: &Path) -> Result<SessionHandle> {
     let id = SessionId::new();
-    let dir = paths::session_dir(config_dir, &id);
-    std::fs::create_dir_all(&dir)?;
+    let project = paths::project_dir(config_dir, cwd);
+    std::fs::create_dir_all(&project)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(
-            &dir,
+            &project,
             std::fs::Permissions::from_mode(0o700),
         );
     }
-    let transcript_path = paths::transcript_path(config_dir, &id);
+    let transcript_path = paths::transcript_path(config_dir, cwd, &id);
     let writer = transcript::Writer::open(&transcript_path)?;
     Ok(SessionHandle {
         id,
@@ -40,8 +38,12 @@ pub fn open_new(config_dir: &std::path::Path) -> Result<SessionHandle> {
     })
 }
 
-pub fn resume(config_dir: &std::path::Path, id: &SessionId) -> Result<(SessionHandle, Vec<Record>)> {
-    let transcript_path = paths::transcript_path(config_dir, id);
+pub fn resume(
+    config_dir: &Path,
+    cwd: &Path,
+    id: &SessionId,
+) -> Result<(SessionHandle, Vec<Record>)> {
+    let transcript_path = paths::transcript_path(config_dir, cwd, id);
     let records = transcript::Reader::read_all(&transcript_path)?;
     let writer = transcript::Writer::open(&transcript_path)?;
     Ok((
@@ -54,24 +56,31 @@ pub fn resume(config_dir: &std::path::Path, id: &SessionId) -> Result<(SessionHa
     ))
 }
 
-pub fn resume_latest(config_dir: &std::path::Path) -> Result<Option<(SessionHandle, Vec<Record>)>> {
-    let root = paths::sessions_root(config_dir);
-    if !root.exists() {
+pub fn resume_latest(
+    config_dir: &Path,
+    cwd: &Path,
+) -> Result<Option<(SessionHandle, Vec<Record>)>> {
+    let project = paths::project_dir(config_dir, cwd);
+    if !project.exists() {
         return Ok(None);
     }
     let mut candidates: Vec<(std::time::SystemTime, SessionId)> = Vec::new();
-    for entry in std::fs::read_dir(&root)? {
+    for entry in std::fs::read_dir(&project)? {
         let entry = entry?;
-        if !entry.file_type()?.is_dir() {
+        if !entry.file_type()?.is_file() {
             continue;
         }
         let name = match entry.file_name().into_string() {
             Ok(s) => s,
             Err(_) => continue,
         };
-        let id = SessionId::from_hex(&name).unwrap_or_else(|| SessionId::from_hex_unchecked(&name));
-        let transcript = entry.path().join("transcript.jsonl");
-        let modified = std::fs::metadata(&transcript)
+        let Some(stem) = name.strip_suffix(".jsonl") else {
+            continue;
+        };
+        let id = SessionId::from_hex(stem)
+            .unwrap_or_else(|| SessionId::from_hex_unchecked(stem));
+        let modified = entry
+            .metadata()
             .and_then(|m| m.modified())
             .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
         candidates.push((modified, id));
@@ -79,7 +88,7 @@ pub fn resume_latest(config_dir: &std::path::Path) -> Result<Option<(SessionHand
     candidates.sort_by(|a, b| b.0.cmp(&a.0));
     match candidates.into_iter().next() {
         Some((_, id)) => {
-            let (handle, records) = resume(config_dir, &id)?;
+            let (handle, records) = resume(config_dir, cwd, &id)?;
             Ok(Some((handle, records)))
         }
         None => Ok(None),
@@ -99,19 +108,54 @@ mod tests {
         p
     }
 
-    #[test]
-    fn open_new_creates_transcript_file() {
-        let root = scratch_root();
-        let handle = open_new(&root).unwrap();
-        assert!(handle.transcript_path.exists());
-        std::fs::remove_dir_all(&root).ok();
+    fn scratch_cwd() -> PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "otherside_cwd_{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
     }
 
     #[test]
-    fn resume_latest_none_when_empty() {
-        let root = scratch_root();
-        let result = resume_latest(&root).unwrap();
+    fn open_new_creates_transcript_file_under_projects_slug() {
+        let cfg = scratch_root();
+        let cwd = scratch_cwd();
+        let handle = open_new(&cfg, &cwd).unwrap();
+        assert!(handle.transcript_path.exists());
+        let expected_parent = paths::project_dir(&cfg, &cwd);
+        assert_eq!(handle.transcript_path.parent().unwrap(), expected_parent);
+        let name = handle.transcript_path.file_name().unwrap().to_string_lossy().to_string();
+        assert!(name.ends_with(".jsonl"));
+        std::fs::remove_dir_all(&cfg).ok();
+        std::fs::remove_dir_all(&cwd).ok();
+    }
+
+    #[test]
+    fn resume_latest_none_when_project_absent() {
+        let cfg = scratch_root();
+        let cwd = scratch_cwd();
+        let result = resume_latest(&cfg, &cwd).unwrap();
         assert!(result.is_none());
-        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&cfg).ok();
+        std::fs::remove_dir_all(&cwd).ok();
+    }
+
+    #[test]
+    fn resume_latest_scopes_to_current_cwd_only() {
+        let cfg = scratch_root();
+        let cwd_a = scratch_cwd();
+        let cwd_b = scratch_cwd();
+        let _handle_a = open_new(&cfg, &cwd_a).unwrap();
+        // Writing a session under cwd_b must NOT surface as "latest" for cwd_a.
+        let _handle_b = open_new(&cfg, &cwd_b).unwrap();
+        let latest_a = resume_latest(&cfg, &cwd_a).unwrap().unwrap();
+        assert_eq!(
+            latest_a.0.transcript_path.parent().unwrap(),
+            paths::project_dir(&cfg, &cwd_a)
+        );
+        std::fs::remove_dir_all(&cfg).ok();
+        std::fs::remove_dir_all(&cwd_a).ok();
+        std::fs::remove_dir_all(&cwd_b).ok();
     }
 }

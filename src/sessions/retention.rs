@@ -1,5 +1,3 @@
-
-
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
@@ -12,8 +10,11 @@ pub struct SweepReport {
     pub skipped_errors: Vec<String>,
 }
 
+/// Walk `<config_dir>/projects/*/*.jsonl` and delete transcripts whose
+/// modification time is older than `retention_days`. Matches the upstream
+/// one-JSONL-per-session layout (`utils/sessionStoragePortable.ts:329`).
 pub fn sweep(config_dir: &Path, retention_days: u64) -> Result<SweepReport> {
-    let root = super::paths::sessions_root(config_dir);
+    let root = super::paths::projects_root(config_dir);
     let mut report = SweepReport::default();
     if retention_days == 0 {
         return Ok(report);
@@ -24,61 +25,80 @@ pub fn sweep(config_dir: &Path, retention_days: u64) -> Result<SweepReport> {
     let now = SystemTime::now();
     let threshold = Duration::from_secs(retention_days * 86_400);
 
-    for entry in std::fs::read_dir(&root)? {
-        let entry = match entry {
+    let project_entries = match std::fs::read_dir(&root) {
+        Ok(it) => it,
+        Err(e) => {
+            report.skipped_errors.push(e.to_string());
+            return Ok(report);
+        }
+    };
+
+    for project_entry in project_entries {
+        let project_entry = match project_entry {
             Ok(e) => e,
             Err(e) => {
                 report.skipped_errors.push(e.to_string());
                 continue;
             }
         };
-        if !entry
-            .file_type()
-            .map(|t| t.is_dir())
-            .unwrap_or(false)
-        {
+        if !project_entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
             continue;
         }
-        report.scanned += 1;
-        let dir = entry.path();
-        let newest = newest_mtime(&dir);
-        let age = now
-            .duration_since(newest)
-            .unwrap_or(Duration::ZERO);
-        if age > threshold {
-            match std::fs::remove_dir_all(&dir) {
-                Ok(_) => {
-                    report
-                        .deleted
-                        .push(entry.file_name().to_string_lossy().into_owned());
-                }
-                Err(e) => {
-                    report.skipped_errors.push(format!(
-                        "{}: {}",
-                        entry.file_name().to_string_lossy(),
-                        e
-                    ));
-                }
+        let project_dir = project_entry.path();
+        let transcripts = match std::fs::read_dir(&project_dir) {
+            Ok(it) => it,
+            Err(e) => {
+                report.skipped_errors.push(format!(
+                    "{}: {}",
+                    project_entry.file_name().to_string_lossy(),
+                    e
+                ));
+                continue;
             }
-        }
-    }
-    Ok(report)
-}
-
-fn newest_mtime(dir: &Path) -> SystemTime {
-    let mut newest = SystemTime::UNIX_EPOCH;
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for e in entries.flatten() {
-            if let Ok(meta) = e.metadata() {
-                if let Ok(m) = meta.modified() {
-                    if m > newest {
-                        newest = m;
+        };
+        for transcript_entry in transcripts {
+            let transcript_entry = match transcript_entry {
+                Ok(e) => e,
+                Err(e) => {
+                    report.skipped_errors.push(e.to_string());
+                    continue;
+                }
+            };
+            if !transcript_entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                continue;
+            }
+            let path = transcript_entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("jsonl") {
+                continue;
+            }
+            report.scanned += 1;
+            let modified = transcript_entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+            let age = now.duration_since(modified).unwrap_or(Duration::ZERO);
+            if age > threshold {
+                match std::fs::remove_file(&path) {
+                    Ok(_) => {
+                        let rel = path
+                            .strip_prefix(&root)
+                            .unwrap_or(&path)
+                            .to_string_lossy()
+                            .into_owned();
+                        report.deleted.push(rel);
+                    }
+                    Err(e) => {
+                        report.skipped_errors.push(format!(
+                            "{}: {}",
+                            path.to_string_lossy(),
+                            e
+                        ));
                     }
                 }
             }
         }
     }
-    newest
+    Ok(report)
 }
 
 #[cfg(test)]
@@ -111,14 +131,26 @@ mod tests {
     }
 
     #[test]
-    fn sweep_keeps_fresh_session() {
+    fn sweep_keeps_fresh_transcript() {
         let root = scratch();
-        let sessions = root.join("sessions").join("fresh");
-        std::fs::create_dir_all(&sessions).unwrap();
-        std::fs::write(sessions.join("transcript.jsonl"), b"").unwrap();
+        let project = root.join("projects").join("-fresh");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("abc.jsonl"), b"").unwrap();
         let report = sweep(&root, 30).unwrap();
         assert_eq!(report.scanned, 1);
         assert!(report.deleted.is_empty());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn sweep_ignores_non_jsonl_files() {
+        let root = scratch();
+        let project = root.join("projects").join("-mixed");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("session.jsonl"), b"").unwrap();
+        std::fs::write(project.join("notes.txt"), b"").unwrap();
+        let report = sweep(&root, 30).unwrap();
+        assert_eq!(report.scanned, 1, "txt file should be skipped");
         std::fs::remove_dir_all(&root).ok();
     }
 }

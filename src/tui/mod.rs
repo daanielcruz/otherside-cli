@@ -178,17 +178,18 @@ async fn event_loop(
 
     match crate::config::config_dir() {
         Ok(cfg_dir) => {
+            let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
             let resume_outcome: std::result::Result<
                 Option<(crate::sessions::SessionHandle, Vec<crate::sessions::Record>)>,
                 crate::error::Error,
             > = match &resume_intent {
                 ResumeIntent::None => Ok(None),
                 ResumeIntent::Picker | ResumeIntent::Latest => {
-                    crate::sessions::resume_latest(&cfg_dir)
+                    crate::sessions::resume_latest(&cfg_dir, &cwd)
                 }
                 ResumeIntent::Specific(id_hex) => {
                     match crate::sessions::id::SessionId::from_hex(id_hex) {
-                        Some(id) => crate::sessions::resume(&cfg_dir, &id).map(Some),
+                        Some(id) => crate::sessions::resume(&cfg_dir, &cwd, &id).map(Some),
                         None => Err(crate::error::Error::Other(format!(
                             "session id {id_hex:?} is not a valid uuid-like hex"
                         ))),
@@ -206,7 +207,7 @@ async fn event_loop(
                     if matches!(resume_intent, ResumeIntent::Latest) {
                         tracing::info!("--continue: no prior session found, starting fresh");
                     }
-                    match crate::sessions::open_new(&cfg_dir) {
+                    match crate::sessions::open_new(&cfg_dir, &cwd) {
                         Ok(handle) => {
                             st.session_id = Some(handle.id.clone());
                             st.session_writer = Some(handle.writer);
@@ -218,7 +219,7 @@ async fn event_loop(
                 }
                 Err(e) => {
                     tracing::warn!(?e, "resume failed; starting fresh session");
-                    match crate::sessions::open_new(&cfg_dir) {
+                    match crate::sessions::open_new(&cfg_dir, &cwd) {
                         Ok(handle) => {
                             st.session_id = Some(handle.id.clone());
                             st.session_writer = Some(handle.writer);
