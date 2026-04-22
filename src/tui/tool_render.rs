@@ -113,6 +113,20 @@ pub fn render_tool_call(view: &ToolCallView<'_>) -> Vec<Line<'static>> {
         format!("({arg_summary})")
     };
 
+    if view.name == "Agent" {
+        let subtype = view
+            .args
+            .as_object()
+            .and_then(|o| o.get("subagent_type"))
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("subagent");
+        out.push(Line::from(Span::styled(
+            format!("⏺ Dispatching {subtype} subagent."),
+            Style::default().fg(theme::TEXT),
+        )));
+    }
+
     let bullet_glyph = if matches!(view.status, ToolStatus::Running)
         && (view.spinner_tick / BLINK_INTERVAL_TICKS) % 2 == 1
     {
@@ -199,6 +213,17 @@ pub fn render_tool_call(view: &ToolCallView<'_>) -> Vec<Line<'static>> {
                     emitted += 1;
                 }
             }
+        }
+    }
+
+    if view.name == "Agent" && matches!(view.status, ToolStatus::Ok) {
+        if let Some(ms) = view.elapsed_ms {
+            out.push(Line::from(Span::styled(
+                format!("✻ Worked for {}", format_duration_ms(ms)),
+                Style::default()
+                    .fg(theme::MUTED)
+                    .add_modifier(Modifier::ITALIC),
+            )));
         }
     }
 
