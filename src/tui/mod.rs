@@ -466,6 +466,10 @@ fn handle_key(
 
         KeyCode::Char('l') if ctrl => {}
 
+        KeyCode::Char('o') if ctrl => {
+            st.render_verbose = !st.render_verbose;
+        }
+
         KeyCode::Char('u') if ctrl => {
             st.input.clear();
             st.refresh_autocomplete();
@@ -496,6 +500,17 @@ fn handle_key(
         KeyCode::Down => {
             if let Some(ac) = st.autocomplete.as_mut() {
                 ac.move_down();
+            } else if !st.streaming
+                && st.input.is_empty()
+                && st.tasks.any_backgrounded()
+                && st.active_agents_panel.is_none()
+            {
+                st.active_agents_panel = Some(
+                    crate::tui::slash::agents_panel::AgentsPanelState::new(
+                        &st.tasks,
+                        crate::agent::subagents::registry::all(),
+                    ),
+                );
             }
         }
 

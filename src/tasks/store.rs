@@ -141,6 +141,14 @@ impl TaskStore {
             .any(|r| matches!(r.state, TaskState::Running) && !r.is_backgrounded)
     }
 
+    pub fn any_backgrounded(&self) -> bool {
+        self.inner
+            .read()
+            .expect("task store rwlock poisoned")
+            .values()
+            .any(|r| r.is_backgrounded && !r.state.is_terminal())
+    }
+
     pub fn background_all_running_foreground(&self) -> Vec<TaskId> {
         let mut map = self.inner.write().expect("task store rwlock poisoned");
         let mut flipped = Vec::new();

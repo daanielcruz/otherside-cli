@@ -18,6 +18,8 @@ const BULLET_HIDDEN: &str = " ";
 
 const BLINK_INTERVAL_TICKS: u64 = 12;
 
+const MAX_PROGRESS_MESSAGES_TO_SHOW: usize = 3;
+
 const TURN_COMPLETION_VERBS: &[&str] = &[
     "Baked", "Brewed", "Churned", "Cogitated", "Cooked", "Crunched", "Sautéed", "Worked",
 ];
@@ -236,9 +238,11 @@ pub fn render_tool_call(view: &ToolCallView<'_>) -> Vec<Line<'static>> {
     }
 
     let nested_count = view.nested_entries.len();
-    for (idx, entry) in view.nested_entries.iter().enumerate() {
+    let hidden = nested_count.saturating_sub(MAX_PROGRESS_MESSAGES_TO_SHOW);
+    let visible_start = nested_count.saturating_sub(MAX_PROGRESS_MESSAGES_TO_SHOW);
+    for (rel_idx, entry) in view.nested_entries.iter().skip(visible_start).enumerate() {
         let (label, inner) = format_nested_entry(entry);
-        let prefix = if idx == 0 { GUTTER_HEAD } else { GUTTER_CONT };
+        let prefix = if rel_idx == 0 { GUTTER_HEAD } else { GUTTER_CONT };
         let mut spans: Vec<Span<'static>> = Vec::with_capacity(4);
         spans.push(Span::styled(
             prefix.to_string(),
@@ -258,13 +262,39 @@ pub fn render_tool_call(view: &ToolCallView<'_>) -> Vec<Line<'static>> {
         }
         out.push(Line::from(spans));
 
-        let is_last = idx + 1 == nested_count;
+        let abs_idx = visible_start + rel_idx;
+        let is_last = abs_idx + 1 == nested_count;
         if is_last && entry.running {
             out.push(Line::from(vec![
                 Span::styled(GUTTER_CONT.to_string(), Style::default().fg(theme::MUTED)),
                 Span::styled("Running…".to_string(), Style::default().fg(theme::MUTED)),
             ]));
         }
+    }
+    if hidden > 0 {
+        let plural = if hidden == 1 { "use" } else { "uses" };
+        out.push(Line::from(vec![
+            Span::styled(GUTTER_CONT.to_string(), Style::default().fg(theme::MUTED)),
+            Span::styled(
+                format!("+{hidden} more tool {plural} (ctrl+o to expand)"),
+                Style::default().fg(theme::MUTED),
+            ),
+        ]));
+    }
+
+    if view.name == "Agent"
+        && matches!(view.status, ToolStatus::Running)
+        && nested_count >= 1
+    {
+        out.push(Line::from(vec![
+            Span::styled(GUTTER_CONT.to_string(), Style::default().fg(theme::MUTED)),
+            Span::styled(
+                "(ctrl+b to run in background)".to_string(),
+                Style::default()
+                    .fg(theme::MUTED)
+                    .add_modifier(Modifier::DIM),
+            ),
+        ]));
     }
 
     if let Some(payload) = view.payload {
@@ -1868,6 +1898,151 @@ mod tests {
         };
         let text = collect_text(&render_tool_call(&view));
         assert!(!text.contains("Running…"));
+    }
+
+    #[test]
+    fn nested_truncates_to_max_3_and_emits_plus_n_suffix() {
+        let args = serde_json::json!({"subagent_type":"general-purpose","description":"x"});
+        let nested: Vec<NestedEntry> = (0..5)
+            .map(|i| NestedEntry {
+                tool_name: "Bash".to_string(),
+                args: serde_json::json!({"command": format!("echo {i}")}),
+                running: false,
+            })
+            .collect();
+        let view = ToolCallView {
+            name: "Agent",
+            args: &args,
+            status: ToolStatus::Running,
+            elapsed_ms: None,
+            payload: None,
+            verbose: false,
+            spinner_tick: 0,
+            nested_entries: &nested,
+        };
+        let text = collect_text(&render_tool_call(&view));
+        assert!(
+            text.contains("+2 more tool uses (ctrl+o to expand)"),
+            "expected +2 more suffix with plural + ctrl+o hint: {text:?}"
+        );
+        assert!(!text.contains("echo 0"), "first two entries should be hidden");
+        assert!(!text.contains("echo 1"), "first two entries should be hidden");
+        assert!(text.contains("echo 2"));
+        assert!(text.contains("echo 3"));
+        assert!(text.contains("echo 4"));
+    }
+
+    #[test]
+    fn nested_plus_one_uses_singular_form() {
+        let args = serde_json::json!({"subagent_type":"general-purpose","description":"x"});
+        let nested: Vec<NestedEntry> = (0..4)
+            .map(|i| NestedEntry {
+                tool_name: "Bash".to_string(),
+                args: serde_json::json!({"command": format!("cmd{i}")}),
+                running: false,
+            })
+            .collect();
+        let view = ToolCallView {
+            name: "Agent",
+            args: &args,
+            status: ToolStatus::Running,
+            elapsed_ms: None,
+            payload: None,
+            verbose: false,
+            spinner_tick: 0,
+            nested_entries: &nested,
+        };
+        let text = collect_text(&render_tool_call(&view));
+        assert!(text.contains("+1 more tool use (ctrl+o to expand)"));
+        assert!(!text.contains("+1 more tool uses"));
+    }
+
+    #[test]
+    fn agent_running_emits_ctrl_b_hint_below_nested() {
+        let args = serde_json::json!({"subagent_type":"general-purpose","description":"x"});
+        let nested = vec![NestedEntry {
+            tool_name: "Bash".to_string(),
+            args: serde_json::json!({"command": "ls"}),
+            running: false,
+        }];
+        let view = ToolCallView {
+            name: "Agent",
+            args: &args,
+            status: ToolStatus::Running,
+            elapsed_ms: Some(1500),
+            payload: None,
+            verbose: false,
+            spinner_tick: 0,
+            nested_entries: &nested,
+        };
+        let text = collect_text(&render_tool_call(&view));
+        assert!(
+            text.contains("(ctrl+b to run in background)"),
+            "Agent running block must emit ctrl+b hint: {text:?}"
+        );
+    }
+
+    #[test]
+    fn non_agent_tool_does_not_emit_ctrl_b_hint() {
+        let args = serde_json::json!({"command": "ls"});
+        let view = ToolCallView {
+            name: "Bash",
+            args: &args,
+            status: ToolStatus::Running,
+            elapsed_ms: Some(500),
+            payload: None,
+            verbose: false,
+            spinner_tick: 0,
+            nested_entries: &[],
+        };
+        let text = collect_text(&render_tool_call(&view));
+        assert!(!text.contains("(ctrl+b"));
+    }
+
+    #[test]
+    fn resolved_agent_does_not_emit_ctrl_b_hint() {
+        let args = serde_json::json!({"subagent_type":"general-purpose","description":"x"});
+        let nested = vec![NestedEntry {
+            tool_name: "Bash".to_string(),
+            args: serde_json::json!({"command": "ls"}),
+            running: false,
+        }];
+        let view = ToolCallView {
+            name: "Agent",
+            args: &args,
+            status: ToolStatus::Ok,
+            elapsed_ms: Some(1500),
+            payload: None,
+            verbose: false,
+            spinner_tick: 0,
+            nested_entries: &nested,
+        };
+        let text = collect_text(&render_tool_call(&view));
+        assert!(!text.contains("(ctrl+b"));
+    }
+
+    #[test]
+    fn nested_no_suffix_when_under_cap() {
+        let args = serde_json::json!({"subagent_type":"general-purpose","description":"x"});
+        let nested: Vec<NestedEntry> = (0..2)
+            .map(|i| NestedEntry {
+                tool_name: "Bash".to_string(),
+                args: serde_json::json!({"command": format!("cmd{i}")}),
+                running: false,
+            })
+            .collect();
+        let view = ToolCallView {
+            name: "Agent",
+            args: &args,
+            status: ToolStatus::Running,
+            elapsed_ms: None,
+            payload: None,
+            verbose: false,
+            spinner_tick: 0,
+            nested_entries: &nested,
+        };
+        let text = collect_text(&render_tool_call(&view));
+        assert!(!text.contains("more tool"));
     }
 
     #[test]
