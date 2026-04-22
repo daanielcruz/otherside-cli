@@ -69,6 +69,12 @@ pub fn split_frame(
     constraints.push(Constraint::Length(3));
     if popup_active {
         constraints.push(Constraint::Length(popup_rows));
+        // Bottom padding row: keep the last suggestion from kissing the
+        // terminal edge (user report 2026-04-23: `/dre…` popup glued to
+        // bottom). Reserved here instead of shrinking the inner list area,
+        // which would clip a visible suggestion when popup_rows equals the
+        // match count.
+        constraints.push(Constraint::Length(1));
     } else {
         constraints.push(Constraint::Length(1));
         constraints.push(Constraint::Length(1));

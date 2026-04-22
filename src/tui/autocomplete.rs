@@ -79,16 +79,10 @@ pub fn draw(f: &mut Frame<'_>, area: Rect, ac: &Autocomplete) {
 
     f.render_widget(Clear, area);
 
-    // Reserve 1 blank row at the bottom so the last suggestion doesn't
-    // kiss the prompt-bar border underneath the popup (user report
-    // 2026-04-22: padding bottom perdido quando autocomplete renderiza).
-    let list_area = Rect {
-        x: area.x,
-        y: area.y,
-        width: area.width,
-        height: area.height.saturating_sub(1),
-    };
-
+    // Bottom padding is reserved one layer up in `layout::split_frame` via a
+    // trailing `Constraint::Length(1)` after the popup slot. Shrinking the
+    // draw area here would clip a suggestion when popup_rows == match count
+    // (see render.rs popup_rows sizing — it's match-count-exact, no slack).
     let name_col_w = name_col_width(area.width) as usize;
     let total_w = area.width as usize;
     let brief_col_w = total_w.saturating_sub(name_col_w + 2);
@@ -118,7 +112,7 @@ pub fn draw(f: &mut Frame<'_>, area: Rect, ac: &Autocomplete) {
     let mut list_state = ListState::default();
     list_state.select(Some(ac.selected));
 
-    let area_rows = list_area.height as usize;
+    let area_rows = area.height as usize;
     let window = area_rows.min(MAX_POPUP_ROWS).max(1);
     let total = ac.matches.len();
     let offset = if ac.selected + 1 <= window {
@@ -233,6 +227,91 @@ mod tests {
     fn commit_returns_selected_name() {
         let ac = Autocomplete::from_input("/he").unwrap();
         assert_eq!(ac.commit().as_deref(), Some("help"));
+    }
+
+    #[test]
+    fn autocomplete_popup_leaves_bottom_padding_row() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        // Pick a partial that yields at least 2 matches (`/s` has many).
+        let ac = Autocomplete::from_input("/s").unwrap();
+        let matches_rows = ac.matches.len() as u16;
+        let cap = MAX_POPUP_ROWS as u16;
+
+        // Mimic render.rs popup_rows derivation (match-count-exact).
+        let term_w: u16 = 80;
+        let term_h: u16 = 24;
+        let remaining = term_h.saturating_sub(4 + 1 + 3 + 1);
+        let popup_rows = matches_rows.min(cap).min(remaining);
+
+        let slots = super::super::layout::split_frame(
+            Rect::new(0, 0, term_w, term_h),
+            false,
+            0,
+            popup_rows,
+        );
+        let popup = slots.popup.expect("popup slot present when popup_rows > 0");
+
+        // Padding invariant: the last visible popup row must be at least one
+        // row above the terminal's bottom edge.
+        assert!(
+            popup.y + popup.height - 1 < term_h - 1,
+            "popup bottom row ({}) must not touch terminal bottom edge ({})",
+            popup.y + popup.height - 1,
+            term_h - 1,
+        );
+
+        // Render and confirm the terminal's bottom row is blank.
+        let backend = TestBackend::new(term_w, term_h);
+        let mut term = Terminal::new(backend).expect("terminal");
+        term.draw(|f| {
+            draw(f, popup, &ac);
+        })
+        .unwrap();
+
+        let buf = term.backend().buffer().clone();
+        for x in 0..term_w {
+            let sym = buf[(x, term_h - 1)].symbol();
+            assert!(
+                sym == " " || sym.is_empty(),
+                "terminal bottom row must be blank, found {:?} at col {}",
+                sym,
+                x,
+            );
+        }
+
+        // And single-match case must still render a row (regression guard
+        // against the naive "shrink draw area by 1" approach).
+        let single = Autocomplete::from_input("/help").unwrap();
+        assert_eq!(single.matches.len(), 1);
+        let single_popup_rows = 1u16;
+        let single_slots = super::super::layout::split_frame(
+            Rect::new(0, 0, term_w, term_h),
+            false,
+            0,
+            single_popup_rows,
+        );
+        let single_popup = single_slots.popup.expect("popup slot present");
+        assert_eq!(single_popup.height, 1, "single-match popup must keep its row");
+        assert!(single_popup.y + single_popup.height - 1 < term_h - 1);
+
+        let backend2 = TestBackend::new(term_w, term_h);
+        let mut term2 = Terminal::new(backend2).expect("terminal");
+        term2.draw(|f| {
+            draw(f, single_popup, &single);
+        })
+        .unwrap();
+        let buf2 = term2.backend().buffer().clone();
+        let mut saw_help = false;
+        for x in 0..term_w {
+            let sym = buf2[(x, single_popup.y)].symbol();
+            if sym == "h" {
+                saw_help = true;
+                break;
+            }
+        }
+        assert!(saw_help, "single-match popup must still render its content");
     }
 
     #[test]
