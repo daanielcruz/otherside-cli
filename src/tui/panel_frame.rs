@@ -166,12 +166,15 @@ fn draw_top_rule(f: &mut Frame<'_>, area: Rect) {
 }
 
 fn draw_title(f: &mut Frame<'_>, area: Rect, title: &str) {
-    let para = Paragraph::new(Line::from(Span::styled(
-        title.to_string(),
-        Style::default()
-            .fg(theme::TEXT)
-            .add_modifier(Modifier::BOLD),
-    )));
+    let para = Paragraph::new(Line::from(vec![
+        Span::raw("  "),
+        Span::styled(
+            title.to_string(),
+            Style::default()
+                .fg(theme::TEXT)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]));
     f.render_widget(para, area);
 }
 

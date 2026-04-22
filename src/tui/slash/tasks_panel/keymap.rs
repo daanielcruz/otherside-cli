@@ -19,7 +19,7 @@ pub fn handle_key(event: KeyEvent, state: &mut TasksPanelState) -> KeyOutcome {
 
 fn handle_list_key(event: KeyEvent, state: &mut TasksPanelState) -> KeyOutcome {
     match event.code {
-        KeyCode::Esc => KeyOutcome::Dismiss,
+        KeyCode::Esc | KeyCode::Left => KeyOutcome::Dismiss,
         KeyCode::Up => {
             state.cursor_up();
             KeyOutcome::Consumed
@@ -86,6 +86,17 @@ mod tests {
         let store = store_with_two();
         let mut s = TasksPanelState::new(&store);
         assert_eq!(handle_key(k(KeyCode::Esc), &mut s), KeyOutcome::Dismiss);
+    }
+
+    #[test]
+    fn list_left_arrow_dismisses() {
+        let store = store_with_two();
+        let mut s = TasksPanelState::new(&store);
+        assert_eq!(
+            handle_key(k(KeyCode::Left), &mut s),
+            KeyOutcome::Dismiss,
+            "footer hint advertises ←/Esc close — ← must dismiss list"
+        );
     }
 
     #[test]

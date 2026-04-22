@@ -24,9 +24,9 @@ pub fn draw_panel(f: &mut Frame<'_>, area: Rect, state: &TasksPanelState) {
 fn draw_list(f: &mut Frame<'_>, area: Rect, state: &TasksPanelState) {
     let body = list_body(state);
     let footer_hints: &[(&str, &str)] = &[
-        ("\u{2191}\u{2193}", "navigate"),
-        ("Enter/\u{2192}", "select"),
-        ("Esc", "close"),
+        ("\u{2191}/\u{2193}", "select"),
+        ("Enter", "view"),
+        ("\u{2190}/Esc", "close"),
     ];
     let panel = PanelFrame {
         title: Some("Background tasks"),
@@ -120,7 +120,7 @@ fn list_body(state: &TasksPanelState) -> Vec<Line<'static>> {
         lines.push(Line::from(vec![
             Span::raw(BODY_INDENT),
             Span::styled(
-                "No background tasks running.",
+                "No tasks currently running",
                 Style::default().fg(theme::MUTED),
             ),
         ]));
@@ -405,7 +405,7 @@ mod tests {
         let s = TaskStore::new();
         let st = TasksPanelState::new(&s);
         let text = collect_text(&list_body(&st));
-        assert!(text.contains("No background tasks running."));
+        assert!(text.contains("No tasks currently running"));
     }
 
     #[test]
