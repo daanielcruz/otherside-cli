@@ -130,11 +130,50 @@ pub trait ToolDispatcher {
     fn dispatch(&self, name: &str, args: &Value) -> Result<Value>;
 }
 
-#[derive(Debug, Default)]
-pub struct DefaultToolDispatcher;
+#[derive(Debug, Clone)]
+enum Gate {
+    Unrestricted,
+    ToolsField(subagents::frontmatter::ToolsField),
+}
 
-impl ToolDispatcher for DefaultToolDispatcher {
+#[derive(Debug, Clone)]
+pub struct GatedDispatcher {
+    gate: Gate,
+}
+
+impl GatedDispatcher {
+    pub fn unrestricted() -> Self {
+        Self { gate: Gate::Unrestricted }
+    }
+
+    pub fn from_tools_field(tools: subagents::frontmatter::ToolsField) -> Self {
+        Self { gate: Gate::ToolsField(tools) }
+    }
+
+    fn allows(&self, name: &str) -> bool {
+        match &self.gate {
+            Gate::Unrestricted => true,
+            Gate::ToolsField(subagents::frontmatter::ToolsField::Wildcard) => true,
+            Gate::ToolsField(subagents::frontmatter::ToolsField::List(list)) => {
+                list.iter().any(|t| t == name)
+            }
+        }
+    }
+}
+
+impl Default for GatedDispatcher {
+    fn default() -> Self {
+        Self::unrestricted()
+    }
+}
+
+impl ToolDispatcher for GatedDispatcher {
     fn dispatch(&self, name: &str, args: &Value) -> Result<Value> {
+        if !self.allows(name) {
+            return Err(Error::Other(format!(
+                "subagent cannot call tool `{name}` (not in allowlist)"
+            )));
+        }
         tools::dispatch(name, args).map_err(|e| Error::Other(format!("tool `{name}`: {e}")))
     }
 }
@@ -260,7 +299,7 @@ pub async fn run_with_provider<P: Provider + ?Sized>(
         model,
         thinking,
         max_turns: MAX_AUTO_TURNS,
-        dispatcher: DefaultToolDispatcher,
+        dispatcher: GatedDispatcher::unrestricted(),
     };
     loop_
         .run(history, |req, thinking_cfg| async move {
@@ -528,6 +567,48 @@ mod tests {
             }),
         );
         assert_eq!(msg.content, "hello world\nwarn: stderr line");
+    }
+
+    #[test]
+    fn gated_dispatcher_unrestricted_allows_any_tool() {
+        let g = GatedDispatcher::unrestricted();
+        for name in ["Read", "Bash", "Edit", "Agent"] {
+            assert!(g.allows(name), "unrestricted must allow `{name}`");
+        }
+    }
+
+    #[test]
+    fn gated_dispatcher_wildcard_allows_any_tool() {
+        use crate::agent::subagents::frontmatter::ToolsField;
+        let g = GatedDispatcher::from_tools_field(ToolsField::Wildcard);
+        for name in ["Read", "Bash", "Edit", "Agent"] {
+            assert!(g.allows(name), "wildcard must allow `{name}`");
+        }
+    }
+
+    #[test]
+    fn gated_dispatcher_list_restricts() {
+        use crate::agent::subagents::frontmatter::ToolsField;
+        let g = GatedDispatcher::from_tools_field(ToolsField::List(vec![
+            "Read".into(),
+            "Glob".into(),
+        ]));
+        assert!(g.allows("Read"));
+        assert!(g.allows("Glob"));
+        assert!(!g.allows("Bash"));
+        assert!(!g.allows("Edit"));
+    }
+
+    #[test]
+    fn gated_dispatcher_denies_out_of_allowlist_with_error() {
+        use crate::agent::subagents::frontmatter::ToolsField;
+        let g = GatedDispatcher::from_tools_field(ToolsField::List(vec!["Read".into()]));
+        let err = g
+            .dispatch("Bash", &json!({"command": "ls"}))
+            .unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("Bash"));
+        assert!(msg.contains("allowlist"));
     }
 
     #[test]

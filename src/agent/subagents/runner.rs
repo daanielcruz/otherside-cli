@@ -4,42 +4,11 @@ use std::sync::Arc;
 
 use serde_json::{json, Value};
 
-use crate::agent::{AgentLoop, ToolDispatcher, MAX_AUTO_TURNS};
-use crate::error::{Error, Result as AgentResult};
+use crate::agent::{AgentLoop, GatedDispatcher, MAX_AUTO_TURNS};
 use crate::inference::{OpenAiChatMessage, OpenAiChatRole};
 use crate::provider::Provider;
 
-use super::frontmatter::ToolsField;
 use super::{registry, AgentInvocation, RunnerError, SubagentRunner};
-
-pub struct GatedToolDispatcher {
-    pub tools: ToolsField,
-}
-
-impl GatedToolDispatcher {
-    pub fn new(tools: ToolsField) -> Self {
-        Self { tools }
-    }
-
-    fn allows(&self, name: &str) -> bool {
-        match &self.tools {
-            ToolsField::Wildcard => true,
-            ToolsField::List(list) => list.iter().any(|t| t == name),
-        }
-    }
-}
-
-impl ToolDispatcher for GatedToolDispatcher {
-    fn dispatch(&self, name: &str, args: &Value) -> AgentResult<Value> {
-        if !self.allows(name) {
-            return Err(Error::Other(format!(
-                "subagent cannot call tool `{name}` (not in allowlist)"
-            )));
-        }
-        crate::tools::dispatch(name, args)
-            .map_err(|e| Error::Other(format!("tool `{name}`: {e}")))
-    }
-}
 
 pub const SUBAGENT_MAX_TURNS: u32 = MAX_AUTO_TURNS;
 
@@ -96,7 +65,7 @@ impl InnerLoopRunner {
             tool_call_id: None,
         });
 
-        let dispatcher = GatedToolDispatcher::new(definition.tools.clone());
+        let dispatcher = GatedDispatcher::from_tools_field(definition.tools.clone());
         let loop_ = AgentLoop {
             model: model.clone(),
             thinking: None,
@@ -173,39 +142,3 @@ impl SubagentRunner for InnerLoopRunner {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::agent::subagents::frontmatter::ToolsField;
-
-    #[test]
-    fn gated_dispatcher_wildcard_allows_any_tool() {
-        let g = GatedToolDispatcher::new(ToolsField::Wildcard);
-        for name in ["Read", "Bash", "Edit", "Agent"] {
-            assert!(g.allows(name), "wildcard must allow `{name}`");
-        }
-    }
-
-    #[test]
-    fn gated_dispatcher_list_restricts() {
-        let g = GatedToolDispatcher::new(ToolsField::List(vec![
-            "Read".into(),
-            "Glob".into(),
-        ]));
-        assert!(g.allows("Read"));
-        assert!(g.allows("Glob"));
-        assert!(!g.allows("Bash"));
-        assert!(!g.allows("Edit"));
-    }
-
-    #[test]
-    fn gated_dispatcher_denies_out_of_allowlist_with_error() {
-        let g = GatedToolDispatcher::new(ToolsField::List(vec!["Read".into()]));
-        let err = g
-            .dispatch("Bash", &serde_json::json!({"command": "ls"}))
-            .unwrap_err();
-        let msg = format!("{err}");
-        assert!(msg.contains("Bash"));
-        assert!(msg.contains("allowlist"));
-    }
-}

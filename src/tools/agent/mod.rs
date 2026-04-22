@@ -1,7 +1,5 @@
 
 
-use std::sync::Arc;
-
 use serde_json::{json, Value};
 
 use crate::agent::subagents::{registry, AgentInvocation, DepthGuard, RunnerError, SubagentRunner};
@@ -132,27 +130,6 @@ fn dispatch_with_runner(
     }
 }
 
-#[allow(dead_code)]
-pub struct SubagentToolGate {
-    definition: Arc<registry::AgentDefinition>,
-}
-
-impl SubagentToolGate {
-    pub fn new(definition: Arc<registry::AgentDefinition>) -> Self {
-        Self { definition }
-    }
-
-    pub fn gated_dispatch(&self, tool_name: &str, args: &Value) -> Result<Value, ToolError> {
-        if !self.definition.allows_tool(tool_name) {
-            return Err(ToolError::PermissionDenied(format!(
-                "subagent `{}` cannot call tool `{}` (not in its `tools` allowlist)",
-                self.definition.name, tool_name
-            )));
-        }
-        crate::tools::dispatch(tool_name, args)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,47 +189,6 @@ mod tests {
                 }
             }
             Err(e) => panic!("unexpected error: {e}"),
-        }
-    }
-
-    #[test]
-    fn tool_gate_rejects_out_of_allowlist_calls() {
-        let def = registry::resolve("reader").unwrap().clone();
-        let gate = SubagentToolGate::new(Arc::new(def));
-        let err = gate.gated_dispatch("Bash", &json!({"command": "ls"})).unwrap_err();
-        match err {
-            ToolError::PermissionDenied(m) => {
-                assert!(m.contains("reader"));
-                assert!(m.contains("Bash"));
-            }
-            _ => panic!("expected PermissionDenied, got {err:?}"),
-        }
-    }
-
-    #[test]
-    fn tool_gate_allows_in_allowlist_calls() {
-
-        let def = registry::resolve("reader").unwrap().clone();
-        let gate = SubagentToolGate::new(Arc::new(def));
-        let res = gate.gated_dispatch("Glob", &json!({}));
-        match res {
-            Err(ToolError::PermissionDenied(_)) => {
-                panic!("gate rejected an allowlisted tool")
-            }
-            _ => {}
-        }
-    }
-
-    #[test]
-    fn wildcard_definition_passes_every_tool_through_gate() {
-        let def = registry::resolve("general-purpose").unwrap().clone();
-        let gate = SubagentToolGate::new(Arc::new(def));
-        for t in ["Read", "Bash", "Edit", "Write", "Agent"] {
-            let res = gate.gated_dispatch(t, &json!({}));
-            assert!(
-                !matches!(res, Err(ToolError::PermissionDenied(_))),
-                "wildcard agent should allow `{t}`"
-            );
         }
     }
 }
