@@ -282,20 +282,6 @@ pub fn render_tool_call(view: &ToolCallView<'_>) -> Vec<Line<'static>> {
         ]));
     }
 
-    if view.name == "Agent"
-        && matches!(view.status, ToolStatus::Running)
-        && nested_count >= 1
-    {
-        out.push(Line::from(vec![
-            Span::styled(GUTTER_CONT.to_string(), Style::default().fg(theme::MUTED)),
-            Span::styled(
-                "(ctrl+b to run in background)".to_string(),
-                Style::default()
-                    .fg(theme::MUTED)
-                    .add_modifier(Modifier::DIM),
-            ),
-        ]));
-    }
 
     if let Some(payload) = view.payload {
         match payload {
@@ -352,18 +338,6 @@ pub fn render_tool_call(view: &ToolCallView<'_>) -> Vec<Line<'static>> {
                     emitted += 1;
                 }
             }
-        }
-    }
-
-    if view.name == "Agent" && matches!(view.status, ToolStatus::Ok) {
-        if let Some(ms) = view.elapsed_ms {
-            let verb = pick_turn_completion_verb(view.args, ms);
-            out.push(Line::from(Span::styled(
-                format!("✻ {verb} for {}", format_duration_ms(ms)),
-                Style::default()
-                    .fg(theme::MUTED)
-                    .add_modifier(Modifier::ITALIC),
-            )));
         }
     }
 
@@ -1958,7 +1932,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_running_emits_ctrl_b_hint_below_nested() {
+    fn agent_running_does_not_emit_inline_ctrl_b_hint() {
         let args = serde_json::json!({"subagent_type":"general-purpose","description":"x"});
         let nested = vec![NestedEntry {
             tool_name: "Bash".to_string(),
@@ -1977,8 +1951,8 @@ mod tests {
         };
         let text = collect_text(&render_tool_call(&view));
         assert!(
-            text.contains("(ctrl+b to run in background)"),
-            "Agent running block must emit ctrl+b hint: {text:?}"
+            !text.contains("(ctrl+b"),
+            "Agent block must not emit inline ctrl+b hint (upstream keeps it in prompt footer): {text:?}"
         );
     }
 
