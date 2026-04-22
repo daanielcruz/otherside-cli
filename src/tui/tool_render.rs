@@ -236,8 +236,8 @@ pub fn render_tool_call(view: &ToolCallView<'_>) -> Vec<Line<'static>> {
     let _ = view.elapsed_ms;
     out.push(Line::from(header_spans));
 
-    const GUTTER_HEAD: &str = "  ⎿ ";
-    const GUTTER_CONT: &str = "    ";
+    const GUTTER_HEAD: &str = "  ⎿  ";
+    const GUTTER_CONT: &str = "     ";
 
     if view.name == "Agent"
         && matches!(view.status, ToolStatus::Running)
