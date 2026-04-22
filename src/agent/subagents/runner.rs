@@ -4,11 +4,74 @@ use std::sync::Arc;
 
 use serde_json::{json, Value};
 
-use crate::agent::{AgentLoop, GatedDispatcher, NoOpObserver, MAX_AUTO_TURNS};
+use crate::agent::{AgentLoop, ControlFlow, GatedDispatcher, LoopObserver, MAX_AUTO_TURNS};
+use crate::error::Error;
 use crate::inference::{OpenAiChatMessage, OpenAiChatRole};
 use crate::provider::Provider;
 
-use super::{registry, AgentInvocation, RunnerError, SubagentRunner};
+use super::{registry, AgentInvocation, NestedEmitter, RunnerError, SubagentRunner};
+
+struct NestedObserver {
+    emitter: Arc<dyn NestedEmitter>,
+}
+
+impl LoopObserver for NestedObserver {
+    fn on_tool_start<'a>(
+        &'a self,
+        _id: &'a str,
+        name: &'a str,
+        args: &'a Value,
+    ) -> impl std::future::Future<Output = ControlFlow> + Send + 'a {
+        let preview = preview_args(args);
+        let name = name.to_string();
+        async move {
+            self.emitter.on_tool_start(&name, &preview);
+            ControlFlow::Continue
+        }
+    }
+
+    fn on_tool_finish<'a>(
+        &'a self,
+        _id: &'a str,
+        _name: &'a str,
+        result: std::result::Result<&'a Value, &'a str>,
+        elapsed_ms: u64,
+    ) -> impl std::future::Future<Output = ControlFlow> + Send + 'a {
+        let success = result.is_ok();
+        async move {
+            self.emitter.on_tool_finish(success, elapsed_ms);
+            ControlFlow::Continue
+        }
+    }
+
+    fn on_stream_error<'a>(&'a self, _err: &'a Error) -> impl std::future::Future<Output = ()> + Send + 'a {
+        async move {}
+    }
+}
+
+fn preview_args(args: &Value) -> String {
+    let obj = match args.as_object() {
+        Some(o) => o,
+        None => return String::new(),
+    };
+    for key in ["command", "file_path", "pattern", "description", "query", "url", "path"] {
+        if let Some(v) = obj.get(key).and_then(|v| v.as_str()) {
+            return clip(v, 80);
+        }
+    }
+    clip(&serde_json::to_string(args).unwrap_or_default(), 80)
+}
+
+fn clip(s: &str, cap: usize) -> String {
+    let flat = s.replace('\n', " ");
+    if flat.chars().count() <= cap {
+        flat
+    } else {
+        let mut out: String = flat.chars().take(cap).collect();
+        out.push('…');
+        out
+    }
+}
 
 pub const SUBAGENT_MAX_TURNS: u32 = MAX_AUTO_TURNS;
 
@@ -66,6 +129,10 @@ impl InnerLoopRunner {
         });
 
         let dispatcher = GatedDispatcher::from_tools_field(definition.tools.clone());
+        let emitter = super::current_nested_emitter();
+        let observer = NestedObserver {
+            emitter: emitter.unwrap_or_else(|| Arc::new(NullEmitter) as Arc<dyn NestedEmitter>),
+        };
         let loop_ = AgentLoop {
             model: model.clone(),
             thinking: None,
@@ -73,7 +140,7 @@ impl InnerLoopRunner {
             tools: Vec::new(),
             tool_choice: None,
             dispatcher,
-            observer: NoOpObserver,
+            observer,
         };
 
         let provider = self.provider.clone();
@@ -146,5 +213,12 @@ impl SubagentRunner for InnerLoopRunner {
     ) -> Result<Value, RunnerError> {
         self.run_inner(definition, prompt, depth, invocation)
     }
+}
+
+struct NullEmitter;
+
+impl NestedEmitter for NullEmitter {
+    fn on_tool_start(&self, _name: &str, _args_preview: &str) {}
+    fn on_tool_finish(&self, _success: bool, _elapsed_ms: u64) {}
 }
 

@@ -46,6 +46,29 @@ pub trait SubagentRunner: Send + Sync {
     ) -> Result<Value, RunnerError>;
 }
 
+pub trait NestedEmitter: Send + Sync {
+    fn on_tool_start(&self, name: &str, args_preview: &str);
+    fn on_tool_finish(&self, success: bool, elapsed_ms: u64);
+}
+
+thread_local! {
+    static NESTED_EMITTER: std::cell::RefCell<Option<Arc<dyn NestedEmitter>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+pub fn with_nested_emitter<R>(emitter: Arc<dyn NestedEmitter>, f: impl FnOnce() -> R) -> R {
+    NESTED_EMITTER.with(|cell| {
+        let prev = cell.borrow_mut().replace(emitter);
+        let out = f();
+        *cell.borrow_mut() = prev;
+        out
+    })
+}
+
+pub fn current_nested_emitter() -> Option<Arc<dyn NestedEmitter>> {
+    NESTED_EMITTER.with(|cell| cell.borrow().clone())
+}
+
 static RUNNER: OnceLock<Arc<dyn SubagentRunner>> = OnceLock::new();
 
 pub fn install_runner(runner: Arc<dyn SubagentRunner>) -> bool {

@@ -17,6 +17,8 @@ pub struct ToolCallEntry {
     pub elapsed_ms: u64,
 
     pub raw_result: Option<Value>,
+
+    pub nested_lines: Vec<String>,
 }
 
 pub fn format_tool_history_entry(entry: &ToolCallEntry) -> String {

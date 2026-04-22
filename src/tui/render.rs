@@ -207,6 +207,7 @@ fn draw_log(f: &mut Frame<'_>, area: Rect, state: &ConversationState, spinner_ti
                 payload: entry.payload.as_ref(),
                 verbose: state.render_verbose,
                 spinner_tick,
+                nested_lines: &entry.nested_lines,
             };
             lines.extend(super::tool_render::render_tool_call(&view));
         }

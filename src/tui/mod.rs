@@ -76,6 +76,16 @@ enum StreamEvent {
         hint: Option<String>,
         reply: tokio::sync::oneshot::Sender<String>,
     },
+
+    NestedToolStart {
+        name: String,
+        args_preview: String,
+    },
+
+    NestedToolFinish {
+        success: bool,
+        elapsed_ms: u64,
+    },
 }
 
 pub async fn run(
@@ -292,6 +302,12 @@ async fn event_loop(
                             hint,
                             reply,
                         ));
+                    }
+                    Some(StreamEvent::NestedToolStart { name, args_preview }) => {
+                        st.push_nested_tool_start(&name, &args_preview);
+                    }
+                    Some(StreamEvent::NestedToolFinish { success, elapsed_ms }) => {
+                        st.push_nested_tool_finish(success, elapsed_ms);
                     }
                     None => {
 

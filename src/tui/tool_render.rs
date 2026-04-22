@@ -86,6 +86,8 @@ impl ToolCallArchive {
             verbose: false,
 
             spinner_tick: 0,
+
+            nested_lines: &[],
         }
     }
 }
@@ -100,6 +102,8 @@ pub struct ToolCallView<'a> {
     pub verbose: bool,
 
     pub spinner_tick: u64,
+
+    pub nested_lines: &'a [String],
 }
 
 pub fn render_tool_call(view: &ToolCallView<'_>) -> Vec<Line<'static>> {
@@ -158,6 +162,14 @@ pub fn render_tool_call(view: &ToolCallView<'_>) -> Vec<Line<'static>> {
 
     const GUTTER_HEAD: &str = "  ⎿ ";
     const GUTTER_CONT: &str = "    ";
+
+    for line in view.nested_lines {
+        out.push(Line::from(vec![
+            Span::styled(GUTTER_HEAD.to_string(), Style::default().fg(theme::MUTED)),
+            Span::styled(line.clone(), Style::default().fg(theme::MUTED)),
+        ]));
+    }
+
     if let Some(payload) = view.payload {
         match payload {
             ToolPayload::Preview(text) => {
@@ -980,6 +992,7 @@ mod tests {
             payload: None,
                     verbose: false,
                     spinner_tick: 0,
+            nested_lines: &[],
         };
         let lines = render_tool_call(&view);
         let text = collect_text(&lines);
@@ -1003,6 +1016,7 @@ mod tests {
             payload: None,
             verbose: false,
             spinner_tick: tick,
+            nested_lines: &[],
         };
         let on_text = collect_text(&render_tool_call(&mk_view(0)));
         let off_text = collect_text(&render_tool_call(&mk_view(BLINK_INTERVAL_TICKS)));
@@ -1038,6 +1052,7 @@ mod tests {
                 payload: None,
                 verbose: false,
                 spinner_tick: BLINK_INTERVAL_TICKS,
+                nested_lines: &[],
             };
             let text = collect_text(&render_tool_call(&view));
             assert!(
@@ -1059,6 +1074,7 @@ mod tests {
             payload: Some(&preview),
                     verbose: false,
                     spinner_tick: 0,
+            nested_lines: &[],
         };
         let lines = render_tool_call(&view);
         let text = collect_text(&lines);
@@ -1091,6 +1107,7 @@ mod tests {
             payload: Some(&payload),
                     verbose: false,
                     spinner_tick: 0,
+            nested_lines: &[],
         };
         let lines = render_tool_call(&view);
         let text = collect_text(&lines);
@@ -1112,6 +1129,7 @@ mod tests {
             payload: Some(&payload),
                     verbose: false,
                     spinner_tick: 0,
+            nested_lines: &[],
         };
         let lines = render_tool_call(&view);
         let text = collect_text(&lines);
@@ -1294,6 +1312,7 @@ mod tests {
             payload: Some(&payload),
             verbose: false,
             spinner_tick: 0,
+            nested_lines: &[],
         };
         let lines = render_tool_call(&view);
 

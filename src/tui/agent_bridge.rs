@@ -4,6 +4,7 @@ use std::sync::Arc;
 use serde_json::Value;
 use tokio::sync::mpsc;
 
+use crate::agent::subagents::NestedEmitter;
 use crate::agent::{ControlFlow, LoopObserver, ToolDispatcher, MAX_AUTO_TURNS};
 use crate::config::settings::{PermissionMode, Settings};
 use crate::error::{Error, Result};
@@ -11,6 +12,26 @@ use crate::permissions::{self, Decision, PermissionResponse, RuntimePermissionGr
 use crate::tools::{self, ToolError};
 
 use super::StreamEvent;
+
+struct StreamEmitter {
+    tx: mpsc::Sender<StreamEvent>,
+}
+
+impl NestedEmitter for StreamEmitter {
+    fn on_tool_start(&self, name: &str, args_preview: &str) {
+        let _ = self.tx.try_send(StreamEvent::NestedToolStart {
+            name: name.to_string(),
+            args_preview: args_preview.to_string(),
+        });
+    }
+
+    fn on_tool_finish(&self, success: bool, elapsed_ms: u64) {
+        let _ = self.tx.try_send(StreamEvent::NestedToolFinish {
+            success,
+            elapsed_ms,
+        });
+    }
+}
 
 pub(super) struct TuiDispatcher {
     pub tx: mpsc::Sender<StreamEvent>,
@@ -182,7 +203,17 @@ async fn dispatch_with_prompt(
     overlay_session_allowlist(&mut composed, session_allowlist);
 
     let dispatch_scoped = |tool_name: &str, args: &Value| {
-        tools::with_tool_call_id(tool_call_id.to_string(), || tools::dispatch(tool_name, args))
+        if tool_name == "Agent" {
+            let emitter: Arc<dyn NestedEmitter> =
+                Arc::new(StreamEmitter { tx: tx.clone() });
+            crate::agent::subagents::with_nested_emitter(emitter, || {
+                tools::with_tool_call_id(tool_call_id.to_string(), || {
+                    tools::dispatch(tool_name, args)
+                })
+            })
+        } else {
+            tools::with_tool_call_id(tool_call_id.to_string(), || tools::dispatch(tool_name, args))
+        }
     };
     match permissions::resolve(tool_name, &input_str, &composed, mode) {
         Decision::Allow => dispatch_scoped(tool_name, args),

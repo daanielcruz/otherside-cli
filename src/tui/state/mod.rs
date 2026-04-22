@@ -493,7 +493,28 @@ impl ConversationState {
             started_at: Instant::now(),
             elapsed_ms: 0,
             raw_result: None,
+            nested_lines: Vec::new(),
         });
+    }
+
+    pub fn push_nested_tool_start(&mut self, name: &str, args_preview: &str) {
+        let line = if args_preview.is_empty() {
+            name.to_string()
+        } else {
+            format!("{name}({args_preview})")
+        };
+        if let Some(parent) = self
+            .active_tool_calls
+            .iter_mut()
+            .rev()
+            .find(|e| e.name == "Agent" && matches!(e.status, ToolStatus::Running))
+        {
+            parent.nested_lines.push(line);
+        }
+    }
+
+    pub fn push_nested_tool_finish(&mut self, success: bool, elapsed_ms: u64) {
+        let _ = (success, elapsed_ms);
     }
 
     pub fn finish_tool_call(
