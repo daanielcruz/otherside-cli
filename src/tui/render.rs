@@ -790,7 +790,28 @@ fn build_info_chip_line(state: &ConversationState) -> Line<'static> {
         } else {
             pill
         };
-        spans.push(Span::styled(segment, Style::default().fg(theme::MUTED)));
+        // Bug Q: upstream highlights the `N background tasks` pill with a
+        // cyan background to cue the user that ↓ + Enter opens the panel.
+        // Show the separator dot in muted but the pill itself in accent.
+        if has_chip {
+            let (sep, body) = segment.split_at(3); // " · "
+            spans.push(Span::styled(sep.to_string(), Style::default().fg(theme::MUTED)));
+            spans.push(Span::styled(
+                body.to_string(),
+                Style::default()
+                    .fg(theme::TEXT)
+                    .bg(theme::AUTO_ACCEPT)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        } else {
+            spans.push(Span::styled(
+                segment,
+                Style::default()
+                    .fg(theme::TEXT)
+                    .bg(theme::AUTO_ACCEPT)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
     }
     if !hint.is_empty() {
         let text = if has_chip || has_task_pill {

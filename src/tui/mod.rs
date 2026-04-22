@@ -668,10 +668,12 @@ fn handle_key(
         KeyCode::Up => {
             if let Some(ac) = st.autocomplete.as_mut() {
                 ac.move_up();
-            } else if !st.streaming
-                && st.input.is_empty()
-                && st.has_queued_messages()
-            {
+            } else if st.input.is_empty() && st.has_queued_messages() {
+                // Bug N: previously gated on `!st.streaming`, so Up during
+                // an in-flight turn silently no-oped — exactly when the
+                // user queued text and wanted to edit the last item. The
+                // queued buffer is independent of streaming state; let
+                // Up pull the tail into the input at any time.
                 if let Some(tail) = st.pop_queue_tail() {
                     st.input = tail;
                     st.refresh_autocomplete();
