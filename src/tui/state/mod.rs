@@ -859,6 +859,17 @@ impl ConversationState {
         self.autocomplete = None;
         self.scroll_offset = 0;
 
+        // Parity #1 bug J: upstream zeros token counters post-compact —
+        // the "99% until auto-compact" right-chip jumps back to low usage
+        // because the pre-compact context is gone. Otherside kept
+        // input_tokens at the pre-compact value (22571 in the tmux capture),
+        // which (a) confused the chip and (b) would re-trigger the
+        // auto-fire gate on the first post-compact turn.
+        self.input_tokens = 0;
+        self.output_tokens = 0;
+        self.cumulative_output_tokens = 0;
+        self.thought_ms = 0;
+
         if let Some(raw) = summary {
             let seed = crate::agent::compact::get_compact_user_summary_message(
                 &raw, false, None, false, false,
@@ -2358,6 +2369,25 @@ mod tests {
         super::hydrate_from_records(&mut st, &records);
         assert_eq!(st.messages.len(), 1, "orphan tool call flushed as Running");
         assert_eq!(st.messages[0].role, OpenAiChatRole::Tool);
+    }
+
+    #[test]
+    fn compact_history_with_summary_zeros_token_counters() {
+        // Regression for bug J (parity #1): post-compact, upstream resets
+        // input_tokens / output_tokens to 0 so the right-chip jumps back
+        // to low usage. Pre-fix, the counters stayed at the pre-compact
+        // value (22571 in the tmux capture), which re-triggered the
+        // auto-fire gate on the very next turn.
+        let mut st = ConversationState::default();
+        st.input_tokens = 22_571;
+        st.output_tokens = 1_200;
+        st.cumulative_output_tokens = 3_400;
+        st.thought_ms = 5_000;
+        st.compact_history_with_summary(Some("<summary>done</summary>".to_string()));
+        assert_eq!(st.input_tokens, 0);
+        assert_eq!(st.output_tokens, 0);
+        assert_eq!(st.cumulative_output_tokens, 0);
+        assert_eq!(st.thought_ms, 0);
     }
 
     #[test]
