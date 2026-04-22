@@ -201,7 +201,7 @@ async fn cmd_print(cli: &Cli, prompt: &str) -> Result<()> {
     let raw_model = cli
         .model
         .clone()
-        .or(settings.default_model.clone())
+        .or_else(|| settings.default_model.clone().filter(|s| !s.trim().is_empty()))
         .unwrap_or_else(|| DEFAULT_MODEL.to_string());
 
     let (base_model, thinking) = parse_suffix(&raw_model)
@@ -323,7 +323,7 @@ async fn cmd_tui(cli: &Cli) -> Result<()> {
     let raw_model = cli
         .model
         .clone()
-        .or(settings.default_model.clone())
+        .or_else(|| settings.default_model.clone().filter(|s| !s.trim().is_empty()))
         .unwrap_or(tier_default);
 
     let registry = Registry::builder()
