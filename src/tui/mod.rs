@@ -29,6 +29,7 @@ pub mod layout;
 pub mod markdown;
 pub mod mascot;
 pub mod menu;
+pub mod panel_frame;
 pub mod progress;
 pub mod render;
 pub mod slash;
