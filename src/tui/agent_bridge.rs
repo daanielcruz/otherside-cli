@@ -295,68 +295,81 @@ async fn dispatch_agent_cancellable(
         })
     });
 
-    let cancelled = tokio::select! {
+    // The non-cancelled branch MUST capture the JoinResult directly — once
+    // `&mut join` resolves inside tokio::select!, the handle is consumed.
+    // The previous shape `_ = &mut join => false` threw away the outcome
+    // and then called `join.await` again below, which panics with
+    // "JoinHandle polled after completion" (tokio/src/runtime/task/core.rs).
+    // Capture the result in-branch; detach only on the cancel path.
+    let completion: Option<std::result::Result<
+        std::result::Result<Value, ToolError>,
+        tokio::task::JoinError,
+    >> = tokio::select! {
         biased;
-        _ = cancel_rx.changed() => true,
-        _ = &mut join => false,
+        _ = cancel_rx.changed() => None,
+        result = &mut join => Some(result),
     };
 
-    if cancelled {
-        let call_id_for_late = tool_call_id.to_string();
-        let tx_for_late = tx.clone();
-        tokio::spawn(async move {
-            let outcome = join.await;
-            let summary = match outcome {
-                Ok(Ok(v)) => v
-                    .get("content")
-                    .and_then(|c| c.as_array())
-                    .and_then(|arr| arr.first())
-                    .and_then(|first| first.get("text"))
-                    .and_then(|t| t.as_str())
-                    .unwrap_or("(no text)")
-                    .to_string(),
-                Ok(Err(e)) => format!("error: {e}"),
-                Err(e) => format!("join error: {e}"),
-            };
-            let _ = tx_for_late
-                .send(StreamEvent::BackgroundAgentCompleted {
-                    tool_call_id: call_id_for_late,
-                    summary,
-                })
-                .await;
-        });
+    if let Some(join_result) = completion {
         background_signal::unregister(tool_call_id);
-        let subagent_type = args
-            .get("subagent_type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("general-purpose");
-        let description = args
-            .get("description")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let upstream_text = format!(
-            "Async agent launched successfully.\nagentId: {id} (internal ID - do not mention to user. The agent is working in the background. You will be notified automatically when it completes.)\n\nDo not call TaskOutput or any other tool to check status — wait for the completion notification.",
-            id = tool_call_id,
-        );
-        Ok(serde_json::json!({
-            "status": "backgrounded",
-            "task_id": tool_call_id,
-            "tool_use_id": tool_call_id,
-            "subagent_type": subagent_type,
-            "description": description,
-            "content": [{
-                "type": "text",
-                "text": upstream_text,
-            }],
-        }))
-    } else {
-        background_signal::unregister(tool_call_id);
-        match join.await {
+        return match join_result {
             Ok(Ok(v)) => Ok(v),
             Ok(Err(e)) => Err(e),
             Err(e) => Err(ToolError::InvalidArgs(format!("agent join error: {e}"))),
-        }
+        };
     }
+
+    // Cancelled: the blocking task is still running. Detach it so its final
+    // result flows in via StreamEvent::BackgroundAgentCompleted, and hand
+    // the model the synthetic "backgrounded" tool result immediately so
+    // the turn unblocks.
+    let call_id_for_late = tool_call_id.to_string();
+    let tx_for_late = tx.clone();
+    tokio::spawn(async move {
+        let outcome = join.await;
+        let summary = match outcome {
+            Ok(Ok(v)) => v
+                .get("content")
+                .and_then(|c| c.as_array())
+                .and_then(|arr| arr.first())
+                .and_then(|first| first.get("text"))
+                .and_then(|t| t.as_str())
+                .unwrap_or("(no text)")
+                .to_string(),
+            Ok(Err(e)) => format!("error: {e}"),
+            Err(e) => format!("join error: {e}"),
+        };
+        let _ = tx_for_late
+            .send(StreamEvent::BackgroundAgentCompleted {
+                tool_call_id: call_id_for_late,
+                summary,
+            })
+            .await;
+    });
+    background_signal::unregister(tool_call_id);
+    let subagent_type = args
+        .get("subagent_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("general-purpose");
+    let description = args
+        .get("description")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let upstream_text = format!(
+        "Async agent launched successfully.\nagentId: {id} (internal ID - do not mention to user. The agent is working in the background. You will be notified automatically when it completes.)\n\nDo not call TaskOutput or any other tool to check status — wait for the completion notification.",
+        id = tool_call_id,
+    );
+    Ok(serde_json::json!({
+        "status": "backgrounded",
+        "task_id": tool_call_id,
+        "tool_use_id": tool_call_id,
+        "subagent_type": subagent_type,
+        "description": description,
+        "content": [{
+            "type": "text",
+            "text": upstream_text,
+        }],
+    }))
 }
 
 async fn ask_user_question_async(
@@ -452,4 +465,70 @@ fn format_err(e: &Error) -> String {
     let mut s = e.to_string();
     s = s.replace('\n', " ");
     s
+}
+
+#[cfg(test)]
+mod panic_regression_tests {
+    //! Regression guard for the "JoinHandle polled after completion" panic
+    //! surfaced by parity agents #1 + #3 (docs/evidence/live-bugs-2026-04-22/
+    //! frames/d1-otherside-T25s.txt and neighbours).
+    //!
+    //! The original shape lost the JoinResult inside the select! branch and
+    //! then re-awaited the handle, which panics in tokio's task core. This
+    //! test reproduces the exact pattern in isolation and asserts the fix:
+    //! once a branch has polled `&mut join` to Ready, do NOT await it again.
+    use tokio::sync::watch;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn select_capture_pattern_does_not_double_poll_join_handle() {
+        let (_tx, mut cancel_rx) = watch::channel(false);
+
+        let mut join = tokio::task::spawn_blocking(|| 42_i32);
+
+        // Matches the live-agent shape: keep the cancel branch biased first,
+        // capture the join outcome in-branch, and never re-await the handle.
+        let completion: Option<std::result::Result<i32, tokio::task::JoinError>> = tokio::select! {
+            biased;
+            _ = cancel_rx.changed() => None,
+            result = &mut join => Some(result),
+        };
+
+        // Non-cancelled branch: we MUST have the result. Re-awaiting `join`
+        // here is what triggered the production panic — the assertion below
+        // proves the new pattern makes that re-await both unnecessary and
+        // unreachable.
+        let value = completion
+            .expect("join branch must win when no cancel signal fired")
+            .expect("spawn_blocking future must not fail");
+        assert_eq!(value, 42);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancel_branch_leaves_join_handle_pollable_by_detached_task() {
+        let (tx, mut cancel_rx) = watch::channel(false);
+
+        let mut join = tokio::task::spawn_blocking(|| {
+            // Simulate a long-running subagent: sleep a bit so the cancel
+            // signal can win the select! race deterministically.
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            "late-result"
+        });
+
+        // Fire the cancel signal immediately so the cancel branch wins.
+        let _ = tx.send(true);
+
+        let completion: Option<std::result::Result<&str, tokio::task::JoinError>> = tokio::select! {
+            biased;
+            _ = cancel_rx.changed() => None,
+            result = &mut join => Some(result),
+        };
+
+        assert!(completion.is_none(), "cancel branch must win when signal fires first");
+
+        // On the cancel path the handle is still live — the detached tracker
+        // can await it. This is what the live code does inside its
+        // tokio::spawn to surface BackgroundAgentCompleted later.
+        let late = join.await.expect("detached join must still succeed");
+        assert_eq!(late, "late-result");
+    }
 }
