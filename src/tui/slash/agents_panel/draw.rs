@@ -1,78 +1,60 @@
-use ratatui::layout::{Alignment, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::layout::Rect;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use super::state::{AgentsPanelState, Tab};
+use crate::tui::panel_frame::{body_row, PanelFrame, TabSpec};
 use crate::tui::render::theme;
 
-const FOOTER_HINT: &str = "←/→ switch tabs · ↑↓ navigate · Enter select · Esc close";
-
-/// Upstream AgentsList + BackgroundTasksDialog indent body rows 4 cols
-/// from pane edge (tab bar + headers indent with 2, content rows with 4).
-/// Matches `pngs/02-agents-frame2-library.png` + `frame3-running.png`.
-const BODY_INDENT: &str = "    ";
-const BODY_HEADER_INDENT: &str = "  ";
+/// Body-row label indent. PanelFrame body rows carry a 2-col chevron
+/// prefix already; we indent section headers and non-selectable rows
+/// one extra column so the columns align with chevron-prefixed rows.
+const BODY_INDENT: &str = "  ";
 
 pub fn draw_panel(f: &mut Frame<'_>, area: Rect, state: &AgentsPanelState) {
-    let mut lines: Vec<Line<'static>> = Vec::with_capacity(6 + state.running.len() + state.library.len());
+    let running_label = running_tab_label(state.running.len());
+    let tabs: Vec<TabSpec<'_>> = vec![
+        TabSpec { label: &running_label },
+        TabSpec { label: "Library" },
+    ];
+    let active_tab = match state.tab {
+        Tab::Running => 0,
+        Tab::Library => 1,
+    };
 
-    lines.push(tab_bar(state.tab, state.running.len()));
-    lines.push(Line::from(""));
+    let body: Vec<Line<'static>> = match state.tab {
+        Tab::Running => running_body(state),
+        Tab::Library => library_body(state),
+    };
 
-    match state.tab {
-        Tab::Running => lines.extend(running_body(state)),
-        Tab::Library => lines.extend(library_body(state)),
-    }
+    let footer_hints: &[(&str, &str)] = &[
+        ("\u{2190}/\u{2192}", "switch tabs"),
+        ("\u{2191}\u{2193}", "navigate"),
+        ("Enter", "select"),
+        ("Esc", "close"),
+    ];
 
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        FOOTER_HINT,
-        Style::default().fg(theme::MUTED),
-    )));
-
-    let para = Paragraph::new(lines).alignment(Alignment::Left);
-    f.render_widget(para, area);
+    let panel = PanelFrame {
+        title: Some("Agents"),
+        tabs: Some(&tabs),
+        active_tab,
+        tabs_focused: false,
+        search: None,
+        body,
+        footer_hints,
+        pagination_hint: None,
+    };
+    panel.render(f, area);
 }
 
-fn tab_bar(active: Tab, running_count: usize) -> Line<'static> {
-    let title = Span::styled(
-        "Agents ",
-        Style::default()
-            .fg(theme::TEXT)
-            .add_modifier(Modifier::BOLD),
-    );
-    let running_label = if running_count > 0 {
-        format!("Running ({running_count})")
+/// Compose the `Running` tab label, appending `(N)` when N > 0. Kept
+/// as a small helper so tests can pin the format without re-rendering.
+pub(super) fn running_tab_label(count: usize) -> String {
+    if count > 0 {
+        format!("Running ({count})")
     } else {
         "Running".to_string()
-    };
-    let spans = vec![
-        title,
-        chip(running_label, matches!(active, Tab::Running)),
-        Span::raw(" "),
-        chip("Library".to_string(), matches!(active, Tab::Library)),
-    ];
-    Line::from(spans)
-}
-
-fn chip(label: String, selected: bool) -> Span<'static> {
-    if selected {
-        Span::styled(
-            format!(" {label} "),
-            Style::default()
-                .fg(Color::Black)
-                .bg(theme::PRIMARY)
-                .add_modifier(Modifier::BOLD),
-        )
-    } else {
-        Span::styled(
-            format!(" {label} "),
-            Style::default()
-                .fg(theme::PRIMARY)
-                .add_modifier(Modifier::BOLD),
-        )
     }
 }
 
@@ -80,7 +62,7 @@ fn running_body(state: &AgentsPanelState) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
     if state.running.is_empty() && state.recently_completed.is_empty() {
         lines.push(Line::from(vec![
-            Span::raw(BODY_HEADER_INDENT),
+            Span::raw(BODY_INDENT),
             Span::styled(
                 "No subagents are currently running.",
                 Style::default().fg(theme::MUTED),
@@ -89,15 +71,8 @@ fn running_body(state: &AgentsPanelState) -> Vec<Line<'static>> {
     } else {
         for (i, row) in state.running.iter().enumerate() {
             let selected = i == state.running_cursor;
-            let prefix = if selected { "\u{276F} " } else { "  " };
-            let style = if selected {
-                Style::default().fg(theme::TEXT).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(theme::TEXT)
-            };
             // Upstream row format (AsyncAgentDetailDialog.tsx:106):
             // `{subagent_type} · {description} · {elapsed}s · {tokens} tokens`.
-            // `subagent_type` leads — `name` was otherside's legacy stand-in.
             let mut segments: Vec<String> = Vec::with_capacity(4);
             let lead = row
                 .subagent_type
@@ -112,13 +87,7 @@ fn running_body(state: &AgentsPanelState) -> Vec<Line<'static>> {
                 "{} tokens",
                 crate::tui::tool_render::format_number_compact(row.tokens),
             ));
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!("{BODY_HEADER_INDENT}{prefix}"),
-                    style,
-                ),
-                Span::styled(segments.join(" · "), style),
-            ]));
+            lines.push(body_row(segments.join(" · "), false, selected));
         }
 
         if !state.recently_completed.is_empty() {
@@ -126,7 +95,7 @@ fn running_body(state: &AgentsPanelState) -> Vec<Line<'static>> {
                 lines.push(Line::from(""));
             }
             lines.push(Line::from(vec![
-                Span::raw(BODY_HEADER_INDENT),
+                Span::raw(BODY_INDENT),
                 Span::styled(
                     "Recently completed".to_string(),
                     Style::default().fg(theme::TEXT),
@@ -148,11 +117,11 @@ fn running_body(state: &AgentsPanelState) -> Vec<Line<'static>> {
                 lines.push(Line::from(vec![
                     Span::raw(BODY_INDENT),
                     Span::styled(
-                        "✔ ".to_string(),
+                        "\u{2714} ".to_string(),
                         Style::default().fg(theme::SUCCESS),
                     ),
                     Span::styled(
-                        segments.join(" · "),
+                        segments.join(" \u{00B7} "),
                         Style::default().fg(theme::TEXT),
                     ),
                 ]));
@@ -172,7 +141,7 @@ fn truncate_completed(s: &str) -> String {
         first_line.to_string()
     } else {
         let head: String = first_line.chars().take(CAP - 1).collect();
-        format!("{head}…")
+        format!("{head}\u{2026}")
     }
 }
 
@@ -200,14 +169,14 @@ fn library_body(state: &AgentsPanelState) -> Vec<Line<'static>> {
             None => "User agents".to_string(),
         };
         lines.push(Line::from(vec![
-            Span::raw(BODY_HEADER_INDENT),
+            Span::raw(BODY_INDENT),
             Span::styled(header, Style::default().fg(theme::TEXT)),
         ]));
         for row in &state.user_agents {
             lines.push(Line::from(vec![
                 Span::raw(BODY_INDENT),
                 Span::styled(
-                    format!("{} · {} · user memory", row.name, row.model),
+                    format!("{} \u{00B7} {} \u{00B7} user memory", row.name, row.model),
                     Style::default().fg(theme::TEXT),
                 ),
             ]));
@@ -221,7 +190,7 @@ fn library_body(state: &AgentsPanelState) -> Vec<Line<'static>> {
 
     // Built-in agents (always available) — closes the section list.
     lines.push(Line::from(vec![
-        Span::raw(BODY_HEADER_INDENT),
+        Span::raw(BODY_INDENT),
         Span::styled(
             "Built-in agents (always available)".to_string(),
             Style::default().fg(theme::TEXT),
@@ -231,13 +200,13 @@ fn library_body(state: &AgentsPanelState) -> Vec<Line<'static>> {
         let mut spans: Vec<Span<'static>> = vec![
             Span::raw(BODY_INDENT),
             Span::styled(
-                format!("{} · {}", row.name, row.model),
+                format!("{} \u{00B7} {}", row.name, row.model),
                 Style::default().fg(theme::TEXT),
             ),
         ];
         if row.running_count > 0 {
             spans.push(Span::styled(
-                format!(" 🟢 {} running", row.running_count),
+                format!(" \u{1F7E2} {} running", row.running_count),
                 Style::default().fg(theme::SUCCESS),
             ));
         }
@@ -251,6 +220,11 @@ mod tests {
     use super::*;
     use crate::agent::subagents::registry;
     use crate::tasks::TaskStore;
+    use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use ratatui::style::Color;
+    use ratatui::Terminal;
 
     fn collect_text(lines: &[Line<'_>]) -> String {
         lines
@@ -263,6 +237,17 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    fn render_panel(state: &AgentsPanelState, width: u16, height: u16) -> Buffer {
+        let backend = TestBackend::new(width, height);
+        let mut term = Terminal::new(backend).expect("terminal");
+        term.draw(|f| {
+            let area = Rect::new(0, 0, width, height);
+            draw_panel(f, area, state);
+        })
+        .unwrap();
+        term.backend().buffer().clone()
     }
 
     #[test]
@@ -315,26 +300,13 @@ mod tests {
     }
 
     #[test]
-    fn tab_bar_lists_title_and_two_chips() {
-        let line = tab_bar(Tab::Running, 0);
-        let joined: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(joined.contains("Agents"));
-        assert!(joined.contains("Running"));
-        assert!(joined.contains("Library"));
+    fn running_tab_label_shows_count_when_nonzero() {
+        assert_eq!(running_tab_label(2), "Running (2)");
     }
 
     #[test]
-    fn tab_bar_running_chip_shows_count_when_nonzero() {
-        let line = tab_bar(Tab::Running, 2);
-        let joined: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(joined.contains("Running (2)"), "missing count: {joined:?}");
-    }
-
-    #[test]
-    fn tab_bar_running_chip_omits_count_when_zero() {
-        let line = tab_bar(Tab::Running, 0);
-        let joined: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(!joined.contains("(0)"), "should not render (0): {joined:?}");
+    fn running_tab_label_omits_count_when_zero() {
+        assert_eq!(running_tab_label(0), "Running");
     }
 
     #[test]
@@ -356,7 +328,7 @@ mod tests {
             "section header missing: {text}"
         );
         assert!(
-            text.contains("✔"),
+            text.contains("\u{2714}"),
             "completed marker missing: {text}"
         );
         assert!(
@@ -383,8 +355,73 @@ mod tests {
         let text = collect_text(&lines);
         // Upstream row: `{subagent_type} · {description} · {elapsed}s · {tokens}`
         assert!(
-            text.contains("general-purpose · Sleep 200 echo ok · 19s"),
+            text.contains("general-purpose \u{00B7} Sleep 200 echo ok \u{00B7} 19s"),
             "row must lead with subagent_type then description: {text}"
+        );
+    }
+
+    #[test]
+    fn agents_panel_uses_panel_frame_chrome() {
+        // Full-panel render — assert PanelFrame slots:
+        //   y=0 top rule in theme::PRIMARY
+        //   y=1 blank padding row
+        //   y=body_y selected running row with SUCCESS chevron prefix.
+        let mut s = AgentsPanelState::new(&TaskStore::new(), registry::all());
+        s.tab = Tab::Running;
+        s.running.push(super::super::state::RunningRow {
+            name: "solo".into(),
+            runtime_secs: 5,
+            description: Some("one and only".into()),
+            tokens: 100,
+            subagent_type: Some("general-purpose".into()),
+        });
+        s.running_cursor = 0;
+
+        let buf = render_panel(&s, 80, 12);
+
+        // y=0 top rule glyph + color.
+        let rule_cell = buf[(3, 0)].clone();
+        assert_eq!(
+            rule_cell.symbol(),
+            "\u{2500}",
+            "y=0 must be top-rule glyph: {rule_cell:?}"
+        );
+        assert_eq!(
+            rule_cell.fg,
+            Color::Rgb(0x3E, 0xA0, 0xC3),
+            "top rule fg must be theme::PRIMARY: {rule_cell:?}"
+        );
+
+        // y=1 blank padding row (all spaces).
+        let mut row1 = String::new();
+        for x in 0..80u16 {
+            row1.push_str(buf[(x, 1)].symbol());
+        }
+        assert_eq!(
+            row1.trim(),
+            "",
+            "y=1 must be blank padding row, got {row1:?}"
+        );
+
+        // Locate the row containing the selection chevron and assert its
+        // foreground color is theme::SUCCESS. Layout:
+        //   y=0 rule, y=1 pad, y=2 title, y=3 tabs, y=4 body-first.
+        let mut found = false;
+        for y in 2..12u16 {
+            let cell = buf[(0, y)].clone();
+            if cell.symbol() == "\u{276F}" {
+                assert_eq!(
+                    cell.fg,
+                    Color::Rgb(78, 186, 101),
+                    "selected body-row chevron must be theme::SUCCESS: {cell:?} at y={y}"
+                );
+                found = true;
+                break;
+            }
+        }
+        assert!(
+            found,
+            "expected a selected body-row chevron somewhere below the tab row"
         );
     }
 }
