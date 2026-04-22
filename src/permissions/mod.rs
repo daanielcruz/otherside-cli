@@ -118,7 +118,7 @@ fn is_mutating(tool: &str) -> bool {
     MUTATING_TOOLS.contains(&tool)
 }
 
-const DANGEROUS_DIRECTORIES: &[&str] = &[".git", ".vscode", ".idea", ".claude"];
+const DANGEROUS_DIRECTORIES: &[&str] = &[".git", ".vscode", ".idea", ".otherside"];
 
 const DANGEROUS_FILES: &[&str] = &[
     ".gitconfig",
@@ -130,7 +130,6 @@ const DANGEROUS_FILES: &[&str] = &[
     ".profile",
     ".ripgreprc",
     ".mcp.json",
-    ".claude.json",
 ];
 
 fn is_dangerous_edit_path(tool_input: &str) -> bool {
@@ -323,18 +322,6 @@ mod tests {
     }
 
     #[test]
-    fn accept_edits_refuses_claude_dir() {
-        let s = settings_with(&[], &[], &[]);
-        let d = resolve(
-            "Write",
-            r#"{"file_path":"/proj/.claude/settings.json","content":"{}"}"#,
-            &s,
-            PermissionMode::AcceptEdits,
-        );
-        assert_eq!(d, Decision::Ask { rule: None });
-    }
-
-    #[test]
     fn accept_edits_refuses_vscode_dir() {
         let s = settings_with(&[], &[], &[]);
         let d = resolve(
@@ -363,11 +350,23 @@ mod tests {
     }
 
     #[test]
-    fn accept_edits_refuses_case_insensitive_claude() {
+    fn accept_edits_refuses_otherside_config_dir() {
+        let s = settings_with(&[], &[], &[]);
+        let d = resolve(
+            "Write",
+            r#"{"file_path":"/home/user/.otherside/settings.json","content":"{}"}"#,
+            &s,
+            PermissionMode::AcceptEdits,
+        );
+        assert_eq!(d, Decision::Ask { rule: None });
+    }
+
+    #[test]
+    fn accept_edits_refuses_otherside_case_insensitive() {
         let s = settings_with(&[], &[], &[]);
         let d = resolve(
             "Edit",
-            r#"{"file_path":"/proj/.cLauDe/settings.local.json"}"#,
+            r#"{"file_path":"/proj/.OtherSide/credentials.json"}"#,
             &s,
             PermissionMode::AcceptEdits,
         );
