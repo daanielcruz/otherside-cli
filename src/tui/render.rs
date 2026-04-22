@@ -421,67 +421,46 @@ fn render_message(role: OpenAiChatRole, content: &str, width: u16) -> Vec<Line<'
 }
 
 fn draw_queue_lines(f: &mut Frame<'_>, area: Rect, state: &ConversationState) {
-    if area.height < 2 || state.queued_messages.is_empty() {
+    if area.height == 0 || state.queued_messages.is_empty() {
         return;
     }
     let total_rows = area.height as usize;
-    let message_rows = total_rows.saturating_sub(1);
-    if message_rows == 0 {
-        return;
-    }
-
     let total = state.queued_messages.len();
-    let needs_summary = total > message_rows;
+    let needs_summary = total > total_rows;
     let body_slots = if needs_summary {
-        message_rows.saturating_sub(1)
+        total_rows.saturating_sub(1)
     } else {
-        message_rows
+        total_rows
     };
 
     let mut lines: Vec<Line<'_>> = Vec::with_capacity(total_rows);
-    lines.push(blank_user_bg_line(area.width));
-
     for msg in state.queued_messages.iter().take(body_slots) {
         let first_line = msg.lines().next().unwrap_or("");
-        lines.push(user_bubble_row(first_line, area.width));
+        lines.push(queue_preview_row(first_line, area.width));
     }
     if needs_summary {
         let remaining = total.saturating_sub(body_slots);
-        let summary = format!("… {remaining} more queued");
-        lines.push(user_bubble_row(&summary, area.width));
+        lines.push(queue_preview_row(
+            &format!("… {remaining} more queued"),
+            area.width,
+        ));
     }
 
-    let para = Paragraph::new(lines);
-    f.render_widget(para, area);
+    f.render_widget(Paragraph::new(lines), area);
 }
 
-fn user_bubble_row(body: &str, width: u16) -> Line<'static> {
+fn queue_preview_row(body: &str, width: u16) -> Line<'static> {
     let prefix = "❯ ";
-    let prefix_style = Style::default().fg(theme::MUTED).bg(theme::USER_BG);
-    let body_style = Style::default().fg(theme::TEXT).bg(theme::USER_BG);
+    let style = Style::default()
+        .fg(theme::MUTED)
+        .add_modifier(Modifier::DIM);
     let prefix_cols = prefix.chars().count();
     let max_body_cols = (width as usize).saturating_sub(prefix_cols);
     let preview = truncate_for_width(body, max_body_cols);
-    let used = prefix_cols + preview.chars().count();
-    let filler_len = (width as usize).saturating_sub(used);
-
-    let mut spans: Vec<Span<'static>> = Vec::with_capacity(3);
-    spans.push(Span::styled(prefix.to_string(), prefix_style));
-    spans.push(Span::styled(preview, body_style));
-    if filler_len > 0 {
-        spans.push(Span::styled(
-            " ".repeat(filler_len),
-            Style::default().bg(theme::USER_BG),
-        ));
-    }
-    Line::from(spans)
-}
-
-fn blank_user_bg_line(width: u16) -> Line<'static> {
-    Line::from(Span::styled(
-        " ".repeat(width as usize),
-        Style::default().bg(theme::USER_BG),
-    ))
+    Line::from(vec![
+        Span::styled(prefix.to_string(), style),
+        Span::styled(preview, style),
+    ])
 }
 
 fn truncate_for_width(s: &str, max_cols: usize) -> String {
@@ -517,10 +496,19 @@ fn draw_prompt(f: &mut Frame<'_>, area: Rect, state: &ConversationState) {
     } else {
         Style::default().fg(theme::TEXT)
     };
-    let spans = vec![
-        Span::styled("❯ ", chevron_style),
-        Span::styled(state.input.clone(), text_style),
-    ];
+    let show_queue_hint = state.input.is_empty() && !state.queued_messages.is_empty();
+
+    let mut spans = vec![Span::styled("❯ ", chevron_style)];
+    if show_queue_hint {
+        spans.push(Span::styled(
+            "Press up to edit queued messages".to_string(),
+            Style::default()
+                .fg(theme::MUTED)
+                .add_modifier(Modifier::DIM),
+        ));
+    } else {
+        spans.push(Span::styled(state.input.clone(), text_style));
+    }
 
     let para = Paragraph::new(Line::from(spans))
         .block(block)
@@ -1146,7 +1134,7 @@ mod tests {
         let s = render_queue_lines_to_string(&st, 80, 4);
         assert!(s.contains("❯ msg-0"), "rendered: {s:?}");
         assert!(s.contains("❯ msg-1"), "rendered: {s:?}");
-        assert!(s.contains("… 5 more queued"), "rendered: {s:?}");
+        assert!(s.contains("… 4 more queued"), "rendered: {s:?}");
     }
 
     #[test]
@@ -1159,6 +1147,32 @@ mod tests {
         let s = render_queue_lines_to_string(&st, 40, 2);
         assert!(s.contains("❯ "), "chevron missing: {s:?}");
         assert!(s.contains('…'), "ellipsis missing: {s:?}");
+    }
+
+    #[test]
+    fn prompt_shows_queue_hint_placeholder_when_queue_has_items_and_input_empty() {
+        use super::super::state::ConversationState;
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let mut st = ConversationState::new();
+
+        st.queued_messages.push("stalled follow-up".into());
+
+        let backend = TestBackend::new(80, 30);
+        let mut term = Terminal::new(backend).expect("terminal");
+        term.draw(|f| render(f, &st, "claude-opus-4-7", "anthropic", 0))
+            .unwrap();
+        let buf = term.backend().buffer().clone();
+        let mut joined = String::new();
+        for y in 0..30 {
+            for x in 0..80 {
+                joined.push_str(buf[(x, y)].symbol());
+            }
+        }
+        assert!(
+            joined.contains("Press up to edit queued messages"),
+            "placeholder missing: {joined:?}"
+        );
     }
 
     #[test]
