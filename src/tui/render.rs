@@ -42,6 +42,14 @@ pub mod theme {
 
     pub const USER_BG: Color = Color::Rgb(55, 55, 55);
 
+    // Queued-message chip palette mirrors upstream's 256-color scheme:
+    //   reconstructed/2.1.117/source/components/messages/HighlightedThinkingText.tsx:24,91,99
+    //   reconstructed/2.1.117/source/components/messages/UserPromptMessage.tsx:113-119
+    // subtle(239) for the pointer, text(231) for the body, userMessageBackground(237) for the band.
+    pub const QUEUE_PREFIX: Color = Color::Indexed(239);
+    pub const QUEUE_TEXT: Color = Color::Indexed(231);
+    pub const QUEUE_BG: Color = Color::Indexed(237);
+
     pub const DIFF_ADDED: Color = Color::Rgb(56, 166, 96);
     pub const DIFF_REMOVED: Color = Color::Rgb(179, 89, 107);
 
@@ -456,42 +464,53 @@ fn draw_queue_lines(f: &mut Frame<'_>, area: Rect, state: &ConversationState) {
         return;
     }
     let total_rows = area.height as usize;
-    let total = state.queued_messages.len();
-    let needs_summary = total > total_rows;
-    let body_slots = if needs_summary {
-        total_rows.saturating_sub(1)
-    } else {
-        total_rows
-    };
+    // Upstream inserts a blank row between the streaming/loading trailer and
+    // the queue chip (context/QueuedMessageContext.tsx:27 `marginTop={1}`).
+    let body_budget = total_rows.saturating_sub(1);
 
     let mut lines: Vec<Line<'_>> = Vec::with_capacity(total_rows);
-    for msg in state.queued_messages.iter().take(body_slots) {
+    lines.push(Line::from(""));
+    for msg in state.queued_messages.iter().take(body_budget) {
         let first_line = msg.lines().next().unwrap_or("");
         lines.push(queue_preview_row(first_line, area.width));
-    }
-    if needs_summary {
-        let remaining = total.saturating_sub(body_slots);
-        lines.push(queue_preview_row(
-            &format!("… {remaining} more queued"),
-            area.width,
-        ));
     }
 
     f.render_widget(Paragraph::new(lines), area);
 }
 
 fn queue_preview_row(body: &str, width: u16) -> Line<'static> {
+    // paddingX=2 on the chip — components/messages/QueuedMessage.tsx:4,24.
+    const SIDE_PAD: usize = 2;
     let prefix = "❯ ";
-    let style = Style::default()
-        .fg(theme::MUTED)
-        .add_modifier(Modifier::DIM);
+    let prefix_style = Style::default()
+        .fg(theme::QUEUE_PREFIX)
+        .bg(theme::QUEUE_BG);
+    let body_style = Style::default()
+        .fg(theme::QUEUE_TEXT)
+        .bg(theme::QUEUE_BG);
+    let pad_style = Style::default().bg(theme::QUEUE_BG);
+
     let prefix_cols = prefix.chars().count();
-    let max_body_cols = (width as usize).saturating_sub(prefix_cols);
+    let width_usize = width as usize;
+    let reserved = SIDE_PAD.saturating_mul(2).saturating_add(prefix_cols);
+    let max_body_cols = width_usize.saturating_sub(reserved);
     let preview = truncate_for_width(body, max_body_cols);
-    Line::from(vec![
-        Span::styled(prefix.to_string(), style),
-        Span::styled(preview, style),
-    ])
+    let preview_cols = preview.chars().count();
+
+    let pad = " ".repeat(SIDE_PAD);
+    let mut spans = vec![
+        Span::styled(pad.clone(), pad_style),
+        Span::styled(prefix.to_string(), prefix_style),
+        Span::styled(preview, body_style),
+    ];
+    // Extend the bg band through the trailing padding and any unused columns,
+    // so the shaded chip spans the full width of the queue slot.
+    let used = SIDE_PAD.saturating_add(prefix_cols).saturating_add(preview_cols);
+    let trailing = width_usize.saturating_sub(used);
+    if trailing > 0 {
+        spans.push(Span::styled(" ".repeat(trailing), pad_style));
+    }
+    Line::from(spans)
 }
 
 fn truncate_for_width(s: &str, max_cols: usize) -> String {
@@ -1176,17 +1195,19 @@ mod tests {
     }
 
     #[test]
-    fn queue_summarizes_overflow() {
+    fn draw_queue_lines_renders_all_messages_no_overflow_summary_at_three() {
         use super::super::state::ConversationState;
         let mut st = ConversationState::new();
-        for i in 0..7 {
-            st.queued_messages.push(format!("msg-{i}"));
-        }
+        st.queued_messages.push("msg-0".into());
+        st.queued_messages.push("msg-1".into());
+        st.queued_messages.push("msg-2".into());
 
+        // slot = count + 1 margin row (matches layout.rs QUEUE_CHROME_ROWS).
         let s = render_queue_lines_to_string(&st, 80, 4);
         assert!(s.contains("❯ msg-0"), "rendered: {s:?}");
         assert!(s.contains("❯ msg-1"), "rendered: {s:?}");
-        assert!(s.contains("… 4 more queued"), "rendered: {s:?}");
+        assert!(s.contains("❯ msg-2"), "rendered: {s:?}");
+        assert!(!s.contains("more queued"), "overflow summary leaked: {s:?}");
     }
 
     #[test]
@@ -1199,6 +1220,64 @@ mod tests {
         let s = render_queue_lines_to_string(&st, 40, 2);
         assert!(s.contains("❯ "), "chevron missing: {s:?}");
         assert!(s.contains('…'), "ellipsis missing: {s:?}");
+    }
+
+    #[test]
+    fn queue_preview_row_renders_with_upstream_colors_and_no_dim() {
+        use super::super::state::ConversationState;
+        use ratatui::backend::TestBackend;
+        use ratatui::layout::Rect;
+        use ratatui::style::Color;
+        use ratatui::Terminal;
+
+        let mut st = ConversationState::new();
+        st.queued_messages.push("queued msg".into());
+
+        let width: u16 = 40;
+        let height: u16 = 2;
+        let backend = TestBackend::new(width, height);
+        let mut term = Terminal::new(backend).expect("terminal");
+        term.draw(|f| {
+            let area = Rect::new(0, 0, width, height);
+            draw_queue_lines(f, area, &st);
+        })
+        .unwrap();
+        let buf = term.backend().buffer().clone();
+
+        // Row 0 is the margin-top blank, row 1 holds the chip.
+        let chip_row: u16 = 1;
+        let pad_cell = &buf[(0, chip_row)];
+        assert_eq!(pad_cell.bg, Color::Indexed(237), "leading pad bg: {:?}", pad_cell);
+        assert!(
+            !pad_cell.modifier.contains(Modifier::DIM),
+            "leading pad carries DIM: {:?}",
+            pad_cell
+        );
+
+        // Prefix glyph sits at x=2 after the 2-col left pad.
+        let prefix_cell = &buf[(2, chip_row)];
+        assert_eq!(prefix_cell.symbol(), "❯", "prefix glyph: {:?}", prefix_cell);
+        assert_eq!(prefix_cell.fg, Color::Indexed(239), "prefix fg: {:?}", prefix_cell);
+        assert_eq!(prefix_cell.bg, Color::Indexed(237), "prefix bg: {:?}", prefix_cell);
+        assert!(
+            !prefix_cell.modifier.contains(Modifier::DIM),
+            "prefix carries DIM: {:?}",
+            prefix_cell
+        );
+
+        // Body cell right after "❯ " (prefix at x=2, space at x=3, body at x=4).
+        let body_cell = &buf[(4, chip_row)];
+        assert_eq!(body_cell.fg, Color::Indexed(231), "body fg: {:?}", body_cell);
+        assert_eq!(body_cell.bg, Color::Indexed(237), "body bg: {:?}", body_cell);
+        assert!(
+            !body_cell.modifier.contains(Modifier::DIM),
+            "body carries DIM: {:?}",
+            body_cell
+        );
+
+        // Trailing cell at the right edge still wears the bg band.
+        let tail_cell = &buf[(width - 1, chip_row)];
+        assert_eq!(tail_cell.bg, Color::Indexed(237), "trailing bg: {:?}", tail_cell);
     }
 
     #[test]

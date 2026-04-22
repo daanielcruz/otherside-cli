@@ -34,8 +34,6 @@ pub struct FrameSlots {
     pub info: Rect,
 }
 
-pub const QUEUE_ROWS_CAP: u16 = 5;
-
 pub const QUEUE_CHROME_ROWS: u16 = 1;
 
 pub fn split_frame(
@@ -45,8 +43,10 @@ pub fn split_frame(
     popup_rows: u16,
 ) -> FrameSlots {
 
+    // Upstream only caps user-typed queued messages in task-notification mode
+    // (PromptInputQueuedCommands.tsx:40). For regular queued input there is no
+    // cap, so we render every entry — the terminal height bounds it anyway.
     let message_rows: u16 = (queue_count as u16)
-        .min(QUEUE_ROWS_CAP)
         .saturating_mul(u16::from(streaming_active));
     let queue_rows: u16 = if message_rows > 0 {
         message_rows + QUEUE_CHROME_ROWS
@@ -194,12 +194,9 @@ mod tests {
     }
 
     #[test]
-    fn queue_message_rows_cap_at_five() {
+    fn queue_slot_grows_uncapped_for_user_messages() {
         let slots = split_frame(area(40), true, 12, 0);
-        assert_eq!(
-            slots.queue.unwrap().height,
-            QUEUE_ROWS_CAP + QUEUE_CHROME_ROWS
-        );
+        assert_eq!(slots.queue.unwrap().height, 12 + QUEUE_CHROME_ROWS);
     }
 
     #[test]
