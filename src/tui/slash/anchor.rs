@@ -20,7 +20,7 @@ pub fn handle(name: &str, args: &str, state: &mut ConversationState) -> SlashOut
     }
     let result = match lower.as_str() {
         "branch" => {
-            "session branch lands with persistence (spec 008)".to_string()
+            "session fork is not implemented — requires transcript persistence".to_string()
         }
         "context" => context_result(state),
         other => format!("unhandled anchor slash: /{other}"),
@@ -109,8 +109,20 @@ mod tests {
         let hist = st.history_for_request();
         let dump = format!("{hist:?}");
         assert!(
-            !dump.contains("session branch") && !dump.contains("/branch"),
+            !dump.contains("session fork") && !dump.contains("/branch"),
             "branch anchor text leaked into history_for_request: {dump}",
+        );
+    }
+
+    #[test]
+    fn branch_anchor_is_honest_about_not_being_implemented() {
+        let mut st = ConversationState::default();
+        handle("branch", "", &mut st);
+        let last = st.messages.last().unwrap();
+        assert!(
+            last.content.contains("not implemented"),
+            "the /branch anchor must tell the user the feature is not implemented, not ship an internal spec reference: got {}",
+            last.content
         );
     }
 
