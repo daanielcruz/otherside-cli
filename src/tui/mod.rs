@@ -2217,6 +2217,53 @@ mod settings_edit_tests {
     }
 
     #[test]
+    fn effort_row_reflects_new_provider_after_switch() {
+        // Regression pin: flipping provider must change the effort cycle
+        // space because each provider's model catalog carries its own
+        // supported_efforts. Kimi advertises only "auto" — cycling Effort
+        // under Kimi must land on "auto", not a Claude-only level.
+        use crate::config::providers::ProviderId;
+        use crate::config::settings::PermissionMode;
+
+        let mut st = ConversationState::default();
+        st.session.permission_mode = PermissionMode::Default;
+        st.session.model = "claude-opus-4-7[1m]".into();
+        st.provider_id = ProviderId::ClaudeCode;
+
+        let claude_efforts = crate::models::catalog::by_id(&st.session.model)
+            .map(|m| m.supported_efforts)
+            .unwrap();
+        assert!(
+            claude_efforts.len() > 1,
+            "precondition: opus exposes multi-level effort; got {claude_efforts:?}"
+        );
+
+        st.switch_provider(ProviderId::Kimi);
+        assert_eq!(st.session.model, "kimi-for-coding");
+
+        let kimi_efforts = crate::models::catalog::by_id(&st.session.model)
+            .map(|m| m.supported_efforts)
+            .unwrap();
+        assert_eq!(
+            kimi_efforts,
+            &["auto"],
+            "Kimi effort catalog must dominate post-switch; got {kimi_efforts:?}"
+        );
+
+        st.session.effort_label = None;
+        st.active_menu = Some(OverlayMenu::new_settings(SettingsTab::Config, &st));
+        if let Some(m) = st.active_menu.as_mut() {
+            focus_row(m, "Effort");
+        }
+        edit_settings_row(&mut st, 1);
+        assert_eq!(
+            st.session.effort_label,
+            Some("auto"),
+            "Kimi only supports auto — Effort cycle must land on it"
+        );
+    }
+
+    #[test]
     fn paste_event_injects_into_prompt_as_one_blob() {
         let mut st = ConversationState::default();
         super::handle_paste("hello\r\nworld\n!", &mut st);
