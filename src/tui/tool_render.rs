@@ -52,7 +52,7 @@ fn relativize_path(fp: &str) -> String {
     fp.to_string()
 }
 
-fn format_number_compact(n: u64) -> String {
+pub fn format_number_compact(n: u64) -> String {
     if n < 1_000 {
         return n.to_string();
     }

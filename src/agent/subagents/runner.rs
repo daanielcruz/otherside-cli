@@ -44,6 +44,17 @@ impl LoopObserver for NestedObserver {
         }
     }
 
+    fn on_usage(
+        &self,
+        input_tokens: Option<u64>,
+        output_tokens: Option<u64>,
+    ) -> impl std::future::Future<Output = ControlFlow> + Send + '_ {
+        async move {
+            self.emitter.on_usage(input_tokens, output_tokens);
+            ControlFlow::Continue
+        }
+    }
+
     fn on_stream_error<'a>(&'a self, _err: &'a Error) -> impl std::future::Future<Output = ()> + Send + 'a {
         async move {}
     }
@@ -196,5 +207,6 @@ struct NullEmitter;
 impl NestedEmitter for NullEmitter {
     fn on_tool_start(&self, _name: &str, _args: &Value) {}
     fn on_tool_finish(&self, _success: bool) {}
+    fn on_usage(&self, _input_tokens: Option<u64>, _output_tokens: Option<u64>) {}
 }
 

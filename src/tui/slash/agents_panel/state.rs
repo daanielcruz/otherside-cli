@@ -22,6 +22,8 @@ impl Tab {
 pub struct RunningRow {
     pub name: String,
     pub runtime_secs: u64,
+    pub description: Option<String>,
+    pub tokens: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -74,6 +76,8 @@ impl AgentsPanelState {
             .map(|r| RunningRow {
                 name: r.name.clone(),
                 runtime_secs: r.runtime_secs(),
+                description: r.description.clone(),
+                tokens: r.tokens,
             })
             .collect();
 
@@ -180,6 +184,24 @@ mod tests {
                 "library missing {expected}: {names:?}"
             );
         }
+    }
+
+    #[test]
+    fn running_row_carries_description_and_tokens_from_record() {
+        let store = TaskStore::new();
+        let mut record = crate::tasks::TaskRecord::new_agent(
+            crate::tasks::TaskId::from_string("tid-1"),
+            "Explore".to_string(),
+            "prompt body".to_string(),
+        );
+        record.description = Some("Quick lookup".into());
+        record.tokens = 1234;
+        store.insert(record);
+        let defs = registry::all();
+        let st = AgentsPanelState::new(&store, defs);
+        let row = st.running.first().expect("running row present");
+        assert_eq!(row.description.as_deref(), Some("Quick lookup"));
+        assert_eq!(row.tokens, 1234);
     }
 
     #[test]

@@ -93,12 +93,15 @@ fn running_body(state: &AgentsPanelState) -> Vec<Line<'static>> {
             } else {
                 Style::default().fg(theme::TEXT)
             };
+            let mut segments: Vec<String> = vec![row.name.clone()];
+            if let Some(desc) = &row.description {
+                segments.push(desc.clone());
+            }
+            segments.push(format!("{}s", row.runtime_secs));
+            segments.push(format!("{} tokens", crate::tui::tool_render::format_number_compact(row.tokens)));
             lines.push(Line::from(vec![
                 Span::styled(prefix.to_string(), style),
-                Span::styled(
-                    format!("{} · running for {}s", row.name, row.runtime_secs),
-                    style,
-                ),
+                Span::styled(segments.join(" · "), style),
             ]));
         }
     }

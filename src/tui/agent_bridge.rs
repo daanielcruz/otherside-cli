@@ -28,6 +28,13 @@ impl NestedEmitter for StreamEmitter {
     fn on_tool_finish(&self, success: bool) {
         let _ = self.tx.try_send(StreamEvent::NestedToolFinish { success });
     }
+
+    fn on_usage(&self, input_tokens: Option<u64>, output_tokens: Option<u64>) {
+        let _ = self.tx.try_send(StreamEvent::NestedUsage {
+            input_tokens,
+            output_tokens,
+        });
+    }
 }
 
 pub(super) struct TuiDispatcher {

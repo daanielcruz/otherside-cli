@@ -85,6 +85,11 @@ enum StreamEvent {
     NestedToolFinish {
         success: bool,
     },
+
+    NestedUsage {
+        input_tokens: Option<u64>,
+        output_tokens: Option<u64>,
+    },
 }
 
 pub async fn run(
@@ -310,6 +315,9 @@ async fn event_loop(
                     }
                     Some(StreamEvent::NestedToolFinish { success }) => {
                         st.push_nested_tool_finish(success);
+                    }
+                    Some(StreamEvent::NestedUsage { input_tokens, output_tokens }) => {
+                        st.push_nested_usage(input_tokens, output_tokens);
                     }
                     None => {
 

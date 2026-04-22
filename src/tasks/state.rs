@@ -58,6 +58,10 @@ pub struct TaskRecord {
     pub rendered_completion_line: bool,
 
     pub subagent_type: Option<String>,
+
+    pub description: Option<String>,
+
+    pub tokens: u64,
 }
 
 impl TaskRecord {
@@ -79,6 +83,8 @@ impl TaskRecord {
             tool_use_id: None,
             rendered_completion_line: false,
             subagent_type: None,
+            description: None,
+            tokens: 0,
         }
     }
 
@@ -97,6 +103,8 @@ impl TaskRecord {
             tool_use_id: None,
             rendered_completion_line: false,
             subagent_type: None,
+            description: None,
+            tokens: 0,
         }
     }
 

@@ -490,6 +490,11 @@ impl ConversationState {
                     .and_then(|v| v.as_str())
                     .filter(|s| !s.is_empty())
                     .map(|s| s.to_string());
+                record.description = args
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string());
             }
             self.tasks.insert(record);
         }
@@ -531,6 +536,23 @@ impl ConversationState {
             if let Some(last) = parent.nested_entries.iter_mut().rev().find(|e| e.running) {
                 last.running = false;
             }
+        }
+    }
+
+    pub fn push_nested_usage(&mut self, input_tokens: Option<u64>, output_tokens: Option<u64>) {
+        let delta = input_tokens.unwrap_or(0).saturating_add(output_tokens.unwrap_or(0));
+        if delta == 0 {
+            return;
+        }
+        let parent_id: Option<String> = self
+            .active_tool_calls
+            .iter()
+            .rev()
+            .find(|e| e.name == "Agent" && matches!(e.status, ToolStatus::Running))
+            .map(|e| e.id.clone());
+        if let Some(id) = parent_id {
+            let task_id = crate::tasks::TaskId::from_string(id);
+            self.tasks.accumulate_tokens(&task_id, delta);
         }
     }
 

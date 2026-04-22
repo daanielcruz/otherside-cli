@@ -141,6 +141,13 @@ impl TaskStore {
             .any(|r| matches!(r.state, TaskState::Running) && !r.is_backgrounded)
     }
 
+    pub fn accumulate_tokens(&self, id: &TaskId, delta: u64) {
+        let mut map = self.inner.write().expect("task store rwlock poisoned");
+        if let Some(r) = map.get_mut(id) {
+            r.tokens = r.tokens.saturating_add(delta);
+        }
+    }
+
     pub fn any_backgrounded(&self) -> bool {
         self.inner
             .read()
