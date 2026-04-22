@@ -4,7 +4,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
-use super::state::{AgentsPanelState, Tab};
+use super::state::{AgentsPanelState, CompletedRow, Tab};
+use crate::tasks::TaskState;
 use crate::tui::render::theme;
 
 const FOOTER_HINT: &str = "←/→ switch tabs · ↑↓ navigate · Enter select · Esc close";
@@ -77,17 +78,14 @@ fn chip(label: String, selected: bool) -> Span<'static> {
 }
 
 fn running_body(state: &AgentsPanelState) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = Vec::new();
     if state.running.is_empty() {
-        return vec![Line::from(Span::styled(
+        lines.push(Line::from(Span::styled(
             "No subagents are currently running.",
             Style::default().fg(theme::MUTED),
-        ))];
-    }
-    state
-        .running
-        .iter()
-        .enumerate()
-        .map(|(i, row)| {
+        )));
+    } else {
+        for (i, row) in state.running.iter().enumerate() {
             let selected = i == state.running_cursor;
             let prefix = if selected { "▶ " } else { "  " };
             let style = if selected {
@@ -95,15 +93,43 @@ fn running_body(state: &AgentsPanelState) -> Vec<Line<'static>> {
             } else {
                 Style::default().fg(theme::TEXT)
             };
-            Line::from(vec![
+            lines.push(Line::from(vec![
                 Span::styled(prefix.to_string(), style),
                 Span::styled(
                     format!("{} · running for {}s", row.name, row.runtime_secs),
                     style,
                 ),
-            ])
-        })
-        .collect()
+            ]));
+        }
+    }
+
+    if !state.recently_completed.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "Recently completed",
+            Style::default()
+                .fg(theme::MUTED)
+                .add_modifier(Modifier::BOLD),
+        )));
+        for row in &state.recently_completed {
+            lines.push(completed_row_line(row));
+        }
+    }
+
+    lines
+}
+
+fn completed_row_line(row: &CompletedRow) -> Line<'static> {
+    let (glyph, glyph_color) = match row.status {
+        TaskState::Completed => ("✓ ", theme::SUCCESS),
+        TaskState::Failed => ("✗ ", theme::ERROR),
+        TaskState::Stopped => ("■ ", theme::MUTED),
+        _ => ("  ", theme::MUTED),
+    };
+    Line::from(vec![
+        Span::styled(glyph.to_string(), Style::default().fg(glyph_color)),
+        Span::styled(row.name.clone(), Style::default().fg(theme::MUTED)),
+    ])
 }
 
 fn library_body(state: &AgentsPanelState) -> Vec<Line<'static>> {

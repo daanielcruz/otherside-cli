@@ -89,6 +89,23 @@ impl TaskStore {
         v
     }
 
+    pub fn list_recent_terminal(&self, kind: TaskKind, limit: usize) -> Vec<TaskRecord> {
+        if limit == 0 {
+            return Vec::new();
+        }
+        let mut v: Vec<TaskRecord> = self
+            .inner
+            .read()
+            .expect("task store rwlock poisoned")
+            .values()
+            .filter(|r| r.kind == kind && r.state.is_terminal())
+            .cloned()
+            .collect();
+        v.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+        v.truncate(limit);
+        v
+    }
+
     pub fn counts_active(&self) -> TaskCounts {
         let map = self.inner.read().expect("task store rwlock poisoned");
         let mut c = TaskCounts::default();

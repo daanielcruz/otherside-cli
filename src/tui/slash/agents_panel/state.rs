@@ -1,5 +1,7 @@
 use crate::agent::subagents::registry::AgentDefinition;
-use crate::tasks::{TaskKind, TaskStore};
+use crate::tasks::{TaskKind, TaskState, TaskStore};
+
+const RECENTLY_COMPLETED_LIMIT: usize = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
@@ -23,6 +25,12 @@ pub struct RunningRow {
 }
 
 #[derive(Debug, Clone)]
+pub struct CompletedRow {
+    pub name: String,
+    pub status: TaskState,
+}
+
+#[derive(Debug, Clone)]
 pub struct LibraryRow {
     pub name: String,
     pub model: String,
@@ -33,6 +41,7 @@ pub struct AgentsPanelState {
     pub tab: Tab,
     pub running_cursor: usize,
     pub running: Vec<RunningRow>,
+    pub recently_completed: Vec<CompletedRow>,
     pub library: Vec<LibraryRow>,
 }
 
@@ -63,6 +72,15 @@ impl AgentsPanelState {
             })
             .collect();
 
+        let recently_completed: Vec<CompletedRow> = tasks
+            .list_recent_terminal(TaskKind::Agent, RECENTLY_COMPLETED_LIMIT)
+            .into_iter()
+            .map(|r| CompletedRow {
+                name: r.name.clone(),
+                status: r.state,
+            })
+            .collect();
+
         let mut library: Vec<LibraryRow> = defs
             .iter()
             .map(|d| LibraryRow {
@@ -76,6 +94,7 @@ impl AgentsPanelState {
             tab: Tab::Running,
             running_cursor: 0,
             running,
+            recently_completed,
             library,
         }
     }
@@ -170,6 +189,43 @@ mod tests {
     #[test]
     fn short_model_name_unknown_canonical_returns_verbatim() {
         assert_eq!(short_model_name(Some("custom-model-9")), "custom-model-9");
+    }
+
+    #[test]
+    fn recently_completed_populated_from_terminal_agent_tasks() {
+        use crate::tasks::id::TaskId;
+        use crate::tasks::state::{TaskRecord, TaskState};
+        let store = TaskStore::new();
+        let mut r = TaskRecord::new_agent(
+            TaskId::from_string("a1"),
+            "Quick sanity test agent".into(),
+            "prompt".into(),
+        );
+        r.state = TaskState::Completed;
+        store.insert(r);
+        let st = AgentsPanelState::new(&store, registry::all());
+        assert_eq!(st.recently_completed.len(), 1);
+        assert_eq!(st.recently_completed[0].name, "Quick sanity test agent");
+        assert!(matches!(
+            st.recently_completed[0].status,
+            TaskState::Completed
+        ));
+    }
+
+    #[test]
+    fn recently_completed_ignores_shell_tasks() {
+        use crate::tasks::id::TaskId;
+        use crate::tasks::state::{TaskRecord, TaskState};
+        let store = TaskStore::new();
+        let mut r = TaskRecord::new_shell(
+            TaskId::from_string("s1"),
+            "ls".into(),
+            "ls".into(),
+        );
+        r.state = TaskState::Completed;
+        store.insert(r);
+        let st = AgentsPanelState::new(&store, registry::all());
+        assert!(st.recently_completed.is_empty());
     }
 
     #[test]
