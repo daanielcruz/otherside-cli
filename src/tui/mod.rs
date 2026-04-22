@@ -1196,7 +1196,7 @@ fn handle_agents_panel_key(k: KeyEvent, st: &mut ConversationState) {
     match handle_key(k, panel) {
         KeyOutcome::Dismiss => {
             st.active_agents_panel = None;
-            st.push_system_note("⎿ Agents dialog dismissed");
+            st.push_anchor("agents", "", "Agents dialog dismissed", DisplayOrigin::Chrome);
         }
         KeyOutcome::Consumed => {}
     }
@@ -2018,6 +2018,23 @@ mod panel_anchor_tests {
         emit_panel_dismiss_anchor(&mut st, &menu, Some(&outcome));
         let (_, anchor) = anchor_lines(&st);
         assert_eq!(anchor, "⎿  Set permission mode to plan");
+    }
+
+    #[test]
+    fn agents_panel_dismiss_emits_paired_echo_plus_anchor() {
+        use crate::agent::subagents::registry;
+        use crate::tui::slash::agents_panel::AgentsPanelState;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut st = ConversationState::default();
+        st.active_agents_panel = Some(AgentsPanelState::new(&st.tasks, registry::all()));
+        let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        handle_agents_panel_key(esc, &mut st);
+
+        assert!(st.active_agents_panel.is_none(), "panel must close on Esc");
+        let (echo, anchor) = anchor_lines(&st);
+        assert_eq!(echo, "/agents", "dismiss must emit paired `/agents` echo, not an orphan note (bug W)");
+        assert_eq!(anchor, "⎿  Agents dialog dismissed");
     }
 
     #[test]
