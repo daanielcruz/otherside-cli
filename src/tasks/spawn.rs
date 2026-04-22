@@ -8,6 +8,15 @@ use crate::agent::subagents::{registry::AgentDefinition, AgentInvocation, Subage
 
 use super::{id::TaskId, state::TaskRecord, state::TaskState, store::TaskStore};
 
+pub struct SpawnOutcome {
+    pub task_id: TaskId,
+    /// Upstream-shape agentId (`a<16-hex>`) — surfaced to the model in the
+    /// `"Async agent launched successfully. agentId: …"` text. Separate
+    /// from the internal `task_id` TaskStore key so the Anthropic tool_use_id
+    /// never leaks into user-visible output.
+    pub agent_id: String,
+}
+
 pub fn spawn_background_agent(
     runner: Arc<dyn SubagentRunner>,
     definition: AgentDefinition,
@@ -17,13 +26,15 @@ pub fn spawn_background_agent(
     store: TaskStore,
     display_name: String,
     tool_use_id: Option<String>,
-) -> TaskId {
+) -> SpawnOutcome {
     let id = TaskId::generate();
+    let agent_id = super::id::create_agent_id(None);
     let mut record = TaskRecord::new_agent(id.clone(), display_name, prompt.clone());
 
     record.state = TaskState::Backgrounded;
     record.is_backgrounded = true;
     record.tool_use_id = tool_use_id;
+    record.agent_id = Some(agent_id.clone());
     record.subagent_type = Some(definition.name.clone());
     store.insert(record);
 
@@ -34,7 +45,7 @@ pub fn spawn_background_agent(
         finalize(&store_for_task, &id_for_task, result);
     });
 
-    id
+    SpawnOutcome { task_id: id, agent_id }
 }
 
 fn finalize(
@@ -140,7 +151,7 @@ mod tests {
         let store = TaskStore::new();
         let runner: Arc<dyn SubagentRunner> = FakeRunner::ok("hello world");
         let started = std::time::Instant::now();
-        let id = spawn_background_agent(
+        let SpawnOutcome { task_id: id, .. } = spawn_background_agent(
             runner,
             def(),
             "hi".into(),
@@ -161,7 +172,7 @@ mod tests {
     async fn spawn_transitions_to_completed_with_output() {
         let store = TaskStore::new();
         let runner: Arc<dyn SubagentRunner> = FakeRunner::ok("agent output");
-        let id = spawn_background_agent(
+        let SpawnOutcome { task_id: id, .. } = spawn_background_agent(
             runner,
             def(),
             "hi".into(),
@@ -185,7 +196,7 @@ mod tests {
     async fn spawn_transitions_to_failed_on_runner_error() {
         let store = TaskStore::new();
         let runner: Arc<dyn SubagentRunner> = FakeRunner::err("boom");
-        let id = spawn_background_agent(
+        let SpawnOutcome { task_id: id, .. } = spawn_background_agent(
             runner,
             def(),
             "hi".into(),
@@ -227,7 +238,7 @@ mod tests {
     async fn spawn_handles_block_in_place_runner_pattern() {
         let store = TaskStore::new();
         let runner: Arc<dyn SubagentRunner> = Arc::new(BlockInPlaceRunner);
-        let id = spawn_background_agent(
+        let SpawnOutcome { task_id: id, .. } = spawn_background_agent(
             runner,
             def(),
             "hi".into(),

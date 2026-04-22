@@ -55,6 +55,14 @@ pub struct TaskRecord {
 
     pub tool_use_id: Option<String>,
 
+    /// Upstream-shape agentId (`a<16-hex>`) generated via
+    /// `tasks::id::create_agent_id` at spawn time. Separate from `id`
+    /// (the internal TaskStore key) and `tool_use_id` (the Anthropic
+    /// wire-level identifier used for tool_result pairing). This is the
+    /// identifier the user sees in "Async agent launched successfully."
+    /// and the basis for `getTaskOutputPath` on disk.
+    pub agent_id: Option<String>,
+
     pub rendered_completion_line: bool,
 
     pub subagent_type: Option<String>,
@@ -81,6 +89,7 @@ impl TaskRecord {
             inject_on_next_turn: false,
             exit_code: None,
             tool_use_id: None,
+            agent_id: None,
             rendered_completion_line: false,
             subagent_type: None,
             description: None,
@@ -101,6 +110,7 @@ impl TaskRecord {
             inject_on_next_turn: false,
             exit_code: None,
             tool_use_id: None,
+            agent_id: None,
             rendered_completion_line: false,
             subagent_type: None,
             description: None,

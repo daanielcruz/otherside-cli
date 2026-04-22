@@ -4,6 +4,7 @@ use std::fmt;
 
 use rand::distr::{Alphanumeric, SampleString};
 use rand::rng;
+use rand::RngCore;
 
 pub const TASK_ID_LEN: usize = 9;
 
@@ -23,6 +24,26 @@ impl TaskId {
 
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+/// Build an upstream-shape agentId — `a<16-hex>` or `a<label>-<16-hex>`.
+///
+/// Mirrors upstream `utils/uuid.ts:24 createAgentId` exactly:
+///   `a${label ? label + '-' : ''}${randomBytes(8).toString('hex')}`
+///
+/// This is NOT the internal TaskId used as the TaskStore HashMap key (that
+/// stays keyed by the Anthropic tool_use_id for lookup compatibility with
+/// begin_tool_call/finish_tool_call sites). It is the identifier surfaced
+/// in "Async agent launched successfully." and the basis for the on-disk
+/// task-output path.
+pub fn create_agent_id(label: Option<&str>) -> String {
+    let mut bytes = [0u8; 8];
+    rng().fill_bytes(&mut bytes);
+    let hex: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
+    match label {
+        Some(l) if !l.is_empty() => format!("a{l}-{hex}"),
+        _ => format!("a{hex}"),
     }
 }
 
@@ -63,5 +84,47 @@ mod tests {
         let a = TaskId::generate();
         let b = TaskId::generate();
         assert_ne!(a, b, "consecutive generate() returned the same id");
+    }
+
+    #[test]
+    fn create_agent_id_matches_upstream_no_label_shape() {
+        // Upstream utils/uuid.ts:24 — `a${randomBytes(8).toString('hex')}`
+        // → 1 prefix char + 16 hex chars = 17 total.
+        for _ in 0..64 {
+            let id = create_agent_id(None);
+            assert_eq!(id.len(), 17, "unexpected len: {id} ({})", id.len());
+            let mut chars = id.chars();
+            assert_eq!(chars.next(), Some('a'), "missing `a` prefix: {id}");
+            for c in chars {
+                assert!(c.is_ascii_hexdigit(), "non-hex char in suffix: {id}");
+                assert!(!c.is_ascii_uppercase(), "uppercase hex breaks parity: {id}");
+            }
+        }
+    }
+
+    #[test]
+    fn create_agent_id_matches_upstream_labeled_shape() {
+        // Upstream: `a${label}-${hex}` — e.g. `acompact-a3f2c1b4d5e6f7a8`.
+        let id = create_agent_id(Some("compact"));
+        assert!(id.starts_with("acompact-"), "bad prefix: {id}");
+        let suffix = &id["acompact-".len()..];
+        assert_eq!(suffix.len(), 16, "suffix should be 16 hex chars: {suffix}");
+        assert!(suffix.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+    }
+
+    #[test]
+    fn create_agent_id_empty_label_falls_back_to_no_label() {
+        let id = create_agent_id(Some(""));
+        assert_eq!(id.len(), 17);
+        assert!(id.starts_with('a'));
+        // No `-` sentinel when label was empty.
+        assert!(!id.contains('-'), "empty label must not leave a dangling dash: {id}");
+    }
+
+    #[test]
+    fn create_agent_id_does_not_repeat() {
+        let a = create_agent_id(None);
+        let b = create_agent_id(None);
+        assert_ne!(a, b);
     }
 }

@@ -73,7 +73,7 @@ async fn background_agent_auto_trigger_pipeline() {
     let runner: Arc<dyn SubagentRunner> = Arc::new(BlockOnRunner {
         text: "agent finished its work".into(),
     });
-    let id = spawn_background_agent(
+    let outcome = spawn_background_agent(
         runner,
         def(),
         "summarize docs/roadmap.md".into(),
@@ -83,6 +83,7 @@ async fn background_agent_auto_trigger_pipeline() {
         "test-agent".into(),
         Some("toolu_test_pipeline".into()),
     );
+    let id = outcome.task_id;
     let id_str = id.as_str().to_string();
 
     let mut done = false;

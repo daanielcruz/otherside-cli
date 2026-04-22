@@ -355,14 +355,19 @@ async fn dispatch_agent_cancellable(
         .get("description")
         .and_then(|v| v.as_str())
         .unwrap_or("");
+    // Emit an upstream-shape agentId (`a<16hex>`) to the model instead of the
+    // Anthropic tool_use_id. Reusing `toolu_…` leaked the wire identifier into
+    // user-visible text and the agent-log path, neither of which match
+    // upstream (`utils/uuid.ts:24 createAgentId`).
+    let agent_id = crate::tasks::id::create_agent_id(None);
     let upstream_text = format!(
-        "Async agent launched successfully.\nagentId: {id} (internal ID - do not mention to user. The agent is working in the background. You will be notified automatically when it completes.)\n\nDo not call TaskOutput or any other tool to check status — wait for the completion notification.",
-        id = tool_call_id,
+        "Async agent launched successfully.\nagentId: {agent_id} (internal ID - do not mention to user. The agent is working in the background. You will be notified automatically when it completes.)\n\nDo not call TaskOutput or any other tool to check status — wait for the completion notification.",
     );
     Ok(serde_json::json!({
         "status": "backgrounded",
         "task_id": tool_call_id,
         "tool_use_id": tool_call_id,
+        "agent_id": agent_id,
         "subagent_type": subagent_type,
         "description": description,
         "content": [{

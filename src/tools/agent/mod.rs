@@ -73,7 +73,7 @@ pub fn agent(args: &Value) -> Result<Value, ToolError> {
             };
 
             let tool_use_id = crate::tools::current_tool_call_id();
-            let task_id = crate::tasks::spawn_background_agent(
+            let outcome = crate::tasks::spawn_background_agent(
                 runner,
                 definition.clone(),
                 prompt.to_string(),
@@ -84,14 +84,18 @@ pub fn agent(args: &Value) -> Result<Value, ToolError> {
                 tool_use_id.clone(),
             );
 
+            // Surface the upstream-shape agentId (`a<16hex>`) to the model —
+            // NOT the internal TaskStore key and NOT the Anthropic
+            // tool_use_id. Matches `utils/uuid.ts:24 createAgentId`.
             let upstream_text = format!(
                 "Async agent launched successfully.\nagentId: {agent_id} (internal ID - do not mention to user. Use SendMessage with to: '{agent_id}' to continue this agent.)\nThe agent is working in the background. You will be notified automatically when it completes.",
-                agent_id = task_id.as_str(),
+                agent_id = outcome.agent_id,
             );
             return Ok(json!({
                 "status": "backgrounded",
-                "task_id": task_id.as_str(),
+                "task_id": outcome.task_id.as_str(),
                 "tool_use_id": tool_use_id,
+                "agent_id": outcome.agent_id,
                 "subagent_type": subagent_type,
                 "description": description,
                 "model_requested": invocation.model,
