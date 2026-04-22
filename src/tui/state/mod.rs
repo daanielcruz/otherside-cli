@@ -972,7 +972,7 @@ impl ConversationState {
         self.streaming = false;
         self.request_started_at = None;
         self.turn_verb = None;
-        self.push_system_note("cancelled");
+        self.push_system_note("⎿  Interrupted · What should Claude do instead?");
         true
     }
 
@@ -1675,6 +1675,25 @@ mod tests {
 
         assert!(st.streaming);
         assert_eq!(hist.last().unwrap().content, "queued-a");
+    }
+
+    #[test]
+    fn cancel_stream_emits_upstream_interrupt_trailer() {
+        let mut st = ConversationState::new();
+        st.input = "long prompt".into();
+        st.submit().unwrap();
+        st.append_stream_delta("partial reply");
+
+        let cancelled = st.cancel_stream();
+        assert!(cancelled);
+
+        let last = st.messages.last().unwrap();
+        assert_eq!(last.role, OpenAiChatRole::System);
+        assert_eq!(
+            last.content, "⎿  Interrupted · What should Claude do instead?",
+            "upstream hardcodes this hint at components/InterruptedByUser.tsx:8 + InterruptedHint.tsx:8"
+        );
+        assert!(!st.streaming);
     }
 
     #[test]
