@@ -47,6 +47,12 @@ struct Cli {
     #[arg(long, alias = "dangerously-skip-permissions")]
     yolo: bool,
 
+    #[arg(short = 'c', long = "continue")]
+    continue_last: bool,
+
+    #[arg(long = "resume", value_name = "SESSION_ID", num_args = 0..=1, default_missing_value = "")]
+    resume: Option<String>,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -353,5 +359,26 @@ async fn cmd_tui(cli: &Cli) -> Result<()> {
     } else {
         config::PermissionMode::AcceptEdits
     };
-    tui::run(registry, raw_model, provider_id, permission_mode, settings).await
+
+    let resume_intent = if let Some(id_or_empty) = &cli.resume {
+        if id_or_empty.is_empty() {
+            tui::ResumeIntent::Picker
+        } else {
+            tui::ResumeIntent::Specific(id_or_empty.clone())
+        }
+    } else if cli.continue_last {
+        tui::ResumeIntent::Latest
+    } else {
+        tui::ResumeIntent::None
+    };
+
+    tui::run(
+        registry,
+        raw_model,
+        provider_id,
+        permission_mode,
+        settings,
+        resume_intent,
+    )
+    .await
 }

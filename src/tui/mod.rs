@@ -92,12 +92,22 @@ enum StreamEvent {
     },
 }
 
+#[derive(Debug, Clone, Default)]
+pub enum ResumeIntent {
+    #[default]
+    None,
+    Latest,
+    Specific(String),
+    Picker,
+}
+
 pub async fn run(
     registry: Arc<Registry>,
     raw_model: String,
     provider_id: String,
     initial_permission_mode: crate::config::PermissionMode,
     settings: crate::config::settings::Settings,
+    resume_intent: ResumeIntent,
 ) -> Result<()> {
     let provider = registry
         .get(&provider_id)
@@ -115,6 +125,7 @@ pub async fn run(
         provider_id,
         initial_permission_mode,
         settings,
+        resume_intent,
     )
     .await;
     guard.restore();
@@ -129,6 +140,7 @@ async fn event_loop(
     provider_id: String,
     initial_permission_mode: crate::config::PermissionMode,
     settings: crate::config::settings::Settings,
+    resume_intent: ResumeIntent,
 ) -> Result<()> {
     let mut st =
         ConversationState::new_for_model_with_mode(&base_model, initial_permission_mode);
@@ -139,13 +151,55 @@ async fn event_loop(
 
     match crate::config::config_dir() {
         Ok(cfg_dir) => {
-            match crate::sessions::open_new(&cfg_dir) {
-                Ok(handle) => {
+            let resume_outcome: std::result::Result<
+                Option<(crate::sessions::SessionHandle, Vec<crate::sessions::Record>)>,
+                crate::error::Error,
+            > = match &resume_intent {
+                ResumeIntent::None => Ok(None),
+                ResumeIntent::Picker | ResumeIntent::Latest => {
+                    crate::sessions::resume_latest(&cfg_dir)
+                }
+                ResumeIntent::Specific(id_hex) => {
+                    match crate::sessions::id::SessionId::from_hex(id_hex) {
+                        Some(id) => crate::sessions::resume(&cfg_dir, &id).map(Some),
+                        None => Err(crate::error::Error::Other(format!(
+                            "session id {id_hex:?} is not a valid uuid-like hex"
+                        ))),
+                    }
+                }
+            };
+
+            match resume_outcome {
+                Ok(Some((handle, records))) => {
                     st.session_id = Some(handle.id.clone());
                     st.session_writer = Some(handle.writer);
+                    state::hydrate_from_records(&mut st, &records);
+                }
+                Ok(None) => {
+                    if matches!(resume_intent, ResumeIntent::Latest) {
+                        tracing::info!("--continue: no prior session found, starting fresh");
+                    }
+                    match crate::sessions::open_new(&cfg_dir) {
+                        Ok(handle) => {
+                            st.session_id = Some(handle.id.clone());
+                            st.session_writer = Some(handle.writer);
+                        }
+                        Err(e) => {
+                            tracing::warn!(?e, "session transcript unavailable");
+                        }
+                    }
                 }
                 Err(e) => {
-                    tracing::warn!(?e, "session transcript unavailable");
+                    tracing::warn!(?e, "resume failed; starting fresh session");
+                    match crate::sessions::open_new(&cfg_dir) {
+                        Ok(handle) => {
+                            st.session_id = Some(handle.id.clone());
+                            st.session_writer = Some(handle.writer);
+                        }
+                        Err(e) => {
+                            tracing::warn!(?e, "session transcript unavailable");
+                        }
+                    }
                 }
             }
         }

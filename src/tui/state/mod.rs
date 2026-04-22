@@ -153,6 +153,131 @@ impl ConversationState {
     }
 }
 
+pub fn hydrate_from_records(
+    st: &mut ConversationState,
+    records: &[crate::sessions::Record],
+) {
+    use std::collections::HashMap;
+    use tool_render::ToolStatus;
+
+    let mut pending_tools: HashMap<String, ToolCallEntry> = HashMap::new();
+    let mut last_usage: Option<(u64, u64, u64)> = None;
+
+    for rec in records {
+        match rec {
+            crate::sessions::Record::UserMessage { content, .. } => {
+                st.messages.push(DisplayMessage {
+                    role: OpenAiChatRole::User,
+                    content: content.clone(),
+                    wire_override: None,
+                    origin: DisplayOrigin::Transcript,
+                    tool_calls: Vec::new(),
+                    tool_call_id: None,
+                    is_synthetic: false,
+                });
+            }
+            crate::sessions::Record::AssistantMessage { content, usage, .. } => {
+                if !content.is_empty() {
+                    st.messages.push(DisplayMessage {
+                        role: OpenAiChatRole::Assistant,
+                        content: content.clone(),
+                        wire_override: None,
+                        origin: DisplayOrigin::Transcript,
+                        tool_calls: Vec::new(),
+                        tool_call_id: None,
+                        is_synthetic: false,
+                    });
+                }
+                if let Some(u) = usage {
+                    let input = u.get("input_tokens").and_then(Value::as_u64).unwrap_or(0);
+                    let output = u.get("output_tokens").and_then(Value::as_u64).unwrap_or(0);
+                    let cumulative = u
+                        .get("cumulative_output_tokens")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(output);
+                    last_usage = Some((input, output, cumulative));
+                }
+            }
+            crate::sessions::Record::ToolCall { tool_name, args, call_id, .. } => {
+                pending_tools.insert(
+                    call_id.clone(),
+                    ToolCallEntry {
+                        id: call_id.clone(),
+                        name: tool_name.clone(),
+                        args: args.clone(),
+                        status: ToolStatus::Running,
+                        payload: None,
+                        started_at: Instant::now(),
+                        elapsed_ms: 0,
+                        raw_result: None,
+                        nested_entries: Vec::new(),
+                    },
+                );
+            }
+            crate::sessions::Record::ToolResult { call_id, result, is_error, .. } => {
+                let Some(mut entry) = pending_tools.remove(call_id) else {
+                    continue;
+                };
+                if *is_error {
+                    entry.status = ToolStatus::Error;
+                    let err_str = result.as_str().map(str::to_string).unwrap_or_else(|| result.to_string());
+                    entry.payload = Some(tool_render::payload_from_error(&err_str));
+                } else {
+                    entry.status = ToolStatus::Ok;
+                    entry.payload = tool_render::payload_from_result(
+                        &entry.name,
+                        result,
+                        st.render_verbose,
+                    );
+                    entry.raw_result = Some(result.clone());
+                }
+                st.messages.push(DisplayMessage {
+                    role: OpenAiChatRole::Tool,
+                    content: format_tool_history_entry(&entry),
+                    wire_override: None,
+                    origin: DisplayOrigin::Transcript,
+                    tool_calls: Vec::new(),
+                    tool_call_id: Some(call_id.clone()),
+                    is_synthetic: false,
+                });
+            }
+            crate::sessions::Record::CompactionMark { summary_ref, .. } => {
+                st.messages.push(DisplayMessage {
+                    role: OpenAiChatRole::System,
+                    content: format!("⎿ compacted (summary: {summary_ref})"),
+                    wire_override: None,
+                    origin: DisplayOrigin::Transcript,
+                    tool_calls: Vec::new(),
+                    tool_call_id: None,
+                    is_synthetic: false,
+                });
+            }
+            crate::sessions::Record::HookEvent { .. } => {}
+        }
+    }
+
+    for (_, entry) in pending_tools {
+        st.messages.push(DisplayMessage {
+            role: OpenAiChatRole::Tool,
+            content: format_tool_history_entry(&entry),
+            wire_override: None,
+            origin: DisplayOrigin::Transcript,
+            tool_calls: Vec::new(),
+            tool_call_id: Some(entry.id.clone()),
+            is_synthetic: false,
+        });
+    }
+
+    if let Some((input, output, cumulative)) = last_usage {
+        st.input_tokens = input;
+        st.output_tokens = output;
+        st.cumulative_output_tokens = cumulative;
+    }
+
+    st.scroll_offset = 0;
+    st.sticky_bottom = true;
+}
+
 fn backgroundable_kind(tool_name: &str) -> Option<crate::tasks::TaskKind> {
     match tool_name {
         "Agent" => Some(crate::tasks::TaskKind::Agent),
@@ -2049,5 +2174,116 @@ mod tests {
         assert_eq!(hist[3].content, "Async agent launched successfully.");
         assert_eq!(hist[4].role, OpenAiChatRole::User);
         assert_eq!(hist[4].content, "did it finish?");
+    }
+
+    #[test]
+    fn hydrate_from_records_restores_user_assistant_ordering() {
+        use crate::sessions::Record;
+        let mut st = ConversationState::new();
+        let records = vec![
+            Record::UserMessage {
+                ts: "2026-04-22T10:00:00.000Z".into(),
+                content: "hello".into(),
+            },
+            Record::AssistantMessage {
+                ts: "2026-04-22T10:00:01.000Z".into(),
+                content: "hi there".into(),
+                thinking: None,
+                usage: Some(serde_json::json!({
+                    "input_tokens": 1234,
+                    "output_tokens": 56,
+                    "cumulative_output_tokens": 56,
+                })),
+            },
+        ];
+        super::hydrate_from_records(&mut st, &records);
+        assert_eq!(st.messages.len(), 2);
+        assert_eq!(st.messages[0].role, OpenAiChatRole::User);
+        assert_eq!(st.messages[0].content, "hello");
+        assert_eq!(st.messages[0].origin, DisplayOrigin::Transcript);
+        assert_eq!(st.messages[1].role, OpenAiChatRole::Assistant);
+        assert_eq!(st.messages[1].content, "hi there");
+        assert_eq!(st.input_tokens, 1234);
+        assert_eq!(st.output_tokens, 56);
+        assert_eq!(st.cumulative_output_tokens, 56);
+    }
+
+    #[test]
+    fn hydrate_from_records_pairs_tool_call_and_result() {
+        use crate::sessions::Record;
+        let mut st = ConversationState::new();
+        let records = vec![
+            Record::UserMessage {
+                ts: "2026-04-22T10:00:00.000Z".into(),
+                content: "run ls".into(),
+            },
+            Record::ToolCall {
+                ts: "2026-04-22T10:00:00.100Z".into(),
+                tool_name: "Bash".into(),
+                args: serde_json::json!({"command": "ls"}),
+                call_id: "toolu_1".into(),
+            },
+            Record::ToolResult {
+                ts: "2026-04-22T10:00:00.500Z".into(),
+                call_id: "toolu_1".into(),
+                result: serde_json::json!({"stdout": "a.txt\nb.txt", "exit_code": 0}),
+                is_error: false,
+            },
+            Record::AssistantMessage {
+                ts: "2026-04-22T10:00:01.000Z".into(),
+                content: "two files".into(),
+                thinking: None,
+                usage: None,
+            },
+        ];
+        super::hydrate_from_records(&mut st, &records);
+        assert_eq!(st.messages.len(), 3);
+        assert_eq!(st.messages[0].role, OpenAiChatRole::User);
+        assert_eq!(st.messages[1].role, OpenAiChatRole::Tool);
+        assert_eq!(st.messages[1].tool_call_id.as_deref(), Some("toolu_1"));
+        assert_eq!(st.messages[2].role, OpenAiChatRole::Assistant);
+    }
+
+    #[test]
+    fn hydrate_from_records_marks_error_tool_results() {
+        use crate::sessions::Record;
+        let mut st = ConversationState::new();
+        let records = vec![
+            Record::ToolCall {
+                ts: "2026-04-22T10:00:00.100Z".into(),
+                tool_name: "Bash".into(),
+                args: serde_json::json!({"command": "nope"}),
+                call_id: "toolu_1".into(),
+            },
+            Record::ToolResult {
+                ts: "2026-04-22T10:00:00.500Z".into(),
+                call_id: "toolu_1".into(),
+                result: serde_json::Value::String("command not found".into()),
+                is_error: true,
+            },
+        ];
+        super::hydrate_from_records(&mut st, &records);
+        assert_eq!(st.messages.len(), 1);
+
+        let archive: super::tool_render::ToolCallArchive =
+            serde_json::from_str(&st.messages[0].content).unwrap();
+        assert!(matches!(archive.status, super::tool_render::ToolStatus::Error));
+    }
+
+    #[test]
+    fn hydrate_from_records_skips_orphan_tool_call_without_result() {
+        use crate::sessions::Record;
+        let mut st = ConversationState::new();
+        let records = vec![
+            Record::ToolCall {
+                ts: "2026-04-22T10:00:00.100Z".into(),
+                tool_name: "Bash".into(),
+                args: serde_json::json!({"command": "hung"}),
+                call_id: "toolu_orphan".into(),
+            },
+        ];
+        super::hydrate_from_records(&mut st, &records);
+        assert_eq!(st.messages.len(), 1, "orphan tool call flushed as Running");
+        assert_eq!(st.messages[0].role, OpenAiChatRole::Tool);
     }
 }
