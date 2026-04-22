@@ -75,12 +75,29 @@ pub fn current_provider() -> crate::config::providers::ProviderId {
 /// Tools that upstream hides from the chat UI via
 /// `renderToolUseMessage: () => null` + `userFacingName: () => ''`.
 /// They run (so the agent loop still dispatches them), but no `⏺ Name(args)`
-/// anchor + `⎿ result` row lands in the transcript. Matches upstream
-/// `tools/ToolSearchTool/ToolSearchTool.ts:435-438` and
-/// `tools/TaskOutputTool/TaskOutputTool.tsx:309` (returns null on the
-/// anchor side — chat render is suppressed).
+/// anchor + `⎿ result` row lands in the transcript. Verified against the
+/// reconstructed source:
+///   - ToolSearchTool/ToolSearchTool.ts:435-438
+///   - TaskOutputTool/TaskOutputTool.tsx:309
+///   - TaskGetTool/TaskGetTool.ts:70-72
+///   - TaskCreateTool/TaskCreateTool.ts (renderToolUseMessage → null)
+///   - TaskListTool/TaskListTool.ts (renderToolUseMessage → null)
+///   - TaskUpdateTool/TaskUpdateTool.ts (renderToolUseMessage → null)
+///   - TaskStopTool/TaskStopTool.ts (delegates to UI.tsx which returns null)
+///
+/// These are task-orchestration internals — the Background tasks UI panel
+/// is the user-facing surface, not inline chat rows.
 pub fn is_hidden_tool(name: &str) -> bool {
-    matches!(name, "ToolSearch" | "TaskOutput")
+    matches!(
+        name,
+        "ToolSearch"
+            | "TaskCreate"
+            | "TaskGet"
+            | "TaskList"
+            | "TaskOutput"
+            | "TaskStop"
+            | "TaskUpdate"
+    )
 }
 
 pub fn effective_cwd() -> std::path::PathBuf {

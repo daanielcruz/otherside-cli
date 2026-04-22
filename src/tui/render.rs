@@ -501,20 +501,12 @@ fn draw_prompt(f: &mut Frame<'_>, area: Rect, state: &ConversationState) {
         .borders(Borders::TOP | Borders::BOTTOM)
         .border_style(Style::default().fg(theme::PROMPT_BORDER));
 
-    let chevron_style = if state.streaming {
-        Style::default()
-            .fg(theme::PROMPT_BORDER)
-            .add_modifier(Modifier::DIM)
-    } else {
-        Style::default().fg(theme::PROMPT_BORDER)
-    };
-    let text_style = if state.streaming {
-        Style::default()
-            .fg(theme::TEXT)
-            .add_modifier(Modifier::DIM)
-    } else {
-        Style::default().fg(theme::TEXT)
-    };
+    // Input bar stays at full contrast while streaming — upstream keeps
+    // the prompt live so users can queue the next turn as they read the
+    // stream. Previously both chevron + text got Modifier::DIM during
+    // streaming, which made the whole row look disabled (bug O).
+    let chevron_style = Style::default().fg(theme::PROMPT_BORDER);
+    let text_style = Style::default().fg(theme::TEXT);
     let show_queue_hint = state.input.is_empty() && !state.queued_messages.is_empty();
 
     let mut spans = vec![Span::styled("❯ ", chevron_style)];
