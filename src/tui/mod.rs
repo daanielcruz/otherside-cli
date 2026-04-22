@@ -241,6 +241,17 @@ async fn event_loop(
         }
     }
 
+    // Install the task-output root (mirrors upstream `_taskOutputDir` in
+    // `utils/task/diskOutput.ts:49-54`): `<config_dir>/projects/<slug>/<session-id>`
+    // — set once, not rotated mid-session. Background tasks outliving a
+    // /clear keep their original paths reachable.
+    if let (Ok(cfg_dir), Some(session_id)) = (crate::config::config_dir(), st.session_id.as_ref()) {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let project = crate::sessions::paths::project_dir(&cfg_dir, &cwd);
+        let session_root = project.join(session_id.to_string());
+        crate::tasks::disk_output::install_root(session_root);
+    }
+
     if thinking.is_none() {
         if let Some(level_str) = settings.effort_level.as_deref() {
             use crate::thinking::{ThinkingConfig, ThinkingLevel};

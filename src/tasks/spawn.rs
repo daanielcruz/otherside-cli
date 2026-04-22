@@ -53,12 +53,19 @@ fn finalize(
     id: &TaskId,
     result: Result<Value, crate::agent::subagents::RunnerError>,
 ) {
+    // Capture the upstream-shape agent_id + final text so we can mirror to
+    // disk AFTER releasing the store lock (write_task_output does fs I/O).
+    let mut disk_payload: Option<(String, String)> = None;
+
     store.update_with(id, |r| {
         match result {
             Ok(v) => {
                 let text = extract_assistant_text(&v);
                 if !text.is_empty() {
-                    r.push_output(text);
+                    r.push_output(text.clone());
+                    if let Some(agent_id) = r.agent_id.as_ref() {
+                        disk_payload = Some((agent_id.clone(), text));
+                    }
                 }
                 let status = v.get("status").and_then(Value::as_str).unwrap_or("");
                 r.state = match status {
@@ -69,13 +76,25 @@ fn finalize(
                 r.exit_code = Some(0);
             }
             Err(e) => {
-                r.push_output(format!("error: {e}"));
+                let err_line = format!("error: {e}");
+                r.push_output(err_line.clone());
+                if let Some(agent_id) = r.agent_id.as_ref() {
+                    disk_payload = Some((agent_id.clone(), err_line));
+                }
                 r.state = TaskState::Failed;
                 r.exit_code = Some(1);
             }
         }
         r.inject_on_next_turn = true;
     });
+
+    if let Some((agent_id, text)) = disk_payload {
+        // Best-effort mirror — failures here do not affect the task
+        // result path the model sees.
+        if let Err(e) = super::disk_output::write_task_output(&agent_id, &text) {
+            tracing::warn!(?e, agent_id, "task-output mirror failed");
+        }
+    }
 }
 
 fn extract_assistant_text(v: &Value) -> String {
