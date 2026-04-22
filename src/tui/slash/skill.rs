@@ -42,7 +42,6 @@ fn substitute_host_paths(body: &str) -> String {
     };
     let home = base.home_dir().to_string_lossy();
     body.replace("~/.otherside", &format!("{home}/.otherside"))
-        .replace("~/.claude", &format!("{home}/.claude"))
 }
 
 #[cfg(test)]
