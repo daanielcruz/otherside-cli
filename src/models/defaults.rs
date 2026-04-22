@@ -43,6 +43,7 @@ pub fn default_model_for(provider: ProviderId) -> &'static str {
         ProviderId::ClaudeCode => "claude-opus-4-7[1m]",
         ProviderId::Codex => "gpt-5.4",
         ProviderId::GeminiCli => "gemini-3.1-pro-preview",
+        ProviderId::Kimi => "kimi-for-coding",
         ProviderId::OpenAiCustom => "",
     }
 }
@@ -64,6 +65,11 @@ mod tests {
     #[test]
     fn gemini_defaults_to_3_1_pro_preview() {
         assert_eq!(default_model_for(ProviderId::GeminiCli), "gemini-3.1-pro-preview");
+    }
+
+    #[test]
+    fn kimi_defaults_to_for_coding() {
+        assert_eq!(default_model_for(ProviderId::Kimi), "kimi-for-coding");
     }
 
     #[test]

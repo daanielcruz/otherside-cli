@@ -5,6 +5,7 @@ pub enum ProviderId {
     ClaudeCode,
     Codex,
     GeminiCli,
+    Kimi,
     OpenAiCustom,
 }
 
@@ -15,6 +16,7 @@ impl ProviderId {
             ProviderId::ClaudeCode => "anthropic-oauth",
             ProviderId::Codex => "codex-oauth",
             ProviderId::GeminiCli => "gemini-oauth",
+            ProviderId::Kimi => "kimi",
             ProviderId::OpenAiCustom => "openai-custom",
         }
     }
@@ -24,6 +26,7 @@ impl ProviderId {
             ProviderId::ClaudeCode => "Anthropic OAuth",
             ProviderId::Codex => "Codex OAuth",
             ProviderId::GeminiCli => "Gemini OAuth",
+            ProviderId::Kimi => "Kimi (API key)",
             ProviderId::OpenAiCustom => "OpenAI Custom",
         }
     }
@@ -37,6 +40,7 @@ impl ProviderId {
             "anthropic-oauth" | "claude-code" | "anthropic" => Some(ProviderId::ClaudeCode),
             "codex-oauth" | "codex" => Some(ProviderId::Codex),
             "gemini-oauth" | "gemini-cli" | "gemini" => Some(ProviderId::GeminiCli),
+            "kimi" | "kimi-code" | "moonshot" => Some(ProviderId::Kimi),
             "openai-custom" => Some(ProviderId::OpenAiCustom),
             _ => None,
         }
@@ -47,6 +51,7 @@ pub const PROVIDER_ORDER: &[ProviderId] = &[
     ProviderId::ClaudeCode,
     ProviderId::Codex,
     ProviderId::GeminiCli,
+    ProviderId::Kimi,
     ProviderId::OpenAiCustom,
 ];
 
@@ -69,6 +74,7 @@ mod tests {
         assert_eq!(ProviderId::ClaudeCode.default_model(), "claude-opus-4-7[1m]");
         assert_eq!(ProviderId::Codex.default_model(), "gpt-5.4");
         assert_eq!(ProviderId::GeminiCli.default_model(), "gemini-3.1-pro-preview");
+        assert_eq!(ProviderId::Kimi.default_model(), "kimi-for-coding");
         assert_eq!(ProviderId::OpenAiCustom.default_model(), "");
     }
 
@@ -86,21 +92,31 @@ mod tests {
     }
 
     #[test]
+    fn kimi_slug_has_documented_aliases() {
+
+        assert_eq!(ProviderId::from_slug("kimi"), Some(ProviderId::Kimi));
+        assert_eq!(ProviderId::from_slug("kimi-code"), Some(ProviderId::Kimi));
+        assert_eq!(ProviderId::from_slug("moonshot"), Some(ProviderId::Kimi));
+    }
+
+    #[test]
     fn cycle_wraps_forward() {
         assert_eq!(cycle(ProviderId::ClaudeCode, 1), ProviderId::Codex);
         assert_eq!(cycle(ProviderId::Codex, 1), ProviderId::GeminiCli);
-        assert_eq!(cycle(ProviderId::GeminiCli, 1), ProviderId::OpenAiCustom);
+        assert_eq!(cycle(ProviderId::GeminiCli, 1), ProviderId::Kimi);
+        assert_eq!(cycle(ProviderId::Kimi, 1), ProviderId::OpenAiCustom);
         assert_eq!(cycle(ProviderId::OpenAiCustom, 1), ProviderId::ClaudeCode);
     }
 
     #[test]
     fn cycle_wraps_backward() {
         assert_eq!(cycle(ProviderId::ClaudeCode, -1), ProviderId::OpenAiCustom);
-        assert_eq!(cycle(ProviderId::OpenAiCustom, -1), ProviderId::GeminiCli);
+        assert_eq!(cycle(ProviderId::OpenAiCustom, -1), ProviderId::Kimi);
+        assert_eq!(cycle(ProviderId::Kimi, -1), ProviderId::GeminiCli);
     }
 
     #[test]
-    fn provider_order_has_four_entries() {
-        assert_eq!(PROVIDER_ORDER.len(), 4);
+    fn provider_order_has_five_entries() {
+        assert_eq!(PROVIDER_ORDER.len(), 5);
     }
 }

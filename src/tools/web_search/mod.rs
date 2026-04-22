@@ -14,7 +14,7 @@ pub fn dispatch(args: &Value, provider: ProviderId) -> Result<Value, ToolError> 
     match provider {
         ProviderId::ClaudeCode => claude_code::web_search(args),
         ProviderId::Codex => codex::web_search(args),
-        ProviderId::GeminiCli | ProviderId::OpenAiCustom => {
+        ProviderId::GeminiCli | ProviderId::Kimi | ProviderId::OpenAiCustom => {
             Err(ToolError::Unsupported(format!(
                 "WebSearch backend for provider `{}` is not wired yet",
                 provider.slug()

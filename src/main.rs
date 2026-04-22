@@ -12,7 +12,9 @@ use otherside::auth;
 use otherside::config;
 use otherside::error::{Error, Result};
 use otherside::inference::{OpenAiChatMessage, OpenAiChatRequest, OpenAiChatRole};
-use otherside::provider::{anthropic::AnthropicProvider, codex::CodexProvider, Registry};
+use otherside::provider::{
+    anthropic::AnthropicProvider, codex::CodexProvider, kimi::KimiProvider, Registry,
+};
 use otherside::serve;
 use otherside::thinking::parse_suffix;
 use otherside::tui;
@@ -163,10 +165,25 @@ async fn cmd_login(provider: &str) -> Result<()> {
             println!("  expires_at (epoch ms): {}", creds.expires_at);
             Ok(())
         }
+        ProviderId::Kimi => {
+            let creds = auth::kimi::login_interactive()?;
+            println!("\nLogged in to kimi (API key).");
+            println!("  api_key: {}", mask_key(&creds.api_key));
+            Ok(())
+        }
         ProviderId::GeminiCli | ProviderId::OpenAiCustom => Err(Error::Other(format!(
-            "provider {provider:?} has no login flow — try `anthropic-oauth` or `codex`"
+            "provider {provider:?} has no login flow — try `anthropic-oauth`, `codex`, or `kimi`"
         ))),
     }
+}
+
+fn mask_key(key: &str) -> String {
+    if key.len() <= 8 {
+        return "*".repeat(key.len());
+    }
+    let head: String = key.chars().take(4).collect();
+    let tail: String = key.chars().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect();
+    format!("{head}...{tail}")
 }
 
 fn cmd_logout(provider: &str) -> Result<()> {
@@ -183,6 +200,11 @@ fn cmd_logout(provider: &str) -> Result<()> {
         ProviderId::Codex => {
             auth::codex::clear_credentials()?;
             println!("Cleared cached credentials for codex.");
+            Ok(())
+        }
+        ProviderId::Kimi => {
+            auth::kimi::clear_credentials()?;
+            println!("Cleared cached credentials for kimi.");
             Ok(())
         }
         ProviderId::GeminiCli | ProviderId::OpenAiCustom => Err(Error::Other(format!(
@@ -242,6 +264,7 @@ async fn cmd_print(cli: &Cli, prompt: &str) -> Result<()> {
     let registry = Registry::builder()
         .with(AnthropicProvider::arc()?)
         .with(CodexProvider::arc()?)
+        .with(KimiProvider::arc()?)
         .build();
     let provider = registry.get(&provider_id).ok_or_else(|| {
         Error::Other(format!(
@@ -292,6 +315,7 @@ async fn cmd_serve(cli: &Cli, host: IpAddr, port: u16) -> Result<()> {
     let registry = Registry::builder()
         .with(AnthropicProvider::arc()?)
         .with(CodexProvider::arc()?)
+        .with(KimiProvider::arc()?)
         .build();
 
     if registry.get(&provider_id).is_none() {
@@ -335,6 +359,7 @@ async fn cmd_tui(cli: &Cli) -> Result<()> {
     let registry = Registry::builder()
         .with(AnthropicProvider::arc()?)
         .with(CodexProvider::arc()?)
+        .with(KimiProvider::arc()?)
         .build();
 
     if registry.get(&provider_id).is_none() {

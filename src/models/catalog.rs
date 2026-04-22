@@ -102,6 +102,31 @@ pub const CATALOG: &[Model] = &[
         context_window: 200_000,
         display_hint: "",
     },
+
+    Model {
+        id: "kimi-for-coding",
+        display_name: "Kimi K2 (for coding)",
+        supports_1m: false,
+        provider: ProviderId::Kimi,
+        family_alias: Some("kimi"),
+        primary_for_family: true,
+        supported_efforts: &["auto"],
+        default_effort: "auto",
+        context_window: 262_144,
+        display_hint: "Kimi K2 · 262k window · anthropic-compatible",
+    },
+    Model {
+        id: "kimi-k2-thinking",
+        display_name: "Kimi K2 Thinking",
+        supports_1m: false,
+        provider: ProviderId::Kimi,
+        family_alias: Some("kimi"),
+        primary_for_family: false,
+        supported_efforts: &["auto"],
+        default_effort: "auto",
+        context_window: 262_144,
+        display_hint: "Kimi K2 Thinking · reasoning-tuned variant",
+    },
 ];
 
 pub fn by_id(id: &str) -> Option<&'static Model> {
@@ -191,6 +216,25 @@ mod tests {
     fn codex_has_gpt54() {
         let ms = models_for(ProviderId::Codex);
         assert!(ms.iter().any(|m| m.id == "gpt-5.4"));
+    }
+
+    #[test]
+    fn kimi_has_two_rows_and_primary_is_for_coding() {
+        let ms = models_for(ProviderId::Kimi);
+        assert_eq!(ms.len(), 2, "kimi catalog carries for-coding + thinking");
+        let primary = ms.iter().find(|m| m.primary_for_family).unwrap();
+        assert_eq!(primary.id, "kimi-for-coding");
+        assert!(ms.iter().any(|m| m.id == "kimi-k2-thinking"));
+    }
+
+    #[test]
+    fn kimi_models_advertise_262k_window_and_no_1m() {
+        let ms = models_for(ProviderId::Kimi);
+        for m in ms {
+            assert_eq!(m.context_window, 262_144, "Kimi context window = 262k");
+            assert!(!m.supports_1m, "Kimi does not speak the anthropic 1m beta");
+            assert_eq!(m.supported_efforts, &["auto"]);
+        }
     }
 
     #[test]

@@ -2122,10 +2122,17 @@ mod settings_edit_tests {
         edit_settings_row(&mut st, 1);
         assert_eq!(
             st.persistence.settings.default_provider.as_deref(),
+            Some("kimi")
+        );
+        assert_eq!(st.session.model, "kimi-for-coding");
+
+        edit_settings_row(&mut st, 1);
+        assert_eq!(
+            st.persistence.settings.default_provider.as_deref(),
             Some("openai-custom")
         );
 
-        assert_eq!(st.session.model, "gemini-3.1-pro-preview");
+        assert_eq!(st.session.model, "kimi-for-coding");
 
         edit_settings_row(&mut st, 1);
         assert_eq!(
