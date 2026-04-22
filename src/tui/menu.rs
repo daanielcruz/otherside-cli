@@ -929,13 +929,36 @@ fn status_rows(state: &super::state::ConversationState) -> Vec<MenuOption> {
         crate::config::settings::PermissionMode::Plan => "Plan",
         crate::config::settings::PermissionMode::Yolo => "Yolo",
     };
+
+    let session_id_display = state
+        .session_id
+        .as_ref()
+        .map(|s| s.as_str().to_string())
+        .unwrap_or_else(|| "(none)".into());
+
+    let creds = crate::auth::anthropic::load_credentials().ok().flatten();
+    let login_display = match creds.as_ref() {
+        None => "(none)".to_string(),
+        Some(c) => {
+            let sub = c.subscription_type.as_deref().unwrap_or("claude");
+            match c.account_email.as_deref() {
+                Some(email) => format!("{email} ({sub})"),
+                None => format!("OAuth ({sub})"),
+            }
+        }
+    };
+    let org_display = creds
+        .as_ref()
+        .and_then(|c| c.organization_name.clone())
+        .unwrap_or_else(|| "(n/a)".into());
+
     vec![
         settings_ro("Version", env!("CARGO_PKG_VERSION")),
         settings_ro("Session name", "(unnamed)"),
-        settings_ro("Session ID", "(not persisted)"),
+        settings_ro("Session ID", session_id_display),
         settings_ro("cwd", cwd),
-        settings_ro("Login method", "(none)"),
-        settings_ro("Organization", "(n/a)"),
+        settings_ro("Login method", login_display),
+        settings_ro("Organization", org_display),
         settings_blank(),
         settings_ro("Model", state.session.model.clone()),
         settings_ro("Permission mode", permission_label),

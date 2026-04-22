@@ -108,6 +108,10 @@ pub struct CachedCreds {
     pub scopes: Vec<String>,
     pub subscription_type: Option<String>,
     pub rate_limit_tier: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_email: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub organization_name: Option<String>,
 }
 
 impl CachedCreds {
@@ -139,6 +143,8 @@ impl CachedCreds {
             scopes,
             subscription_type: None,
             rate_limit_tier: None,
+            account_email: Some(resp.account.email_address.clone()),
+            organization_name: Some(resp.organization.name.clone()),
         }
     }
 }
@@ -583,6 +589,8 @@ mod tests {
             scopes: vec![],
             subscription_type: None,
             rate_limit_tier: None,
+            account_email: None,
+            organization_name: None,
         };
         assert!(creds.needs_refresh(SystemTime::now()));
     }
@@ -603,6 +611,8 @@ mod tests {
             scopes: vec![],
             subscription_type: None,
             rate_limit_tier: None,
+            account_email: None,
+            organization_name: None,
         };
         assert!(creds.needs_refresh(now));
     }
@@ -623,6 +633,8 @@ mod tests {
             scopes: vec![],
             subscription_type: None,
             rate_limit_tier: None,
+            account_email: None,
+            organization_name: None,
         };
         assert!(!creds.needs_refresh(now));
     }
@@ -649,6 +661,8 @@ mod tests {
             scopes: vec!["user:profile".into()],
             subscription_type: Some("pro".into()),
             rate_limit_tier: None,
+            account_email: None,
+            organization_name: None,
         };
         save_credentials_to(&p, &creds).unwrap();
         let read = load_credentials_from(&p).unwrap().unwrap();
@@ -671,6 +685,8 @@ mod tests {
             scopes: vec![],
             subscription_type: None,
             rate_limit_tier: None,
+            account_email: None,
+            organization_name: None,
         };
         save_credentials_to(&p, &creds).unwrap();
         let bytes = std::fs::read(&p).unwrap();
@@ -691,6 +707,8 @@ mod tests {
             scopes: vec![],
             subscription_type: None,
             rate_limit_tier: None,
+            account_email: None,
+            organization_name: None,
         };
         save_credentials_to(&p, &creds).unwrap();
         let mode = std::fs::metadata(&p).unwrap().permissions().mode() & 0o777;
