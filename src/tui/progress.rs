@@ -13,9 +13,11 @@ use ratatui::{
 
 use super::render::theme;
 
-const SPINNER_FRAMES: &[char] = &[
-    '·', '✢', '✳', '✶', '✻', '✽', '✽', '✻', '✶', '✳', '✢', '·',
-];
+// otherside-branded spinner: 4-frame quadrant cycle (user directive
+// 2026-04-22). Intentional divergence from upstream's 12-frame asterisk
+// pulse — the visible identity lives in `src/tui/mascot.rs` + statusline
+// + this spinner, kept distinct from the claude-code brand surface.
+const SPINNER_FRAMES: &[char] = &['◰', '◳', '◲', '◱'];
 
 const VERBS: &[&str] = &[
     "Accomplishing",
@@ -345,23 +347,25 @@ mod tests {
     use std::collections::HashSet;
 
     #[test]
-    fn spinner_cycles_through_star_frames() {
-
+    fn spinner_cycles_through_quadrant_frames() {
         let ratio = SPINNER_FRAME_RATIO as u64;
-        let expected = ['·', '✢', '✳', '✶', '✻', '✽', '✽', '✻', '✶', '✳', '✢', '·'];
+        let expected = ['◰', '◳', '◲', '◱'];
         for (i, &c) in expected.iter().enumerate() {
             assert_eq!(spinner_frame(ratio * i as u64), c, "frame {i}");
         }
-
-        assert_eq!(spinner_frame(ratio * 12), '·');
+        assert_eq!(
+            spinner_frame(ratio * 4),
+            '◰',
+            "cycle wraps back to first frame after {} ticks",
+            expected.len()
+        );
     }
 
     #[test]
     fn spinner_holds_frame_between_ticks() {
-
         let ratio = SPINNER_FRAME_RATIO as u64;
         for i in 0..ratio {
-            assert_eq!(spinner_frame(i), '·');
+            assert_eq!(spinner_frame(i), '◰');
         }
     }
 

@@ -79,6 +79,16 @@ pub fn draw(f: &mut Frame<'_>, area: Rect, ac: &Autocomplete) {
 
     f.render_widget(Clear, area);
 
+    // Reserve 1 blank row at the bottom so the last suggestion doesn't
+    // kiss the prompt-bar border underneath the popup (user report
+    // 2026-04-22: padding bottom perdido quando autocomplete renderiza).
+    let list_area = Rect {
+        x: area.x,
+        y: area.y,
+        width: area.width,
+        height: area.height.saturating_sub(1),
+    };
+
     let name_col_w = name_col_width(area.width) as usize;
     let total_w = area.width as usize;
     let brief_col_w = total_w.saturating_sub(name_col_w + 2);
@@ -108,7 +118,7 @@ pub fn draw(f: &mut Frame<'_>, area: Rect, ac: &Autocomplete) {
     let mut list_state = ListState::default();
     list_state.select(Some(ac.selected));
 
-    let area_rows = area.height as usize;
+    let area_rows = list_area.height as usize;
     let window = area_rows.min(MAX_POPUP_ROWS).max(1);
     let total = ac.matches.len();
     let offset = if ac.selected + 1 <= window {
