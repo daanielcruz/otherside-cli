@@ -2,6 +2,7 @@
 
 pub mod agent;
 pub mod ask_user_question;
+pub mod background_signal;
 pub mod bash;
 pub mod cron;
 pub mod edit;

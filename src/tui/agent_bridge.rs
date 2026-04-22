@@ -206,21 +206,21 @@ async fn dispatch_with_prompt(
     let mut composed = settings.clone();
     overlay_session_allowlist(&mut composed, session_allowlist);
 
-    let dispatch_scoped = |tool_name: &str, args: &Value| {
+    async fn run_dispatch(
+        tool_name: &str,
+        args: &Value,
+        tool_call_id: &str,
+        tx: &mpsc::Sender<StreamEvent>,
+    ) -> std::result::Result<Value, ToolError> {
         if tool_name == "Agent" {
-            let emitter: Arc<dyn NestedEmitter> =
-                Arc::new(StreamEmitter { tx: tx.clone() });
-            crate::agent::subagents::with_nested_emitter(emitter, || {
-                tools::with_tool_call_id(tool_call_id.to_string(), || {
-                    tools::dispatch(tool_name, args)
-                })
-            })
+            dispatch_agent_cancellable(tool_name, args, tool_call_id, tx).await
         } else {
             tools::with_tool_call_id(tool_call_id.to_string(), || tools::dispatch(tool_name, args))
         }
-    };
+    }
+
     match permissions::resolve(tool_name, &input_str, &composed, mode) {
-        Decision::Allow => dispatch_scoped(tool_name, args),
+        Decision::Allow => run_dispatch(tool_name, args, tool_call_id, tx).await,
         Decision::Deny { rule } => Err(ToolError::PermissionDenied(rule)),
         Decision::Ask { rule } => {
             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
@@ -242,7 +242,9 @@ async fn dispatch_with_prompt(
             match reply_rx.await {
                 Ok(PermissionResponse::Allow)
                 | Ok(PermissionResponse::AllowSession)
-                | Ok(PermissionResponse::AllowAlways) => dispatch_scoped(tool_name, args),
+                | Ok(PermissionResponse::AllowAlways) => {
+                    run_dispatch(tool_name, args, tool_call_id, tx).await
+                }
                 Ok(PermissionResponse::Deny) => Err(ToolError::PermissionDenied(
                     rule.unwrap_or_else(|| "user declined".into()),
                 )),
@@ -250,6 +252,77 @@ async fn dispatch_with_prompt(
                     "permission prompt cancelled".into(),
                 )),
             }
+        }
+    }
+}
+
+async fn dispatch_agent_cancellable(
+    tool_name: &str,
+    args: &Value,
+    tool_call_id: &str,
+    tx: &mpsc::Sender<StreamEvent>,
+) -> std::result::Result<Value, ToolError> {
+    use crate::tools::background_signal;
+
+    let mut cancel_rx = background_signal::register(tool_call_id);
+
+    let name_owned = tool_name.to_string();
+    let args_owned = args.clone();
+    let call_id_owned = tool_call_id.to_string();
+    let tx_for_emitter = tx.clone();
+
+    let mut join = tokio::task::spawn_blocking(move || {
+        let emitter: Arc<dyn NestedEmitter> = Arc::new(StreamEmitter { tx: tx_for_emitter });
+        crate::agent::subagents::with_nested_emitter(emitter, || {
+            tools::with_tool_call_id(call_id_owned, || tools::dispatch(&name_owned, &args_owned))
+        })
+    });
+
+    let cancelled = tokio::select! {
+        biased;
+        _ = cancel_rx.changed() => true,
+        _ = &mut join => false,
+    };
+
+    if cancelled {
+        let call_id_for_late = tool_call_id.to_string();
+        let tx_for_late = tx.clone();
+        tokio::spawn(async move {
+            let outcome = join.await;
+            let summary = match outcome {
+                Ok(Ok(v)) => v
+                    .get("content")
+                    .and_then(|c| c.as_array())
+                    .and_then(|arr| arr.first())
+                    .and_then(|first| first.get("text"))
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("(no text)")
+                    .to_string(),
+                Ok(Err(e)) => format!("error: {e}"),
+                Err(e) => format!("join error: {e}"),
+            };
+            let _ = tx_for_late
+                .send(StreamEvent::BackgroundAgentCompleted {
+                    tool_call_id: call_id_for_late,
+                    summary,
+                })
+                .await;
+        });
+        background_signal::unregister(tool_call_id);
+        Ok(serde_json::json!({
+            "status": "backgrounded",
+            "tool_use_id": tool_call_id,
+            "content": [{
+                "type": "text",
+                "text": "Task running in background — will notify on completion."
+            }],
+        }))
+    } else {
+        background_signal::unregister(tool_call_id);
+        match join.await {
+            Ok(Ok(v)) => Ok(v),
+            Ok(Err(e)) => Err(e),
+            Err(e) => Err(ToolError::InvalidArgs(format!("agent join error: {e}"))),
         }
     }
 }

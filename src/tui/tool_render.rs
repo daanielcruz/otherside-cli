@@ -212,17 +212,23 @@ pub fn render_tool_call(view: &ToolCallView<'_>) -> Vec<Line<'static>> {
     };
 
     let bullet_glyph = if matches!(view.status, ToolStatus::Running)
+        && !view.is_backgrounded
         && (view.spinner_tick / BLINK_INTERVAL_TICKS) % 2 == 1
     {
         BULLET_HIDDEN
     } else {
         BULLET
     };
+    let glyph_color = if view.is_backgrounded {
+        theme::MUTED
+    } else {
+        view.status.color()
+    };
     let mut header_spans: Vec<Span<'static>> = Vec::with_capacity(3);
     header_spans.push(Span::styled(
         format!("{bullet_glyph} "),
         Style::default()
-            .fg(view.status.color())
+            .fg(glyph_color)
             .add_modifier(view.status.modifier()),
     ));
     header_spans.push(Span::styled(
@@ -245,6 +251,7 @@ pub fn render_tool_call(view: &ToolCallView<'_>) -> Vec<Line<'static>> {
 
     if view.name == "Agent"
         && matches!(view.status, ToolStatus::Running)
+        && !view.is_backgrounded
         && view.nested_entries.is_empty()
     {
         out.push(Line::from(vec![

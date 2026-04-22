@@ -90,6 +90,11 @@ enum StreamEvent {
         input_tokens: Option<u64>,
         output_tokens: Option<u64>,
     },
+
+    BackgroundAgentCompleted {
+        tool_call_id: String,
+        summary: String,
+    },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -386,6 +391,20 @@ async fn event_loop(
                     Some(StreamEvent::NestedUsage { input_tokens, output_tokens }) => {
                         st.push_nested_usage(input_tokens, output_tokens);
                     }
+                    Some(StreamEvent::BackgroundAgentCompleted { tool_call_id, summary }) => {
+                        let trimmed: String = summary.chars().take(160).collect();
+                        st.push_system_note(format!(
+                            "⎿  Background agent {tool_call_id} completed: {trimmed}"
+                        ));
+                        let task_id = crate::tasks::TaskId::from_string(tool_call_id);
+                        st.tasks.update_with(&task_id, |r| {
+                            if !r.state.is_terminal() {
+                                r.state = crate::tasks::TaskState::Completed;
+                                r.exit_code = Some(0);
+                            }
+                            r.inject_on_next_turn = true;
+                        });
+                    }
                     None => {
 
                         if st.streaming {
@@ -483,11 +502,12 @@ fn handle_key(
             match action {
                 Action::TaskBackground => {
                     let flipped = st.tasks.background_all_running_foreground();
-                    if !flipped.is_empty() {
-                        let n = flipped.len();
+                    let signalled = crate::tools::background_signal::signal_all();
+                    let n = flipped.len().max(signalled.len());
+                    if n > 0 {
                         let noun = if n == 1 { "task" } else { "tasks" };
                         st.push_system_note(format!(
-                            "⎿  {n} {noun} sent to background — will notify on completion"
+                            "⎿  {n} {noun} sent to background"
                         ));
                     }
                     return false;
