@@ -402,6 +402,10 @@ pub const PERMISSION_CHOICES: &[(&str, &str)] = &[
         "Allow and don't ask again this session",
         "add a rule to the session allowlist",
     ),
+    (
+        "Always allow (save to settings)",
+        "persist to settings.json permissions.allow",
+    ),
     ("Deny", "refuse this call; let the model know"),
 ];
 
@@ -444,6 +448,7 @@ impl PendingPermissionPrompt {
         match self.cursor {
             0 => R::Allow,
             1 => R::AllowSession,
+            2 => R::AllowAlways,
             _ => R::Deny,
         }
     }
@@ -1360,6 +1365,8 @@ mod tests {
         assert_eq!(p.selected_response(), PermissionResponse::Allow);
         p.move_down();
         assert_eq!(p.selected_response(), PermissionResponse::AllowSession);
+        p.move_down();
+        assert_eq!(p.selected_response(), PermissionResponse::AllowAlways);
         p.move_down();
         assert_eq!(p.selected_response(), PermissionResponse::Deny);
         p.move_down();

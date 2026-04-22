@@ -14,6 +14,8 @@ pub enum PermissionResponse {
 
     AllowSession,
 
+    AllowAlways,
+
     Deny,
 }
 

@@ -1086,27 +1086,77 @@ fn handle_agents_panel_key(k: KeyEvent, st: &mut ConversationState) {
 
 fn handle_permission_key(k: KeyEvent, st: &mut ConversationState) {
     use crate::permissions::PermissionResponse;
-    let Some(prompt) = st.pending_permission.as_mut() else {
-        return;
-    };
     match k.code {
         KeyCode::Esc => {
-            prompt.resolve(PermissionResponse::Deny);
-            st.pending_permission = None;
+            if let Some(mut prompt) = st.pending_permission.take() {
+                prompt.resolve(PermissionResponse::Deny);
+            }
         }
-        KeyCode::Up => prompt.move_up(),
-        KeyCode::Down => prompt.move_down(),
+        KeyCode::Up => {
+            if let Some(prompt) = st.pending_permission.as_mut() {
+                prompt.move_up();
+            }
+        }
+        KeyCode::Down => {
+            if let Some(prompt) = st.pending_permission.as_mut() {
+                prompt.move_down();
+            }
+        }
         KeyCode::Enter => {
+            let Some(mut prompt) = st.pending_permission.take() else {
+                return;
+            };
             let response = prompt.selected_response();
-
-            if response == PermissionResponse::AllowSession {
-                let rule = session_rule_for(&prompt.tool_name, &prompt.args_preview);
-                st.session_allowlist.push_rule(rule);
+            let rule = session_rule_for(&prompt.tool_name, &prompt.args_preview);
+            match response {
+                PermissionResponse::AllowSession => {
+                    st.session_allowlist.push_rule(rule);
+                }
+                PermissionResponse::AllowAlways => {
+                    st.session_allowlist.push_rule(rule.clone());
+                    persist_permission_allow_rule(st, &rule);
+                }
+                _ => {}
             }
             prompt.resolve(response);
-            st.pending_permission = None;
         }
         _ => {}
+    }
+}
+
+fn persist_permission_allow_rule(st: &mut ConversationState, rule_str: &str) {
+    use crate::config::settings::{PermissionRule, PermissionsConfig};
+    use crate::permissions::{matcher, MatcherTool};
+    let parsed = match matcher::parse(rule_str) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(?e, rule_str, "skip persist: rule unparseable");
+            return;
+        }
+    };
+    let tool_name = match parsed.tool {
+        MatcherTool::Any => "*".to_string(),
+        MatcherTool::Named(n) => n,
+    };
+    let new_rule = PermissionRule {
+        tool_name: Some(tool_name.clone()),
+        match_pattern: parsed.pattern.clone(),
+        extra: Default::default(),
+    };
+    let perms = st
+        .persistence
+        .settings
+        .permissions
+        .get_or_insert_with(PermissionsConfig::default);
+    let already = perms.allow.iter().any(|r| {
+        r.tool_name.as_deref() == Some(tool_name.as_str())
+            && r.match_pattern == parsed.pattern
+    });
+    if !already {
+        perms.allow.push(new_rule);
+    }
+    if let Err(e) = persist_session_defaults(st) {
+        tracing::warn!(?e, "persist permission rule failed");
     }
 }
 

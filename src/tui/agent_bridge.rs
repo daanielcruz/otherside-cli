@@ -240,8 +240,9 @@ async fn dispatch_with_prompt(
                 ));
             }
             match reply_rx.await {
-                Ok(PermissionResponse::Allow) => dispatch_scoped(tool_name, args),
-                Ok(PermissionResponse::AllowSession) => dispatch_scoped(tool_name, args),
+                Ok(PermissionResponse::Allow)
+                | Ok(PermissionResponse::AllowSession)
+                | Ok(PermissionResponse::AllowAlways) => dispatch_scoped(tool_name, args),
                 Ok(PermissionResponse::Deny) => Err(ToolError::PermissionDenied(
                     rule.unwrap_or_else(|| "user declined".into()),
                 )),
