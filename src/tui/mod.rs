@@ -1394,10 +1394,55 @@ fn drain_pending_inputs(
     provider_id: &str,
     tx: &mpsc::Sender<StreamEvent>,
 ) -> bool {
+    if auto_fire_compact_if_needed(st, provider, base_model, thinking, tx) {
+        return true;
+    }
     if drain_queue_head_if_any(st, provider, base_model, thinking, provider_id, tx) {
         return true;
     }
     auto_trigger_pending_notifications(st, provider, base_model, thinking, tx)
+}
+
+/// Mirrors upstream `autoCompactIfNeeded` gate (minus rapid-refill + failure
+/// tracking — post-MVP). Fires a silent compact turn between user turns when
+/// token usage crosses the auto-compact threshold, matching the warning chip
+/// already shown in the status line.
+fn auto_fire_compact_if_needed(
+    st: &mut ConversationState,
+    provider: &Arc<dyn Provider>,
+    base_model: &str,
+    thinking: &Option<ThinkingConfig>,
+    tx: &mpsc::Sender<StreamEvent>,
+) -> bool {
+    if st.streaming {
+        return false;
+    }
+    if !st.input.is_empty() {
+        return false;
+    }
+    if !st.persistence.settings.auto_compact.unwrap_or(true) {
+        return false;
+    }
+    if st.session.context_window == 0 {
+        return false;
+    }
+    // Mirror render.rs AUTOCOMPACT_BUFFER_TOKENS — keep in sync manually until
+    // that constant is promoted to a shared module.
+    let threshold = st.session.context_window.saturating_sub(13_000);
+    if threshold == 0 || st.input_tokens < threshold {
+        return false;
+    }
+    if st.history_for_request().is_empty() {
+        return false;
+    }
+    tracing::info!(
+        target: "otherside::compact",
+        input_tokens = st.input_tokens,
+        threshold,
+        "auto-fire: crossing auto-compact threshold, dispatching silent summary turn"
+    );
+    spawn_compact_turn(st, provider, base_model, thinking, tx, "", true);
+    true
 }
 
 fn auto_trigger_pending_notifications(
