@@ -6,41 +6,27 @@ use super::SlashOutcome;
 pub fn handle(name: &str, args: &str, state: &mut ConversationState) -> SlashOutcome {
     let lower = name.to_ascii_lowercase();
 
-    if lower.as_str() == "compact" {
-        run_compact(state);
-
-        state.push_system_note("✻ Conversation compacted (ctrl+o for history)");
-        state.push_anchor(
-            &lower,
-            args,
-            "Compacted (ctrl+o to see full summary)",
-            DisplayOrigin::Transcript,
-        );
-        return SlashOutcome::Handled;
-    }
+    // compact is intercepted by dispatch_slash before reaching this arm —
+    // it needs provider/model/thinking to fire the async LLM-summary turn
+    // (see tui::spawn_compact_turn). Falling through here means the intercept
+    // regressed: surface a loud error row instead of silently doing nothing.
     let result = match lower.as_str() {
         "branch" => {
             "session fork is not implemented — requires transcript persistence".to_string()
         }
         "context" => context_result(state),
+        "compact" => {
+            "internal: /compact reached anchor::handle — dispatch_slash intercept missing".to_string()
+        }
         other => format!("unhandled anchor slash: /{other}"),
     };
 
     let origin = match lower.as_str() {
-        "branch" => DisplayOrigin::Chrome,
+        "branch" | "compact" => DisplayOrigin::Chrome,
         _ => DisplayOrigin::Transcript,
     };
     state.push_anchor(&lower, args, result, origin);
     SlashOutcome::Handled
-}
-
-fn run_compact(state: &mut ConversationState) {
-    let kept = state.messages.len() as u64;
-    state.append_record(crate::sessions::Record::CompactionMark {
-        ts: crate::sessions::record::now_iso(),
-        summary_ref: format!("kept={kept}"),
-    });
-    state.compact_history();
 }
 
 fn context_result(state: &ConversationState) -> String {
@@ -59,30 +45,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn compact_emits_star_header_before_anchor() {
-        let mut st = ConversationState::default();
-        handle("compact", "", &mut st);
-
-        assert_eq!(st.messages.len(), 3);
-        assert_eq!(
-            st.messages[0].content,
-            "✻ Conversation compacted (ctrl+o for history)"
-        );
-        assert_eq!(st.messages[1].content, "/compact");
-        assert_eq!(
-            st.messages[2].content,
-            "⎿  Compacted (ctrl+o to see full summary)"
-        );
-    }
-
-    #[test]
-    fn compact_anchor_body_matches_upstream() {
+    fn compact_falls_through_to_error_when_dispatch_intercept_missing() {
+        // Guards the tui::dispatch_slash contract: compact must be handled via
+        // spawn_compact_turn (async, LLM-summary) before reaching this arm.
+        // If someone routes /compact back here the anchor surfaces a loud
+        // internal-error row rather than silently dropping history.
         let mut st = ConversationState::default();
         handle("compact", "", &mut st);
         let last = st.messages.last().unwrap();
-        assert_eq!(last.content, "⎿  Compacted (ctrl+o to see full summary)");
-        assert!(!last.content.contains("dropped"));
-        assert!(!last.content.contains("prior message"));
+        assert!(
+            last.content.contains("dispatch_slash intercept missing"),
+            "expected loud fallback error, got {:?}",
+            last.content,
+        );
     }
 
     #[test]
@@ -135,14 +110,4 @@ mod tests {
         assert_eq!(st.messages[1].origin, DisplayOrigin::Transcript);
     }
 
-    #[test]
-    fn compact_anchor_rows_remain_transcript() {
-        let mut st = ConversationState::default();
-        handle("compact", "", &mut st);
-
-        assert_eq!(st.messages.len(), 3);
-        assert_eq!(st.messages[0].origin, DisplayOrigin::Chrome);
-        assert_eq!(st.messages[1].origin, DisplayOrigin::Transcript);
-        assert_eq!(st.messages[2].origin, DisplayOrigin::Transcript);
-    }
 }

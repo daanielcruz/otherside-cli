@@ -840,12 +840,34 @@ impl ConversationState {
     }
 
     pub fn compact_history(&mut self) {
+        self.compact_history_with_summary(None);
+    }
+
+    /// Reset the display + request history after a compaction. When `summary`
+    /// is provided, reseed a synthetic `user` message carrying the upstream
+    /// "This session is being continued…" framing so the next turn resumes
+    /// with the summarized context instead of an empty transcript.
+    pub fn compact_history_with_summary(&mut self, summary: Option<String>) {
         self.messages.clear();
         self.current_assistant_buffer.clear();
         self.input.clear();
         self.autocomplete = None;
         self.scroll_offset = 0;
 
+        if let Some(raw) = summary {
+            let seed = crate::agent::compact::get_compact_user_summary_message(
+                &raw, false, None, false, false,
+            );
+            self.messages.push(DisplayMessage {
+                role: OpenAiChatRole::User,
+                content: seed,
+                wire_override: None,
+                origin: DisplayOrigin::Transcript,
+                tool_calls: Vec::new(),
+                tool_call_id: None,
+                is_synthetic: true,
+            });
+        }
     }
 
     pub fn elapsed_ms(&self) -> u64 {

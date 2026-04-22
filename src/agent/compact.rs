@@ -1,9 +1,21 @@
-//! Compact conversation prompt + formatter primitives.
+//! Compact conversation prompt + formatter primitives + async runner.
 //!
 //! Verbatim port of `services/compact/prompt.ts` from upstream 2.1.117. Only
 //! the base (full-conversation) path is ported — partial/up-to variants are
-//! post-MVP. The provider wiring that actually runs the summary turn lives in
-//! a follow-up commit; this module is pure string plumbing.
+//! post-MVP. `compact_conversation` streams a single-turn summary request
+//! through the active provider, drops any attempted tool calls, and returns
+//! the raw assistant text (caller applies `format_compact_summary`).
+
+use std::pin::Pin;
+
+use futures::StreamExt;
+
+use crate::error::{Error, Result};
+use crate::inference::{
+    OpenAiChatMessage, OpenAiChatRequest, OpenAiChatRole, OpenAiChunk,
+};
+use crate::provider::{ChunkStream, Provider};
+use crate::thinking::ThinkingConfig;
 
 const NO_TOOLS_PREAMBLE: &str = "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.
 
@@ -226,6 +238,74 @@ fn collapse_blank_runs(source: &str) -> String {
     out
 }
 
+/// Drive one streaming turn that asks the model to summarize `history`.
+///
+/// Parallels upstream `streamCompactSummary` → `compactConversation` (minus
+/// the PTL retry / cache-sharing fork / hook pipeline). Caller owns wiring the
+/// returned summary back into state (either replace history with a single
+/// synthetic user message carrying `get_compact_user_summary_message`, or
+/// drop the tail entirely for manual `/compact`).
+pub async fn compact_conversation(
+    provider: &(dyn Provider + Send + Sync),
+    model: &str,
+    history: Vec<OpenAiChatMessage>,
+    custom_instructions: Option<&str>,
+    thinking: Option<ThinkingConfig>,
+) -> Result<String> {
+    if history.is_empty() {
+        return Err(Error::Other(
+            "compact: refusing to summarize empty history".to_string(),
+        ));
+    }
+
+    let prompt = get_compact_prompt(custom_instructions);
+    let mut messages = history;
+    messages.push(OpenAiChatMessage {
+        role: OpenAiChatRole::User,
+        content: prompt,
+        name: None,
+        tool_calls: Vec::new(),
+        tool_call_id: None,
+    });
+
+    let req = OpenAiChatRequest {
+        model: model.to_string(),
+        messages,
+        stream: Some(true),
+        max_tokens: None,
+        temperature: None,
+        top_p: None,
+        stop: None,
+        tools: Vec::new(),
+        tool_choice: None,
+        extra: serde_json::Map::new(),
+    };
+
+    let mut stream: Pin<Box<ChunkStream>> = Box::pin(provider.stream(req, thinking).await?);
+    let mut summary = String::new();
+
+    while let Some(item) = stream.next().await {
+        match item {
+            Ok(OpenAiChunk { choices, .. }) => {
+                for choice in choices {
+                    if let Some(text) = choice.delta.content {
+                        summary.push_str(&text);
+                    }
+                }
+            }
+            Err(e) => return Err(e),
+        }
+    }
+
+    if summary.trim().is_empty() {
+        return Err(Error::Other(
+            "compact: provider returned empty summary".to_string(),
+        ));
+    }
+
+    Ok(summary)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -358,5 +438,102 @@ mod tests {
         );
         assert!(msg.contains("Continue the conversation from where it left off"));
         assert!(msg.contains("do not acknowledge the summary"));
+    }
+
+    use std::pin::Pin as StdPin;
+    use std::sync::Arc;
+
+    use crate::inference::{OpenAiChoice, OpenAiDelta};
+
+    struct ScriptedProvider {
+        chunks: Vec<OpenAiChunk>,
+    }
+
+    impl Provider for ScriptedProvider {
+        fn id(&self) -> &'static str {
+            "scripted"
+        }
+
+        fn stream<'a>(
+            &'a self,
+            _req: OpenAiChatRequest,
+            _thinking: Option<ThinkingConfig>,
+        ) -> StdPin<Box<dyn std::future::Future<Output = Result<ChunkStream>> + Send + 'a>>
+        {
+            let chunks = self.chunks.clone();
+            Box::pin(async move {
+                let stream = futures::stream::iter(chunks.into_iter().map(Ok));
+                let boxed: ChunkStream = Box::pin(stream);
+                Ok(boxed)
+            })
+        }
+    }
+
+    fn text_chunk(delta: &str) -> OpenAiChunk {
+        OpenAiChunk {
+            id: "x".into(),
+            object: OpenAiChunk::OBJECT.to_string(),
+            created: 0,
+            model: "m".into(),
+            choices: vec![OpenAiChoice {
+                index: 0,
+                delta: OpenAiDelta {
+                    role: None,
+                    content: Some(delta.into()),
+                    tool_calls: Vec::new(),
+                },
+                finish_reason: None,
+            }],
+            usage: None,
+        }
+    }
+
+    fn history_one() -> Vec<OpenAiChatMessage> {
+        vec![OpenAiChatMessage {
+            role: OpenAiChatRole::User,
+            content: "first turn".into(),
+            name: None,
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+        }]
+    }
+
+    #[tokio::test]
+    async fn compact_conversation_concatenates_content_deltas() {
+        let provider: Arc<dyn Provider> = Arc::new(ScriptedProvider {
+            chunks: vec![
+                text_chunk("<analysis>"),
+                text_chunk("thinking</analysis>\n<summary>done</summary>"),
+            ],
+        });
+        let out = compact_conversation(&*provider, "m", history_one(), None, None)
+            .await
+            .unwrap();
+        assert!(out.contains("<analysis>"));
+        assert!(out.ends_with("</summary>"));
+    }
+
+    #[tokio::test]
+    async fn compact_conversation_rejects_empty_history() {
+        let provider: Arc<dyn Provider> = Arc::new(ScriptedProvider { chunks: vec![] });
+        let err = compact_conversation(&*provider, "m", Vec::new(), None, None)
+            .await
+            .unwrap_err();
+        match err {
+            Error::Other(msg) => assert!(msg.contains("empty history")),
+            other => panic!("wrong error: {other}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn compact_conversation_errors_on_empty_summary() {
+        let provider: Arc<dyn Provider> = Arc::new(ScriptedProvider { chunks: vec![] });
+        let err = compact_conversation(&*provider, "m", history_one(), None, None)
+            .await
+            .unwrap_err();
+        match err {
+            Error::Other(msg) => assert!(msg.contains("empty summary")),
+            other => panic!("wrong error: {other}"),
+        }
     }
 }

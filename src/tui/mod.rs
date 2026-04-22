@@ -95,6 +95,15 @@ enum StreamEvent {
         tool_call_id: String,
         summary: String,
     },
+
+    CompactDone {
+        summary: String,
+        is_auto: bool,
+    },
+
+    CompactFailed {
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -404,6 +413,29 @@ async fn event_loop(
                             }
                             r.inject_on_next_turn = true;
                         });
+                    }
+                    Some(StreamEvent::CompactDone { summary, is_auto }) => {
+                        let kept = st.messages.len() as u64;
+                        st.append_record(crate::sessions::Record::CompactionMark {
+                            ts: crate::sessions::record::now_iso(),
+                            summary_ref: format!("kept={kept};auto={is_auto}"),
+                        });
+                        st.compact_history_with_summary(Some(summary));
+                        st.streaming = false;
+                        st.push_system_note("✻ Conversation compacted (ctrl+o for history)");
+                        st.push_anchor(
+                            "compact",
+                            "",
+                            "Compacted (ctrl+o to see full summary)",
+                            state::DisplayOrigin::Transcript,
+                        );
+                        drain_pending_inputs(
+                            &mut st, &provider, &base_model, &thinking, &provider_id, &tx,
+                        );
+                    }
+                    Some(StreamEvent::CompactFailed { message }) => {
+                        st.streaming = false;
+                        st.push_system_note(format!("⎿  compact failed: {message}"));
                     }
                     None => {
 
@@ -1457,6 +1489,10 @@ fn dispatch_slash(
         slash::SlashAction::Skill { name, args } => {
             slash::skill::handle(&name, &args, st)
         }
+        slash::SlashAction::Anchor { name, args } if name == "compact" => {
+            spawn_compact_turn(st, provider, base_model, thinking, tx, &args, false);
+            slash::SlashOutcome::Handled
+        }
         slash::SlashAction::Anchor { name, args } => {
             slash::anchor::handle(&name, &args, st)
         }
@@ -1507,6 +1543,56 @@ fn submit_current_input(
         });
         spawn_agent_turn(st, provider, base_model, thinking, tx, history);
     }
+}
+
+fn spawn_compact_turn(
+    st: &mut ConversationState,
+    provider: &Arc<dyn Provider>,
+    base_model: &str,
+    thinking: &Option<ThinkingConfig>,
+    tx: &mpsc::Sender<StreamEvent>,
+    custom_instructions: &str,
+    is_auto: bool,
+) {
+    let history = st.history_for_request();
+    if history.is_empty() {
+        st.push_system_note("⎿  compact skipped: no history to summarize");
+        return;
+    }
+
+    st.input.clear();
+    st.autocomplete = None;
+    st.streaming = true;
+    st.push_system_note(if is_auto {
+        "✻ Auto-compacting conversation…"
+    } else {
+        "✻ Compacting conversation…"
+    });
+
+    let provider = provider.clone();
+    let model = base_model.to_string();
+    let thinking_cfg = *thinking;
+    let tx = tx.clone();
+    let custom = {
+        let trimmed = custom_instructions.trim();
+        if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
+    };
+
+    tokio::spawn(async move {
+        let result = crate::agent::compact::compact_conversation(
+            &*provider,
+            &model,
+            history,
+            custom.as_deref(),
+            thinking_cfg,
+        )
+        .await;
+        let event = match result {
+            Ok(summary) => StreamEvent::CompactDone { summary, is_auto },
+            Err(e) => StreamEvent::CompactFailed { message: e.to_string() },
+        };
+        let _ = tx.send(event).await;
+    });
 }
 
 async fn run_agent_turns(
