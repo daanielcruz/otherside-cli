@@ -1049,65 +1049,8 @@ fn handle_menu_key(
         }
     }
 
-    if matches!(menu_state.kind, PanelKind::Model)
-        && matches!(k.code, KeyCode::Left | KeyCode::Right)
-    {
-        let dir: i32 = if matches!(k.code, KeyCode::Right) { 1 } else { -1 };
-        let cursor_model_id = menu_state
-            .options
-            .get(menu_state.cursor)
-            .map(|o| o.action_id.clone())
-            .unwrap_or_default();
-
-        if cursor_model_id == menu::PROVIDER_CYCLE_ACTION {
-            let _ = menu_state;
-            let next = crate::config::providers::cycle(st.provider_id, dir);
-            st.switch_provider(next);
-            let mut fresh = menu::OverlayMenu::new_model_with_effort_for_provider(
-                &st.session.model,
-                st.session.effort_label,
-                next,
-            );
-            fresh.cursor = 0;
-            st.active_menu = Some(fresh);
-            return false;
-        }
-
-        let next_effort: Option<&'static str> =
-            crate::models::catalog::by_id(&cursor_model_id).and_then(|m| {
-                let real: Vec<&'static str> = m
-                    .supported_efforts
-                    .iter()
-                    .copied()
-                    .filter(|l| *l != "auto")
-                    .collect();
-                if real.len() < 2 {
-                    return None;
-                }
-                let current = st.session.effort_label.unwrap_or(m.default_effort);
-                let idx = real.iter().position(|l| *l == current).unwrap_or(0);
-                let n = real.len() as i32;
-                let next_idx = (((idx as i32) + dir).rem_euclid(n)) as usize;
-                Some(real[next_idx])
-            });
-
-        let _ = menu_state;
-        if let Some(next) = next_effort {
-            apply_effort_outcome(st, thinking, next, next);
-
-            let mut fresh = menu::OverlayMenu::new_model_with_effort_for_provider(
-                &st.session.model,
-                st.session.effort_label,
-                st.provider_id,
-            );
-            fresh.cursor = fresh
-                .options
-                .iter()
-                .position(|o| o.action_id == cursor_model_id)
-                .unwrap_or(2);
-            st.active_menu = Some(fresh);
-        }
-        return false;
+    if matches!(menu_state.kind, PanelKind::Model) {
+        return handle_model_panel_key(k, st);
     }
     match k.code {
         KeyCode::Up => menu_state.move_up(),
@@ -1131,6 +1074,117 @@ fn handle_menu_key(
         _ => {}
     }
     false
+}
+
+/// Tabbed `/model` panel key handler. Phase 1 UI-only — Enter on any row
+/// fires a `tracing::info!` stub and never mutates session state.
+///
+/// Keymap:
+/// - tabs (focused) + `←/→/Tab` → cycle tab, wraps.
+/// - tabs + `↓/Enter` → focus body (row 0).
+/// - body + `↑/↓` → walk rows (Authenticated only).
+/// - body + `Enter` → log stub intent (set model, logout, login).
+/// - Custom unauth + Enter → no-op (per spec).
+/// - `Esc` is handled by the generic menu path above, not repeated here.
+fn handle_model_panel_key(k: KeyEvent, st: &mut ConversationState) -> bool {
+    use crate::config::providers::PROVIDER_ORDER;
+    use crate::tui::menu::ModelTabRow;
+
+    let Some(menu_state) = st.active_menu.as_ref() else {
+        return false;
+    };
+    let tabs_focused = menu_state.model_tabs_focused;
+    let tab_index = menu_state.model_tab_index;
+    let body_cursor = menu_state.model_body_cursor;
+    let active_tab_clone = menu_state.active_model_tab().cloned();
+
+    match k.code {
+        KeyCode::Left | KeyCode::Right | KeyCode::Tab | KeyCode::BackTab if tabs_focused => {
+            let dir: i32 = match k.code {
+                KeyCode::Right | KeyCode::Tab => 1,
+                _ => -1,
+            };
+            let n = PROVIDER_ORDER.len() as i32;
+            let next = (((tab_index as i32) + dir).rem_euclid(n)) as usize;
+            st.model_panel_tab_index = next;
+            st.model_panel_body_cursor = 0;
+            rebuild_model_panel(st);
+            false
+        }
+        KeyCode::Down | KeyCode::Enter if tabs_focused => {
+            st.model_panel_tabs_focused = false;
+            st.model_panel_body_cursor = 0;
+            rebuild_model_panel(st);
+            false
+        }
+        KeyCode::Up if !tabs_focused => {
+            if body_cursor == 0 {
+                st.model_panel_tabs_focused = true;
+            } else {
+                st.model_panel_body_cursor = body_cursor.saturating_sub(1);
+            }
+            rebuild_model_panel(st);
+            false
+        }
+        KeyCode::Down if !tabs_focused => {
+            let row_count = active_tab_clone
+                .as_ref()
+                .map(|t| t.rows.len())
+                .unwrap_or(0);
+            if row_count > 0 {
+                let next = (body_cursor + 1).min(row_count.saturating_sub(1));
+                st.model_panel_body_cursor = next;
+            }
+            rebuild_model_panel(st);
+            false
+        }
+        KeyCode::Enter if !tabs_focused => {
+            if let Some(tab) = active_tab_clone.as_ref() {
+                let provider = tab.provider;
+                match tab.rows.get(body_cursor) {
+                    Some(ModelTabRow::Model { raw_id, .. }) => {
+                        tracing::info!(
+                            target: "otherside::tui::model_panel",
+                            raw_id = %raw_id,
+                            "/model UI stub: would set {raw_id}"
+                        );
+                    }
+                    Some(ModelTabRow::Logout) => {
+                        tracing::info!(
+                            target: "otherside::tui::model_panel",
+                            ?provider,
+                            "/model UI stub: would logout {provider:?}"
+                        );
+                    }
+                    Some(ModelTabRow::LoginCta) => {
+                        tracing::info!(
+                            target: "otherside::tui::model_panel",
+                            ?provider,
+                            "/model UI stub: would login {provider:?}"
+                        );
+                    }
+                    // Custom unauth body has no Enter action per spec.
+                    Some(ModelTabRow::CustomHint) | None => {}
+                }
+            }
+            false
+        }
+        _ => false,
+    }
+}
+
+/// Rebuild the `/model` overlay from canonical fields on `ConversationState`.
+/// Mirrors the CycleProvider-rebuild pattern elsewhere — the renderer sees
+/// only `&OverlayMenu`, so we rebuild on every state change.
+fn rebuild_model_panel(st: &mut ConversationState) {
+    let fresh = menu::OverlayMenu::new_model_tabbed(
+        &st.session.model,
+        &st.persistence.settings,
+        st.model_panel_tab_index,
+        st.model_panel_tabs_focused,
+        st.model_panel_body_cursor,
+    );
+    st.active_menu = Some(fresh);
 }
 
 fn edit_settings_row(st: &mut ConversationState, direction: i32) {
@@ -1303,27 +1357,10 @@ fn emit_panel_dismiss_anchor(
     let (slash, text) = match menu.kind {
 
         PanelKind::Rewind => return,
-        PanelKind::Model => {
-            let chosen = match outcome {
-                Some(menu::OverlayMenuOutcome::SetModel { model_id }) => model_id.as_str(),
-                _ => st.session.model.as_str(),
-            };
-            let label = crate::models::catalog::display_name_for(chosen)
-                .map(str::to_string)
-                .unwrap_or_else(|| chosen.to_string());
-            let text = if chosen == st.session.model {
-
-                let suffix = if is_session_default_model(chosen, st) {
-                    " (default)"
-                } else {
-                    ""
-                };
-                format!("Kept model as {label}{suffix}")
-            } else {
-                format!("Set model to {label}")
-            };
-            ("model", text)
-        }
+        // Phase 1 `/model` is UI-only; Enter / Esc never mutate session
+        // state so we only emit a neutral dismissal anchor. Phase 2 will
+        // reintroduce "Set model to X" anchors via the broker.
+        PanelKind::Model => ("model", "Model dialog dismissed".to_string()),
         PanelKind::Permissions => match outcome {
             Some(menu::OverlayMenuOutcome::SetPermissionMode { action_id }) => {
                 ("permissions", format!("Set permission mode to {action_id}"))
@@ -1360,16 +1397,6 @@ fn emit_panel_dismiss_anchor(
     };
 
     st.push_anchor(slash, "", text, DisplayOrigin::Chrome);
-}
-
-fn is_session_default_model(model: &str, st: &ConversationState) -> bool {
-    let default = st
-        .persistence
-        .settings
-        .default_model
-        .as_deref()
-        .unwrap_or_else(|| st.provider_id.default_model());
-    model == default
 }
 
 /// Handle a bracketed-paste event from the terminal. Inject the full paste
@@ -1583,17 +1610,10 @@ fn apply_menu_outcome(
         menu::OverlayMenuOutcome::SetModel { model_id } => {
             apply_model_outcome(st, thinking, &model_id);
         }
-        menu::OverlayMenuOutcome::CycleProvider { direction } => {
-            let next = crate::config::providers::cycle(st.provider_id, direction);
-            st.switch_provider(next);
-            let mut fresh = menu::OverlayMenu::new_model_with_effort_for_provider(
-                &st.session.model,
-                st.session.effort_label,
-                next,
-            );
-            fresh.cursor = 0; // keep cursor on Provider row so rapid Enter re-cycles
-            st.active_menu = Some(fresh);
-        }
+        // The tabbed `/model` panel no longer emits CycleProvider — provider
+        // switching happens via tab navigation, not Enter. The variant is
+        // retained for source compatibility; treat as a no-op.
+        menu::OverlayMenuOutcome::CycleProvider { direction: _ } => {}
     }
     false
 }
@@ -2246,28 +2266,24 @@ mod panel_anchor_tests {
     }
 
     #[test]
-    fn model_dismiss_without_change_reads_kept() {
+    fn model_dismiss_emits_neutral_dialog_dismissed() {
+        // Phase 1 `/model` is UI-only. Dismiss never fires the old
+        // "Kept model as X" / "Set model to X" anchors — those return in
+        // Phase 2 once the broker lands. Panel always emits the neutral
+        // dismissal wording.
         let mut st = ConversationState::default();
-
         st.session.model = "claude-opus-4-7".into();
-        let menu = OverlayMenu::new_model(&st.session.model);
+        let menu = OverlayMenu::new_model_tabbed(
+            &st.session.model,
+            &st.persistence.settings,
+            0,
+            true,
+            0,
+        );
         emit_panel_dismiss_anchor(&mut st, &menu, None);
         let (echo, anchor) = anchor_lines(&st);
         assert_eq!(echo, "/model");
-        assert_eq!(anchor, "⎿  Kept model as Opus 4.7");
-    }
-
-    #[test]
-    fn model_dismiss_with_switch_reads_set() {
-        let mut st = ConversationState::default();
-        st.session.model = "claude-opus-4-7".into();
-        let menu = OverlayMenu::new_model(&st.session.model);
-        let outcome = OverlayMenuOutcome::SetModel {
-            model_id: "claude-sonnet-4-6".into(),
-        };
-        emit_panel_dismiss_anchor(&mut st, &menu, Some(&outcome));
-        let (_, anchor) = anchor_lines(&st);
-        assert_eq!(anchor, "⎿  Set model to Sonnet 4.6");
+        assert_eq!(anchor, "⎿  Model dialog dismissed");
     }
 
     #[test]
@@ -2405,22 +2421,10 @@ mod panel_anchor_tests {
         assert_eq!(anchor, "⎿  Cancelled");
     }
 
-    #[test]
-    fn model_dismiss_with_1m_beta_appends_suffix() {
-
-        let mut st = ConversationState::default();
-        st.session.model = "claude-opus-4-7[1m]".into();
-
-        assert_eq!(
-            crate::config::providers::ProviderId::ClaudeCode.default_model(),
-            "claude-opus-4-7[1m]",
-            "session-default rule depends on this constant"
-        );
-        let menu = OverlayMenu::new_model(&st.session.model);
-        emit_panel_dismiss_anchor(&mut st, &menu, None);
-        let (_, anchor) = anchor_lines(&st);
-        assert_eq!(anchor, "⎿  Kept model as Opus 4.7 (1M context) (default)");
-    }
+    // `model_dismiss_with_1m_beta_appends_suffix` — removed with the Phase 1
+    // pivot. The `/model` panel no longer mutates the session on dismiss,
+    // so the "(default)" suffix logic against `default_model()` returns with
+    // the Phase 2 broker wiring.
 
     #[test]
     fn anchor_line_uses_double_space_after_symbol() {

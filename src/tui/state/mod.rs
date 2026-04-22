@@ -147,6 +147,21 @@ pub struct ConversationState {
     /// after the short window or on any other key. Second Ctrl+B within
     /// `CTRL_B_DOUBLE_TAP_WINDOW_MS` fires the TaskBackground action.
     pub ctrl_b_armed_at: Option<Instant>,
+
+    /// Active tab index inside the tabbed `/model` panel. Indexes into
+    /// `config::providers::PROVIDER_ORDER`. Canonical source of truth —
+    /// mirrored into `OverlayMenu.model_tab_index` every time the overlay
+    /// is rebuilt. Phase 1 is UI only; no broker wiring.
+    pub model_panel_tab_index: usize,
+
+    /// `true` when the tab row (not the body) owns focus inside `/model`.
+    /// Default on open = `true`. `↓` / `Enter` flips it to `false`.
+    pub model_panel_tabs_focused: bool,
+
+    /// Row cursor inside the body of the active `/model` tab. Resets to 0
+    /// on every tab switch — row counts differ per provider so there's no
+    /// meaningful cross-tab mapping.
+    pub model_panel_body_cursor: usize,
 }
 
 pub const CTRL_B_DOUBLE_TAP_WINDOW_MS: u128 = 1_000;

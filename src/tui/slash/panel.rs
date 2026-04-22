@@ -16,15 +16,31 @@ pub fn handle(kind: PanelKind, state: &mut ConversationState) -> SlashOutcome {
         ),
         PanelKind::Permissions => menu::OverlayMenu::new_permissions(state.session.permission_mode),
         PanelKind::Model => {
-
-            let effort = state
-                .session
-                .effort_label
-                .unwrap_or_else(|| crate::models::catalog::default_effort_for(&state.session.model));
-            menu::OverlayMenu::new_model_with_effort_for_provider(
+            // Phase 1 tabbed `/model` panel. Default tab = the
+            // `settings.default_provider` slug, falling back to the session's
+            // provider, then ClaudeCode. Tabs start focused (user first
+            // presses ↓/Enter to drop into the body).
+            use crate::config::providers::{ProviderId, PROVIDER_ORDER};
+            let default_pid = state
+                .persistence
+                .settings
+                .default_provider
+                .as_deref()
+                .and_then(ProviderId::from_slug)
+                .unwrap_or(state.provider_id);
+            let tab_index = PROVIDER_ORDER
+                .iter()
+                .position(|p| *p == default_pid)
+                .unwrap_or(0);
+            state.model_panel_tab_index = tab_index;
+            state.model_panel_tabs_focused = true;
+            state.model_panel_body_cursor = 0;
+            menu::OverlayMenu::new_model_tabbed(
                 &state.session.model,
-                Some(effort),
-                state.provider_id,
+                &state.persistence.settings,
+                tab_index,
+                true,
+                0,
             )
         }
         PanelKind::Help => menu::OverlayMenu::new_info(
