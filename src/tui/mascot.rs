@@ -43,6 +43,19 @@ pub fn mascot_rows() -> Vec<&'static str> {
     MASCOT.lines().filter(|l| !l.is_empty()).collect()
 }
 
+fn padded_rows() -> Vec<String> {
+    let rows = mascot_rows();
+    let max = rows.iter().map(|r| r.chars().count()).max().unwrap_or(0);
+    rows.into_iter()
+        .map(|r| {
+            let pad = max.saturating_sub(r.chars().count());
+            let mut s = r.to_string();
+            s.extend(std::iter::repeat(' ').take(pad));
+            s
+        })
+        .collect()
+}
+
 pub fn draw_splash(f: &mut Frame<'_>, area: Rect) {
     if area.width < MASCOT_COLS + 2 || area.height < MASCOT_ROWS + 6 {
         let line = Line::from(vec![
@@ -88,14 +101,9 @@ pub fn draw_splash(f: &mut Frame<'_>, area: Rect) {
 }
 
 fn draw_mascot_block(f: &mut Frame<'_>, area: Rect) {
-    let lines: Vec<Line<'_>> = mascot_rows()
+    let lines: Vec<Line<'_>> = padded_rows()
         .into_iter()
-        .map(|row| {
-            Line::from(Span::styled(
-                row.to_string(),
-                Style::default().fg(theme::PRIMARY),
-            ))
-        })
+        .map(|row| Line::from(Span::styled(row, Style::default().fg(theme::PRIMARY))))
         .collect();
     let para = Paragraph::new(lines).alignment(Alignment::Center);
     f.render_widget(para, area);
@@ -189,7 +197,7 @@ pub fn draw_splash_with_core_accent(f: &mut Frame<'_>, area: Rect) {
 }
 
 fn draw_mascot_with_core_accent(f: &mut Frame<'_>, area: Rect) {
-    let rows = mascot_rows();
+    let rows = padded_rows();
     let total = rows.len();
     let band_start = total / 3;
     let band_end = total.saturating_sub(total / 3);
@@ -197,13 +205,12 @@ fn draw_mascot_with_core_accent(f: &mut Frame<'_>, area: Rect) {
         .into_iter()
         .enumerate()
         .map(|(idx, row)| {
-
             let color = if (band_start..band_end).contains(&idx) {
                 theme::ACCENT_AMBER
             } else {
                 theme::PRIMARY
             };
-            Line::from(Span::styled(row.to_string(), Style::default().fg(color)))
+            Line::from(Span::styled(row, Style::default().fg(color)))
         })
         .collect();
     let para = Paragraph::new(lines).alignment(Alignment::Center);
