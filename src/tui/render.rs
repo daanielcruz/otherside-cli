@@ -187,7 +187,19 @@ pub fn render(
         draw_queue_lines(f, queue_area, state);
     }
 
-    draw_prompt(f, slots.prompt, state);
+    // Bug S: hide the prompt/input bar when a full-screen overlay is
+    // active (agents panel, settings menu, permission prompt, question
+    // modal). Upstream blocks input during overlay display so the user
+    // doesn't type into a hidden field. Keep it visible only when the
+    // overlay is just the autocomplete popup (which is anchored to the
+    // live input).
+    let overlay_hides_prompt = state.pending_permission.is_some()
+        || state.pending_question.is_some()
+        || state.active_agents_panel.is_some()
+        || state.active_menu.is_some();
+    if !overlay_hides_prompt {
+        draw_prompt(f, slots.prompt, state);
+    }
 
     if let Some(popup_rect) = slots.popup {
         if let Some(prompt) = state.pending_permission.as_ref() {
