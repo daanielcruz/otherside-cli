@@ -120,11 +120,19 @@ impl InnerLoopRunner {
         let observer = NestedObserver {
             emitter: emitter.unwrap_or_else(|| Arc::new(NullEmitter) as Arc<dyn NestedEmitter>),
         };
+        // Advertise the tools the subagent is actually allowed to call.
+        // Before this, tools: Vec::new() left the nested model unaware that
+        // any tools existed — the gated dispatcher was ready to serve but
+        // the model couldn't know to ask, so subagents could only produce
+        // text and the user saw a "fake subagent" that never analyzed
+        // anything. Upstream AgentTool wires per-subagent tools per the
+        // `tools:` frontmatter field the same way.
+        let subagent_tools = subagent_openai_tools(&definition.tools);
         let loop_ = AgentLoop {
             model: model.clone(),
             thinking: None,
             max_turns: SUBAGENT_MAX_TURNS,
-            tools: Vec::new(),
+            tools: subagent_tools,
             tool_choice: None,
             dispatcher,
             observer,
@@ -199,6 +207,20 @@ impl SubagentRunner for InnerLoopRunner {
         invocation: &AgentInvocation,
     ) -> Result<Value, RunnerError> {
         self.run_inner(definition, prompt, depth, invocation)
+    }
+}
+
+fn subagent_openai_tools(
+    allowed: &super::frontmatter::ToolsField,
+) -> Vec<crate::inference::OpenAiToolDef> {
+    use super::frontmatter::ToolsField;
+    let full = crate::tools::openai_tools();
+    match allowed {
+        ToolsField::Wildcard => full,
+        ToolsField::List(names) => full
+            .into_iter()
+            .filter(|t| names.iter().any(|n| n == &t.function.name))
+            .collect(),
     }
 }
 

@@ -45,6 +45,17 @@ pub fn current_tool_call_id() -> Option<String> {
     CURRENT_TOOL_CALL_ID.with(|cell| cell.borrow().clone())
 }
 
+/// Tools that upstream hides from the chat UI via
+/// `renderToolUseMessage: () => null` + `userFacingName: () => ''`.
+/// They run (so the agent loop still dispatches them), but no `⏺ Name(args)`
+/// anchor + `⎿ result` row lands in the transcript. Matches upstream
+/// `tools/ToolSearchTool/ToolSearchTool.ts:435-438` and
+/// `tools/TaskOutputTool/TaskOutputTool.tsx:309` (returns null on the
+/// anchor side — chat render is suppressed).
+pub fn is_hidden_tool(name: &str) -> bool {
+    matches!(name, "ToolSearch" | "TaskOutput")
+}
+
 pub fn effective_cwd() -> std::path::PathBuf {
     crate::tools::worktree::effective_cwd()
         .unwrap_or_else(|| {

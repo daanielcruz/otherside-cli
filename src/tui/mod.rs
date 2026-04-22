@@ -354,6 +354,14 @@ async fn event_loop(
                         );
                     }
                     Some(StreamEvent::ToolCallStart { id, name, args }) => {
+                        // Upstream hides certain meta tools (ToolSearch, TaskOutput)
+                        // from the chat UI via renderToolUseMessage: () => null +
+                        // userFacingName: () => ''. They still dispatch — only the
+                        // anchor/result rows are suppressed. Session record also
+                        // skipped so replays don't resurrect the rows.
+                        if crate::tools::is_hidden_tool(&name) {
+                            continue;
+                        }
                         st.flush_assistant_buffer();
                         st.append_record(crate::sessions::Record::ToolCall {
                             ts: crate::sessions::record::now_iso(),
@@ -364,6 +372,16 @@ async fn event_loop(
                         st.begin_tool_call(id, name, args);
                     }
                     Some(StreamEvent::ToolCallFinish { id, result, elapsed_ms }) => {
+                        // Hidden-tool finishes never had a begin_tool_call entry
+                        // — skip the result render + transcript line too.
+                        let tool_name = st
+                            .active_tool_calls
+                            .iter()
+                            .find(|e| e.id == id)
+                            .map(|e| e.name.clone());
+                        if tool_name.as_deref().is_none() {
+                            continue;
+                        }
                         let (record_result, is_error) = match &result {
                             Ok(v) => (v.clone(), false),
                             Err(s) => (serde_json::Value::String(s.clone()), true),
@@ -539,15 +557,13 @@ fn handle_key(
         if let Some(action) = kb_dispatch(&k, &pred_ctx) {
             match action {
                 Action::TaskBackground => {
-                    let flipped = st.tasks.background_all_running_foreground();
-                    let signalled = crate::tools::background_signal::signal_all();
-                    let n = flipped.len().max(signalled.len());
-                    if n > 0 {
-                        let noun = if n == 1 { "task" } else { "tasks" };
-                        st.push_system_note(format!(
-                            "⎿  {n} {noun} sent to background"
-                        ));
-                    }
+                    // Upstream feedback: no chat note — the tool-result row
+                    // mutates in place to "Backgrounded agent (↓ to manage)"
+                    // and the statusline picks up the `N local agent` pill.
+                    // Emitting an extra `⎿ N tasks sent to background` line
+                    // was otherside-only drift; D25 polish drops it.
+                    let _ = st.tasks.background_all_running_foreground();
+                    let _ = crate::tools::background_signal::signal_all();
                     return false;
                 }
                 Action::OpenBackgroundTasksDialog => {
