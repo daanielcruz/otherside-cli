@@ -1387,10 +1387,21 @@ fn emit_panel_dismiss_anchor(
     let (slash, text) = match menu.kind {
 
         PanelKind::Rewind => return,
-        // Phase 1 `/model` is UI-only; Enter / Esc never mutate session
-        // state so we only emit a neutral dismissal anchor. Phase 2 will
-        // reintroduce "Set model to X" anchors via the broker.
-        PanelKind::Model => ("model", "Model dialog dismissed".to_string()),
+        // Phase 1 `/model` is UI-only; Enter / Esc never mutate session model.
+        // Match upstream wording: `Kept model as <displayName>` (commands/model/model.tsx:82).
+        // Phase 2 will add `Set model to X` once the broker commits.
+        PanelKind::Model => {
+            let display = crate::models::catalog::display_name_for(&st.session.model)
+                .unwrap_or(st.session.model.as_str());
+            let is_default = st
+                .persistence
+                .settings
+                .default_model
+                .as_deref()
+                .is_some_and(|d| d == st.session.model.as_str());
+            let suffix = if is_default { " (default)" } else { "" };
+            ("model", format!("Kept model as {display}{suffix}"))
+        }
         PanelKind::Permissions => match outcome {
             Some(menu::OverlayMenuOutcome::SetPermissionMode { action_id }) => {
                 ("permissions", format!("Set permission mode to {action_id}"))
@@ -2296,11 +2307,11 @@ mod panel_anchor_tests {
     }
 
     #[test]
-    fn model_dismiss_emits_neutral_dialog_dismissed() {
-        // Phase 1 `/model` is UI-only. Dismiss never fires the old
-        // "Kept model as X" / "Set model to X" anchors — those return in
-        // Phase 2 once the broker lands. Panel always emits the neutral
-        // dismissal wording.
+    fn model_dismiss_emits_kept_model_as_upstream_wording() {
+        // Upstream (`commands/model/model.tsx:82`) emits
+        // `Kept model as <displayName>` on Esc-without-commit. Phase 1 still
+        // UI-only so every dismiss is `Kept model as current_model`.
+        // Appends `(default)` when session.model == settings.default_model.
         let mut st = ConversationState::default();
         st.session.model = "claude-opus-4-7".into();
         let menu = OverlayMenu::new_model_tabbed(
@@ -2313,7 +2324,24 @@ mod panel_anchor_tests {
         emit_panel_dismiss_anchor(&mut st, &menu, None);
         let (echo, anchor) = anchor_lines(&st);
         assert_eq!(echo, "/model");
-        assert_eq!(anchor, "⎿  Model dialog dismissed");
+        assert_eq!(anchor, "⎿  Kept model as Opus 4.7");
+    }
+
+    #[test]
+    fn model_dismiss_appends_default_marker_when_session_model_equals_default() {
+        let mut st = ConversationState::default();
+        st.session.model = "claude-opus-4-7[1m]".into();
+        st.persistence.settings.default_model = Some("claude-opus-4-7[1m]".into());
+        let menu = OverlayMenu::new_model_tabbed(
+            &st.session.model,
+            &st.persistence.settings,
+            0,
+            true,
+            0,
+        );
+        emit_panel_dismiss_anchor(&mut st, &menu, None);
+        let (_, anchor) = anchor_lines(&st);
+        assert_eq!(anchor, "⎿  Kept model as Opus 4.7 (1M context) (default)");
     }
 
     #[test]
