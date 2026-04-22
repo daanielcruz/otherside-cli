@@ -84,6 +84,36 @@ pub fn handle(kind: PanelKind, state: &mut ConversationState) -> SlashOutcome {
     SlashOutcome::Handled
 }
 
+fn push_wrapped_group(lines: &mut Vec<String>, label: &str, slashes: &[&str]) {
+    const WIDTH_BUDGET: usize = 78;
+    const HEADER_WIDTH: usize = 12;
+
+    let mut row: Vec<&str> = Vec::new();
+    let mut row_len = HEADER_WIDTH;
+    let mut first_row = true;
+    for name in slashes {
+        let cost = name.chars().count() + 2;
+        if !row.is_empty() && row_len + cost > WIDTH_BUDGET {
+            let prefix = if first_row { label } else { "" };
+            lines.push(format!("  {prefix:<8}  /{}", row.join(" /")));
+            first_row = false;
+            row.clear();
+            row_len = HEADER_WIDTH;
+        }
+        row.push(name);
+        row_len += cost;
+    }
+    if !row.is_empty() {
+        let prefix = if first_row { label } else { "" };
+        lines.push(format!("  {prefix:<8}  /{}", row.join(" /")));
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn help_hints_for_test() -> Vec<String> {
+    help_hints()
+}
+
 fn help_hints() -> Vec<String> {
     use super::catalog::{CATALOG, SlashKind};
     let mut lines = vec![
@@ -107,6 +137,7 @@ fn help_hints() -> Vec<String> {
         SlashKind::Skill,
         SlashKind::Anchor,
         SlashKind::Auth,
+        SlashKind::Panel(super::PanelKind::Help),
     ] {
         let slashes: Vec<&str> = CATALOG
             .iter()
@@ -124,19 +155,7 @@ fn help_hints() -> Vec<String> {
             SlashKind::Panel(_) => "panel",
             SlashKind::Auth => "auth",
         };
-        lines.push(format!(
-            "  {label:<8}  /{}",
-            slashes.join(" /")
-        ));
-    }
-
-    let panel_names: Vec<&str> = CATALOG
-        .iter()
-        .filter(|e| matches!(e.kind, SlashKind::Panel(_)))
-        .map(|e| e.name)
-        .collect();
-    if !panel_names.is_empty() {
-        lines.push(format!("  panel     /{}", panel_names.join(" /")));
+        push_wrapped_group(&mut lines, label, &slashes);
     }
     lines.push(String::new());
     lines.push("Type `/` to filter. Type `/<prefix>` to narrow.".into());
@@ -176,4 +195,35 @@ fn tasks_hints(st: &ConversationState) -> Vec<String> {
             )
         })
         .collect()
+}
+
+#[cfg(test)]
+mod help_hints_tests {
+    use super::*;
+
+    #[test]
+    fn help_hints_lists_every_catalog_row_including_tail_panels() {
+        let hints = help_hints_for_test();
+        let joined = hints.join("\n");
+
+        for name in ["help", "usage", "mcp", "tasks", "bashes"] {
+            assert!(
+                joined.contains(&format!("/{name}")),
+                "/help panel must render /{name} — parity e2e 2026-04-21 flagged the last 4 panel entries as missing when the panel row wraps past overlay height"
+            );
+        }
+    }
+
+    #[test]
+    fn help_hints_panel_rows_fit_under_80_columns() {
+        let hints = help_hints_for_test();
+        for (i, line) in hints.iter().enumerate() {
+            assert!(
+                line.chars().count() <= 80,
+                "line {i} exceeds 80 cols ({}) — overlay clips past here:\n{}",
+                line.chars().count(),
+                line
+            );
+        }
+    }
 }
