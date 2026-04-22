@@ -262,13 +262,7 @@ async fn event_loop(
 
     if thinking.is_none() {
         if let Some(level_str) = settings.effort_level.as_deref() {
-            use crate::thinking::{ThinkingConfig, ThinkingLevel};
-            use std::str::FromStr;
-            if level_str.eq_ignore_ascii_case("auto") {
-                thinking = Some(ThinkingConfig::auto());
-            } else if let Ok(level) = ThinkingLevel::from_str(level_str) {
-                thinking = Some(ThinkingConfig::level(level));
-            }
+            thinking = crate::thinking::config_from_effort_label(level_str);
         }
     }
     st.persistence.settings = settings;
@@ -285,10 +279,7 @@ async fn event_loop(
 
     st.session.effort_label = thinking
         .as_ref()
-        .and_then(|cfg| match cfg.level {
-            crate::thinking::ThinkingLevel::Auto | crate::thinking::ThinkingLevel::None => None,
-            other => Some(other.as_label()),
-        });
+        .and_then(crate::thinking::label_from_thinking);
     let mut key_stream = EventStream::new();
 
     let mut ticker = tokio::time::interval(Duration::from_millis(50));
