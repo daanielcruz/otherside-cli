@@ -242,16 +242,15 @@ pub fn hydrate_from_records(
                     is_synthetic: false,
                 });
             }
-            crate::sessions::Record::CompactionMark { summary_ref, .. } => {
-                st.messages.push(DisplayMessage {
-                    role: OpenAiChatRole::System,
-                    content: format!("⎿ compacted (summary: {summary_ref})"),
-                    wire_override: None,
-                    origin: DisplayOrigin::Transcript,
-                    tool_calls: Vec::new(),
-                    tool_call_id: None,
-                    is_synthetic: false,
-                });
+            crate::sessions::Record::CompactionMark { .. } => {
+                // Resume-time render. Upstream drops nothing user-visible
+                // for a prior compaction (the synthetic "This session is
+                // being continued…" seed carries the context). Otherside
+                // previously printed `⎿ compacted (summary: kept=N;auto=X)`
+                // here, leaking the internal `summary_ref` key=value string
+                // into the chat — parity #1 bug K. Skip the render entirely;
+                // the CompactionMark record still stays in the transcript
+                // for audit trail, but never reaches the UI.
             }
             crate::sessions::Record::HookEvent { .. } => {}
         }
@@ -2359,5 +2358,49 @@ mod tests {
         super::hydrate_from_records(&mut st, &records);
         assert_eq!(st.messages.len(), 1, "orphan tool call flushed as Running");
         assert_eq!(st.messages[0].role, OpenAiChatRole::Tool);
+    }
+
+    #[test]
+    fn hydrate_from_records_hides_compaction_mark_internals() {
+        // Regression for bug K (parity #1): on --resume, the compaction mark
+        // used to render as `⎿ compacted (summary: kept=5;auto=false)`,
+        // leaking the internal summary_ref key=value string into the chat.
+        // Fix: skip the CompactionMark render entirely — the seed user
+        // message from compact_history_with_summary carries the real
+        // "This session is being continued…" context.
+        use crate::sessions::Record;
+        let mut st = ConversationState::new();
+        let records = vec![
+            Record::UserMessage {
+                ts: "2026-04-22T09:00:00.000Z".into(),
+                content: "earlier user turn".into(),
+            },
+            Record::CompactionMark {
+                ts: "2026-04-22T09:05:00.000Z".into(),
+                summary_ref: "kept=5;auto=false".into(),
+            },
+            Record::UserMessage {
+                ts: "2026-04-22T09:06:00.000Z".into(),
+                content: "post-compact continuation".into(),
+            },
+        ];
+        super::hydrate_from_records(&mut st, &records);
+        for m in &st.messages {
+            assert!(
+                !m.content.contains("kept="),
+                "summary_ref raw string leaked into chat: {:?}",
+                m.content,
+            );
+            assert!(
+                !m.content.contains("auto=false"),
+                "summary_ref raw string leaked into chat: {:?}",
+                m.content,
+            );
+            assert!(
+                !m.content.starts_with("⎿ compacted"),
+                "internal compaction anchor leaked into chat: {:?}",
+                m.content,
+            );
+        }
     }
 }
