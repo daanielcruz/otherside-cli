@@ -859,6 +859,25 @@ impl ConversationState {
         self.autocomplete = None;
         self.scroll_offset = 0;
 
+        // Parity #1 bug M: port upstream services/compact/postCompactCleanup.ts
+        // intent — don't carry ephemeral state across the compact boundary.
+        // Upstream clears its own flavor of caches (systemPromptSections,
+        // classifierApprovals, bashSpeculativeChecks, userContext,
+        // memoryFilesCache, betaTracingState, sessionMessagesCache). The
+        // analogue here is to wipe in-flight/stale TUI state that would
+        // outlive the summarized context:
+        //   - any active tool-call entries (their tool_use_ids won't match
+        //     anything in the reseeded history → dangling ⎿ rows)
+        //   - the last error banner (stale relative to the new conversation)
+        //   - any open permission prompt (context it references is gone)
+        //   - any open ask-user question modal (same)
+        // The queued_messages buffer is intentionally NOT cleared — user-
+        // queued turns predate the compact and should still dispatch.
+        self.active_tool_calls.clear();
+        self.last_error = None;
+        self.pending_permission = None;
+        self.pending_question = None;
+
         // Parity #1 bug J: upstream zeros token counters post-compact —
         // the "99% until auto-compact" right-chip jumps back to low usage
         // because the pre-compact context is gone. Otherside kept
