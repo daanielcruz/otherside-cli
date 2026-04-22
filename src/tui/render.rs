@@ -148,7 +148,18 @@ pub fn render(
             .active_tool_calls
             .iter()
             .rev()
-            .find(|e| e.name == "Agent" && matches!(e.status, super::tool_render::ToolStatus::Running))
+            .find(|e| {
+                e.name == "Agent"
+                    && matches!(e.status, super::tool_render::ToolStatus::Running)
+                    && {
+                        let task_id = crate::tasks::TaskId::from_string(e.id.clone());
+                        !state
+                            .tasks
+                            .get(&task_id)
+                            .map(|r| r.is_backgrounded)
+                            .unwrap_or(false)
+                    }
+            })
             .and_then(|e| {
                 e.args
                     .get("subagent_type")
@@ -221,6 +232,12 @@ fn draw_log(f: &mut Frame<'_>, area: Rect, state: &ConversationState, spinner_ti
     if !state.active_tool_calls.is_empty() {
         for entry in &state.active_tool_calls {
             lines.push(Line::raw(""));
+            let task_id = crate::tasks::TaskId::from_string(entry.id.clone());
+            let is_backgrounded = state
+                .tasks
+                .get(&task_id)
+                .map(|r| r.is_backgrounded)
+                .unwrap_or(false);
             let view = super::tool_render::ToolCallView {
                 name: &entry.name,
                 args: &entry.args,
@@ -234,6 +251,7 @@ fn draw_log(f: &mut Frame<'_>, area: Rect, state: &ConversationState, spinner_ti
                 verbose: state.render_verbose,
                 spinner_tick,
                 nested_entries: &entry.nested_entries,
+                is_backgrounded,
             };
             lines.extend(super::tool_render::render_tool_call(&view));
         }

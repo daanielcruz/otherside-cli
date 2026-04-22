@@ -156,6 +156,8 @@ impl ToolCallArchive {
             spinner_tick: 0,
 
             nested_entries: &[],
+
+            is_backgrounded: false,
         }
     }
 }
@@ -194,6 +196,8 @@ pub struct ToolCallView<'a> {
     pub spinner_tick: u64,
 
     pub nested_entries: &'a [NestedEntry],
+
+    pub is_backgrounded: bool,
 }
 
 pub fn render_tool_call(view: &ToolCallView<'_>) -> Vec<Line<'static>> {
@@ -354,6 +358,19 @@ pub fn render_tool_call(view: &ToolCallView<'_>) -> Vec<Line<'static>> {
                 }
             }
         }
+    }
+
+    if matches!(view.name, "Agent" | "Bash")
+        && matches!(view.status, ToolStatus::Running)
+        && !view.is_backgrounded
+    {
+        out.push(Line::from(vec![
+            Span::styled(GUTTER_CONT.to_string(), Style::default().fg(theme::MUTED)),
+            Span::styled(
+                "(ctrl+b to run in background)".to_string(),
+                Style::default().fg(theme::MUTED),
+            ),
+        ]));
     }
 
     out
@@ -1142,6 +1159,7 @@ mod tests {
                     verbose: false,
                     spinner_tick: 0,
             nested_entries: &[],
+        is_backgrounded: false,
         };
         let lines = render_tool_call(&view);
         let text = collect_text(&lines);
@@ -1166,6 +1184,7 @@ mod tests {
             verbose: false,
             spinner_tick: tick,
             nested_entries: &[],
+        is_backgrounded: false,
         };
         let on_text = collect_text(&render_tool_call(&mk_view(0)));
         let off_text = collect_text(&render_tool_call(&mk_view(BLINK_INTERVAL_TICKS)));
@@ -1202,7 +1221,8 @@ mod tests {
                 verbose: false,
                 spinner_tick: BLINK_INTERVAL_TICKS,
                 nested_entries: &[],
-            };
+            is_backgrounded: false,
+        };
             let text = collect_text(&render_tool_call(&view));
             assert!(
                 text.starts_with(BULLET),
@@ -1224,6 +1244,7 @@ mod tests {
                     verbose: false,
                     spinner_tick: 0,
             nested_entries: &[],
+        is_backgrounded: false,
         };
         let lines = render_tool_call(&view);
         let text = collect_text(&lines);
@@ -1257,6 +1278,7 @@ mod tests {
                     verbose: false,
                     spinner_tick: 0,
             nested_entries: &[],
+        is_backgrounded: false,
         };
         let lines = render_tool_call(&view);
         let text = collect_text(&lines);
@@ -1279,6 +1301,7 @@ mod tests {
                     verbose: false,
                     spinner_tick: 0,
             nested_entries: &[],
+        is_backgrounded: false,
         };
         let lines = render_tool_call(&view);
         let text = collect_text(&lines);
@@ -1462,6 +1485,7 @@ mod tests {
             verbose: false,
             spinner_tick: 0,
             nested_entries: &[],
+        is_backgrounded: false,
         };
         let lines = render_tool_call(&view);
 
@@ -1863,6 +1887,7 @@ mod tests {
             verbose: false,
             spinner_tick: 0,
             nested_entries: &[],
+        is_backgrounded: false,
         };
         let text = collect_text(&render_tool_call(&view));
         assert!(
@@ -1888,6 +1913,7 @@ mod tests {
             verbose: false,
             spinner_tick: 0,
             nested_entries: &nested,
+        is_backgrounded: false,
         };
         let text = collect_text(&render_tool_call(&view));
         assert!(
@@ -1943,6 +1969,7 @@ mod tests {
             verbose: false,
             spinner_tick: 0,
             nested_entries: &nested,
+        is_backgrounded: false,
         };
         let text = collect_text(&render_tool_call(&view));
         assert_eq!(
@@ -1969,6 +1996,7 @@ mod tests {
             verbose: false,
             spinner_tick: 0,
             nested_entries: &nested,
+        is_backgrounded: false,
         };
         let text = collect_text(&render_tool_call(&view));
         assert!(!text.contains("Running…"));
@@ -1993,6 +2021,7 @@ mod tests {
             verbose: false,
             spinner_tick: 0,
             nested_entries: &nested,
+        is_backgrounded: false,
         };
         let text = collect_text(&render_tool_call(&view));
         assert!(
@@ -2025,6 +2054,7 @@ mod tests {
             verbose: false,
             spinner_tick: 0,
             nested_entries: &nested,
+        is_backgrounded: false,
         };
         let text = collect_text(&render_tool_call(&view));
         assert!(text.contains("+1 more tool use (ctrl+o to expand)"));
@@ -2032,7 +2062,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_running_does_not_emit_inline_ctrl_b_hint() {
+    fn agent_running_emits_inline_ctrl_b_hint() {
         let args = serde_json::json!({"subagent_type":"general-purpose","description":"x"});
         let nested = vec![NestedEntry {
             tool_name: "Bash".to_string(),
@@ -2048,16 +2078,38 @@ mod tests {
             verbose: false,
             spinner_tick: 0,
             nested_entries: &nested,
+        is_backgrounded: false,
         };
         let text = collect_text(&render_tool_call(&view));
         assert!(
-            !text.contains("(ctrl+b"),
-            "Agent block must not emit inline ctrl+b hint (upstream keeps it in prompt footer): {text:?}"
+            text.contains("(ctrl+b to run in background)"),
+            "Agent block must emit inline ctrl+b hint per upstream BashTool/UI.tsx:63-73: {text:?}"
         );
     }
 
     #[test]
-    fn non_agent_tool_does_not_emit_ctrl_b_hint() {
+    fn backgrounded_agent_suppresses_inline_ctrl_b_hint() {
+        let args = serde_json::json!({"subagent_type":"general-purpose","description":"x"});
+        let view = ToolCallView {
+            name: "Agent",
+            args: &args,
+            status: ToolStatus::Running,
+            elapsed_ms: Some(1500),
+            payload: None,
+            verbose: false,
+            spinner_tick: 0,
+            nested_entries: &[],
+            is_backgrounded: true,
+        };
+        let text = collect_text(&render_tool_call(&view));
+        assert!(
+            !text.contains("(ctrl+b"),
+            "backgrounded agent must not still suggest ctrl+b: {text:?}"
+        );
+    }
+
+    #[test]
+    fn bash_running_emits_inline_ctrl_b_hint() {
         let args = serde_json::json!({"command": "ls"});
         let view = ToolCallView {
             name: "Bash",
@@ -2068,9 +2120,13 @@ mod tests {
             verbose: false,
             spinner_tick: 0,
             nested_entries: &[],
+        is_backgrounded: false,
         };
         let text = collect_text(&render_tool_call(&view));
-        assert!(!text.contains("(ctrl+b"));
+        assert!(
+            text.contains("(ctrl+b to run in background)"),
+            "Bash running block must emit inline ctrl+b hint: {text:?}"
+        );
     }
 
     #[test]
@@ -2090,6 +2146,7 @@ mod tests {
             verbose: false,
             spinner_tick: 0,
             nested_entries: &nested,
+        is_backgrounded: false,
         };
         let text = collect_text(&render_tool_call(&view));
         assert!(!text.contains("(ctrl+b"));
@@ -2114,6 +2171,7 @@ mod tests {
             verbose: false,
             spinner_tick: 0,
             nested_entries: &nested,
+        is_backgrounded: false,
         };
         let text = collect_text(&render_tool_call(&view));
         assert!(!text.contains("more tool"));
@@ -2148,6 +2206,7 @@ mod tests {
             verbose: false,
             spinner_tick: 0,
             nested_entries: &nested,
+        is_backgrounded: false,
         };
         let text = collect_text(&render_tool_call(&view));
         assert_eq!(
@@ -2169,6 +2228,7 @@ mod tests {
             verbose: false,
             spinner_tick: 0,
             nested_entries: &[],
+        is_backgrounded: false,
         };
         let text = collect_text(&render_tool_call(&view));
         assert!(
