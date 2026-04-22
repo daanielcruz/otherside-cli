@@ -6,7 +6,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, Paragraph, Wrap},
     Frame,
 };
 
@@ -278,22 +278,23 @@ fn draw_log(f: &mut Frame<'_>, area: Rect, state: &ConversationState, spinner_ti
         )));
     }
 
-    let inner_h = area.height;
-    let para = Paragraph::new(lines).wrap(Wrap { trim: false });
+    f.render_widget(Clear, area);
 
-    let total_lines = para.line_count(area.width) as u16;
+    let inner_h = area.height;
+    let probe = Paragraph::new(lines.clone()).wrap(Wrap { trim: false });
+    let total_lines = probe.line_count(area.width) as u16;
 
     if total_lines <= inner_h {
-
         let render_area = Rect {
             x: area.x,
             y: area.y + inner_h.saturating_sub(total_lines),
             width: area.width,
             height: total_lines,
         };
+        let para = Paragraph::new(lines).wrap(Wrap { trim: false });
         f.render_widget(para, render_area);
     } else {
-
+        let para = Paragraph::new(lines).wrap(Wrap { trim: false });
         let max_top = total_lines.saturating_sub(inner_h);
         let top = max_top.saturating_sub(state.scroll_offset as u16);
         f.render_widget(para.scroll((top, 0)), area);
@@ -874,6 +875,7 @@ mod tests {
             assert_eq!(span.style.bg, Some(theme::USER_BG));
         }
     }
+
 
     #[test]
     fn render_log_splices_tool_call_lines_between_messages_and_buffer() {

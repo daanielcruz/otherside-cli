@@ -314,9 +314,10 @@ pub fn render_tool_call(view: &ToolCallView<'_>) -> Vec<Line<'static>> {
             ToolPayload::Preview(text) => {
                 for (i, raw) in text.lines().enumerate() {
                     let prefix = if i == 0 { GUTTER_HEAD } else { GUTTER_CONT };
+                    let expanded = expand_tabs_for_render(raw);
                     out.push(Line::from(vec![
                         Span::styled(prefix.to_string(), Style::default().fg(theme::MUTED)),
-                        Span::styled(raw.to_string(), Style::default().fg(theme::MUTED)),
+                        Span::styled(expanded, Style::default().fg(theme::MUTED)),
                     ]));
                 }
             }
@@ -713,6 +714,19 @@ fn write_preview(result: &Value, args: &Value) -> Option<ToolPayload> {
         ));
     }
     Some(ToolPayload::Preview(text))
+}
+
+fn expand_tabs_for_render(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '\t' => out.push_str("    "),
+            '\r' | '\x08' | '\x0b' | '\x0c' => {}
+            c if (c as u32) < 0x20 => out.push(' '),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 fn count_lines(content: &str) -> usize {
