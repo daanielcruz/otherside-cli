@@ -60,6 +60,21 @@ pub fn read(args: &Value) -> Result<Value, ToolError> {
         )));
     }
 
+    // Bug H: main model keeps trying `Read(~/.otherside/tasks/<id>.log)`
+    // etc. to peek at a backgrounded subagent's output, despite the
+    // "do NOT poll" discipline in the Agent tool description. Intercept
+    // the common hallucinated paths and return a direct reminder so the
+    // model immediately gives up instead of emitting multi-turn retry
+    // churn. Real task-output files live under `<config>/projects/
+    // <slug>/<session-id>/tasks/<agent_id>.output` via disk_output;
+    // even if the model correctly reads there, the peek discipline
+    // says don't — completion arrives via notification.
+    if is_hallucinated_task_output_path(&canonical) {
+        return Err(ToolError::InvalidArgs(
+            "do not poll subagent output — wait for the completion notification. The agent's result lands via a system notification automatically. Do NOT call Read/Bash/TaskOutput on any ~/.otherside/tasks or ~/.claude/tasks path.".to_string(),
+        ));
+    }
+
     if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
         let ext = ext.to_ascii_lowercase();
         if matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp") {
@@ -163,10 +178,64 @@ pub fn read(args: &Value) -> Result<Value, ToolError> {
     }))
 }
 
+/// Detect the paths the main model most often hallucinates when trying to
+/// peek at a backgrounded subagent's output — the "do NOT poll" discipline
+/// is baked into the Agent tool description but models still try. Match
+/// `~/.otherside/tasks/**` and `~/.claude/tasks/**` across possible
+/// home-expansion shapes. Real task-output lives in the session-scoped
+/// projects/<slug>/<session-id>/tasks/ directory, which the model should
+/// not be told about — wait for the completion notification instead.
+fn is_hallucinated_task_output_path(canonical: &str) -> bool {
+    let needles = [
+        ".otherside/tasks/",
+        ".claude/tasks/",
+        "/otherside/tasks/",
+        "/claude/tasks/",
+    ];
+    needles.iter().any(|n| canonical.contains(*n))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn hallucinated_task_output_paths_blocked_before_fs_read() {
+        for path in [
+            "/Users/foo/.otherside/tasks/toolu_01Abc.log",
+            "/Users/foo/.otherside/tasks/a1b2c3d4e5f6a7b8.output",
+            "/Users/foo/.claude/tasks/a1b2c3d4e5f6a7b8.output",
+            "/home/bar/.claude/tasks/abc.log",
+        ] {
+            assert!(
+                is_hallucinated_task_output_path(path),
+                "should intercept: {path}"
+            );
+            let err = read(&json!({ "file_path": path })).unwrap_err();
+            match err {
+                ToolError::InvalidArgs(m) => assert!(
+                    m.contains("do not poll") || m.contains("completion notification"),
+                    "expected peek-deny message, got: {m}"
+                ),
+                other => panic!("expected InvalidArgs, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn normal_paths_not_misclassified_as_task_output() {
+        for path in [
+            "/Users/foo/projects/myapp/src/main.rs",
+            "/tmp/random/file.txt",
+            "/Users/foo/Desktop/tasks.md",
+        ] {
+            assert!(
+                !is_hallucinated_task_output_path(path),
+                "false positive: {path}"
+            );
+        }
+    }
 
     #[test]
     fn read_small_file_returns_numbered_lines() {
