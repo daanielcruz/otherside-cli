@@ -215,6 +215,19 @@ pub fn render_tool_call(view: &ToolCallView<'_>) -> Vec<Line<'static>> {
     const GUTTER_HEAD: &str = "  ⎿ ";
     const GUTTER_CONT: &str = "    ";
 
+    if view.name == "Agent"
+        && matches!(view.status, ToolStatus::Running)
+        && view.nested_lines.is_empty()
+    {
+        out.push(Line::from(vec![
+            Span::styled(GUTTER_HEAD.to_string(), Style::default().fg(theme::MUTED)),
+            Span::styled(
+                "Initializing…".to_string(),
+                Style::default().fg(theme::MUTED),
+            ),
+        ]));
+    }
+
     for line in view.nested_lines {
         out.push(Line::from(vec![
             Span::styled(GUTTER_HEAD.to_string(), Style::default().fg(theme::MUTED)),
@@ -1686,6 +1699,47 @@ mod tests {
         assert_eq!(
             s,
             "Backgrounded agent (↓ to manage · ctrl+o to expand)"
+        );
+    }
+
+    #[test]
+    fn agent_running_with_no_nested_shows_initializing_placeholder() {
+        let args = serde_json::json!({"subagent_type":"general-purpose","description":"do x"});
+        let view = ToolCallView {
+            name: "Agent",
+            args: &args,
+            status: ToolStatus::Running,
+            elapsed_ms: None,
+            payload: None,
+            verbose: false,
+            spinner_tick: 0,
+            nested_lines: &[],
+        };
+        let text = collect_text(&render_tool_call(&view));
+        assert!(
+            text.contains("Initializing…"),
+            "expected Initializing placeholder while Agent is running without nested progress: {text:?}"
+        );
+    }
+
+    #[test]
+    fn agent_running_with_nested_skips_initializing_placeholder() {
+        let args = serde_json::json!({"subagent_type":"general-purpose","description":"do x"});
+        let nested = vec!["Bash · 1s".to_string()];
+        let view = ToolCallView {
+            name: "Agent",
+            args: &args,
+            status: ToolStatus::Running,
+            elapsed_ms: None,
+            payload: None,
+            verbose: false,
+            spinner_tick: 0,
+            nested_lines: &nested,
+        };
+        let text = collect_text(&render_tool_call(&view));
+        assert!(
+            !text.contains("Initializing"),
+            "Initializing must disappear once progress arrives: {text:?}"
         );
     }
 
