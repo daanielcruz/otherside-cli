@@ -42,7 +42,7 @@ fn list_body(state: &TasksPanelState) -> Vec<Line<'static>> {
     } else {
         for (i, row) in state.rows.iter().enumerate() {
             let selected = i == state.cursor;
-            let prefix = if selected { "▶ " } else { "  " };
+            let prefix = if selected { "\u{276F} " } else { "  " };
             let style = if selected {
                 Style::default().fg(theme::TEXT).add_modifier(Modifier::BOLD)
             } else {
@@ -402,7 +402,7 @@ mod tests {
         let mut st = TasksPanelState::new(&s);
         st.mode = Mode::List;
         let text = collect_text(&list_body(&st));
-        assert!(text.contains("▶ "));
+        assert!(text.contains("\u{276F} "));
         assert!(
             text.contains("general-purpose · Sleep 200 echo ok"),
             "row leads with subagent_type · description: {text}"

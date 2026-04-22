@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -6,21 +8,24 @@ use ratatui::Frame;
 
 use crate::tui::render::theme;
 
-// Panel chrome accent (top rule, search bar border, active-focused tab
-// chip bg). Maps to upstream `darkTheme.permission` / `darkTheme.suggestion`
-// = `rgb(177,185,249)` (light blue-purple). See
-// reconstructed/2.1.117/source/utils/theme.ts:447,458. Our palette exposes
-// this exact value as `theme::SUGGESTION`.
-//
-// Near-black used as foreground on chip backgrounds. Matches the existing
-// `Color::Black` used by agents_panel chips on accent bg.
-const CHIP_FG: Color = Color::Black;
+// Panel chrome accent (top rule, search bar border, active tab chip bg,
+// nav chevron). User directive 2026-04-23: unify every accent on
+// `theme::PRIMARY` (teal `rgb(62,160,195)` — see
+// src/tui/render.rs:23). The earlier SUGGESTION (blue-purple) accent is
+// retired for panel chrome; see `docs/ui-panels/chrome.md` §"Tab row FSM"
+// and §"Headline padding".
+
+const FOOTER_SEP: &str = " \u{00B7} ";
 
 // U+26B2 SAGITTARIUS-like magnifier glyph used as the search prefix.
 // ASCII fallback reference only — rendered as Unicode at runtime.
 const SEARCH_GLYPH: &str = "\u{26B2}";
 
-const FOOTER_SEP: &str = " \u{00B7} ";
+// U+276F HEAVY RIGHT-POINTING ANGLE QUOTATION MARK ORNAMENT. Single
+// canonical chevron used by every selection row — see
+// `docs/ui-panels/chrome.md` §"Selection chevron system". Any other
+// glyph (▶, ▸, ►, >) is a regression.
+pub const CHEVRON: &str = "\u{276F}";
 
 /// One tab chip label. Kept minimal — panels assemble their own list
 /// per render.
@@ -47,12 +52,13 @@ pub struct SearchSpec<'a> {
 ///
 /// Layout slots (top → bottom):
 ///   1. top rule (always)
-///   2. optional breadcrumb title
-///   3. optional tab row
-///   4. optional search bar (bordered)
-///   5. body
-///   6. optional pagination hint
-///   7. footer byline
+///   2. headline padding (always — one blank row after the rule)
+///   3. optional breadcrumb title
+///   4. optional tab row
+///   5. optional search bar (bordered)
+///   6. body
+///   7. optional pagination hint
+///   8. footer byline
 pub struct PanelFrame<'a> {
     pub title: Option<&'a str>,
     pub tabs: Option<&'a [TabSpec<'a>]>,
@@ -73,25 +79,27 @@ impl<'a> PanelFrame<'a> {
         let mut constraints: Vec<Constraint> = Vec::with_capacity(8);
         // 1. top rule (1 row)
         constraints.push(Constraint::Length(1));
-        // 2. title
+        // 2. headline padding (1 blank row — non-optional, see chrome.md).
+        constraints.push(Constraint::Length(1));
+        // 3. title
         if self.title.is_some() {
             constraints.push(Constraint::Length(1));
         }
-        // 3. tab row
+        // 4. tab row
         if self.tabs.is_some() {
             constraints.push(Constraint::Length(1));
         }
-        // 4. search (3 rows: border + inner + border)
+        // 5. search (3 rows: border + inner + border)
         if self.search.is_some() {
             constraints.push(Constraint::Length(3));
         }
-        // 5. body (fills remaining)
+        // 6. body (fills remaining)
         constraints.push(Constraint::Min(0));
-        // 6. pagination hint
+        // 7. pagination hint
         if self.pagination_hint.is_some() {
             constraints.push(Constraint::Length(1));
         }
-        // 7. footer
+        // 8. footer
         if !self.footer_hints.is_empty() {
             constraints.push(Constraint::Length(1));
         }
@@ -107,35 +115,38 @@ impl<'a> PanelFrame<'a> {
         draw_top_rule(f, chunks[idx]);
         idx += 1;
 
-        // 2. title
+        // 2. headline padding — intentionally left blank.
+        idx += 1;
+
+        // 3. title
         if let Some(title) = self.title {
             draw_title(f, chunks[idx], title);
             idx += 1;
         }
 
-        // 3. tab row
+        // 4. tab row
         if let Some(tabs) = self.tabs {
             draw_tab_row(f, chunks[idx], tabs, self.active_tab, self.tabs_focused);
             idx += 1;
         }
 
-        // 4. search bar
+        // 5. search bar
         if let Some(search) = self.search {
             draw_search_bar(f, chunks[idx], &search);
             idx += 1;
         }
 
-        // 5. body
+        // 6. body
         draw_body(f, chunks[idx], self.body);
         idx += 1;
 
-        // 6. pagination hint
+        // 7. pagination hint
         if let Some(hint) = self.pagination_hint {
             draw_pagination_hint(f, chunks[idx], hint);
             idx += 1;
         }
 
-        // 7. footer
+        // 8. footer
         if !self.footer_hints.is_empty() {
             draw_footer(f, chunks[idx], self.footer_hints);
         }
@@ -149,7 +160,7 @@ fn draw_top_rule(f: &mut Frame<'_>, area: Rect) {
     let rule: String = "\u{2500}".repeat(area.width as usize);
     let para = Paragraph::new(Line::from(Span::styled(
         rule,
-        Style::default().fg(theme::SUGGESTION),
+        Style::default().fg(theme::PRIMARY),
     )));
     f.render_widget(para, area);
 }
@@ -182,25 +193,61 @@ fn draw_tab_row(
     f.render_widget(para, area);
 }
 
+/// Active tab chip paint per chrome.md §"Tab row FSM": identical across
+/// row focus states — `theme::PRIMARY` bg + white fg + bold. The
+/// `tabs_focused` parameter is kept on the signature for future wiring
+/// of the `❯` row-focus nav prefix (chrome.md §"Selection chevron
+/// system") but does not alter the chip paint in Phase 1.
 fn chip_span(label: &str, active: bool, tabs_focused: bool) -> Span<'static> {
+    let _ = tabs_focused;
     let body = format!(" {label} ");
     let style = match (active, tabs_focused) {
         (false, _) => Style::default().fg(theme::MUTED),
-        (true, false) => Style::default()
-            .fg(CHIP_FG)
-            .bg(Color::White)
-            .add_modifier(Modifier::BOLD),
-        (true, true) => Style::default()
-            .fg(CHIP_FG)
-            .bg(theme::SUGGESTION)
+        (true, _) => Style::default()
+            .fg(Color::White)
+            .bg(theme::PRIMARY)
             .add_modifier(Modifier::BOLD),
     };
     Span::styled(body, style)
 }
 
+/// Body row with dual-chevron prefix — see chrome.md
+/// §"Selection chevron system".
+///
+/// - `nav_cursor`: keyboard cursor is currently on this row → paint
+///   `❯` in `theme::PRIMARY`.
+/// - `selected`: this row is the persistently-committed selection →
+///   paint `❯` in `theme::SUCCESS` (Phase 1 default).
+/// - Both true → `theme::SUCCESS` + bold to signal nav co-location
+///   without swapping the commit color.
+/// - Neither → two spaces so label columns stay aligned.
+pub fn body_row<'a>(
+    label: impl Into<Cow<'a, str>>,
+    nav_cursor: bool,
+    selected: bool,
+) -> Line<'a> {
+    let prefix_style = match (nav_cursor, selected) {
+        (false, false) => Style::default(),
+        (true, false) => Style::default().fg(theme::PRIMARY),
+        (false, true) => Style::default().fg(theme::SUCCESS),
+        (true, true) => Style::default()
+            .fg(theme::SUCCESS)
+            .add_modifier(Modifier::BOLD),
+    };
+    let prefix = if nav_cursor || selected {
+        format!("{CHEVRON} ")
+    } else {
+        "  ".to_string()
+    };
+    Line::from(vec![
+        Span::styled(prefix, prefix_style),
+        Span::raw(label.into().into_owned()),
+    ])
+}
+
 fn draw_search_bar(f: &mut Frame<'_>, area: Rect, spec: &SearchSpec<'_>) {
     let border_color = if spec.focused || !spec.query.is_empty() {
-        theme::SUGGESTION
+        theme::PRIMARY
     } else {
         theme::MUTED
     };
@@ -253,7 +300,7 @@ fn draw_search_bar(f: &mut Frame<'_>, area: Rect, spec: &SearchSpec<'_>) {
             let cursor_area = Rect::new(cursor_x, inner.y, 1, 1);
             let block_glyph = Paragraph::new(Span::styled(
                 "\u{2588}",
-                Style::default().fg(theme::SUGGESTION),
+                Style::default().fg(theme::PRIMARY),
             ));
             f.render_widget(block_glyph, cursor_area);
         }
@@ -373,7 +420,9 @@ mod tests {
     }
 
     #[test]
-    fn active_tab_paint_differs_by_focus() {
+    fn active_tab_paint_uses_primary_bg_and_white_fg() {
+        // Per chrome.md §"Tab row FSM": active chip paints identical
+        // regardless of row focus — `theme::PRIMARY` bg + white fg + bold.
         let tabs = [
             TabSpec { label: "A" },
             TabSpec { label: "B" },
@@ -392,18 +441,193 @@ mod tests {
         let unfocused = render_to_buffer(mk(false), 20, 4);
         let focused = render_to_buffer(mk(true), 20, 4);
 
-        // Tab row is the second row (y=1) — top rule at y=0.
+        // Tab row now lives at y=2 (y=0 top rule, y=1 padding, y=2 tabs).
         // Active chip "A" occupies cells around x=0..3 (" A ").
-        // WHITE bg when unfocused, theme::SUGGESTION bg when focused → bg cells
-        // must differ at the chip body cell.
         let probe_x = 1;
-        let probe_y = 1;
+        let probe_y = 2;
         let cell_unfocused = unfocused[(probe_x, probe_y)].clone();
         let cell_focused = focused[(probe_x, probe_y)].clone();
-        assert_ne!(
+
+        assert_eq!(
+            cell_unfocused.bg, Color::Rgb(0x3E, 0xA0, 0xC3),
+            "unfocused active chip bg must be theme::PRIMARY: {cell_unfocused:?}"
+        );
+        assert_eq!(
+            cell_focused.bg, Color::Rgb(0x3E, 0xA0, 0xC3),
+            "focused active chip bg must be theme::PRIMARY: {cell_focused:?}"
+        );
+        assert_eq!(
+            cell_unfocused.fg, Color::White,
+            "unfocused active chip fg must be white: {cell_unfocused:?}"
+        );
+        assert_eq!(
+            cell_focused.fg, Color::White,
+            "focused active chip fg must be white: {cell_focused:?}"
+        );
+        assert_eq!(
             cell_unfocused.bg, cell_focused.bg,
-            "active-tab bg must differ between tabs_focused=false (WHITE) and true (theme::SUGGESTION); got unfocused={:?} focused={:?}",
-            cell_unfocused, cell_focused
+            "active chip bg must be identical across tabs_focused states"
+        );
+        assert_eq!(
+            cell_unfocused.fg, cell_focused.fg,
+            "active chip fg must be identical across tabs_focused states"
+        );
+    }
+
+    #[test]
+    fn top_rule_uses_theme_primary() {
+        let frame = PanelFrame {
+            title: None,
+            tabs: None,
+            active_tab: 0,
+            tabs_focused: false,
+            search: None,
+            body: Vec::new(),
+            footer_hints: &[],
+            pagination_hint: None,
+        };
+        let buf = render_to_buffer(frame, 12, 3);
+        // y=0 is the rule row.
+        let cell = buf[(3, 0)].clone();
+        assert_eq!(
+            cell.symbol(),
+            "\u{2500}",
+            "top row must render ── rule glyph: {cell:?}"
+        );
+        assert_eq!(
+            cell.fg,
+            Color::Rgb(0x3E, 0xA0, 0xC3),
+            "top rule fg must be theme::PRIMARY: {cell:?}"
+        );
+    }
+
+    #[test]
+    fn search_border_uses_theme_primary_when_focused() {
+        let frame = PanelFrame {
+            title: None,
+            tabs: None,
+            active_tab: 0,
+            tabs_focused: false,
+            search: Some(SearchSpec {
+                query: "",
+                placeholder: "Search settings\u{2026}",
+                focused: true,
+                cursor_pos: 0,
+            }),
+            body: Vec::new(),
+            footer_hints: &[],
+            pagination_hint: None,
+        };
+        let buf = render_to_buffer(frame, 40, 8);
+        // Layout: y=0 rule, y=1 padding, y=2 search top-border,
+        // y=3 search inner, y=4 search bottom-border.
+        let border_cell = buf[(0, 2)].clone();
+        assert_eq!(
+            border_cell.fg,
+            Color::Rgb(0x3E, 0xA0, 0xC3),
+            "search top-border must be theme::PRIMARY when focused: {border_cell:?}"
+        );
+    }
+
+    #[test]
+    fn layout_has_blank_padding_row_after_top_rule() {
+        // Per chrome.md §"Headline padding": y=0 rule, y=1 blank,
+        // y=2 first content row (tabs here).
+        let tabs = [TabSpec { label: "Alpha" }];
+        let frame = PanelFrame {
+            title: None,
+            tabs: Some(&tabs),
+            active_tab: 0,
+            tabs_focused: false,
+            search: None,
+            body: Vec::new(),
+            footer_hints: &[],
+            pagination_hint: None,
+        };
+        let buf = render_to_buffer(frame, 20, 5);
+        // y=1 must be all spaces (blank padding row).
+        let mut row1 = String::new();
+        for x in 0..20u16 {
+            row1.push_str(buf[(x, 1)].symbol());
+        }
+        assert_eq!(
+            row1.trim(),
+            "",
+            "y=1 must be blank padding row, got {row1:?}"
+        );
+        // y=2 must carry the tab row.
+        let mut row2 = String::new();
+        for x in 0..20u16 {
+            row2.push_str(buf[(x, 2)].symbol());
+        }
+        assert!(
+            row2.contains("Alpha"),
+            "tab row must render at y=2 after padding: {row2:?}"
+        );
+    }
+
+    #[test]
+    fn body_row_paints_nav_chevron_in_primary() {
+        let line = body_row("Settings", true, false);
+        let prefix_span = &line.spans[0];
+        assert_eq!(prefix_span.content.as_ref(), "\u{276F} ");
+        assert_eq!(
+            prefix_span.style.fg,
+            Some(Color::Rgb(0x3E, 0xA0, 0xC3)),
+            "nav chevron must be theme::PRIMARY: {:?}",
+            prefix_span.style
+        );
+        assert!(
+            !prefix_span.style.add_modifier.contains(Modifier::BOLD),
+            "nav-only chevron must not be bold: {:?}",
+            prefix_span.style
+        );
+    }
+
+    #[test]
+    fn body_row_paints_selected_chevron_in_success() {
+        let line = body_row("Agents", false, true);
+        let prefix_span = &line.spans[0];
+        assert_eq!(prefix_span.content.as_ref(), "\u{276F} ");
+        assert_eq!(
+            prefix_span.style.fg,
+            Some(Color::Rgb(78, 186, 101)),
+            "selected chevron must be theme::SUCCESS: {:?}",
+            prefix_span.style
+        );
+        assert!(
+            !prefix_span.style.add_modifier.contains(Modifier::BOLD),
+            "selected-only chevron must not be bold: {:?}",
+            prefix_span.style
+        );
+    }
+
+    #[test]
+    fn body_row_paints_both_when_nav_on_selected_row() {
+        let line = body_row("Usage", true, true);
+        let prefix_span = &line.spans[0];
+        assert_eq!(prefix_span.content.as_ref(), "\u{276F} ");
+        assert_eq!(
+            prefix_span.style.fg,
+            Some(Color::Rgb(78, 186, 101)),
+            "nav+selected chevron must stay theme::SUCCESS: {:?}",
+            prefix_span.style
+        );
+        assert!(
+            prefix_span.style.add_modifier.contains(Modifier::BOLD),
+            "nav+selected chevron must add BOLD to signal co-location: {:?}",
+            prefix_span.style
+        );
+    }
+
+    #[test]
+    fn body_row_renders_blank_prefix_when_neither() {
+        let line = body_row("Quiet row", false, false);
+        let prefix_span = &line.spans[0];
+        assert_eq!(
+            prefix_span.content.as_ref(),
+            "  ",
+            "idle row must pad with two spaces to align with chevron column"
         );
     }
 
@@ -497,10 +721,10 @@ mod tests {
             footer_hints: &[],
             pagination_hint: Some(hint),
         };
-        // Height: 1 top rule + 5 body + 1 pagination = 7.
-        let buf = render_to_buffer(frame, 40, 7);
+        // Height: 1 top rule + 1 padding + 5 body + 1 pagination = 8.
+        let buf = render_to_buffer(frame, 40, 8);
         // Pagination hint occupies the last rendered row (y = height-1).
-        let last_y = 6;
+        let last_y = 7;
         let mut last_row = String::new();
         for x in 0..40u16 {
             last_row.push_str(buf[(x, last_y)].symbol());

@@ -89,7 +89,7 @@ fn running_body(state: &AgentsPanelState) -> Vec<Line<'static>> {
     } else {
         for (i, row) in state.running.iter().enumerate() {
             let selected = i == state.running_cursor;
-            let prefix = if selected { "▶ " } else { "  " };
+            let prefix = if selected { "\u{276F} " } else { "  " };
             let style = if selected {
                 Style::default().fg(theme::TEXT).add_modifier(Modifier::BOLD)
             } else {
