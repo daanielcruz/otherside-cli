@@ -144,6 +144,17 @@ pub fn render(
     if let (Some(pr), Some(tp)) = (slots.progress, slots.tip) {
 
         let verb = state.turn_verb.unwrap_or("Thinking");
+        let teammate_name: Option<String> = state
+            .active_tool_calls
+            .iter()
+            .rev()
+            .find(|e| e.name == "Agent" && matches!(e.status, super::tool_render::ToolStatus::Running))
+            .and_then(|e| {
+                e.args
+                    .get("subagent_type")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+            });
         progress::draw(
             f,
             pr,
@@ -154,6 +165,7 @@ pub fn render(
             state.total_output_tokens(),
             state.thought_ms,
             state.session.effort_label,
+            teammate_name.as_deref(),
         );
         if state.persistence.settings.show_tips.unwrap_or(true) {
             tips::draw(f, tp, state.tip_rotation_index);

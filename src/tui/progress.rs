@@ -285,28 +285,11 @@ pub fn draw(
     tokens_down: u64,
     thought_ms: u64,
     effort_label: Option<&str>,
+    foregrounded_teammate: Option<&str>,
 ) {
     let frame = spinner_frame(tick);
-    let elapsed_str = format_elapsed(elapsed);
 
-    let tokens_part = if tokens_down > 0 {
-        format!(" · ↓ {} tokens", format_tokens_compact(tokens_down))
-    } else if tokens_up > 0 {
-        format!(" · ↑ {} tokens", format_tokens_compact(tokens_up))
-    } else {
-        String::new()
-    };
-
-    let thought_part = if thought_ms > 0 {
-        let secs = (thought_ms + 500) / 1000;
-        format!(" · thought for {secs}s")
-    } else if let Some(level) = effort_label {
-        format!(" · thinking with {level} effort")
-    } else {
-        String::new()
-    };
-
-    let line = Line::from(vec![
+    let mut spans = vec![
         Span::styled(
             format!("{frame} "),
             Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD),
@@ -315,12 +298,45 @@ pub fn draw(
             format!("{verb}… "),
             Style::default().fg(theme::PRIMARY),
         ),
-        Span::styled(
+    ];
+
+    if let Some(name) = foregrounded_teammate {
+        spans.push(Span::styled(
+            "(esc to interrupt ".to_string(),
+            Style::default().fg(theme::MUTED),
+        ));
+        spans.push(Span::styled(
+            name.to_string(),
+            Style::default().fg(theme::PRIMARY),
+        ));
+        spans.push(Span::styled(
+            ")".to_string(),
+            Style::default().fg(theme::MUTED),
+        ));
+    } else {
+        let elapsed_str = format_elapsed(elapsed);
+        let tokens_part = if tokens_down > 0 {
+            format!(" · ↓ {} tokens", format_tokens_compact(tokens_down))
+        } else if tokens_up > 0 {
+            format!(" · ↑ {} tokens", format_tokens_compact(tokens_up))
+        } else {
+            String::new()
+        };
+        let thought_part = if thought_ms > 0 {
+            let secs = (thought_ms + 500) / 1000;
+            format!(" · thought for {secs}s")
+        } else if let Some(level) = effort_label {
+            format!(" · thinking with {level} effort")
+        } else {
+            String::new()
+        };
+        spans.push(Span::styled(
             format!("({elapsed_str}{tokens_part}{thought_part})"),
             Style::default().fg(theme::MUTED),
-        ),
-    ]);
-    f.render_widget(Paragraph::new(line), area);
+        ));
+    }
+
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 #[cfg(test)]
