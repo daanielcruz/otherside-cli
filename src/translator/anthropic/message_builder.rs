@@ -20,8 +20,24 @@ pub fn build_with_flavor(
     ctx: &UserContext<'_>,
     flavor: SystemFlavor,
 ) -> Vec<Value> {
+    build_with_flavor_and_shim(messages, ctx, flavor, false)
+}
+
+/// When `emit_reasoning_shim` is true, every assistant message carrying
+/// at least one `tool_use` block gets an empty-string `reasoning_content`
+/// sibling on the message object. Gated by the caller to kimi-flavored
+/// requests with `thinking` enabled — see `request.rs`.
+pub fn build_with_flavor_and_shim(
+    messages: &[OpenAiChatMessage],
+    ctx: &UserContext<'_>,
+    flavor: SystemFlavor,
+    emit_reasoning_shim: bool,
+) -> Vec<Value> {
     let mut normalized = normalize_with_flavor(messages, ctx, flavor);
     add_cache_breakpoints(&mut normalized);
+    if emit_reasoning_shim {
+        attach_reasoning_content_shim(&mut normalized);
+    }
     normalized.iter().map(|m| m.to_json()).collect()
 }
 
@@ -79,6 +95,7 @@ pub fn normalize_with_flavor(
                 out.push(AnthropicMessage {
                     role: Role::User,
                     content: blocks,
+                    reasoning_content: None,
                 });
             }
             OpenAiChatRole::Assistant => {
@@ -111,6 +128,7 @@ pub fn normalize_with_flavor(
                     out.push(AnthropicMessage {
                         role: Role::Assistant,
                         content: blocks,
+                        reasoning_content: None,
                     });
                 }
             }
@@ -136,7 +154,31 @@ fn flush_tool_results(pending: &mut Vec<Block>, out: &mut Vec<AnthropicMessage>)
         out.push(AnthropicMessage {
             role: Role::User,
             content: std::mem::take(pending),
+            reasoning_content: None,
         });
+    }
+}
+
+/// For every assistant message that carries at least one `tool_use`
+/// block, attach `reasoning_content: ""` as an empty-string shim. The
+/// kimi validator only checks for field PRESENCE; the value content
+/// is irrelevant until we wire the response-side capture back through
+/// `OpenAiChatMessage` (blocked on agent/* scope). Assistant turns
+/// with no tool_use (plain text answers) are left untouched — the
+/// upstream error message ("in assistant tool call message") scopes
+/// the requirement to tool-carrying turns only.
+fn attach_reasoning_content_shim(messages: &mut [AnthropicMessage]) {
+    for msg in messages.iter_mut() {
+        if msg.role != Role::Assistant {
+            continue;
+        }
+        let has_tool_use = msg
+            .content
+            .iter()
+            .any(|b| matches!(b, Block::ToolUse { .. }));
+        if has_tool_use && msg.reasoning_content.is_none() {
+            msg.reasoning_content = Some(String::new());
+        }
     }
 }
 

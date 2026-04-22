@@ -169,7 +169,20 @@ fn build_request_body_full(
 
     let tools = super::tools::build_tools_array();
 
-    let messages = message_builder::build_with_flavor(&req.messages, ctx, flavor);
+    // Kimi-specific shim: when talking to a ThirdParty flavor with
+    // thinking enabled, every assistant tool-call message needs a
+    // `reasoning_content` sibling (see kimi 400 error captured
+    // 2026-04-23: "thinking is enabled but reasoning_content is
+    // missing in assistant tool call message at index N"). Anthropic
+    // itself rejects this field, so the gate is flavor-scoped.
+    let emit_reasoning_shim =
+        matches!(flavor, super::system::SystemFlavor::ThirdParty) && thinking.is_some();
+    let messages = message_builder::build_with_flavor_and_shim(
+        &req.messages,
+        ctx,
+        flavor,
+        emit_reasoning_shim,
+    );
 
     let mut body = Map::with_capacity(10);
     body.insert("model".to_string(), Value::String(req.model.clone()));
@@ -466,5 +479,180 @@ mod tests {
             names,
             vec!["Agent", "Bash", "Edit", "Glob", "Grep", "Read", "Skill", "ToolSearch", "Write"]
         );
+    }
+
+    // Kimi `reasoning_content` shim regression — captured 2026-04-23.
+    // Upstream error message: "thinking is enabled but reasoning_content
+    // is missing in assistant tool call message at index N". Gate is
+    // flavor=ThirdParty + thinking.is_some() + message has ≥1 tool_use.
+    mod reasoning_content_shim {
+        use super::*;
+        use crate::inference::{
+            OpenAiChatMessage, OpenAiChatRole, OpenAiToolCall, OpenAiToolCallFunction,
+        };
+        use crate::thinking::{ThinkingConfig, ThinkingLevel};
+        use crate::translator::anthropic::system::SystemFlavor;
+
+        fn history_with_tool_use_turn() -> Vec<OpenAiChatMessage> {
+            vec![
+                OpenAiChatMessage {
+                    role: OpenAiChatRole::User,
+                    content: "list files".to_string(),
+                    ..Default::default()
+                },
+                OpenAiChatMessage {
+                    role: OpenAiChatRole::Assistant,
+                    content: String::new(),
+                    tool_calls: vec![OpenAiToolCall {
+                        id: "toolu_kimi1".into(),
+                        kind: "function".into(),
+                        function: OpenAiToolCallFunction {
+                            name: "Glob".into(),
+                            arguments: r#"{"pattern":"*.rs"}"#.into(),
+                        },
+                    }],
+                    ..Default::default()
+                },
+                OpenAiChatMessage {
+                    role: OpenAiChatRole::Tool,
+                    content: "a.rs\nb.rs".into(),
+                    tool_call_id: Some("toolu_kimi1".into()),
+                    ..Default::default()
+                },
+                OpenAiChatMessage {
+                    role: OpenAiChatRole::User,
+                    content: "now read a.rs".to_string(),
+                    ..Default::default()
+                },
+            ]
+        }
+
+        fn history_text_only_assistant() -> Vec<OpenAiChatMessage> {
+            vec![
+                OpenAiChatMessage {
+                    role: OpenAiChatRole::User,
+                    content: "hi".into(),
+                    ..Default::default()
+                },
+                OpenAiChatMessage {
+                    role: OpenAiChatRole::Assistant,
+                    content: "hello there".into(),
+                    ..Default::default()
+                },
+                OpenAiChatMessage {
+                    role: OpenAiChatRole::User,
+                    content: "continue".into(),
+                    ..Default::default()
+                },
+            ]
+        }
+
+        fn build(
+            history: Vec<OpenAiChatMessage>,
+            flavor: SystemFlavor,
+            thinking: Option<&ThinkingConfig>,
+        ) -> Value {
+            let req = OpenAiChatRequest {
+                model: "kimi-k2-thinking".to_string(),
+                messages: history,
+                stream: Some(true),
+                ..Default::default()
+            };
+            let ctx = UserContext::capture_defaults();
+            let bytes = build_request_body_with_flavor_and_thinking(
+                &req, &ctx, flavor, thinking,
+            )
+            .unwrap();
+            serde_json::from_slice(&bytes).unwrap()
+        }
+
+        fn find_assistant_tool_use(body: &Value) -> &Value {
+            body["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|m| {
+                    m["role"] == "assistant"
+                        && m["content"]
+                            .as_array()
+                            .map(|c| c.iter().any(|b| b["type"] == "tool_use"))
+                            .unwrap_or(false)
+                })
+                .expect("assistant tool_use message present")
+        }
+
+        #[test]
+        fn request_emits_reasoning_content_for_kimi_thinking_on() {
+            let cfg = ThinkingConfig::level(ThinkingLevel::On);
+            let body = build(
+                history_with_tool_use_turn(),
+                SystemFlavor::ThirdParty,
+                Some(&cfg),
+            );
+            let msg = find_assistant_tool_use(&body);
+            let rc = msg
+                .get("reasoning_content")
+                .expect("reasoning_content sibling present on assistant tool-call message");
+            assert_eq!(
+                rc.as_str(),
+                Some(""),
+                "empty-string shim satisfies kimi validator; real content requires agent/* wire-up",
+            );
+        }
+
+        #[test]
+        fn request_omits_reasoning_content_when_thinking_off() {
+            // thinking = None → no shim, regardless of flavor.
+            let body = build(
+                history_with_tool_use_turn(),
+                SystemFlavor::ThirdParty,
+                None,
+            );
+            let msg = find_assistant_tool_use(&body);
+            assert!(
+                msg.get("reasoning_content").is_none(),
+                "reasoning_content must NOT ride when thinking is disabled",
+            );
+        }
+
+        #[test]
+        fn request_omits_reasoning_content_for_anthropic_flavor() {
+            // First-party Anthropic rejects the field entirely — even with
+            // thinking on, the builder must keep the wire clean.
+            let cfg = ThinkingConfig::level(ThinkingLevel::High);
+            let body = build(
+                history_with_tool_use_turn(),
+                SystemFlavor::ClaudeCode,
+                Some(&cfg),
+            );
+            let msg = find_assistant_tool_use(&body);
+            assert!(
+                msg.get("reasoning_content").is_none(),
+                "reasoning_content must NEVER ride Anthropic's own API; gated on ThirdParty flavor",
+            );
+        }
+
+        #[test]
+        fn request_omits_reasoning_content_when_no_tool_use() {
+            // Assistant text-only turn under kimi+thinking: the error only
+            // conditions on "assistant tool call message", so text-only
+            // assistant replies must NOT carry the field.
+            let cfg = ThinkingConfig::level(ThinkingLevel::On);
+            let body = build(
+                history_text_only_assistant(),
+                SystemFlavor::ThirdParty,
+                Some(&cfg),
+            );
+            let assistant_msg = body["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|m| m["role"] == "assistant")
+                .expect("assistant text-only message present");
+            assert!(
+                assistant_msg.get("reasoning_content").is_none(),
+                "shim scope is tool-call messages only, not blanket every assistant turn",
+            );
+        }
     }
 }

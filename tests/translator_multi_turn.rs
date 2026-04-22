@@ -138,6 +138,7 @@ fn turn2_messages_fragment_matches_capture() {
                 cache_control: None,
             },
         ],
+        reasoning_content: None,
     };
     let assistant = AnthropicMessage {
         role: Role::Assistant,
@@ -152,6 +153,7 @@ fn turn2_messages_fragment_matches_capture() {
                 input: json!({ "pattern": "src/*.rs" }),
             },
         ],
+        reasoning_content: None,
     };
     let user2 = AnthropicMessage {
         role: Role::User,
@@ -160,6 +162,7 @@ fn turn2_messages_fragment_matches_capture() {
             content: "src/main.rs\nsrc/error.rs\nsrc/lib.rs".to_string(),
             cache_control: None,
         }],
+        reasoning_content: None,
     };
     let mut msgs = vec![user1, assistant, user2];
     message_builder::add_cache_breakpoints(&mut msgs);
@@ -194,6 +197,7 @@ fn turn3_messages_fragment_matches_capture() {
                 cache_control: None,
             },
         ],
+        reasoning_content: None,
     };
     let assistant1 = AnthropicMessage {
         role: Role::Assistant,
@@ -208,6 +212,7 @@ fn turn3_messages_fragment_matches_capture() {
                 input: json!({ "pattern": "src/*.rs" }),
             },
         ],
+        reasoning_content: None,
     };
     let user2 = AnthropicMessage {
         role: Role::User,
@@ -216,6 +221,7 @@ fn turn3_messages_fragment_matches_capture() {
             content: "src/main.rs\nsrc/error.rs\nsrc/lib.rs".to_string(),
             cache_control: None,
         }],
+        reasoning_content: None,
     };
     let assistant2 = AnthropicMessage {
         role: Role::Assistant,
@@ -224,6 +230,7 @@ fn turn3_messages_fragment_matches_capture() {
             name: "Read".to_string(),
             input: json!({ "file_path": "/workspace/src/main.rs" }),
         }],
+        reasoning_content: None,
     };
     let user3 = AnthropicMessage {
         role: Role::User,
@@ -233,6 +240,7 @@ fn turn3_messages_fragment_matches_capture() {
                 .to_string(),
             cache_control: None,
         }],
+        reasoning_content: None,
     };
     let mut msgs = vec![user1, assistant1, user2, assistant2, user3];
     message_builder::add_cache_breakpoints(&mut msgs);

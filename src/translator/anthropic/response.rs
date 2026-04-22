@@ -47,6 +47,19 @@ pub struct AnthropicStreamTranslator {
     tool_blocks: HashMap<u32, ToolBlock>,
 
     next_tool_index: u32,
+
+    // Kimi extends Anthropic Messages API: when `thinking` is enabled,
+    // every assistant tool-call message must round-trip a
+    // `reasoning_content` field on the next request. We accumulate it
+    // here from whichever delta variant Kimi actually emits — the exact
+    // SSE shape wasn't captured pre-landing, so we decode both
+    // `thinking_delta` (the known Anthropic shape) and a speculative
+    // `reasoning_content_delta`, folding into one buffer. Consumer
+    // wire-up lives in `agent/*` which is frozen for this patch — the
+    // decoder lands ahead of its consumer by design (see roadmap §P0
+    // Kimi wire). `take_reasoning_content` exposes the buffer for a
+    // follow-up pass.
+    reasoning_content_buf: String,
 }
 
 impl Default for AnthropicStreamTranslator {
@@ -66,6 +79,20 @@ impl AnthropicStreamTranslator {
             role_emitted: false,
             tool_blocks: HashMap::new(),
             next_tool_index: 0,
+            reasoning_content_buf: String::new(),
+        }
+    }
+
+    /// Drain any accumulated reasoning_content captured from kimi-flavored
+    /// SSE deltas during this turn. Returns `None` if nothing was captured.
+    /// Consumer wire-up is a deferred follow-up — the request-side gate
+    /// emits `""` unconditionally so the kimi validator passes even when
+    /// this buffer never flows back into history.
+    pub fn take_reasoning_content(&mut self) -> Option<String> {
+        if self.reasoning_content_buf.is_empty() {
+            None
+        } else {
+            Some(std::mem::take(&mut self.reasoning_content_buf))
         }
     }
 
@@ -245,6 +272,29 @@ impl AnthropicStreamTranslator {
                     },
                     None,
                 )))
+            }
+            // Kimi-specific: when `thinking` is on, reasoning flows as either
+            // `thinking_delta` (reusing Anthropic's shape; field name `thinking`)
+            // or a speculative `reasoning_content_delta` (field name
+            // `reasoning_content`). Both variants feed one buffer; if neither
+            // lands, the request-side gate still emits `""` to satisfy the
+            // kimi validator. Wire shape uncertain until Proxyman capture —
+            // shipping both decoders keeps the follow-up one match-arm away.
+            "thinking_delta" => {
+                if let Some(chunk) = delta_obj.get("thinking").and_then(Value::as_str) {
+                    self.reasoning_content_buf.push_str(chunk);
+                }
+                Ok(None)
+            }
+            "reasoning_content_delta" => {
+                if let Some(chunk) = delta_obj
+                    .get("reasoning_content")
+                    .and_then(Value::as_str)
+                    .or_else(|| delta_obj.get("text").and_then(Value::as_str))
+                {
+                    self.reasoning_content_buf.push_str(chunk);
+                }
+                Ok(None)
             }
             "input_json_delta" => {
                 let anthropic_index = value
@@ -506,8 +556,11 @@ mod tests {
     }
 
     #[test]
-    fn thinking_delta_ignored_in_mvp() {
-
+    fn thinking_delta_accumulates_into_reasoning_content_buffer() {
+        // Historical `thinking_delta_ignored_in_mvp`: the event still emits
+        // no downstream chunk (reasoning content never rides the OpenAI
+        // delta stream), but it now feeds the reasoning_content
+        // accumulator so kimi re-emission can round-trip it.
         let mut t = AnthropicStreamTranslator::new();
         let ev = SseEvent {
             event: "content_block_delta".into(),
@@ -515,6 +568,47 @@ mod tests {
             ..Default::default()
         };
         assert!(t.on_event(&ev).unwrap().is_none());
+        assert_eq!(t.take_reasoning_content().as_deref(), Some("reasoning..."));
+    }
+
+    #[test]
+    fn translator_accumulates_reasoning_content_internally() {
+        // Two back-to-back thinking_delta events must concatenate into one
+        // buffer. `take_reasoning_content` drains it.
+        let mut t = AnthropicStreamTranslator::new();
+        t.on_event(&SseEvent {
+            event: "content_block_delta".into(),
+            data: r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"step one "}}"#.into(),
+            ..Default::default()
+        })
+        .unwrap();
+        t.on_event(&SseEvent {
+            event: "content_block_delta".into(),
+            data: r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"step two"}}"#.into(),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(
+            t.take_reasoning_content().as_deref(),
+            Some("step one step two")
+        );
+        // Drained — a second call yields None.
+        assert!(t.take_reasoning_content().is_none());
+    }
+
+    #[test]
+    fn reasoning_content_delta_variant_also_accumulates() {
+        // Speculative kimi-specific event name. Wire shape unconfirmed —
+        // we decode `delta.reasoning_content` first, falling back to
+        // `delta.text` for Anthropic-like payload reuse.
+        let mut t = AnthropicStreamTranslator::new();
+        t.on_event(&SseEvent {
+            event: "content_block_delta".into(),
+            data: r#"{"type":"content_block_delta","index":0,"delta":{"type":"reasoning_content_delta","reasoning_content":"kimi-rc"}}"#.into(),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(t.take_reasoning_content().as_deref(), Some("kimi-rc"));
     }
 
     #[test]

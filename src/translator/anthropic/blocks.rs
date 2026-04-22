@@ -114,6 +114,17 @@ impl Block {
 pub struct AnthropicMessage {
     pub role: Role,
     pub content: Vec<Block>,
+
+    // Kimi-only sibling field on the assistant-message object. Kimi's
+    // Anthropic-compat endpoint requires `reasoning_content` to be
+    // present (even as `""`) on every assistant message that carries a
+    // `tool_use` block when `thinking` is enabled — otherwise it 400s
+    // with "thinking is enabled but reasoning_content is missing in
+    // assistant tool call message at index N". Anthropic's own
+    // `/v1/messages` rejects this field, so it is gated on
+    // `SystemFlavor::ThirdParty` at the builder level. See request.rs
+    // for the gate.
+    pub reasoning_content: Option<String>,
 }
 
 impl AnthropicMessage {
@@ -122,6 +133,9 @@ impl AnthropicMessage {
         m.insert("role".into(), Value::String(self.role.wire().into()));
         let arr: Vec<Value> = self.content.iter().map(|b| b.to_json()).collect();
         m.insert("content".into(), Value::Array(arr));
+        if let Some(rc) = &self.reasoning_content {
+            m.insert("reasoning_content".into(), Value::String(rc.clone()));
+        }
         Value::Object(m)
     }
 }
@@ -254,10 +268,31 @@ mod tests {
                 text: "x".into(),
                 cache_control: None,
             }],
+            reasoning_content: None,
         };
         let v = m.to_json();
         let keys: Vec<&str> = v.as_object().unwrap().keys().map(|s| s.as_str()).collect();
         assert_eq!(keys, vec!["role", "content"]);
         assert_eq!(v["role"], "user");
+    }
+
+    #[test]
+    fn anthropic_message_emits_reasoning_content_when_set() {
+        // kimi `reasoning_content` sibling lands after `content`. Empty
+        // string is the shim that satisfies the validator without leaking
+        // captured reasoning back to the provider.
+        let m = AnthropicMessage {
+            role: Role::Assistant,
+            content: vec![Block::ToolUse {
+                id: "tu".into(),
+                name: "Glob".into(),
+                input: json!({}),
+            }],
+            reasoning_content: Some(String::new()),
+        };
+        let v = m.to_json();
+        let keys: Vec<&str> = v.as_object().unwrap().keys().map(|s| s.as_str()).collect();
+        assert_eq!(keys, vec!["role", "content", "reasoning_content"]);
+        assert_eq!(v["reasoning_content"], "");
     }
 }
