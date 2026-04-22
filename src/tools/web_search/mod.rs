@@ -56,4 +56,34 @@ mod dispatch_tests {
             _ => panic!("expected Unsupported"),
         }
     }
+
+    #[test]
+    fn thread_local_provider_controls_dispatch_branch() {
+        // This covers the full G2 path: the top-level `tools::dispatch`
+        // reads the CURRENT_PROVIDER thread-local and routes WebSearch
+        // accordingly. A codex-scoped dispatch must land in the codex shim,
+        // a claude-scoped dispatch must reach the claude module's arg
+        // validator (we check the error to avoid hitting the network).
+        use crate::tools;
+
+        let codex_out = tools::with_current_provider(ProviderId::Codex, || {
+            tools::dispatch("WebSearch", &json!({"query": "tokio"}))
+        })
+        .unwrap();
+        let marker = codex_out["results"][0].as_str().unwrap();
+        assert!(marker.contains("codex"),
+            "codex scope must land in codex shim, got: {marker}");
+
+        let claude_err = tools::with_current_provider(ProviderId::ClaudeCode, || {
+            tools::dispatch("WebSearch", &json!({"query": ""}))
+        })
+        .unwrap_err();
+        match claude_err {
+            ToolError::InvalidArgs(msg) => assert!(
+                msg.contains("Missing query"),
+                "claude scope must reach claude_code validator, got: {msg}"
+            ),
+            _ => panic!("expected InvalidArgs"),
+        }
+    }
 }
