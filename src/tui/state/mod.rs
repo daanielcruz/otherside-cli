@@ -293,11 +293,22 @@ fn summarize_tool_invocation(name: &str, args: &Value) -> String {
             .and_then(Value::as_str)
             .map(str::to_string)
             .unwrap_or_else(|| "agent".into()),
-        "Bash" => args
-            .get("command")
-            .and_then(Value::as_str)
-            .map(|s| s.chars().take(40).collect::<String>())
-            .unwrap_or_else(|| "bash".into()),
+        "Bash" => {
+            // Prefer the Bash `description` arg over the truncated command —
+            // the completion line "Background command \"X\" completed" reads
+            // cleaner with a short description (`"Verify post-revert"`) than
+            // a 40-char shred of the command (`"cargo test -- --test-threads=1 2>&1 | t…"`).
+            // Matches upstream BackgroundBashTool completion render.
+            if let Some(desc) = args.get("description").and_then(Value::as_str) {
+                if !desc.is_empty() {
+                    return desc.to_string();
+                }
+            }
+            args.get("command")
+                .and_then(Value::as_str)
+                .map(|s| s.chars().take(40).collect::<String>())
+                .unwrap_or_else(|| "bash".into())
+        }
         other => other.to_string(),
     }
 }
