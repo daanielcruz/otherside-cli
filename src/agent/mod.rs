@@ -14,6 +14,7 @@ use crate::provider::{ChunkStream, Provider};
 use crate::thinking::ThinkingConfig;
 use crate::tools;
 
+pub mod compact;
 pub mod subagents;
 
 pub const MAX_AUTO_TURNS: u32 = 25;
