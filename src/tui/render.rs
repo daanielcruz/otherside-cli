@@ -238,12 +238,14 @@ fn draw_log(f: &mut Frame<'_>, area: Rect, state: &ConversationState, spinner_ti
     let mut lines: Vec<Line> = Vec::new();
     let width = area.width;
 
-    let mut first_paint = true;
+    let mut prev: Option<&crate::tui::state::DisplayMessage> = None;
     for msg in state.messages.iter().filter(|m| !m.is_synthetic) {
-        if !first_paint {
-            lines.push(Line::raw(""));
+        if let Some(p) = prev {
+            if !is_chrome_anchor_pair(p, msg) {
+                lines.push(Line::raw(""));
+            }
         }
-        first_paint = false;
+        prev = Some(msg);
         lines.extend(render_message(msg.role, &msg.content, width));
     }
 
@@ -317,6 +319,23 @@ fn draw_log(f: &mut Frame<'_>, area: Rect, state: &ConversationState, spinner_ti
         let top = max_top.saturating_sub(state.scroll_offset as u16);
         f.render_widget(para.scroll((top, 0)), area);
     }
+}
+
+// Upstream renders the slash echo and its `⎿` dismiss anchor as a
+// tight paired unit (no blank row between them). `push_anchor` emits this
+// shape with `DisplayOrigin::Chrome` on both rows, so match it and skip the
+// usual per-message separator. Transcript-origin pairs (e.g. /compact) keep
+// the default spacing.
+fn is_chrome_anchor_pair(
+    prev: &crate::tui::state::DisplayMessage,
+    curr: &crate::tui::state::DisplayMessage,
+) -> bool {
+    use crate::tui::state::DisplayOrigin;
+    prev.role == OpenAiChatRole::User
+        && curr.role == OpenAiChatRole::System
+        && prev.origin == DisplayOrigin::Chrome
+        && curr.origin == DisplayOrigin::Chrome
+        && curr.content.starts_with("⎿ ")
 }
 
 fn render_message(role: OpenAiChatRole, content: &str, width: u16) -> Vec<Line<'static>> {
@@ -1042,6 +1061,153 @@ mod tests {
         assert!(content.contains("5 file"));
 
         assert_eq!(st.active_tool_calls[0].status, ToolStatus::Ok);
+    }
+
+    // Collect each rendered row into a plain string so tests can reason
+    // about vertical adjacency without fighting wrap/alignment.
+    fn row_strings(buf: &ratatui::buffer::Buffer) -> Vec<String> {
+        let mut rows = Vec::with_capacity(buf.area.height as usize);
+        for y in 0..buf.area.height {
+            let mut row = String::new();
+            for x in 0..buf.area.width {
+                row.push_str(buf.cell((x, y)).expect("cell").symbol());
+            }
+            rows.push(row);
+        }
+        rows
+    }
+
+    #[test]
+    fn chrome_dismiss_pair_renders_without_blank_row_between() {
+
+        use crate::tui::state::{ConversationState, DisplayOrigin};
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut st = ConversationState::new();
+        st.push_anchor("config", "", "Config dialog dismissed", DisplayOrigin::Chrome);
+
+        let backend = TestBackend::new(80, 20);
+        let mut term = Terminal::new(backend).expect("terminal");
+        term.draw(|f| {
+            let area = f.area();
+            draw_log(f, area, &st, 0);
+        })
+        .expect("draw");
+        let buf = term.backend().buffer().clone();
+        let rows = row_strings(&buf);
+
+        let echo_idx = rows
+            .iter()
+            .position(|r| r.contains("/config"))
+            .expect("`/config` echo row missing");
+        let anchor_idx = rows
+            .iter()
+            .position(|r| r.contains("Config dialog dismissed"))
+            .expect("anchor row missing");
+
+        assert_eq!(
+            anchor_idx,
+            echo_idx + 1,
+            "Chrome dismiss pair must render tight (echo row then anchor row, zero blank rows between). \
+             echo at row {echo_idx}, anchor at row {anchor_idx}. Rows: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn transcript_user_then_assistant_keeps_blank_row_separator() {
+
+        use crate::tui::state::{ConversationState, DisplayMessage, DisplayOrigin};
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut st = ConversationState::new();
+        st.messages.push(DisplayMessage {
+            role: OpenAiChatRole::User,
+            content: "hello".into(),
+            wire_override: None,
+            origin: DisplayOrigin::Transcript,
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+            is_synthetic: false,
+        });
+        st.messages.push(DisplayMessage {
+            role: OpenAiChatRole::Assistant,
+            content: "world".into(),
+            wire_override: None,
+            origin: DisplayOrigin::Transcript,
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+            is_synthetic: false,
+        });
+
+        let backend = TestBackend::new(80, 20);
+        let mut term = Terminal::new(backend).expect("terminal");
+        term.draw(|f| {
+            let area = f.area();
+            draw_log(f, area, &st, 0);
+        })
+        .expect("draw");
+        let buf = term.backend().buffer().clone();
+        let rows = row_strings(&buf);
+
+        let user_idx = rows
+            .iter()
+            .position(|r| r.contains("hello"))
+            .expect("`hello` user row missing");
+        let asst_idx = rows
+            .iter()
+            .position(|r| r.contains("world"))
+            .expect("`world` assistant row missing");
+
+        assert_eq!(
+            asst_idx,
+            user_idx + 2,
+            "regular user then assistant must keep one blank row between (upstream spacing). \
+             user at {user_idx}, assistant at {asst_idx}. Rows: {rows:?}"
+        );
+        let between = &rows[user_idx + 1];
+        assert!(
+            between.trim().is_empty(),
+            "row between user and assistant must be blank; got {between:?}"
+        );
+    }
+
+    #[test]
+    fn transcript_anchor_pair_keeps_blank_row_separator() {
+
+        use crate::tui::state::{ConversationState, DisplayOrigin};
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut st = ConversationState::new();
+        st.push_anchor("compact", "", "42 msgs dropped", DisplayOrigin::Transcript);
+
+        let backend = TestBackend::new(80, 20);
+        let mut term = Terminal::new(backend).expect("terminal");
+        term.draw(|f| {
+            let area = f.area();
+            draw_log(f, area, &st, 0);
+        })
+        .expect("draw");
+        let buf = term.backend().buffer().clone();
+        let rows = row_strings(&buf);
+
+        let echo_idx = rows
+            .iter()
+            .position(|r| r.contains("/compact"))
+            .expect("`/compact` echo row missing");
+        let anchor_idx = rows
+            .iter()
+            .position(|r| r.contains("42 msgs dropped"))
+            .expect("anchor row missing");
+
+        assert_eq!(
+            anchor_idx,
+            echo_idx + 2,
+            "Transcript-origin anchor pairs keep the default one-row separator. \
+             echo at row {echo_idx}, anchor at row {anchor_idx}. Rows: {rows:?}"
+        );
     }
 
     #[test]
