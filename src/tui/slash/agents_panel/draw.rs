@@ -18,7 +18,7 @@ pub fn draw_panel(f: &mut Frame<'_>, area: Rect, state: &AgentsPanelState) {
 
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(6 + state.running.len() + state.library.len());
 
-    lines.push(tab_bar(state.tab));
+    lines.push(tab_bar(state.tab, state.running.len()));
     lines.push(Line::from(""));
 
     match state.tab {
@@ -36,23 +36,28 @@ pub fn draw_panel(f: &mut Frame<'_>, area: Rect, state: &AgentsPanelState) {
     f.render_widget(para, inner);
 }
 
-fn tab_bar(active: Tab) -> Line<'static> {
+fn tab_bar(active: Tab, running_count: usize) -> Line<'static> {
     let title = Span::styled(
         "Agents ",
         Style::default()
             .fg(theme::TEXT)
             .add_modifier(Modifier::BOLD),
     );
+    let running_label = if running_count > 0 {
+        format!("Running ({running_count})")
+    } else {
+        "Running".to_string()
+    };
     let spans = vec![
         title,
-        chip("Running", matches!(active, Tab::Running)),
+        chip(running_label, matches!(active, Tab::Running)),
         Span::raw(" "),
-        chip("Library", matches!(active, Tab::Library)),
+        chip("Library".to_string(), matches!(active, Tab::Library)),
     ];
     Line::from(spans)
 }
 
-fn chip(label: &'static str, selected: bool) -> Span<'static> {
+fn chip(label: String, selected: bool) -> Span<'static> {
     if selected {
         Span::styled(
             format!(" {label} "),
@@ -84,7 +89,7 @@ fn running_body(state: &AgentsPanelState) -> Vec<Line<'static>> {
         .enumerate()
         .map(|(i, row)| {
             let selected = i == state.running_cursor;
-            let prefix = if selected { "❯ " } else { "  " };
+            let prefix = if selected { "▶ " } else { "  " };
             let style = if selected {
                 Style::default().fg(theme::TEXT).add_modifier(Modifier::BOLD)
             } else {
@@ -174,10 +179,24 @@ mod tests {
 
     #[test]
     fn tab_bar_lists_title_and_two_chips() {
-        let line = tab_bar(Tab::Running);
+        let line = tab_bar(Tab::Running, 0);
         let joined: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(joined.contains("Agents"));
         assert!(joined.contains("Running"));
         assert!(joined.contains("Library"));
+    }
+
+    #[test]
+    fn tab_bar_running_chip_shows_count_when_nonzero() {
+        let line = tab_bar(Tab::Running, 2);
+        let joined: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(joined.contains("Running (2)"), "missing count: {joined:?}");
+    }
+
+    #[test]
+    fn tab_bar_running_chip_omits_count_when_zero() {
+        let line = tab_bar(Tab::Running, 0);
+        let joined: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(!joined.contains("(0)"), "should not render (0): {joined:?}");
     }
 }

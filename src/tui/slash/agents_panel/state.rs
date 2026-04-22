@@ -36,6 +36,21 @@ pub struct AgentsPanelState {
     pub library: Vec<LibraryRow>,
 }
 
+fn short_model_name(model: Option<&str>) -> String {
+    let Some(canonical) = model else {
+        return "inherit".to_string();
+    };
+    if canonical.starts_with("claude-opus") {
+        "opus".to_string()
+    } else if canonical.starts_with("claude-sonnet") {
+        "sonnet".to_string()
+    } else if canonical.starts_with("claude-haiku") {
+        "haiku".to_string()
+    } else {
+        canonical.to_string()
+    }
+}
+
 impl AgentsPanelState {
     pub fn new(tasks: &TaskStore, defs: &[AgentDefinition]) -> Self {
         let running: Vec<RunningRow> = tasks
@@ -52,7 +67,7 @@ impl AgentsPanelState {
             .iter()
             .map(|d| LibraryRow {
                 name: d.name.clone(),
-                model: d.model.clone().unwrap_or_else(|| "inherit".into()),
+                model: short_model_name(d.model.as_deref()),
             })
             .collect();
         library.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
@@ -142,6 +157,19 @@ mod tests {
         assert_eq!(st.tab, Tab::Library);
         st.cycle_tab();
         assert_eq!(st.tab, Tab::Running);
+    }
+
+    #[test]
+    fn short_model_name_families() {
+        assert_eq!(short_model_name(Some("claude-opus-4-7")), "opus");
+        assert_eq!(short_model_name(Some("claude-sonnet-4-6")), "sonnet");
+        assert_eq!(short_model_name(Some("claude-haiku-4-5")), "haiku");
+        assert_eq!(short_model_name(None), "inherit");
+    }
+
+    #[test]
+    fn short_model_name_unknown_canonical_returns_verbatim() {
+        assert_eq!(short_model_name(Some("custom-model-9")), "custom-model-9");
     }
 
     #[test]
