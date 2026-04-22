@@ -45,6 +45,12 @@ pub struct TasksPanelState {
     pub mode: Mode,
     pub cursor: usize,
     pub rows: Vec<TaskRow>,
+    /// True when the user actively drilled into detail from the list —
+    /// mirrors upstream's `onBack` prop being wired only on list drill-in.
+    /// Auto-skip-to-detail (`allItems.length === 1`) leaves this `false`
+    /// so the `← go back` footer shortcut stays hidden.
+    /// (`BackgroundTasksDialog.tsx:364-375`, `AsyncAgentDetailDialog.tsx:160`.)
+    pub came_from_list: bool,
 }
 
 impl TasksPanelState {
@@ -64,6 +70,7 @@ impl TasksPanelState {
             mode,
             cursor: 0,
             rows,
+            came_from_list: false,
         }
     }
 
@@ -107,6 +114,7 @@ impl TasksPanelState {
         }
         if let Mode::List = self.mode {
             self.mode = Mode::Detail(self.cursor);
+            self.came_from_list = true;
             true
         } else {
             false
@@ -117,6 +125,7 @@ impl TasksPanelState {
         if let Mode::Detail(idx) = self.mode {
             self.cursor = idx.min(self.rows.len().saturating_sub(1));
             self.mode = Mode::List;
+            self.came_from_list = false;
             true
         } else {
             false
