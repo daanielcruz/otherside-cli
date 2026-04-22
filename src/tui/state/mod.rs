@@ -528,6 +528,10 @@ impl ConversationState {
         self.input.push(c);
     }
 
+    pub fn input_push_str(&mut self, s: &str) {
+        self.input.push_str(s);
+    }
+
     pub fn input_push_newline(&mut self) {
         self.input.push('\n');
     }

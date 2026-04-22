@@ -518,6 +518,9 @@ async fn event_loop(
                     Some(Ok(CtEvent::Resize(_, _))) => {
 
                     }
+                    Some(Ok(CtEvent::Paste(text))) => {
+                        handle_paste(&text, &mut st);
+                    }
                     Some(Ok(_)) => {
 
                     }
@@ -1162,6 +1165,40 @@ fn is_session_default_model(model: &str, st: &ConversationState) -> bool {
         .as_deref()
         .unwrap_or_else(|| crate::config::providers::ProviderId::ClaudeCode.default_model());
     model == default
+}
+
+/// Handle a bracketed-paste event from the terminal. Inject the full paste
+/// content into the active input surface (prompt bar, pending-question, or
+/// permission prompt) so Cmd+V / middle-click / drag-drop arrives as one
+/// atomic blob instead of a burst of per-character Key events (which would
+/// trigger autocomplete / history / key handlers on every char).
+///
+/// Mouse capture stays on — users who want to copy-paste out with native
+/// selection can hold Option (macOS) / Alt (Linux) while dragging; the
+/// terminal bypasses mouse capture under that modifier.
+fn handle_paste(text: &str, st: &mut ConversationState) {
+    if text.is_empty() {
+        return;
+    }
+    if let Some(q) = st.pending_question.as_mut() {
+        for c in text.chars() {
+            q.push_char(c);
+        }
+        return;
+    }
+    if let Some(menu) = st.active_menu.as_mut() {
+        // Settings panels carry a filter search query — pastes into an open
+        // settings panel extend the filter rather than falling through to
+        // the prompt. No-op on panels without a query surface.
+        if matches!(menu.kind, crate::tui::slash::catalog::PanelKind::Settings(_)) {
+            menu.settings_search_query.push_str(text);
+            return;
+        }
+    }
+    // Normalize CRLF → LF so multi-line pastes stay well-formed.
+    let normalized: String = text.replace("\r\n", "\n").replace('\r', "\n");
+    st.input_push_str(&normalized);
+    st.refresh_autocomplete();
 }
 
 fn handle_question_key(k: KeyEvent, st: &mut ConversationState) {
@@ -2172,6 +2209,36 @@ mod settings_edit_tests {
             Some("anthropic-oauth")
         );
         assert_eq!(st.session.model, "claude-opus-4-7[1m]");
+    }
+
+    #[test]
+    fn paste_event_injects_into_prompt_as_one_blob() {
+        let mut st = ConversationState::default();
+        super::handle_paste("hello\r\nworld\n!", &mut st);
+        assert_eq!(
+            st.input, "hello\nworld\n!",
+            "CRLF must normalize to LF so multi-line pastes stay well-formed"
+        );
+    }
+
+    #[test]
+    fn paste_empty_string_is_noop() {
+        let mut st = ConversationState::default();
+        st.input = "keep me".to_string();
+        super::handle_paste("", &mut st);
+        assert_eq!(st.input, "keep me");
+    }
+
+    #[test]
+    fn paste_into_settings_panel_extends_search_query_not_prompt() {
+        use crate::tui::menu::OverlayMenu;
+        use crate::tui::slash::catalog::SettingsTab;
+        let mut st = ConversationState::default();
+        st.active_menu = Some(OverlayMenu::new_settings(SettingsTab::Config, &st));
+        super::handle_paste("permiss", &mut st);
+        let menu = st.active_menu.as_ref().unwrap();
+        assert_eq!(menu.settings_search_query, "permiss");
+        assert_eq!(st.input, "", "prompt must stay untouched while settings panel absorbs paste");
     }
 
     #[test]
