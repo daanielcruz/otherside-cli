@@ -1,7 +1,7 @@
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use super::state::{AgentsPanelState, CompletedRow, Tab};
@@ -11,12 +11,6 @@ use crate::tui::render::theme;
 const FOOTER_HINT: &str = "←/→ switch tabs · ↑↓ navigate · Enter select · Esc close";
 
 pub fn draw_panel(f: &mut Frame<'_>, area: Rect, state: &AgentsPanelState) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme::PRIMARY));
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(6 + state.running.len() + state.library.len());
 
     lines.push(tab_bar(state.tab, state.running.len()));
@@ -34,7 +28,7 @@ pub fn draw_panel(f: &mut Frame<'_>, area: Rect, state: &AgentsPanelState) {
     )));
 
     let para = Paragraph::new(lines).alignment(Alignment::Left);
-    f.render_widget(para, inner);
+    f.render_widget(para, area);
 }
 
 fn tab_bar(active: Tab, running_count: usize) -> Line<'static> {
@@ -106,18 +100,7 @@ fn running_body(state: &AgentsPanelState) -> Vec<Line<'static>> {
         }
     }
 
-    if !state.recently_completed.is_empty() {
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            "Recently completed",
-            Style::default()
-                .fg(theme::MUTED)
-                .add_modifier(Modifier::BOLD),
-        )));
-        for row in &state.recently_completed {
-            lines.push(completed_row_line(row));
-        }
-    }
+    let _ = state.recently_completed;
 
     lines
 }
