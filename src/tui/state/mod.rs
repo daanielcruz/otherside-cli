@@ -868,6 +868,21 @@ impl ConversationState {
         }
     }
 
+    pub fn flush_assistant_buffer(&mut self) {
+        if !self.current_assistant_buffer.is_empty() {
+            let content = std::mem::take(&mut self.current_assistant_buffer);
+            self.messages.push(DisplayMessage {
+                role: OpenAiChatRole::Assistant,
+                content,
+                wire_override: None,
+                origin: DisplayOrigin::Transcript,
+                tool_calls: Vec::new(),
+                tool_call_id: None,
+                is_synthetic: false,
+            });
+        }
+    }
+
     pub fn finish_stream(&mut self) {
 
         for entry in std::mem::take(&mut self.active_tool_calls) {
@@ -1660,6 +1675,49 @@ mod tests {
 
         assert!(st.streaming);
         assert_eq!(hist.last().unwrap().content, "queued-a");
+    }
+
+    #[test]
+    fn flush_assistant_buffer_drains_to_messages_between_turns() {
+        let mut st = ConversationState::new();
+        st.input = "go".into();
+        st.submit().unwrap();
+        st.append_stream_delta("Looking at files");
+
+        st.flush_assistant_buffer();
+
+        assert!(st.current_assistant_buffer.is_empty());
+        let last = st.messages.last().unwrap();
+        assert_eq!(last.role, OpenAiChatRole::Assistant);
+        assert_eq!(last.content, "Looking at files");
+        assert!(
+            st.streaming,
+            "flush must not end the stream — streaming still active for turn N+1"
+        );
+
+        st.append_stream_delta("main.rs contains X");
+        assert_eq!(st.current_assistant_buffer, "main.rs contains X");
+        st.finish_stream();
+
+        let assistants: Vec<&str> = st
+            .messages
+            .iter()
+            .filter(|m| m.role == OpenAiChatRole::Assistant)
+            .map(|m| m.content.as_str())
+            .collect();
+        assert_eq!(
+            assistants,
+            vec!["Looking at files", "main.rs contains X"],
+            "each assistant segment lands as its own message, no cross-turn mash"
+        );
+    }
+
+    #[test]
+    fn flush_assistant_buffer_is_noop_when_empty() {
+        let mut st = ConversationState::new();
+        let before_len = st.messages.len();
+        st.flush_assistant_buffer();
+        assert_eq!(st.messages.len(), before_len);
     }
 
     #[test]

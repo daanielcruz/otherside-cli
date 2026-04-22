@@ -250,6 +250,7 @@ async fn event_loop(
                         );
                     }
                     Some(StreamEvent::ToolCallStart { id, name, args }) => {
+                        st.flush_assistant_buffer();
                         st.append_record(crate::sessions::Record::ToolCall {
                             ts: crate::sessions::record::now_iso(),
                             tool_name: name.clone(),
