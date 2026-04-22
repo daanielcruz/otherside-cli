@@ -9,6 +9,12 @@ pub enum ProviderId {
     OpenAiCustom,
 }
 
+impl Default for ProviderId {
+    fn default() -> Self {
+        ProviderId::ClaudeCode
+    }
+}
+
 impl ProviderId {
 
     pub fn slug(self) -> &'static str {

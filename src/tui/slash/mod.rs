@@ -26,6 +26,8 @@ pub enum SlashAction {
 
     Auth { name: String, args: String },
 
+    Unknown { name: String, args: String },
+
     Passthrough,
 }
 
@@ -76,7 +78,25 @@ pub fn classify(input: &str) -> SlashAction {
             },
         };
     }
-    SlashAction::Passthrough
+
+    if name.is_empty() {
+        return SlashAction::Passthrough;
+    }
+
+    if !looks_like_command(name) {
+        return SlashAction::Passthrough;
+    }
+
+    SlashAction::Unknown {
+        name: name.to_string(),
+        args: rest.to_string(),
+    }
+}
+
+fn looks_like_command(name: &str) -> bool {
+    !name
+        .chars()
+        .any(|c| !(c.is_ascii_alphanumeric() || c == ':' || c == '-' || c == '_'))
 }
 
 fn split_name_and_args(body: &str) -> (&str, &str) {
@@ -124,15 +144,27 @@ mod tests {
     }
 
     #[test]
-    fn bye_is_passthrough_after_011_purge() {
+    fn bye_reclassified_as_unknown() {
 
-        assert_eq!(classify("/bye"), SlashAction::Passthrough);
+        assert_eq!(
+            classify("/bye"),
+            SlashAction::Unknown {
+                name: "bye".to_string(),
+                args: String::new(),
+            }
+        );
     }
 
     #[test]
-    fn swarm_is_passthrough_after_011_purge() {
+    fn swarm_reclassified_as_unknown() {
 
-        assert_eq!(classify("/swarm"), SlashAction::Passthrough);
+        assert_eq!(
+            classify("/swarm"),
+            SlashAction::Unknown {
+                name: "swarm".to_string(),
+                args: String::new(),
+            }
+        );
     }
 
     #[test]
@@ -218,10 +250,13 @@ mod tests {
     }
 
     #[test]
-    fn unknown_slash_is_passthrough() {
+    fn unknown_slash_classified_as_unknown() {
         assert_eq!(
             classify("/this-is-not-a-slash"),
-            SlashAction::Passthrough
+            SlashAction::Unknown {
+                name: "this-is-not-a-slash".to_string(),
+                args: String::new(),
+            }
         );
     }
 

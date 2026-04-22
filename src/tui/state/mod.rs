@@ -86,6 +86,8 @@ pub struct ConversationState {
 
     pub session: crate::state::Session,
 
+    pub provider_id: crate::config::providers::ProviderId,
+
     pub thought_ms: u64,
 
     pub tip_rotation_index: usize,
@@ -505,11 +507,44 @@ impl ConversationState {
         raw_model: &str,
         mode: crate::config::PermissionMode,
     ) -> Self {
+        Self::new_for_model_with_provider(
+            raw_model,
+            mode,
+            crate::config::providers::ProviderId::ClaudeCode,
+        )
+    }
+
+    pub fn new_for_model_with_provider(
+        raw_model: &str,
+        mode: crate::config::PermissionMode,
+        provider_id: crate::config::providers::ProviderId,
+    ) -> Self {
         Self {
             session: crate::state::Session::new(raw_model, mode),
             sticky_bottom: true,
+            provider_id,
             ..Self::default()
         }
+    }
+
+    pub fn switch_provider(
+        &mut self,
+        next: crate::config::providers::ProviderId,
+    ) -> String {
+        self.provider_id = next;
+        self.persistence.settings.default_provider = Some(next.slug().to_string());
+
+        let current_belongs = crate::models::catalog::by_id(&self.session.model)
+            .map(|m| m.provider == next)
+            .unwrap_or(false);
+        if !current_belongs {
+            let default_model = next.default_model();
+            if !default_model.is_empty() {
+                self.switch_model(default_model);
+                self.persistence.settings.default_model = Some(default_model.to_string());
+            }
+        }
+        self.session.model.clone()
     }
 
     pub fn context_used_percent(&self) -> u32 {

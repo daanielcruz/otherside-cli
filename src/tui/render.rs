@@ -79,7 +79,6 @@ pub fn render(
     f: &mut Frame<'_>,
     state: &ConversationState,
     model: &str,
-    provider_id: &str,
     spinner_tick: u64,
 ) {
     let area = f.area();
@@ -223,9 +222,8 @@ pub fn render(
         }
     }
 
-    let _ = provider_id;
     if slots.statusline.height > 0 {
-        draw_statusline(f, slots.statusline, state, model, provider_id);
+        draw_statusline(f, slots.statusline, state, model);
     }
     if slots.info.height > 0 {
         draw_info_row(f, slots.info, state, model);
@@ -571,12 +569,13 @@ fn draw_statusline(
     area: Rect,
     state: &ConversationState,
     model: &str,
-    provider_id: &str,
 ) {
     use statusline::types::{
         ContextWindowInput, CostInput, ModelInput, OutputStyleInput, StatuslineCtx,
         StatuslineInput, WorkspaceInput,
     };
+
+    let provider_id = state.provider_id.slug();
 
     let cwd = std::env::current_dir()
         .map(|p| p.to_string_lossy().into_owned())
@@ -863,6 +862,61 @@ mod tests {
     fn strip_ansi_removes_color_escapes() {
         let with = "\x1b[38;2;81;21;140mhello\x1b[0m";
         assert_eq!(strip_ansi(with), "hello");
+    }
+
+    #[test]
+    fn statusline_reads_provider_id_from_state_not_from_stale_param() {
+        use super::super::state::ConversationState;
+        use crate::config::providers::ProviderId;
+        use ratatui::backend::TestBackend;
+        use ratatui::layout::Rect;
+        use ratatui::Terminal;
+
+        let mut st = ConversationState::new();
+        st.provider_id = ProviderId::Kimi;
+        st.session.model = "kimi-for-coding".into();
+
+        let width: u16 = 120;
+        let height: u16 = 1;
+        let backend = TestBackend::new(width, height);
+        let mut term = Terminal::new(backend).expect("terminal");
+        term.draw(|f| {
+            let area = Rect::new(0, 0, width, height);
+            draw_statusline(f, area, &st, &st.session.model);
+        })
+        .unwrap();
+        let buf = term.backend().buffer().clone();
+        let mut rendered = String::new();
+        for x in 0..width {
+            rendered.push_str(buf[(x, 0)].symbol());
+        }
+        assert!(
+            rendered.contains("kimi"),
+            "statusline must show `kimi` after provider_id flip; got {rendered:?}"
+        );
+
+        st.provider_id = ProviderId::Codex;
+        st.session.model = "gpt-5.4".into();
+        let backend2 = TestBackend::new(width, height);
+        let mut term2 = Terminal::new(backend2).expect("terminal");
+        term2.draw(|f| {
+            let area = Rect::new(0, 0, width, height);
+            draw_statusline(f, area, &st, &st.session.model);
+        })
+        .unwrap();
+        let buf2 = term2.backend().buffer().clone();
+        let mut rendered2 = String::new();
+        for x in 0..width {
+            rendered2.push_str(buf2[(x, 0)].symbol());
+        }
+        assert!(
+            rendered2.contains("codex"),
+            "statusline must show `codex` after flip; got {rendered2:?}"
+        );
+        assert!(
+            !rendered2.contains("kimi"),
+            "statusline must NOT show stale `kimi` after flip; got {rendered2:?}"
+        );
     }
 
     #[test]
@@ -1291,7 +1345,7 @@ mod tests {
 
         let backend = TestBackend::new(80, 30);
         let mut term = Terminal::new(backend).expect("terminal");
-        term.draw(|f| render(f, &st, "claude-opus-4-7", "anthropic", 0))
+        term.draw(|f| render(f, &st, "claude-opus-4-7", 0))
             .unwrap();
         let buf = term.backend().buffer().clone();
         let mut joined = String::new();
@@ -1316,7 +1370,7 @@ mod tests {
         st.submit().unwrap();
         let backend = TestBackend::new(80, 30);
         let mut term = Terminal::new(backend).expect("terminal");
-        term.draw(|f| render(f, &st, "claude-opus-4-7", "anthropic", 0))
+        term.draw(|f| render(f, &st, "claude-opus-4-7", 0))
             .unwrap();
         let buf = term.backend().buffer().clone();
         let mut joined = String::new();
@@ -1342,7 +1396,7 @@ mod tests {
         st.push_to_queue("queued-beta".into());
         let backend = TestBackend::new(80, 30);
         let mut term = Terminal::new(backend).expect("terminal");
-        term.draw(|f| render(f, &st, "claude-opus-4-7", "anthropic", 0))
+        term.draw(|f| render(f, &st, "claude-opus-4-7", 0))
             .unwrap();
         let buf = term.backend().buffer().clone();
         let mut joined = String::new();
@@ -1366,7 +1420,7 @@ mod tests {
         assert!(!st.streaming);
         let backend = TestBackend::new(80, 30);
         let mut term = Terminal::new(backend).expect("terminal");
-        term.draw(|f| render(f, &st, "claude-opus-4-7", "anthropic", 0))
+        term.draw(|f| render(f, &st, "claude-opus-4-7", 0))
             .unwrap();
         let buf = term.backend().buffer().clone();
         let mut joined = String::new();

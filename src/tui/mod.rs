@@ -124,9 +124,13 @@ pub async fn run(
     settings: crate::config::settings::Settings,
     resume_intent: ResumeIntent,
 ) -> Result<()> {
-    let provider = registry
+    let _ = registry
         .get(&provider_id)
         .ok_or_else(|| Error::Other(format!("provider {provider_id:?} not registered")))?;
+
+    let initial_provider =
+        crate::config::providers::ProviderId::from_slug(&provider_id)
+            .ok_or_else(|| Error::Other(format!("provider {provider_id:?} not recognized")))?;
 
     let (base_model, thinking) = parse_suffix(&raw_model)
         .map_err(|e| Error::Other(format!("invalid model suffix: {e}")))?;
@@ -134,10 +138,10 @@ pub async fn run(
     let mut guard = TerminalGuard::enter()?;
     let res = event_loop(
         &mut guard.terminal,
-        provider,
+        registry,
         base_model,
         thinking,
-        provider_id,
+        initial_provider,
         initial_permission_mode,
         settings,
         resume_intent,
@@ -162,16 +166,19 @@ pub async fn run(
 
 async fn event_loop(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
-    provider: Arc<dyn Provider>,
+    registry: Arc<Registry>,
     base_model: String,
     mut thinking: Option<ThinkingConfig>,
-    provider_id: String,
+    initial_provider: crate::config::providers::ProviderId,
     initial_permission_mode: crate::config::PermissionMode,
     settings: crate::config::settings::Settings,
     resume_intent: ResumeIntent,
 ) -> Result<Option<crate::sessions::SessionId>> {
-    let mut st =
-        ConversationState::new_for_model_with_mode(&base_model, initial_permission_mode);
+    let mut st = ConversationState::new_for_model_with_provider(
+        &base_model,
+        initial_permission_mode,
+        initial_provider,
+    );
 
     let _ = crate::tasks::store::install_global(st.tasks.clone());
 
@@ -267,7 +274,7 @@ async fn event_loop(
     st.persistence.settings = settings;
 
     if st.persistence.settings.default_provider.is_none() {
-        st.persistence.settings.default_provider = Some(provider_id.to_string());
+        st.persistence.settings.default_provider = Some(st.provider_id.slug().to_string());
     }
     if st.persistence.settings.default_model.is_none() {
         st.persistence.settings.default_model = Some(st.session.model.clone());
@@ -291,7 +298,7 @@ async fn event_loop(
 
     st.prune_feedback();
     terminal
-        .draw(|f| render::render(f, &st, &st.session.model, &provider_id, spinner_tick))
+        .draw(|f| render::render(f, &st, &st.session.model, spinner_tick))
         .map_err(|e| Error::Tui(format!("draw: {e}")))?;
 
     loop {
@@ -328,7 +335,7 @@ async fn event_loop(
                 }
 
                 let _ = auto_trigger_pending_notifications(
-                    &mut st, &provider, &base_model, &thinking, &tx,
+                    &mut st, &registry, &base_model, &thinking, &tx,
                 );
             }
 
@@ -369,13 +376,13 @@ async fn event_loop(
                         st.finish_stream();
 
                         drain_pending_inputs(
-                            &mut st, &provider, &base_model, &thinking, &provider_id, &tx,
+                            &mut st, &registry, &base_model, &thinking, &tx,
                         );
                     }
                     Some(StreamEvent::Error(e)) => {
                         st.fail_stream(e);
                         drain_pending_inputs(
-                            &mut st, &provider, &base_model, &thinking, &provider_id, &tx,
+                            &mut st, &registry, &base_model, &thinking, &tx,
                         );
                     }
                     Some(StreamEvent::ToolCallStart { id, name, args }) => {
@@ -489,7 +496,7 @@ async fn event_loop(
                             state::DisplayOrigin::Transcript,
                         );
                         drain_pending_inputs(
-                            &mut st, &provider, &base_model, &thinking, &provider_id, &tx,
+                            &mut st, &registry, &base_model, &thinking, &tx,
                         );
                     }
                     Some(StreamEvent::CompactFailed { message }) => {
@@ -501,7 +508,7 @@ async fn event_loop(
                         if st.streaming {
                             st.finish_stream();
                             drain_queue_head_if_any(
-                                &mut st, &provider, &base_model, &thinking, &provider_id, &tx,
+                                &mut st, &registry, &base_model, &thinking, &tx,
                             );
                         }
                     }
@@ -511,7 +518,7 @@ async fn event_loop(
             maybe = key_stream.next() => {
                 match maybe {
                     Some(Ok(CtEvent::Key(k))) => {
-                        if handle_key(k, &mut st, &provider, &base_model, &mut thinking, &provider_id, &tx) {
+                        if handle_key(k, &mut st, &registry, &base_model, &mut thinking, &tx) {
                             break;
                         }
                     }
@@ -537,7 +544,7 @@ async fn event_loop(
 
         st.prune_feedback();
         terminal
-            .draw(|f| render::render(f, &st, &st.session.model, &provider_id, spinner_tick))
+            .draw(|f| render::render(f, &st, &st.session.model, spinner_tick))
             .map_err(|e| Error::Tui(format!("draw: {e}")))?;
     }
 
@@ -547,10 +554,9 @@ async fn event_loop(
 fn handle_key(
     k: KeyEvent,
     st: &mut ConversationState,
-    provider: &Arc<dyn Provider>,
+    registry: &Arc<Registry>,
     base_model: &str,
     thinking: &mut Option<ThinkingConfig>,
-    _provider_id: &str,
     tx: &mpsc::Sender<StreamEvent>,
 ) -> bool {
 
@@ -740,7 +746,7 @@ fn handle_key(
                 }
                 if dispatch_slash(
                     st,
-                    provider,
+                    registry,
                     base_model,
                     thinking,
                     tx,
@@ -928,7 +934,7 @@ fn handle_menu_key(
 }
 
 fn edit_settings_row(st: &mut ConversationState, direction: i32) {
-    use crate::config::providers::{self, ProviderId};
+    use crate::config::providers;
     use crate::config::settings::PermissionMode;
     use crate::tui::menu::SettingsRowKind;
     use crate::tui::slash::catalog::PanelKind;
@@ -953,29 +959,12 @@ fn edit_settings_row(st: &mut ConversationState, direction: i32) {
     let dir = if direction == 0 { 1 } else { direction.signum() };
     match kind {
         SettingsRowKind::Provider => {
-            let current = st
-                .persistence
-                .settings
-                .default_provider
-                .as_deref()
-                .and_then(ProviderId::from_slug)
-                .unwrap_or(ProviderId::ClaudeCode);
+            let current = st.provider_id;
             let next = providers::cycle(current, dir);
-            st.persistence.settings.default_provider = Some(next.slug().to_string());
-            let default_model = next.default_model();
-            if !default_model.is_empty() {
-                st.switch_model(default_model);
-                st.persistence.settings.default_model = Some(default_model.to_string());
-            }
+            st.switch_provider(next);
         }
         SettingsRowKind::Model => {
-            let provider = st
-                .persistence
-                .settings
-                .default_provider
-                .as_deref()
-                .and_then(ProviderId::from_slug)
-                .unwrap_or(ProviderId::ClaudeCode);
+            let provider = st.provider_id;
             let list = crate::models::catalog::models_for(provider);
             if list.is_empty() {
                 return;
@@ -1058,14 +1047,8 @@ fn edit_settings_row(st: &mut ConversationState, direction: i32) {
 }
 
 fn persist_session_defaults(st: &ConversationState) -> Result<()> {
-    let provider_id = st
-        .persistence
-        .settings
-        .default_provider
-        .clone()
-        .unwrap_or_else(|| "anthropic-oauth".to_string());
     let mut pers = crate::state::PersistenceState::new(st.persistence.settings.clone());
-    pers.commit_session_defaults(&st.session, &provider_id)
+    pers.commit_session_defaults(&st.session, st.provider_id.slug())
 }
 
 fn rotate_settings_tab(st: &mut ConversationState, direction: i32) {
@@ -1163,7 +1146,7 @@ fn is_session_default_model(model: &str, st: &ConversationState) -> bool {
         .settings
         .default_model
         .as_deref()
-        .unwrap_or_else(|| crate::config::providers::ProviderId::ClaudeCode.default_model());
+        .unwrap_or_else(|| st.provider_id.default_model());
     model == default
 }
 
@@ -1429,12 +1412,22 @@ fn apply_effort_outcome(
 
 fn spawn_agent_turn(
     st: &mut ConversationState,
-    provider: &Arc<dyn Provider>,
+    registry: &Arc<Registry>,
     _base_model: &str,
     thinking: &Option<ThinkingConfig>,
     tx: &mpsc::Sender<StreamEvent>,
     history: Vec<crate::inference::OpenAiChatMessage>,
 ) {
+    let provider_id = st.provider_id;
+    let Some(provider) = registry.get(provider_id.slug()) else {
+        st.push_system_note(format!(
+            "provider {:?} not registered — cannot dispatch turn",
+            provider_id.slug()
+        ));
+        st.streaming = false;
+        return;
+    };
+
     let thinking = *thinking;
     let tx = tx.clone();
 
@@ -1443,13 +1436,10 @@ fn spawn_agent_turn(
     let settings = st.persistence.settings.clone();
     let mode = st.session.permission_mode;
     let session_allowlist = st.session_allowlist.clone();
-    let provider_id = crate::config::providers::ProviderId::from_slug(provider.id())
-        .unwrap_or(crate::config::providers::ProviderId::ClaudeCode);
 
-    let provider_for_task = provider.clone();
     let handle = tokio::spawn(async move {
         run_agent_turns(
-            provider_for_task,
+            provider,
             model,
             thinking,
             history,
@@ -1487,19 +1477,18 @@ fn render_completion_line(r: &crate::tasks::TaskRecord) -> String {
 
 fn drain_pending_inputs(
     st: &mut ConversationState,
-    provider: &Arc<dyn Provider>,
+    registry: &Arc<Registry>,
     base_model: &str,
     thinking: &Option<ThinkingConfig>,
-    provider_id: &str,
     tx: &mpsc::Sender<StreamEvent>,
 ) -> bool {
-    if auto_fire_compact_if_needed(st, provider, base_model, thinking, tx) {
+    if auto_fire_compact_if_needed(st, registry, base_model, thinking, tx) {
         return true;
     }
-    if drain_queue_head_if_any(st, provider, base_model, thinking, provider_id, tx) {
+    if drain_queue_head_if_any(st, registry, base_model, thinking, tx) {
         return true;
     }
-    auto_trigger_pending_notifications(st, provider, base_model, thinking, tx)
+    auto_trigger_pending_notifications(st, registry, base_model, thinking, tx)
 }
 
 /// Mirrors upstream `autoCompactIfNeeded` gate (minus rapid-refill + failure
@@ -1508,7 +1497,7 @@ fn drain_pending_inputs(
 /// already shown in the status line.
 fn auto_fire_compact_if_needed(
     st: &mut ConversationState,
-    provider: &Arc<dyn Provider>,
+    registry: &Arc<Registry>,
     base_model: &str,
     thinking: &Option<ThinkingConfig>,
     tx: &mpsc::Sender<StreamEvent>,
@@ -1540,13 +1529,13 @@ fn auto_fire_compact_if_needed(
         threshold,
         "auto-fire: crossing auto-compact threshold, dispatching silent summary turn"
     );
-    spawn_compact_turn(st, provider, base_model, thinking, tx, "", true);
+    spawn_compact_turn(st, registry, base_model, thinking, tx, "", true);
     true
 }
 
 fn auto_trigger_pending_notifications(
     st: &mut ConversationState,
-    provider: &Arc<dyn Provider>,
+    registry: &Arc<Registry>,
     base_model: &str,
     thinking: &Option<ThinkingConfig>,
     tx: &mpsc::Sender<StreamEvent>,
@@ -1571,16 +1560,15 @@ fn auto_trigger_pending_notifications(
         history_len = history.len(),
         "auto-trigger: notifications drained, dispatching synthetic turn"
     );
-    spawn_agent_turn(st, provider, base_model, thinking, tx, history);
+    spawn_agent_turn(st, registry, base_model, thinking, tx, history);
     true
 }
 
 fn drain_queue_head_if_any(
     st: &mut ConversationState,
-    provider: &Arc<dyn Provider>,
+    registry: &Arc<Registry>,
     base_model: &str,
     thinking: &Option<ThinkingConfig>,
-    provider_id: &str,
     tx: &mpsc::Sender<StreamEvent>,
 ) -> bool {
     tracing::info!(
@@ -1600,7 +1588,7 @@ fn drain_queue_head_if_any(
         "queue head consumed; dispatching"
     );
 
-    let exit_signal = dispatch_slash(st, provider, base_model, thinking, tx);
+    let exit_signal = dispatch_slash(st, registry, base_model, thinking, tx);
     tracing::info!(
         target: "otherside::queue",
         exit_signal,
@@ -1611,13 +1599,12 @@ fn drain_queue_head_if_any(
         st.push_system_note("queued /exit — press Ctrl+C twice to quit");
     }
 
-    let _ = provider_id;
     true
 }
 
 fn dispatch_slash(
     st: &mut ConversationState,
-    provider: &Arc<dyn Provider>,
+    registry: &Arc<Registry>,
     base_model: &str,
     thinking: &Option<ThinkingConfig>,
     tx: &mpsc::Sender<StreamEvent>,
@@ -1634,7 +1621,7 @@ fn dispatch_slash(
             slash::skill::handle(&name, &args, st)
         }
         slash::SlashAction::Anchor { name, args } if name == "compact" => {
-            spawn_compact_turn(st, provider, base_model, thinking, tx, &args, false);
+            spawn_compact_turn(st, registry, base_model, thinking, tx, &args, false);
             slash::SlashOutcome::Handled
         }
         slash::SlashAction::Anchor { name, args } => {
@@ -1644,8 +1631,17 @@ fn dispatch_slash(
         slash::SlashAction::Auth { name, args } => {
             slash::auth::handle(&name, &args, st)
         }
+        slash::SlashAction::Unknown { name, args } => {
+            let result = if args.is_empty() {
+                format!("Unknown skill: {name}")
+            } else {
+                format!("Unknown skill: {name}\nArgs from unknown skill: {args}")
+            };
+            st.push_anchor(&name, &args, result, DisplayOrigin::Chrome);
+            slash::SlashOutcome::Handled
+        }
         slash::SlashAction::Passthrough => {
-            submit_current_input(st, provider, base_model, thinking, tx);
+            submit_current_input(st, registry, base_model, thinking, tx);
             return false;
         }
     };
@@ -1666,7 +1662,7 @@ fn dispatch_slash(
             };
             st.pending_wire_override = Some(body);
             st.input = echo;
-            submit_current_input(st, provider, base_model, thinking, tx);
+            submit_current_input(st, registry, base_model, thinking, tx);
             false
         }
     }
@@ -1674,7 +1670,7 @@ fn dispatch_slash(
 
 fn submit_current_input(
     st: &mut ConversationState,
-    provider: &Arc<dyn Provider>,
+    registry: &Arc<Registry>,
     base_model: &str,
     thinking: &Option<ThinkingConfig>,
     tx: &mpsc::Sender<StreamEvent>,
@@ -1685,13 +1681,13 @@ fn submit_current_input(
             ts: crate::sessions::record::now_iso(),
             content: submitted_text,
         });
-        spawn_agent_turn(st, provider, base_model, thinking, tx, history);
+        spawn_agent_turn(st, registry, base_model, thinking, tx, history);
     }
 }
 
 fn spawn_compact_turn(
     st: &mut ConversationState,
-    provider: &Arc<dyn Provider>,
+    registry: &Arc<Registry>,
     base_model: &str,
     thinking: &Option<ThinkingConfig>,
     tx: &mpsc::Sender<StreamEvent>,
@@ -1704,6 +1700,14 @@ fn spawn_compact_turn(
         return;
     }
 
+    let Some(provider) = registry.get(st.provider_id.slug()) else {
+        st.push_system_note(format!(
+            "compact skipped: provider {:?} not registered",
+            st.provider_id.slug()
+        ));
+        return;
+    };
+
     st.input.clear();
     st.autocomplete = None;
     st.streaming = true;
@@ -1713,7 +1717,6 @@ fn spawn_compact_turn(
         "✻ Compacting conversation…"
     });
 
-    let provider = provider.clone();
     let model = base_model.to_string();
     let thinking_cfg = *thinking;
     let tx = tx.clone();
@@ -2169,6 +2172,7 @@ mod settings_edit_tests {
 
     #[test]
     fn provider_row_cycles_and_switches_model_default() {
+        use crate::config::providers::ProviderId;
 
         let mut st = ConversationState::default();
         st.session.model = "claude-opus-4-7[1m]".into();
@@ -2178,6 +2182,7 @@ mod settings_edit_tests {
         }
 
         edit_settings_row(&mut st, 1);
+        assert_eq!(st.provider_id, ProviderId::Codex);
         assert_eq!(st.persistence.settings.default_provider.as_deref(), Some("codex-oauth"));
         assert_eq!(st.session.model, "gpt-5.4");
 
