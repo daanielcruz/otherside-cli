@@ -415,16 +415,7 @@ fn handle_key(
         if let Some(action) = kb_dispatch(&k, &pred_ctx) {
             match action {
                 Action::TaskBackground => {
-                    let flipped = st.tasks.background_all_running_foreground();
-                    if !flipped.is_empty() {
-
-                        for id in flipped {
-                            st.push_system_note(format!(
-                                "Started in background as {}. I'll be notified when it completes.",
-                                id.as_str()
-                            ));
-                        }
-                    }
+                    let _flipped = st.tasks.background_all_running_foreground();
                     return false;
                 }
                 Action::OpenBackgroundTasksDialog => {
