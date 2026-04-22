@@ -199,15 +199,39 @@ enum Gate {
 #[derive(Debug, Clone)]
 pub struct GatedDispatcher {
     gate: Gate,
+    provider_id: crate::config::providers::ProviderId,
 }
 
 impl GatedDispatcher {
     pub fn unrestricted() -> Self {
-        Self { gate: Gate::Unrestricted }
+        Self {
+            gate: Gate::Unrestricted,
+            provider_id: crate::config::providers::ProviderId::ClaudeCode,
+        }
+    }
+
+    pub fn unrestricted_for(
+        provider_id: crate::config::providers::ProviderId,
+    ) -> Self {
+        Self { gate: Gate::Unrestricted, provider_id }
     }
 
     pub fn from_tools_field(tools: subagents::frontmatter::ToolsField) -> Self {
-        Self { gate: Gate::ToolsField(tools) }
+        Self {
+            gate: Gate::ToolsField(tools),
+            provider_id: crate::config::providers::ProviderId::ClaudeCode,
+        }
+    }
+
+    pub fn from_tools_field_with_provider(
+        tools: subagents::frontmatter::ToolsField,
+        provider_id: crate::config::providers::ProviderId,
+    ) -> Self {
+        Self { gate: Gate::ToolsField(tools), provider_id }
+    }
+
+    pub fn provider_id(&self) -> crate::config::providers::ProviderId {
+        self.provider_id
     }
 
     fn allows(&self, name: &str) -> bool {
@@ -240,7 +264,12 @@ impl ToolDispatcher for GatedDispatcher {
                     "subagent cannot call tool `{name}` (not in allowlist)"
                 )));
             }
-            tools::dispatch(name, args).map_err(|e| Error::Other(format!("tool `{name}`: {e}")))
+            // Scope the provider thread-local across the SYNC tools::dispatch
+            // call so per-provider tools (WebSearch) pick the right backend.
+            // See src/tools/mod.rs::current_provider.
+            crate::tools::with_current_provider(self.provider_id, || {
+                tools::dispatch(name, args).map_err(|e| Error::Other(format!("tool `{name}`: {e}")))
+            })
         }
     }
 }

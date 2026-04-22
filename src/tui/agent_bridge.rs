@@ -42,6 +42,7 @@ pub(super) struct TuiDispatcher {
     pub settings: Arc<Settings>,
     pub mode: PermissionMode,
     pub session_allowlist: RuntimePermissionGrants,
+    pub provider_id: crate::config::providers::ProviderId,
 }
 
 impl ToolDispatcher for TuiDispatcher {
@@ -60,6 +61,7 @@ impl ToolDispatcher for TuiDispatcher {
                 self.mode,
                 &self.session_allowlist,
                 &self.tx,
+                self.provider_id,
             )
             .await
             {
@@ -196,6 +198,7 @@ async fn dispatch_with_prompt(
     mode: PermissionMode,
     session_allowlist: &RuntimePermissionGrants,
     tx: &mpsc::Sender<StreamEvent>,
+    provider_id: crate::config::providers::ProviderId,
 ) -> std::result::Result<Value, ToolError> {
     if tool_name == "AskUserQuestion" {
         return ask_user_question_async(args, tx).await;
@@ -211,16 +214,21 @@ async fn dispatch_with_prompt(
         args: &Value,
         tool_call_id: &str,
         tx: &mpsc::Sender<StreamEvent>,
+        provider_id: crate::config::providers::ProviderId,
     ) -> std::result::Result<Value, ToolError> {
         if tool_name == "Agent" {
-            dispatch_agent_cancellable(tool_name, args, tool_call_id, tx).await
+            dispatch_agent_cancellable(tool_name, args, tool_call_id, tx, provider_id).await
         } else {
-            tools::with_tool_call_id(tool_call_id.to_string(), || tools::dispatch(tool_name, args))
+            tools::with_current_provider(provider_id, || {
+                tools::with_tool_call_id(tool_call_id.to_string(), || {
+                    tools::dispatch(tool_name, args)
+                })
+            })
         }
     }
 
     match permissions::resolve(tool_name, &input_str, &composed, mode) {
-        Decision::Allow => run_dispatch(tool_name, args, tool_call_id, tx).await,
+        Decision::Allow => run_dispatch(tool_name, args, tool_call_id, tx, provider_id).await,
         Decision::Deny { rule } => Err(ToolError::PermissionDenied(rule)),
         Decision::Ask { rule } => {
             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
@@ -243,7 +251,7 @@ async fn dispatch_with_prompt(
                 Ok(PermissionResponse::Allow)
                 | Ok(PermissionResponse::AllowSession)
                 | Ok(PermissionResponse::AllowAlways) => {
-                    run_dispatch(tool_name, args, tool_call_id, tx).await
+                    run_dispatch(tool_name, args, tool_call_id, tx, provider_id).await
                 }
                 Ok(PermissionResponse::Deny) => Err(ToolError::PermissionDenied(
                     rule.unwrap_or_else(|| "user declined".into()),
@@ -261,6 +269,7 @@ async fn dispatch_agent_cancellable(
     args: &Value,
     tool_call_id: &str,
     tx: &mpsc::Sender<StreamEvent>,
+    provider_id: crate::config::providers::ProviderId,
 ) -> std::result::Result<Value, ToolError> {
     use crate::tools::background_signal;
 
@@ -274,7 +283,15 @@ async fn dispatch_agent_cancellable(
     let mut join = tokio::task::spawn_blocking(move || {
         let emitter: Arc<dyn NestedEmitter> = Arc::new(StreamEmitter { tx: tx_for_emitter });
         crate::agent::subagents::with_nested_emitter(emitter, || {
-            tools::with_tool_call_id(call_id_owned, || tools::dispatch(&name_owned, &args_owned))
+            // Scope the provider thread-local across the sync Agent-tool
+            // dispatch so nested subagent loops inherit it (they re-derive
+            // via `self.provider.id()`, but the first hop reads the
+            // thread-local for consistency with non-Agent tools).
+            tools::with_current_provider(provider_id, || {
+                tools::with_tool_call_id(call_id_owned, || {
+                    tools::dispatch(&name_owned, &args_owned)
+                })
+            })
         })
     });
 

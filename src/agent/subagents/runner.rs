@@ -115,7 +115,12 @@ impl InnerLoopRunner {
             tool_call_id: None,
         });
 
-        let dispatcher = GatedDispatcher::from_tools_field(definition.tools.clone());
+        let provider_id = crate::config::providers::ProviderId::from_slug(self.provider.id())
+            .unwrap_or(crate::config::providers::ProviderId::ClaudeCode);
+        let dispatcher = GatedDispatcher::from_tools_field_with_provider(
+            definition.tools.clone(),
+            provider_id,
+        );
         let emitter = super::current_nested_emitter();
         let observer = NestedObserver {
             emitter: emitter.unwrap_or_else(|| Arc::new(NullEmitter) as Arc<dyn NestedEmitter>),

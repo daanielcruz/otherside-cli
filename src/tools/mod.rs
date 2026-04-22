@@ -30,6 +30,16 @@ thread_local! {
 
     static CURRENT_TOOL_CALL_ID: std::cell::RefCell<Option<String>> =
         const { std::cell::RefCell::new(None) };
+
+    /// Which provider is driving the current turn. Set by the agent loop at
+    /// the boundary where it translates a model-emitted function call into a
+    /// `dispatch(name, args)` call. Read by tools whose backend differs per
+    /// provider (WebSearch: claude-code hits the anthropic server tool;
+    /// codex hits the codex native web_search server tool via the translator).
+    /// Unset → falls back to `ProviderId::ClaudeCode` to preserve existing
+    /// test/integration behavior from before this hook existed.
+    static CURRENT_PROVIDER: std::cell::RefCell<Option<crate::config::providers::ProviderId>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 pub fn with_tool_call_id<R>(tool_call_id: String, f: impl FnOnce() -> R) -> R {
@@ -43,6 +53,23 @@ pub fn with_tool_call_id<R>(tool_call_id: String, f: impl FnOnce() -> R) -> R {
 
 pub fn current_tool_call_id() -> Option<String> {
     CURRENT_TOOL_CALL_ID.with(|cell| cell.borrow().clone())
+}
+
+pub fn with_current_provider<R>(
+    provider: crate::config::providers::ProviderId,
+    f: impl FnOnce() -> R,
+) -> R {
+    CURRENT_PROVIDER.with(|cell| {
+        let prev = cell.borrow_mut().replace(provider);
+        let out = f();
+        *cell.borrow_mut() = prev;
+        out
+    })
+}
+
+pub fn current_provider() -> crate::config::providers::ProviderId {
+    CURRENT_PROVIDER.with(|cell| cell.borrow().clone())
+        .unwrap_or(crate::config::providers::ProviderId::ClaudeCode)
 }
 
 /// Tools that upstream hides from the chat UI via
@@ -138,9 +165,7 @@ pub fn dispatch(tool_name: &str, args: &Value) -> Result<Value, ToolError> {
 
         "WebFetch" => web_fetch::web_fetch(args),
 
-        "WebSearch" => {
-            web_search::dispatch(args, crate::config::providers::ProviderId::ClaudeCode)
-        }
+        "WebSearch" => web_search::dispatch(args, current_provider()),
 
         "EnterPlanMode" => plan_mode::enter_plan_mode(args),
         "ExitPlanMode" => plan_mode::exit_plan_mode(args),
@@ -398,6 +423,33 @@ mod tests {
                 }
                 other => panic!("accept-edits must still gate Bash, got {other:?}"),
             }
+        }
+    }
+
+    mod provider_scope {
+        use super::*;
+        use crate::config::providers::ProviderId;
+
+        #[test]
+        fn current_provider_defaults_to_claude_code() {
+            assert_eq!(current_provider(), ProviderId::ClaudeCode);
+        }
+
+        #[test]
+        fn with_current_provider_scopes_value() {
+            let seen = with_current_provider(ProviderId::Codex, || current_provider());
+            assert_eq!(seen, ProviderId::Codex);
+            assert_eq!(current_provider(), ProviderId::ClaudeCode,
+                "provider must reset after scope");
+        }
+
+        #[test]
+        fn with_current_provider_nests_correctly() {
+            let seen = with_current_provider(ProviderId::Codex, || {
+                with_current_provider(ProviderId::GeminiCli, || current_provider())
+            });
+            assert_eq!(seen, ProviderId::GeminiCli);
+            assert_eq!(current_provider(), ProviderId::ClaudeCode);
         }
     }
 }

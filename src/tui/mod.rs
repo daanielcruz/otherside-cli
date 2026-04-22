@@ -1369,6 +1369,8 @@ fn spawn_agent_turn(
     let settings = st.persistence.settings.clone();
     let mode = st.session.permission_mode;
     let session_allowlist = st.session_allowlist.clone();
+    let provider_id = crate::config::providers::ProviderId::from_slug(provider.id())
+        .unwrap_or(crate::config::providers::ProviderId::ClaudeCode);
 
     let provider_for_task = provider.clone();
     let handle = tokio::spawn(async move {
@@ -1381,6 +1383,7 @@ fn spawn_agent_turn(
             settings,
             mode,
             session_allowlist,
+            provider_id,
         )
         .await;
     });
@@ -1767,6 +1770,7 @@ async fn run_agent_turns(
     settings: crate::config::settings::Settings,
     mode: crate::config::settings::PermissionMode,
     session_allowlist: crate::permissions::RuntimePermissionGrants,
+    provider_id: crate::config::providers::ProviderId,
 ) {
     use crate::agent::{AgentLoop, MAX_AUTO_TURNS};
     use agent_bridge::{TuiDispatcher, TuiObserver};
@@ -1776,6 +1780,7 @@ async fn run_agent_turns(
         settings: Arc::new(settings),
         mode,
         session_allowlist,
+        provider_id,
     };
     let observer = TuiObserver { tx: tx.clone() };
 
