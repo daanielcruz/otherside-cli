@@ -1026,9 +1026,11 @@ fn handle_menu_key(
                 }
                 return false;
             }
-            // Body: Enter commits the focused row's edit (cycle like `→`).
+            // Body: Enter commits the focused row's edit. Model opens `/model`
+            // panel (cycling via Enter silently drops the `[1m]` suffix — parity
+            // with upstream which opens a picker here). Other rows cycle like `→`.
             KeyCode::Enter if body_focused => {
-                edit_settings_row(st, 1);
+                commit_settings_row_enter(st);
                 return false;
             }
             _ => {}
@@ -1185,6 +1187,34 @@ fn rebuild_model_panel(st: &mut ConversationState) {
         st.model_panel_body_cursor,
     );
     st.active_menu = Some(fresh);
+}
+
+fn commit_settings_row_enter(st: &mut ConversationState) {
+    use crate::config::providers::{ProviderId, PROVIDER_ORDER};
+    use crate::tui::menu::SettingsRowKind;
+    let enter_kind = st
+        .active_menu
+        .as_ref()
+        .and_then(|m| m.options.get(m.cursor))
+        .and_then(|row| row.settings_kind.clone());
+    if matches!(enter_kind, Some(SettingsRowKind::Model)) {
+        let default_pid = st
+            .persistence
+            .settings
+            .default_provider
+            .as_deref()
+            .and_then(ProviderId::from_slug)
+            .unwrap_or(st.provider_id);
+        st.model_panel_tab_index = PROVIDER_ORDER
+            .iter()
+            .position(|p| *p == default_pid)
+            .unwrap_or(0);
+        st.model_panel_tabs_focused = true;
+        st.model_panel_body_cursor = 0;
+        rebuild_model_panel(st);
+    } else {
+        edit_settings_row(st, 1);
+    }
 }
 
 fn edit_settings_row(st: &mut ConversationState, direction: i32) {
@@ -2655,6 +2685,49 @@ mod settings_edit_tests {
         assert_eq!(st.session.model, "claude-sonnet-4-6");
         edit_settings_row(&mut st, -1);
         assert_eq!(st.session.model, "claude-opus-4-7");
+    }
+
+    #[test]
+    fn enter_on_model_row_opens_model_panel_instead_of_cycling() {
+        use crate::tui::slash::catalog::PanelKind;
+        let mut st = ConversationState::default();
+        st.persistence.settings.default_provider = Some("claude-code".into());
+        st.session.model = "claude-opus-4-7[1m]".into();
+        st.active_menu = Some(OverlayMenu::new_settings(SettingsTab::Config, &st));
+        if let Some(m) = st.active_menu.as_mut() {
+            focus_row(m, "Model");
+        }
+        commit_settings_row_enter(&mut st);
+        assert_eq!(
+            st.session.model, "claude-opus-4-7[1m]",
+            "session model must not mutate — Enter must open picker, not cycle"
+        );
+        let kind = st
+            .active_menu
+            .as_ref()
+            .expect("menu still present")
+            .kind;
+        assert!(
+            matches!(kind, PanelKind::Model),
+            "Enter must switch overlay to /model panel, got {kind:?}"
+        );
+    }
+
+    #[test]
+    fn enter_on_bool_row_still_toggles() {
+        let mut st = ConversationState::default();
+        st.active_menu = Some(OverlayMenu::new_settings(SettingsTab::Config, &st));
+        if let Some(m) = st.active_menu.as_mut() {
+            focus_row(m, "Auto-compact");
+        }
+        let before = st.persistence.settings.auto_compact.unwrap_or(true);
+        commit_settings_row_enter(&mut st);
+        let after = st
+            .persistence
+            .settings
+            .auto_compact
+            .expect("bool setting persists");
+        assert_eq!(after, !before, "non-Model Enter must still cycle");
     }
 
     #[test]
