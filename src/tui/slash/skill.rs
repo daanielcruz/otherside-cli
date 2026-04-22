@@ -26,14 +26,23 @@ pub fn lookup_body(name: &str) -> Option<&'static str> {
 }
 
 pub fn handle(name: &str, args: &str, _state: &mut ConversationState) -> SlashOutcome {
-    let body = lookup_body(name);
+    let body = lookup_body(name).map(substitute_host_paths);
     let user_turn = match (body, args.is_empty()) {
-        (Some(body), true) => body.to_string(),
+        (Some(body), true) => body,
         (Some(body), false) => format!("{body}\n\n{args}"),
         (None, true) => format!("/{name}"),
         (None, false) => format!("/{name} {args}"),
     };
     SlashOutcome::SendTurn(user_turn)
+}
+
+fn substitute_host_paths(body: &str) -> String {
+    let Some(base) = directories::BaseDirs::new() else {
+        return body.to_string();
+    };
+    let home = base.home_dir().to_string_lossy();
+    body.replace("~/.otherside", &format!("{home}/.otherside"))
+        .replace("~/.claude", &format!("{home}/.claude"))
 }
 
 #[cfg(test)]
@@ -83,6 +92,27 @@ mod tests {
             }
             other => panic!("expected SendTurn, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn handle_substitutes_tilde_paths_with_host_home() {
+        let mut st = ConversationState::default();
+        let outcome = handle("dream", "", &mut st);
+        let body = match outcome {
+            SlashOutcome::SendTurn(body) => body,
+            other => panic!("expected SendTurn, got {other:?}"),
+        };
+
+        assert!(
+            !body.contains("~/.otherside"),
+            "skill body must not ship the literal `~/.otherside` to the LLM — it defaults to `/root/` on the model side. Got body:\n{body}"
+        );
+        let base = directories::BaseDirs::new().expect("host base dirs resolvable in test env");
+        let home = base.home_dir().to_string_lossy();
+        assert!(
+            body.contains(&format!("{home}/.otherside")),
+            "expected host-absolute `{home}/.otherside` in substituted body"
+        );
     }
 
     #[test]
