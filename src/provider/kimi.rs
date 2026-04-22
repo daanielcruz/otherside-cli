@@ -19,7 +19,7 @@ use crate::inference::{OpenAiChatRequest, OpenAiChunk};
 use crate::thinking::ThinkingConfig;
 use crate::translator::anthropic::response::AnthropicStreamTranslator;
 use crate::translator::anthropic::system::SystemFlavor;
-use crate::translator::anthropic::{build_request_body_with_flavor, strip_1m_suffix, UserContext};
+use crate::translator::anthropic::{strip_1m_suffix, UserContext};
 use crate::translator::sse::SseBuffer;
 
 use super::{ChunkStream, Provider};
@@ -52,7 +52,7 @@ impl Provider for KimiProvider {
     fn stream<'a>(
         &'a self,
         mut req: OpenAiChatRequest,
-        _thinking: Option<ThinkingConfig>,
+        thinking: Option<ThinkingConfig>,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<ChunkStream>> + Send + 'a>> {
         Box::pin(async move {
 
@@ -78,7 +78,19 @@ impl Provider for KimiProvider {
             // exclusive to Anthropic's first-party SaaS routing). Agent preamble
             // + main system prompt still flow so every operational instruction
             // lands upstream-identical.
-            let body = build_request_body_with_flavor(&req, &ctx, SystemFlavor::ThirdParty)?;
+            //
+            // Kimi has no `effort` knob — the catalog gates `supported_efforts`
+            // at `["auto"]` so the translator drops `output_config.effort` and
+            // the `thinking` envelope block for Kimi models. The caller's
+            // `thinking` param is still threaded through so future Kimi
+            // thinking-capable SKUs (e.g. `kimi-k2-thinking`) pick it up
+            // once catalog wires their effort support.
+            let body = crate::translator::anthropic::build_request_body_with_flavor_and_thinking(
+                &req,
+                &ctx,
+                SystemFlavor::ThirdParty,
+                thinking.as_ref(),
+            )?;
 
             let headers = build_inference_headers(&api_key)?;
 

@@ -4,7 +4,27 @@ use serde_json::{Map, Value};
 
 use crate::error::{Error, Result};
 use crate::inference::{OpenAiChatRequest, OpenAiChatRole};
+use crate::thinking::{ThinkingConfig, ThinkingLevel, ThinkingMode};
 use crate::translator::anthropic::message_builder;
+
+/// Map a selected `ThinkingConfig` onto the Anthropic `output_config.effort`
+/// string upstream accepts. Kept in one place so codex + anthropic stay in
+/// sync: Opus accepts the full ladder (auto/low/medium/high/xhigh/max);
+/// Sonnet caps at high; Haiku accepts only auto.
+fn thinking_to_effort(cfg: Option<&ThinkingConfig>) -> Option<&'static str> {
+    let cfg = cfg?;
+    if matches!(cfg.mode, ThinkingMode::None | ThinkingMode::Auto) {
+        return None;
+    }
+    Some(match cfg.level {
+        ThinkingLevel::Minimal | ThinkingLevel::Low => "low",
+        ThinkingLevel::Medium => "medium",
+        ThinkingLevel::High => "high",
+        ThinkingLevel::XHigh => "xhigh",
+        ThinkingLevel::Max => "max",
+        ThinkingLevel::None | ThinkingLevel::Auto => return None,
+    })
+}
 
 pub fn strip_1m_suffix(raw: &str) -> (String, bool) {
     let lower = raw.to_ascii_lowercase();
@@ -81,7 +101,19 @@ pub fn build_request_body(
     req: &OpenAiChatRequest,
     ctx: &UserContext<'_>,
 ) -> Result<Vec<u8>> {
-    build_request_body_with_flavor(req, ctx, super::system::SystemFlavor::ClaudeCode)
+    build_request_body_full(req, ctx, super::system::SystemFlavor::ClaudeCode, None)
+}
+
+/// Like `build_request_body` but threads the caller's selected effort via
+/// `thinking` into `output_config.effort`. Callers that have no chosen level
+/// (e.g. historical tests, fingerprint captures) pass `None` and fall back
+/// to `default_effort_for(model)` — the pre-2026-04-22 behavior.
+pub fn build_request_body_with_thinking(
+    req: &OpenAiChatRequest,
+    ctx: &UserContext<'_>,
+    thinking: Option<&ThinkingConfig>,
+) -> Result<Vec<u8>> {
+    build_request_body_full(req, ctx, super::system::SystemFlavor::ClaudeCode, thinking)
 }
 
 /// Same as `build_request_body` but lets the provider pick which system
@@ -93,6 +125,24 @@ pub fn build_request_body_with_flavor(
     req: &OpenAiChatRequest,
     ctx: &UserContext<'_>,
     flavor: super::system::SystemFlavor,
+) -> Result<Vec<u8>> {
+    build_request_body_full(req, ctx, flavor, None)
+}
+
+pub fn build_request_body_with_flavor_and_thinking(
+    req: &OpenAiChatRequest,
+    ctx: &UserContext<'_>,
+    flavor: super::system::SystemFlavor,
+    thinking: Option<&ThinkingConfig>,
+) -> Result<Vec<u8>> {
+    build_request_body_full(req, ctx, flavor, thinking)
+}
+
+fn build_request_body_full(
+    req: &OpenAiChatRequest,
+    ctx: &UserContext<'_>,
+    flavor: super::system::SystemFlavor,
+    thinking: Option<&ThinkingConfig>,
 ) -> Result<Vec<u8>> {
     if !req
         .messages
@@ -135,13 +185,23 @@ pub fn build_request_body_with_flavor(
     }
 
     let (stripped_for_effort, _) = strip_1m_suffix(&req.model);
-    let effort = crate::models::catalog::default_effort_for(&stripped_for_effort);
-    if let Some(out_cfg) = body.get_mut("output_config").and_then(|v| v.as_object_mut()) {
-        if effort == "auto" {
 
+    // Effort selection: caller-supplied `thinking` wins when the level maps
+    // to a non-auto effort AND the model accepts it; otherwise fall back to
+    // the catalog's default effort for this model. Haiku-class models
+    // (supported_efforts == ["auto"]) never carry an `effort` field.
+    let selected_effort = thinking_to_effort(thinking)
+        .filter(|level| crate::models::catalog::supports_effort(&stripped_for_effort, level))
+        .unwrap_or_else(|| crate::models::catalog::default_effort_for(&stripped_for_effort));
+
+    if let Some(out_cfg) = body.get_mut("output_config").and_then(|v| v.as_object_mut()) {
+        if selected_effort == "auto" {
             out_cfg.remove("effort");
         } else {
-            out_cfg.insert("effort".to_string(), Value::String(effort.to_string()));
+            out_cfg.insert(
+                "effort".to_string(),
+                Value::String(selected_effort.to_string()),
+            );
         }
     }
 

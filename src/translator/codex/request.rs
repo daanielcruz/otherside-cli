@@ -173,7 +173,8 @@ fn reasoning_json(cfg: &ThinkingConfig) -> Option<Value> {
     let effort = match cfg.level {
         ThinkingLevel::Minimal | ThinkingLevel::Low => "low",
         ThinkingLevel::Medium => "medium",
-        ThinkingLevel::High | ThinkingLevel::XHigh | ThinkingLevel::Max => "high",
+        ThinkingLevel::High => "high",
+        ThinkingLevel::XHigh | ThinkingLevel::Max => "xhigh",
         ThinkingLevel::None | ThinkingLevel::Auto => return None,
     };
     Some(json!({
@@ -328,8 +329,44 @@ mod tests {
             vec![],
             Some(&ThinkingConfig::level(ThinkingLevel::XHigh)),
         );
-        assert_eq!(body["reasoning"]["effort"], "high");
+        assert_eq!(body["reasoning"]["effort"], "xhigh");
         assert_eq!(body["reasoning"]["summary"], "auto");
+    }
+
+    #[test]
+    fn body_maps_high_separately_from_xhigh() {
+        let req = OpenAiChatRequest {
+            model: "gpt-5-codex".into(),
+            messages: vec![user("hi")],
+            ..Default::default()
+        };
+        let body_high = build_responses_body(
+            &req,
+            vec![],
+            Some(&ThinkingConfig::level(ThinkingLevel::High)),
+        );
+        assert_eq!(
+            body_high["reasoning"]["effort"], "high",
+            "Codex now accepts low/medium/high/xhigh for all models (user-confirmed upstream contract). High and XHigh must not alias to the same effort string."
+        );
+    }
+
+    #[test]
+    fn body_maps_max_to_xhigh_as_alias() {
+        let req = OpenAiChatRequest {
+            model: "gpt-5-codex".into(),
+            messages: vec![user("hi")],
+            ..Default::default()
+        };
+        let body = build_responses_body(
+            &req,
+            vec![],
+            Some(&ThinkingConfig::level(ThinkingLevel::Max)),
+        );
+        assert_eq!(
+            body["reasoning"]["effort"], "xhigh",
+            "Codex caps out at xhigh — Max aliases to xhigh since the /responses surface has no separate max effort."
+        );
     }
 
     #[test]

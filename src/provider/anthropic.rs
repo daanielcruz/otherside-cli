@@ -17,7 +17,7 @@ use crate::fingerprint::anthropic as fp;
 use crate::inference::{OpenAiChatRequest, OpenAiChunk};
 use crate::thinking::ThinkingConfig;
 use crate::translator::anthropic::response::AnthropicStreamTranslator;
-use crate::translator::anthropic::{build_request_body, strip_1m_suffix, UserContext};
+use crate::translator::anthropic::{strip_1m_suffix, UserContext};
 use crate::translator::sse::SseBuffer;
 
 use super::{ChunkStream, Provider};
@@ -51,7 +51,7 @@ impl Provider for AnthropicProvider {
     fn stream<'a>(
         &'a self,
         mut req: OpenAiChatRequest,
-        _thinking: Option<ThinkingConfig>,
+        thinking: Option<ThinkingConfig>,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<ChunkStream>> + Send + 'a>> {
 
         Box::pin(async move {
@@ -73,7 +73,11 @@ impl Provider for AnthropicProvider {
                 memory_dir: &env.memory_dir,
                 git_status: &env.git_status,
             };
-            let body = build_request_body(&req, &ctx)?;
+            let body = crate::translator::anthropic::build_request_body_with_thinking(
+                &req,
+                &ctx,
+                thinking.as_ref(),
+            )?;
 
             let headers = build_inference_headers(&bearer, has_1m)?;
 
