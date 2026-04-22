@@ -626,10 +626,6 @@ impl ConversationState {
     }
 
     pub fn refresh_autocomplete(&mut self) {
-        if self.streaming {
-            self.autocomplete = None;
-            return;
-        }
         self.autocomplete = Autocomplete::from_input(&self.input);
     }
 
@@ -1274,8 +1270,8 @@ mod tests {
         st.input = "/cle".to_string();
         st.refresh_autocomplete();
         assert!(
-            st.autocomplete.is_none(),
-            "autocomplete must be suppressed while streaming"
+            st.autocomplete.is_some(),
+            "autocomplete must stay available during streaming (upstream allows typing + slash popup)"
         );
     }
 
