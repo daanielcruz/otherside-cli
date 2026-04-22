@@ -649,8 +649,8 @@ fn write_preview(result: &Value) -> Option<ToolPayload> {
                 .map(|s| s.lines().count() as u64)
         });
     let bytes = obj.get("bytes_written").and_then(|v| v.as_u64());
-    let created = obj.get("created").and_then(|v| v.as_bool()).unwrap_or(false);
-    let verb = if created { "Created" } else { "Wrote" };
+    let _ = obj.get("created");
+    let verb = "Wrote";
     let text = match (lines, bytes, fp.is_empty()) {
         (Some(n), _, false) => format!("{verb} {n} lines to {fp}"),
         (Some(n), _, true) => format!("{verb} {n} lines"),
@@ -1543,7 +1543,7 @@ mod tests {
             "bytes_written": 42,
         });
         let s = expect_preview(payload_from_result("Write", &v, false).unwrap());
-        assert!(s.contains("Created"), "got: {s}");
+        assert!(s.contains("Wrote"), "got: {s}");
         assert!(s.contains("42 bytes"), "got: {s}");
         assert!(s.contains("/tmp/out.txt"), "got: {s}");
     }
