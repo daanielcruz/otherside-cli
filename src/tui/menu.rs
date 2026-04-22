@@ -975,13 +975,7 @@ fn draw_model_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
                     display_name,
                     active,
                 } => {
-                    let marker = if *active { "\u{25CF} " } else { "  " };
-                    let marker_style = if *active {
-                        Style::default().fg(theme::PRIMARY)
-                    } else {
-                        Style::default().fg(theme::MUTED)
-                    };
-                    let left_cols = marker.chars().count() + display_name.chars().count();
+                    let left_cols = 2 + display_name.chars().count();
                     let right_cols = raw_id.chars().count();
                     let pad = ROW_WIDTH.saturating_sub(left_cols + right_cols).max(2);
                     let name_style = if is_cursor {
@@ -991,13 +985,9 @@ fn draw_model_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
                     } else {
                         Style::default().fg(theme::TEXT)
                     };
-                    // Chevron prefix comes from PanelFrame's `body_row` so
-                    // keyboard-nav/selected paint matches chrome.md §"Selection
-                    // chevron system". `active` == session model → `selected`.
                     let prefix_line = body_row("", is_cursor, *active);
                     let mut spans: Vec<Span<'static>> =
                         prefix_line.spans.iter().cloned().collect();
-                    spans.push(Span::styled(marker.to_string(), marker_style));
                     spans.push(Span::styled(display_name.clone(), name_style));
                     spans.push(Span::raw(" ".repeat(pad)));
                     spans.push(Span::styled(
