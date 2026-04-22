@@ -24,6 +24,7 @@ pub fn spawn_background_agent(
     record.state = TaskState::Backgrounded;
     record.is_backgrounded = true;
     record.tool_use_id = tool_use_id;
+    record.subagent_type = Some(definition.name.clone());
     store.insert(record);
 
     let id_for_task = id.clone();

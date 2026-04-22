@@ -141,13 +141,20 @@ fn library_body(state: &AgentsPanelState) -> Vec<Line<'static>> {
             .add_modifier(Modifier::BOLD),
     )));
     for row in &state.library {
-        lines.push(Line::from(vec![
+        let mut spans: Vec<Span<'static>> = vec![
             Span::styled("  ".to_string(), Style::default().fg(theme::MUTED)),
             Span::styled(
                 format!("{} · {}", row.name, row.model),
                 Style::default().fg(theme::MUTED),
             ),
-        ]));
+        ];
+        if row.running_count > 0 {
+            spans.push(Span::styled(
+                format!(" 🟢 {} running", row.running_count),
+                Style::default().fg(theme::SUCCESS),
+            ));
+        }
+        lines.push(Line::from(spans));
     }
     lines
 }

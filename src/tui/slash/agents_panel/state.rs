@@ -34,6 +34,7 @@ pub struct CompletedRow {
 pub struct LibraryRow {
     pub name: String,
     pub model: String,
+    pub running_count: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -62,15 +63,27 @@ fn short_model_name(model: Option<&str>) -> String {
 
 impl AgentsPanelState {
     pub fn new(tasks: &TaskStore, defs: &[AgentDefinition]) -> Self {
-        let running: Vec<RunningRow> = tasks
+        let active_agents: Vec<_> = tasks
             .list_active()
             .into_iter()
             .filter(|r| matches!(r.kind, TaskKind::Agent))
+            .collect();
+
+        let running: Vec<RunningRow> = active_agents
+            .iter()
             .map(|r| RunningRow {
                 name: r.name.clone(),
                 runtime_secs: r.runtime_secs(),
             })
             .collect();
+
+        use std::collections::HashMap;
+        let mut running_by_type: HashMap<String, usize> = HashMap::new();
+        for r in &active_agents {
+            if let Some(st) = r.subagent_type.as_deref() {
+                *running_by_type.entry(st.to_string()).or_insert(0) += 1;
+            }
+        }
 
         let recently_completed: Vec<CompletedRow> = tasks
             .list_recent_terminal(TaskKind::Agent, RECENTLY_COMPLETED_LIMIT)
@@ -86,6 +99,7 @@ impl AgentsPanelState {
             .map(|d| LibraryRow {
                 name: d.name.clone(),
                 model: short_model_name(d.model.as_deref()),
+                running_count: *running_by_type.get(&d.name).unwrap_or(&0),
             })
             .collect();
         library.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
@@ -176,6 +190,33 @@ mod tests {
         assert_eq!(st.tab, Tab::Library);
         st.cycle_tab();
         assert_eq!(st.tab, Tab::Running);
+    }
+
+    #[test]
+    fn library_row_running_count_populated_from_subagent_type() {
+        use crate::tasks::id::TaskId;
+        use crate::tasks::state::TaskRecord;
+        let store = TaskStore::new();
+        let mut r = TaskRecord::new_agent(
+            TaskId::from_string("a9"),
+            "running job".into(),
+            "prompt".into(),
+        );
+        r.subagent_type = Some("general-purpose".into());
+        store.insert(r);
+        let st = AgentsPanelState::new(&store, registry::all());
+        let gp = st
+            .library
+            .iter()
+            .find(|l| l.name == "general-purpose")
+            .expect("general-purpose in library");
+        assert_eq!(gp.running_count, 1);
+        let explore = st
+            .library
+            .iter()
+            .find(|l| l.name == "Explore")
+            .expect("Explore in library");
+        assert_eq!(explore.running_count, 0);
     }
 
     #[test]

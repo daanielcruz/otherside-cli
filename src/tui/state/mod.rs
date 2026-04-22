@@ -484,6 +484,13 @@ impl ConversationState {
             };
             record.state = crate::tasks::TaskState::Running;
             record.is_backgrounded = false;
+            if matches!(kind, crate::tasks::TaskKind::Agent) {
+                record.subagent_type = args
+                    .get("subagent_type")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string());
+            }
             self.tasks.insert(record);
         }
         self.active_tool_calls.push(ToolCallEntry {
