@@ -155,7 +155,9 @@ pub fn render(
             state.thought_ms,
             state.session.effort_label,
         );
-        tips::draw(f, tp, state.tip_rotation_index);
+        if state.persistence.settings.show_tips.unwrap_or(true) {
+            tips::draw(f, tp, state.tip_rotation_index);
+        }
     }
 
     if let Some(queue_area) = slots.queue {

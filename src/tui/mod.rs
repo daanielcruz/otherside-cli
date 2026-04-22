@@ -922,7 +922,15 @@ fn emit_panel_dismiss_anchor(
         },
         PanelKind::Help => ("help", "Help dialog dismissed".to_string()),
 
-        PanelKind::Settings(tab) => (tab.slash_name(), "Status dialog dismissed".to_string()),
+        PanelKind::Settings(tab) => {
+            use crate::tui::slash::catalog::SettingsTab;
+            let wording = match tab {
+                SettingsTab::Config => "Config dialog dismissed",
+                SettingsTab::Status => "Status dialog dismissed",
+                SettingsTab::Usage => "Status dialog dismissed",
+            };
+            (tab.slash_name(), wording.to_string())
+        }
         PanelKind::Skills => ("skills", "Skills dialog dismissed".to_string()),
         PanelKind::Agents => ("agents", "Agents dialog dismissed".to_string()),
         PanelKind::Mcp => ("mcp", "MCP dialog dismissed".to_string()),
@@ -1492,20 +1500,21 @@ mod panel_anchor_tests {
     }
 
     #[test]
-    fn settings_status_dismiss_wording_hardcoded() {
+    fn settings_tab_dismiss_wording_per_tab() {
 
         use crate::tui::slash::catalog::SettingsTab;
-        for tab in [SettingsTab::Status, SettingsTab::Config, SettingsTab::Usage] {
+        let cases = [
+            (SettingsTab::Status, "⎿  Status dialog dismissed"),
+            (SettingsTab::Config, "⎿  Config dialog dismissed"),
+            (SettingsTab::Usage, "⎿  Status dialog dismissed"),
+        ];
+        for (tab, expected) in cases {
             let mut st = ConversationState::default();
             let menu = OverlayMenu::new_info(PanelKind::Settings(tab), "_".into(), vec![]);
             emit_panel_dismiss_anchor(&mut st, &menu, None);
             let (echo, anchor) = anchor_lines(&st);
             assert_eq!(echo, format!("/{}", tab.slash_name()));
-            assert_eq!(
-                anchor, "⎿  Status dialog dismissed",
-                "tab {:?} must dismiss with hardcoded 'Status dialog dismissed' per upstream",
-                tab
-            );
+            assert_eq!(anchor, expected, "tab {:?} dismiss wording", tab);
         }
     }
 

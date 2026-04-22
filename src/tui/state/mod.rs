@@ -243,7 +243,7 @@ mod feedback_tests {
 
         let mut st = ConversationState::default();
 
-        st.push_anchor("config", "", "Status dialog dismissed", DisplayOrigin::Chrome);
+        st.push_anchor("config", "", "Config dialog dismissed", DisplayOrigin::Chrome);
 
         st.input = "what does main.rs do?".into();
         let _ = st.submit();
