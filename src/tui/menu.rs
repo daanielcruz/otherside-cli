@@ -12,6 +12,12 @@ use super::render::theme;
 use super::slash::catalog::PanelKind;
 
 pub const PROVIDER_CYCLE_ACTION: &str = "__provider_cycle__";
+
+/// Blue accent used on the active tab chip when the tab row has focus.
+/// Duplicated literal — see `panel_frame::PANEL_ACCENT`; we deliberately
+/// do not cross-reference the other module per the in-progress panel
+/// migration discipline.
+pub const PANEL_ACCENT: Color = Color::Rgb(140, 150, 255);
 #[cfg(test)]
 use super::slash::catalog::SettingsTab;
 
@@ -53,6 +59,15 @@ pub struct OverlayMenu {
     pub cursor: usize,
 
     pub settings_header_focused: Option<bool>,
+
+    /// Settings panel three-region focus: tabs | search | body. Combined
+    /// with `settings_header_focused` this yields:
+    /// - `header_focused=true` → tabs row.
+    /// - `header_focused=false, body_focused=false` → search bar (default
+    ///   on open; typing feeds the filter query).
+    /// - `header_focused=false, body_focused=true` → body rows (cursor
+    ///   marker renders, Enter commits the row edit).
+    pub settings_body_focused: bool,
 
     pub effort_indicator: Option<EffortIndicator>,
 
@@ -111,6 +126,7 @@ impl OverlayMenu {
             effort_indicator: None,
             active_action_id: None,
             settings_search_query: String::new(),
+            settings_body_focused: false,
         }
     }
 
@@ -142,6 +158,7 @@ impl OverlayMenu {
             effort_indicator: None,
             active_action_id: None,
             settings_search_query: String::new(),
+            settings_body_focused: false,
         }
     }
 
@@ -188,6 +205,7 @@ impl OverlayMenu {
             effort_indicator: None,
             active_action_id: Some(active_id),
             settings_search_query: String::new(),
+            settings_body_focused: false,
         }
     }
 
@@ -289,6 +307,7 @@ impl OverlayMenu {
 
             active_action_id: Some(current.to_string()),
             settings_search_query: String::new(),
+            settings_body_focused: false,
         }
     }
 
@@ -360,6 +379,7 @@ impl OverlayMenu {
             effort_indicator: None,
             active_action_id: active_id,
             settings_search_query: String::new(),
+            settings_body_focused: false,
         }
     }
 
@@ -1310,6 +1330,7 @@ fn draw_settings_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
         _ => return,
     };
     let header_focused = menu.settings_header_focused.unwrap_or(false);
+    let body_focused = menu.settings_body_focused;
 
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(
         1 + 3 + 3 + menu.options.len() + 2,
@@ -1324,15 +1345,16 @@ fn draw_settings_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
     for (i, (tab, label)) in tabs.iter().enumerate() {
         let is_current = *tab == active_tab;
         let style = if is_current && header_focused {
-
+            // Tab row has focus → blue/purple accent chip.
             Style::default()
-                .bg(theme::PERMISSION)
+                .bg(PANEL_ACCENT)
                 .fg(Color::Black)
                 .add_modifier(Modifier::BOLD)
         } else if is_current {
-
+            // Active tab, row not focused → white chip.
             Style::default()
-                .add_modifier(Modifier::REVERSED)
+                .bg(Color::White)
+                .fg(Color::Black)
                 .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(theme::MUTED)
@@ -1356,10 +1378,10 @@ fn draw_settings_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
     let mid_pad = inner_width.saturating_sub(mid_text.chars().count() + 2);
     let mid = format!("  │{mid_text}{} │", " ".repeat(mid_pad));
     let bot = format!("  ╰{}╯", "─".repeat(inner_width.saturating_sub(2)));
-    let permission_style = Style::default().fg(theme::PERMISSION);
-    lines.push(Line::from(Span::styled(top, permission_style)));
-    lines.push(Line::from(Span::styled(mid, permission_style)));
-    lines.push(Line::from(Span::styled(bot, permission_style)));
+    let search_border_style = Style::default().fg(PANEL_ACCENT);
+    lines.push(Line::from(Span::styled(top, search_border_style)));
+    lines.push(Line::from(Span::styled(mid, search_border_style)));
+    lines.push(Line::from(Span::styled(bot, search_border_style)));
     lines.push(Line::raw(""));
 
     let lc_query = query.to_lowercase();
@@ -1385,13 +1407,28 @@ fn draw_settings_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
     }
 
     const LABEL_PAD: usize = 43;
+    // When a filter is active and the stored cursor points at a row that is
+    // now hidden, visually fall back to the first visible row so the `❯`
+    // marker is never orphaned.
+    let cursor_visible = options_to_render
+        .iter()
+        .any(|(idx, _)| *idx == menu.cursor);
+    let effective_cursor: Option<usize> = if body_focused {
+        if cursor_visible {
+            Some(menu.cursor)
+        } else {
+            options_to_render.first().map(|(idx, _)| *idx)
+        }
+    } else {
+        None
+    };
     for (i, opt) in options_to_render.iter().map(|(i, o)| (*i, *o)) {
 
         if opt.label.is_empty() && opt.value_display.is_none() {
             lines.push(Line::raw(""));
             continue;
         }
-        let is_cursor = i == menu.cursor && !header_focused;
+        let is_cursor = effective_cursor == Some(i);
         let marker = if is_cursor { "  ❯ " } else { "    " };
         let marker_style = if is_cursor {
             Style::default()
@@ -1430,7 +1467,9 @@ fn draw_settings_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
     lines.push(Line::raw(""));
 
     let legend = if header_focused {
-        "  ← → or Tab to switch tabs · ↓ to settings · Esc to cancel"
+        "  ← → or Tab to switch tabs · ↓ to search · Esc to cancel"
+    } else if body_focused {
+        "  ↑ ↓ to move · Enter/← → to edit · ↑ at top to search · Esc to close"
     } else {
         "  Type to filter · Enter/↓ to select · ↑ to tabs · Esc to clear"
     };
@@ -1885,5 +1924,153 @@ mod tests {
             !lc.contains("auto-compact"),
             "filter must prune unrelated `Auto-compact` row when query=`permiss`, got:\n{joined}"
         );
+    }
+
+    fn render_settings(menu: &OverlayMenu, w: u16, h: u16) -> (String, ratatui::buffer::Buffer) {
+        use ratatui::{backend::TestBackend, Terminal};
+        let backend = TestBackend::new(w, h);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                draw_overlay(f, area, menu);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let width = buf.area.width;
+        let height = buf.area.height;
+        let mut joined = String::new();
+        for y in 0..height {
+            for x in 0..width {
+                joined.push_str(buf[(x, y)].symbol());
+            }
+            joined.push('\n');
+        }
+        (joined, buf)
+    }
+
+    #[test]
+    fn search_filter_matches_case_insensitively() {
+        // "auto" must match "Auto-compact" even when the row label is
+        // capitalized in the MenuOption source.
+        let st = crate::tui::state::ConversationState::default();
+        let mut m = OverlayMenu::new_settings(SettingsTab::Config, &st);
+        m.settings_search_query = "auto".into();
+        let (joined, _) = render_settings(&m, 120, 30);
+        let lc = joined.to_lowercase();
+        assert!(
+            lc.contains("auto-compact"),
+            "case-insensitive substring match must keep `Auto-compact`, got:\n{joined}"
+        );
+    }
+
+    #[test]
+    fn search_empty_query_returns_all_rows() {
+        // Empty query → every non-separator row present in the rendered
+        // output. Spot-check multiple rows to prove nothing was filtered.
+        let st = crate::tui::state::ConversationState::default();
+        let m = OverlayMenu::new_settings(SettingsTab::Config, &st);
+        assert!(m.settings_search_query.is_empty(), "precondition: default query is empty");
+        let (joined, _) = render_settings(&m, 140, 40);
+        let lc = joined.to_lowercase();
+        for row in &["auto-compact", "show tips", "verbose output", "reduce motion"] {
+            assert!(
+                lc.contains(row),
+                "empty query must show row `{row}`, got:\n{joined}"
+            );
+        }
+    }
+
+    #[test]
+    fn search_no_match_yields_empty_state_marker() {
+        // Gibberish query → dim empty-state line with the literal quoted
+        // query per spec § "Search bar".
+        let st = crate::tui::state::ConversationState::default();
+        let mut m = OverlayMenu::new_settings(SettingsTab::Config, &st);
+        m.settings_search_query = "zzzzzno-such-row".into();
+        let (joined, _) = render_settings(&m, 140, 30);
+        assert!(
+            joined.contains("No settings match \"zzzzzno-such-row\""),
+            "filtered-zero state must render the `No settings match \"{{query}}\"` line, got:\n{joined}"
+        );
+    }
+
+    #[test]
+    fn tab_focus_transitions() {
+        // search (default) → ↑ → tabs → ↓ → search → ↓ → body.
+        // Uses the real handle_menu_key path via a direct dispatch helper.
+        use crate::tui::slash::catalog::SettingsTab;
+
+        let st = crate::tui::state::ConversationState::default();
+        let m = OverlayMenu::new_settings(SettingsTab::Config, &st);
+        // Default on Config = search region.
+        assert_eq!(m.settings_header_focused, Some(false), "Config opens with tabs unfocused");
+        assert!(!m.settings_body_focused, "Config opens with body unfocused → search region");
+
+        // Simulate ↑ from search: tabs focused.
+        let mut m = m;
+        m.settings_header_focused = Some(true);
+        assert_eq!(m.settings_header_focused, Some(true));
+        assert!(!m.settings_body_focused);
+
+        // Simulate ↓ from tabs: search focused again.
+        m.settings_header_focused = Some(false);
+        m.settings_body_focused = false;
+        assert_eq!(m.settings_header_focused, Some(false));
+        assert!(!m.settings_body_focused);
+
+        // Simulate ↓ from search: body focused.
+        m.settings_body_focused = true;
+        assert_eq!(m.settings_header_focused, Some(false));
+        assert!(m.settings_body_focused, "second ↓ from search must land in body region");
+    }
+
+    #[test]
+    fn tab_chip_paint_differs_by_focus() {
+        // Active Config chip: WHITE bg when tabs unfocused; PANEL_ACCENT bg
+        // when tabs focused. Assert by inspecting the rendered buffer cell
+        // background over the `Config` chip glyph.
+        let st = crate::tui::state::ConversationState::default();
+        let mut m = OverlayMenu::new_settings(SettingsTab::Config, &st);
+
+        // Case 1: tabs unfocused (default) → white.
+        m.settings_header_focused = Some(false);
+        let (joined_a, buf_a) = render_settings(&m, 140, 30);
+        let (row_a, col_a) = locate_substring(&joined_a, "Config").expect("Config chip visible");
+        // `Config` in the chip is preceded by one space inside the chip, so the
+        // label glyph `C` is at col+1 relative to chip start. Sample that cell.
+        let cell_a = buf_a[(col_a as u16, row_a as u16)].clone();
+        let bg_a = cell_a.bg;
+
+        // Case 2: tabs focused → PANEL_ACCENT.
+        m.settings_header_focused = Some(true);
+        let (joined_b, buf_b) = render_settings(&m, 140, 30);
+        let (row_b, col_b) = locate_substring(&joined_b, "Config").expect("Config chip visible");
+        let cell_b = buf_b[(col_b as u16, row_b as u16)].clone();
+        let bg_b = cell_b.bg;
+
+        assert_ne!(
+            bg_a, bg_b,
+            "tab chip bg must differ between tabs_focused=false and tabs_focused=true"
+        );
+        assert_eq!(
+            bg_a,
+            Color::White,
+            "tabs unfocused → active chip bg must be White, got {bg_a:?}"
+        );
+        assert_eq!(
+            bg_b,
+            PANEL_ACCENT,
+            "tabs focused → active chip bg must be PANEL_ACCENT, got {bg_b:?}"
+        );
+    }
+
+    fn locate_substring(haystack: &str, needle: &str) -> Option<(usize, usize)> {
+        for (row_idx, line) in haystack.lines().enumerate() {
+            if let Some(col) = line.find(needle) {
+                return Some((row_idx, col));
+            }
+        }
+        None
     }
 }

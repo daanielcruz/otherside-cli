@@ -875,9 +875,13 @@ fn handle_menu_key(
     use crate::tui::slash::catalog::PanelKind;
     if matches!(k.code, KeyCode::Esc) {
         if let Some(menu) = st.active_menu.as_mut() {
-            if matches!(menu.kind, PanelKind::Settings(_))
-                && !menu.settings_search_query.is_empty()
-            {
+            // Esc in the search region with a non-empty query only clears
+            // the filter. A second Esc (empty query) then closes the panel.
+            // Esc from tabs or body always closes.
+            let in_search = matches!(menu.kind, PanelKind::Settings(_))
+                && !menu.settings_header_focused.unwrap_or(false)
+                && !menu.settings_body_focused;
+            if in_search && !menu.settings_search_query.is_empty() {
                 menu.settings_search_query.clear();
                 menu.cursor = 0;
                 return false;
@@ -894,7 +898,13 @@ fn handle_menu_key(
 
     if let PanelKind::Settings(_) = menu_state.kind {
         let header_focused = menu_state.settings_header_focused.unwrap_or(false);
+        let body_focused = menu_state.settings_body_focused;
+        // Three-region focus model: tabs (header) | search | body.
+        // `header_focused && !body_focused` = tabs.
+        // `!header_focused && !body_focused` = search bar (default on open).
+        // `!header_focused && body_focused` = body rows.
         match k.code {
+            // Tabs: left/right/tab cycle between tabs.
             KeyCode::Left | KeyCode::Right | KeyCode::Tab | KeyCode::BackTab
                 if header_focused =>
             {
@@ -905,10 +915,10 @@ fn handle_menu_key(
                 rotate_settings_tab(st, direction);
                 return false;
             }
+            // Body: left/right edit the focused row's value.
             KeyCode::Left | KeyCode::Right | KeyCode::Tab | KeyCode::BackTab
-                if !header_focused =>
+                if body_focused =>
             {
-
                 let direction: i32 = match k.code {
                     KeyCode::Right | KeyCode::Tab => 1,
                     _ => -1,
@@ -916,18 +926,20 @@ fn handle_menu_key(
                 edit_settings_row(st, direction);
                 return false;
             }
-            KeyCode::Backspace if !header_focused && !menu_state.settings_search_query.is_empty() => {
+            // Search: backspace trims the filter.
+            KeyCode::Backspace
+                if !header_focused
+                    && !body_focused
+                    && !menu_state.settings_search_query.is_empty() =>
+            {
                 menu_state.settings_search_query.pop();
                 menu_state.cursor = 0;
                 return false;
             }
-            KeyCode::Char(' ') if !header_focused && menu_state.settings_search_query.is_empty() => {
-
-                edit_settings_row(st, 1);
-                return false;
-            }
+            // Search: any printable char appends to the filter.
             KeyCode::Char(c)
                 if !header_focused
+                    && !body_focused
                     && !k.modifiers.contains(KeyModifiers::CONTROL)
                     && !k.modifiers.contains(KeyModifiers::ALT)
                     && (c.is_alphanumeric() || c == ' ' || c == '-' || c == '_') =>
@@ -936,13 +948,87 @@ fn handle_menu_key(
                 menu_state.cursor = 0;
                 return false;
             }
-            KeyCode::Up if !header_focused && menu_state.cursor == 0 => {
+            // Body: space toggles the focused bool row (legacy affordance).
+            KeyCode::Char(' ') if body_focused => {
+                edit_settings_row(st, 1);
+                return false;
+            }
+            // Search → tabs.
+            KeyCode::Up if !header_focused && !body_focused => {
                 menu_state.settings_header_focused = Some(true);
                 return false;
             }
+            // Body → search when pressing Up at the first visible row.
+            KeyCode::Up if body_focused => {
+                let lc_query = menu_state.settings_search_query.to_lowercase();
+                let first_visible_idx = menu_state
+                    .options
+                    .iter()
+                    .enumerate()
+                    .find(|(_, o)| {
+                        !o.label.is_empty()
+                            && o.action_id != "__line__"
+                            && (lc_query.is_empty()
+                                || o.label.to_lowercase().contains(&lc_query))
+                    })
+                    .map(|(i, _)| i);
+                if first_visible_idx == Some(menu_state.cursor) {
+                    menu_state.settings_body_focused = false;
+                    return false;
+                }
+                menu_state.move_up();
+                return false;
+            }
+            // Tabs → search.
             KeyCode::Down if header_focused => {
                 menu_state.settings_header_focused = Some(false);
+                menu_state.settings_body_focused = false;
                 menu_state.cursor = 0;
+                return false;
+            }
+            // Search → body (Enter or Down): snap cursor to first visible row.
+            KeyCode::Down | KeyCode::Enter if !header_focused && !body_focused => {
+                let lc_query = menu_state.settings_search_query.to_lowercase();
+                let first_visible = menu_state
+                    .options
+                    .iter()
+                    .enumerate()
+                    .find(|(_, o)| {
+                        !o.label.is_empty()
+                            && o.action_id != "__line__"
+                            && (lc_query.is_empty()
+                                || o.label.to_lowercase().contains(&lc_query))
+                    })
+                    .map(|(i, _)| i);
+                if let Some(idx) = first_visible {
+                    menu_state.cursor = idx;
+                    menu_state.settings_body_focused = true;
+                }
+                return false;
+            }
+            // Body: Down skips hidden rows.
+            KeyCode::Down if body_focused => {
+                let lc_query = menu_state.settings_search_query.to_lowercase();
+                let n = menu_state.options.len();
+                for _ in 0..n {
+                    menu_state.move_down();
+                    let visible = menu_state
+                        .options
+                        .get(menu_state.cursor)
+                        .map(|o| {
+                            lc_query.is_empty()
+                                || o.label.to_lowercase().contains(&lc_query)
+                        })
+                        .unwrap_or(false);
+                    if visible {
+                        break;
+                    }
+                }
+                return false;
+            }
+            // Body: Enter commits the focused row's edit (cycle like `→`).
+            KeyCode::Enter if body_focused => {
+                edit_settings_row(st, 1);
                 return false;
             }
             _ => {}
