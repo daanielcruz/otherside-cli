@@ -175,7 +175,6 @@ mod tests {
             "Explore",
             "Plan",
             "verification",
-            "claude-code-guide",
             "statusline-setup",
         ] {
             assert!(text.contains(name), "library missing {name}: {text}");

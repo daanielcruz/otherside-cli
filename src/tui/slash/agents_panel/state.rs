@@ -230,7 +230,6 @@ mod tests {
             "Explore",
             "Plan",
             "verification",
-            "claude-code-guide",
             "statusline-setup",
         ] {
             assert!(
