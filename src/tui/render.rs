@@ -763,11 +763,7 @@ fn build_info_chip_line(state: &ConversationState) -> Line<'static> {
         (has_chip as usize) + (has_task_pill as usize);
     let show_cycle_hint = primary_item_count < 2;
 
-    let has_backgroundable = !crate::tasks::is_disabled()
-        && state.tasks.any_running_foreground();
-    let hint = if has_backgroundable {
-        "ctrl+b to background"
-    } else if state.autocomplete.is_some() {
+    let hint = if state.autocomplete.is_some() {
         "enter run · esc close"
     } else {
         ""

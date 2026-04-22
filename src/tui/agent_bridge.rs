@@ -309,12 +309,27 @@ async fn dispatch_agent_cancellable(
                 .await;
         });
         background_signal::unregister(tool_call_id);
+        let subagent_type = args
+            .get("subagent_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("general-purpose");
+        let description = args
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let upstream_text = format!(
+            "Async agent launched successfully.\nagentId: {id} (internal ID - do not mention to user. The agent is working in the background. You will be notified automatically when it completes.)\n\nDo not call TaskOutput or any other tool to check status — wait for the completion notification.",
+            id = tool_call_id,
+        );
         Ok(serde_json::json!({
             "status": "backgrounded",
+            "task_id": tool_call_id,
             "tool_use_id": tool_call_id,
+            "subagent_type": subagent_type,
+            "description": description,
             "content": [{
                 "type": "text",
-                "text": "Task running in background — will notify on completion."
+                "text": upstream_text,
             }],
         }))
     } else {
