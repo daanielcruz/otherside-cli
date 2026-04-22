@@ -727,6 +727,16 @@ impl ConversationState {
         if backgroundable_kind(&tool_name).is_some() {
             let task_id = crate::tasks::TaskId::from_string(id.to_string());
             self.tasks.update_with(&task_id, |r| {
+                // When the task was already backgrounded (Ctrl+B fired
+                // earlier in the same turn), the synthetic "backgrounded"
+                // tool_result is NOT a real completion — the subagent is
+                // still running. Leave state=Backgrounded so the footer
+                // pill keeps counting the task. The real completion lands
+                // later via StreamEvent::BackgroundAgentCompleted, which
+                // flips to Completed + sets inject_on_next_turn.
+                if r.is_backgrounded {
+                    return;
+                }
                 match &result {
                     Ok(_) => {
                         r.state = crate::tasks::TaskState::Completed;
@@ -736,10 +746,6 @@ impl ConversationState {
                         r.state = crate::tasks::TaskState::Failed;
                         r.exit_code = Some(1);
                     }
-                }
-
-                if r.is_backgrounded {
-                    r.inject_on_next_turn = true;
                 }
             });
         }
@@ -1776,6 +1782,42 @@ mod tests {
             ToolPayload::Preview(s) => assert!(s.contains("permission denied")),
             other => panic!("expected Preview, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn finish_tool_call_does_not_complete_backgrounded_agent() {
+        // Regression for D.2: Ctrl+B on an Agent tool call races with the
+        // synthetic "backgrounded" tool_result flowing back from
+        // dispatch_agent_cancellable. finish_tool_call must NOT flip the
+        // record to Completed — the real completion comes later via
+        // StreamEvent::BackgroundAgentCompleted. Pre-fix, the pill dropped
+        // the record immediately after Ctrl+B because state went terminal.
+        let mut st = ConversationState::new();
+        st.begin_tool_call(
+            "tc-agent".into(),
+            "Agent".into(),
+            serde_json::json!({"subagent_type": "general-purpose"}),
+        );
+        // Simulate Ctrl+B flipping the record to Backgrounded.
+        let _ = st.tasks.background_all_running_foreground();
+        // Tool result streams back after the cancellation synth response.
+        st.finish_tool_call(
+            "tc-agent",
+            Ok(serde_json::json!({"status": "backgrounded"})),
+            5,
+        );
+        let task_id = crate::tasks::TaskId::from_string("tc-agent".to_string());
+        let record = st.tasks.get(&task_id).expect("record present");
+        assert_eq!(
+            record.state,
+            crate::tasks::TaskState::Backgrounded,
+            "state must stay Backgrounded until real completion lands"
+        );
+        assert!(record.is_backgrounded);
+        assert!(
+            !record.state.is_terminal(),
+            "terminal state drops the record from the footer pill"
+        );
     }
 
     #[test]

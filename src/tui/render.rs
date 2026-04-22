@@ -755,7 +755,11 @@ fn build_info_chip_line(state: &ConversationState) -> Line<'static> {
     let task_pill = if crate::tasks::is_disabled() {
         None
     } else {
-        crate::tasks::pill_label::get_pill_label(state.tasks.counts_active())
+        // Pill tracks BACKGROUNDED tasks only — not foreground-running.
+        // Upstream shows `N local agent(s)` after the user Ctrl+B's; during
+        // a foreground tool turn the spinner + inline tool view are the
+        // feedback path, not the statusline pill.
+        crate::tasks::pill_label::get_pill_label(state.tasks.counts_backgrounded())
     };
     let has_task_pill = task_pill.is_some();
 

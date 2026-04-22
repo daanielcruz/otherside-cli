@@ -122,6 +122,27 @@ impl TaskStore {
         c
     }
 
+    /// Count only records that are currently backgrounded (Ctrl+B flipped
+    /// `is_backgrounded` true and the record hasn't reached a terminal
+    /// state). Foreground running tasks are excluded — upstream's pill
+    /// `N local agent(s)` only appears once the user explicitly
+    /// backgrounds, never while a turn is actively streaming its tool.
+    pub fn counts_backgrounded(&self) -> TaskCounts {
+        let map = self.inner.read().expect("task store rwlock poisoned");
+        let mut c = TaskCounts::default();
+        for r in map.values() {
+            if !r.is_backgrounded || r.state.is_terminal() {
+                continue;
+            }
+            match r.kind {
+                TaskKind::Shell => c.shells += 1,
+                TaskKind::Agent => c.agents += 1,
+                TaskKind::Generic => c.generic += 1,
+            }
+        }
+        c
+    }
+
     pub fn update_with<F: FnOnce(&mut TaskRecord)>(&self, id: &TaskId, f: F) -> bool {
         let mut map = self.inner.write().expect("task store rwlock poisoned");
         match map.get_mut(id) {
@@ -245,6 +266,55 @@ mod tests {
         assert_eq!(c.generic, 0);
         assert_eq!(c.total(), 3);
         assert!(c.is_mixed());
+    }
+
+    #[test]
+    fn counts_backgrounded_ignores_foreground_running_agent() {
+        // Regression for D.1: a foreground-running Agent must NOT feed
+        // the footer pill. Only records the user explicitly backgrounded
+        // count toward `N local agent(s)`.
+        let s = TaskStore::new();
+        s.insert({
+            let mut r = agent("fg-running");
+            r.is_backgrounded = false;
+            r.state = TaskState::Running;
+            r
+        });
+        assert_eq!(s.counts_backgrounded().agents, 0);
+        assert_eq!(s.counts_active().agents, 1, "foreground still counts as active");
+    }
+
+    #[test]
+    fn counts_backgrounded_counts_flipped_agent_until_terminal() {
+        // Regression for D.2: after Ctrl+B flips a running Agent to
+        // Backgrounded, the pill must keep the record until the real
+        // completion lands (state becomes terminal).
+        let s = TaskStore::new();
+        s.insert({
+            let mut r = agent("just-backgrounded");
+            r.is_backgrounded = true;
+            r.state = TaskState::Backgrounded;
+            r
+        });
+        assert_eq!(s.counts_backgrounded().agents, 1);
+
+        // When the real completion arrives and flips to Completed, the
+        // pill must drop back to zero — otherwise ghost entries pile up.
+        let id = s.counts_backgrounded();
+        assert_eq!(id.agents, 1);
+        let records: Vec<_> = s
+            .inner
+            .read()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        for id in records {
+            s.update_with(&id, |r| {
+                r.state = TaskState::Completed;
+            });
+        }
+        assert_eq!(s.counts_backgrounded().agents, 0);
     }
 
     #[test]
