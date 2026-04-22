@@ -5,7 +5,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crossterm::event::{
-    DisableMouseCapture, Event as CtEvent, EventStream, KeyCode, KeyEvent,
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste,
+    EnableMouseCapture, Event as CtEvent, EventStream, KeyCode, KeyEvent,
     KeyEventKind, KeyModifiers,
 };
 use crossterm::execute;
@@ -1851,8 +1852,19 @@ impl TerminalGuard {
         enable_raw_mode().map_err(|e| Error::Tui(format!("raw mode: {e}")))?;
         let mut out = io::stdout();
 
-        execute!(out, EnterAlternateScreen)
-            .map_err(|e| Error::Tui(format!("enter altscreen: {e}")))?;
+        // Enable mouse capture + bracketed paste so the terminal sends
+        // structured CtEvent::Mouse / CtEvent::Paste events instead of
+        // raw escape sequences that crossterm can misread as a burst of
+        // Key events — bug T (clicking in chat fired several duplicate
+        // messages). Both events fall through to the `Some(Ok(_))`
+        // catch-all in the event loop, which drops them silently.
+        execute!(
+            out,
+            EnterAlternateScreen,
+            EnableMouseCapture,
+            EnableBracketedPaste
+        )
+        .map_err(|e| Error::Tui(format!("enter altscreen: {e}")))?;
         let backend = CrosstermBackend::new(out);
         let terminal = Terminal::new(backend)
             .map_err(|e| Error::Tui(format!("terminal init: {e}")))?;
@@ -1871,8 +1883,9 @@ impl TerminalGuard {
         let _ = disable_raw_mode();
         let _ = execute!(
             self.terminal.backend_mut(),
+            DisableBracketedPaste,
+            DisableMouseCapture,
             LeaveAlternateScreen,
-            DisableMouseCapture
         );
         let _ = self.terminal.show_cursor();
     }
