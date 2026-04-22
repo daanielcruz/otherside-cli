@@ -55,6 +55,8 @@ const READER_SRC: &str = include_str!("../../../agents_corpus/reader.md");
 const EXPLORE_SRC: &str = include_str!("../../../agents_corpus/explore.md");
 const PLAN_SRC: &str = include_str!("../../../agents_corpus/plan.md");
 const VERIFICATION_SRC: &str = include_str!("../../../agents_corpus/verification.md");
+const CLAUDE_CODE_GUIDE_SRC: &str = include_str!("../../../agents_corpus/claude-code-guide.md");
+const STATUSLINE_SETUP_SRC: &str = include_str!("../../../agents_corpus/statusline-setup.md");
 
 fn bundled() -> &'static [AgentDefinition] {
     static CELL: OnceLock<Vec<AgentDefinition>> = OnceLock::new();
@@ -65,6 +67,8 @@ fn bundled() -> &'static [AgentDefinition] {
             parse_bundled("explore.md", EXPLORE_SRC),
             parse_bundled("plan.md", PLAN_SRC),
             parse_bundled("verification.md", VERIFICATION_SRC),
+            parse_bundled("claude-code-guide.md", CLAUDE_CODE_GUIDE_SRC),
+            parse_bundled("statusline-setup.md", STATUSLINE_SETUP_SRC),
         ]
     })
     .as_slice()
@@ -103,6 +107,8 @@ mod tests {
         assert!(names.contains(&"Explore"));
         assert!(names.contains(&"Plan"));
         assert!(names.contains(&"verification"));
+        assert!(names.contains(&"claude-code-guide"));
+        assert!(names.contains(&"statusline-setup"));
     }
 
     #[test]

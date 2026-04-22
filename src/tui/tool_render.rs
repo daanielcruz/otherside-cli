@@ -105,17 +105,7 @@ pub struct ToolCallView<'a> {
 pub fn render_tool_call(view: &ToolCallView<'_>) -> Vec<Line<'static>> {
     let mut out: Vec<Line<'static>> = Vec::new();
 
-    let displayed_name: String = if view.name == "Agent" {
-        view.args
-            .as_object()
-            .and_then(|o| o.get("subagent_type"))
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
-            .unwrap_or_else(|| view.name.to_string())
-    } else {
-        view.name.to_string()
-    };
+    let displayed_name: String = view.name.to_string();
     let arg_summary = summarize_args(view.name, view.args, view.verbose);
     let parens = if arg_summary.is_empty() {
         String::new()
@@ -796,7 +786,7 @@ fn agent_preview(result: &Value) -> Option<ToolPayload> {
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
         return Some(ToolPayload::Preview(format!(
-            "Done ({} tool use{} · {} tokens · {})",
+            "Done ({} tool use{} · {} tokens · {})\n(ctrl+o to expand)",
             tool_uses,
             if tool_uses == 1 { "" } else { "s" },
             format_number_thousands(tokens),
@@ -806,7 +796,7 @@ fn agent_preview(result: &Value) -> Option<ToolPayload> {
 
     if status == "backgrounded" {
         return Some(ToolPayload::Preview(
-            "Backgrounded agent (↓ to manage · ctrl+o to expand)".to_string(),
+            "Background agent launched. Wait for notification.".to_string(),
         ));
     }
 

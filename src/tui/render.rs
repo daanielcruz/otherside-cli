@@ -335,6 +335,11 @@ fn render_message(role: OpenAiChatRole, content: &str, width: u16) -> Vec<Line<'
                             .fg(theme::MUTED)
                             .add_modifier(Modifier::ITALIC),
                     )));
+                } else if raw.starts_with("⏺ ") && i == 0 {
+                    lines.push(Line::from(Span::styled(
+                        raw.to_string(),
+                        Style::default().fg(theme::TEXT),
+                    )));
                 } else {
                     let prefix = if i == 0 { "⎿ system: " } else { "           " };
                     lines.push(Line::from(vec![

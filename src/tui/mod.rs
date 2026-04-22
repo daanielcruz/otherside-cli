@@ -1124,7 +1124,7 @@ fn render_completion_line(r: &crate::tasks::TaskRecord) -> String {
         .filter(|_| matches!(r.kind, crate::tasks::TaskKind::Shell))
         .map(|c| format!(" (exit code {c})"))
         .unwrap_or_default();
-    format!("{kind_label} \"{}\" {status_phrase}{exit_suffix}", r.name)
+    format!("⏺ {kind_label} \"{}\" {status_phrase}{exit_suffix}", r.name)
 }
 
 fn drain_pending_inputs(

@@ -281,6 +281,10 @@ pub struct LoopResult {
     pub hit_turn_limit: bool,
 
     pub aborted: bool,
+
+    pub total_input_tokens: u64,
+
+    pub total_output_tokens: u64,
 }
 
 impl<D: ToolDispatcher, O: LoopObserver> AgentLoop<D, O> {
@@ -298,6 +302,8 @@ impl<D: ToolDispatcher, O: LoopObserver> AgentLoop<D, O> {
 
         let mut history = initial;
         let mut turns = 0u32;
+        let mut total_input_tokens: u64 = 0;
+        let mut total_output_tokens: u64 = 0;
 
         while turns < self.max_turns {
             turns += 1;
@@ -326,6 +332,10 @@ impl<D: ToolDispatcher, O: LoopObserver> AgentLoop<D, O> {
                     Ok(chunk) => {
                         let emitted = turn.fold_chunk(chunk);
                         if let Some(usage) = turn.take_usage() {
+                            total_input_tokens =
+                                total_input_tokens.saturating_add(usage.input_tokens.unwrap_or(0));
+                            total_output_tokens = total_output_tokens
+                                .saturating_add(usage.output_tokens.unwrap_or(0));
                             if self
                                 .observer
                                 .on_usage(usage.input_tokens, usage.output_tokens)
@@ -337,6 +347,8 @@ impl<D: ToolDispatcher, O: LoopObserver> AgentLoop<D, O> {
                                     turns,
                                     hit_turn_limit: false,
                                     aborted: true,
+                                    total_input_tokens,
+                                    total_output_tokens,
                                 });
                             }
                         }
@@ -349,6 +361,8 @@ impl<D: ToolDispatcher, O: LoopObserver> AgentLoop<D, O> {
                                     turns,
                                     hit_turn_limit: false,
                                     aborted: true,
+                                    total_input_tokens,
+                                    total_output_tokens,
                                 });
                             }
                         }
@@ -385,6 +399,8 @@ impl<D: ToolDispatcher, O: LoopObserver> AgentLoop<D, O> {
                             turns,
                             hit_turn_limit: false,
                             aborted: true,
+                            total_input_tokens,
+                            total_output_tokens,
                         });
                     }
                     let dispatch_outcome = self
@@ -420,6 +436,8 @@ impl<D: ToolDispatcher, O: LoopObserver> AgentLoop<D, O> {
                             turns,
                             hit_turn_limit: false,
                             aborted: true,
+                            total_input_tokens,
+                            total_output_tokens,
                         });
                     }
                     history.push(tool_result_message(&call.id, &history_value));
@@ -441,6 +459,8 @@ impl<D: ToolDispatcher, O: LoopObserver> AgentLoop<D, O> {
                 turns,
                 hit_turn_limit: false,
                 aborted: false,
+                total_input_tokens,
+                total_output_tokens,
             });
         }
 
@@ -450,6 +470,8 @@ impl<D: ToolDispatcher, O: LoopObserver> AgentLoop<D, O> {
             turns,
             hit_turn_limit: true,
             aborted: false,
+            total_input_tokens,
+            total_output_tokens,
         })
     }
 }

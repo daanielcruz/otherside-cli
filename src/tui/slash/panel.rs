@@ -39,7 +39,7 @@ pub fn handle(kind: PanelKind, state: &mut ConversationState) -> SlashOutcome {
             PanelKind::Agents,
             "Subagents".into(),
             vec![
-                "Subagents live at otherside-cli/agents/.".into(),
+                "Subagents live at otherside-cli/agents_corpus/.".into(),
                 "Invoke via the Agent tool with `subagent_type`.".into(),
             ],
         ),

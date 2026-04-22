@@ -104,6 +104,9 @@ impl InnerLoopRunner {
             .filter(|m| m.role == OpenAiChatRole::Assistant)
             .map(|m| m.tool_calls.len() as u64)
             .sum();
+        let total_tokens = loop_result
+            .total_input_tokens
+            .saturating_add(loop_result.total_output_tokens);
         let status = if loop_result.hit_turn_limit {
             "budget_exceeded"
         } else {
@@ -115,7 +118,7 @@ impl InnerLoopRunner {
             "agentType": definition.name,
             "content": [{"type": "text", "text": assistant_text}],
             "totalToolUseCount": total_tool_uses,
-            "totalTokens": 0,
+            "totalTokens": total_tokens,
             "totalDurationMs": duration_ms,
             "depth": depth,
             "model": model,
@@ -126,8 +129,8 @@ impl InnerLoopRunner {
                 "isolation_requested": invocation.isolation,
             },
             "usage": {
-                "input_tokens": 0,
-                "output_tokens": 0,
+                "input_tokens": loop_result.total_input_tokens,
+                "output_tokens": loop_result.total_output_tokens,
             },
         }))
     }

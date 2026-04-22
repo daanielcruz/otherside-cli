@@ -739,8 +739,20 @@ impl ConversationState {
         let count = drained.len();
         for record in drained {
             let output_path = format!("~/.otherside/tasks/{}.log", record.id.as_str());
+            let joined: String = record
+                .output
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n");
+            let final_result = if joined.trim().is_empty() {
+                None
+            } else {
+                Some(joined)
+            };
             let extras = crate::harness::task_notification::NotificationExtras {
                 tool_use_id: record.tool_use_id.as_deref(),
+                final_result: final_result.as_deref(),
                 ..Default::default()
             };
             let xml = crate::harness::task_notification::render(
