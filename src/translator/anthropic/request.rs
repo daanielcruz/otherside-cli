@@ -81,6 +81,19 @@ pub fn build_request_body(
     req: &OpenAiChatRequest,
     ctx: &UserContext<'_>,
 ) -> Result<Vec<u8>> {
+    build_request_body_with_flavor(req, ctx, super::system::SystemFlavor::ClaudeCode)
+}
+
+/// Same as `build_request_body` but lets the provider pick which system
+/// flavor to emit. Third-party Anthropic-compat endpoints (Kimi) pass
+/// `ThirdParty` to skip the billing header + `You are Claude Code…`
+/// opener — both are claude-code-exclusive. The agent preamble + main
+/// system prompt still flow so every operational instruction lands.
+pub fn build_request_body_with_flavor(
+    req: &OpenAiChatRequest,
+    ctx: &UserContext<'_>,
+    flavor: super::system::SystemFlavor,
+) -> Result<Vec<u8>> {
     if !req
         .messages
         .iter()
@@ -96,7 +109,7 @@ pub fn build_request_body(
         .as_object()
         .expect("envelope defaults parse as object");
 
-    let mut system_blocks = super::system::build_system_blocks();
+    let mut system_blocks = super::system::build_system_blocks_for(flavor);
     substitute_environment_in_system(&mut system_blocks, ctx);
 
     let tools = super::tools::build_tools_array();

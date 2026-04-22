@@ -18,7 +18,8 @@ use crate::fingerprint::kimi as fp;
 use crate::inference::{OpenAiChatRequest, OpenAiChunk};
 use crate::thinking::ThinkingConfig;
 use crate::translator::anthropic::response::AnthropicStreamTranslator;
-use crate::translator::anthropic::{build_request_body, strip_1m_suffix, UserContext};
+use crate::translator::anthropic::system::SystemFlavor;
+use crate::translator::anthropic::{build_request_body_with_flavor, strip_1m_suffix, UserContext};
 use crate::translator::sse::SseBuffer;
 
 use super::{ChunkStream, Provider};
@@ -72,7 +73,12 @@ impl Provider for KimiProvider {
                 memory_dir: &env.memory_dir,
                 git_status: &env.git_status,
             };
-            let body = build_request_body(&req, &ctx)?;
+            // Kimi speaks native Anthropic Messages API but is not claude-code.
+            // Skip the billing header + `You are Claude Code…` opener (both
+            // exclusive to Anthropic's first-party SaaS routing). Agent preamble
+            // + main system prompt still flow so every operational instruction
+            // lands upstream-identical.
+            let body = build_request_body_with_flavor(&req, &ctx, SystemFlavor::ThirdParty)?;
 
             let headers = build_inference_headers(&api_key)?;
 

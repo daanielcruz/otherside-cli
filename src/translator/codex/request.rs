@@ -60,6 +60,19 @@ fn web_search_server_tool(_schema: &Value) -> Value {
 pub const DEFAULT_INSTRUCTIONS: &str =
     "You are Codex, a coding agent based on GPT-5. You and the user share the same workspace and collaborate to achieve the user's goals.";
 
+/// Concatenation of the claude-code agent preamble + main system prompt.
+/// Codex speaks OpenAI /responses which folds the "system" role into a
+/// single `instructions` string. To keep operational parity (tools, slash
+/// commands, memory system, permission semantics all come from these two
+/// blocks), we prepend them to any caller-supplied System message. The
+/// claude-code-exclusive blocks (billing header + `You are Claude Code…`
+/// opener) are NOT included — Codex has its own identity + routing.
+fn claude_harness_instructions() -> String {
+    let preamble = crate::harness::SYSTEM_AGENT_PREAMBLE.trim_end();
+    let main = crate::harness::SYSTEM_PROMPT.trim_end();
+    format!("{preamble}\n\n{main}")
+}
+
 pub fn build_responses_body(
     req: &OpenAiChatRequest,
     tools_json: Vec<Value>,
@@ -67,8 +80,19 @@ pub fn build_responses_body(
 ) -> Value {
     let mut body = Map::new();
     body.insert("model".into(), Value::String(req.model.clone()));
-    let instructions = extract_instructions(&req.messages)
-        .unwrap_or_else(|| DEFAULT_INSTRUCTIONS.to_string());
+    // Always lead with the claude-code harness preamble + main prompt so
+    // Codex gets the same tool discipline, memory rules, and operational
+    // context as Anthropic. Caller-supplied System message (e.g. subagent
+    // definition.system_prompt) is appended after. Empty-fallback is the
+    // codex-personality header so /responses never rejects on
+    // {"detail":"Instructions are required"}.
+    let harness = claude_harness_instructions();
+    let extra = extract_instructions(&req.messages);
+    let instructions = match extra {
+        Some(s) if !s.is_empty() => format!("{harness}\n\n{s}"),
+        _ if !harness.is_empty() => harness,
+        _ => DEFAULT_INSTRUCTIONS.to_string(),
+    };
     body.insert("instructions".into(), Value::String(instructions));
     body.insert("input".into(), Value::Array(messages_to_input(&req.messages)));
     if !tools_json.is_empty() {
@@ -180,14 +204,35 @@ mod tests {
     }
 
     #[test]
-    fn body_lifts_system_to_instructions() {
+    fn body_appends_system_message_after_harness_instructions() {
         let req = OpenAiChatRequest {
             model: "gpt-5-codex".into(),
             messages: vec![system("you are a helper"), user("hi")],
             ..Default::default()
         };
         let body = build_responses_body(&req, vec![], None);
-        assert_eq!(body["instructions"], "you are a helper");
+        let instr = body["instructions"].as_str().expect("instructions present");
+        // Harness preamble + main system prompt MUST ride on codex too —
+        // they carry the tool discipline, slash rules, memory system.
+        // Claude-code-exclusive blocks (billing header, "You are Claude
+        // Code…" opener) MUST NOT.
+        assert!(
+            !instr.contains("x-anthropic-billing-header:"),
+            "billing header leaked to codex: {instr}"
+        );
+        assert!(
+            !instr.contains("You are Claude Code,"),
+            "claude-code opener leaked to codex: {instr}"
+        );
+        assert!(
+            instr.ends_with("you are a helper"),
+            "caller system must be appended after harness: tail={:?}",
+            &instr[instr.len().saturating_sub(40)..]
+        );
+        assert!(
+            instr.len() > 15_000,
+            "main system prompt (~16KB) must flow"
+        );
         let input = body["input"].as_array().unwrap();
         assert_eq!(input.len(), 1);
         assert_eq!(input[0]["type"], "message");
@@ -197,7 +242,7 @@ mod tests {
     }
 
     #[test]
-    fn body_injects_default_instructions_when_no_system_message() {
+    fn body_still_carries_harness_when_no_system_message() {
         let req = OpenAiChatRequest {
             model: "gpt-5.4".into(),
             messages: vec![user("hi")],
@@ -206,7 +251,22 @@ mod tests {
         let body = build_responses_body(&req, vec![], None);
         let instr = body["instructions"].as_str().expect("instructions present");
         assert!(!instr.is_empty(), "upstream /responses rejects empty instructions");
-        assert_eq!(instr, DEFAULT_INSTRUCTIONS);
+        // No explicit System message but harness preamble + main prompt
+        // still flow so the main-agent path sees the same operational
+        // context as anthropic. Falls back to DEFAULT_INSTRUCTIONS only
+        // if the harness consts ever go empty at build time.
+        assert!(
+            !instr.contains("x-anthropic-billing-header:"),
+            "billing header leaked when no system message: {instr}"
+        );
+        assert!(
+            !instr.contains("You are Claude Code,"),
+            "claude-code opener leaked when no system message: {instr}"
+        );
+        assert!(
+            instr.len() > 15_000,
+            "main system prompt (~16KB) must flow by default"
+        );
     }
 
     #[test]
