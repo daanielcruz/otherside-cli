@@ -717,6 +717,12 @@ fn build_token_right_chip(state: &ConversationState, total: u64) -> String {
 }
 
 fn build_info_chip_line(state: &ConversationState) -> Line<'static> {
+    if let Some(key) = state.exit_armed_key {
+        return Line::from(Span::styled(
+            format!("Press {key} again to exit"),
+            Style::default().fg(theme::MUTED),
+        ));
+    }
     let chip_opt = state.permission_mode_label();
     let has_chip = chip_opt.is_some();
 
