@@ -95,11 +95,6 @@ pub const CATALOG: &[SlashEntry] = &[
         brief: "wipe history, re-splash mascot",
         kind: SlashKind::Instant,
     },
-    SlashEntry {
-        name: "provider",
-        brief: "switch the active provider (e.g. /provider kimi)",
-        kind: SlashKind::Instant,
-    },
 
     SlashEntry {
         name: "plan",
@@ -419,7 +414,7 @@ mod tests {
 
         assert_eq!(
             CATALOG.len(),
-            34,
+            33,
             "CATALOG must be a strict subset of docs/slashes.md"
         );
     }
@@ -443,6 +438,7 @@ mod tests {
             "checkpoint",
             "bughunter",
             "files",
+            "provider",
         ];
         for cut in cuts {
             assert!(
@@ -460,7 +456,6 @@ mod tests {
 
             ("exit", SlashKind::Instant),
             ("clear", SlashKind::Instant),
-            ("provider", SlashKind::Instant),
 
             ("plan", SlashKind::Toggle),
             ("copy", SlashKind::Toggle),
