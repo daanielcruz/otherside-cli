@@ -2,6 +2,7 @@
 
 pub mod claude_code;
 pub mod codex;
+pub mod kimi;
 
 pub use claude_code::TOOL_WEB_SEARCH_JSON;
 
@@ -14,7 +15,8 @@ pub fn dispatch(args: &Value, provider: ProviderId) -> Result<Value, ToolError> 
     match provider {
         ProviderId::ClaudeCode => claude_code::web_search(args),
         ProviderId::Codex => codex::web_search(args),
-        ProviderId::GeminiCli | ProviderId::Kimi | ProviderId::OpenAiCustom => {
+        ProviderId::Kimi => kimi::web_search(args),
+        ProviderId::GeminiCli | ProviderId::OpenAiCustom => {
             Err(ToolError::Unsupported(format!(
                 "WebSearch backend for provider `{}` is not wired yet",
                 provider.slug()
