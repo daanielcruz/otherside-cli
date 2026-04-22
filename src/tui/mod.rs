@@ -894,7 +894,7 @@ fn emit_panel_dismiss_anchor(
 
         PanelKind::Resume => ("resume", "Resume cancelled".to_string()),
 
-        PanelKind::Tasks => ("tasks", "Tasks dialog dismissed".to_string()),
+        PanelKind::Tasks => ("tasks", "Background tasks dialog dismissed".to_string()),
     };
 
     st.push_anchor(slash, "", text, DisplayOrigin::Chrome);
@@ -1405,6 +1405,19 @@ mod panel_anchor_tests {
         emit_panel_dismiss_anchor(&mut st, &menu, Some(&outcome));
         let (_, anchor) = anchor_lines(&st);
         assert_eq!(anchor, "⎿  Set model to Sonnet 4.6");
+    }
+
+    #[test]
+    fn tasks_dismiss_matches_upstream_background_tasks_wording() {
+        let mut st = ConversationState::default();
+        let menu = OverlayMenu::new_info(PanelKind::Tasks, "Tasks".into(), vec![]);
+        emit_panel_dismiss_anchor(&mut st, &menu, None);
+        let (echo, anchor) = anchor_lines(&st);
+        assert_eq!(echo, "/tasks");
+        assert_eq!(
+            anchor, "⎿  Background tasks dialog dismissed",
+            "upstream hardcodes 'Background tasks dialog dismissed' at components/tasks/BackgroundTasksDialog.tsx:268"
+        );
     }
 
     #[test]
