@@ -1,5 +1,7 @@
 
 
+use std::hash::{DefaultHasher, Hash, Hasher};
+
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use serde_json::Value;
@@ -15,6 +17,70 @@ const BULLET: &str = "●";
 const BULLET_HIDDEN: &str = " ";
 
 const BLINK_INTERVAL_TICKS: u64 = 12;
+
+const TURN_COMPLETION_VERBS: &[&str] = &[
+    "Baked", "Brewed", "Churned", "Cogitated", "Cooked", "Crunched", "Sautéed", "Worked",
+];
+
+fn pick_turn_completion_verb(args: &Value, elapsed_ms: u64) -> &'static str {
+    let mut h = DefaultHasher::new();
+    args.to_string().hash(&mut h);
+    elapsed_ms.hash(&mut h);
+    let idx = (h.finish() as usize) % TURN_COMPLETION_VERBS.len();
+    TURN_COMPLETION_VERBS[idx]
+}
+
+fn relativize_path(fp: &str) -> String {
+    if fp.is_empty() || fp.starts_with('~') {
+        return fp.to_string();
+    }
+    let Ok(cwd) = std::env::current_dir() else {
+        return fp.to_string();
+    };
+    let Some(cwd_str) = cwd.to_str() else {
+        return fp.to_string();
+    };
+    if let Some(rest) = fp.strip_prefix(cwd_str) {
+        let trimmed = rest.trim_start_matches('/');
+        if trimmed.is_empty() {
+            return ".".to_string();
+        }
+        return trimmed.to_string();
+    }
+    fp.to_string()
+}
+
+fn format_number_compact(n: u64) -> String {
+    if n < 1_000 {
+        return n.to_string();
+    }
+    const UNITS: &[(u64, &str)] = &[
+        (1_000_000_000_000, "t"),
+        (1_000_000_000, "b"),
+        (1_000_000, "m"),
+        (1_000, "k"),
+    ];
+    for (i, &(div, suffix)) in UNITS.iter().enumerate() {
+        if n >= div {
+            let scaled = n as f64 / div as f64;
+            let rounded = (scaled * 10.0).round() / 10.0;
+            if rounded >= 1000.0 && i > 0 {
+                let (pdiv, psuffix) = UNITS[i - 1];
+                let pscaled = n as f64 / pdiv as f64;
+                let prounded = (pscaled * 10.0).round() / 10.0;
+                if prounded.fract() == 0.0 {
+                    return format!("{}{}", prounded as u64, psuffix);
+                }
+                return format!("{:.1}{}", prounded, psuffix);
+            }
+            if rounded.fract() == 0.0 {
+                return format!("{}{}", rounded as u64, suffix);
+            }
+            return format!("{:.1}{}", rounded, suffix);
+        }
+    }
+    unreachable!()
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ToolStatus {
@@ -117,20 +183,6 @@ pub fn render_tool_call(view: &ToolCallView<'_>) -> Vec<Line<'static>> {
         format!("({arg_summary})")
     };
 
-    if view.name == "Agent" {
-        let subtype = view
-            .args
-            .as_object()
-            .and_then(|o| o.get("subagent_type"))
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-            .unwrap_or("subagent");
-        out.push(Line::from(Span::styled(
-            format!("⏺ Dispatching {subtype} subagent."),
-            Style::default().fg(theme::TEXT),
-        )));
-    }
-
     let bullet_glyph = if matches!(view.status, ToolStatus::Running)
         && (view.spinner_tick / BLINK_INTERVAL_TICKS) % 2 == 1
     {
@@ -230,8 +282,9 @@ pub fn render_tool_call(view: &ToolCallView<'_>) -> Vec<Line<'static>> {
 
     if view.name == "Agent" && matches!(view.status, ToolStatus::Ok) {
         if let Some(ms) = view.elapsed_ms {
+            let verb = pick_turn_completion_verb(view.args, ms);
             out.push(Line::from(Span::styled(
-                format!("✻ Worked for {}", format_duration_ms(ms)),
+                format!("✻ {verb} for {}", format_duration_ms(ms)),
                 Style::default()
                     .fg(theme::MUTED)
                     .add_modifier(Modifier::ITALIC),
@@ -278,7 +331,7 @@ pub fn summarize_args(name: &str, args: &Value, verbose: bool) -> String {
 
     if name == "Read" {
         if let Some(fp) = obj.get("file_path").and_then(|v| v.as_str()) {
-            let mut header = clip_flat(fp, 80);
+            let mut header = clip_flat(&relativize_path(fp), 80);
             if let Some(pages) = obj.get("pages").and_then(|v| v.as_str()) {
                 header.push_str(&format!(" · pages {}", clip_flat(pages, 20)));
             } else {
@@ -300,7 +353,7 @@ pub fn summarize_args(name: &str, args: &Value, verbose: bool) -> String {
 
     if name == "Edit" || name == "Write" {
         if let Some(fp) = obj.get("file_path").and_then(|v| v.as_str()) {
-            return clip_flat(fp, 80);
+            return clip_flat(&relativize_path(fp), 80);
         }
     }
 
@@ -500,7 +553,8 @@ fn format_byte_size(bytes: u64) -> String {
 
 fn edit_preview(result: &Value) -> Option<ToolPayload> {
     let obj = result.as_object()?;
-    let fp = obj.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
+    let raw_fp = obj.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
+    let fp = relativize_path(raw_fp);
     let replaced = obj.get("replaced").and_then(|v| v.as_u64());
     let text = match replaced {
         Some(n) => format!(
@@ -518,7 +572,8 @@ fn edit_preview(result: &Value) -> Option<ToolPayload> {
 
 fn write_preview(result: &Value) -> Option<ToolPayload> {
     let obj = result.as_object()?;
-    let fp = obj.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
+    let raw_fp = obj.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
+    let fp = relativize_path(raw_fp);
 
     let lines = obj
         .get("numLines")
@@ -533,14 +588,8 @@ fn write_preview(result: &Value) -> Option<ToolPayload> {
     let created = obj.get("created").and_then(|v| v.as_bool()).unwrap_or(false);
     let verb = if created { "Created" } else { "Wrote" };
     let text = match (lines, bytes, fp.is_empty()) {
-        (Some(n), _, false) => format!(
-            "{verb} {n} line{} to {fp}",
-            if n == 1 { "" } else { "s" }
-        ),
-        (Some(n), _, true) => format!(
-            "{verb} {n} line{}",
-            if n == 1 { "" } else { "s" }
-        ),
+        (Some(n), _, false) => format!("{verb} {n} lines to {fp}"),
+        (Some(n), _, true) => format!("{verb} {n} lines"),
         (None, Some(n), false) => format!(
             "{verb} {n} byte{} to {fp}",
             if n == 1 { "" } else { "s" }
@@ -826,14 +875,14 @@ fn agent_preview(result: &Value) -> Option<ToolPayload> {
             "Done ({} tool use{} · {} tokens · {})\n(ctrl+o to expand)",
             tool_uses,
             if tool_uses == 1 { "" } else { "s" },
-            format_number_thousands(tokens),
+            format_number_compact(tokens),
             format_duration_ms(duration_ms),
         )));
     }
 
     if status == "backgrounded" {
         return Some(ToolPayload::Preview(
-            "Background agent launched. Wait for notification.".to_string(),
+            "Backgrounded agent".to_string(),
         ));
     }
 
@@ -842,21 +891,6 @@ fn agent_preview(result: &Value) -> Option<ToolPayload> {
         .and_then(|v| v.as_str())
         .unwrap_or("agent dispatch returned no result");
     Some(ToolPayload::Preview(one_line_preview(reason, 240)))
-}
-
-fn format_number_thousands(n: u64) -> String {
-    let raw = n.to_string();
-    let bytes = raw.as_bytes();
-    let mut out = String::with_capacity(raw.len() + raw.len() / 3);
-    let mut count = 0;
-    for b in bytes.iter().rev() {
-        if count > 0 && count % 3 == 0 {
-            out.push(',');
-        }
-        out.push(*b as char);
-        count += 1;
-    }
-    out.chars().rev().collect()
 }
 
 fn format_duration_ms(ms: u64) -> String {
@@ -1602,7 +1636,104 @@ mod tests {
         let s = expect_preview(payload_from_result("Agent", &v, false).unwrap());
         assert!(s.starts_with("Done ("), "got: {s}");
         assert!(s.contains("5 tool uses"), "got: {s}");
-        assert!(s.contains("12,345 tokens"), "got: {s}");
+        assert!(s.contains("12.3k tokens"), "got: {s}");
         assert!(s.contains("2m 15s"), "got: {s}");
+    }
+
+    #[test]
+    fn format_number_compact_matches_upstream_compact_notation() {
+        assert_eq!(format_number_compact(0), "0");
+        assert_eq!(format_number_compact(900), "900");
+        assert_eq!(format_number_compact(999), "999");
+        assert_eq!(format_number_compact(1_000), "1k");
+        assert_eq!(format_number_compact(1_300), "1.3k");
+        assert_eq!(format_number_compact(10_000), "10k");
+        assert_eq!(format_number_compact(12_345), "12.3k");
+        assert_eq!(format_number_compact(42_500), "42.5k");
+        assert_eq!(format_number_compact(79_070), "79.1k");
+        assert_eq!(format_number_compact(1_000_000), "1m");
+        assert_eq!(format_number_compact(1_500_000), "1.5m");
+    }
+
+    #[test]
+    fn pick_turn_completion_verb_is_stable_per_input_and_from_pool() {
+        let args = serde_json::json!({"subagent_type":"general-purpose","description":"foo"});
+        let v1 = pick_turn_completion_verb(&args, 12_000);
+        let v2 = pick_turn_completion_verb(&args, 12_000);
+        assert_eq!(v1, v2);
+        assert!(TURN_COMPLETION_VERBS.contains(&v1));
+    }
+
+    #[test]
+    fn pick_turn_completion_verb_covers_pool_across_inputs() {
+        use std::collections::HashSet;
+        let mut seen: HashSet<&'static str> = HashSet::new();
+        for i in 0..64u64 {
+            let args = serde_json::json!({"subagent_type": format!("t{i}"), "description": format!("d{i}")});
+            seen.insert(pick_turn_completion_verb(&args, i * 100));
+        }
+        assert!(
+            seen.len() >= 4,
+            "verb pool coverage too low — only {} distinct verbs across 64 inputs",
+            seen.len()
+        );
+    }
+
+    #[test]
+    fn agent_backgrounded_preview_matches_upstream_string() {
+        let v = serde_json::json!({"status":"backgrounded"});
+        let s = expect_preview(payload_from_result("Agent", &v, false).unwrap());
+        assert_eq!(s, "Backgrounded agent");
+    }
+
+    #[test]
+    fn agent_tool_header_does_not_emit_dispatching_line() {
+        let args = serde_json::json!({"subagent_type":"general-purpose","description":"foo"});
+        let view = ToolCallView {
+            name: "Agent",
+            args: &args,
+            status: ToolStatus::Running,
+            elapsed_ms: None,
+            payload: None,
+            verbose: false,
+            spinner_tick: 0,
+            nested_lines: &[],
+        };
+        let text = collect_text(&render_tool_call(&view));
+        assert!(
+            !text.contains("Dispatching"),
+            "pre-dispatch line must not render (upstream 2.1.117 AgentTool/UI.tsx emits none): got {text:?}"
+        );
+    }
+
+    #[test]
+    fn relativize_path_strips_cwd_prefix_when_inside() {
+        let cwd = std::env::current_dir().expect("cwd");
+        let inside = cwd.join("child/file.md");
+        let rel = relativize_path(inside.to_str().unwrap());
+        assert_eq!(rel, "child/file.md");
+    }
+
+    #[test]
+    fn relativize_path_leaves_unrelated_absolute_paths_alone() {
+        let outside = "/etc/hosts";
+        assert_eq!(relativize_path(outside), "/etc/hosts");
+    }
+
+    #[test]
+    fn relativize_path_leaves_tilde_paths_alone() {
+        assert_eq!(relativize_path("~/x.md"), "~/x.md");
+    }
+
+    #[test]
+    fn write_preview_mirrors_upstream_plural_bug() {
+        let args = serde_json::json!({});
+        let v = serde_json::json!({"file_path":"stub.md","lines":1,"created":false});
+        let s = expect_preview(payload_from_result("Write", &v, false).unwrap());
+        let _ = args;
+        assert!(
+            s.contains("Wrote 1 lines"),
+            "must mirror upstream FileWriteTool/UI.tsx:79 plural bug: got {s:?}"
+        );
     }
 }

@@ -612,12 +612,9 @@ fn draw_statusline(
 
     let (line, _warn) = statusline::dispatch(&ctx, None);
     let stripped = strip_ansi(&line.content);
-    let provider_label = crate::config::providers::ProviderId::from_slug(provider_id)
-        .map(|p| p.label())
-        .unwrap_or(provider_id);
-    let composed = format!("{stripped} · {provider_label}");
+    let _ = provider_id;
     let para = Paragraph::new(Line::from(Span::styled(
-        composed,
+        stripped,
         Style::default().fg(theme::MUTED),
     )));
     f.render_widget(para, area);

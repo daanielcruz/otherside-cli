@@ -203,6 +203,9 @@ async fn event_loop(
 
                 if let Some(store) = crate::tasks::store::current_global() {
                     for record in store.drain_unrendered_completions() {
+                        if matches!(record.kind, crate::tasks::TaskKind::Agent) {
+                            continue;
+                        }
                         let line = render_completion_line(&record);
                         st.push_system_note(line);
                     }

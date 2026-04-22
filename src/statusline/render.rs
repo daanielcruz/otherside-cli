@@ -20,7 +20,7 @@ pub fn native(ctx: &StatuslineCtx) -> StatuslineLine {
     let pct = ctx.payload.context_window.used_percentage;
 
     let content =
-        format!("🤖 {display_name} · 📉 {avail_fmt} available · 🧠 {pct}% used");
+        format!("🤖 {display_name} | 📉 {avail_fmt} available | 🧠 {pct}% used");
     let truncated = truncate_to_width(&content, ctx.terminal_width);
     let width_cols = display_width(&truncated);
     StatuslineLine {
@@ -92,12 +92,12 @@ mod tests {
             line.content
         );
         assert!(
-            line.content.contains(" · 📉 "),
+            line.content.contains(" | 📉 "),
             "missing chart-decreasing segment: {}",
             line.content
         );
         assert!(
-            line.content.contains(" · 🧠 "),
+            line.content.contains(" | 🧠 "),
             "missing brain segment: {}",
             line.content
         );
