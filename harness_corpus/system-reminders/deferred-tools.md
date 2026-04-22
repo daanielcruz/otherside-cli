@@ -1,5 +1,4 @@
-<system-reminder>
-The following deferred tools are now available via ToolSearch. Their schemas are NOT loaded — calling them directly will fail with InputValidationError. Use ToolSearch with query "select:<name>[,<name>...]" to load tool schemas before calling them:
+<available-deferred-tools>
 AskUserQuestion
 CronCreate
 CronDelete
@@ -18,4 +17,4 @@ TaskStop
 TaskUpdate
 WebFetch
 WebSearch
-</system-reminder>
+</available-deferred-tools>

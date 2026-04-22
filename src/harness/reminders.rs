@@ -42,11 +42,12 @@ mod tests {
     }
 
     #[test]
-    fn deferred_tools_keeps_wrapper() {
+    fn deferred_tools_uses_available_deferred_tools_wrapper() {
         let blocks = build_preamble_blocks("e", "d");
         let text = blocks[0]["text"].as_str().unwrap();
-        assert!(text.starts_with("<system-reminder>"));
-        assert!(text.contains("</system-reminder>"));
+        assert!(text.starts_with("<available-deferred-tools>"));
+        assert!(text.contains("</available-deferred-tools>"));
+        assert!(!text.contains("<system-reminder>"));
     }
 
     #[test]
