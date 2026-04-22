@@ -35,14 +35,13 @@ pub fn handle(kind: PanelKind, state: &mut ConversationState) -> SlashOutcome {
                 "Use the Skill tool to load one mid-turn.".into(),
             ],
         ),
-        PanelKind::Agents => menu::OverlayMenu::new_info(
-            PanelKind::Agents,
-            "Subagents".into(),
-            vec![
-                "Subagents live at otherside-cli/agents_corpus/.".into(),
-                "Invoke via the Agent tool with `subagent_type`.".into(),
-            ],
-        ),
+        PanelKind::Agents => {
+            state.active_agents_panel = Some(super::agents_panel::AgentsPanelState::new(
+                &state.tasks,
+                crate::agent::subagents::registry::all(),
+            ));
+            return SlashOutcome::Handled;
+        }
         PanelKind::Mcp => menu::OverlayMenu::new_info(
             PanelKind::Mcp,
             "MCP servers".into(),

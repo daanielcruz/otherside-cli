@@ -113,6 +113,8 @@ pub struct ConversationState {
 
     pub active_menu: Option<super::menu::OverlayMenu>,
 
+    pub active_agents_panel: Option<super::slash::agents_panel::AgentsPanelState>,
+
     pub pending_permission: Option<super::menu::PendingPermissionPrompt>,
 
     pub pending_question: Option<super::menu::PendingQuestion>,

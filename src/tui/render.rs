@@ -87,6 +87,16 @@ pub fn render(
             let question_rows = q.question.lines().count() as u16;
             let hint_rows = if q.hint.is_some() { 1 } else { 0 };
             (1 + question_rows + hint_rows + 4).min(remaining)
+        } else if let Some(panel) = state.active_agents_panel.as_ref() {
+            let body_rows = match panel.tab {
+                super::slash::agents_panel::Tab::Running => {
+                    if panel.running.is_empty() { 1 } else { panel.running.len() as u16 }
+                }
+                super::slash::agents_panel::Tab::Library => {
+                    1 + panel.library.len() as u16
+                }
+            };
+            (body_rows + 5).min(remaining).max(8)
         } else if let Some(m) = state.active_menu.as_ref() {
             super::menu::overlay_rows(m).min(remaining)
         } else if let Some(ac) = state.autocomplete.as_ref() {
@@ -159,6 +169,8 @@ pub fn render(
             super::menu::draw_permission_prompt(f, popup_rect, prompt);
         } else if let Some(q) = state.pending_question.as_ref() {
             super::menu::draw_question_prompt(f, popup_rect, q);
+        } else if let Some(panel) = state.active_agents_panel.as_ref() {
+            super::slash::agents_panel::draw_panel(f, popup_rect, panel);
         } else if let Some(menu_state) = state.active_menu.as_ref() {
             super::menu::draw_overlay(f, popup_rect, menu_state);
         } else if let Some(ac) = state.autocomplete.as_ref() {

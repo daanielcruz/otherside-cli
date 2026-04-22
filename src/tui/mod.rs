@@ -378,6 +378,11 @@ fn handle_key(
         return false;
     }
 
+    if st.active_agents_panel.is_some() {
+        handle_agents_panel_key(k, st);
+        return false;
+    }
+
     if st.active_menu.is_some() {
         return handle_menu_key(k, st, thinking);
     }
@@ -947,6 +952,20 @@ fn handle_question_key(k: KeyEvent, st: &mut ConversationState) {
             q.push_char(c);
         }
         _ => {}
+    }
+}
+
+fn handle_agents_panel_key(k: KeyEvent, st: &mut ConversationState) {
+    use slash::agents_panel::{handle_key, KeyOutcome};
+    let Some(panel) = st.active_agents_panel.as_mut() else {
+        return;
+    };
+    match handle_key(k, panel) {
+        KeyOutcome::Dismiss => {
+            st.active_agents_panel = None;
+            st.push_system_note("⎿ Agents dialog dismissed");
+        }
+        KeyOutcome::Consumed => {}
     }
 }
 

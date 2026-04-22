@@ -1,5 +1,6 @@
 
 
+pub mod agents_panel;
 pub mod anchor;
 pub mod auth;
 pub mod catalog;
