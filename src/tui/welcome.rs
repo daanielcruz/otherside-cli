@@ -289,7 +289,10 @@ fn draw_section_heading(f: &mut Frame<'_>, area: Rect) {
 
 fn draw_row(f: &mut Frame<'_>, area: Rect, row: Row, selected: bool) {
     let indent = indent_for(area.width);
-    let marker = if selected { "●" } else { " " };
+    // Chrome-standard chevron (U+276F) — same glyph every other panel uses
+    // for selection. Was `●` bullet pre-2026-04-23; user directive lands
+    // the chevron here for consistency with /agents, /tasks, /model rows.
+    let marker = if selected { "\u{276F}" } else { " " };
     let marker_style = if selected {
         Style::default().fg(theme::PRIMARY)
     } else {
@@ -543,10 +546,11 @@ mod tests {
             "welcome frame must contain Ctrl+C hint in footer"
         );
 
-        // Selection marker on the current (first enabled) row.
+        // Selection marker on the current (first enabled) row — chrome
+        // chevron `\u{276F}`, not a bullet (user directive 2026-04-23).
         assert!(
-            buffer_contains(buf, "●"),
-            "welcome frame must render the selection marker ●"
+            buffer_contains(buf, "\u{276F}"),
+            "welcome frame must render the chevron selection marker"
         );
     }
 }

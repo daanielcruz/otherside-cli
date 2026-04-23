@@ -1236,11 +1236,33 @@ fn handle_model_panel_key(k: KeyEvent, st: &mut ConversationState) -> bool {
                 let provider = tab.provider;
                 match tab.rows.get(body_cursor) {
                     Some(ModelTabRow::Model { raw_id, .. }) => {
-                        tracing::info!(
-                            target: "otherside::tui::model_panel",
-                            raw_id = %raw_id,
-                            "/model UI stub: would set {raw_id}"
-                        );
+                        // Commit: switch session provider + model, persist to
+                        // settings.default_provider + default_model. Closes
+                        // the panel + emits the Set-anchor so the next boot
+                        // restores the user's pick (directive 2026-04-23).
+                        let new_model = (*raw_id).to_string();
+                        st.switch_provider(provider);
+                        st.switch_model(&new_model);
+                        st.persistence.settings.default_provider =
+                            Some(provider.slug().to_string());
+                        st.persistence.settings.default_model = Some(new_model.clone());
+                        if let Err(e) = persist_session_defaults(st) {
+                            tracing::warn!(?e, "/model commit: settings flush failed");
+                        }
+                        if let Some(menu) = st.active_menu.take() {
+                            let display =
+                                crate::models::catalog::display_name_for(&new_model)
+                                    .unwrap_or(new_model.as_str());
+                            let anchor = format!("Set model to {display}");
+                            st.push_anchor(
+                                "model",
+                                "",
+                                anchor,
+                                crate::tui::state::DisplayOrigin::Chrome,
+                            );
+                            let _ = menu;
+                        }
+                        return false;
                     }
                     Some(ModelTabRow::Logout) => {
                         tracing::info!(
