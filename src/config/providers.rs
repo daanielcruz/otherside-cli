@@ -1,5 +1,4 @@
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderId {
     ClaudeCode,
@@ -123,9 +122,7 @@ mod tests {
 
     #[test]
     fn cmd_login_resolves_codex_slug() {
-        // Pins the bare `codex` alias used by `otherside login --provider codex`.
-        // The round-trip test only covers the canonical `codex-oauth` slug; a
-        // regression that dropped the bare `codex` arm would ship without this.
+        
         assert_eq!(ProviderId::from_slug("codex"), Some(ProviderId::Codex));
         assert_eq!(ProviderId::from_slug("codex-oauth"), Some(ProviderId::Codex));
     }

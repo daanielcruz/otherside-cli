@@ -1,5 +1,4 @@
 
-
 use serde_json::{json, Map, Value};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -263,11 +262,7 @@ mod tests {
 
     #[test]
     fn anthropic_message_emits_thinking_block_before_tool_use_when_present() {
-        // kimi round-trip: when captured thinking + signature rides on
-        // the assistant turn, the next request body must start content
-        // with `{"type":"thinking",...}` BEFORE any `tool_use`. No
-        // top-level `reasoning_content` sibling — kimi-cli reference
-        // pattern.
+        
         let m = AnthropicMessage {
             role: Role::Assistant,
             content: vec![

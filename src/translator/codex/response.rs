@@ -1,5 +1,4 @@
 
-
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
@@ -62,13 +61,7 @@ impl State {
                             ..Default::default()
                         })]
                     }
-                    // Codex `/responses` server-side web_search: emits a
-                    // `web_search_call` output item whose `action` describes
-                    // what the model searched for. Surface it as a synthetic
-                    // text-content delta so the transcript shows the query.
-                    // Shape reference: openai/codex
-                    // codex-rs/protocol/src/models.rs:555-565 (WebSearchCall)
-                    // codex-rs/protocol/src/models.rs:861-889 (WebSearchAction)
+                    
                     "web_search_call" if event == "response.output_item.done" => {
                         let note = format_web_search_call(item);
                         if note.is_empty() {
@@ -216,10 +209,6 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// Render a `web_search_call` output item as a human-readable log line.
-/// Shape: `{"type":"web_search_call","status":"completed",
-///          "action":{"type":"search","query":"..."}}` — see openai/codex
-/// codex-rs/protocol/src/models.rs:555-565.
 fn format_web_search_call(item: &Value) -> String {
     let action = &item["action"];
     let action_type = action["type"].as_str().unwrap_or("");
@@ -431,7 +420,7 @@ mod tests {
         let content = out[0].choices[0].delta.content.as_deref().unwrap();
         assert!(content.contains("open_page"));
         assert!(content.contains("https://example.com"));
-        assert!(content.contains("open")); // status rendered
+        assert!(content.contains("open")); 
     }
 
     #[test]
@@ -492,12 +481,12 @@ mod tests {
     #[test]
     fn function_call_done_without_added_does_not_double_seed() {
         let mut s = State::new("gpt-5-codex");
-        // `added` seeds the tool_call
+        
         let _ = s.ingest(
             "response.output_item.added",
             &json!({"item": {"type": "function_call", "call_id": "c1", "name": "shell"}}),
         );
-        // `done` for the same function_call should NOT re-seed (no emission).
+        
         let out = s.ingest(
             "response.output_item.done",
             &json!({"item": {"type": "function_call", "call_id": "c1", "name": "shell"}}),

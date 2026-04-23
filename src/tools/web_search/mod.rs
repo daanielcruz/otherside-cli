@@ -1,5 +1,4 @@
 
-
 pub mod claude_code;
 pub mod codex;
 pub mod kimi;
@@ -40,9 +39,7 @@ mod dispatch_tests {
 
     #[test]
     fn claude_code_rejects_empty_query_early() {
-        // Route-to-claude-module check. The claude path validates arguments
-        // synchronously before touching the runtime, so short-circuits on
-        // empty queries without needing a reactor.
+        
         let err = dispatch(&json!({"query": ""}), ProviderId::ClaudeCode).unwrap_err();
         match err {
             ToolError::InvalidArgs(msg) => assert!(msg.contains("Missing query")),
@@ -61,11 +58,7 @@ mod dispatch_tests {
 
     #[test]
     fn thread_local_provider_controls_dispatch_branch() {
-        // This covers the full G2 path: the top-level `tools::dispatch`
-        // reads the CURRENT_PROVIDER thread-local and routes WebSearch
-        // accordingly. A codex-scoped dispatch must land in the codex shim,
-        // a claude-scoped dispatch must reach the claude module's arg
-        // validator (we check the error to avoid hitting the network).
+        
         use crate::tools;
 
         let codex_out = tools::with_current_provider(ProviderId::Codex, || {

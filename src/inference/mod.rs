@@ -1,5 +1,4 @@
 
-
 pub mod model_display;
 
 use serde::{Deserialize, Serialize};
@@ -78,17 +77,6 @@ pub struct OpenAiChatMessage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
 
-    // Kimi / Anthropic interleaved-thinking round-trip. When the previous
-    // turn streamed a thinking content block, we capture the (text,
-    // signature) pair here so the NEXT request can re-emit
-    // `{"type":"thinking","thinking":...,"signature":...}` as the first
-    // content block on the assistant message. Kimi's `/coding/v1/messages`
-    // validator rejects assistant-with-tool_use turns that lose the
-    // thinking block (error: "thinking is enabled but reasoning_content
-    // is missing"). Reference: MoonshotAI/kimi-cli
-    // `kosong/contrib/chat_provider/anthropic.py` — ThinkPart round-trip
-    // gates on `part.encrypted is not None`; missing-signature thinking
-    // blocks are dropped rather than sent as empty.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_content: Option<String>,
 
@@ -145,17 +133,9 @@ pub struct OpenAiDelta {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<OpenAiToolCallDelta>,
 
-    // Streaming carrier for `thinking_delta` SSE events (the thinking block
-    // body text). Agent loop folds into `OpenAiChatMessage.reasoning_content`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_content: Option<String>,
 
-    // Streaming carrier for `signature_delta` SSE events (the thinking block
-    // signature — Anthropic/kimi's cryptographic integrity token for the
-    // reasoning content). Agent loop folds into
-    // `OpenAiChatMessage.thinking_signature`. Must be present alongside
-    // reasoning_content for the next request to round-trip the thinking
-    // block; signature-less thinking is dropped (kimi-cli pattern).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking_signature: Option<String>,
 }

@@ -1,5 +1,4 @@
 
-
 pub mod agent;
 pub mod ask_user_question;
 pub mod background_signal;
@@ -31,13 +30,6 @@ thread_local! {
     static CURRENT_TOOL_CALL_ID: std::cell::RefCell<Option<String>> =
         const { std::cell::RefCell::new(None) };
 
-    /// Which provider is driving the current turn. Set by the agent loop at
-    /// the boundary where it translates a model-emitted function call into a
-    /// `dispatch(name, args)` call. Read by tools whose backend differs per
-    /// provider (WebSearch: claude-code hits the anthropic server tool;
-    /// codex hits the codex native web_search server tool via the translator).
-    /// Unset → falls back to `ProviderId::ClaudeCode` to preserve existing
-    /// test/integration behavior from before this hook existed.
     static CURRENT_PROVIDER: std::cell::RefCell<Option<crate::config::providers::ProviderId>> =
         const { std::cell::RefCell::new(None) };
 }
@@ -72,21 +64,6 @@ pub fn current_provider() -> crate::config::providers::ProviderId {
         .unwrap_or(crate::config::providers::ProviderId::ClaudeCode)
 }
 
-/// Tools that upstream hides from the chat UI via
-/// `renderToolUseMessage: () => null` + `userFacingName: () => ''`.
-/// They run (so the agent loop still dispatches them), but no `⏺ Name(args)`
-/// anchor + `⎿ result` row lands in the transcript. Verified against the
-/// reconstructed source:
-///   - ToolSearchTool/ToolSearchTool.ts:435-438
-///   - TaskOutputTool/TaskOutputTool.tsx:309
-///   - TaskGetTool/TaskGetTool.ts:70-72
-///   - TaskCreateTool/TaskCreateTool.ts (renderToolUseMessage → null)
-///   - TaskListTool/TaskListTool.ts (renderToolUseMessage → null)
-///   - TaskUpdateTool/TaskUpdateTool.ts (renderToolUseMessage → null)
-///   - TaskStopTool/TaskStopTool.ts (delegates to UI.tsx which returns null)
-///
-/// These are task-orchestration internals — the Background tasks UI panel
-/// is the user-facing surface, not inline chat rows.
 pub fn is_hidden_tool(name: &str) -> bool {
     matches!(
         name,

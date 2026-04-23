@@ -1,5 +1,4 @@
 
-
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
 use std::path::Path;
@@ -307,9 +306,13 @@ pub fn wait_for_callback(listener: &TcpListener) -> Result<(String, String)> {
     listener
         .set_nonblocking(false)
         .map_err(|e| Error::Other(format!("listener non-blocking: {e}")))?;
-    let (mut stream, _addr) = listener
+    let (stream, _addr) = listener
         .accept()
         .map_err(|e| Error::Other(format!("accept callback: {e}")))?;
+    parse_callback_stream(stream)
+}
+
+pub fn parse_callback_stream(mut stream: std::net::TcpStream) -> Result<(String, String)> {
     let reader = BufReader::new(stream.try_clone().map_err(|e| Error::Other(e.to_string()))?);
     let mut first_line = String::new();
     {
@@ -347,11 +350,82 @@ pub fn wait_for_callback(listener: &TcpListener) -> Result<(String, String)> {
     }
 }
 
-pub async fn login_interactive() -> Result<CachedCreds> {
+pub struct CodexLoginHandshake {
+    listener: Option<TcpListener>,
+    port: u16,
+    pkce: PkcePair,
+    state: String,
+    url: String,
+}
+
+impl CodexLoginHandshake {
+    pub fn authorize_url(&self) -> &str {
+        &self.url
+    }
+
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    pub fn expected_state(&self) -> &str {
+        &self.state
+    }
+
+    pub fn take_listener(&mut self) -> Option<TcpListener> {
+        self.listener.take()
+    }
+
+    pub async fn finalize(
+        self,
+        code: String,
+        returned_state: String,
+    ) -> Result<CachedCreds> {
+        if returned_state != self.state {
+            return Err(Error::Other(format!(
+                "state mismatch — got {returned_state:?}, expected {:?}",
+                self.state
+            )));
+        }
+        let tokens = exchange_code_for_tokens(&code, &self.pkce.verifier, self.port).await?;
+        let creds = CachedCreds::from_exchange(&tokens);
+        save_credentials(&creds)?;
+        Ok(creds)
+    }
+}
+
+pub fn begin_login() -> Result<CodexLoginHandshake> {
     let (listener, port) = bind_callback_port()?;
     let pkce = PkcePair::generate();
     let state = generate_state();
-    let url = build_authorize_url(&pkce.challenge, &state, port);
+    let url = build_authorize_url(&pkce.challenge, &state, port).to_string();
+    Ok(CodexLoginHandshake {
+        listener: Some(listener),
+        port,
+        pkce,
+        state,
+        url,
+    })
+}
+
+pub async fn complete_login(
+    mut handshake: CodexLoginHandshake,
+) -> Result<CachedCreds> {
+    let listener = handshake
+        .take_listener()
+        .ok_or_else(|| Error::Other("codex handshake missing listener".into()))?;
+    let (code, returned_state) = tokio::task::spawn_blocking(move || {
+        wait_for_callback(&listener)
+    })
+    .await
+    .map_err(|e| Error::Other(format!("callback task: {e}")))??;
+
+    handshake.finalize(code, returned_state).await
+}
+
+pub async fn login_interactive() -> Result<CachedCreds> {
+    let handshake = begin_login()?;
+    let url = handshake.authorize_url().to_string();
+    let port = handshake.port();
 
     println!("Authorize otherside with ChatGPT — open this URL in your browser:");
     println!();
@@ -359,16 +433,7 @@ pub async fn login_interactive() -> Result<CachedCreds> {
     println!();
     println!("Waiting for the callback on 127.0.0.1:{port}…");
 
-    let (code, returned_state) = tokio::task::block_in_place(|| wait_for_callback(&listener))?;
-    if returned_state != state {
-        return Err(Error::Other(format!(
-            "state mismatch — got {returned_state:?}, expected {state:?}"
-        )));
-    }
-    let tokens = exchange_code_for_tokens(&code, &pkce.verifier, port).await?;
-    let creds = CachedCreds::from_exchange(&tokens);
-    save_credentials(&creds)?;
-    Ok(creds)
+    complete_login(handshake).await
 }
 
 pub async fn authorization_header() -> Result<String> {

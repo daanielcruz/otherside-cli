@@ -1,5 +1,4 @@
 
-
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use serde_json::Value;
@@ -293,7 +292,6 @@ pub fn render_tool_call(view: &ToolCallView<'_>) -> Vec<Line<'static>> {
             ),
         ]));
     }
-
 
     if let Some(payload) = view.payload {
         match payload {
@@ -606,9 +604,7 @@ fn read_preview(result: &Value) -> Option<ToolPayload> {
     }
 
     let num = obj.get("numLines").and_then(|v| v.as_u64())?;
-    // Upstream (FileReadTool/UI.tsx:129-135) renders a single-line summary
-    // `Read <N> line(s)` with no inline body; full content is reachable via
-    // ctrl+o expand. Emit just the head to match.
+    
     let head = format!("Read {num} {}", if num == 1 { "line" } else { "lines" });
     Some(ToolPayload::Preview(head))
 }
@@ -2215,7 +2211,7 @@ mod tests {
         let text = collect_text(&render_tool_call(&view));
         assert!(
             !text.contains("Dispatching"),
-            "pre-dispatch line must not render (upstream 2.1.117 AgentTool/UI.tsx emits none): got {text:?}"
+            "pre-dispatch line must not render (upstream 2.1.118 AgentTool/UI.tsx emits none): got {text:?}"
         );
     }
 

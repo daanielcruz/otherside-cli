@@ -1,73 +1,9 @@
-//! `state::broker` — single mediator between UI and disk/auth/settings.
-//!
-//! Today, UI surfaces and runtime modules reach directly into disk, auth, and
-//! settings stores. `/model` peeks `persistence.settings`, `/agents` reads
-//! `config::projects`, `/provider` hits `auth::*::load_credentials()`, the
-//! subagent spawn path re-reads `default_model` from `persistence.settings`.
-//! Every surface implements its own validation and its own
-//! persist-after-mutate handshake.
-//!
-//! This module is the single broker. UI code calls `state::broker::*`; the
-//! broker is the only module allowed to touch `persistence.settings`,
-//! `auth::*`, `config::projects`, or the provider registry on behalf of UI.
-//!
-//! Design reference: `docs/state/state-api.md`.
-//!
-//! Migration progress:
-//! - Step 1 empty scaffold — LANDED.
-//! - Step 2 `has_any_credentials` real scan — LANDED.
-//! - Step 2b `authenticated_providers` — LANDED (this patch). Zero callers yet;
-//!   prep for welcome-screen Phase 2 + `/model` tab redesign that both need the
-//!   ready-to-dispatch provider list.
-//! - Step 3 `set_active_provider` — LANDED (this patch). Centralizes the
-//!   6-step handshake (in-memory swap + settings flush + runner resync) that
-//!   was previously duplicated at 2 call sites with different bugs each.
-//!   Closes the latent Q5 bug where runner-sync only fired via
-//!   `dispatch_slash`'s post-hook, which itself went dead after `/provider`
-//!   slash was removed.
-//! - Step 4 `set_active_model` + `set_effort`, Step 5 auth lifecycle,
-//!   Step 6 settings bridge, Step 7 `pub(crate)` lockdown — pending.
 
 use crate::config::providers::{ProviderId, PROVIDER_ORDER};
 use crate::config::settings::Settings;
 use crate::error::Result;
 use crate::tui::state::ConversationState;
 
-/// 6-step provider switch handshake. Single entry point for every UI surface
-/// that wants to change the active provider (today: `/model` panel Enter at
-/// `tui/mod.rs` and `/config` Provider-row cycle).
-///
-/// Steps (per `docs/state/state-broker-analysis.md` § 5):
-/// 1. In-memory swap — `st.switch_provider(next)` flips `provider_id` and
-///    auto-swaps the session model to `next.default_model()` when the current
-///    model doesn't belong to the new provider's catalog family.
-/// 2-4. Mirror the new pair into `st.persistence.settings.default_provider` +
-///    `default_model` (also handled inside `switch_provider`).
-/// 5. Atomically flush `settings.json` to disk via
-///    `PersistenceState::commit_session_defaults` — mirrors the
-///    `persist_session_defaults` helper in `tui/mod.rs` (which this call
-///    eventually subsumes).
-/// 6. Resync the subagent runner with the new provider `Arc` so the next
-///    `Task(...)` / `Agent(...)` dispatches against the freshly-picked
-///    provider. Previously this only fired from `dispatch_slash`'s
-///    post-outcome hook, which went dead when the `/provider` slash was
-///    removed — leaving 2 of 2 current sites silently stuck with the boot
-///    provider in the runner.
-///
-/// Auth gate deferred: callers today are panel-level (`/model` tabs already
-/// gate via `authenticated_providers`; `/config` cycles UX-continuously).
-/// Step 5 lifecycle migration will own the hard refusal semantics.
-///
-/// Effort reset deferred to Step 4 `set_active_model` — current
-/// `switch_provider` preserves `effort_label` across the swap. Any mismatch
-/// (e.g. kimi `on`/`off` vs anthropic `auto`/`deep`/…) is a pre-existing
-/// latent bug addressed when Step 4 lands.
-///
-/// Registry access is routed through `state::dispatch::provider_by_slug` so
-/// every UI surface (both `/model` panel Enter and `/config` Provider cycle)
-/// gets the full snapshot+runner handshake without threading `Arc<Registry>`
-/// through the call chain. Main installs the registry at boot via
-/// `dispatch::install_registry`.
 pub fn set_active_provider(
     st: &mut ConversationState,
     next: ProviderId,
@@ -79,17 +15,11 @@ pub fn set_active_provider(
     if let Some(provider_arc) = crate::state::dispatch::provider_by_slug(provider_slug) {
         crate::state::dispatch::set_provider(provider_arc);
     }
-    // Model may have auto-swapped inside `switch_provider` — keep the
-    // dispatch snapshot aligned with the session-live model so the subagent
-    // runner reads the same model the main turn will.
+    
     crate::state::dispatch::set_model(st.session.model.clone());
     Ok(())
 }
 
-/// Switch the active model in-memory, mirror into settings, flush to disk,
-/// and update the dispatch snapshot. The model catalog guarantees the slug
-/// belongs to the currently-active provider — caller is responsible for
-/// gating cross-provider selection.
 pub fn set_active_model(st: &mut ConversationState, model: impl Into<String>) -> Result<()> {
     let model = model.into();
     st.session.set_model(&model);
@@ -100,22 +30,6 @@ pub fn set_active_model(st: &mut ConversationState, model: impl Into<String>) ->
     Ok(())
 }
 
-/// Clear stored credentials for `provider` and, when that provider was the
-/// ready-to-dispatch set's only member, re-seed the welcome screen on the
-/// next boot by returning the `(provider, was_active)` pair so the caller
-/// can pick a fallback.
-///
-/// Provider-specific dispatch:
-/// - `ClaudeCode` → `auth::anthropic::clear_credentials`
-/// - `Codex` → `auth::codex::clear_credentials`
-/// - `Kimi` → `auth::kimi::clear_credentials`
-/// - `GeminiCli` → no-op (provider not wired)
-/// - `OpenAiCustom` → strips `api_key` from settings; keeps `base_url`.
-///
-/// Caller is responsible for any follow-up welcome-screen routing. Broker
-/// Step 5 (partial) — interactive login remains a TUI-owned flow until the
-/// `login_interactive` paths agree on a single async signature across all
-/// three providers.
 pub fn logout_provider(
     st: &mut ConversationState,
     provider: ProviderId,
@@ -125,8 +39,7 @@ pub fn logout_provider(
         ProviderId::Codex => crate::auth::codex::clear_credentials()?,
         ProviderId::Kimi => crate::auth::kimi::clear_credentials()?,
         ProviderId::GeminiCli => {
-            // Gemini has no auth module wired; logout is a no-op. Caller
-            // still gets Ok — idempotent.
+            
         }
         ProviderId::OpenAiCustom => {
             if let Some(cfg) = st
@@ -146,11 +59,6 @@ pub fn logout_provider(
     Ok(())
 }
 
-/// Boot-time seed: fill `default_provider` + `default_model` if the user's
-/// `settings.json` left them blank, then flush. Called once from the TUI
-/// event loop after `settings.json` has been loaded and `ConversationState`
-/// is constructed. No dispatch-snapshot sync — main.rs installs the
-/// snapshot before this runs with the same `(provider, model)` pair.
 pub fn seed_boot_defaults(st: &mut ConversationState) -> Result<()> {
     if st.persistence.settings.default_provider.is_none() {
         st.persistence.settings.default_provider =
@@ -164,19 +72,6 @@ pub fn seed_boot_defaults(st: &mut ConversationState) -> Result<()> {
         .commit_session_defaults(&st.session, provider_slug)
 }
 
-/// Boolean-setting bridge for `/config` bool-row toggles. Mutates the in-
-/// memory settings, mirrors into the matching `ConversationState` flag when
-/// the setting has a runtime shadow (`verbose` → `render_verbose`), and
-/// flushes `settings.json`. Returns `Err(...)` for unknown keys so callers
-/// get a loud signal instead of a silent no-op.
-///
-/// Broker-owned bool keys (matches `/config` Bool rows in `tui/menu.rs`):
-/// - `auto_compact`
-/// - `show_tips`
-/// - `verbose` — also mirrored into `st.render_verbose`.
-/// - `prefers_reduced_motion`
-/// - `file_checkpointing_enabled`
-/// - `auto_connect_ide`
 pub fn set_bool_setting(
     st: &mut ConversationState,
     key: &str,
@@ -210,8 +105,6 @@ pub fn set_bool_setting(
     Ok(())
 }
 
-/// Switch the active thinking config in-memory + snapshot, and mirror the
-/// effort label into settings. `thinking = None` clears effort.
 pub fn set_effort(
     st: &mut ConversationState,
     thinking: Option<crate::thinking::ThinkingConfig>,
@@ -229,23 +122,6 @@ pub fn set_effort(
     Ok(())
 }
 
-/// Ready-to-dispatch provider list. Returns providers (in `PROVIDER_ORDER`)
-/// whose credentials are sufficient to build a valid turn today. Used by the
-/// `/model` tab redesign (per-provider tabs) and welcome-screen post-login
-/// routing; the set returned here is the set of providers the user can pick
-/// without running login first.
-///
-/// Rules per provider (see `docs/state/state-broker-analysis.md` § Q9):
-/// - `ClaudeCode` / `Codex` / `Kimi`: live `auth::<p>::load_credentials()`
-///   returning `Some`.
-/// - `GeminiCli`: **not yet wired** — no auth module, not in `Registry`.
-///   Always excluded until provider wiring lands.
-/// - `OpenAiCustom`: BOTH `settings.providers.openai_compatible.base_url` AND
-///   `.api_key` present and non-empty. Stricter than `has_any_credentials`
-///   (which accepts `base_url`-alone as the welcome-gate signal) because
-///   dispatching a turn needs the key. NOTE: also not yet wired end-to-end
-///   (no `provider/openai_custom.rs` in the Registry); inclusion here is
-///   forward-looking for when the provider lands.
 pub fn authenticated_providers(settings: &Settings) -> Vec<ProviderId> {
     let mut out = Vec::with_capacity(PROVIDER_ORDER.len());
     for p in PROVIDER_ORDER {
@@ -279,10 +155,6 @@ pub fn authenticated_providers(settings: &Settings) -> Vec<ProviderId> {
     out
 }
 
-/// Zero-cred gate. Returns true if AT LEAST ONE provider has a live credential
-/// or a configured OpenAI-compatible base URL. The welcome screen floors on
-/// `!has_any_credentials(&settings)`; all other boot paths skip straight to
-/// the chat TUI.
 pub fn has_any_credentials(settings: &Settings) -> bool {
     if crate::auth::anthropic::load_credentials()
         .ok()
@@ -301,8 +173,7 @@ pub fn has_any_credentials(settings: &Settings) -> bool {
     if crate::auth::kimi::load_credentials().ok().flatten().is_some() {
         return true;
     }
-    // OpenAI-custom is configured-only (no OAuth): treat a non-empty base_url
-    // as "auth present" — the API key may be blank if the upstream is keyless.
+    
     if settings
         .providers
         .openai_compatible
@@ -312,8 +183,7 @@ pub fn has_any_credentials(settings: &Settings) -> bool {
     {
         return true;
     }
-    // Gemini has no OAuth flow wired yet (Phase 2); no credential surface to
-    // scan. Stays false until the gemini auth module lands.
+    
     false
 }
 
@@ -340,21 +210,14 @@ mod tests {
 
     #[test]
     fn has_any_credentials_respects_configured_providers_only() {
-        // Settings with no OpenAI-custom configured + OAuth creds absent
-        // (CI / clean boot) must NOT spuriously count as authenticated.
-        // When real credentials are present in the user env, the anthropic /
-        // codex / kimi `load_credentials()` calls may return Some — we can't
-        // assert false unconditionally here. Instead assert that the
-        // OpenAI-custom branch doesn't fire when base_url is absent.
+        
         let s = Settings::default();
         assert!(s.providers.openai_compatible.is_none());
     }
 
     #[test]
     fn authenticated_providers_excludes_gemini_unconditionally() {
-        // Gemini has no auth module wired (Phase 2). Even if a user manually
-        // configured it in settings.json somehow, broker must not return it
-        // as ready-to-dispatch.
+        
         let s = Settings::default();
         let list = authenticated_providers(&s);
         assert!(
@@ -412,16 +275,7 @@ mod tests {
 
     #[test]
     fn set_active_provider_swaps_provider_and_mirrors_settings() {
-        // Unit-level contract: set_active_provider(st, next) flips
-        // provider_id, auto-switches the session model when it doesn't belong
-        // to the new provider's catalog family, and mirrors both into
-        // persistence.settings via `commit_session_defaults`. When no
-        // registry has been installed at `dispatch::install_registry`, the
-        // provider-snapshot write silently no-ops (test harness path).
-        //
-        // Flush happens inside commit_session_defaults; we can't assert the
-        // on-disk bytes without a temp-HOME fixture, but the in-memory mirror
-        // proves the handshake called through.
+        
         use crate::config::providers::ProviderId;
         use crate::config::settings::PermissionMode;
         use crate::tui::state::ConversationState;
@@ -430,12 +284,9 @@ mod tests {
         st.session = crate::state::Session::new("claude-opus-4-7[1m]", PermissionMode::Default);
         st.provider_id = ProviderId::ClaudeCode;
 
-        // Pre-switch sanity: model belongs to ClaudeCode.
         assert_eq!(st.provider_id, ProviderId::ClaudeCode);
         assert_eq!(st.session.model, "claude-opus-4-7[1m]");
 
-        // commit_session_defaults will attempt a disk flush — isolate by
-        // pointing settings_path at a writable temp file via OTHERSIDE_CONFIG_DIR.
         let tmp = std::env::temp_dir().join(format!(
             "broker_test_{}_{}",
             std::process::id(),
@@ -666,9 +517,7 @@ mod tests {
 
     #[test]
     fn no_dialog_dismissed_wording_in_production() {
-        // User directive 2026-04-24: "nao mencionar slashs dismisseds na
-        // tela de mensagens, fazer isso de maneira silenciosa." This gate
-        // fails if any non-test file emits the old dismiss wordings.
+        
         use std::path::Path;
 
         let needles = [
@@ -726,14 +575,7 @@ mod tests {
 
     #[test]
     fn persistence_settings_writers_are_broker_only() {
-        // Step 7 lockdown (per docs/state/state-broker-analysis.md): every
-        // `st.persistence.settings.<field> = ...` site in the crate must
-        // live inside this file, be a test site (`#[cfg(test)]`), or be the
-        // `switch_provider` method in `tui/state/mod.rs` which is invoked
-        // ONLY by `broker::set_active_provider`. Any other production
-        // writer is a SoT drift: it bypasses the broker's
-        // mutate+mirror+flush handshake and the dispatch-snapshot sync
-        // that rides with it.
+        
         use std::path::Path;
 
         fn scan(dir: &Path, hits: &mut Vec<String>) {
@@ -756,11 +598,7 @@ mod tests {
                 let Ok(src) = std::fs::read_to_string(&path) else {
                     continue;
                 };
-                // Cheap cfg(test) module stripper: drop every span between
-                // `#[cfg(test)]\nmod ...` (or `#[cfg(test)]\npub mod ...`)
-                // and the closing module brace at col 0. This is
-                // conservative — inner test-only helpers outside a
-                // `#[cfg(test)]` block still get scanned.
+                
                 let stripped = strip_cfg_test_modules(&src);
                 for (line_no, line) in stripped.lines().enumerate() {
                     let trimmed = line.trim_start();
@@ -779,15 +617,12 @@ mod tests {
             }
         }
 
-        /// Matches `persistence.settings.<ident> = <rhs>` where the `=` is
-        /// the first non-ident, non-whitespace char after the field name
-        /// (so `.clone()`, `.unwrap_or(...)`, `==`, `=>` all skip cleanly).
         fn is_assignment_to_settings_field(line: &str) -> bool {
             let needle = "persistence.settings.";
             let Some(idx) = line.find(needle) else { return false; };
             let tail = &line[idx + needle.len()..];
             let mut iter = tail.chars().peekable();
-            // Consume the <ident> part (alphanum + underscore).
+            
             while let Some(&c) = iter.peek() {
                 if c.is_alphanumeric() || c == '_' {
                     iter.next();
@@ -795,12 +630,11 @@ mod tests {
                     break;
                 }
             }
-            // Skip whitespace between ident and next token.
+            
             while let Some(&c) = iter.peek() {
                 if c.is_whitespace() { iter.next(); } else { break; }
             }
-            // Next char must be `=`, followed by something that isn't `=`
-            // (rules out `==`).
+            
             match iter.next() {
                 Some('=') => !matches!(iter.peek(), Some('=')),
                 _ => false,
@@ -811,8 +645,6 @@ mod tests {
         let mut hits = Vec::new();
         scan(&crate_src, &mut hits);
 
-        // Allowlist: broker's own writes + the `switch_provider` shim
-        // invoked only by `broker::set_active_provider`.
         let allowed_file_suffixes = ["state/broker.rs", "tui/state/mod.rs"];
         let unexpected: Vec<&String> = hits
             .iter()
@@ -836,9 +668,7 @@ mod tests {
 
     #[test]
     fn logout_provider_strips_openai_custom_api_key_only() {
-        // Broker Step 5 (partial) — OpenAiCustom logout keeps base_url and
-        // nukes api_key; other providers dispatch to their module's
-        // clear_credentials. Gemini is a no-op (provider not wired).
+        
         use crate::config::settings::{OpenAiCompatibleSettings, PermissionMode};
         use crate::tui::state::ConversationState;
 
@@ -936,8 +766,7 @@ mod tests {
 
     #[test]
     fn authenticated_providers_preserves_provider_order() {
-        // Whatever providers turn up in the list must appear in PROVIDER_ORDER
-        // sequence (ClaudeCode < Codex < Gemini < Kimi < OpenAiCustom).
+        
         let s = Settings::default();
         let list = authenticated_providers(&s);
         let mut positions: Vec<usize> = list

@@ -10,9 +10,6 @@ pub struct SweepReport {
     pub skipped_errors: Vec<String>,
 }
 
-/// Walk `<config_dir>/projects/*/*.jsonl` and delete transcripts whose
-/// modification time is older than `retention_days`. Matches the upstream
-/// one-JSONL-per-session layout (`utils/sessionStoragePortable.ts:329`).
 pub fn sweep(config_dir: &Path, retention_days: u64) -> Result<SweepReport> {
     let root = super::paths::projects_root(config_dir);
     let mut report = SweepReport::default();

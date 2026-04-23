@@ -1,5 +1,4 @@
 
-
 use serde_json::Value;
 
 use crate::harness::reminders::{
@@ -23,11 +22,6 @@ pub fn build_with_flavor(
     build_with_flavor_and_shim(messages, ctx, flavor, false)
 }
 
-/// Deprecated shim flag is now a no-op — thinking rounds through
-/// `Block::Thinking` content blocks emitted by `normalize_with_flavor`
-/// when a paired (reasoning_content, signature) is present. Kept for
-/// call-site compatibility during the transition; remove the `_shim`
-/// arg and merge this into `build_with_flavor` in a follow-up.
 pub fn build_with_flavor_and_shim(
     messages: &[OpenAiChatMessage],
     ctx: &UserContext<'_>,
@@ -99,14 +93,6 @@ pub fn normalize_with_flavor(
                 flush_tool_results(&mut pending_tool_results, &mut out);
                 let mut blocks: Vec<Block> = Vec::new();
 
-                // Prepend thinking block FIRST in content when the turn
-                // carried captured (reasoning_content, thinking_signature).
-                // kimi-cli reference: signature-less thinking MUST be
-                // dropped (never sent empty). Flavor gate: ClaudeCode
-                // rejects thinking blocks smuggled from a prior
-                // ThirdParty turn across provider switches, so we strip
-                // there too — matches the existing billing-header gate
-                // in system.rs.
                 let carry_thinking = match flavor {
                     SystemFlavor::ThirdParty => {
                         match (msg.reasoning_content.as_deref(), msg.thinking_signature.as_deref()) {

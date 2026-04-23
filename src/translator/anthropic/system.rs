@@ -1,19 +1,8 @@
 
-
 use serde_json::{json, Value};
 
 use crate::harness::{SYSTEM_AGENT_PREAMBLE, SYSTEM_BILLING_HEADER, SYSTEM_OPENER, SYSTEM_PROMPT};
 
-/// Which provider flavor is building the system prompt. Controls whether
-/// claude-code-exclusive blocks (billing header + opener identity) land.
-///
-/// - `ClaudeCode`: all four blocks — billing header, `You are Claude Code…`
-///   opener, agent preamble (cached), main system prompt.
-/// - `ThirdParty`: skip billing + opener. Kimi and Codex go here — the
-///   agent preamble + main system prompt still flow so tools, slash
-///   commands, memory system, and every operational instruction land
-///   upstream-identical; only the claude-code-routing string and the
-///   claude-identity one-liner are elided.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemFlavor {
     ClaudeCode,
@@ -92,10 +81,7 @@ mod tests {
 
     #[test]
     fn third_party_flavor_drops_billing_header_and_opener() {
-        // Kimi/Codex must NOT receive the `x-anthropic-billing-header:`
-        // routing string nor the `You are Claude Code…` claude-identity
-        // opener — those are first-party-only. Agent preamble + main
-        // prompt still ride so every operational instruction lands.
+        
         let blocks = build_system_blocks_for(SystemFlavor::ThirdParty);
         assert_eq!(blocks.len(), 2, "third-party keeps preamble + main only");
         let texts: Vec<&str> = blocks
@@ -120,7 +106,7 @@ mod tests {
 
     #[test]
     fn claude_code_flavor_still_includes_billing_and_opener() {
-        // Regression: the split must NOT change the claude-code wire.
+        
         let blocks = build_system_blocks_for(SystemFlavor::ClaudeCode);
         assert_eq!(blocks.len(), 4);
         assert!(blocks[0]["text"].as_str().unwrap().starts_with("x-anthropic-billing-header:"));
@@ -129,8 +115,7 @@ mod tests {
 
     #[test]
     fn both_flavors_share_the_preamble_and_main_prompt_content() {
-        // The operational blocks are IDENTICAL across flavors — only the
-        // first-party header + opener differ.
+        
         let cc = build_system_blocks_for(SystemFlavor::ClaudeCode);
         let tp = build_system_blocks_for(SystemFlavor::ThirdParty);
         assert_eq!(cc[2]["text"], tp[0]["text"], "agent preamble must match");

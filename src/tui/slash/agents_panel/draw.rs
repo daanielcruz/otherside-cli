@@ -8,9 +8,6 @@ use crate::tui::panel_frame::{body_row, PanelFrame, TabSpec};
 use crate::tui::render::theme;
 use ratatui::style::Modifier;
 
-/// Body-row label indent. PanelFrame body rows carry a 2-col chevron
-/// prefix already; we indent section headers and non-selectable rows
-/// one extra column so the columns align with chevron-prefixed rows.
 const BODY_INDENT: &str = "  ";
 
 pub fn draw_panel(f: &mut Frame<'_>, area: Rect, state: &AgentsPanelState) {
@@ -232,8 +229,6 @@ fn detail_body_line(text: &str) -> Line<'static> {
     ])
 }
 
-/// Compose the `Running` tab label, appending `(N)` when N > 0. Kept
-/// as a small helper so tests can pin the format without re-rendering.
 pub(super) fn running_tab_label(count: usize) -> String {
     if count > 0 {
         format!("Running ({count})")
@@ -255,8 +250,7 @@ fn running_body(state: &AgentsPanelState) -> Vec<Line<'static>> {
     } else {
         for (i, row) in state.running.iter().enumerate() {
             let selected = i == state.running_cursor;
-            // Upstream row format (AsyncAgentDetailDialog.tsx:106):
-            // `{subagent_type} · {description} · {elapsed}s · {tokens} tokens`.
+            
             let mut segments: Vec<String> = Vec::with_capacity(4);
             let lead = row
                 .subagent_type
@@ -317,8 +311,7 @@ fn running_body(state: &AgentsPanelState) -> Vec<Line<'static>> {
 }
 
 fn truncate_completed(s: &str) -> String {
-    // Upstream Recently-completed shows the first line of final_message,
-    // capped. We cap at 80 chars to keep the row in a single terminal row.
+    
     let first_line = s.lines().next().unwrap_or("");
     const CAP: usize = 80;
     if first_line.chars().count() <= CAP {
@@ -333,14 +326,6 @@ fn library_body(state: &AgentsPanelState) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> =
         Vec::with_capacity(state.library.len() + state.user_agents.len() + 8);
 
-    // Upstream ordering (AgentsList.tsx): Create new agent → User agents →
-    // Plugin agents → Built-in agents. Sections separated by blank rows.
-    //
-    // Selection cursor walks a flat index across the 3 selectable kinds:
-    // 0 = `Create new agent`, 1..=user_agents.len() = user, rest = built-ins.
-    // Section-header and blank rows are non-selectable; the cursor index
-    // lives on AgentsPanelState.library_cursor and increments per rendered
-    // selectable row.
     let cursor = state.library_cursor;
     let mut flat_idx: usize = 0;
 
@@ -372,7 +357,6 @@ fn library_body(state: &AgentsPanelState) -> Vec<Line<'static>> {
         lines.push(Line::from(""));
     }
 
-    // Built-in agents (always available) — closes the section list.
     lines.push(Line::from(vec![
         Span::raw(BODY_INDENT),
         Span::styled(
@@ -534,7 +518,7 @@ mod tests {
         });
         let lines = running_body(&s);
         let text = collect_text(&lines);
-        // Upstream row: `{subagent_type} · {description} · {elapsed}s · {tokens}`
+        
         assert!(
             text.contains("general-purpose \u{00B7} Sleep 200 echo ok \u{00B7} 19s"),
             "row must lead with subagent_type then description: {text}"
@@ -543,10 +527,7 @@ mod tests {
 
     #[test]
     fn agents_panel_uses_panel_frame_chrome() {
-        // Full-panel render — assert PanelFrame slots:
-        //   y=0 top rule in theme::PRIMARY
-        //   y=1 blank padding row
-        //   y=body_y selected running row with SUCCESS chevron prefix.
+        
         let mut s = AgentsPanelState::new(&TaskStore::new(), registry::all());
         s.tab = Tab::Running;
         s.running.push(super::super::state::RunningRow {
@@ -560,7 +541,6 @@ mod tests {
 
         let buf = render_panel(&s, 80, 12);
 
-        // y=0 top rule glyph + color.
         let rule_cell = buf[(3, 0)].clone();
         assert_eq!(
             rule_cell.symbol(),
@@ -573,7 +553,6 @@ mod tests {
             "top rule fg must be theme::PRIMARY: {rule_cell:?}"
         );
 
-        // y=1 blank padding row (all spaces).
         let mut row1 = String::new();
         for x in 0..80u16 {
             row1.push_str(buf[(x, 1)].symbol());
@@ -584,9 +563,6 @@ mod tests {
             "y=1 must be blank padding row, got {row1:?}"
         );
 
-        // Locate the row containing the selection chevron and assert its
-        // foreground color is theme::SUCCESS. Layout:
-        //   y=0 rule, y=1 pad, y=2 title, y=3 tabs, y=4 body-first.
         let mut found = false;
         for y in 2..12u16 {
             let cell = buf[(0, y)].clone();

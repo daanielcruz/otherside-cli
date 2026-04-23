@@ -1,5 +1,4 @@
 
-
 use std::io::{self, Write};
 use std::net::{IpAddr, SocketAddr};
 use std::process::ExitCode;
@@ -226,13 +225,6 @@ async fn cmd_print(cli: &Cli, prompt: &str) -> Result<()> {
         .or(settings.default_provider.clone())
         .unwrap_or_else(|| DEFAULT_PROVIDER.to_string());
 
-    // Resolve the fallback model against the resolved provider so
-    // `--provider=codex` without `--model` doesn't wedge a claude slug (or
-    // any other provider's slug) into codex /responses (which 400s with
-    // "model is not supported when using Codex with a ChatGPT account").
-    // Settings-level `default_model` only wins when it belongs to the
-    // chosen provider — otherwise fall back to the provider's declared
-    // default, and only then to the universal claude-opus fallback.
     let chosen_provider =
         otherside::config::providers::ProviderId::from_slug(&provider_id);
     let provider_default_model = chosen_provider
@@ -244,8 +236,7 @@ async fn cmd_print(cli: &Cli, prompt: &str) -> Result<()> {
         .filter(|s| !s.trim().is_empty())
         .filter(|slug| match (chosen_provider, otherside::models::catalog::by_id(slug)) {
             (Some(chosen), Some(model)) => model.provider == chosen,
-            // unknown slug or unknown provider: keep whatever settings said
-            // and let the backend surface its own error.
+            
             _ => true,
         });
     let raw_model = cli
@@ -365,15 +356,6 @@ async fn cmd_tui(cli: &Cli) -> Result<()> {
         .or(settings.default_provider.clone())
         .unwrap_or_else(|| DEFAULT_PROVIDER.to_string());
 
-    // Resolve model against the chosen provider. Rules:
-    //   1. `--model` wins unconditionally (user knows what they're typing).
-    //   2. Settings `default_model` wins only if it belongs to the chosen
-    //      provider — otherwise it would wedge e.g. a claude slug into codex
-    //      and 404. Unknown-slug / unknown-provider keeps the setting and
-    //      lets the backend surface its own error.
-    //   3. Anthropic falls back to the subscription-tier default
-    //      (`default_claude_code_for_tier`); other providers fall back to
-    //      their declared `default_model`.
     let chosen_provider =
         otherside::config::providers::ProviderId::from_slug(&provider_id);
     let provider_default_model = match chosen_provider {

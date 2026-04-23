@@ -45,10 +45,6 @@ pub struct LibraryRow {
     pub running_count: usize,
 }
 
-/// User-defined agent discovered on disk under `~/.claude/agents/*.md`.
-/// Upstream surfaces these under the `User agents (<path>)` section in
-/// the Library tab (AgentsList.tsx). Parsed via the shared frontmatter
-/// parser.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UserAgentRow {
     pub name: String,
@@ -103,7 +99,6 @@ pub fn discover_user_agents() -> Vec<UserAgentRow> {
     rows
 }
 
-/// Which Library row kind is being drilled into when `detail_index` is set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LibraryDetailKind {
     CreateNewAgent,
@@ -121,19 +116,12 @@ pub struct AgentsPanelState {
     pub library: Vec<LibraryRow>,
     pub user_agents: Vec<UserAgentRow>,
     pub user_agents_dir: Option<PathBuf>,
-    /// When `Some`, the Library tab is in detail-view mode showing the
-    /// selected agent's prompt/tools/model (view-only — upstream's Edit +
-    /// Delete + Create wizard are Phase 2).
+    
     pub detail: Option<LibraryDetailKind>,
-    /// Built-in agent definitions, cached at panel open so the detail view
-    /// has access to the full prompt body without round-tripping through
-    /// the registry.
+    
     pub builtin_defs: Vec<BuiltInAgentSnapshot>,
 }
 
-/// Snapshot of an `AgentDefinition` sufficient to render the detail view
-/// (`View agent` mode). Cached into the panel state so the panel can run
-/// without borrowing the global registry.
 #[derive(Debug, Clone)]
 pub struct BuiltInAgentSnapshot {
     pub name: String,
@@ -240,9 +228,6 @@ impl AgentsPanelState {
         }
     }
 
-    /// Resolve the cursor's flat index into a `LibraryDetailKind`. Returns
-    /// `None` when the cursor is out of range (should not happen given
-    /// `library_selectable_count` gating, but defensive).
     pub fn library_detail_kind(&self) -> Option<LibraryDetailKind> {
         let idx = self.library_cursor;
         if idx == 0 {
@@ -260,8 +245,6 @@ impl AgentsPanelState {
         }
     }
 
-    /// Drill into the detail view for the currently-selected Library row.
-    /// No-op when tab != Library or cursor is out of range.
     pub fn enter_library_detail(&mut self) {
         if !matches!(self.tab, Tab::Library) {
             return;
@@ -271,22 +254,14 @@ impl AgentsPanelState {
         }
     }
 
-    /// Leave detail view, back to list.
     pub fn back_from_detail(&mut self) {
         self.detail = None;
     }
 
-    /// Total selectable rows on the Library tab:
-    /// 1 (`Create new agent`) + user_agents + builtins (library).
     pub fn library_selectable_count(&self) -> usize {
         1 + self.user_agents.len() + self.library.len()
     }
 
-    /// Re-pull live state from the TaskStore without dropping user UI
-    /// selection (tab + cursor). Called each draw tick so a subagent
-    /// dispatched AFTER the panel opened surfaces immediately, and a
-    /// completion flips the row into the Recent tab without the user
-    /// needing to /agents again.
     pub fn refresh(&mut self, tasks: &TaskStore, defs: &[AgentDefinition]) {
         let active_agents: Vec<_> = tasks
             .list_active()
@@ -337,9 +312,7 @@ impl AgentsPanelState {
             .collect();
         self.library
             .sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-        // Keep `builtin_defs` in sync so the detail view walks the same
-        // sort order as the list (LibraryRow sorts case-insensitively;
-        // mirror that here).
+        
         self.builtin_defs = defs
             .iter()
             .map(|d| {
@@ -572,9 +545,7 @@ mod tests {
 
     #[test]
     fn discover_user_agents_parses_real_claude_dir() {
-        // If ~/.claude/agents/*.md exists, discover_user_agents must surface
-        // at least one row. Test skipped gracefully when the dir is empty
-        // (CI / clean envs).
+        
         let Some(dir) = discover_user_agents_dir() else {
             return;
         };

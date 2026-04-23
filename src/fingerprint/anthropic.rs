@@ -1,6 +1,5 @@
 
-
-pub const CLAUDE_CODE_VERSION: &str = "2.1.117";
+pub const CLAUDE_CODE_VERSION: &str = "2.1.118";
 
 pub const CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 

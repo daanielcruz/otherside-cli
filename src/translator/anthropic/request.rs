@@ -1,5 +1,4 @@
 
-
 use serde_json::{Map, Value};
 
 use crate::error::{Error, Result};
@@ -7,10 +6,6 @@ use crate::inference::{OpenAiChatRequest, OpenAiChatRole};
 use crate::thinking::{ThinkingConfig, ThinkingLevel, ThinkingMode};
 use crate::translator::anthropic::message_builder;
 
-/// Map a selected `ThinkingConfig` onto the Anthropic `output_config.effort`
-/// string upstream accepts. Kept in one place so codex + anthropic stay in
-/// sync: Opus accepts the full ladder (auto/low/medium/high/xhigh/max);
-/// Sonnet caps at high; Haiku accepts only auto.
 fn thinking_to_effort(cfg: Option<&ThinkingConfig>) -> Option<&'static str> {
     let cfg = cfg?;
     if matches!(cfg.mode, ThinkingMode::None | ThinkingMode::Auto) {
@@ -22,9 +17,7 @@ fn thinking_to_effort(cfg: Option<&ThinkingConfig>) -> Option<&'static str> {
         ThinkingLevel::High => "high",
         ThinkingLevel::XHigh => "xhigh",
         ThinkingLevel::Max => "max",
-        // Kimi binary ladder: On keeps the default adaptive envelope
-        // (translator drops `output_config.effort` via `matches!` gate),
-        // Off propagates "off" so the strip branch fires.
+        
         ThinkingLevel::On => "on",
         ThinkingLevel::Off => "off",
         ThinkingLevel::None | ThinkingLevel::Auto => return None,
@@ -109,10 +102,6 @@ pub fn build_request_body(
     build_request_body_full(req, ctx, super::system::SystemFlavor::ClaudeCode, None)
 }
 
-/// Like `build_request_body` but threads the caller's selected effort via
-/// `thinking` into `output_config.effort`. Callers that have no chosen level
-/// (e.g. historical tests, fingerprint captures) pass `None` and fall back
-/// to `default_effort_for(model)` — the pre-2026-04-22 behavior.
 pub fn build_request_body_with_thinking(
     req: &OpenAiChatRequest,
     ctx: &UserContext<'_>,
@@ -121,11 +110,6 @@ pub fn build_request_body_with_thinking(
     build_request_body_full(req, ctx, super::system::SystemFlavor::ClaudeCode, thinking)
 }
 
-/// Same as `build_request_body` but lets the provider pick which system
-/// flavor to emit. Third-party Anthropic-compat endpoints (Kimi) pass
-/// `ThirdParty` to skip the billing header + `You are Claude Code…`
-/// opener — both are claude-code-exclusive. The agent preamble + main
-/// system prompt still flow so every operational instruction lands.
 pub fn build_request_body_with_flavor(
     req: &OpenAiChatRequest,
     ctx: &UserContext<'_>,
@@ -171,10 +155,6 @@ fn build_request_body_full(
 
     let (stripped_for_effort, _) = strip_1m_suffix(&req.model);
 
-    // Effort selection: caller-supplied `thinking` wins when the level maps
-    // to a non-auto effort AND the model accepts it; otherwise fall back to
-    // the catalog's default effort for this model. Haiku-class models
-    // (supported_efforts == ["auto"]) never carry an `effort` field.
     let selected_effort = thinking_to_effort(thinking)
         .filter(|level| crate::models::catalog::supports_effort(&stripped_for_effort, level))
         .unwrap_or_else(|| crate::models::catalog::default_effort_for(&stripped_for_effort));
@@ -182,19 +162,11 @@ fn build_request_body_full(
     let efforts = crate::models::catalog::by_id(&stripped_for_effort)
         .map(|m| m.supported_efforts)
         .unwrap_or(&[]);
-    // Three paths that strip the `thinking` + `context_management`
-    // envelope blocks:
-    //   1. Model advertises only `auto` (claude haiku class).
-    //   2. Catalog is empty / unknown slug (defensive fallback).
-    //   3. Kimi `effort=off` — explicit user request to skip reasoning.
+    
     let kimi_effort_off = efforts == ["on", "off"] && selected_effort == "off";
     let strip_thinking_envelope =
         efforts == ["auto"] || efforts.is_empty() || kimi_effort_off;
 
-    // The thinking round-trip now happens at the content-block level via
-    // `Block::Thinking` in `normalize_with_flavor` (gated on flavor +
-    // paired signature). The shim flag here is vestigial — false keeps
-    // the old no-op path; message_builder handles the real work.
     let _ = strip_thinking_envelope;
     let messages = message_builder::build_with_flavor_and_shim(
         &req.messages,
@@ -222,10 +194,7 @@ fn build_request_body_full(
     }
 
     if let Some(out_cfg) = body.get_mut("output_config").and_then(|v| v.as_object_mut()) {
-        // Numeric levels ride on `output_config.effort`. Kimi's on/off
-        // binary + claude's `auto` bucket are non-numeric and handled by
-        // stripping the field (claude defaults) or by the thinking
-        // envelope strip below (kimi).
+        
         if matches!(selected_effort, "auto" | "on" | "off") {
             out_cfg.remove("effort");
         } else {
@@ -433,16 +402,6 @@ mod tests {
         );
     }
 
-    // NOTE: kimi effort on/off wire-strip unit test is pending a follow-up
-    // plumbing pass. The gate (`selected_effort == "off"` strips `thinking`
-    // + `context_management`) is coded in `build_request_body_full`, but
-    // `selected_effort` is derived from `ThinkingConfig` which has no
-    // matching variant yet. Effort-label → ThinkingConfig translation
-    // needs to land first (state consolidation task). When it lands, these
-    // tests should assert:
-    //   - kimi + effort "off": body["thinking"] absent, body["context_management"] absent
-    //   - kimi + effort "on":  body["thinking"] present with adaptive envelope
-
     #[test]
     fn advertises_nine_tools_in_canonical_order() {
         let req = mvp_request();
@@ -461,10 +420,6 @@ mod tests {
         );
     }
 
-    // Kimi `reasoning_content` shim regression — captured 2026-04-23.
-    // Upstream error message: "thinking is enabled but reasoning_content
-    // is missing in assistant tool call message at index N". Gate is
-    // flavor=ThirdParty + thinking.is_some() + message has ≥1 tool_use.
     mod reasoning_content_shim {
         use super::*;
         use crate::inference::{
@@ -532,11 +487,7 @@ mod tests {
             flavor: SystemFlavor,
             thinking: Option<&ThinkingConfig>,
         ) -> Value {
-            // Use the LIVE kimi model — `kimi-for-coding` — so the shim gate
-            // exercises the actual wire path. Previous ghost slug
-            // `kimi-k2-thinking` fell to `catalog::by_id == None` → efforts
-            // empty → thinking-envelope stripped → shim skipped, masking
-            // the 400 we're regressing against.
+            
             let req = OpenAiChatRequest {
                 model: "kimi-for-coding".to_string(),
                 messages: history,
@@ -568,12 +519,7 @@ mod tests {
 
         #[test]
         fn request_omits_thinking_block_when_history_has_no_signature() {
-            // kimi-cli pattern: signature-less thinking is STRIPPED, not
-            // sent empty. history_with_tool_use_turn() has assistant
-            // tool_use with no captured reasoning+signature pair, so the
-            // wire MUST NOT emit a Block::Thinking nor a reasoning_content
-            // sibling. Prior shim-based approach leaked empty-string
-            // fallback and still failed validation.
+            
             let cfg = ThinkingConfig::level(ThinkingLevel::On);
             let body = build(
                 history_with_tool_use_turn(),
@@ -594,7 +540,7 @@ mod tests {
 
         #[test]
         fn request_omits_thinking_when_effort_off() {
-            // Kimi effort explicitly off → thinking envelope stripped.
+            
             let cfg = ThinkingConfig::level(ThinkingLevel::Off);
             let body = build(
                 history_with_tool_use_turn(),
@@ -615,9 +561,7 @@ mod tests {
 
         #[test]
         fn request_omits_thinking_when_caller_thinking_is_none_and_history_bare() {
-            // 2026-04-23 regression scenario follow-up. Caller None +
-            // envelope thinking-on + history without captured signature
-            // → signature-less thinking dropped (kimi-cli pattern).
+            
             let body = build(
                 history_with_tool_use_turn(),
                 SystemFlavor::ThirdParty,
@@ -713,10 +657,7 @@ mod tests {
 
         #[test]
         fn request_emits_thinking_block_when_history_has_reasoning_and_signature() {
-            // Round-trip happy path. Source message has paired (reasoning,
-            // signature) from the fold_chunk path. Wire body must carry
-            // `{"type":"thinking","thinking":...,"signature":...}` as
-            // content[0] BEFORE the tool_use. No top-level reasoning_content.
+            
             let captured = "Let me think: I should Glob for *.rs first.";
             let signature = "sig-abc-123";
             let cfg = ThinkingConfig::level(ThinkingLevel::On);

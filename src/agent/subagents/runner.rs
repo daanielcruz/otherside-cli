@@ -1,5 +1,4 @@
 
-
 use std::sync::Arc;
 
 use serde_json::{json, Value};
@@ -61,10 +60,6 @@ impl LoopObserver for NestedObserver {
 
 pub const SUBAGENT_MAX_TURNS: u32 = MAX_AUTO_TURNS;
 
-/// Zero-state runner. The `(provider, model, thinking)` triple is read
-/// live from `state::dispatch::snapshot()` on every dispatch, so
-/// mid-session `/model` / `/effort` / provider swaps are always honored.
-/// No cached triple, no boot capture.
 pub struct InnerLoopRunner;
 
 impl InnerLoopRunner {
@@ -141,13 +136,7 @@ impl InnerLoopRunner {
         let observer = NestedObserver {
             emitter: emitter.unwrap_or_else(|| Arc::new(NullEmitter) as Arc<dyn NestedEmitter>),
         };
-        // Advertise the tools the subagent is actually allowed to call.
-        // Before this, tools: Vec::new() left the nested model unaware that
-        // any tools existed — the gated dispatcher was ready to serve but
-        // the model couldn't know to ask, so subagents could only produce
-        // text and the user saw a "fake subagent" that never analyzed
-        // anything. Upstream AgentTool wires per-subagent tools per the
-        // `tools:` frontmatter field the same way.
+        
         let subagent_tools = subagent_openai_tools(&definition.tools);
         let loop_ = AgentLoop {
             model: model.clone(),
@@ -246,11 +235,6 @@ impl NestedEmitter for NullEmitter {
     fn on_usage(&self, _input_tokens: Option<u64>, _output_tokens: Option<u64>) {}
 }
 
-/// Scan backwards for the last assistant turn that produced user-visible
-/// text. A naive `.find(Assistant)` grabs the last turn — which, when the
-/// subagent loop hits the turn budget or ends on a tool_use-only turn, is
-/// an empty string. Empty `<result>` → parent model sees "Agent completed"
-/// with nothing useful (kimi self-report 2026-04-24).
 fn resolve_assistant_text(
     history: &[OpenAiChatMessage],
     hit_turn_limit: bool,
@@ -366,4 +350,3 @@ mod tests {
         assert_eq!(resolve_assistant_text(&history, false), "real answer");
     }
 }
-

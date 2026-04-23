@@ -1,5 +1,4 @@
 
-
 use std::time::Instant;
 
 use serde_json::Value;
@@ -133,34 +132,14 @@ pub struct ConversationState {
 
     pub toggle_feedback: Option<(String, Instant)>,
 
-    /// Two-stage pill focus flag. Upstream PromptInput.tsx:410-419 decrements
-    /// `coordinatorTaskIndex` from 0 to -1 on the first ↓ at prompt bottom
-    /// (when a bg-task pill exists) — ink re-renders the pill with `inverse=
-    /// true`. A second ↓ / Enter opens the panel. Otherside mirrors that
-    /// state: `false` at rest → pill paints flat; `true` after first ↓ →
-    /// pill paints with inverse fg/bg and next ↓ / Enter opens `/tasks`.
     pub pill_focused: bool,
 
-    /// Upstream binds `chat:taskBackground` to **Ctrl+B Ctrl+B** (doubled)
-    /// rather than a single keystroke — prevents accidental background when
-    /// user fat-fingers Ctrl+B while typing. Set on the first press, cleared
-    /// after the short window or on any other key. Second Ctrl+B within
-    /// `CTRL_B_DOUBLE_TAP_WINDOW_MS` fires the TaskBackground action.
     pub ctrl_b_armed_at: Option<Instant>,
 
-    /// Active tab index inside the tabbed `/model` panel. Indexes into
-    /// `config::providers::PROVIDER_ORDER`. Canonical source of truth —
-    /// mirrored into `OverlayMenu.model_tab_index` every time the overlay
-    /// is rebuilt. Phase 1 is UI only; no broker wiring.
     pub model_panel_tab_index: usize,
 
-    /// `true` when the tab row (not the body) owns focus inside `/model`.
-    /// Default on open = `true`. `↓` / `Enter` flips it to `false`.
     pub model_panel_tabs_focused: bool,
 
-    /// Row cursor inside the body of the active `/model` tab. Resets to 0
-    /// on every tab switch — row counts differ per provider so there's no
-    /// meaningful cross-tab mapping.
     pub model_panel_body_cursor: usize,
 }
 
@@ -279,14 +258,7 @@ pub fn hydrate_from_records(
                 });
             }
             crate::sessions::Record::CompactionMark { .. } => {
-                // Resume-time render. Upstream drops nothing user-visible
-                // for a prior compaction (the synthetic "This session is
-                // being continued…" seed carries the context). Otherside
-                // previously printed `⎿ compacted (summary: kept=N;auto=X)`
-                // here, leaking the internal `summary_ref` key=value string
-                // into the chat — parity #1 bug K. Skip the render entirely;
-                // the CompactionMark record still stays in the transcript
-                // for audit trail, but never reaches the UI.
+                
             }
             crate::sessions::Record::HookEvent { .. } => {}
         }
@@ -330,11 +302,7 @@ fn summarize_tool_invocation(name: &str, args: &Value) -> String {
             .map(str::to_string)
             .unwrap_or_else(|| "agent".into()),
         "Bash" => {
-            // Prefer the Bash `description` arg over the truncated command —
-            // the completion line "Background command \"X\" completed" reads
-            // cleaner with a short description (`"Verify post-revert"`) than
-            // a 40-char shred of the command (`"cargo test -- --test-threads=1 2>&1 | t…"`).
-            // Matches upstream BackgroundBashTool completion render.
+            
             if let Some(desc) = args.get("description").and_then(Value::as_str) {
                 if !desc.is_empty() {
                     return desc.to_string();
@@ -695,15 +663,7 @@ impl ConversationState {
             record.is_backgrounded = false;
             record.tool_use_id = Some(id.clone());
             if matches!(kind, crate::tasks::TaskKind::Agent) {
-                // Generate an upstream-shape agent_id up-front so that:
-                // (1) Ctrl+B -> BackgroundAgentCompleted render shows
-                //     `a<16hex>` not `toolu_*`,
-                // (2) the disk-mirror path under tasks/<agent_id>.output
-                //     uses the same identifier regardless of whether the
-                //     subagent was dispatched via run_in_background=true
-                //     (tools::agent::agent sets it too via
-                //     spawn_background_agent) or via the foreground +
-                //     Ctrl+B path (agent_bridge::dispatch_agent_cancellable).
+                
                 record.agent_id = Some(crate::tasks::id::create_agent_id(None));
                 record.subagent_type = args
                     .get("subagent_type")
@@ -821,13 +781,7 @@ impl ConversationState {
         if backgroundable_kind(&tool_name).is_some() {
             let task_id = crate::tasks::TaskId::from_string(id.to_string());
             self.tasks.update_with(&task_id, |r| {
-                // When the task was already backgrounded (Ctrl+B fired
-                // earlier in the same turn), the synthetic "backgrounded"
-                // tool_result is NOT a real completion — the subagent is
-                // still running. Leave state=Backgrounded so the footer
-                // pill keeps counting the task. The real completion lands
-                // later via StreamEvent::BackgroundAgentCompleted, which
-                // flips to Completed + sets inject_on_next_turn.
+                
                 if r.is_backgrounded {
                     return;
                 }
@@ -943,10 +897,6 @@ impl ConversationState {
         self.compact_history_with_summary(None);
     }
 
-    /// Reset the display + request history after a compaction. When `summary`
-    /// is provided, reseed a synthetic `user` message carrying the upstream
-    /// "This session is being continued…" framing so the next turn resumes
-    /// with the summarized context instead of an empty transcript.
     pub fn compact_history_with_summary(&mut self, summary: Option<String>) {
         self.messages.clear();
         self.current_assistant_buffer.clear();
@@ -954,31 +904,11 @@ impl ConversationState {
         self.autocomplete = None;
         self.scroll_offset = 0;
 
-        // Parity #1 bug M: port upstream services/compact/postCompactCleanup.ts
-        // intent — don't carry ephemeral state across the compact boundary.
-        // Upstream clears its own flavor of caches (systemPromptSections,
-        // classifierApprovals, bashSpeculativeChecks, userContext,
-        // memoryFilesCache, betaTracingState, sessionMessagesCache). The
-        // analogue here is to wipe in-flight/stale TUI state that would
-        // outlive the summarized context:
-        //   - any active tool-call entries (their tool_use_ids won't match
-        //     anything in the reseeded history → dangling ⎿ rows)
-        //   - the last error banner (stale relative to the new conversation)
-        //   - any open permission prompt (context it references is gone)
-        //   - any open ask-user question modal (same)
-        // The queued_messages buffer is intentionally NOT cleared — user-
-        // queued turns predate the compact and should still dispatch.
         self.active_tool_calls.clear();
         self.last_error = None;
         self.pending_permission = None;
         self.pending_question = None;
 
-        // Parity #1 bug J: upstream zeros token counters post-compact —
-        // the "99% until auto-compact" right-chip jumps back to low usage
-        // because the pre-compact context is gone. Otherside kept
-        // input_tokens at the pre-compact value (22571 in the tmux capture),
-        // which (a) confused the chip and (b) would re-trigger the
-        // auto-fire gate on the first post-compact turn.
         self.input_tokens = 0;
         self.output_tokens = 0;
         self.cumulative_output_tokens = 0;
@@ -1085,12 +1015,7 @@ impl ConversationState {
         }
         let count = drained.len();
         for record in drained {
-            // Emit the REAL on-disk path so the model can Read it. The
-            // upstream-shape path lives under
-            // `<session_root>/tasks/<agent_id>.output`, mirrored by
-            // `tasks::disk_output::write_task_output` when the session
-            // root is installed. Fallback to the upstream-shape string
-            // when the root isn't installed yet (test / headless).
+            
             let output_path = record
                 .agent_id
                 .as_deref()
@@ -1407,15 +1332,6 @@ impl ConversationState {
         }
     }
 
-    /// Drain ALL queued-while-streaming messages into `self.input` as one
-    /// concatenated turn. Upstream directive 2026-04-24: "se houver duas
-    /// queue mensagem as duas devem ser enviadas ao mesmo tempo, assim
-    /// como upstream faz." Previously we popped one head per stream Done,
-    /// firing N consecutive turns for N queued entries.
-    ///
-    /// Entries join with `\n\n` so the model sees each as a distinct
-    /// paragraph — matches how the user typed them originally (one per
-    /// Enter).
     pub fn consume_queue_all_into_input(&mut self) -> bool {
         if self.queued_messages.is_empty() {
             return false;
@@ -1953,21 +1869,16 @@ mod tests {
 
     #[test]
     fn finish_tool_call_does_not_complete_backgrounded_agent() {
-        // Regression for D.2: Ctrl+B on an Agent tool call races with the
-        // synthetic "backgrounded" tool_result flowing back from
-        // dispatch_agent_cancellable. finish_tool_call must NOT flip the
-        // record to Completed — the real completion comes later via
-        // StreamEvent::BackgroundAgentCompleted. Pre-fix, the pill dropped
-        // the record immediately after Ctrl+B because state went terminal.
+        
         let mut st = ConversationState::new();
         st.begin_tool_call(
             "tc-agent".into(),
             "Agent".into(),
             serde_json::json!({"subagent_type": "general-purpose"}),
         );
-        // Simulate Ctrl+B flipping the record to Backgrounded.
+        
         let _ = st.tasks.background_all_running_foreground();
-        // Tool result streams back after the cancellation synth response.
+        
         st.finish_tool_call(
             "tc-agent",
             Ok(serde_json::json!({"status": "backgrounded"})),
@@ -2113,9 +2024,7 @@ mod tests {
 
     #[test]
     fn consume_queue_all_into_input_batches_all_entries() {
-        // Upstream directive 2026-04-24: "se houver duas queue mensagem
-        // as duas devem ser enviadas ao mesmo tempo, assim como upstream
-        // faz." All queued entries flush as ONE turn on stream Done.
+        
         let mut st = ConversationState::new();
         st.input = "first".into();
         st.submit().unwrap();
@@ -2323,12 +2232,7 @@ mod tests {
 
     #[test]
     fn notification_output_file_never_points_at_read_intercepted_path() {
-        // Regression guard for kimi self-report 2026-04-24 — previously we
-        // emitted `~/.otherside/tasks/<task_id>.log` which Read's
-        // hallucinated-path intercept blocks, leaving the model unable to
-        // peek the result. Notification must emit the real disk path (from
-        // `tasks::disk_output::task_output_path`) OR the relative fallback
-        // `tasks/<task_id>.output` — never the intercepted shape.
+        
         use crate::tasks::{TaskId, TaskRecord, TaskState as TS, TaskStore};
         let store = TaskStore::new();
         let id = TaskId::generate();
@@ -2346,9 +2250,7 @@ mod tests {
         let mut st = ConversationState::new();
         st.consume_pending_notifications(&store);
         let last = st.messages.last().expect("synthetic message present");
-        // The exact path depends on whether disk_output::install_root ran
-        // in this process; either way, it must not contain a path the Read
-        // intercept would block.
+        
         assert!(
             !last.content.contains(".otherside/tasks/"),
             "output-file must not emit an .otherside/tasks/ path — Read intercept would block it; got: {}",
@@ -2601,11 +2503,7 @@ mod tests {
 
     #[test]
     fn compact_history_with_summary_zeros_token_counters() {
-        // Regression for bug J (parity #1): post-compact, upstream resets
-        // input_tokens / output_tokens to 0 so the right-chip jumps back
-        // to low usage. Pre-fix, the counters stayed at the pre-compact
-        // value (22571 in the tmux capture), which re-triggered the
-        // auto-fire gate on the very next turn.
+        
         let mut st = ConversationState::default();
         st.input_tokens = 22_571;
         st.output_tokens = 1_200;
@@ -2620,12 +2518,7 @@ mod tests {
 
     #[test]
     fn hydrate_from_records_hides_compaction_mark_internals() {
-        // Regression for bug K (parity #1): on --resume, the compaction mark
-        // used to render as `⎿ compacted (summary: kept=5;auto=false)`,
-        // leaking the internal summary_ref key=value string into the chat.
-        // Fix: skip the CompactionMark render entirely — the seed user
-        // message from compact_history_with_summary carries the real
-        // "This session is being continued…" context.
+        
         use crate::sessions::Record;
         let mut st = ConversationState::new();
         let records = vec![

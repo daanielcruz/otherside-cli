@@ -1,5 +1,4 @@
 
-
 use super::super::menu;
 use super::super::state::ConversationState;
 use super::PanelKind;
@@ -16,10 +15,7 @@ pub fn handle(kind: PanelKind, state: &mut ConversationState) -> SlashOutcome {
         ),
         PanelKind::Permissions => menu::OverlayMenu::new_permissions(state.session.permission_mode),
         PanelKind::Model => {
-            // Phase 1 tabbed `/model` panel. Default tab = the
-            // `settings.default_provider` slug, falling back to the session's
-            // provider, then ClaudeCode. Tabs start focused (user first
-            // presses ↓/Enter to drop into the body).
+            
             use crate::config::providers::{ProviderId, PROVIDER_ORDER};
             let default_pid = state
                 .persistence
@@ -74,10 +70,7 @@ pub fn handle(kind: PanelKind, state: &mut ConversationState) -> SlashOutcome {
             ],
         ),
         PanelKind::Tasks => {
-            // Open the full list-or-detail surface that mirrors upstream's
-            // BackgroundTasksDialog + AsyncAgentDetailDialog. Flat
-            // OverlayMenu::new_info was legacy; parity capture 2026-04-22
-            // (Target 3) required a drill-in + prompt preview.
+            
             state.active_tasks_panel = Some(
                 super::tasks_panel::TasksPanelState::new(&state.tasks),
             );
@@ -201,7 +194,6 @@ fn hooks_hints(st: &ConversationState) -> Vec<String> {
         format!("stop: {}", h.stop.len()),
     ]
 }
-
 
 #[cfg(test)]
 mod help_hints_tests {

@@ -3,7 +3,7 @@ use crate::tasks::{TaskKind, TaskRecord, TaskState, TaskStore};
 #[derive(Debug, Clone)]
 pub enum Mode {
     List,
-    Detail(usize), // index into `rows`
+    Detail(usize), 
 }
 
 #[derive(Debug, Clone)]
@@ -16,9 +16,7 @@ pub struct TaskRow {
     pub runtime_secs: u64,
     pub tokens: u64,
     pub output: Vec<String>,
-    /// Prompt (for agents) or command (for shells) — cached from
-    /// `TaskRecord.command` at panel-open so detail can render even after
-    /// the task is cleared from the store.
+    
     pub prompt: String,
     pub tool_use_id: Option<String>,
     pub error: Option<String>,
@@ -47,11 +45,7 @@ pub struct TasksPanelState {
     pub mode: Mode,
     pub cursor: usize,
     pub rows: Vec<TaskRow>,
-    /// True when the user actively drilled into detail from the list —
-    /// mirrors upstream's `onBack` prop being wired only on list drill-in.
-    /// Auto-skip-to-detail (`allItems.length === 1`) leaves this `false`
-    /// so the `← go back` footer shortcut stays hidden.
-    /// (`BackgroundTasksDialog.tsx:364-375`, `AsyncAgentDetailDialog.tsx:160`.)
+    
     pub came_from_list: bool,
 }
 
@@ -60,8 +54,6 @@ impl TasksPanelState {
         let rows: Vec<TaskRow> =
             tasks.list_active().iter().map(TaskRow::from).collect();
 
-        // Upstream single-task auto-skip: if `allItems.length === 1`, mount
-        // detail directly (`BackgroundTasksDialog.tsx:163-169`).
         let mode = if rows.len() == 1 {
             Mode::Detail(0)
         } else {
@@ -83,7 +75,7 @@ impl TasksPanelState {
         if self.cursor >= self.rows.len() {
             self.cursor = self.rows.len().saturating_sub(0).saturating_sub(1);
         }
-        // If user was in detail but the task went away, fall back to list.
+        
         if let Mode::Detail(idx) = self.mode {
             if idx >= self.rows.len() {
                 self.mode = Mode::List;

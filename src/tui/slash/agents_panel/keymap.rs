@@ -9,8 +9,7 @@ pub enum KeyOutcome {
 }
 
 pub fn handle_key(event: KeyEvent, state: &mut AgentsPanelState) -> KeyOutcome {
-    // Detail view intercepts most keys: Esc/Left/Enter back to list, Esc at
-    // list dismisses.
+    
     if state.detail.is_some() {
         return match event.code {
             KeyCode::Esc | KeyCode::Left | KeyCode::Enter | KeyCode::Char(' ') => {

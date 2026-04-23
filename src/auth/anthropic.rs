@@ -1,5 +1,4 @@
 
-
 use std::io::{self, BufRead, Write};
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -15,17 +14,44 @@ const REFRESH_SAFETY_MARGIN: Duration = Duration::from_secs(60);
 pub const CREDENTIALS_KEY: &str = "anthropic-oauth";
 
 pub fn build_login_body(auth_code: &str, state: &str, code_verifier: &str) -> Vec<u8> {
+    build_login_body_with_redirect(auth_code, state, code_verifier, fp::OAUTH_REDIRECT_URI)
+}
+
+pub fn build_login_body_with_redirect(
+    auth_code: &str,
+    state: &str,
+    code_verifier: &str,
+    redirect_uri: &str,
+) -> Vec<u8> {
     let mut m = Map::new();
     m.insert("grant_type".into(), Value::String("authorization_code".into()));
     m.insert("code".into(), Value::String(auth_code.into()));
     m.insert(
         "redirect_uri".into(),
-        Value::String(fp::OAUTH_REDIRECT_URI.into()),
+        Value::String(redirect_uri.into()),
     );
     m.insert("client_id".into(), Value::String(fp::CLIENT_ID.into()));
     m.insert("code_verifier".into(), Value::String(code_verifier.into()));
     m.insert("state".into(), Value::String(state.into()));
     serde_json::to_vec(&Value::Object(m)).expect("body serialization cannot fail")
+}
+
+pub fn build_authorize_url_with_redirect(
+    code_challenge: &str,
+    state: &str,
+    redirect_uri: &str,
+) -> url::Url {
+    let mut u = url::Url::parse(fp::OAUTH_AUTHORIZE_URL).expect("authorize URL is static");
+    u.query_pairs_mut()
+        .append_pair("code", "true")
+        .append_pair("client_id", fp::CLIENT_ID)
+        .append_pair("response_type", "code")
+        .append_pair("redirect_uri", redirect_uri)
+        .append_pair("scope", &fp::LOGIN_SCOPES.join(" "))
+        .append_pair("code_challenge", code_challenge)
+        .append_pair("code_challenge_method", "S256")
+        .append_pair("state", state);
+    u
 }
 
 pub fn build_refresh_body(refresh_token: &str) -> Vec<u8> {
@@ -319,17 +345,180 @@ pub async fn hydrate_subscription_if_missing() -> Result<()> {
     Ok(())
 }
 
+pub struct LoginHandshake {
+    pair: super::pkce::PkcePair,
+    state: String,
+    automatic_url: String,
+    manual_url: String,
+    listener: Option<std::net::TcpListener>,
+    port: u16,
+}
+
+impl LoginHandshake {
+    pub fn authorize_url(&self) -> &str {
+        &self.manual_url
+    }
+
+    pub fn manual_url(&self) -> &str {
+        &self.manual_url
+    }
+
+    pub fn automatic_url(&self) -> &str {
+        &self.automatic_url
+    }
+
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    pub fn expected_state(&self) -> &str {
+        &self.state
+    }
+
+    pub fn take_listener(&mut self) -> Option<std::net::TcpListener> {
+        self.listener.take()
+    }
+
+    pub async fn finalize(
+        self,
+        code: String,
+        returned_state: String,
+        is_manual: bool,
+    ) -> Result<CachedCreds> {
+        if returned_state != self.state {
+            return Err(Error::Auth(format!(
+                "state mismatch: sent {}, got {returned_state}",
+                self.state
+            )));
+        }
+        let redirect_uri = if is_manual {
+            fp::OAUTH_REDIRECT_URI.to_string()
+        } else {
+            format!("http://localhost:{}/callback", self.port)
+        };
+        let body = build_login_body_with_redirect(
+            &code,
+            &returned_state,
+            &self.pair.verifier,
+            &redirect_uri,
+        );
+        let client = token_http_client()?;
+        let resp = client
+            .post(fp::OAUTH_TOKEN_URL)
+            .header("Content-Type", "application/json")
+            .body(body)
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body_text = resp.text().await.unwrap_or_default();
+            return Err(Error::Auth(format!(
+                "token exchange failed: HTTP {status}: {body_text}"
+            )));
+        }
+
+        let token: TokenResponse = resp.json().await?;
+        let creds = CachedCreds::from_token_response(&token);
+        save_credentials(&creds)?;
+        Ok(creds)
+    }
+}
+
+pub fn begin_login() -> Result<LoginHandshake> {
+    let pair = super::pkce::PkcePair::generate();
+    let state = generate_state();
+    let (listener, port) = bind_callback_port()?;
+    let automatic_redirect = format!("http://localhost:{}/callback", port);
+    let automatic_url =
+        build_authorize_url_with_redirect(&pair.challenge, &state, &automatic_redirect)
+            .to_string();
+    let manual_url =
+        build_authorize_url_with_redirect(&pair.challenge, &state, fp::OAUTH_REDIRECT_URI)
+            .to_string();
+    Ok(LoginHandshake {
+        pair,
+        state,
+        automatic_url,
+        manual_url,
+        listener: Some(listener),
+        port,
+    })
+}
+
+pub fn bind_callback_port() -> Result<(std::net::TcpListener, u16)> {
+    const LOW: u16 = 54545;
+    const HIGH: u16 = LOW + 64;
+    for port in LOW..HIGH {
+        if let Ok(listener) = std::net::TcpListener::bind(("127.0.0.1", port)) {
+            return Ok((listener, port));
+        }
+    }
+    Err(Error::Other(
+        "could not bind any port in 54545..54609 for the anthropic OAuth callback".into(),
+    ))
+}
+
+pub fn parse_callback_stream(
+    mut stream: std::net::TcpStream,
+) -> Result<(String, String)> {
+    use std::io::{BufRead, BufReader, Write};
+    let reader = BufReader::new(
+        stream
+            .try_clone()
+            .map_err(|e| Error::Other(e.to_string()))?,
+    );
+    let mut first_line = String::new();
+    {
+        let mut lines = reader.lines();
+        if let Some(Ok(line)) = lines.next() {
+            first_line = line;
+        }
+    }
+    let path = first_line
+        .split_whitespace()
+        .nth(1)
+        .ok_or_else(|| Error::Other(format!("malformed callback line: {first_line:?}")))?;
+    let full = format!("http://localhost{path}");
+    let parsed = url::Url::parse(&full)
+        .map_err(|e| Error::Other(format!("parse callback url {full}: {e}")))?;
+    let mut code: Option<String> = None;
+    let mut state: Option<String> = None;
+    for (k, v) in parsed.query_pairs() {
+        match k.as_ref() {
+            "code" => code = Some(v.to_string()),
+            "state" => state = Some(v.to_string()),
+            _ => {}
+        }
+    }
+    let _ = stream.write_all(
+        b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nLogin complete - you can close this tab.",
+    );
+    let _ = stream.flush();
+    match (code, state) {
+        (Some(c), Some(s)) => Ok((c, s)),
+        _ => Err(Error::Other(format!(
+            "callback missing code/state in {full:?}"
+        ))),
+    }
+}
+
+pub async fn complete_login(
+    handshake: LoginHandshake,
+    pasted: &str,
+) -> Result<CachedCreds> {
+    let (code, returned_state) = parse_callback_input(pasted)?;
+    handshake.finalize(code, returned_state, true).await
+}
+
 pub async fn login<W: Write, R: BufRead>(
     mut stdout: W,
     mut stdin: R,
 ) -> Result<CachedCreds> {
-    let pair = super::pkce::PkcePair::generate();
-    let state = generate_state();
-
-    let url = build_authorize_url(&pair.challenge, &state);
+    let handshake = begin_login()?;
     writeln!(stdout, "\nOpen this URL in your browser to authorize otherside:")
         .map_err(|e| Error::Other(format!("stdout write: {e}")))?;
-    writeln!(stdout, "\n  {url}\n")
+    writeln!(stdout, "\n  {}\n", handshake.manual_url())
         .map_err(|e| Error::Other(format!("stdout write: {e}")))?;
     writeln!(
         stdout,
@@ -346,34 +535,7 @@ pub async fn login<W: Write, R: BufRead>(
     stdin
         .read_line(&mut input)
         .map_err(|e| Error::Other(format!("stdin read: {e}")))?;
-    let (code, returned_state) = parse_callback_input(&input)?;
-    if returned_state != state {
-        return Err(Error::Auth(format!(
-            "state mismatch: sent {state}, got {returned_state}"
-        )));
-    }
-
-    let body = build_login_body(&code, &returned_state, &pair.verifier);
-    let client = token_http_client()?;
-    let resp = client
-        .post(fp::OAUTH_TOKEN_URL)
-        .header("Content-Type", "application/json")
-        .body(body)
-        .send()
-        .await?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body_text = resp.text().await.unwrap_or_default();
-        return Err(Error::Auth(format!(
-            "token exchange failed: HTTP {status}: {body_text}"
-        )));
-    }
-
-    let token: TokenResponse = resp.json().await?;
-    let creds = CachedCreds::from_token_response(&token);
-    save_credentials(&creds)?;
-    Ok(creds)
+    complete_login(handshake, &input).await
 }
 
 pub async fn login_interactive() -> Result<CachedCreds> {

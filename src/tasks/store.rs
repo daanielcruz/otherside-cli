@@ -1,5 +1,4 @@
 
-
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock, RwLock};
 
@@ -122,11 +121,6 @@ impl TaskStore {
         c
     }
 
-    /// Count only records that are currently backgrounded (Ctrl+B flipped
-    /// `is_backgrounded` true and the record hasn't reached a terminal
-    /// state). Foreground running tasks are excluded — upstream's pill
-    /// `N local agent(s)` only appears once the user explicitly
-    /// backgrounds, never while a turn is actively streaming its tool.
     pub fn counts_backgrounded(&self) -> TaskCounts {
         let map = self.inner.read().expect("task store rwlock poisoned");
         let mut c = TaskCounts::default();
@@ -270,9 +264,7 @@ mod tests {
 
     #[test]
     fn counts_backgrounded_ignores_foreground_running_agent() {
-        // Regression for D.1: a foreground-running Agent must NOT feed
-        // the footer pill. Only records the user explicitly backgrounded
-        // count toward `N local agent(s)`.
+        
         let s = TaskStore::new();
         s.insert({
             let mut r = agent("fg-running");
@@ -286,9 +278,7 @@ mod tests {
 
     #[test]
     fn counts_backgrounded_counts_flipped_agent_until_terminal() {
-        // Regression for D.2: after Ctrl+B flips a running Agent to
-        // Backgrounded, the pill must keep the record until the real
-        // completion lands (state becomes terminal).
+        
         let s = TaskStore::new();
         s.insert({
             let mut r = agent("just-backgrounded");
@@ -298,8 +288,6 @@ mod tests {
         });
         assert_eq!(s.counts_backgrounded().agents, 1);
 
-        // When the real completion arrives and flips to Completed, the
-        // pill must drop back to zero — otherwise ghost entries pile up.
         let id = s.counts_backgrounded();
         assert_eq!(id.agents, 1);
         let records: Vec<_> = s

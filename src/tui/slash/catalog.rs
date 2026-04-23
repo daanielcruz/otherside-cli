@@ -123,11 +123,6 @@ pub const CATALOG: &[SlashEntry] = &[
         kind: SlashKind::Skill,
     },
     SlashEntry {
-        name: "init-verifiers",
-        brief: "create verifier skill(s)",
-        kind: SlashKind::Skill,
-    },
-    SlashEntry {
         name: "review",
         brief: "code review a pull request",
         kind: SlashKind::Skill,

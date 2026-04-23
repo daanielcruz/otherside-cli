@@ -1,5 +1,4 @@
 
-
 use std::time::Duration;
 
 use ratatui::{
@@ -42,10 +41,6 @@ pub mod theme {
 
     pub const USER_BG: Color = Color::Rgb(55, 55, 55);
 
-    // Queued-message chip palette mirrors upstream's 256-color scheme:
-    //   reconstructed/2.1.117/source/components/messages/HighlightedThinkingText.tsx:24,91,99
-    //   reconstructed/2.1.117/source/components/messages/UserPromptMessage.tsx:113-119
-    // subtle(239) for the pointer, text(231) for the body, userMessageBackground(237) for the band.
     pub const QUEUE_PREFIX: Color = Color::Indexed(239);
     pub const QUEUE_TEXT: Color = Color::Indexed(231);
     pub const QUEUE_BG: Color = Color::Indexed(237);
@@ -100,13 +95,7 @@ pub fn render(
                     if panel.running.is_empty() { 1 } else { panel.running.len() as u16 }
                 }
                 super::slash::agents_panel::Tab::Library => {
-                    // Match library_body's actual emission shape:
-                    //   1 `Create new agent` row
-                    //   + 1 blank separator
-                    //   + (0 or 2 + user_agents.len()) for User agents section
-                    //     (header + rows + trailing blank — only when non-empty)
-                    //   + 1 `Built-in agents (always available)` header
-                    //   + panel.library.len() built-in rows
+                    
                     let user_block = if panel.user_agents.is_empty() {
                         0
                     } else {
@@ -215,12 +204,6 @@ pub fn render(
         draw_queue_lines(f, queue_area, state);
     }
 
-    // Bug S: hide the prompt/input bar when a full-screen overlay is
-    // active (agents panel, settings menu, permission prompt, question
-    // modal). Upstream blocks input during overlay display so the user
-    // doesn't type into a hidden field. Keep it visible only when the
-    // overlay is just the autocomplete popup (which is anchored to the
-    // live input).
     let overlay_hides_prompt = state.pending_permission.is_some()
         || state.pending_question.is_some()
         || state.active_agents_panel.is_some()
@@ -345,11 +328,6 @@ fn draw_log(f: &mut Frame<'_>, area: Rect, state: &ConversationState, spinner_ti
     }
 }
 
-// Upstream renders the slash echo and its `⎿` dismiss anchor as a
-// tight paired unit (no blank row between them). `push_anchor` emits this
-// shape with `DisplayOrigin::Chrome` on both rows, so match it and skip the
-// usual per-message separator. Transcript-origin pairs (e.g. /compact) keep
-// the default spacing.
 fn is_chrome_anchor_pair(
     prev: &crate::tui::state::DisplayMessage,
     curr: &crate::tui::state::DisplayMessage,
@@ -505,22 +483,13 @@ fn draw_queue_lines(f: &mut Frame<'_>, area: Rect, state: &ConversationState) {
         return;
     }
     let total_rows = area.height as usize;
-    // Upstream chip shape (components/messages/QueuedMessage.tsx):
-    //   [blank gap above the chip, no bg]
-    //   [bg-filled pad row]
-    //   [❯ <msg 1>]
-    //   [❯ <msg 2>]
-    //   ...
-    //   [bg-filled pad row]
-    // The outer gap + interior top+bottom pad matches the upstream box's
-    // `marginY=1` + `paddingY=0` + explicit 1-line inner pads that give
-    // the chip visible breathing room (user diff #3 2026-04-24).
+    
     let outer_gap = 1usize;
-    let inner_pad = 1usize; // top + bottom each
+    let inner_pad = 1usize; 
     let reserved = outer_gap.saturating_add(inner_pad).saturating_add(inner_pad);
     let body_budget = total_rows.saturating_sub(reserved);
     if body_budget == 0 {
-        // Terminal too short — fall back to just the gap + one row packed.
+        
         let fallback_budget = total_rows.saturating_sub(outer_gap).max(1);
         let mut lines: Vec<Line<'_>> = Vec::with_capacity(total_rows);
         lines.push(Line::from(""));
@@ -544,17 +513,13 @@ fn draw_queue_lines(f: &mut Frame<'_>, area: Rect, state: &ConversationState) {
     f.render_widget(Paragraph::new(lines), area);
 }
 
-/// Interior padding row — full-width band at `theme::QUEUE_BG` so the chip
-/// shape looks boxed instead of a row of chevroned text (upstream diff #3
-/// 2026-04-24). Reuses the preview row's bg color for pixel continuity
-/// with the chevron+body rows above/below.
 fn queue_pad_row(width: u16) -> Line<'static> {
     let pad_style = Style::default().bg(theme::QUEUE_BG);
     Line::from(Span::styled(" ".repeat(width as usize), pad_style))
 }
 
 fn queue_preview_row(body: &str, width: u16) -> Line<'static> {
-    // paddingX=2 on the chip — components/messages/QueuedMessage.tsx:4,24.
+    
     const SIDE_PAD: usize = 2;
     let prefix = "❯ ";
     let prefix_style = Style::default()
@@ -578,8 +543,7 @@ fn queue_preview_row(body: &str, width: u16) -> Line<'static> {
         Span::styled(prefix.to_string(), prefix_style),
         Span::styled(preview, body_style),
     ];
-    // Extend the bg band through the trailing padding and any unused columns,
-    // so the shaded chip spans the full width of the queue slot.
+    
     let used = SIDE_PAD.saturating_add(prefix_cols).saturating_add(preview_cols);
     let trailing = width_usize.saturating_sub(used);
     if trailing > 0 {
@@ -607,10 +571,6 @@ fn draw_prompt(f: &mut Frame<'_>, area: Rect, state: &ConversationState) {
         .borders(Borders::TOP | Borders::BOTTOM)
         .border_style(Style::default().fg(theme::PROMPT_BORDER));
 
-    // Input bar stays at full contrast while streaming — upstream keeps
-    // the prompt live so users can queue the next turn as they read the
-    // stream. Previously both chevron + text got Modifier::DIM during
-    // streaming, which made the whole row look disabled (bug O).
     let chevron_style = Style::default().fg(theme::PROMPT_BORDER);
     let text_style = Style::default().fg(theme::TEXT);
     let show_queue_hint = state.input.is_empty() && !state.queued_messages.is_empty();
@@ -854,10 +814,7 @@ fn build_info_chip_line(state: &ConversationState) -> Line<'static> {
     let task_pill = if crate::tasks::is_disabled() {
         None
     } else {
-        // Pill tracks BACKGROUNDED tasks only — not foreground-running.
-        // Upstream shows `N local agent(s)` after the user Ctrl+B's; during
-        // a foreground tool turn the spinner + inline tool view are the
-        // feedback path, not the statusline pill.
+        
         crate::tasks::pill_label::get_pill_label(state.tasks.counts_backgrounded())
     };
     let has_task_pill = task_pill.is_some();
@@ -897,12 +854,7 @@ fn build_info_chip_line(state: &ConversationState) -> Line<'static> {
         } else {
             pill
         };
-        // Upstream SummaryPill (BackgroundTaskStatus.tsx:378-398) renders
-        // `<Text color="background" inverse={selected || hover}>` — flat at
-        // rest, fg/bg swapped ("chip-like") only when the pill is focused
-        // via ↓ at prompt bottom. Mirror by gating the inverse-style paint
-        // on `state.pill_focused`; rest-state paints the pill in MUTED,
-        // visually inline with the statusline.
+        
         let pill_style = if state.pill_focused {
             Style::default()
                 .fg(theme::TEXT)
@@ -912,7 +864,7 @@ fn build_info_chip_line(state: &ConversationState) -> Line<'static> {
             Style::default().fg(theme::MUTED)
         };
         if has_chip {
-            let (sep, body) = segment.split_at(3); // " · "
+            let (sep, body) = segment.split_at(3); 
             spans.push(Span::styled(sep.to_string(), Style::default().fg(theme::MUTED)));
             spans.push(Span::styled(body.to_string(), pill_style));
         } else {
@@ -1057,7 +1009,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn render_log_splices_tool_call_lines_between_messages_and_buffer() {
 
@@ -1120,8 +1071,6 @@ mod tests {
         assert_eq!(st.active_tool_calls[0].status, ToolStatus::Ok);
     }
 
-    // Collect each rendered row into a plain string so tests can reason
-    // about vertical adjacency without fighting wrap/alignment.
     fn row_strings(buf: &ratatui::buffer::Buffer) -> Vec<String> {
         let mut rows = Vec::with_capacity(buf.area.height as usize);
         for y in 0..buf.area.height {
@@ -1518,7 +1467,6 @@ mod tests {
         st.queued_messages.push("first queued".into());
         st.queued_messages.push("second queued".into());
 
-        // 2 msgs + 3 chrome rows (outer gap + 2 interior pads).
         let s = render_queue_lines_to_string(&st, 80, 5);
         assert!(s.contains("❯ first queued"), "rendered: {s:?}");
         assert!(s.contains("❯ second queued"), "rendered: {s:?}");
@@ -1532,7 +1480,6 @@ mod tests {
         st.queued_messages.push("msg-1".into());
         st.queued_messages.push("msg-2".into());
 
-        // slot = count + QUEUE_CHROME_ROWS (3: outer gap + top+bottom pad).
         let s = render_queue_lines_to_string(&st, 80, 6);
         assert!(s.contains("❯ msg-0"), "rendered: {s:?}");
         assert!(s.contains("❯ msg-1"), "rendered: {s:?}");
@@ -1552,7 +1499,7 @@ mod tests {
         st.queued_messages.push("queued".into());
 
         let width: u16 = 40;
-        let height: u16 = 4; // gap + top-pad + entry + bottom-pad
+        let height: u16 = 4; 
         let backend = TestBackend::new(width, height);
         let mut term = Terminal::new(backend).expect("terminal");
         term.draw(|f| {
@@ -1562,8 +1509,6 @@ mod tests {
         .unwrap();
         let buf = term.backend().buffer().clone();
 
-        // Row 0 = outer gap (no bg), row 1 = top pad (bg), row 2 = entry
-        // (bg), row 3 = bottom pad (bg).
         let top_pad = &buf[(20, 1)];
         assert_eq!(
             top_pad.bg, Color::Indexed(237),
@@ -1610,7 +1555,6 @@ mod tests {
         .unwrap();
         let buf = term.backend().buffer().clone();
 
-        // Row 0 is the margin-top blank, row 1 holds the chip.
         let chip_row: u16 = 1;
         let pad_cell = &buf[(0, chip_row)];
         assert_eq!(pad_cell.bg, Color::Indexed(237), "leading pad bg: {:?}", pad_cell);
@@ -1620,7 +1564,6 @@ mod tests {
             pad_cell
         );
 
-        // Prefix glyph sits at x=2 after the 2-col left pad.
         let prefix_cell = &buf[(2, chip_row)];
         assert_eq!(prefix_cell.symbol(), "❯", "prefix glyph: {:?}", prefix_cell);
         assert_eq!(prefix_cell.fg, Color::Indexed(239), "prefix fg: {:?}", prefix_cell);
@@ -1631,7 +1574,6 @@ mod tests {
             prefix_cell
         );
 
-        // Body cell right after "❯ " (prefix at x=2, space at x=3, body at x=4).
         let body_cell = &buf[(4, chip_row)];
         assert_eq!(body_cell.fg, Color::Indexed(231), "body fg: {:?}", body_cell);
         assert_eq!(body_cell.bg, Color::Indexed(237), "body bg: {:?}", body_cell);
@@ -1641,7 +1583,6 @@ mod tests {
             body_cell
         );
 
-        // Trailing cell at the right edge still wears the bg band.
         let tail_cell = &buf[(width - 1, chip_row)];
         assert_eq!(tail_cell.bg, Color::Indexed(237), "trailing bg: {:?}", tail_cell);
     }

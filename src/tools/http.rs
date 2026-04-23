@@ -2,18 +2,6 @@ use std::time::Duration;
 
 use crate::tools::ToolError;
 
-/// Env vars for an extra PEM-encoded root-CA bundle. Checked in order:
-/// 1. `SSL_CERT_FILE` — POSIX standard (curl, Go, Python with requests-ca-bundle).
-/// 2. `NODE_EXTRA_CA_CERTS` — Node.js convention. Accepted as fallback so
-///    existing pman-style shell functions that set both just work without
-///    the user having to fork a Rust-specific variant.
-///
-/// First one set AND non-empty wins. Both point at a file containing one
-/// or more PEM `BEGIN CERTIFICATE` blocks.
-///
-/// `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` are picked up automatically
-/// by reqwest 0.12 when no `.no_proxy()` is set — we never call that, so
-/// the proxy side is already transparent.
 const EXTRA_CA_ENVS: &[&str] = &["SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS"];
 
 fn resolve_extra_ca_path() -> Option<(&'static str, String)> {
@@ -27,11 +15,6 @@ fn resolve_extra_ca_path() -> Option<(&'static str, String)> {
     None
 }
 
-/// Apply the extra-CA env-var root store to a `ClientBuilder` in place.
-/// Best-effort: file-not-set, file-unreadable, or no-valid-certs-parsed
-/// cases log a warning via `tracing` and leave the builder untouched.
-/// rustls-tls-native-roots already loads the OS keychain, so the env var
-/// is additive — not a replacement for keychain-installed trust.
 pub fn apply_extra_ca_roots(mut builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
     let Some((env_name, path)) = resolve_extra_ca_path() else {
         return builder;
@@ -145,9 +128,7 @@ mod tests {
 
     #[test]
     fn apply_extra_ca_roots_accepts_valid_pem() {
-        // Minimal self-signed test cert generated offline — just a shape
-        // check that the PEM parse + add_root_certificate chain doesn't
-        // reject a well-formed bundle.
+        
         const TEST_CERT: &[u8] = b"-----BEGIN CERTIFICATE-----\n\
 MIIBhTCCASugAwIBAgIQIRi6zePL6mKjOipn+dNuaTAKBggqhkjOPQQDAjASMRAw\n\
 DgYDVQQKEwdBY21lIENvMB4XDTE3MTAyMDE5NDMwNloXDTE4MTAyMDE5NDMwNlow\n\

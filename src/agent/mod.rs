@@ -1,5 +1,4 @@
 
-
 use std::collections::HashMap;
 use std::future::Future;
 
@@ -30,16 +29,8 @@ pub struct Turn {
 
     pub pending_usage: Option<crate::inference::OpenAiUsage>,
 
-    // Accumulates thinking-block body text from `thinking_delta` SSE
-    // events. Half of a round-trip pair; the other half is
-    // `thinking_signature`. Both must be non-empty for the next request
-    // to re-emit a Block::Thinking content block. Empty = drop the
-    // thinking block entirely (kimi-cli pattern).
     pub reasoning_content: String,
 
-    // Accumulates thinking-block signature from `signature_delta` SSE
-    // events. Cryptographic integrity token over the thinking body;
-    // kimi/anthropic validator rejects unsigned reused thinking.
     pub thinking_signature: String,
 }
 
@@ -286,9 +277,7 @@ impl ToolDispatcher for GatedDispatcher {
                     "subagent cannot call tool `{name}` (not in allowlist)"
                 )));
             }
-            // Scope the provider thread-local across the SYNC tools::dispatch
-            // call so per-provider tools (WebSearch) pick the right backend.
-            // See src/tools/mod.rs::current_provider.
+            
             crate::tools::with_current_provider(self.provider_id, || {
                 tools::dispatch(name, args).map_err(|e| Error::Other(format!("tool `{name}`: {e}")))
             })
@@ -309,23 +298,6 @@ pub fn tool_result_message(call_id: &str, result: &Value) -> OpenAiChatMessage {
     }
 }
 
-/// Unwrap the tool-result content the model will see as `tool_result.content`.
-///
-/// Three shapes supported:
-/// 1. `"string"` — flat string. Used directly.
-/// 2. `[{"type": "text", "text": "…"}, …]` — Anthropic/upstream-shape block
-///    array. The subagent runner + backgrounded Agent path both emit this;
-///    concatenate all text blocks so a multi-block payload survives the
-///    collapse to a single string (the wire types we ship expose
-///    `tool_result.content` as `String`).
-/// 3. Anything else — fall back to serializing the entire result JSON blob.
-///    Last-ditch path for tools that forget to set `content`; keeps the
-///    model from seeing an empty string.
-///
-/// Before this extractor, shape #2 fell through to the JSON-blob fallback
-/// — kimi self-reported seeing `{"status":"backgrounded",...,"content":[…]}`
-/// as the tool_result for a backgrounded Agent call and re-dispatched
-/// thinking the first attempt failed (live session 2026-04-24).
 fn extract_tool_result_content(result: &Value) -> String {
     if let Some(s) = result.get("content").and_then(Value::as_str) {
         return s.to_string();
@@ -464,10 +436,7 @@ impl<D: ToolDispatcher, O: LoopObserver> AgentLoop<D, O> {
 
             if turn.wants_tool_dispatch() && turn.has_pending_calls() {
                 let tool_calls = turn.drain_calls();
-                // Pair captured (reasoning_content, thinking_signature).
-                // kimi-cli rule: signature-less thinking is STRIPPED, not
-                // sent as empty. We mirror: both Some → thinking block
-                // round-trips; either None → both become None.
+                
                 let (captured_reasoning, captured_signature) = if turn.reasoning_content.is_empty()
                     || turn.thinking_signature.is_empty()
                 {
@@ -779,16 +748,12 @@ mod tests {
 
     #[test]
     fn turn_fold_captures_reasoning_content_from_stream() {
-        // Simulate the translator emitting `thinking_delta` / `reasoning_content_delta`
-        // chunks (shape: `OpenAiDelta.reasoning_content = Some(...)`).
-        // Turn::fold_chunk must accumulate into `turn.reasoning_content`
-        // so the agent loop can attach it to the assistant tool-call
-        // message and round-trip to kimi.
+        
         let mut t = Turn::new();
         t.fold_chunk(reasoning_chunk("Let me think "));
         t.fold_chunk(reasoning_chunk("about this. "));
         t.fold_chunk(reasoning_chunk("I'll Glob first."));
-        // Interleave with text + a tool call to prove the fold coexists.
+        
         t.fold_chunk(text_chunk("Reading files now.", None));
         t.fold_chunk(tool_chunk(
             0,
@@ -814,11 +779,7 @@ mod tests {
 
     #[tokio::test]
     async fn agent_loop_attaches_reasoning_content_to_tool_call_assistant_msg() {
-        // End-to-end check: thinking_delta + signature_delta chunks flow
-        // through the stream, Turn folds them as a pair, and the
-        // assistant tool-call message pushed into history carries BOTH
-        // the captured reasoning AND the signature. kimi-cli rule:
-        // signature-less thinking is dropped; both must round-trip.
+        
         let turn1: Vec<std::result::Result<OpenAiChunk, Error>> = vec![
             Ok(reasoning_chunk("kimi-think-step-1 ")),
             Ok(reasoning_chunk("kimi-think-step-2")),
@@ -885,11 +846,7 @@ mod tests {
 
     #[tokio::test]
     async fn agent_loop_drops_thinking_when_signature_missing() {
-        // kimi-cli rule regression. Stream emits reasoning_content but
-        // never a signature_delta (real-world case: malformed wire, or
-        // a provider that doesn't emit signatures). Agent loop MUST
-        // drop both halves — signature-less thinking would 400 on kimi
-        // round-trip anyway.
+        
         let turn1: Vec<std::result::Result<OpenAiChunk, Error>> = vec![
             Ok(reasoning_chunk("unsigned reasoning")),
             Ok(tool_chunk(
@@ -1145,12 +1102,7 @@ mod tests {
 
     #[test]
     fn tool_result_message_extracts_text_from_block_array() {
-        // Backgrounded Agent + subagent runner both emit `content:
-        // [{"type":"text","text":"..."}]`. Before the block-array
-        // extractor, this fell through to JSON-blob stringify and
-        // kimi saw `{"status":"backgrounded",...}` as the tool_result
-        // — re-dispatched the Agent thinking the first attempt failed
-        // (live session 2026-04-24).
+        
         let msg = tool_result_message(
             "tu_bg",
             &json!({

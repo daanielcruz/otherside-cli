@@ -35,10 +35,6 @@ pub fn signal_all() -> Vec<String> {
     ids
 }
 
-/// Signal a single tool_call_id. Returns `true` when a receiver was
-/// registered and notified; `false` when nothing matched (already
-/// unregistered / spurious id). Used by `/tasks` detail `x` to kill one
-/// specific task without affecting siblings.
 pub fn signal(tool_call_id: &str) -> bool {
     let mut map = registry()
         .lock()

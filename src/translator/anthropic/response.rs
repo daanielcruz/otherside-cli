@@ -1,5 +1,4 @@
 
-
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -48,18 +47,6 @@ pub struct AnthropicStreamTranslator {
 
     next_tool_index: u32,
 
-    // Kimi / Anthropic interleaved-thinking: every assistant turn that
-    // emits tool_use blocks under `thinking: {type: adaptive}` must be
-    // round-tripped back with a `{"type":"thinking","thinking":...,
-    // "signature":...}` content block at the FIRST position. We capture
-    // both halves as they stream:
-    //   - `thinking_delta` → reasoning_content_buf (body text)
-    //   - `signature_delta` → thinking_signature_buf (integrity token)
-    // Both must be present when the agent loop folds them onto the
-    // assistant message. A thinking block with empty signature MUST be
-    // stripped — never sent back as empty — or kimi rejects. Matches
-    // kimi-cli `kosong/contrib/chat_provider/anthropic.py` round-trip
-    // (signature-less ThinkPart is dropped in _convert_message).
     reasoning_content_buf: String,
     thinking_signature_buf: String,
 }
@@ -86,11 +73,6 @@ impl AnthropicStreamTranslator {
         }
     }
 
-    /// Drain any accumulated reasoning_content captured from kimi-flavored
-    /// SSE deltas during this turn. Returns `None` if nothing was captured.
-    /// Consumer wire-up is a deferred follow-up — the request-side gate
-    /// emits `""` unconditionally so the kimi validator passes even when
-    /// this buffer never flows back into history.
     pub fn take_reasoning_content(&mut self) -> Option<String> {
         if self.reasoning_content_buf.is_empty() {
             None
@@ -99,12 +81,6 @@ impl AnthropicStreamTranslator {
         }
     }
 
-    /// Drain any accumulated thinking-block signature. Paired with
-    /// `take_reasoning_content`; both must return `Some` for the next
-    /// request to round-trip a valid thinking block. A Some/None mismatch
-    /// means a half-captured stream — caller SHOULD drop both and emit no
-    /// thinking block, matching the kimi-cli rule (signature-less
-    /// ThinkPart is stripped, not sent empty).
     pub fn take_thinking_signature(&mut self) -> Option<String> {
         if self.thinking_signature_buf.is_empty() {
             None
@@ -145,10 +121,7 @@ impl AnthropicStreamTranslator {
             }
 
             other => {
-                // Kimi subagent-hang debug hook (2026-04-22): log unknown
-                // events so a Proxyman-free probe can still spot when the
-                // provider emits a sentinel we ignore — e.g. `ping`,
-                // keepalive, or provider-specific extensions.
+                
                 tracing::debug!(
                     target: "otherside::stream",
                     hop = "translator_unknown_event",
@@ -293,18 +266,7 @@ impl AnthropicStreamTranslator {
                     None,
                 )))
             }
-            // Kimi-specific: when `thinking` is on, reasoning flows as either
-            // `thinking_delta` (reusing Anthropic's shape; field name `thinking`)
-            // or a speculative `reasoning_content_delta` (field name
-            // `reasoning_content`). Both variants feed one buffer AND emit a
-            // chunk with `delta.reasoning_content` set — the agent loop folds
-            // those chunks into `OpenAiChatMessage.reasoning_content` so the
-            // next request body round-trips the real content. The buffer is
-            // retained for direct `take_reasoning_content()` callers (unit
-            // tests today; tomorrow perhaps a non-streaming code path). Wire
-            // shape still needs a Proxyman capture to confirm the exact
-            // event name kimi emits — shipping both decoders keeps the
-            // follow-up one match-arm away.
+            
             "thinking_delta" => {
                 let chunk = delta_obj
                     .get("thinking")
@@ -324,13 +286,7 @@ impl AnthropicStreamTranslator {
                 )))
             }
             "signature_delta" => {
-                // Anthropic interleaved-thinking: after thinking_delta stream,
-                // provider emits signature_delta events carrying the
-                // cryptographic signature of the thinking content. Must be
-                // captured and round-tripped verbatim in the next request's
-                // thinking block, or kimi/anthropic 400s. Wire pattern
-                // confirmed against kimi-cli
-                // (kosong/contrib/chat_provider/anthropic.py _convert_stream_response).
+                
                 let chunk = delta_obj
                     .get("signature")
                     .and_then(Value::as_str)
@@ -630,12 +586,7 @@ mod tests {
 
     #[test]
     fn signature_delta_accumulates_into_thinking_signature_buffer() {
-        // Wire-confirmed via Proxyman capture 2026-04-23 of
-        // api.kimi.com/coding/v1/messages successful turn. After the
-        // thinking_delta stream, kimi emits signature_delta events
-        // carrying the cryptographic signature of the thinking content.
-        // Must be captured and round-tripped verbatim or kimi rejects
-        // the next turn with "reasoning_content missing".
+        
         let mut t = AnthropicStreamTranslator::new();
         let ev = SseEvent {
             event: "content_block_delta".into(),
@@ -659,10 +610,7 @@ mod tests {
 
     #[test]
     fn thinking_delta_accumulates_into_reasoning_content_buffer() {
-        // The event now BOTH feeds the internal buffer (backward-compat
-        // for direct `take_reasoning_content` callers) AND emits a chunk
-        // with `delta.reasoning_content` set so the data flows through
-        // the agent loop's fold_chunk path for round-trip to kimi.
+        
         let mut t = AnthropicStreamTranslator::new();
         let ev = SseEvent {
             event: "content_block_delta".into(),
@@ -680,14 +628,13 @@ mod tests {
         );
         assert!(chunk.choices[0].delta.content.is_none());
         assert!(chunk.choices[0].delta.tool_calls.is_empty());
-        // Internal buffer still populated for backward compat.
+        
         assert_eq!(t.take_reasoning_content().as_deref(), Some("reasoning..."));
     }
 
     #[test]
     fn translator_accumulates_reasoning_content_internally() {
-        // Two back-to-back thinking_delta events must concatenate into one
-        // buffer. `take_reasoning_content` drains it.
+        
         let mut t = AnthropicStreamTranslator::new();
         t.on_event(&SseEvent {
             event: "content_block_delta".into(),
@@ -705,15 +652,13 @@ mod tests {
             t.take_reasoning_content().as_deref(),
             Some("step one step two")
         );
-        // Drained — a second call yields None.
+        
         assert!(t.take_reasoning_content().is_none());
     }
 
     #[test]
     fn reasoning_content_delta_variant_also_accumulates() {
-        // Speculative kimi-specific event name. Wire shape unconfirmed —
-        // we decode `delta.reasoning_content` first, falling back to
-        // `delta.text` for Anthropic-like payload reuse.
+        
         let mut t = AnthropicStreamTranslator::new();
         t.on_event(&SseEvent {
             event: "content_block_delta".into(),

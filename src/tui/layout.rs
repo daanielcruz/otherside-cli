@@ -1,5 +1,4 @@
 
-
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
 fn pad_sides(r: Rect, pad: u16) -> Rect {
@@ -34,9 +33,6 @@ pub struct FrameSlots {
     pub info: Rect,
 }
 
-// Outer gap row above the chip + 1 bg-filled pad row inside top + 1 inside
-// bottom. Matches upstream's `marginTop={1}` + interior `paddingY` on the
-// QueuedMessage box (user diff #3 2026-04-24).
 pub const QUEUE_CHROME_ROWS: u16 = 3;
 
 pub fn split_frame(
@@ -46,9 +42,6 @@ pub fn split_frame(
     popup_rows: u16,
 ) -> FrameSlots {
 
-    // Upstream only caps user-typed queued messages in task-notification mode
-    // (PromptInputQueuedCommands.tsx:40). For regular queued input there is no
-    // cap, so we render every entry — the terminal height bounds it anyway.
     let message_rows: u16 = (queue_count as u16)
         .saturating_mul(u16::from(streaming_active));
     let queue_rows: u16 = if message_rows > 0 {
@@ -72,11 +65,7 @@ pub fn split_frame(
     constraints.push(Constraint::Length(3));
     if popup_active {
         constraints.push(Constraint::Length(popup_rows));
-        // Bottom padding row: keep the last suggestion from kissing the
-        // terminal edge (user report 2026-04-23: `/dre…` popup glued to
-        // bottom). Reserved here instead of shrinking the inner list area,
-        // which would clip a visible suggestion when popup_rows equals the
-        // match count.
+        
         constraints.push(Constraint::Length(1));
     } else {
         constraints.push(Constraint::Length(1));

@@ -1,5 +1,4 @@
 
-
 use serde_json::{json, Map, Value};
 
 use crate::harness::reminders::render_user_context_with_git;
@@ -8,21 +7,6 @@ use crate::inference::{OpenAiChatMessage, OpenAiChatRequest, OpenAiChatRole, Ope
 use crate::thinking::{ThinkingConfig, ThinkingLevel, ThinkingMode};
 use crate::translator::anthropic::UserContext;
 
-/// Convert the OpenAI-chat-style `tools[]` (OpenAiToolDef, nested
-/// `{type, function:{name, description, parameters}}`) into the flat
-/// Responses-API shape codex expects:
-/// `{type:"function", name, description, strict:false, parameters}`.
-/// See openai/codex `codex-rs/tools/src/responses_api.rs:26-38` (struct
-/// ResponsesApiTool) and `codex-rs/tools/src/tool_spec.rs:20-58`
-/// (enum ToolSpec with `#[serde(tag = "type")]`).
-///
-/// WebSearch is special-cased: codex's RL-trained path uses a server-side
-/// `{"type":"web_search", ...}` tool (see `tool_spec.rs:43-55` +
-/// `create_web_search_tool` at `tool_spec.rs:93-129`). When a WebSearch
-/// function tool is present, we replace it with the server tool spec so
-/// the model picks it up natively. The `allowed_domains` filter maps to
-/// `filters.allowed_domains`; `blocked_domains` has no codex counterpart
-/// and is dropped.
 pub fn openai_tools_to_codex_tools(tools: &[OpenAiToolDef]) -> Vec<Value> {
     let mut out: Vec<Value> = Vec::with_capacity(tools.len());
     for t in tools {
@@ -41,10 +25,6 @@ pub fn openai_tools_to_codex_tools(tools: &[OpenAiToolDef]) -> Vec<Value> {
     out
 }
 
-/// Build the `{"type":"web_search", ...}` server-tool entry.
-/// `schema` is the claude-anchor WebSearch input_schema — we mine
-/// `allowed_domains` off it (request-side filter) if the caller passed
-/// a non-empty default through the schema. Live flag is always on.
 fn web_search_server_tool(_schema: &Value) -> Value {
     json!({
         "type": "web_search",
@@ -52,32 +32,15 @@ fn web_search_server_tool(_schema: &Value) -> Value {
     })
 }
 
-/// Upstream's fallback header when no explicit base instructions are supplied.
-/// Mirrors `DEFAULT_PERSONALITY_HEADER` at
-/// `openai/codex:codex-rs/models-manager/src/model_info.rs:17`.
-/// The /responses endpoint rejects requests with missing or empty
-/// `instructions` ({"detail":"Instructions are required"}), so we always
-/// emit a non-empty string — see `build_responses_request` at
-/// `codex-rs/core/src/client.rs:831-874` where upstream clones
-/// `prompt.base_instructions.text` unconditionally into the request body.
 pub const DEFAULT_INSTRUCTIONS: &str =
     "You are Codex, a coding agent based on GPT-5. You and the user share the same workspace and collaborate to achieve the user's goals.";
 
-/// Concatenation of the claude-code agent preamble + main system prompt.
-/// Codex speaks OpenAI /responses which folds the "system" role into a
-/// single `instructions` string. To keep operational parity (tools, slash
-/// commands, memory system, permission semantics all come from these two
-/// blocks), we prepend them to any caller-supplied System message. The
-/// claude-code-exclusive blocks (billing header + `You are Claude Code…`
-/// opener) are NOT included — Codex has its own identity + routing.
 fn claude_harness_instructions() -> String {
     let preamble = crate::harness::SYSTEM_AGENT_PREAMBLE.trim_end();
     let main = crate::harness::SYSTEM_PROMPT.trim_end();
     format!("{preamble}\n\n{main}")
 }
 
-/// Codex uses the shared third-party clarifier prepended to the raw
-/// `<available-deferred-tools>` tag. Same fix as Kimi ThirdParty flavor.
 fn codex_deferred_tools_reminder() -> String {
     crate::harness::reminders::third_party_deferred_tools_reminder()
 }
@@ -90,14 +53,6 @@ pub fn build_responses_body(
     build_responses_body_with_ctx(req, tools_json, thinking, None)
 }
 
-/// Like `build_responses_body` but threads the harness reminder context
-/// (email, date, git status) so the first user input carries the
-/// `<available-deferred-tools>`, `<skills>`, and `<user-context>` reminder
-/// blocks the Anthropic translator injects via `message_builder::normalize`.
-/// Without these reminders Codex would see preamble + main prompt only,
-/// missing the per-turn operational context (deferred tools availability,
-/// user identity, current date, git status). User ask 2026-04-22:
-/// "mandar todo harness claude code, só excluímos billing header e opener".
 pub fn build_responses_body_with_ctx(
     req: &OpenAiChatRequest,
     tools_json: Vec<Value>,
@@ -106,12 +61,7 @@ pub fn build_responses_body_with_ctx(
 ) -> Value {
     let mut body = Map::new();
     body.insert("model".into(), Value::String(req.model.clone()));
-    // Always lead with the claude-code harness preamble + main prompt so
-    // Codex gets the same tool discipline, memory rules, and operational
-    // context as Anthropic. Caller-supplied System message (e.g. subagent
-    // definition.system_prompt) is appended after. Empty-fallback is the
-    // codex-personality header so /responses never rejects on
-    // {"detail":"Instructions are required"}.
+    
     let harness = claude_harness_instructions();
     let extra = extract_instructions(&req.messages);
     let instructions = match extra {
@@ -133,11 +83,6 @@ pub fn build_responses_body_with_ctx(
         body.insert("reasoning".into(), reasoning);
     }
 
-    // ChatGPT /responses rejects `store:true` with HTTP 400
-    // ({"detail":"Store must be set to false"}). Upstream mirrors this:
-    // `store: provider.is_azure_responses_endpoint()` at
-    // `openai/codex:codex-rs/core/src/client.rs:880` — false on ChatGPT,
-    // true only on Azure Responses. We target ChatGPT exclusively.
     body.insert("store".into(), Value::Bool(false));
     body.insert("stream".into(), Value::Bool(true));
     body.insert("include".into(), Value::Array(Vec::new()));
@@ -166,20 +111,7 @@ fn messages_to_input(
                 let mut content: Vec<Value> = Vec::new();
                 if first_user {
                     if let Some(ctx) = user_ctx {
-                        // Mirror the anthropic `build_preamble_blocks_with_git`
-                        // contract (deferred-tools + skills + user-context) on
-                        // the /responses wire. Upstream Codex doesn't ship
-                        // these, but Otherside needs them so the Codex-backed
-                        // agent loop matches Anthropic behavior for tool
-                        // discovery, skill catalog, and per-turn context.
-                        // Codex tool regression (2026-04-22): GPT-5 reads
-                        // raw `<available-deferred-tools>` as an exclusive
-                        // list ("these are the only tools available") and
-                        // refuses Bash fluently. Upstream Claude is tuned
-                        // to the tag and treats it as additive; Codex is
-                        // not. Prepend an explanatory clarifier on the
-                        // codex wire ONLY — anthropic + kimi still see the
-                        // raw tag for byte-fidelity with upstream.
+                        
                         content.push(json!({
                             "type": "input_text",
                             "text": codex_deferred_tools_reminder(),
@@ -245,9 +177,7 @@ fn reasoning_json(cfg: &ThinkingConfig) -> Option<Value> {
         ThinkingLevel::Medium => "medium",
         ThinkingLevel::High => "high",
         ThinkingLevel::XHigh | ThinkingLevel::Max => "xhigh",
-        // Kimi's On/Off ladder doesn't exist on Codex; `/responses`
-        // reasoning takes numeric levels only. Map On→xhigh (best effort)
-        // and Off→drop the reasoning block.
+        
         ThinkingLevel::On => "xhigh",
         ThinkingLevel::Off => return None,
         ThinkingLevel::None | ThinkingLevel::Auto => return None,
@@ -312,7 +242,6 @@ mod tests {
         let body = build_responses_body_with_ctx(&req, vec![], None, Some(&ctx));
         let input = body["input"].as_array().unwrap();
 
-        // first user: reminder blocks + user content
         assert_eq!(input[0]["role"], "user");
         let first_content = input[0]["content"].as_array().unwrap();
         assert_eq!(
@@ -345,9 +274,7 @@ mod tests {
             first_texts[2].contains("Current branch: main"),
             "block 2 must carry git_status when populated"
         );
-        // Codex-only clarifier: model must see "ADDITIVE" framing so it
-        // doesn't refuse Bash calls on the grounds that Bash isn't listed
-        // in <available-deferred-tools>. Parity fix 2026-04-22.
+        
         assert!(
             first_texts[0].contains("ADDITIVE"),
             "codex deferred-tools reminder must prepend the additive clarifier: {:?}",
@@ -359,7 +286,6 @@ mod tests {
         );
         assert_eq!(first_texts[3], "first turn");
 
-        // second user: only user content, no reminders
         assert_eq!(input[2]["role"], "user");
         let second_content = input[2]["content"].as_array().unwrap();
         assert_eq!(
@@ -392,10 +318,7 @@ mod tests {
         };
         let body = build_responses_body(&req, vec![], None);
         let instr = body["instructions"].as_str().expect("instructions present");
-        // Harness preamble + main system prompt MUST ride on codex too —
-        // they carry the tool discipline, slash rules, memory system.
-        // Claude-code-exclusive blocks (billing header, "You are Claude
-        // Code…" opener) MUST NOT.
+        
         assert!(
             !instr.contains("x-anthropic-billing-header:"),
             "billing header leaked to codex: {instr}"
@@ -431,10 +354,7 @@ mod tests {
         let body = build_responses_body(&req, vec![], None);
         let instr = body["instructions"].as_str().expect("instructions present");
         assert!(!instr.is_empty(), "upstream /responses rejects empty instructions");
-        // No explicit System message but harness preamble + main prompt
-        // still flow so the main-agent path sees the same operational
-        // context as anthropic. Falls back to DEFAULT_INSTRUCTIONS only
-        // if the harness consts ever go empty at build time.
+        
         assert!(
             !instr.contains("x-anthropic-billing-header:"),
             "billing header leaked when no system message: {instr}"

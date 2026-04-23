@@ -1,5 +1,4 @@
 
-
 use crate::config::providers::ProviderId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,10 +53,7 @@ mod tests {
 
     #[test]
     fn claude_code_tier_mapping_covers_all_variants() {
-        // Single table-driven replacement for the four per-tier asserts
-        // and the four per-provider asserts on `default_model_for` (those
-        // are already locked upstream by
-        // `config::providers::default_model_mapping_matches_spec_table`).
+        
         let cases = [
             (SubscriptionTier::AntInternal, "claude-opus-4-7[1m]"),
             (SubscriptionTier::Max, "claude-opus-4-7[1m]"),

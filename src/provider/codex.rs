@@ -1,5 +1,4 @@
 
-
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -21,9 +20,6 @@ use crate::translator::sse::SseBuffer;
 
 use super::{ChunkStream, Provider};
 
-// Must match `config::providers::ProviderId::Codex.slug()` so registry lookups
-// by slug (turn dispatch, /model commit) resolve this provider. Legacy short
-// form "codex" is accepted by `ProviderId::from_slug` for config-file back-compat.
 pub const ID: &str = "codex-oauth";
 
 pub struct CodexProvider {

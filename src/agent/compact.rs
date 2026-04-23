@@ -1,10 +1,3 @@
-//! Compact conversation prompt + formatter primitives + async runner.
-//!
-//! Verbatim port of `services/compact/prompt.ts` from upstream 2.1.117. Only
-//! the base (full-conversation) path is ported — partial/up-to variants are
-//! post-MVP. `compact_conversation` streams a single-turn summary request
-//! through the active provider, drops any attempted tool calls, and returns
-//! the raw assistant text (caller applies `format_compact_summary`).
 
 use std::pin::Pin;
 
@@ -131,7 +124,6 @@ When you are using compact - please focus on test output and code changes. Inclu
 
 const NO_TOOLS_TRAILER: &str = "\n\nREMINDER: Do NOT call any tools. Respond with plain text only — an <analysis> block followed by a <summary> block. Tool calls will be rejected and you will fail the task.";
 
-/// Build the base compact prompt, optionally appending user custom instructions.
 pub fn get_compact_prompt(custom_instructions: Option<&str>) -> String {
     let mut prompt = String::with_capacity(16_000);
     prompt.push_str(NO_TOOLS_PREAMBLE);
@@ -149,8 +141,6 @@ pub fn get_compact_prompt(custom_instructions: Option<&str>) -> String {
     prompt
 }
 
-/// Strip the `<analysis>` drafting scratchpad and swap the `<summary>` XML tags
-/// for a readable `Summary:` header. Mirrors upstream `formatCompactSummary`.
 pub fn format_compact_summary(summary: &str) -> String {
     let mut out = strip_first_tag(summary, "analysis");
 
@@ -166,9 +156,6 @@ pub fn format_compact_summary(summary: &str) -> String {
     collapse_blank_runs(&out).trim().to_string()
 }
 
-/// Compose the synthetic user message seeded post-compact. Mirrors upstream
-/// `getCompactUserSummaryMessage`. The `KAIROS`/`PROACTIVE` branch is not
-/// ported (those build flags are cut in otherside).
 pub fn get_compact_user_summary_message(
     summary: &str,
     suppress_follow_up_questions: bool,
@@ -238,13 +225,6 @@ fn collapse_blank_runs(source: &str) -> String {
     out
 }
 
-/// Drive one streaming turn that asks the model to summarize `history`.
-///
-/// Parallels upstream `streamCompactSummary` → `compactConversation` (minus
-/// the PTL retry / cache-sharing fork / hook pipeline). Caller owns wiring the
-/// returned summary back into state (either replace history with a single
-/// synthetic user message carrying `get_compact_user_summary_message`, or
-/// drop the tail entirely for manual `/compact`).
 pub async fn compact_conversation(
     provider: &(dyn Provider + Send + Sync),
     model: &str,

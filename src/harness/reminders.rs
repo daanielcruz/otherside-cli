@@ -1,5 +1,4 @@
 
-
 use serde_json::{json, Value};
 
 use super::{REMINDER_DEFERRED_TOOLS, REMINDER_SKILLS, REMINDER_USER_CONTEXT_TMPL};
@@ -40,10 +39,6 @@ pub fn build_preamble_blocks_with_git(
     ]
 }
 
-/// Third-party clarifier prepended to `<available-deferred-tools>`.
-/// Upstream Claude tolerates the raw tag as additive; GPT-5 (codex) and
-/// Kimi K2.6 read it as an exclusive list and refuse tools already
-/// present in the top-level `tools` array. Parity fix 2026-04-22.
 pub const THIRD_PARTY_DEFERRED_CLARIFIER: &str = "\
 The following deferred tools load on demand via the ToolSearch tool \
 during your response. They are ADDITIVE — every tool already listed in \
@@ -55,8 +50,6 @@ pub fn third_party_deferred_tools_reminder() -> String {
     format!("{THIRD_PARTY_DEFERRED_CLARIFIER}\n\n{}", REMINDER_DEFERRED_TOOLS)
 }
 
-/// Third-party variant that prepends the ADDITIVE clarifier on the
-/// deferred-tools reminder.
 pub fn build_preamble_blocks_third_party(
     email: &str,
     current_date: &str,

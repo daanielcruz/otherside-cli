@@ -56,9 +56,6 @@ pub fn resume(
     ))
 }
 
-/// Lightweight summary used by the `--resume` picker. Cheap to build: only
-/// scans each transcript until the first user message (or 4 KB, whichever
-/// comes first) to avoid loading the whole session.
 #[derive(Debug, Clone)]
 pub struct SessionSummary {
     pub id: SessionId,
@@ -219,8 +216,6 @@ mod tests {
         .unwrap();
         drop(w1);
 
-        // Touch the second session after the first so mtime ordering is
-        // deterministic on filesystems with coarse mtime resolution.
         std::thread::sleep(std::time::Duration::from_millis(20));
         let h2 = open_new(&cfg, &cwd).unwrap();
         let mut w2 = h2.writer;
@@ -262,7 +257,7 @@ mod tests {
         let cwd_a = scratch_cwd();
         let cwd_b = scratch_cwd();
         let _handle_a = open_new(&cfg, &cwd_a).unwrap();
-        // Writing a session under cwd_b must NOT surface as "latest" for cwd_a.
+        
         let _handle_b = open_new(&cfg, &cwd_b).unwrap();
         let latest_a = resume_latest(&cfg, &cwd_a).unwrap().unwrap();
         assert_eq!(

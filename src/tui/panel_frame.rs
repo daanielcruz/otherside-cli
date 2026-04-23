@@ -8,38 +8,17 @@ use ratatui::Frame;
 
 use crate::tui::render::theme;
 
-// Panel chrome accent (top rule, search bar border, active tab chip bg,
-// nav chevron). User directive 2026-04-23: unify every accent on
-// `theme::PRIMARY` (teal `rgb(62,160,195)` — see
-// src/tui/render.rs:23). The earlier SUGGESTION (blue-purple) accent is
-// retired for panel chrome; see `docs/ui-panels/chrome.md` §"Tab row FSM"
-// and §"Headline padding".
-
 const FOOTER_SEP: &str = " \u{00B7} ";
 
-// U+26B2 SAGITTARIUS-like magnifier glyph used as the search prefix.
-// ASCII fallback reference only — rendered as Unicode at runtime.
 const SEARCH_GLYPH: &str = "\u{26B2}";
 
-// U+276F HEAVY RIGHT-POINTING ANGLE QUOTATION MARK ORNAMENT. Single
-// canonical chevron used by every selection row — see
-// `docs/ui-panels/chrome.md` §"Selection chevron system". Any other
-// glyph (▶, ▸, ►, >) is a regression.
 pub const CHEVRON: &str = "\u{276F}";
 
-/// One tab chip label. Kept minimal — panels assemble their own list
-/// per render.
 #[derive(Debug, Clone, Copy)]
 pub struct TabSpec<'a> {
     pub label: &'a str,
 }
 
-/// Search-bar state as the panel chrome sees it.
-///
-/// `placeholder` renders when `query` is empty (dim). When `focused` is
-/// true the border uses the panel accent and a cursor is shown inside the
-/// box at `cursor_pos` (byte offset into `query`); otherwise the border
-/// stays accented if text exists, plain otherwise, and no cursor.
 #[derive(Debug, Clone, Copy)]
 pub struct SearchSpec<'a> {
     pub query: &'a str,
@@ -48,17 +27,6 @@ pub struct SearchSpec<'a> {
     pub cursor_pos: usize,
 }
 
-/// Shared outer shell for slash-panels and footer-triggered panels.
-///
-/// Layout slots (top → bottom):
-///   1. top rule (always)
-///   2. headline padding (always — one blank row after the rule)
-///   3. optional breadcrumb title
-///   4. optional tab row
-///   5. optional search bar (bordered)
-///   6. body
-///   7. optional pagination hint
-///   8. footer byline
 pub struct PanelFrame<'a> {
     pub title: Option<&'a str>,
     pub tabs: Option<&'a [TabSpec<'a>]>,
@@ -77,29 +45,29 @@ impl<'a> PanelFrame<'a> {
         }
 
         let mut constraints: Vec<Constraint> = Vec::with_capacity(8);
-        // 1. top rule (1 row)
+        
         constraints.push(Constraint::Length(1));
-        // 2. headline padding (1 blank row — non-optional, see chrome.md).
+        
         constraints.push(Constraint::Length(1));
-        // 3. title
+        
         if self.title.is_some() {
             constraints.push(Constraint::Length(1));
         }
-        // 4. tab row
+        
         if self.tabs.is_some() {
             constraints.push(Constraint::Length(1));
         }
-        // 5. search (3 rows: border + inner + border)
+        
         if self.search.is_some() {
             constraints.push(Constraint::Length(3));
         }
-        // 6. body (fills remaining)
+        
         constraints.push(Constraint::Min(0));
-        // 7. pagination hint
+        
         if self.pagination_hint.is_some() {
             constraints.push(Constraint::Length(1));
         }
-        // 8. footer
+        
         if !self.footer_hints.is_empty() {
             constraints.push(Constraint::Length(1));
         }
@@ -111,42 +79,34 @@ impl<'a> PanelFrame<'a> {
 
         let mut idx = 0;
 
-        // 1. top rule
         draw_top_rule(f, chunks[idx]);
         idx += 1;
 
-        // 2. headline padding — intentionally left blank.
         idx += 1;
 
-        // 3. title
         if let Some(title) = self.title {
             draw_title(f, chunks[idx], title);
             idx += 1;
         }
 
-        // 4. tab row
         if let Some(tabs) = self.tabs {
             draw_tab_row(f, chunks[idx], tabs, self.active_tab, self.tabs_focused);
             idx += 1;
         }
 
-        // 5. search bar
         if let Some(search) = self.search {
             draw_search_bar(f, chunks[idx], &search);
             idx += 1;
         }
 
-        // 6. body
         draw_body(f, chunks[idx], self.body);
         idx += 1;
 
-        // 7. pagination hint
         if let Some(hint) = self.pagination_hint {
             draw_pagination_hint(f, chunks[idx], hint);
             idx += 1;
         }
 
-        // 8. footer
         if !self.footer_hints.is_empty() {
             draw_footer(f, chunks[idx], self.footer_hints);
         }
@@ -196,11 +156,6 @@ fn draw_tab_row(
     f.render_widget(para, area);
 }
 
-/// Active tab chip paint per chrome.md §"Tab row FSM": identical across
-/// row focus states — `theme::PRIMARY` bg + white fg + bold. The
-/// `tabs_focused` parameter is kept on the signature for future wiring
-/// of the `❯` row-focus nav prefix (chrome.md §"Selection chevron
-/// system") but does not alter the chip paint in Phase 1.
 fn chip_span(label: &str, active: bool, tabs_focused: bool) -> Span<'static> {
     let _ = tabs_focused;
     let body = format!(" {label} ");
@@ -214,16 +169,6 @@ fn chip_span(label: &str, active: bool, tabs_focused: bool) -> Span<'static> {
     Span::styled(body, style)
 }
 
-/// Body row with dual-chevron prefix — see chrome.md
-/// §"Selection chevron system".
-///
-/// - `nav_cursor`: keyboard cursor is currently on this row → paint
-///   `❯` in `theme::PRIMARY`.
-/// - `selected`: this row is the persistently-committed selection →
-///   paint `❯` in `theme::SUCCESS` (Phase 1 default).
-/// - Both true → `theme::SUCCESS` + bold to signal nav co-location
-///   without swapping the commit color.
-/// - Neither → two spaces so label columns stay aligned.
 pub fn body_row<'a>(
     label: impl Into<Cow<'a, str>>,
     nav_cursor: bool,
@@ -264,7 +209,6 @@ fn draw_search_bar(f: &mut Frame<'_>, area: Rect, spec: &SearchSpec<'_>) {
         return;
     }
 
-    // Prefix glyph + space, then query (or dim placeholder).
     let mut spans: Vec<Span<'static>> = Vec::with_capacity(3);
     spans.push(Span::styled(
         format!("{SEARCH_GLYPH} "),
@@ -288,8 +232,6 @@ fn draw_search_bar(f: &mut Frame<'_>, area: Rect, spec: &SearchSpec<'_>) {
     let para = Paragraph::new(Line::from(spans));
     f.render_widget(para, inner);
 
-    // Cursor: block glyph painted at the query offset when focused. We
-    // clamp to inner area so it never escapes the bordered box.
     if spec.focused {
         let prefix_cols: u16 = (SEARCH_GLYPH.chars().count() + 1) as u16;
         let query_cols: u16 = spec
@@ -329,7 +271,9 @@ fn draw_pagination_hint(f: &mut Frame<'_>, area: Rect, hint: &str) {
 }
 
 fn draw_footer(f: &mut Frame<'_>, area: Rect, hints: &[(&str, &str)]) {
-    let mut spans: Vec<Span<'static>> = Vec::with_capacity(hints.len() * 4);
+    let mut spans: Vec<Span<'static>> = Vec::with_capacity(hints.len() * 4 + 1);
+    
+    spans.push(Span::raw("  "));
     for (i, (shortcut, action)) in hints.iter().enumerate() {
         if i > 0 {
             spans.push(Span::styled(
@@ -394,7 +338,7 @@ mod tests {
             footer_hints: &[],
             pagination_hint: None,
         };
-        // Smoke: must not panic even with no content.
+        
         let _ = render_to_buffer(frame, 80, 10);
     }
 
@@ -424,8 +368,7 @@ mod tests {
 
     #[test]
     fn active_tab_paint_uses_primary_bg_and_white_fg() {
-        // Per chrome.md §"Tab row FSM": active chip paints identical
-        // regardless of row focus — `theme::PRIMARY` bg + white fg + bold.
+        
         let tabs = [
             TabSpec { label: "A" },
             TabSpec { label: "B" },
@@ -444,8 +387,6 @@ mod tests {
         let unfocused = render_to_buffer(mk(false), 20, 4);
         let focused = render_to_buffer(mk(true), 20, 4);
 
-        // Tab row now lives at y=2 (y=0 top rule, y=1 padding, y=2 tabs).
-        // Active chip "A" occupies cells around x=0..3 (" A ").
         let probe_x = 1;
         let probe_y = 2;
         let cell_unfocused = unfocused[(probe_x, probe_y)].clone();
@@ -490,7 +431,7 @@ mod tests {
             pagination_hint: None,
         };
         let buf = render_to_buffer(frame, 12, 3);
-        // y=0 is the rule row.
+        
         let cell = buf[(3, 0)].clone();
         assert_eq!(
             cell.symbol(),
@@ -522,8 +463,7 @@ mod tests {
             pagination_hint: None,
         };
         let buf = render_to_buffer(frame, 40, 8);
-        // Layout: y=0 rule, y=1 padding, y=2 search top-border,
-        // y=3 search inner, y=4 search bottom-border.
+        
         let border_cell = buf[(0, 2)].clone();
         assert_eq!(
             border_cell.fg,
@@ -534,8 +474,7 @@ mod tests {
 
     #[test]
     fn layout_has_blank_padding_row_after_top_rule() {
-        // Per chrome.md §"Headline padding": y=0 rule, y=1 blank,
-        // y=2 first content row (tabs here).
+        
         let tabs = [TabSpec { label: "Alpha" }];
         let frame = PanelFrame {
             title: None,
@@ -548,7 +487,7 @@ mod tests {
             pagination_hint: None,
         };
         let buf = render_to_buffer(frame, 20, 5);
-        // y=1 must be all spaces (blank padding row).
+        
         let mut row1 = String::new();
         for x in 0..20u16 {
             row1.push_str(buf[(x, 1)].symbol());
@@ -558,7 +497,7 @@ mod tests {
             "",
             "y=1 must be blank padding row, got {row1:?}"
         );
-        // y=2 must carry the tab row.
+        
         let mut row2 = String::new();
         for x in 0..20u16 {
             row2.push_str(buf[(x, 2)].symbol());
@@ -700,7 +639,7 @@ mod tests {
         };
         let buf = render_to_buffer(frame, 80, 4);
         let text = buffer_to_string(&buf);
-        // Three hints → two `·` separators.
+        
         let dots = text.matches('\u{00B7}').count();
         assert_eq!(
             dots, 2,
@@ -724,9 +663,9 @@ mod tests {
             footer_hints: &[],
             pagination_hint: Some(hint),
         };
-        // Height: 1 top rule + 1 padding + 5 body + 1 pagination = 8.
+        
         let buf = render_to_buffer(frame, 40, 8);
-        // Pagination hint occupies the last rendered row (y = height-1).
+        
         let last_y = 7;
         let mut last_row = String::new();
         for x in 0..40u16 {

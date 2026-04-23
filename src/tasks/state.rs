@@ -1,5 +1,4 @@
 
-
 use std::collections::VecDeque;
 use std::time::Instant;
 
@@ -55,12 +54,6 @@ pub struct TaskRecord {
 
     pub tool_use_id: Option<String>,
 
-    /// Upstream-shape agentId (`a<16-hex>`) generated via
-    /// `tasks::id::create_agent_id` at spawn time. Separate from `id`
-    /// (the internal TaskStore key) and `tool_use_id` (the Anthropic
-    /// wire-level identifier used for tool_result pairing). This is the
-    /// identifier the user sees in "Async agent launched successfully."
-    /// and the basis for `getTaskOutputPath` on disk.
     pub agent_id: Option<String>,
 
     pub rendered_completion_line: bool,
@@ -71,10 +64,6 @@ pub struct TaskRecord {
 
     pub tokens: u64,
 
-    /// Structured error message captured when `state` transitions to Failed.
-    /// Rendered by the agent-detail view's Error section (upstream
-    /// AsyncAgentDetailDialog.tsx:188-194). Independent of `output` so the
-    /// failure text doesn't have to be scraped out of the progress log.
     pub error: Option<String>,
 }
 

@@ -7,10 +7,6 @@ const SKILL_BODIES: &[(&str, &str)] = &[
     ("dream", include_str!("../../../skills_corpus/dream/SKILL.md")),
     ("statusline", include_str!("../../../skills_corpus/statusline/SKILL.md")),
     ("init", include_str!("../../../skills_corpus/init/SKILL.md")),
-    (
-        "init-verifiers",
-        include_str!("../../../skills_corpus/init-verifiers/SKILL.md"),
-    ),
     ("review", include_str!("../../../skills_corpus/review/SKILL.md")),
     (
         "security-review",
@@ -55,7 +51,6 @@ mod tests {
             "dream",
             "statusline",
             "init",
-            "init-verifiers",
             "review",
             "security-review",
         ];

@@ -1,5 +1,4 @@
 
-
 use std::sync::Arc;
 
 use serde_json::Value;
@@ -10,10 +9,7 @@ use super::{id::TaskId, state::TaskRecord, state::TaskState, store::TaskStore};
 
 pub struct SpawnOutcome {
     pub task_id: TaskId,
-    /// Upstream-shape agentId (`a<16-hex>`) — surfaced to the model in the
-    /// `"Async agent launched successfully. agentId: …"` text. Separate
-    /// from the internal `task_id` TaskStore key so the Anthropic tool_use_id
-    /// never leaks into user-visible output.
+    
     pub agent_id: String,
 }
 
@@ -53,8 +49,7 @@ fn finalize(
     id: &TaskId,
     result: Result<Value, crate::agent::subagents::RunnerError>,
 ) {
-    // Capture the upstream-shape agent_id + final text so we can mirror to
-    // disk AFTER releasing the store lock (write_task_output does fs I/O).
+    
     let mut disk_payload: Option<(String, String)> = None;
 
     store.update_with(id, |r| {
@@ -67,11 +62,7 @@ fn finalize(
                         disk_payload = Some((agent_id.clone(), text));
                     }
                 }
-                // Propagate runner-reported totalTokens into the record so
-                // the /agents Running row + Recently-completed section show
-                // real numbers instead of 0 (Fix 8 from parity 2026-04-22).
-                // Runner shape: `{"totalTokens": n, …}` per
-                // `agent/subagents/runner.rs:199`.
+                
                 if let Some(total) = v.get("totalTokens").and_then(Value::as_u64) {
                     r.tokens = total;
                 }
@@ -98,8 +89,7 @@ fn finalize(
     });
 
     if let Some((agent_id, text)) = disk_payload {
-        // Best-effort mirror — failures here do not affect the task
-        // result path the model sees.
+        
         if let Err(e) = super::disk_output::write_task_output(&agent_id, &text) {
             tracing::warn!(?e, agent_id, "task-output mirror failed");
         }

@@ -1,5 +1,4 @@
 
-
 use serde_json::{json, Value};
 
 use crate::agent::subagents::{registry, AgentInvocation, DepthGuard, RunnerError, SubagentRunner};
@@ -84,9 +83,6 @@ pub fn agent(args: &Value) -> Result<Value, ToolError> {
                 tool_use_id.clone(),
             );
 
-            // Surface the upstream-shape agentId (`a<16hex>`) to the model —
-            // NOT the internal TaskStore key and NOT the Anthropic
-            // tool_use_id. Matches `utils/uuid.ts:24 createAgentId`.
             let upstream_text = format!(
                 "Async agent launched successfully.\nagentId: {agent_id} (internal ID - do not mention to user. Use SendMessage with to: '{agent_id}' to continue this agent.)\nThe agent is working in the background. You will be notified automatically when it completes.",
                 agent_id = outcome.agent_id,

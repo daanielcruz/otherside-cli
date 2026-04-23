@@ -1,5 +1,4 @@
 
-
 use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
@@ -56,13 +55,6 @@ pub struct OverlayMenu {
 
     pub settings_header_focused: Option<bool>,
 
-    /// Settings panel three-region focus: tabs | search | body. Combined
-    /// with `settings_header_focused` this yields:
-    /// - `header_focused=true` → tabs row.
-    /// - `header_focused=false, body_focused=false` → search bar (default
-    ///   on open; typing feeds the filter query).
-    /// - `header_focused=false, body_focused=true` → body rows (cursor
-    ///   marker renders, Enter commits the row edit).
     pub settings_body_focused: bool,
 
     pub effort_indicator: Option<EffortIndicator>,
@@ -71,19 +63,12 @@ pub struct OverlayMenu {
 
     pub settings_search_query: String,
 
-    /// Tabbed `/model` panel — mirrored from `ConversationState` so the
-    /// renderer (which only receives `&OverlayMenu`) can paint the active
-    /// tab + body cursor. Rebuild the overlay on tab / focus / row change,
-    /// matching the CycleProvider rebuild pattern at `tui/mod.rs:1066`.
     pub model_tab_index: usize,
     pub model_tabs_focused: bool,
     pub model_body_cursor: usize,
     pub model_tab_rows: Vec<ModelTabBody>,
 }
 
-/// Per-tab body state for the tabbed `/model` panel. Phase 1 renders these
-/// read-only: Authenticated → catalog + Logout; Unauthenticated → login
-/// CTA; Custom-unauth → config hint (no CTA).
 #[derive(Debug, Clone)]
 pub struct ModelTabBody {
     pub provider: crate::config::providers::ProviderId,
@@ -93,18 +78,17 @@ pub struct ModelTabBody {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModelTabRow {
-    /// Catalog row. `raw_id` is the wire model id, `display_name` the
-    /// human label. `active` marks the session's currently-selected model.
+    
     Model {
         raw_id: String,
         display_name: String,
         active: bool,
     },
-    /// Dim-red Logout row rendered below catalog.
+    
     Logout,
-    /// Blue-border "Login to {label}" CTA.
+    
     LoginCta,
-    /// Custom-provider unauth placeholder — no Enter action.
+    
     CustomHint,
 }
 
@@ -253,12 +237,6 @@ impl OverlayMenu {
         }
     }
 
-    /// Build the tabbed `/model` panel. Phase 1: UI only.
-    ///
-    /// Reads auth state from `auth::{anthropic,codex,kimi}::load_credentials()`
-    /// and `settings.providers.openai_compatible` for the Custom tab. Gemini
-    /// has no auth module in this codebase → always unauthenticated.
-    /// Spec: `docs/ui-panels/model-panel.md`.
     pub fn new_model_tabbed(
         active_model_id: &str,
         settings: &crate::config::settings::Settings,
@@ -304,31 +282,23 @@ impl OverlayMenu {
         }
     }
 
-    /// Active tab body (or `None` if the panel has no tabs, which shouldn't
-    /// happen for PanelKind::Model but avoids panics on stale state).
     pub fn active_model_tab(&self) -> Option<&ModelTabBody> {
         self.model_tab_rows.get(self.model_tab_index)
     }
 
     pub fn new_effort(current: Option<&str>) -> Self {
-        // Legacy entry — assumes a claude-tier effort ladder. Prefer
-        // `new_effort_for_model` in production so kimi/haiku don't lie
-        // to the user about levels their model rejects on the wire.
+        
         const CLAUDE_LEVELS: &[&str] =
             &["low", "medium", "high", "xhigh", "max"];
         Self::new_effort_for_levels(current, CLAUDE_LEVELS, 2)
     }
 
     pub fn new_effort_for_model(current: Option<&str>, model_id: &str) -> Self {
-        // Intersect the panel ladder with the catalog-declared supported
-        // efforts so Kimi's `[on, off]` surface doesn't advertise
-        // claude-native levels. Haiku (`["auto"]`) still lands on
-        // "auto". Unknown model → claude ladder (safe default).
+        
         let catalog_levels = crate::models::catalog::by_id(model_id)
             .map(|m| m.supported_efforts)
             .unwrap_or(&["low", "medium", "high", "xhigh", "max"]);
-        // Drop the synthetic `auto` bucket from the panel — it's only
-        // reachable via `/effort auto` CLI arg per upstream discipline.
+        
         let filtered: Vec<&'static str> = catalog_levels
             .iter()
             .copied()
@@ -337,7 +307,7 @@ impl OverlayMenu {
         let levels: &[&str] = if filtered.is_empty() {
             &["low", "medium", "high", "xhigh", "max"]
         } else {
-            // SAFETY: leak a small static slice matching catalog lifetime.
+            
             Box::leak(filtered.into_boxed_slice())
         };
         let default_cursor = levels.len() / 2;
@@ -458,9 +428,7 @@ impl OverlayMenu {
             PanelKind::Permissions => Some(OverlayMenuOutcome::SetPermissionMode {
                 action_id: selected.action_id.clone(),
             }),
-            // Phase 1 `/model` is UI-only — the tabbed panel handles its own
-            // Enter keystroke in `tui/mod.rs` and emits a `tracing::info!` stub
-            // instead of an outcome. Phase 2 (broker) reintroduces outcomes.
+            
             PanelKind::Model => None,
             _ => None,
         }
@@ -747,14 +715,12 @@ pub fn overlay_rows(menu: &OverlayMenu) -> u16 {
     }
 
     if matches!(menu.kind, PanelKind::Model) {
-        // Chrome: top rule + title + tab row + blank + footer + pad = 6.
-        // Body: authenticated → catalog rows + separator rule + Logout; or
-        // unauthenticated → centered 5-line CTA block.
+        
         let body_rows: u16 = menu
             .active_model_tab()
             .map(|t| {
                 if t.authed {
-                    // rows + 1 separator before Logout
+                    
                     t.rows.len() as u16 + 2
                 } else {
                     7
@@ -854,8 +820,6 @@ pub fn draw_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
     f.render_widget(Paragraph::new(lines), area);
 }
 
-/// Short tab label per spec § "Tab labels are short names, NOT the
-/// ProviderId::label() (which includes '(OAuth)'/'(API Key)' qualifiers)".
 fn model_tab_label(p: crate::config::providers::ProviderId) -> &'static str {
     use crate::config::providers::ProviderId;
     match p {
@@ -867,9 +831,6 @@ fn model_tab_label(p: crate::config::providers::ProviderId) -> &'static str {
     }
 }
 
-/// True if the provider has credentials we can read. Phase 1 is read-only:
-/// no broker call, no refresh — just look at the on-disk creds + settings.
-/// Gemini has no auth module → always `false`.
 fn provider_is_authed(
     p: crate::config::providers::ProviderId,
     settings: &crate::config::settings::Settings,
@@ -901,7 +862,6 @@ fn provider_is_authed(
     }
 }
 
-/// Build the list of `ModelTabRow` for a tab body, per auth state + provider.
 fn build_tab_rows(
     provider: crate::config::providers::ProviderId,
     authed: bool,
@@ -934,7 +894,6 @@ fn draw_model_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
         return;
     };
 
-    // Tabs — one chip per provider. PanelFrame owns the active-chip paint.
     let tab_labels: Vec<&str> = menu
         .model_tab_rows
         .iter()
@@ -945,14 +904,10 @@ fn draw_model_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
         .map(|label| TabSpec { label })
         .collect();
 
-    // Body. Keep byte-exact row content from the legacy renderer so the
-    // downstream tests (login CTA text, custom hint, catalog layout) remain
-    // valid. Chevron prefix moves to `body_row` for rows where keyboard nav
-    // lands (body_focused + matching row index).
     let mut body: Vec<Line<'static>> = Vec::new();
 
     if active_tab.authed {
-        // Compute logout separator insertion point.
+        
         let logout_idx: Option<usize> = active_tab
             .rows
             .iter()
@@ -1012,7 +967,7 @@ fn draw_model_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
                 }
                 _ => {}
             }
-            // Insert dim separator rule right before the Logout row.
+            
             if let Some(li) = logout_idx {
                 if row_idx + 1 == li && has_catalog {
                     body.push(Line::from(Span::styled(
@@ -1222,7 +1177,7 @@ fn status_rows(state: &super::state::ConversationState) -> Vec<MenuOption> {
                 }
             }
             ProviderId::GeminiCli => {
-                // No OAuth flow wired yet — treat as unconfigured.
+                
                 "(not configured)".to_string()
             }
             ProviderId::Kimi => {
@@ -1513,7 +1468,7 @@ fn draw_settings_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
         .unwrap_or(0);
 
     let query = menu.settings_search_query.as_str();
-    // Search-region is "focused" whenever neither tabs nor body has focus.
+    
     let search_focused = !header_focused && !body_focused;
     let search = SearchSpec {
         query,
@@ -1574,9 +1529,7 @@ fn draw_settings_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
             } else {
                 Style::default().fg(theme::TEXT)
             };
-            // Chevron + 1 space prefix delegated to `body_row`. Settings rows
-            // are never "selected" in the committed-row sense (commits happen
-            // on Enter via the outer loop), so `selected=false` throughout.
+            
             let prefix_line = body_row("", is_cursor, false);
             let mut spans: Vec<Span<'static>> =
                 prefix_line.spans.iter().cloned().collect();
@@ -1653,9 +1606,7 @@ mod tests {
 
     #[test]
     fn new_effort_for_haiku_falls_back_to_claude_ladder_when_only_auto() {
-        // Haiku catalog row advertises `["auto"]` alone. Upstream shows a
-        // disabled indicator but otherside degrades to the claude ladder so
-        // the panel is never empty.
+        
         let m = OverlayMenu::new_effort_for_model(None, "claude-haiku-4-5");
         let ids: Vec<&str> = m.options.iter().map(|o| o.action_id.as_str()).collect();
         assert_eq!(ids, vec!["low", "medium", "high", "xhigh", "max"]);
@@ -1705,13 +1656,6 @@ mod tests {
         m.move_right();
         assert_eq!(m.cursor, 4, "move_right clamps at len-1");
     }
-
-    // Phase 1 tabbed `/model` panel replaced the single-panel shape.
-    // The old tests `new_model_has_provider_row_plus_three_anthropic_rows`,
-    // `new_model_populates_effort_indicator`, and
-    // `new_model_cursor_defaults_to_first_model_row_for_unknown` asserted the
-    // legacy 5-option layout (Provider row + sep + 3 models). That shape no
-    // longer exists — see `model_panel_tests` below for the tabbed asserts.
 
     #[test]
     fn permission_prompt_cursor_wraps_and_resolves() {
@@ -1773,11 +1717,7 @@ mod tests {
 
     #[test]
     fn commit_model_panel_yields_none_in_phase_1() {
-        // Phase 1 `/model` panel is UI-only at the `commit_outcome` level —
-        // the Enter handler in `tui/mod.rs::handle_model_panel_key` routes
-        // directly through `state::broker::set_active_provider`, bypassing
-        // OverlayMenu's commit_outcome path entirely. Guard against
-        // accidental re-wiring that would reintroduce a menu-level outcome.
+        
         let settings = crate::config::settings::Settings::default();
         let m = OverlayMenu::new_model_tabbed(
             "claude-opus-4-7",
@@ -1791,11 +1731,6 @@ mod tests {
             "model panel must commit via broker, not OverlayMenuOutcome"
         );
     }
-
-    // `new_model_for_codex_lists_codex_catalog` — replaced by
-    // `authenticated_tab_body_renders_catalog_plus_logout_row` in
-    // `model_panel_tests`, which asserts the same catalog content on the
-    // tabbed shape.
 
     #[test]
     fn info_menu_cursor_starts_on_first_content_row() {
@@ -1886,12 +1821,6 @@ mod tests {
         );
     }
 
-    // `new_model_renders_effort_indicator_and_exit_footer` — removed. The
-    // tabbed `/model` panel doesn't show the per-model ◉ effort slider (it
-    // moved to the `/effort` panel, which keeps its upstream-parity render
-    // test `new_effort_is_horizontal_slider_with_speed_intelligence_axis`).
-    // Tabbed-panel rendering is covered by `model_panel_tests` below.
-
     #[test]
     fn settings_search_query_filters_rendered_rows() {
         use crate::tui::slash::catalog::SettingsTab;
@@ -1899,8 +1828,7 @@ mod tests {
 
         let st = crate::tui::state::ConversationState::default();
         let mut m = OverlayMenu::new_settings(SettingsTab::Config, &st);
-        // Prove the filter actually prunes unrelated rows — typing `permiss`
-        // should leave only the `Default permission mode` row visible.
+        
         m.settings_search_query = "permiss".into();
 
         let backend = TestBackend::new(120, 30);
@@ -1984,8 +1912,7 @@ mod tests {
 
     #[test]
     fn search_filter_matches_case_insensitively() {
-        // "auto" must match "Auto-compact" even when the row label is
-        // capitalized in the MenuOption source.
+        
         let st = crate::tui::state::ConversationState::default();
         let mut m = OverlayMenu::new_settings(SettingsTab::Config, &st);
         m.settings_search_query = "auto".into();
@@ -1999,8 +1926,7 @@ mod tests {
 
     #[test]
     fn search_empty_query_returns_all_rows() {
-        // Empty query → every non-separator row present in the rendered
-        // output. Spot-check multiple rows to prove nothing was filtered.
+        
         let st = crate::tui::state::ConversationState::default();
         let m = OverlayMenu::new_settings(SettingsTab::Config, &st);
         assert!(m.settings_search_query.is_empty(), "precondition: default query is empty");
@@ -2016,8 +1942,7 @@ mod tests {
 
     #[test]
     fn search_no_match_yields_empty_state_marker() {
-        // Gibberish query → dim empty-state line with the literal quoted
-        // query per spec § "Search bar".
+        
         let st = crate::tui::state::ConversationState::default();
         let mut m = OverlayMenu::new_settings(SettingsTab::Config, &st);
         m.settings_search_query = "zzzzzno-such-row".into();
@@ -2030,29 +1955,25 @@ mod tests {
 
     #[test]
     fn tab_focus_transitions() {
-        // search (default) → ↑ → tabs → ↓ → search → ↓ → body.
-        // Uses the real handle_menu_key path via a direct dispatch helper.
+        
         use crate::tui::slash::catalog::SettingsTab;
 
         let st = crate::tui::state::ConversationState::default();
         let m = OverlayMenu::new_settings(SettingsTab::Config, &st);
-        // Default on Config = search region.
+        
         assert_eq!(m.settings_header_focused, Some(false), "Config opens with tabs unfocused");
         assert!(!m.settings_body_focused, "Config opens with body unfocused → search region");
 
-        // Simulate ↑ from search: tabs focused.
         let mut m = m;
         m.settings_header_focused = Some(true);
         assert_eq!(m.settings_header_focused, Some(true));
         assert!(!m.settings_body_focused);
 
-        // Simulate ↓ from tabs: search focused again.
         m.settings_header_focused = Some(false);
         m.settings_body_focused = false;
         assert_eq!(m.settings_header_focused, Some(false));
         assert!(!m.settings_body_focused);
 
-        // Simulate ↓ from search: body focused.
         m.settings_body_focused = true;
         assert_eq!(m.settings_header_focused, Some(false));
         assert!(m.settings_body_focused, "second ↓ from search must land in body region");
@@ -2060,12 +1981,7 @@ mod tests {
 
     #[test]
     fn tab_chip_paint_is_identical_across_focus_states() {
-        // Post task #20b: `PanelFrame::chip_span` (src/tui/panel_frame.rs:201)
-        // paints the active chip identically regardless of `tabs_focused` —
-        // chrome.md §"Tab row FSM" now mandates `theme::PRIMARY` bg + white fg
-        // + bold in both states. The legacy White-vs-SUGGESTION split is
-        // retired. This test is the inverted form of the previous
-        // `tab_chip_paint_differs_by_focus`.
+        
         let st = crate::tui::state::ConversationState::default();
         let mut m = OverlayMenu::new_settings(SettingsTab::Config, &st);
 
@@ -2112,11 +2028,6 @@ mod tests {
         None
     }
 
-    // -----------------------------------------------------------------
-    // Phase 1 tabbed `/model` panel tests — spec:
-    // docs/ui-panels/model-panel.md
-    // -----------------------------------------------------------------
-
     fn render_overlay(menu: &OverlayMenu, w: u16, h: u16) -> String {
         use ratatui::{backend::TestBackend, Terminal};
         let backend = TestBackend::new(w, h);
@@ -2160,7 +2071,6 @@ mod tests {
         let expected: Vec<ProviderId> = PROVIDER_ORDER.iter().copied().collect();
         assert_eq!(order, expected, "tab order must match PROVIDER_ORDER");
 
-        // Short labels, NOT ProviderId::label() (which includes "(OAuth)").
         let joined = render_overlay(&m, 120, 20);
         for label in &["Anthropic", "Codex", "Gemini", "Kimi", "Custom"] {
             assert!(
@@ -2176,9 +2086,7 @@ mod tests {
 
     #[test]
     fn active_tab_defaults_to_settings_default_provider() {
-        // Kimi is PROVIDER_ORDER[3] — constructing the panel with tab_index=3
-        // mirrors what slash::panel::handle does on open when
-        // settings.default_provider == "kimi".
+        
         let settings = crate::config::settings::Settings::default();
         let m = OverlayMenu::new_model_tabbed(
             "kimi-for-coding",
@@ -2197,8 +2105,7 @@ mod tests {
 
     #[test]
     fn authenticated_tab_body_renders_catalog_plus_logout_row() {
-        // Synthesize an authed tab by building rows directly — avoids
-        // depending on on-disk credentials in test sandboxes.
+        
         let rows = build_tab_rows(
             crate::config::providers::ProviderId::Codex,
             true,
@@ -2221,7 +2128,7 @@ mod tests {
             matches!(rows.last(), Some(ModelTabRow::Logout)),
             "Logout must be the last row"
         );
-        // Active flag propagates.
+        
         let active_row = rows.iter().find_map(|r| match r {
             ModelTabRow::Model { raw_id, active, .. } if raw_id == "gpt-5.4" => {
                 Some(*active)
@@ -2233,12 +2140,12 @@ mod tests {
 
     #[test]
     fn unauthenticated_tab_body_renders_login_cta() {
-        // Gemini has no auth module → always unauthenticated.
+        
         let settings = crate::config::settings::Settings::default();
         let m = OverlayMenu::new_model_tabbed(
             "claude-opus-4-7",
             &settings,
-            2, // Gemini
+            2, 
             false,
             0,
         );
@@ -2260,12 +2167,12 @@ mod tests {
 
     #[test]
     fn custom_unauthenticated_body_points_to_config() {
-        // No openai_compatible.base_url + api_key → Custom is unauthed.
+        
         let settings = crate::config::settings::Settings::default();
         let m = OverlayMenu::new_model_tabbed(
             "",
             &settings,
-            4, // Custom
+            4, 
             false,
             0,
         );
@@ -2283,7 +2190,7 @@ mod tests {
             joined.contains("/config"),
             "custom unauth must point to /config, got:\n{joined}"
         );
-        // No CTA button on Custom.
+        
         assert!(
             !joined.contains("Login to Custom"),
             "Custom must NOT show a Login CTA"
@@ -2293,9 +2200,7 @@ mod tests {
     #[test]
     fn tab_row_cycles_on_arrow_and_tab() {
         use crate::config::providers::PROVIDER_ORDER;
-        // The panel rebuild on tab change happens in tui/mod.rs via
-        // ConversationState. Here we emulate the loop by rebuilding the
-        // overlay with bumped indices — proves the builder clamps / wraps.
+        
         let settings = crate::config::settings::Settings::default();
         let mut idx = 0usize;
         for _ in 0..PROVIDER_ORDER.len() {
@@ -2309,7 +2214,7 @@ mod tests {
             assert_eq!(m.model_tab_index, idx);
             idx = (idx + 1) % PROVIDER_ORDER.len();
         }
-        // Out-of-bounds input must clamp to last tab, not panic.
+        
         let m = OverlayMenu::new_model_tabbed(
             "",
             &settings,
@@ -2326,24 +2231,20 @@ mod tests {
 
     #[test]
     fn body_enter_on_model_row_logs_stub_intent() {
-        // Phase 1 contract: Enter on a model row emits `tracing::info!` and
-        // MUST NOT mutate the session. Assert via `commit_outcome` returning
-        // None (the overlay-level guard) and by checking that the session
-        // state after a synthetic build is untouched — no Session::set_model
-        // runs inside the overlay builder.
+        
         let settings = crate::config::settings::Settings::default();
         let m = OverlayMenu::new_model_tabbed(
             "claude-opus-4-7",
             &settings,
             0,
-            false, // body focused
+            false, 
             0,
         );
         assert!(
             m.commit_outcome().is_none(),
             "Phase 1 model Enter must not emit an outcome — stub logs only"
         );
-        // active_action_id preserves the session's current model unchanged.
+        
         assert_eq!(
             m.active_action_id.as_deref(),
             Some("claude-opus-4-7"),
@@ -2353,11 +2254,7 @@ mod tests {
 
     #[test]
     fn esc_closes_panel() {
-        // The Esc path lives in tui/mod.rs::handle_menu_key (line ~876) and
-        // is shared across all OverlayMenu kinds. Here we exercise the
-        // contract the panel builder must honour: `PanelKind::Model`
-        // carries no settings_search_query, so Esc never enters the "clear
-        // query" branch and always closes. Verify by reading the kind.
+        
         let settings = crate::config::settings::Settings::default();
         let m = OverlayMenu::new_model_tabbed("", &settings, 0, true, 0);
         assert_eq!(m.kind, PanelKind::Model);
@@ -2367,22 +2264,13 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------
-    // Panel top-rule chrome — user directive 2026-04-23:
-    // "a linha que fica como header do panel nao existe".
-    // /config + /model MUST paint a full-width ─ rule as y=0.
-    // -----------------------------------------------------------------
-
     #[test]
     fn config_panel_renders_top_rule_row_in_primary() {
-        // Post task #20b: top rule is rendered by `PanelFrame::render` in
-        // `theme::PRIMARY` (chrome.md 2026-04-23 directive unified the panel
-        // accent on teal PRIMARY — see src/tui/panel_frame.rs:11-16).
+        
         let st = crate::tui::state::ConversationState::default();
         let m = OverlayMenu::new_settings(SettingsTab::Config, &st);
         let (joined, buf) = render_settings(&m, 120, 30);
 
-        // y=0 must be a contiguous run of ─ glyphs, not the tab row.
         let first_row: String = joined.lines().next().unwrap_or("").to_string();
         assert!(
             first_row.contains('\u{2500}'),
@@ -2393,7 +2281,6 @@ mod tests {
             "/config y=0 must NOT be the tab row — rule comes first, got:\n{first_row}"
         );
 
-        // Sample a cell mid-row: fg must be theme::PRIMARY.
         let mid_col = buf.area.width / 2;
         let cell = buf[(mid_col, 0u16)].clone();
         assert_eq!(
@@ -2412,8 +2299,7 @@ mod tests {
 
     #[test]
     fn model_panel_renders_top_rule_row_in_primary() {
-        // Post task #20b: top rule is rendered by `PanelFrame::render` in
-        // `theme::PRIMARY` (chrome.md 2026-04-23 directive).
+        
         let settings = crate::config::settings::Settings::default();
         let m = OverlayMenu::new_model_tabbed(
             "claude-opus-4-7",
@@ -2433,7 +2319,6 @@ mod tests {
             .unwrap();
         let buf = terminal.backend().buffer().clone();
 
-        // y=0 cell at the middle column: ─ glyph, theme::PRIMARY fg.
         let mid_col = buf.area.width / 2;
         let cell = buf[(mid_col, 0u16)].clone();
         assert_eq!(
@@ -2450,22 +2335,12 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------
-    // Task #20b — `/config` + `/model` migrated to PanelFrame::render.
-    // These tests lock the chrome contract: y=0 = top rule painted by
-    // PanelFrame in `theme::PRIMARY`, y=1 = mandatory blank padding row
-    // (see src/tui/panel_frame.rs:82-83 and chrome.md §"Headline padding").
-    // If either assertion breaks, the panel reimplemented chrome locally
-    // instead of delegating to PanelFrame.
-    // -----------------------------------------------------------------
-
     #[test]
     fn config_panel_uses_panel_frame_chrome() {
         let st = crate::tui::state::ConversationState::default();
         let m = OverlayMenu::new_settings(SettingsTab::Config, &st);
         let (_joined, buf) = render_settings(&m, 120, 30);
 
-        // y=0 must be the PanelFrame top rule in theme::PRIMARY.
         let rule_cell = buf[(0u16, 0u16)].clone();
         assert_eq!(
             rule_cell.symbol(),
@@ -2480,8 +2355,6 @@ mod tests {
             rule_cell.fg
         );
 
-        // y=1 must be the mandatory headline-padding blank row owned by
-        // PanelFrame. Sweep the whole row — every cell must be ` `.
         for x in 0..buf.area.width {
             let cell = buf[(x, 1u16)].clone();
             assert_eq!(
@@ -2515,7 +2388,6 @@ mod tests {
             .unwrap();
         let buf = terminal.backend().buffer().clone();
 
-        // y=0 must be the PanelFrame top rule in theme::PRIMARY.
         let rule_cell = buf[(0u16, 0u16)].clone();
         assert_eq!(
             rule_cell.symbol(),
@@ -2530,7 +2402,6 @@ mod tests {
             rule_cell.fg
         );
 
-        // y=1 must be the mandatory headline-padding blank row.
         for x in 0..buf.area.width {
             let cell = buf[(x, 1u16)].clone();
             assert_eq!(

@@ -1,5 +1,4 @@
 
-
 use std::collections::VecDeque;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -33,11 +32,7 @@ pub struct KimiProvider {
 impl KimiProvider {
 
     pub fn new() -> Result<Self> {
-        // Hard cap on total request time so a silently-stuck Kimi stream
-        // can't wedge a subagent loop forever (Kimi subagent-dispatch
-        // hang, 2026-04-22). 10 minutes is generous enough for long
-        // reasoning turns but finite — loops now fail-fast with an
-        // error the inner agent can surface instead of hanging.
+        
         let http = crate::tools::http::apply_extra_ca_roots(
             reqwest::Client::builder()
                 .pool_idle_timeout(Duration::from_secs(90))
@@ -81,18 +76,7 @@ impl Provider for KimiProvider {
                 memory_dir: &env.memory_dir,
                 git_status: &env.git_status,
             };
-            // Kimi speaks native Anthropic Messages API but is not claude-code.
-            // Skip the billing header + `You are Claude Code…` opener (both
-            // exclusive to Anthropic's first-party SaaS routing). Agent preamble
-            // + main system prompt still flow so every operational instruction
-            // lands upstream-identical.
-            //
-            // Kimi has no `effort` knob — the catalog gates `supported_efforts`
-            // at `["auto"]` so the translator drops `output_config.effort` and
-            // the `thinking` envelope block for Kimi models. The caller's
-            // `thinking` param is still threaded through so future Kimi
-            // thinking-capable SKUs (e.g. `kimi-k2-thinking`) pick it up
-            // once catalog wires their effort support.
+            
             let body = crate::translator::anthropic::build_request_body_with_flavor_and_thinking(
                 &req,
                 &ctx,

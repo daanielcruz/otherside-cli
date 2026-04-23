@@ -1,19 +1,3 @@
-//! Kimi web_search shim. Kimi exposes a native `$web_search` builtin on the
-//! OpenAI-compat endpoint (`/v1/chat/completions`). Unlike Anthropic's server
-//! tool (`web_search_20250305` on `/v1/messages`) and Codex's server tool
-//! (`web_search` on `/responses`), Moonshot's `$web_search` is a
-//! `builtin_function` round-trip: the client declares `$web_search` in
-//! `tools[]`, the model emits a `tool_call` whose `function.arguments` holds
-//! the search parameters, the client echoes those arguments back verbatim as
-//! a `tool` message, and the server performs the actual search before
-//! returning a final text completion that integrates the results.
-//!
-//! Doc: <https://platform.kimi.ai/docs/guide/use-web-search>.
-//!
-//! Endpoint override via `OTHERSIDE_KIMI_OPENAI_URL` — default is
-//! `https://api.moonshot.ai/v1/chat/completions`. Kimi-for-coding deployments
-//! may host the OpenAI-compat surface behind a different host; the env knob
-//! keeps us from hard-coding a fragile default.
 
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde_json::{json, Value};

@@ -1,34 +1,8 @@
-//! Codex web_search shim. Unlike Anthropic's server tool which we hit via
-//! `/v1/messages` with `type: "web_search_20250305"` (see claude_code.rs),
-//! Codex's `/responses` API performs web_search inline: the model emits
-//! `web_search_call` output items and the server runs the search. Our
-//! responsibility is (a) to advertise the server tool in the request body
-//! (done by the request translator in src/translator/codex/request.rs:
-//! `openai_tools_to_codex_tools` rewrites `WebSearch` -> `{type:"web_search",
-//! external_web_access:true}`), and (b) decode `web_search_call` output items
-//! on the response side (done in src/translator/codex/response.rs).
-//!
-//! Client-side dispatch is unreachable in the happy path — the model never
-//! emits a `WebSearch` function call against codex because the function-tool
-//! entry was replaced upstream by the server tool. This shim still needs
-//! to exist so the dispatch matrix is symmetric when something goes wrong
-//! (e.g. stale rollout where the model thinks the function tool still
-//! exists). The returned marker lets the agent loop keep running and the
-//! user sees a clear explanation.
-//!
-//! Reference: openai/codex
-//! - codex-rs/tools/src/tool_spec.rs:43-55 (enum variant `WebSearch`)
-//! - codex-rs/tools/src/tool_spec.rs:93-129 (`create_web_search_tool`)
-//! - codex-rs/protocol/src/models.rs:555-565 (`WebSearchCall` output item)
-//! - codex-rs/protocol/src/models.rs:861-889 (`WebSearchAction` variants)
 
 use serde_json::{json, Value};
 
 use crate::tools::ToolError;
 
-/// Returned when the codex path is dispatched client-side. Explains why there
-/// are no results: codex's server tool owns the search and emits results via
-/// `response.output_item.added` with item.type = "web_search_call".
 const CODEX_SERVER_TOOL_MARKER: &str =
     "web_search_codex_server_side - codex performs web_search on the /responses \
      server; client-side dispatch returns no results. If you see this, the \

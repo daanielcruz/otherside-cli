@@ -2,19 +2,8 @@ use std::path::{Path, PathBuf};
 
 use super::SessionId;
 
-/// Max bytes we'll keep for a sanitized path component before truncating and
-/// appending a hash suffix. Matches upstream `MAX_SANITIZED_LENGTH` from
-/// `utils/sessionStoragePortable.ts:293` — most filesystems cap individual
-/// components at 255 bytes; the 55-byte headroom leaves room for the suffix.
 pub const MAX_SANITIZED_LENGTH: usize = 200;
 
-/// Sanitize an arbitrary path (typically a cwd) into a single filesystem-safe
-/// component. Mirrors upstream `sanitizePath` (`utils/sessionStoragePortable.ts:311`):
-/// replace every non-alphanumeric byte with `-`, then — if the result would
-/// exceed `MAX_SANITIZED_LENGTH` — truncate and append `-<djb2-base36-abs>`
-/// so nested paths stay collision-resistant without busting the 255-byte limit.
-///
-/// Example: `/Users/foo/my-project` → `-Users-foo-my-project`.
 pub fn sanitize_path(input: &str) -> String {
     let mut sanitized = String::with_capacity(input.len());
     for ch in input.chars() {
@@ -35,11 +24,6 @@ pub fn sanitize_path(input: &str) -> String {
     out
 }
 
-/// djb2 on the *original* input (pre-sanitization) — matches upstream's
-/// Node-path `simpleHash` fallback in `utils/sessionStoragePortable.ts:295`.
-/// Hashing the original avoids truncation-driven collisions: two distinct
-/// inputs that sanitize to the same first-200 bytes still hash differently
-/// because the hash eats the full pre-sanitize string.
 fn djb2_abs_base36(input: &str) -> String {
     let mut hash: i32 = 0;
     for byte in input.chars() {
@@ -71,21 +55,14 @@ fn to_base36(mut n: u32) -> String {
     std::str::from_utf8(&buf[i..]).unwrap().to_string()
 }
 
-/// `<config_dir>/projects` — parent of every per-cwd session directory.
-/// Matches upstream `getProjectsDir` (`utils/sessionStoragePortable.ts:325`).
 pub fn projects_root(config_dir: &Path) -> PathBuf {
     config_dir.join("projects")
 }
 
-/// `<config_dir>/projects/<sanitized-cwd>` — per-cwd session directory.
-/// Matches upstream `getProjectDir` (`utils/sessionStoragePortable.ts:329`).
 pub fn project_dir(config_dir: &Path, cwd: &Path) -> PathBuf {
     projects_root(config_dir).join(sanitize_path(&cwd.to_string_lossy()))
 }
 
-/// `<config_dir>/projects/<sanitized-cwd>/<session-id>.jsonl` — the actual
-/// transcript file. Upstream writes one JSONL per session UUID under the
-/// cwd-derived subdir; otherside now matches.
 pub fn transcript_path(config_dir: &Path, cwd: &Path, id: &SessionId) -> PathBuf {
     project_dir(config_dir, cwd).join(format!("{}.jsonl", id))
 }
@@ -122,15 +99,13 @@ mod tests {
         assert!(out[..MAX_SANITIZED_LENGTH].len() == MAX_SANITIZED_LENGTH);
         let suffix = &out[MAX_SANITIZED_LENGTH..];
         assert!(suffix.starts_with('-'));
-        // base36: 0-9a-z
+        
         assert!(suffix[1..].chars().all(|c| c.is_ascii_alphanumeric()));
     }
 
     #[test]
     fn sanitize_distinguishes_long_paths_beyond_the_cut() {
-        // Both inputs share the first MAX_SANITIZED_LENGTH sanitized chars but
-        // diverge beyond — djb2 over the full pre-sanitize string must still
-        // produce distinct suffixes so they don't collide on disk.
+        
         let common = "/".to_string() + &"a".repeat(MAX_SANITIZED_LENGTH + 10);
         let a = format!("{common}/branch-one");
         let b = format!("{common}/branch-two");
@@ -169,11 +144,7 @@ mod tests {
 
     #[test]
     fn djb2_matches_upstream_reference_vectors() {
-        // Hand-computed against the upstream formula
-        // `h = ((h<<5)-h+c.charCodeAt(0))|0` then `Math.abs(h).toString(36)`.
-        // 'a' (97)           →  97.toString(36) = "2p"
-        // 'ab' (97,98)       → 3105.toString(36) = "2e9"
-        // 'hello' (full)     → 99162322.toString(36) = "1n1e4y"
+        
         assert_eq!(djb2_abs_base36("a"), "2p");
         assert_eq!(djb2_abs_base36("ab"), "2e9");
         assert_eq!(djb2_abs_base36("hello"), "1n1e4y");

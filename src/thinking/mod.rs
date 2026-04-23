@@ -1,5 +1,4 @@
 
-
 use std::str::FromStr;
 
 use crate::error::{Error, Result};
@@ -26,9 +25,7 @@ pub enum ThinkingLevel {
     High,
     XHigh,
     Max,
-    /// Binary reasoning toggle used by Kimi. `On` leaves the
-    /// `thinking:{type:"adaptive"}` envelope; `Off` strips it. Non-claude
-    /// families that wire through the anthropic translator ride these.
+    
     On,
     Off,
 }
@@ -117,18 +114,6 @@ impl ThinkingConfig {
     }
 }
 
-/// Boot-time derivation: `settings.effort_level` string → `ThinkingConfig`.
-///
-/// Mirrors the inline path historically in `tui::cmd_tui`: `"auto"` maps to
-/// `ThinkingConfig::auto()`, any other known label maps to
-/// `ThinkingConfig::level(parsed)`. Unknown labels return `None`, which lets
-/// the caller fall back to its own default (usually: stay as-is).
-///
-/// NOTE: `"none"` is deliberately preserved as `ThinkingConfig::level(None)`
-/// here (not `ThinkingConfig::none()`) to match the legacy boot path; the
-/// back-derivation below then coerces `level: None` to `effort_label = None`,
-/// and the persistence commit rewrites that to `"auto"`. That asymmetry is
-/// the G1 drift surfaced by `boot_effort_round_trip_is_stable`.
 pub fn config_from_effort_label(label: &str) -> Option<ThinkingConfig> {
     if label.eq_ignore_ascii_case("auto") {
         return Some(ThinkingConfig::auto());
@@ -136,11 +121,6 @@ pub fn config_from_effort_label(label: &str) -> Option<ThinkingConfig> {
     ThinkingLevel::from_str(label).ok().map(ThinkingConfig::level)
 }
 
-/// Inverse of `config_from_effort_label`: pick the user-visible label from
-/// a resolved `ThinkingConfig`. Auto and None both collapse to `None` so
-/// UI surfaces (pill, /effort panel) show nothing rather than a surprising
-/// "auto" marker. `commit_session_defaults` separately falls back to
-/// `"auto"` when persisting a `None`.
 pub fn label_from_thinking(cfg: &ThinkingConfig) -> Option<&'static str> {
     match cfg.level {
         ThinkingLevel::Auto | ThinkingLevel::None => None,
@@ -290,8 +270,6 @@ mod tests {
         assert_eq!(cfg.unwrap().level, ThinkingLevel::High);
     }
 
-    /// Mirrors `PersistenceState::commit_session_defaults` — `None` is
-    /// rewritten as `"auto"` on disk. Keep in sync if that policy moves.
     fn commit_effort_label(resolved: Option<&'static str>) -> String {
         resolved.map(|s| s.to_string()).unwrap_or_else(|| "auto".into())
     }
@@ -349,18 +327,6 @@ mod tests {
         }
     }
 
-    /// G1 gate — mirrors the boot → commit → boot cycle of `cmd_tui`.
-    ///
-    /// For each seed label, derive `ThinkingConfig`, then the user-facing
-    /// `effort_label`, then persist via `commit_effort_label` (which mirrors
-    /// `PersistenceState::commit_session_defaults`), then re-derive. The
-    /// second config must equal the first — OR the label must be in the
-    /// documented drift set.
-    ///
-    /// Drift set today: `"none"` collapses to `"auto"` because
-    /// `label_from_thinking(Level(None))` is `None`, and commit rewrites
-    /// `None` to `"auto"`. Every user-facing label (what /effort offers)
-    /// round-trips cleanly.
     #[test]
     fn boot_effort_round_trip_is_stable_for_user_facing_labels() {
         let user_facing = [
@@ -384,14 +350,6 @@ mod tests {
         }
     }
 
-    /// G1 gate (negative) — pins the ONE known drift so a future refactor
-    /// surfaces the regression instead of hiding it.
-    ///
-    /// `"none"` is not a user-exposed /effort row, but any settings.json
-    /// hand-edited to `"effortLevel":"none"` will boot-derive as
-    /// `Level(None)`, then commit back as `"auto"`, then re-derive as
-    /// `Auto`. If this ever stops drifting, broker migration should treat
-    /// that as a behavior change and update the drift set explicitly.
     #[test]
     fn boot_effort_round_trip_documents_none_drift() {
         let cfg1 = config_from_effort_label("none").unwrap();

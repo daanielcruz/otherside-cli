@@ -1,5 +1,4 @@
 
-
 use std::io::{self, Stdout};
 use std::sync::Arc;
 use std::time::Duration;
@@ -130,29 +129,187 @@ pub async fn run(
         .get(&provider_id)
         .ok_or_else(|| Error::Other(format!("provider {provider_id:?} not registered")))?;
 
-    let initial_provider =
+    let mut initial_provider =
         crate::config::providers::ProviderId::from_slug(&provider_id)
             .ok_or_else(|| Error::Other(format!("provider {provider_id:?} not recognized")))?;
 
-    let (base_model, thinking) = parse_suffix(&raw_model)
+    let (mut base_model, thinking) = parse_suffix(&raw_model)
         .map_err(|e| Error::Other(format!("invalid model suffix: {e}")))?;
+
+    let mut settings = settings;
 
     let mut guard = TerminalGuard::enter()?;
 
-    // Zero-cred floor: if no provider has stored credentials, drop the
-    // welcome screen in BEFORE `event_loop`. Phase 1 is UI-only — on
-    // Enter for an enabled row we log intent and fall through into
-    // event_loop anyway (no auth mutation). On Ctrl+C we restore the
-    // terminal and exit cleanly. See `docs/ui-panels/welcome-screen.md`.
+    let mut welcome_just_completed = false;
     if !crate::state::broker::has_any_credentials(&settings) {
-        match run_welcome_gate(&mut guard.terminal).await? {
-            WelcomeGateOutcome::Proceed(provider) => {
-                eprintln!("welcome UI stub: would login to {}", provider.slug());
+        use crate::config::providers::ProviderId;
+        'welcome: loop {
+            match run_welcome_gate(&mut guard.terminal).await? {
+                WelcomeGateOutcome::Proceed(provider) => {
+                    match provider {
+                        ProviderId::ClaudeCode => {
+                            let mut handshake =
+                                match crate::auth::anthropic::begin_login() {
+                                    Ok(h) => h,
+                                    Err(_) => continue 'welcome,
+                                };
+                            let automatic_url = handshake.automatic_url().to_string();
+                            let manual_url = handshake.manual_url().to_string();
+                            let port = handshake.port();
+                            let listener = match handshake.take_listener() {
+                                Some(l) => l,
+                                None => continue 'welcome,
+                            };
+                            let _ = crate::auth::browser::try_open(&automatic_url);
+                            match run_oauth_callback_panel(
+                                &mut guard.terminal,
+                                "\u{25B8} Authorize with Anthropic".to_string(),
+                                automatic_url,
+                                Some(manual_url),
+                                port,
+                                listener,
+                            )
+                            .await?
+                            {
+                                CallbackPanelOutcome::Completed { code, state } => {
+                                    
+                                    match handshake
+                                        .finalize(code, state, false)
+                                        .await
+                                    {
+                                        Ok(_) => {
+                                            initial_provider = provider;
+                                            base_model =
+                                                provider.default_model().to_string();
+                                            welcome_just_completed = true;
+                                            break 'welcome;
+                                        }
+                                        Err(_err) => continue 'welcome,
+                                    }
+                                }
+                                CallbackPanelOutcome::ManualSubmit(raw) => {
+                                    let parsed = crate::auth::anthropic::parse_callback_input(&raw);
+                                    match parsed {
+                                        Ok((code, state)) => {
+                                            match handshake
+                                                .finalize(code, state, true)
+                                                .await
+                                            {
+                                                Ok(_) => {
+                                                    initial_provider = provider;
+                                                    base_model = provider
+                                                        .default_model()
+                                                        .to_string();
+                                                    welcome_just_completed = true;
+                                                    break 'welcome;
+                                                }
+                                                Err(_) => continue 'welcome,
+                                            }
+                                        }
+                                        Err(_) => continue 'welcome,
+                                    }
+                                }
+                                CallbackPanelOutcome::Cancel => continue 'welcome,
+                                CallbackPanelOutcome::Quit => {
+                                    guard.restore();
+                                    return Ok(());
+                                }
+                            }
+                        }
+                        ProviderId::Codex => {
+                            let mut handshake =
+                                match crate::auth::codex::begin_login() {
+                                    Ok(h) => h,
+                                    Err(_) => continue 'welcome,
+                                };
+                            let url = handshake.authorize_url().to_string();
+                            let port = handshake.port();
+                            let listener = match handshake.take_listener() {
+                                Some(l) => l,
+                                None => continue 'welcome,
+                            };
+                            let _ = crate::auth::browser::try_open(&url);
+                            match run_oauth_callback_panel(
+                                &mut guard.terminal,
+                                "\u{25B8} Authorize with ChatGPT".to_string(),
+                                url,
+                                None,
+                                port,
+                                listener,
+                            )
+                            .await?
+                            {
+                                CallbackPanelOutcome::Completed { code, state } => {
+                                    match handshake.finalize(code, state).await {
+                                        Ok(_) => {
+                                            initial_provider = provider;
+                                            base_model =
+                                                provider.default_model().to_string();
+                                            welcome_just_completed = true;
+                                            break 'welcome;
+                                        }
+                                        Err(_) => continue 'welcome,
+                                    }
+                                }
+                                CallbackPanelOutcome::ManualSubmit(raw) => {
+                                    match parse_manual_codex_paste(&raw) {
+                                        Ok((code, state)) => {
+                                            match handshake
+                                                .finalize(code, state)
+                                                .await
+                                            {
+                                                Ok(_) => {
+                                                    initial_provider = provider;
+                                                    base_model = provider
+                                                        .default_model()
+                                                        .to_string();
+                                                    welcome_just_completed = true;
+                                                    break 'welcome;
+                                                }
+                                                Err(_) => continue 'welcome,
+                                            }
+                                        }
+                                        Err(_) => continue 'welcome,
+                                    }
+                                }
+                                CallbackPanelOutcome::Cancel => continue 'welcome,
+                                CallbackPanelOutcome::Quit => {
+                                    guard.restore();
+                                    return Ok(());
+                                }
+                            }
+                        }
+                        _ => {
+
+                            guard.restore();
+                            let r = run_provider_login(provider).await;
+                            guard = TerminalGuard::enter()?;
+                            match r {
+                                Ok(()) => {
+                                    initial_provider = provider;
+                                    base_model = provider.default_model().to_string();
+                                    welcome_just_completed = true;
+                                    break 'welcome;
+                                }
+                                Err(_) => continue 'welcome,
+                            }
+                        }
+                    }
+                }
+                WelcomeGateOutcome::Quit => {
+                    guard.restore();
+                    return Ok(());
+                }
             }
-            WelcomeGateOutcome::Quit => {
-                guard.restore();
-                return Ok(());
-            }
+        }
+    }
+
+    if welcome_just_completed {
+        settings.default_provider = Some(initial_provider.slug().to_string());
+        settings.default_model = Some(base_model.clone());
+        let persist = crate::state::persistence::PersistenceState::new(settings.clone());
+        if let Err(e) = persist.flush() {
+            tracing::warn!(?e, "welcome: failed to persist default provider+model");
         }
     }
 
@@ -184,18 +341,186 @@ pub async fn run(
     }
 }
 
-/// Outcome of the Phase 1 welcome gate. `Proceed` means the user picked
-/// an enabled provider row — we log the intent and fall through to the
-/// main event loop (UI-only; no auth mutation). `Quit` means Ctrl+C.
 enum WelcomeGateOutcome {
     Proceed(crate::config::providers::ProviderId),
     Quit,
 }
 
-/// Drive the welcome screen until the user presses Enter on an enabled
-/// row or Ctrl+C. Uses a minimal crossterm `EventStream` + ticker loop
-/// (no provider stream, no task store) — this runs strictly before any
-/// chat state is constructed.
+async fn run_provider_login(
+    provider: crate::config::providers::ProviderId,
+) -> Result<()> {
+    use crate::config::providers::ProviderId;
+    match provider {
+        ProviderId::ClaudeCode => {
+            crate::auth::anthropic::login_interactive().await.map(|_| ())
+        }
+        ProviderId::Codex => {
+            crate::auth::codex::login_interactive().await.map(|_| ())
+        }
+        ProviderId::Kimi => {
+            crate::auth::kimi::login_interactive().map(|_| ())
+        }
+        ProviderId::GeminiCli | ProviderId::OpenAiCustom => Err(Error::Other(format!(
+            "provider {} has no login flow",
+            provider.slug()
+        ))),
+    }
+}
+
+enum CallbackPanelOutcome {
+    
+    Completed { code: String, state: String },
+    
+    ManualSubmit(String),
+    
+    Cancel,
+    
+    Quit,
+}
+
+async fn run_oauth_callback_panel(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    title: String,
+    url: String,
+    manual_url: Option<String>,
+    port: u16,
+    listener: std::net::TcpListener,
+) -> Result<CallbackPanelOutcome> {
+    use futures::StreamExt;
+
+    listener
+        .set_nonblocking(true)
+        .map_err(|e| Error::Other(format!("listener non-blocking: {e}")))?;
+    let tokio_listener = tokio::net::TcpListener::from_std(listener)
+        .map_err(|e| Error::Other(format!("tokio listener convert: {e}")))?;
+
+    let mut st = welcome::OAuthCallbackWaitState {
+        title,
+        url,
+        manual_url,
+        port,
+        spinner_tick: 0,
+        input: String::new(),
+        error: None,
+    };
+    let mut key_stream = EventStream::new();
+
+    terminal
+        .draw(|f| welcome::draw_oauth_callback(f, f.area(), &st))
+        .map_err(|e| Error::Tui(format!("draw oauth callback: {e}")))?;
+
+    loop {
+        tokio::select! {
+            accept_res = tokio_listener.accept() => {
+                let (tokio_stream, _addr) = accept_res
+                    .map_err(|e| Error::Other(format!("accept: {e}")))?;
+                let std_stream = tokio_stream
+                    .into_std()
+                    .map_err(|e| Error::Other(format!("stream into_std: {e}")))?;
+                std_stream
+                    .set_nonblocking(false)
+                    .map_err(|e| Error::Other(format!("stream blocking: {e}")))?;
+                let parsed = tokio::task::spawn_blocking(move || {
+                    crate::auth::codex::parse_callback_stream(std_stream)
+                })
+                .await
+                .map_err(|e| Error::Other(format!("parse task: {e}")))??;
+                return Ok(CallbackPanelOutcome::Completed {
+                    code: parsed.0,
+                    state: parsed.1,
+                });
+            }
+            maybe_evt = key_stream.next() => {
+                match maybe_evt {
+                    Some(Ok(CtEvent::Paste(s))) => {
+                        let cleaned = s.trim_end_matches(['\r', '\n']);
+                        st.input.push_str(cleaned);
+                        st.error = None;
+                        terminal
+                            .draw(|f| welcome::draw_oauth_callback(f, f.area(), &st))
+                            .map_err(|e| Error::Tui(format!("draw oauth callback: {e}")))?;
+                    }
+                    Some(Ok(CtEvent::Key(k))) => {
+                        if k.kind != KeyEventKind::Press {
+                            continue;
+                        }
+                        match welcome::handle_callback_key(k, &mut st) {
+                            welcome::CallbackKeyOutcome::Stay => {
+                                terminal
+                                    .draw(|f| welcome::draw_oauth_callback(f, f.area(), &st))
+                                    .map_err(|e| Error::Tui(format!("draw oauth callback: {e}")))?;
+                            }
+                            welcome::CallbackKeyOutcome::Submit(raw) => {
+                                return Ok(CallbackPanelOutcome::ManualSubmit(raw));
+                            }
+                            welcome::CallbackKeyOutcome::Cancel => {
+                                return Ok(CallbackPanelOutcome::Cancel);
+                            }
+                            welcome::CallbackKeyOutcome::Quit => {
+                                return Ok(CallbackPanelOutcome::Quit);
+                            }
+                        }
+                    }
+                    Some(Ok(CtEvent::Resize(_, _))) => {
+                        terminal
+                            .draw(|f| welcome::draw_oauth_callback(f, f.area(), &st))
+                            .map_err(|e| Error::Tui(format!("draw oauth callback: {e}")))?;
+                    }
+                    Some(Ok(_)) => {}
+                    Some(Err(e)) => {
+                        return Err(Error::Tui(format!(
+                            "oauth callback event stream: {e}"
+                        )));
+                    }
+                    None => return Ok(CallbackPanelOutcome::Quit),
+                }
+            }
+        }
+    }
+}
+
+fn parse_manual_codex_paste(raw: &str) -> std::result::Result<(String, String), String> {
+    let s = raw.trim();
+    if let Some((c, st)) = s.split_once('#') {
+        if !c.is_empty() && !st.is_empty() {
+            return Ok((c.to_string(), st.to_string()));
+        }
+    }
+    if let Ok(url) = url::Url::parse(s) {
+        let mut code: Option<String> = None;
+        let mut state: Option<String> = None;
+        for (k, v) in url.query_pairs() {
+            match k.as_ref() {
+                "code" => code = Some(v.to_string()),
+                "state" => state = Some(v.to_string()),
+                _ => {}
+            }
+        }
+        if let (Some(c), Some(s)) = (code, state) {
+            return Ok((c, s));
+        }
+    }
+    if s.contains('=') {
+        let mut code: Option<String> = None;
+        let mut state: Option<String> = None;
+        for pair in s.split('&') {
+            if let Some((k, v)) = pair.split_once('=') {
+                match k {
+                    "code" => code = Some(v.to_string()),
+                    "state" => state = Some(v.to_string()),
+                    _ => {}
+                }
+            }
+        }
+        if let (Some(c), Some(s)) = (code, state) {
+            return Ok((c, s));
+        }
+    }
+    Err(format!(
+        "couldn't parse paste — expected `<code>#<state>` or the full callback URL"
+    ))
+}
+
 async fn run_welcome_gate(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
 ) -> Result<WelcomeGateOutcome> {
@@ -212,8 +537,7 @@ async fn run_welcome_gate(
     loop {
         tokio::select! {
             _ = ticker.tick() => {
-                // Ticker keeps the loop responsive; no periodic work on
-                // the welcome floor yet.
+                
             }
             maybe_evt = key_stream.next() => {
                 match maybe_evt {
@@ -241,8 +565,7 @@ async fn run_welcome_gate(
                             .map_err(|e| Error::Tui(format!("draw welcome: {e}")))?;
                     }
                     Some(Ok(_)) => {
-                        // Mouse / paste / focus — drop silently like the
-                        // main event loop does.
+                        
                     }
                     Some(Err(e)) => {
                         return Err(Error::Tui(format!("welcome event stream: {e}")));
@@ -341,10 +664,6 @@ async fn event_loop(
         }
     }
 
-    // Install the task-output root (mirrors upstream `_taskOutputDir` in
-    // `utils/task/diskOutput.ts:49-54`): `<config_dir>/projects/<slug>/<session-id>`
-    // — set once, not rotated mid-session. Background tasks outliving a
-    // /clear keep their original paths reachable.
     if let (Ok(cfg_dir), Some(session_id)) = (crate::config::config_dir(), st.session_id.as_ref()) {
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         let project = crate::sessions::paths::project_dir(&cfg_dir, &cwd);
@@ -367,9 +686,7 @@ async fn event_loop(
     st.session.effort_label = thinking
         .as_ref()
         .and_then(crate::thinking::label_from_thinking);
-    // Align dispatch snapshot with the finalized boot state (settings may
-    // have promoted a `None` into an effort level; main.rs installed
-    // against `raw_model` suffix only).
+    
     crate::state::dispatch::set_model(st.session.model.clone());
     crate::state::dispatch::set_thinking(thinking);
     let mut key_stream = EventStream::new();
@@ -390,12 +707,6 @@ async fn event_loop(
             _ = ticker.tick() => {
                 spinner_tick = spinner_tick.wrapping_add(1);
 
-                // Keep the /agents panel live: if it's open, re-pull the
-                // TaskStore snapshot so a subagent dispatched AFTER the panel
-                // opened surfaces immediately, a completion flips the row to
-                // the Recent tab, and the per-library `running_count` column
-                // stays current. Previously the panel was built ONCE when
-                // opened → "No subagents currently running" even when one was.
                 if let Some(panel) = st.active_agents_panel.as_mut() {
                     panel.refresh(
                         &st.tasks,
@@ -459,10 +770,6 @@ async fn event_loop(
                             });
                         }
 
-                        // Persist lifetime per-(provider, model) usage in
-                        // `~/.otherside/projects.json` so /config Usage can
-                        // surface a cross-session view. Upstream parity:
-                        // `utils/config.ts:95-105` `lastModelUsage`.
                         if let Ok(cwd) = std::env::current_dir() {
                             let provider_slug = st.provider_id.slug().to_string();
                             let model = st.session.model.clone();
@@ -497,22 +804,11 @@ async fn event_loop(
                         );
                     }
                     Some(StreamEvent::ToolCallStart { id, name, args }) => {
-                        // Upstream hides certain meta tools (ToolSearch, TaskOutput)
-                        // from the chat UI via renderToolUseMessage: () => null +
-                        // userFacingName: () => ''. They still dispatch — only the
-                        // anchor/result rows are suppressed. Session record also
-                        // skipped so replays don't resurrect the rows.
+                        
                         if crate::tools::is_hidden_tool(&name) {
                             continue;
                         }
-                        // If the model emitted assistant text BEFORE the
-                        // tool call (refusal prose, "let me check X" prefix,
-                        // etc.), `flush_assistant_buffer` moves it onto
-                        // `messages[]` for render but LEAVES the transcript
-                        // empty — `StreamEvent::Done` then skips the
-                        // AssistantMessage record because the buffer is
-                        // already drained. Persist the text here so
-                        // session.jsonl replays preserve the prose.
+                        
                         if !st.current_assistant_buffer.is_empty() {
                             let prose = st.current_assistant_buffer.clone();
                             st.append_record(crate::sessions::Record::AssistantMessage {
@@ -536,8 +832,7 @@ async fn event_loop(
                         st.begin_tool_call(id, name, args);
                     }
                     Some(StreamEvent::ToolCallFinish { id, result, elapsed_ms }) => {
-                        // Hidden-tool finishes never had a begin_tool_call entry
-                        // — skip the result render + transcript line too.
+                        
                         let tool_name = st
                             .active_tool_calls
                             .iter()
@@ -590,11 +885,7 @@ async fn event_loop(
                     }
                     Some(StreamEvent::BackgroundAgentCompleted { tool_call_id, summary }) => {
                         let trimmed: String = summary.chars().take(160).collect();
-                        // Prefer the upstream-shape agent_id we stored on the
-                        // record at begin_tool_call time. Falling back to
-                        // tool_call_id leaks the Anthropic `toolu_*` prefix
-                        // into user-visible chat + breaks the model's expected
-                        // `a<16hex>` identifier.
+                        
                         let task_id = crate::tasks::TaskId::from_string(tool_call_id.clone());
                         let display_id = st
                             .tasks
@@ -739,12 +1030,7 @@ fn handle_key(
         if let Some(action) = kb_dispatch(&k, &pred_ctx) {
             match action {
                 Action::TaskBackground => {
-                    // Upstream binds `task:background` directly to Ctrl+B
-                    // (single press) — see `reconstructed/2.1.117/source/
-                    // keybindings/defaultBindings.ts:200` + `BashTool/UI.tsx:46`.
-                    // The previous double-tap arming was a misread of upstream
-                    // and forced the user to press Ctrl+B twice (user bug
-                    // 2026-04-23). Single press fires immediately now.
+                    
                     st.ctrl_b_armed_at = None;
                     let _ = st.tasks.background_all_running_foreground();
                     let _ = crate::tools::background_signal::signal_all();
@@ -821,11 +1107,7 @@ fn handle_key(
             if let Some(ac) = st.autocomplete.as_mut() {
                 ac.move_up();
             } else if st.input.is_empty() && st.has_queued_messages() {
-                // Bug N: previously gated on `!st.streaming`, so Up during
-                // an in-flight turn silently no-oped — exactly when the
-                // user queued text and wanted to edit the last item. The
-                // queued buffer is independent of streaming state; let
-                // Up pull the tail into the input at any time.
+                
                 if let Some(tail) = st.pop_queue_tail() {
                     st.input = tail;
                     st.refresh_autocomplete();
@@ -841,11 +1123,7 @@ fn handle_key(
                 && st.active_tasks_panel.is_none()
                 && st.active_agents_panel.is_none()
             {
-                // Upstream two-stage: first ↓ at prompt bottom focuses the
-                // pill (PromptInput.tsx:410-419 decrements coordinatorTaskIndex
-                // 0 → -1). Second ↓ or Enter opens `BackgroundTasksDialog`
-                // — the task manager, NOT AgentsMenu (parity fix 5,
-                // 2026-04-22). `/agents` remains on AgentsPanel.
+                
                 if !st.pill_focused {
                     st.pill_focused = true;
                 } else {
@@ -889,7 +1167,7 @@ fn handle_key(
                 && st.active_tasks_panel.is_none()
                 && st.active_agents_panel.is_none()
             {
-                // Two-stage pill Enter: open BackgroundTasksDialog (not AgentsMenu).
+                
                 st.pill_focused = false;
                 st.active_tasks_panel = Some(
                     crate::tui::slash::tasks_panel::TasksPanelState::new(
@@ -951,9 +1229,7 @@ fn handle_menu_key(
     use crate::tui::slash::catalog::PanelKind;
     if matches!(k.code, KeyCode::Esc) {
         if let Some(menu) = st.active_menu.as_mut() {
-            // Esc in the search region with a non-empty query only clears
-            // the filter. A second Esc (empty query) then closes the panel.
-            // Esc from tabs or body always closes.
+            
             let in_search = matches!(menu.kind, PanelKind::Settings(_))
                 && !menu.settings_header_focused.unwrap_or(false)
                 && !menu.settings_body_focused;
@@ -975,12 +1251,9 @@ fn handle_menu_key(
     if let PanelKind::Settings(_) = menu_state.kind {
         let header_focused = menu_state.settings_header_focused.unwrap_or(false);
         let body_focused = menu_state.settings_body_focused;
-        // Three-region focus model: tabs (header) | search | body.
-        // `header_focused && !body_focused` = tabs.
-        // `!header_focused && !body_focused` = search bar (default on open).
-        // `!header_focused && body_focused` = body rows.
+        
         match k.code {
-            // Tabs: left/right/tab cycle between tabs.
+            
             KeyCode::Left | KeyCode::Right | KeyCode::Tab | KeyCode::BackTab
                 if header_focused =>
             {
@@ -991,7 +1264,7 @@ fn handle_menu_key(
                 rotate_settings_tab(st, direction);
                 return false;
             }
-            // Body: left/right edit the focused row's value.
+            
             KeyCode::Left | KeyCode::Right | KeyCode::Tab | KeyCode::BackTab
                 if body_focused =>
             {
@@ -1002,7 +1275,7 @@ fn handle_menu_key(
                 edit_settings_row(st, direction);
                 return false;
             }
-            // Search: backspace trims the filter.
+            
             KeyCode::Backspace
                 if !header_focused
                     && !body_focused
@@ -1012,7 +1285,7 @@ fn handle_menu_key(
                 menu_state.cursor = 0;
                 return false;
             }
-            // Search: any printable char appends to the filter.
+            
             KeyCode::Char(c)
                 if !header_focused
                     && !body_focused
@@ -1024,17 +1297,17 @@ fn handle_menu_key(
                 menu_state.cursor = 0;
                 return false;
             }
-            // Body: space toggles the focused bool row (legacy affordance).
+            
             KeyCode::Char(' ') if body_focused => {
                 edit_settings_row(st, 1);
                 return false;
             }
-            // Search → tabs.
+            
             KeyCode::Up if !header_focused && !body_focused => {
                 menu_state.settings_header_focused = Some(true);
                 return false;
             }
-            // Body → search when pressing Up at the first visible row.
+            
             KeyCode::Up if body_focused => {
                 let lc_query = menu_state.settings_search_query.to_lowercase();
                 let first_visible_idx = menu_state
@@ -1055,14 +1328,14 @@ fn handle_menu_key(
                 menu_state.move_up();
                 return false;
             }
-            // Tabs → search.
+            
             KeyCode::Down if header_focused => {
                 menu_state.settings_header_focused = Some(false);
                 menu_state.settings_body_focused = false;
                 menu_state.cursor = 0;
                 return false;
             }
-            // Search → body (Enter or Down): snap cursor to first visible row.
+            
             KeyCode::Down | KeyCode::Enter if !header_focused && !body_focused => {
                 let lc_query = menu_state.settings_search_query.to_lowercase();
                 let first_visible = menu_state
@@ -1082,7 +1355,7 @@ fn handle_menu_key(
                 }
                 return false;
             }
-            // Body: Down skips hidden rows.
+            
             KeyCode::Down if body_focused => {
                 let lc_query = menu_state.settings_search_query.to_lowercase();
                 let n = menu_state.options.len();
@@ -1102,9 +1375,7 @@ fn handle_menu_key(
                 }
                 return false;
             }
-            // Body: Enter commits the focused row's edit. Model opens `/model`
-            // panel (cycling via Enter silently drops the `[1m]` suffix — parity
-            // with upstream which opens a picker here). Other rows cycle like `→`.
+            
             KeyCode::Enter if body_focused => {
                 commit_settings_row_enter(st);
                 return false;
@@ -1148,16 +1419,6 @@ fn handle_menu_key(
     false
 }
 
-/// Tabbed `/model` panel key handler. Phase 1 UI-only — Enter on any row
-/// fires a `tracing::info!` stub and never mutates session state.
-///
-/// Keymap:
-/// - tabs (focused) + `←/→/Tab` → cycle tab, wraps.
-/// - tabs + `↓/Enter` → focus body (row 0).
-/// - body + `↑/↓` → walk rows (Authenticated only).
-/// - body + `Enter` → log stub intent (set model, logout, login).
-/// - Custom unauth + Enter → no-op (per spec).
-/// - `Esc` is handled by the generic menu path above, not repeated here.
 fn handle_model_panel_key(
     k: KeyEvent,
     st: &mut ConversationState,
@@ -1218,10 +1479,7 @@ fn handle_model_panel_key(
                 let provider = tab.provider;
                 match tab.rows.get(body_cursor) {
                     Some(ModelTabRow::Model { raw_id, .. }) => {
-                        // Commit: switch session provider + model, persist to
-                        // settings.default_provider + default_model. Closes
-                        // the panel + emits the Set-anchor so the next boot
-                        // restores the user's pick (directive 2026-04-23).
+                        
                         let new_model = (*raw_id).to_string();
                         if let Err(e) = crate::state::broker::set_active_provider(
                             st,
@@ -1261,7 +1519,7 @@ fn handle_model_panel_key(
                             "/model UI stub: would login {provider:?}"
                         );
                     }
-                    // Custom unauth body has no Enter action per spec.
+                    
                     Some(ModelTabRow::CustomHint) | None => {}
                 }
             }
@@ -1271,9 +1529,6 @@ fn handle_model_panel_key(
     }
 }
 
-/// Rebuild the `/model` overlay from canonical fields on `ConversationState`.
-/// Mirrors the CycleProvider-rebuild pattern elsewhere — the renderer sees
-/// only `&OverlayMenu`, so we rebuild on every state change.
 fn rebuild_model_panel(st: &mut ConversationState) {
     let fresh = menu::OverlayMenu::new_model_tabbed(
         &st.session.model,
@@ -1361,9 +1616,7 @@ fn edit_settings_row(st: &mut ConversationState, direction: i32) {
             if let Err(e) = crate::state::broker::set_active_model(st, next_model) {
                 tracing::warn!(?e, "/config model cycle: broker write failed");
             }
-            // Effort reset when the new model doesn't support the current
-            // effort label (e.g. cycling from kimi-for-coding `on` to a
-            // haiku row which exposes `low/medium/high`).
+            
             let current_effort = st.session.effort_label.unwrap_or("auto");
             if !crate::models::catalog::supports_effort(next_model, current_effort) {
                 let next_effort = crate::models::catalog::default_effort_for(next_model);
@@ -1498,10 +1751,7 @@ fn emit_panel_dismiss_anchor(
     outcome: Option<&menu::OverlayMenuOutcome>,
 ) {
     use crate::tui::slash::catalog::PanelKind;
-    // User directive 2026-04-24: "nao mencionar slashs dismisseds na tela
-    // de mensagens, fazer isso de maneira silenciosa." Panels close
-    // silently; only real DECISIONS (SetEffort, SetPermissionMode) still
-    // emit an anchor so the transcript records the user's choice.
+    
     let (slash, text) = match (menu.kind, outcome) {
         (PanelKind::Permissions, Some(menu::OverlayMenuOutcome::SetPermissionMode { action_id })) => {
             ("permissions", format!("Set permission mode to {action_id}"))
@@ -1515,15 +1765,6 @@ fn emit_panel_dismiss_anchor(
     st.push_anchor(slash, "", text, DisplayOrigin::Chrome);
 }
 
-/// Handle a bracketed-paste event from the terminal. Inject the full paste
-/// content into the active input surface (prompt bar, pending-question, or
-/// permission prompt) so Cmd+V / middle-click / drag-drop arrives as one
-/// atomic blob instead of a burst of per-character Key events (which would
-/// trigger autocomplete / history / key handlers on every char).
-///
-/// Mouse capture stays on — users who want to copy-paste out with native
-/// selection can hold Option (macOS) / Alt (Linux) while dragging; the
-/// terminal bypasses mouse capture under that modifier.
 fn handle_paste(text: &str, st: &mut ConversationState) {
     if text.is_empty() {
         return;
@@ -1535,15 +1776,13 @@ fn handle_paste(text: &str, st: &mut ConversationState) {
         return;
     }
     if let Some(menu) = st.active_menu.as_mut() {
-        // Settings panels carry a filter search query — pastes into an open
-        // settings panel extend the filter rather than falling through to
-        // the prompt. No-op on panels without a query surface.
+        
         if matches!(menu.kind, crate::tui::slash::catalog::PanelKind::Settings(_)) {
             menu.settings_search_query.push_str(text);
             return;
         }
     }
-    // Normalize CRLF → LF so multi-line pastes stay well-formed.
+    
     let normalized: String = text.replace("\r\n", "\n").replace('\r', "\n");
     st.input_push_str(&normalized);
     st.refresh_autocomplete();
@@ -1580,7 +1819,7 @@ fn handle_agents_panel_key(k: KeyEvent, st: &mut ConversationState) {
     };
     match handle_key(k, panel) {
         KeyOutcome::Dismiss => {
-            // Silent dismiss per user directive 2026-04-24.
+            
             st.active_agents_panel = None;
         }
         KeyOutcome::Consumed => {}
@@ -1592,25 +1831,22 @@ fn handle_tasks_panel_key(k: KeyEvent, st: &mut ConversationState) {
     let Some(panel) = st.active_tasks_panel.as_mut() else {
         return;
     };
-    // Refresh each tick so row runtime + output grow as tasks run.
+    
     panel.refresh(&st.tasks);
     match handle_key(k, panel) {
         KeyOutcome::Dismiss => {
-            // Silent dismiss per user directive 2026-04-24.
+            
             st.active_tasks_panel = None;
         }
         KeyOutcome::StopFocused => {
-            // Upstream `x` from detail: kill the task. Otherside signals
-            // the background-cancel channel for the focused tool_use_id,
-            // matching the Ctrl+B-handle path. The TaskStore flips the
-            // record to Stopped when the runner observes the signal.
+            
             if let Some(tool_use_id) = panel
                 .focused_row()
                 .and_then(|r| r.tool_use_id.clone())
             {
                 let _ = crate::tools::background_signal::signal(&tool_use_id);
             }
-            // Leave the panel open — user returns to list with updated state.
+            
         }
         KeyOutcome::Consumed => {}
     }
@@ -1779,10 +2015,7 @@ fn spawn_agent_turn(
 ) {
     let provider_id = st.provider_id;
     let Some(provider) = registry.get(provider_id.slug()) else {
-        // Anchor shape (`⎿  …`) instead of the `system: …` plain line — this
-        // is a terminal turn-level error, not a side note. `push_anchor`
-        // emits the `⎿ ` prefix + an empty echo so the line sits under the
-        // user's prompt with chrome styling (user directive 2026-04-23).
+        
         st.push_anchor(
             "",
             "",
@@ -1868,10 +2101,6 @@ fn drain_pending_inputs(
     auto_trigger_pending_notifications(st, registry, base_model, tx)
 }
 
-/// Mirrors upstream `autoCompactIfNeeded` gate (minus rapid-refill + failure
-/// tracking — post-MVP). Fires a silent compact turn between user turns when
-/// token usage crosses the auto-compact threshold, matching the warning chip
-/// already shown in the status line.
 fn auto_fire_compact_if_needed(
     st: &mut ConversationState,
     registry: &Arc<Registry>,
@@ -1890,8 +2119,7 @@ fn auto_fire_compact_if_needed(
     if st.session.context_window == 0 {
         return false;
     }
-    // Mirror render.rs AUTOCOMPACT_BUFFER_TOKENS — keep in sync manually until
-    // that constant is promoted to a shared module.
+    
     let threshold = st.session.context_window.saturating_sub(13_000);
     if threshold == 0 || st.input_tokens < threshold {
         return false;
@@ -1951,9 +2179,7 @@ fn drain_queue_head_if_any(
         streaming = st.streaming,
         "drain_queue_all entered"
     );
-    // Batch drain: upstream flushes the full queued array as ONE turn on
-    // stream Done (user directive 2026-04-24). Previously we popped one
-    // head per drain, firing N consecutive turns for N queued entries.
+    
     if !st.consume_queue_all_into_input() {
         tracing::info!(target: "otherside::queue", "queue empty — no drain");
         return false;
@@ -2022,12 +2248,6 @@ fn dispatch_slash(
         }
     };
 
-    // Runner resync used to live here (pre-/provider removal). Every slash
-    // path today is either (a) provider-neutral (Instant / Toggle / Skill /
-    // Anchor / Auth / Unknown / Passthrough) or (b) routes through a panel
-    // commit that calls `state::broker::set_active_provider` directly, which
-    // owns the runner-update handshake. The post-dispatch hook was therefore
-    // dead after `/provider` slash removed in 2026-04-23.
     match outcome {
         slash::SlashOutcome::Handled => {
             st.input.clear();
@@ -2125,10 +2345,6 @@ fn spawn_compact_turn(
     });
 }
 
-/// Pre-TUI resume picker outcome. Kept narrow on purpose: the full
-/// ratatui overlay (upstream `screens/ResumeConversation.tsx`, ~400 LOC)
-/// is post-MVP — for now we print a numbered list to stderr and read one
-/// line from stdin before dropping into altscreen.
 enum PickerOutcome {
     Resume(crate::sessions::SessionId),
     Latest,
@@ -2153,8 +2369,6 @@ fn pick_session_pre_tui(
         return PickerOutcome::Resume(sessions[0].id.clone());
     }
 
-    // Cap at 20 rows so the prompt stays terminal-sized. Newest first
-    // (matches upstream — newest-first is what users reach for).
     const MAX_ROWS: usize = 20;
     let shown = sessions.iter().take(MAX_ROWS).enumerate();
 
@@ -2275,15 +2489,6 @@ impl TerminalGuard {
         enable_raw_mode().map_err(|e| Error::Tui(format!("raw mode: {e}")))?;
         let mut out = io::stdout();
 
-        // Bracketed paste ON so pasted blocks arrive as a single
-        // CtEvent::Paste instead of N key events.
-        //
-        // Mouse capture intentionally OFF — enabling it suppresses the
-        // terminal emulator's native text-selection path (user cannot
-        // select/copy chat content). Historical bug T (clicking emitted
-        // duplicate Key events) is addressed by bracketed paste + the
-        // `Some(Ok(_))` catch-all drop path, not by consuming mouse
-        // events wholesale.
         execute!(
             out,
             EnterAlternateScreen,
@@ -2323,10 +2528,7 @@ impl Drop for TerminalGuard {
 
 #[cfg(test)]
 mod panel_anchor_tests {
-    // User directive 2026-04-24: "nao mencionar slashs dismisseds na tela
-    // de mensagens, fazer isso de maneira silenciosa." Pure dismisses emit
-    // zero messages. Only real decisions (SetEffort, SetPermissionMode)
-    // still leave an anchor in the transcript.
+    
     use super::*;
     use crate::tui::menu::{OverlayMenu, OverlayMenuOutcome};
     use crate::tui::slash::catalog::PanelKind;
@@ -2540,10 +2742,7 @@ mod settings_edit_tests {
 
     #[test]
     fn effort_row_reflects_new_provider_after_switch() {
-        // Regression pin: flipping provider must change the effort cycle
-        // space because each provider's model catalog carries its own
-        // supported_efforts. Kimi advertises only "auto" — cycling Effort
-        // under Kimi must land on "auto", not a Claude-only level.
+        
         use crate::config::providers::ProviderId;
         use crate::config::settings::PermissionMode;
 
@@ -2597,10 +2796,7 @@ mod settings_edit_tests {
 
     #[test]
     fn paste_image_file_path_injects_as_plain_text_not_stripped() {
-        // macOS Terminal / iTerm2 emit the file path as bracketed-paste text
-        // when the user drags an image onto the terminal window. Confirm the
-        // path is preserved verbatim so downstream (Phase 2: wire-level image
-        // content-block wrap) can detect and lift the image.
+        
         let mut st = ConversationState::default();
         super::handle_paste("/Users/me/Desktop/screenshot.png", &mut st);
         assert_eq!(st.input, "/Users/me/Desktop/screenshot.png");
@@ -2660,9 +2856,7 @@ mod settings_edit_tests {
         if let Some(m) = st.active_menu.as_mut() {
             focus_row(m, "Effort");
         }
-        // Broker stores `None` for auto/none (label_from_thinking rule); the
-        // persistence mirror keeps the literal "auto" for round-trip. UI
-        // surfaces display `effort_label.unwrap_or("auto")`.
+        
         const EXPECTED: &[Option<&str>] = &[
             Some("low"),
             Some("medium"),
@@ -2770,11 +2964,7 @@ mod settings_edit_tests {
 
     #[test]
     fn edit_preserves_body_focus_and_search_query() {
-        // User bug 2026-04-23: toggling a bool row kicked focus back to the
-        // search region, so the user had to navigate down again on every
-        // change. `edit_settings_row` rebuilds the menu with fresh
-        // `OverlayMenu::new_settings` (which defaults body_focused=false,
-        // query=""); the rebuild must preserve both.
+        
         let mut st = ConversationState::default();
         st.active_menu = Some(OverlayMenu::new_settings(SettingsTab::Config, &st));
         if let Some(m) = st.active_menu.as_mut() {

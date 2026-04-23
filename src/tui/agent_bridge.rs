@@ -283,10 +283,7 @@ async fn dispatch_agent_cancellable(
     let mut join = tokio::task::spawn_blocking(move || {
         let emitter: Arc<dyn NestedEmitter> = Arc::new(StreamEmitter { tx: tx_for_emitter });
         crate::agent::subagents::with_nested_emitter(emitter, || {
-            // Scope the provider thread-local across the sync Agent-tool
-            // dispatch so nested subagent loops inherit it (they re-derive
-            // via `self.provider.id()`, but the first hop reads the
-            // thread-local for consistency with non-Agent tools).
+            
             tools::with_current_provider(provider_id, || {
                 tools::with_tool_call_id(call_id_owned, || {
                     tools::dispatch(&name_owned, &args_owned)
@@ -295,12 +292,6 @@ async fn dispatch_agent_cancellable(
         })
     });
 
-    // The non-cancelled branch MUST capture the JoinResult directly — once
-    // `&mut join` resolves inside tokio::select!, the handle is consumed.
-    // The previous shape `_ = &mut join => false` threw away the outcome
-    // and then called `join.await` again below, which panics with
-    // "JoinHandle polled after completion" (tokio/src/runtime/task/core.rs).
-    // Capture the result in-branch; detach only on the cancel path.
     let completion: Option<std::result::Result<
         std::result::Result<Value, ToolError>,
         tokio::task::JoinError,
@@ -319,10 +310,6 @@ async fn dispatch_agent_cancellable(
         };
     }
 
-    // Cancelled: the blocking task is still running. Detach it so its final
-    // result flows in via StreamEvent::BackgroundAgentCompleted, and hand
-    // the model the synthetic "backgrounded" tool result immediately so
-    // the turn unblocks.
     let call_id_for_late = tool_call_id.to_string();
     let tx_for_late = tx.clone();
     tokio::spawn(async move {
@@ -355,13 +342,7 @@ async fn dispatch_agent_cancellable(
         .get("description")
         .and_then(|v| v.as_str())
         .unwrap_or("");
-    // Emit an upstream-shape agentId (`a<16hex>`) to the model instead of the
-    // Anthropic tool_use_id. Reusing `toolu_…` leaked the wire identifier into
-    // user-visible text and the agent-log path, neither of which match
-    // upstream (`utils/uuid.ts:24 createAgentId`). Reuse the agent_id the
-    // TUI pre-generated in begin_tool_call when available — keeps the same
-    // identifier on "Async agent launched" text, disk-mirror path, and the
-    // later BackgroundAgentCompleted render.
+    
     let agent_id = {
         let task_id = crate::tasks::TaskId::from_string(tool_call_id.to_string());
         let store_opt = crate::tasks::store::current_global();
@@ -493,13 +474,7 @@ fn format_err(e: &Error) -> String {
 
 #[cfg(test)]
 mod panic_regression_tests {
-    //! Regression guard for the "JoinHandle polled after completion" panic
-    //! surfaced by 2026-04-22 parity probes (bug I on the commit ledger).
-    //!
-    //! The original shape lost the JoinResult inside the select! branch and
-    //! then re-awaited the handle, which panics in tokio's task core. This
-    //! test reproduces the exact pattern in isolation and asserts the fix:
-    //! once a branch has polled `&mut join` to Ready, do NOT await it again.
+    
     use tokio::sync::watch;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -508,18 +483,12 @@ mod panic_regression_tests {
 
         let mut join = tokio::task::spawn_blocking(|| 42_i32);
 
-        // Matches the live-agent shape: keep the cancel branch biased first,
-        // capture the join outcome in-branch, and never re-await the handle.
         let completion: Option<std::result::Result<i32, tokio::task::JoinError>> = tokio::select! {
             biased;
             _ = cancel_rx.changed() => None,
             result = &mut join => Some(result),
         };
 
-        // Non-cancelled branch: we MUST have the result. Re-awaiting `join`
-        // here is what triggered the production panic — the assertion below
-        // proves the new pattern makes that re-await both unnecessary and
-        // unreachable.
         let value = completion
             .expect("join branch must win when no cancel signal fired")
             .expect("spawn_blocking future must not fail");
@@ -531,13 +500,11 @@ mod panic_regression_tests {
         let (tx, mut cancel_rx) = watch::channel(false);
 
         let mut join = tokio::task::spawn_blocking(|| {
-            // Simulate a long-running subagent: sleep a bit so the cancel
-            // signal can win the select! race deterministically.
+            
             std::thread::sleep(std::time::Duration::from_millis(50));
             "late-result"
         });
 
-        // Fire the cancel signal immediately so the cancel branch wins.
         let _ = tx.send(true);
 
         let completion: Option<std::result::Result<&str, tokio::task::JoinError>> = tokio::select! {
@@ -548,9 +515,6 @@ mod panic_regression_tests {
 
         assert!(completion.is_none(), "cancel branch must win when signal fires first");
 
-        // On the cancel path the handle is still live — the detached tracker
-        // can await it. This is what the live code does inside its
-        // tokio::spawn to surface BackgroundAgentCompleted later.
         let late = join.await.expect("detached join must still succeed");
         assert_eq!(late, "late-result");
     }

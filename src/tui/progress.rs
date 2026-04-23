@@ -1,5 +1,4 @@
 
-
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -13,10 +12,6 @@ use ratatui::{
 
 use super::render::theme;
 
-// otherside-branded spinner: 4-frame quadrant cycle (user directive
-// 2026-04-22). Intentional divergence from upstream's 12-frame asterisk
-// pulse — the visible identity lives in `src/tui/mascot.rs` + statusline
-// + this spinner, kept distinct from the claude-code brand surface.
 const SPINNER_FRAMES: &[char] = &['◰', '◳', '◲', '◱'];
 
 const VERBS: &[&str] = &[

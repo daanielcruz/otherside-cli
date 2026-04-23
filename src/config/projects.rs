@@ -1,5 +1,4 @@
 
-
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -28,31 +27,20 @@ pub struct ProjectEntry {
     pub last_accessed: Option<String>,
     pub history: Vec<HistoryEntry>,
 
-    /// Session UUID of the most recent TUI session that ran in this
-    /// workspace. `--continue` resumes this without needing a picker.
     pub last_session_id: Option<String>,
 
-    /// Provider + model the workspace last dispatched against.
     pub last_provider: Option<String>,
     pub last_model: Option<String>,
 
-    /// Session totals at the time Done fired. Cleared when the user
-    /// manually clears usage or when a new session boots.
     pub last_total_input_tokens: Option<u64>,
     pub last_total_output_tokens: Option<u64>,
 
-    /// Accumulated per-(provider, model) usage. Key is the
-    /// `"<provider-slug>:<model-id>"` tuple; values accumulate across
-    /// sessions so the /config Usage tab can render a lifetime view.
     pub last_model_usage: HashMap<String, ModelUsage>,
 
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
 
-/// Lifetime usage for one (provider, model) combo, accumulated across
-/// sessions. Parity with upstream `ProjectConfig.lastModelUsage` entries at
-/// `reconstructed/2.1.117/source/utils/config.ts:95-105`.
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ModelUsage {
@@ -109,10 +97,6 @@ pub fn is_trusted(cfg: &ProjectsConfig, workspace: &Path) -> bool {
         .is_some_and(|entry| entry.trusted)
 }
 
-/// Append a single turn's usage to the workspace's per-model lifetime
-/// counters, update last-session pointers, and persist atomically. No-op
-/// when both token counts are 0 (keeps fs churn low on empty/tool-only
-/// turns). `ts` is an ISO-8601 timestamp — caller picks now.
 pub fn record_turn_usage(
     workspace: &Path,
     provider_slug: &str,
@@ -223,7 +207,7 @@ mod tests {
         let json = serde_json::to_string(&usage).unwrap();
         let back: ModelUsage = serde_json::from_str(&json).unwrap();
         assert_eq!(back, usage);
-        // camelCase field rename must ship, not snake_case
+        
         assert!(json.contains("\"inputTokens\""));
         assert!(json.contains("\"outputTokens\""));
         assert!(json.contains("\"lastUsedAt\""));

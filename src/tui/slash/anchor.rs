@@ -1,15 +1,10 @@
 
-
 use super::super::state::{ConversationState, DisplayOrigin};
 use super::SlashOutcome;
 
 pub fn handle(name: &str, args: &str, state: &mut ConversationState) -> SlashOutcome {
     let lower = name.to_ascii_lowercase();
 
-    // compact is intercepted by dispatch_slash before reaching this arm —
-    // it needs provider/model/thinking to fire the async LLM-summary turn
-    // (see tui::spawn_compact_turn). Falling through here means the intercept
-    // regressed: surface a loud error row instead of silently doing nothing.
     let result = match lower.as_str() {
         "branch" => {
             "session fork is not implemented — requires transcript persistence".to_string()
@@ -46,10 +41,7 @@ mod tests {
 
     #[test]
     fn compact_falls_through_to_error_when_dispatch_intercept_missing() {
-        // Guards the tui::dispatch_slash contract: compact must be handled via
-        // spawn_compact_turn (async, LLM-summary) before reaching this arm.
-        // If someone routes /compact back here the anchor surfaces a loud
-        // internal-error row rather than silently dropping history.
+        
         let mut st = ConversationState::default();
         handle("compact", "", &mut st);
         let last = st.messages.last().unwrap();

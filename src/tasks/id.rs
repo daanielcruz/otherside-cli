@@ -1,5 +1,4 @@
 
-
 use std::fmt;
 
 use rand::distr::{Alphanumeric, SampleString};
@@ -27,16 +26,6 @@ impl TaskId {
     }
 }
 
-/// Build an upstream-shape agentId — `a<16-hex>` or `a<label>-<16-hex>`.
-///
-/// Mirrors upstream `utils/uuid.ts:24 createAgentId` exactly:
-///   `a${label ? label + '-' : ''}${randomBytes(8).toString('hex')}`
-///
-/// This is NOT the internal TaskId used as the TaskStore HashMap key (that
-/// stays keyed by the Anthropic tool_use_id for lookup compatibility with
-/// begin_tool_call/finish_tool_call sites). It is the identifier surfaced
-/// in "Async agent launched successfully." and the basis for the on-disk
-/// task-output path.
 pub fn create_agent_id(label: Option<&str>) -> String {
     let mut bytes = [0u8; 8];
     rng().fill_bytes(&mut bytes);
@@ -88,8 +77,7 @@ mod tests {
 
     #[test]
     fn create_agent_id_matches_upstream_no_label_shape() {
-        // Upstream utils/uuid.ts:24 — `a${randomBytes(8).toString('hex')}`
-        // → 1 prefix char + 16 hex chars = 17 total.
+        
         for _ in 0..64 {
             let id = create_agent_id(None);
             assert_eq!(id.len(), 17, "unexpected len: {id} ({})", id.len());
@@ -104,7 +92,7 @@ mod tests {
 
     #[test]
     fn create_agent_id_matches_upstream_labeled_shape() {
-        // Upstream: `a${label}-${hex}` — e.g. `acompact-a3f2c1b4d5e6f7a8`.
+        
         let id = create_agent_id(Some("compact"));
         assert!(id.starts_with("acompact-"), "bad prefix: {id}");
         let suffix = &id["acompact-".len()..];
@@ -117,7 +105,7 @@ mod tests {
         let id = create_agent_id(Some(""));
         assert_eq!(id.len(), 17);
         assert!(id.starts_with('a'));
-        // No `-` sentinel when label was empty.
+        
         assert!(!id.contains('-'), "empty label must not leave a dangling dash: {id}");
     }
 

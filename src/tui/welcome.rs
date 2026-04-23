@@ -1,13 +1,3 @@
-//! Welcome screen — zero-cred floor, Phase 1 (UI-only).
-//!
-//! Renders a full-screen boot UX when no provider has stored credentials.
-//! Owns its own layout — it is NOT a slash panel, so `panel_frame.rs` is
-//! intentionally unused here. Re-uses `mascot::padded_rows()` for the art
-//! without duplicating or mutating the constants.
-//!
-//! Phase 2 (not yet wired): replace the `LoginIntent` stub in the call site
-//! with `state::broker::login(provider).await` and transition to chat on
-//! success. See `docs/ui-panels/welcome-screen.md`.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
@@ -21,18 +11,13 @@ use ratatui::{
 use crate::config::providers::ProviderId;
 
 use super::mascot::{padded_rows, MASCOT_COLS, MASCOT_ROWS};
+use super::panel_frame::{PanelFrame, CHEVRON};
 use super::render::theme;
 
-/// Tagline specific to the welcome screen. Distinct from
-/// `mascot::TAGLINE` (which is the boot-splash black-hole framing) — the
-/// welcome screen's tagline is the first-run "what is this thing" one-liner.
 pub const WELCOME_TAGLINE: &str = "a shell for the reversed world";
 
 pub const SECTION_HEADING: &str = "▸ Choose a provider to sign in";
-pub const FOOTER_BYLINE: &str = "↑↓ navigate · Enter to sign in · Ctrl+C to quit";
 
-/// One row in the provider picker. Order matches the wireframe in
-/// `docs/ui-panels/welcome-screen.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Row {
     Anthropic,
@@ -71,8 +56,6 @@ impl Row {
         }
     }
 
-    /// Disabled rows render dim and are skipped by arrow-nav; Enter on a
-    /// disabled row is a no-op.
     pub fn enabled(self) -> bool {
         !matches!(self, Row::Gemini | Row::Custom)
     }
@@ -90,10 +73,7 @@ impl Row {
 
 #[derive(Debug, Clone, Copy)]
 pub struct WelcomeState {
-    /// Index into `Row::ALL`. Always points at an enabled row — the
-    /// constructor lands on the first enabled row and arrow-nav skips
-    /// disabled rows. Tests may set this directly to exercise the
-    /// disabled-row Enter path.
+    
     pub cursor: usize,
 }
 
@@ -126,7 +106,7 @@ impl WelcomeState {
                 return;
             }
         }
-        // All disabled — pathological; leave cursor alone.
+        
     }
 }
 
@@ -137,9 +117,102 @@ pub enum WelcomeOutcome {
     Quit,
 }
 
+#[derive(Debug, Clone)]
+pub struct OAuthPasteState {
+    pub url: String,
+    pub input: String,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct OAuthCallbackWaitState {
+    pub title: String,
+    pub url: String,
+    pub manual_url: Option<String>,
+    pub port: u16,
+    pub spinner_tick: u8,
+    pub input: String,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CallbackKeyOutcome {
+    Stay,
+    Submit(String),
+    Cancel,
+    Quit,
+}
+
+pub fn handle_callback_key(k: KeyEvent, st: &mut OAuthCallbackWaitState) -> CallbackKeyOutcome {
+    if k.modifiers.contains(KeyModifiers::CONTROL)
+        && matches!(k.code, KeyCode::Char('c') | KeyCode::Char('C'))
+    {
+        return CallbackKeyOutcome::Quit;
+    }
+    match k.code {
+        KeyCode::Esc => CallbackKeyOutcome::Cancel,
+        KeyCode::Enter => {
+            let trimmed = st.input.trim().to_string();
+            if trimmed.is_empty() {
+                CallbackKeyOutcome::Stay
+            } else {
+                CallbackKeyOutcome::Submit(trimmed)
+            }
+        }
+        KeyCode::Backspace => {
+            st.input.pop();
+            st.error = None;
+            CallbackKeyOutcome::Stay
+        }
+        KeyCode::Char(c) => {
+            st.input.push(c);
+            st.error = None;
+            CallbackKeyOutcome::Stay
+        }
+        _ => CallbackKeyOutcome::Stay,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PasteOutcome {
+    Stay,
+    Submit(String),
+    Cancel,
+    Quit,
+}
+
+pub fn handle_paste_key(k: KeyEvent, st: &mut OAuthPasteState) -> PasteOutcome {
+    if k.modifiers.contains(KeyModifiers::CONTROL)
+        && matches!(k.code, KeyCode::Char('c') | KeyCode::Char('C'))
+    {
+        return PasteOutcome::Quit;
+    }
+    match k.code {
+        KeyCode::Esc => PasteOutcome::Cancel,
+        KeyCode::Enter => {
+            let trimmed = st.input.trim().to_string();
+            if trimmed.is_empty() {
+                PasteOutcome::Stay
+            } else {
+                PasteOutcome::Submit(trimmed)
+            }
+        }
+        KeyCode::Backspace => {
+            st.input.pop();
+            st.error = None;
+            PasteOutcome::Stay
+        }
+        KeyCode::Char(c) => {
+            st.input.push(c);
+            st.error = None;
+            PasteOutcome::Stay
+        }
+        _ => PasteOutcome::Stay,
+    }
+}
+
 pub fn handle_key(k: KeyEvent, state: &mut WelcomeState) -> WelcomeOutcome {
-    // Ctrl+C exits the process regardless of current row. Spec says it's
-    // the only way out of the welcome floor.
+    
     if k.modifiers.contains(KeyModifiers::CONTROL)
         && matches!(k.code, KeyCode::Char('c') | KeyCode::Char('C'))
     {
@@ -168,71 +241,82 @@ pub fn handle_key(k: KeyEvent, state: &mut WelcomeState) -> WelcomeOutcome {
 }
 
 pub fn draw(f: &mut Frame<'_>, area: Rect, state: &WelcomeState) {
-    // Vertical layout: mascot block (if it fits), title, tagline, gap,
-    // section heading, gap, 5 picker rows, gap, footer. On very small
-    // terminals (rows < 20) drop the mascot to conserve vertical space
-    // per spec § "On small terminals".
-    let show_mascot = area.height >= MASCOT_ROWS + 10 && area.width >= MASCOT_COLS + 2;
+    
+    let rows_n = Row::ALL.len() as u16;
+    let panel_min: u16 = 1 + 1 + 1 + 1 + rows_n + 1 + 1; 
 
-    let picker_rows = Row::ALL.len() as u16;
-    // 1 heading + 1 gap + 5 rows + 1 gap + 1 footer = 9 required below the header block.
-    let below_header: u16 = 1 + 1 + picker_rows + 1 + 1;
-    let header_block: u16 = if show_mascot {
-        MASCOT_ROWS + 1 + 1 + 1 + 1 // mascot + gap + title + tagline + gap
+    let show_mascot =
+        area.height >= MASCOT_ROWS + panel_min + 4 && area.width >= MASCOT_COLS + 2;
+
+    let top_h: u16 = if show_mascot {
+        MASCOT_ROWS + 1 + 1 + 1 + 1 
     } else {
-        1 + 1 + 1 // title + tagline + gap
+        1 + 1 + 1 
     };
 
-    let content_h = header_block + below_header;
-    let top_pad = area.height.saturating_sub(content_h) / 3;
-    let padded = Rect {
-        x: area.x,
-        y: area.y + top_pad,
-        width: area.width,
-        height: area.height.saturating_sub(top_pad),
-    };
+    let outer = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(top_h),
+            Constraint::Min(panel_min),
+        ])
+        .split(area);
 
-    let mut constraints: Vec<Constraint> = Vec::new();
+    draw_top_region(f, outer[0], show_mascot);
+    draw_picker_panel(f, outer[1], state);
+}
+
+fn draw_top_region(f: &mut Frame<'_>, area: Rect, show_mascot: bool) {
+    let mut constraints: Vec<Constraint> = Vec::with_capacity(5);
     if show_mascot {
         constraints.push(Constraint::Length(MASCOT_ROWS));
-        constraints.push(Constraint::Length(1)); // gap
+        constraints.push(Constraint::Length(1)); 
     }
-    constraints.push(Constraint::Length(1)); // title
-    constraints.push(Constraint::Length(1)); // tagline
-    constraints.push(Constraint::Length(1)); // gap
-    constraints.push(Constraint::Length(1)); // section heading
-    constraints.push(Constraint::Length(1)); // gap
-    for _ in 0..picker_rows {
-        constraints.push(Constraint::Length(1));
-    }
-    constraints.push(Constraint::Length(1)); // gap
-    constraints.push(Constraint::Length(1)); // footer
-    constraints.push(Constraint::Min(0));
+    constraints.push(Constraint::Length(1)); 
+    constraints.push(Constraint::Length(1)); 
+    constraints.push(Constraint::Length(1)); 
 
     let slots = Layout::default()
         .direction(Direction::Vertical)
         .constraints(constraints)
-        .split(padded);
+        .split(area);
 
     let mut i = 0usize;
     if show_mascot {
         draw_mascot_block(f, slots[i]);
-        i += 2; // mascot + gap
+        i += 2;
     }
     draw_title(f, slots[i]);
     i += 1;
     draw_tagline(f, slots[i]);
-    i += 2; // tagline + gap
+}
 
-    draw_section_heading(f, slots[i]);
-    i += 2; // heading + gap
+fn draw_picker_panel(f: &mut Frame<'_>, area: Rect, state: &WelcomeState) {
+    let indent = indent_for(area.width);
+    let pad = " ".repeat(indent);
 
+    let mut body: Vec<Line<'_>> = Vec::with_capacity(Row::ALL.len() + 1);
+    
+    body.push(Line::raw(""));
     for (row_idx, row) in Row::ALL.iter().enumerate() {
-        draw_row(f, slots[i], *row, row_idx == state.cursor);
-        i += 1;
+        body.push(row_line(*row, row_idx == state.cursor, &pad));
     }
-    i += 1; // gap
-    draw_footer(f, slots[i]);
+
+    let frame = PanelFrame {
+        title: Some(SECTION_HEADING),
+        tabs: None,
+        active_tab: 0,
+        tabs_focused: false,
+        search: None,
+        body,
+        footer_hints: &[
+            ("↑↓", "to navigate"),
+            ("Enter", "to sign in"),
+            ("Ctrl+C", "to quit"),
+        ],
+        pagination_hint: None,
+    };
+    frame.render(f, area);
 }
 
 fn draw_mascot_block(f: &mut Frame<'_>, area: Rect) {
@@ -271,28 +355,8 @@ fn draw_tagline(f: &mut Frame<'_>, area: Rect) {
     f.render_widget(Paragraph::new(line).alignment(Alignment::Center), area);
 }
 
-fn draw_section_heading(f: &mut Frame<'_>, area: Rect) {
-    // Left-indent the heading so it aligns with the picker rows rather
-    // than centering. Matches the wireframe's left-anchored column.
-    let indent = indent_for(area.width);
-    let line = Line::from(vec![
-        Span::raw(" ".repeat(indent)),
-        Span::styled(
-            SECTION_HEADING,
-            Style::default()
-                .fg(theme::PRIMARY)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ]);
-    f.render_widget(Paragraph::new(line), area);
-}
-
-fn draw_row(f: &mut Frame<'_>, area: Rect, row: Row, selected: bool) {
-    let indent = indent_for(area.width);
-    // Chrome-standard chevron (U+276F) — same glyph every other panel uses
-    // for selection. Was `●` bullet pre-2026-04-23; user directive lands
-    // the chevron here for consistency with /agents, /tasks, /model rows.
-    let marker = if selected { "\u{276F}" } else { " " };
+fn row_line<'a>(row: Row, selected: bool, pad: &str) -> Line<'a> {
+    let marker = if selected { CHEVRON } else { " " };
     let marker_style = if selected {
         Style::default().fg(theme::PRIMARY)
     } else {
@@ -320,35 +384,20 @@ fn draw_row(f: &mut Frame<'_>, area: Rect, row: Row, selected: bool) {
             .add_modifier(Modifier::DIM)
     };
 
-    // Align hints at col 18 relative to the label start (per spec
-    // "Padding: fixed column anchor").
     let label = row.label();
     let pad_after_label = 18usize.saturating_sub(label.chars().count()).max(2);
 
-    let line = Line::from(vec![
-        Span::raw(" ".repeat(indent)),
-        Span::styled(marker, marker_style),
+    Line::from(vec![
+        Span::raw(pad.to_string()),
+        Span::styled(marker.to_string(), marker_style),
         Span::raw(" "),
-        Span::styled(label, label_style),
+        Span::styled(label.to_string(), label_style),
         Span::raw(" ".repeat(pad_after_label)),
-        Span::styled(row.hint(), hint_style),
-    ]);
-    f.render_widget(Paragraph::new(line), area);
+        Span::styled(row.hint().to_string(), hint_style),
+    ])
 }
 
-fn draw_footer(f: &mut Frame<'_>, area: Rect) {
-    let line = Line::from(Span::styled(
-        FOOTER_BYLINE,
-        Style::default().fg(theme::SUBTLE),
-    ));
-    f.render_widget(Paragraph::new(line).alignment(Alignment::Center), area);
-}
-
-/// Column indent for left-anchored rows. Keeps the picker off the frame
-/// edge without computing a centered column (the wireframe shows rows
-/// starting a few cells in from the left).
 fn indent_for(width: u16) -> usize {
-    // Target ~column 4 on ≥80-wide terminals, scale down on narrower ones.
     let w = width as usize;
     if w >= 80 {
         4
@@ -359,9 +408,241 @@ fn indent_for(width: u16) -> usize {
     }
 }
 
-// Phase 2: wire broker::login here — on Enter for enabled row, replace
-// the call-site `eprintln!` stub with `state::broker::login(provider).await`
-// and transition directly into chat on success.
+pub fn draw_oauth_paste(f: &mut Frame<'_>, area: Rect, st: &OAuthPasteState) {
+    
+    let indent = indent_for(area.width);
+    let usable_w = usable_url_width(area.width, indent);
+    let url_lines = wrap_url(&st.url, usable_w).len() as u16;
+    let error_lines: u16 = if st.error.is_some() { 2 } else { 0 };
+    let panel_min: u16 = 4 + 1 + 1 + url_lines + 1 + 1 + 1 + 1 + error_lines;
+
+    let show_mascot =
+        area.height >= MASCOT_ROWS + panel_min + 4 && area.width >= MASCOT_COLS + 2;
+
+    let top_h: u16 = if show_mascot {
+        MASCOT_ROWS + 1 + 1 + 1 + 1
+    } else {
+        1 + 1 + 1
+    };
+
+    let outer = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(top_h),
+            Constraint::Min(panel_min),
+        ])
+        .split(area);
+
+    draw_top_region(f, outer[0], show_mascot);
+    draw_oauth_paste_panel(f, outer[1], st);
+}
+
+fn draw_oauth_paste_panel(f: &mut Frame<'_>, area: Rect, st: &OAuthPasteState) {
+    let indent = indent_for(area.width);
+    let pad = " ".repeat(indent);
+    let usable_w = usable_url_width(area.width, indent);
+
+    let mut body: Vec<Line<'_>> = Vec::with_capacity(10);
+
+    body.push(Line::from(vec![
+        Span::raw(pad.clone()),
+        Span::styled(
+            "Open this URL in your browser to authorize otherside:",
+            Style::default().fg(theme::TEXT),
+        ),
+    ]));
+    body.push(Line::raw(""));
+    for chunk in wrap_url(&st.url, usable_w) {
+        body.push(Line::from(vec![
+            Span::raw(pad.clone()),
+            Span::styled(
+                chunk,
+                Style::default()
+                    .fg(theme::PRIMARY)
+                    .add_modifier(Modifier::UNDERLINED),
+            ),
+        ]));
+    }
+    body.push(Line::raw(""));
+    body.push(Line::from(vec![
+        Span::raw(pad.clone()),
+        Span::styled(
+            "After authorizing, paste the ",
+            Style::default().fg(theme::TEXT),
+        ),
+        Span::styled(
+            "<code>#<state>",
+            Style::default()
+                .fg(theme::PRIMARY)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            " string below:",
+            Style::default().fg(theme::TEXT),
+        ),
+    ]));
+    body.push(Line::raw(""));
+    body.push(Line::from(vec![
+        Span::raw(pad.clone()),
+        Span::styled("> ", Style::default().fg(theme::PRIMARY)),
+        Span::styled(st.input.clone(), Style::default().fg(theme::TEXT)),
+        Span::styled("\u{2588}", Style::default().fg(theme::PRIMARY)),
+    ]));
+    if let Some(err) = &st.error {
+        body.push(Line::raw(""));
+        body.push(Line::from(vec![
+            Span::raw(pad.clone()),
+            Span::styled(err.clone(), Style::default().fg(theme::ERROR)),
+        ]));
+    }
+
+    let frame = PanelFrame {
+        title: Some("▸ Authorize with Anthropic"),
+        tabs: None,
+        active_tab: 0,
+        tabs_focused: false,
+        search: None,
+        body,
+        footer_hints: &[
+            ("Enter", "to submit"),
+            ("Esc", "to cancel"),
+            ("Ctrl+C", "to quit"),
+        ],
+        pagination_hint: None,
+    };
+    frame.render(f, area);
+}
+
+pub fn draw_oauth_callback(f: &mut Frame<'_>, area: Rect, st: &OAuthCallbackWaitState) {
+    let indent = indent_for(area.width);
+    let usable_w = usable_url_width(area.width, indent);
+    let url_lines = wrap_url(&st.url, usable_w).len() as u16;
+    let error_lines: u16 = if st.error.is_some() { 2 } else { 0 };
+    
+    let panel_min: u16 =
+        4 + 1 + 1 + url_lines + 1 + 1 + 1 + 1 + error_lines;
+
+    let show_mascot =
+        area.height >= MASCOT_ROWS + panel_min + 4 && area.width >= MASCOT_COLS + 2;
+    let top_h: u16 = if show_mascot {
+        MASCOT_ROWS + 1 + 1 + 1 + 1
+    } else {
+        1 + 1 + 1
+    };
+
+    let outer = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(top_h),
+            Constraint::Min(panel_min),
+        ])
+        .split(area);
+
+    draw_top_region(f, outer[0], show_mascot);
+    draw_oauth_callback_panel(f, outer[1], st);
+}
+
+fn draw_oauth_callback_panel(f: &mut Frame<'_>, area: Rect, st: &OAuthCallbackWaitState) {
+    let indent = indent_for(area.width);
+    let pad = " ".repeat(indent);
+    let usable_w = usable_url_width(area.width, indent);
+
+    let mut body: Vec<Line<'_>> = Vec::with_capacity(16);
+    body.push(Line::from(vec![
+        Span::raw(pad.clone()),
+        Span::styled(
+            "Open this URL in your browser to authorize otherside:",
+            Style::default().fg(theme::TEXT),
+        ),
+    ]));
+    body.push(Line::raw(""));
+    for chunk in wrap_url(&st.url, usable_w) {
+        body.push(Line::from(vec![
+            Span::raw(pad.clone()),
+            Span::styled(
+                chunk,
+                Style::default()
+                    .fg(theme::PRIMARY)
+                    .add_modifier(Modifier::UNDERLINED),
+            ),
+        ]));
+    }
+    body.push(Line::raw(""));
+    body.push(Line::from(vec![
+        Span::raw(pad.clone()),
+        Span::styled(
+            "Paste the ",
+            Style::default().fg(theme::TEXT),
+        ),
+        Span::styled(
+            "`code`",
+            Style::default()
+                .fg(theme::PRIMARY)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            " string here if we can't reach automatically:",
+            Style::default().fg(theme::TEXT),
+        ),
+    ]));
+    body.push(Line::raw(""));
+    body.push(Line::from(vec![
+        Span::raw(pad.clone()),
+        Span::styled("> ", Style::default().fg(theme::PRIMARY)),
+        Span::styled(st.input.clone(), Style::default().fg(theme::TEXT)),
+        Span::styled("\u{2588}", Style::default().fg(theme::PRIMARY)),
+    ]));
+    if let Some(err) = &st.error {
+        body.push(Line::raw(""));
+        body.push(Line::from(vec![
+            Span::raw(pad.clone()),
+            Span::styled(err.clone(), Style::default().fg(theme::ERROR)),
+        ]));
+    }
+
+    let frame = PanelFrame {
+        title: Some(st.title.as_str()),
+        tabs: None,
+        active_tab: 0,
+        tabs_focused: false,
+        search: None,
+        body,
+        footer_hints: &[
+            ("Enter", "to submit"),
+            ("Esc", "to cancel"),
+            ("Ctrl+C", "to quit"),
+        ],
+        pagination_hint: None,
+    };
+    frame.render(f, area);
+}
+
+fn usable_url_width(area_w: u16, indent: usize) -> usize {
+    (area_w as usize)
+        .saturating_sub(indent + 1)
+        .max(20)
+}
+
+fn wrap_url(url: &str, w: usize) -> Vec<String> {
+    if w == 0 || url.is_empty() {
+        return vec![url.to_string()];
+    }
+    let mut out: Vec<String> = Vec::new();
+    let mut buf = String::new();
+    let mut count = 0usize;
+    for ch in url.chars() {
+        buf.push(ch);
+        count += 1;
+        if count >= w {
+            out.push(std::mem::take(&mut buf));
+            count = 0;
+        }
+    }
+    if !buf.is_empty() {
+        out.push(buf);
+    }
+    out
+}
 
 #[cfg(test)]
 mod tests {
@@ -400,7 +681,7 @@ mod tests {
 
     #[test]
     fn arrow_nav_skips_disabled_rows() {
-        // Forward: Anthropic -> Codex -> (skip Gemini) -> Kimi -> (skip Custom) -> Anthropic.
+        
         let mut state = WelcomeState::new();
         assert_eq!(state.current_row(), Row::Anthropic);
 
@@ -421,7 +702,6 @@ mod tests {
             "Down from Kimi must skip disabled Custom and wrap to Anthropic"
         );
 
-        // Backward wrap: Anthropic -> (skip Custom) -> Kimi.
         assert_eq!(handle_key(key(KeyCode::Up), &mut state), WelcomeOutcome::Stay);
         assert_eq!(
             state.current_row(),
@@ -436,7 +716,6 @@ mod tests {
         let out = handle_key(key(KeyCode::Enter), &mut state);
         assert_eq!(out, WelcomeOutcome::LoginIntent(ProviderId::ClaudeCode));
 
-        // Move to Codex and assert the correct provider is emitted.
         handle_key(key(KeyCode::Down), &mut state);
         let out = handle_key(key(KeyCode::Enter), &mut state);
         assert_eq!(out, WelcomeOutcome::LoginIntent(ProviderId::Codex));
@@ -444,7 +723,7 @@ mod tests {
 
     #[test]
     fn enter_on_disabled_row_is_noop() {
-        // Arrow-nav can't land on a disabled row, so force cursor directly.
+        
         let gemini_idx = Row::ALL.iter().position(|r| *r == Row::Gemini).unwrap();
         let mut state = WelcomeState { cursor: gemini_idx };
         assert_eq!(state.current_row(), Row::Gemini);
@@ -496,7 +775,6 @@ mod tests {
             .expect("draw");
         let buf = terminal.backend().buffer();
 
-        // Title + version.
         assert!(
             buffer_contains(buf, "otherside cli"),
             "welcome frame must contain title 'otherside cli'"
@@ -506,19 +784,16 @@ mod tests {
             "welcome frame must contain the current version"
         );
 
-        // Welcome tagline (distinct from mascot TAGLINE).
         assert!(
             buffer_contains(buf, WELCOME_TAGLINE),
             "welcome frame must contain welcome tagline: {WELCOME_TAGLINE:?}"
         );
 
-        // Section heading.
         assert!(
             buffer_contains(buf, "Choose a provider to sign in"),
             "welcome frame must contain section heading"
         );
 
-        // All five provider labels.
         for row in Row::ALL {
             assert!(
                 buffer_contains(buf, row.label()),
@@ -527,7 +802,6 @@ mod tests {
             );
         }
 
-        // All five hints.
         for row in Row::ALL {
             assert!(
                 buffer_contains(buf, row.hint()),
@@ -536,7 +810,6 @@ mod tests {
             );
         }
 
-        // Footer byline.
         assert!(
             buffer_contains(buf, "navigate"),
             "welcome frame must contain footer byline"
@@ -546,8 +819,6 @@ mod tests {
             "welcome frame must contain Ctrl+C hint in footer"
         );
 
-        // Selection marker on the current (first enabled) row — chrome
-        // chevron `\u{276F}`, not a bullet (user directive 2026-04-23).
         assert!(
             buffer_contains(buf, "\u{276F}"),
             "welcome frame must render the chevron selection marker"

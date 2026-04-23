@@ -8,10 +8,8 @@ use crate::tasks::{TaskKind, TaskState};
 use crate::tui::panel_frame::{body_row, PanelFrame};
 use crate::tui::render::theme;
 
-/// Indent for section headers / non-selectable body rows. PanelFrame
-/// body rows from `body_row` already carry a 2-col chevron prefix.
 const BODY_INDENT: &str = "  ";
-/// Sub-indent (4 cols) for activity rows under a section header.
+
 const BODY_SUB_INDENT: &str = "    ";
 
 pub fn draw_panel(f: &mut Frame<'_>, area: Rect, state: &TasksPanelState) {
@@ -42,12 +40,11 @@ fn draw_list(f: &mut Frame<'_>, area: Rect, state: &TasksPanelState) {
 }
 
 fn draw_detail(f: &mut Frame<'_>, area: Rect, state: &TasksPanelState) {
-    // Panel title (breadcrumb) + body + footer hints are constructed
-    // eagerly so their backing Strings outlive the `render` call.
+    
     let row = match state.focused_row() {
         Some(r) => r,
         None => {
-            // Degenerate: no focused row; degrade to empty frame.
+            
             let panel = PanelFrame {
                 title: None,
                 tabs: None,
@@ -69,8 +66,6 @@ fn draw_detail(f: &mut Frame<'_>, area: Rect, state: &TasksPanelState) {
         }
     };
 
-    // Title: `{subagent_type} › {description || 'Async agent'}` — mirrors
-    // AsyncAgentDetailDialog.tsx:106.
     let lead = row
         .subagent_type
         .clone()
@@ -88,9 +83,6 @@ fn draw_detail(f: &mut Frame<'_>, area: Rect, state: &TasksPanelState) {
 
     let body = detail_body_lines(row);
 
-    // Footer byline owns the static labels. Because PanelFrame takes
-    // `&[(&str, &str)]`, build a `Vec<(&str, &str)>` whose str slices
-    // reference long-lived static strings.
     let mut hints: Vec<(&str, &str)> = Vec::with_capacity(3);
     if state.came_from_list {
         hints.push(("\u{2190}", "go back"));
@@ -138,8 +130,6 @@ fn list_body(state: &TasksPanelState) -> Vec<Line<'static>> {
 fn detail_body_lines(row: &TaskRow) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(20);
 
-    // Subtitle: `[status-icon status ·] {elapsed} [· {tokens} tokens] [· N tool(s)]`.
-    // Whole row dim; status-icon prefix (if any) in status color.
     let tool_count = row.output.len();
     let mut subtitle_spans: Vec<Span<'static>> = Vec::with_capacity(6);
     subtitle_spans.push(Span::raw(BODY_INDENT));
@@ -181,8 +171,6 @@ fn detail_body_lines(row: &TaskRow) -> Vec<Line<'static>> {
     lines.push(Line::from(subtitle_spans));
     lines.push(Line::from(""));
 
-    // Progress section (recent output lines). Prefix the LAST row with
-    // `› ` and the earlier rows with `  ` — upstream pattern.
     if !row.output.is_empty() {
         lines.push(Line::from(vec![
             Span::raw(BODY_INDENT),
@@ -196,8 +184,7 @@ fn detail_body_lines(row: &TaskRow) -> Vec<Line<'static>> {
         for (i, line) in row.output.iter().enumerate().skip(start) {
             let is_last = i + 1 == n;
             let marker = if is_last { "\u{203A} " } else { "  " };
-            // Upstream AsyncAgentDetailDialog.tsx:170 —
-            // `dimColor={i < agent.progress.recentActivities.length - 1}`.
+            
             let mut row_style = Style::default().fg(theme::TEXT);
             if !is_last {
                 row_style = row_style.add_modifier(Modifier::DIM);
@@ -213,7 +200,6 @@ fn detail_body_lines(row: &TaskRow) -> Vec<Line<'static>> {
         lines.push(Line::from(""));
     }
 
-    // Prompt/Plan section.
     if !row.prompt.is_empty() {
         if let Some(plan) = extract_plan_tag(&row.prompt) {
             lines.push(Line::from(vec![
@@ -259,9 +245,6 @@ fn detail_body_lines(row: &TaskRow) -> Vec<Line<'static>> {
         }
     }
 
-    // Error section — mirrors AsyncAgentDetailDialog.tsx:188-194 (bold red
-    // "Error" header + red body) when the task failed and carries a
-    // captured error message.
     if matches!(row.state, TaskState::Failed) {
         if let Some(err) = row.error.as_deref() {
             if !err.trim().is_empty() {
@@ -291,9 +274,6 @@ fn detail_body_lines(row: &TaskRow) -> Vec<Line<'static>> {
     lines
 }
 
-/// Human-readable elapsed time — mirrors upstream
-/// `useElapsedTime` / `formatDuration` output (e.g. `"1m 44s"`,
-/// `"45s"`, `"1h 2m 3s"`).
 fn format_elapsed(secs: u64) -> String {
     let h = secs / 3600;
     let m = (secs % 3600) / 60;
@@ -307,7 +287,6 @@ fn format_elapsed(secs: u64) -> String {
     }
 }
 
-/// Status icon + label + color for non-running terminal states.
 fn status_icon_label_color(
     st: TaskState,
 ) -> Option<(&'static str, &'static str, ratatui::style::Color)> {
@@ -343,7 +322,6 @@ fn format_list_row(row: &TaskRow) -> String {
     segments.join(" \u{00B7} ")
 }
 
-/// Extract the first `<plan>…</plan>` body from `s`.
 fn extract_plan_tag(s: &str) -> Option<String> {
     let lower = s.to_ascii_lowercase();
     let open_idx = lower.find("<plan>")?;
@@ -368,11 +346,6 @@ fn truncate(s: &str, cap: usize) -> String {
     format!("{head}\u{2026}")
 }
 
-/// Test-only helper — renders the detail body prose (subtitle, progress,
-/// prompt/plan) for a given row. The breadcrumb title and footer byline
-/// now live on PanelFrame, so tests that assert those must render the
-/// full panel via `draw_panel`. This helper preserves the pre-migration
-/// test surface that asserted on the inner body only.
 #[cfg(test)]
 fn detail_body(state: &TasksPanelState) -> Vec<Line<'static>> {
     match state.focused_row() {
@@ -449,7 +422,7 @@ mod tests {
         r.description = Some("Sleep 200 echo ok".into());
         r.tokens = 22_300;
         s.insert(r);
-        // Insert a second task so state starts in Mode::List (not auto-skipped).
+        
         let mut r2 = TR::new_agent(
             TaskId::generate(),
             "verification".into(),
@@ -469,10 +442,7 @@ mod tests {
 
     #[test]
     fn breadcrumb_uses_u203a_not_ascii_or_guillemet() {
-        // Pin the separator byte. U+203A (›) is mandated by
-        // AsyncAgentDetailDialog.tsx:106 (`{type} ›{" "}{desc}`). The
-        // breadcrumb now lives on PanelFrame.title — render the full
-        // panel and scan the title row.
+        
         let s = TaskStore::new();
         let mut r = TR::new_agent(
             TaskId::generate(),
@@ -484,7 +454,7 @@ mod tests {
         s.insert(r);
         let st = TasksPanelState::new(&s);
         let buf = render_panel(&st, 80, 20);
-        // Title row at y=2 (y=0 rule, y=1 padding).
+        
         let title_row = buffer_row(&buf, 2);
         assert!(
             title_row.contains("Plan \u{203A} State broker analysis"),
@@ -612,9 +582,7 @@ mod tests {
 
     #[test]
     fn detail_carries_title_subtitle_prompt_footer() {
-        // Render the full panel so the PanelFrame-owned title + footer
-        // bylines are in the buffer. Body sections (Progress, Prompt)
-        // stay in `detail_body_lines` which we scan via the renders too.
+        
         let s = TaskStore::new();
         let mut r = TR::new_agent(
             TaskId::generate(),
@@ -641,8 +609,7 @@ mod tests {
         assert!(all.contains("\u{203A} Bash(bash -c 'sleep 400; echo ok')"));
         assert!(all.contains("Prompt"));
         assert!(all.contains("Run exactly"));
-        // Single-task auto-skip → came_from_list=false → no `← go back`;
-        // Running → `x stop` visible.
+        
         assert!(
             all.contains("close"),
             "footer must render close hint: {all}",
@@ -791,9 +758,7 @@ mod tests {
 
     #[test]
     fn footer_byline_gates_shortcuts() {
-        // Running + came_from_list=true → all 3 shortcuts.
-        // PanelFrame owns the footer byline now — render full panel and
-        // scan the last row for hint labels.
+        
         let s = TaskStore::new();
         let mut r1 = TR::new_agent(
             TaskId::generate(),
@@ -824,7 +789,6 @@ mod tests {
         assert!(all.contains("close"));
         assert!(all.contains(" stop"));
 
-        // Completed + came_from_list=false → only close hint.
         let st2 = TasksPanelState {
             mode: Mode::Detail(0),
             cursor: 0,
@@ -862,9 +826,7 @@ mod tests {
 
     #[test]
     fn tasks_panel_uses_panel_frame_chrome() {
-        // List view with two tasks — PanelFrame chrome must paint
-        // y=0 top rule (theme::PRIMARY), y=1 blank padding, and the
-        // selected body row gets a theme::SUCCESS chevron.
+        
         let s = TaskStore::new();
         let mut r1 = TR::new_agent(
             TaskId::generate(),
@@ -927,8 +889,7 @@ mod tests {
 
     #[test]
     fn tasks_panel_agent_detail_uses_panel_frame_title() {
-        // Detail view must expose the breadcrumb as PanelFrame.title,
-        // which lands at y=2 (y=0 rule, y=1 padding).
+        
         let s = TaskStore::new();
         let mut r = TR::new_agent(
             TaskId::generate(),
@@ -947,7 +908,7 @@ mod tests {
             title_row.contains("Plan \u{203A} broker audit"),
             "breadcrumb title must render on row 2 (post-padding): {title_row:?}"
         );
-        // Title must be bold per PanelFrame::draw_title.
+        
         let title_x: u16 = title_row
             .find('P')
             .map(|i| i as u16)

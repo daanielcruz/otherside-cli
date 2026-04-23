@@ -1,5 +1,4 @@
 
-
 use crate::config::providers::ProviderId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,13 +76,6 @@ pub const CATALOG: &[Model] = &[
         display_hint: "Haiku 4.5 · Fastest for quick answers",
     },
 
-    // Codex / ChatGPT OAuth account catalog.
-    // Upstream removed its static preset list (see
-    // `openai/codex:codex-rs/models-manager/src/model_presets.rs`) in favor
-    // of a live `GET /models` fetch. We carry a small static fallback here,
-    // limited to slugs the ChatGPT OAuth flow actually serves — empirically
-    // probed against a live account: other `gpt-5*` slugs 400 with "not
-    // supported when using Codex with a ChatGPT account".
     Model {
         id: "gpt-5.4",
         display_name: "GPT 5.4",
@@ -129,11 +121,7 @@ pub const CATALOG: &[Model] = &[
         provider: ProviderId::Kimi,
         family_alias: Some("kimi"),
         primary_for_family: true,
-        // Kimi reasoning is binary: `thinking: {type:"adaptive"}` envelope
-        // rides when on, strips when off. Probe 2026-04-22 against
-        // api.kimi.com/coding/v1/models returned a single row — the
-        // previously-listed `kimi-k2-thinking` ghost is rejected by the
-        // backend and has been removed.
+        
         supported_efforts: &["on", "off"],
         default_effort: "on",
         context_window: 262_144,
@@ -226,10 +214,7 @@ mod tests {
 
     #[test]
     fn codex_catalog_carries_the_two_oauth_servable_slugs() {
-        // ChatGPT OAuth backend only serves gpt-5.4 and gpt-5.3-codex today;
-        // other gpt-5* slugs return {"detail":"… model is not supported
-        // when using Codex with a ChatGPT account."}. Keep the catalog pinned
-        // to what actually works until we wire a live /models fetch.
+        
         let ms = models_for(ProviderId::Codex);
         let slugs: Vec<&str> = ms.iter().map(|m| m.id).collect();
         assert!(slugs.contains(&"gpt-5.4"), "{slugs:?}");
@@ -240,10 +225,7 @@ mod tests {
 
     #[test]
     fn kimi_single_row_is_for_coding() {
-        // Live probe 2026-04-22 against api.kimi.com/coding/v1/models
-        // returned exactly one row — `kimi-for-coding`. The previously-
-        // shipped `kimi-k2-thinking` slug was a ghost the backend refuses;
-        // dropping it keeps /model panel honest.
+        
         let ms = models_for(ProviderId::Kimi);
         assert_eq!(ms.len(), 1, "kimi catalog ships only kimi-for-coding");
         let primary = ms.iter().find(|m| m.primary_for_family).unwrap();
@@ -254,9 +236,7 @@ mod tests {
 
     #[test]
     fn kimi_reasoning_is_binary_on_off() {
-        // Kimi wire: effort=on keeps `thinking:{type:"adaptive"}` envelope,
-        // effort=off strips thinking + context_management. No numeric
-        // levels (anthropic's low/medium/high/xhigh/max don't apply).
+        
         let ms = models_for(ProviderId::Kimi);
         for m in ms {
             assert_eq!(m.context_window, 262_144);

@@ -1,5 +1,4 @@
 
-
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
@@ -60,15 +59,6 @@ pub fn read(args: &Value) -> Result<Value, ToolError> {
         )));
     }
 
-    // Bug H: main model keeps trying `Read(~/.otherside/tasks/<id>.log)`
-    // etc. to peek at a backgrounded subagent's output, despite the
-    // "do NOT poll" discipline in the Agent tool description. Intercept
-    // the common hallucinated paths and return a direct reminder so the
-    // model immediately gives up instead of emitting multi-turn retry
-    // churn. Real task-output files live under `<config>/projects/
-    // <slug>/<session-id>/tasks/<agent_id>.output` via disk_output;
-    // even if the model correctly reads there, the peek discipline
-    // says don't — completion arrives via notification.
     if is_hallucinated_task_output_path(&canonical) {
         return Err(ToolError::InvalidArgs(
             "do not poll subagent output — wait for the completion notification. The agent's result lands via a system notification automatically. Do NOT call Read/Bash/TaskOutput on any `tasks/*.log` path under ~/.otherside or similar home-directory locations.".to_string(),
@@ -178,13 +168,6 @@ pub fn read(args: &Value) -> Result<Value, ToolError> {
     }))
 }
 
-/// Detect the paths the main model most often hallucinates when trying to
-/// peek at a backgrounded subagent's output — the "do NOT poll" discipline
-/// is baked into the Agent tool description but models still try. Match
-/// `~/.otherside/tasks/**` and `~/.claude/tasks/**` across possible
-/// home-expansion shapes. Real task-output lives in the session-scoped
-/// projects/<slug>/<session-id>/tasks/ directory, which the model should
-/// not be told about — wait for the completion notification instead.
 fn is_hallucinated_task_output_path(canonical: &str) -> bool {
     let needles = [
         ".otherside/tasks/",

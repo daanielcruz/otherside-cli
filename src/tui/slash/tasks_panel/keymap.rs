@@ -6,7 +6,7 @@ use super::state::{Mode, TasksPanelState};
 pub enum KeyOutcome {
     Consumed,
     Dismiss,
-    /// User asked to kill the task in focus (`x` from detail view).
+    
     StopFocused,
 }
 
@@ -38,10 +38,7 @@ fn handle_list_key(event: KeyEvent, state: &mut TasksPanelState) -> KeyOutcome {
 
 fn handle_detail_key(event: KeyEvent, state: &mut TasksPanelState) -> KeyOutcome {
     match event.code {
-        // Upstream AsyncAgentDetailDialog footer: `← back · Esc/Enter/Space close · x stop`.
-        // `←` is the one key that goes "up a level"; Esc/Enter/Space all close.
-        // When the list has only one row and we auto-skipped to detail,
-        // `←` also dismisses (no list to return to).
+        
         KeyCode::Left => {
             if state.rows.len() <= 1 {
                 KeyOutcome::Dismiss
@@ -139,7 +136,7 @@ mod tests {
     fn detail_space_and_enter_dismiss() {
         let store = store_with_two();
         let mut s = TasksPanelState::new(&store);
-        handle_key(k(KeyCode::Enter), &mut s); // list → detail
+        handle_key(k(KeyCode::Enter), &mut s); 
         assert_eq!(handle_key(k(KeyCode::Char(' ')), &mut s), KeyOutcome::Dismiss);
     }
 
