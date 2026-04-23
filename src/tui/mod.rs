@@ -93,9 +93,7 @@ enum StreamEvent {
         output_tokens: Option<u64>,
     },
 
-    BackgroundAgentCompleted {
-        tool_call_id: String,
-    },
+    BackgroundAgentCompleted,
 
     CompactDone {
         summary: String,
@@ -819,9 +817,6 @@ async fn event_loop(
 
                 if let Some(store) = crate::tasks::store::current_global() {
                     for record in store.drain_unrendered_completions() {
-                        if matches!(record.kind, crate::tasks::TaskKind::Agent) {
-                            continue;
-                        }
                         let line = render_completion_line(&record);
                         st.push_system_note(line);
                     }
@@ -982,16 +977,7 @@ async fn event_loop(
                     Some(StreamEvent::NestedUsage { input_tokens, output_tokens }) => {
                         st.push_nested_usage(input_tokens, output_tokens);
                     }
-                    Some(StreamEvent::BackgroundAgentCompleted { tool_call_id }) => {
-                        let task_id = crate::tasks::TaskId::from_string(tool_call_id.clone());
-                        let display_id = st
-                            .tasks
-                            .get(&task_id)
-                            .and_then(|r| r.agent_id.clone())
-                            .unwrap_or_else(|| tool_call_id.clone());
-                        st.push_system_note(format!(
-                            "⎿  Background agent {display_id} completed"
-                        ));
+                    Some(StreamEvent::BackgroundAgentCompleted) => {
                     }
                     Some(StreamEvent::CompactDone { summary, is_auto }) => {
                         let kept = st.messages.len() as u64;

@@ -64,6 +64,10 @@ pub struct TaskRecord {
 
     pub tokens: u64,
 
+    pub tool_uses: u64,
+
+    pub duration_ms: u64,
+
     pub error: Option<String>,
 }
 
@@ -89,6 +93,8 @@ impl TaskRecord {
             subagent_type: None,
             description: None,
             tokens: 0,
+            tool_uses: 0,
+            duration_ms: 0,
             error: None,
         }
     }
@@ -111,6 +117,8 @@ impl TaskRecord {
             subagent_type: None,
             description: None,
             tokens: 0,
+            tool_uses: 0,
+            duration_ms: 0,
             error: None,
         }
     }

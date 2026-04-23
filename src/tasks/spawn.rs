@@ -66,6 +66,14 @@ fn finalize(
                 if let Some(total) = v.get("totalTokens").and_then(Value::as_u64) {
                     r.tokens = total;
                 }
+                if let Some(tu) = v.get("totalToolUseCount").and_then(Value::as_u64) {
+                    r.tool_uses = tu;
+                }
+                if let Some(dur) = v.get("totalDurationMs").and_then(Value::as_u64) {
+                    r.duration_ms = dur;
+                } else {
+                    r.duration_ms = r.started_at.elapsed().as_millis() as u64;
+                }
                 let status = v.get("status").and_then(Value::as_str).unwrap_or("");
                 r.state = match status {
                     "completed" => TaskState::Completed,
@@ -83,6 +91,7 @@ fn finalize(
                 r.error = Some(e.to_string());
                 r.state = TaskState::Failed;
                 r.exit_code = Some(1);
+                r.duration_ms = r.started_at.elapsed().as_millis() as u64;
             }
         }
         r.inject_on_next_turn = true;

@@ -303,9 +303,15 @@ fn backgroundable_kind(tool_name: &str, args: &Value) -> Option<crate::tasks::Ta
 fn summarize_tool_invocation(name: &str, args: &Value) -> String {
     match name {
         "Agent" => args
-            .get("subagent_type")
+            .get("description")
             .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
             .map(str::to_string)
+            .or_else(|| {
+                args.get("subagent_type")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
             .unwrap_or_else(|| "agent".into()),
         "Bash" => {
             
@@ -1042,9 +1048,15 @@ impl ConversationState {
             } else {
                 Some(joined)
             };
+            let usage = Some(crate::harness::task_notification::NotificationUsage {
+                total_tokens: record.tokens,
+                tool_uses: record.tool_uses,
+                duration_ms: record.duration_ms,
+            });
             let extras = crate::harness::task_notification::NotificationExtras {
                 tool_use_id: record.tool_use_id.as_deref(),
                 final_result: final_result.as_deref(),
+                usage,
                 ..Default::default()
             };
             let xml = crate::harness::task_notification::render(

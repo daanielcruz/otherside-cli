@@ -357,6 +357,8 @@ async fn dispatch_agent_cancellable(
                     .unwrap_or("")
                     .to_string();
                 let total_tokens = v.get("totalTokens").and_then(Value::as_u64);
+                let total_tool_uses = v.get("totalToolUseCount").and_then(Value::as_u64);
+                let total_duration = v.get("totalDurationMs").and_then(Value::as_u64);
 
                 if !text.is_empty() {
                     if let Err(e) = crate::tasks::disk_output::write_task_output(
@@ -379,6 +381,11 @@ async fn dispatch_agent_cancellable(
                         if let Some(total) = total_tokens {
                             r.tokens = total;
                         }
+                        if let Some(tu) = total_tool_uses {
+                            r.tool_uses = tu;
+                        }
+                        r.duration_ms = total_duration
+                            .unwrap_or_else(|| r.started_at.elapsed().as_millis() as u64);
                         if !r.state.is_terminal() {
                             r.state = crate::tasks::TaskState::Completed;
                             r.exit_code = Some(0);
@@ -394,6 +401,7 @@ async fn dispatch_agent_cancellable(
                     store.update_with(&task_id, |r| {
                         r.push_output(err_line.clone());
                         r.error = Some(err_string.clone());
+                        r.duration_ms = r.started_at.elapsed().as_millis() as u64;
                         if !r.state.is_terminal() {
                             r.state = crate::tasks::TaskState::Failed;
                             r.exit_code = Some(1);
@@ -408,6 +416,7 @@ async fn dispatch_agent_cancellable(
                     store.update_with(&task_id, |r| {
                         r.push_output(err_line.clone());
                         r.error = Some(format!("join error: {e}"));
+                        r.duration_ms = r.started_at.elapsed().as_millis() as u64;
                         if !r.state.is_terminal() {
                             r.state = crate::tasks::TaskState::Failed;
                             r.exit_code = Some(1);
@@ -418,10 +427,9 @@ async fn dispatch_agent_cancellable(
             }
         }
 
+        let _ = call_id_for_late;
         let _ = tx_for_late
-            .send(StreamEvent::BackgroundAgentCompleted {
-                tool_call_id: call_id_for_late,
-            })
+            .send(StreamEvent::BackgroundAgentCompleted)
             .await;
     });
     let upstream_text = format!(
