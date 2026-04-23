@@ -1170,6 +1170,7 @@ fn draw_effort_slider(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
 }
 
 fn status_rows(state: &super::state::ConversationState) -> Vec<MenuOption> {
+    use crate::config::providers::{ProviderId, PROVIDER_ORDER};
     let cwd = std::env::current_dir()
         .ok()
         .map(|p| p.display().to_string())
@@ -1187,35 +1188,75 @@ fn status_rows(state: &super::state::ConversationState) -> Vec<MenuOption> {
         .map(|s| s.as_str().to_string())
         .unwrap_or_else(|| "(none)".into());
 
-    let creds = crate::auth::anthropic::load_credentials().ok().flatten();
-    let login_display = match creds.as_ref() {
-        None => "(none)".to_string(),
-        Some(c) => {
-            let sub = c.subscription_type.as_deref().unwrap_or("claude");
-            match c.account_email.as_deref() {
-                Some(email) => format!("{email} ({sub})"),
-                None => format!("OAuth ({sub})"),
-            }
-        }
-    };
-    let org_display = creds
-        .as_ref()
-        .and_then(|c| c.organization_name.clone())
-        .unwrap_or_else(|| "(n/a)".into());
-
-    vec![
+    let mut rows = vec![
         settings_ro("Version", env!("CARGO_PKG_VERSION")),
-        settings_ro("Session name", "(unnamed)"),
         settings_ro("Session ID", session_id_display),
         settings_ro("cwd", cwd),
-        settings_ro("Login method", login_display),
-        settings_ro("Organization", org_display),
         settings_blank(),
         settings_ro("Model", state.session.model.clone()),
         settings_ro("Permission mode", permission_label),
         settings_ro("Effort", state.session.effort_label.unwrap_or("auto")),
-        settings_ro("MCP servers", "(client lands in Phase 3)"),
-    ]
+        settings_blank(),
+    ];
+
+    for provider in PROVIDER_ORDER {
+        let auth_display = match provider {
+            ProviderId::ClaudeCode => {
+                let creds = crate::auth::anthropic::load_credentials().ok().flatten();
+                match creds.as_ref() {
+                    None => "(not signed in)".to_string(),
+                    Some(c) => {
+                        let sub = c.subscription_type.as_deref().unwrap_or("claude");
+                        let email = c.account_email.as_deref().unwrap_or("OAuth");
+                        match c.organization_name.as_deref() {
+                            Some(org) => format!("{email} \u{00B7} {sub} \u{00B7} {org}"),
+                            None => format!("{email} \u{00B7} {sub}"),
+                        }
+                    }
+                }
+            }
+            ProviderId::Codex => {
+                let creds = crate::auth::codex::load_credentials().ok().flatten();
+                match creds.as_ref() {
+                    None => "(not signed in)".to_string(),
+                    Some(c) => c
+                        .account_id
+                        .clone()
+                        .unwrap_or_else(|| "OAuth".to_string()),
+                }
+            }
+            ProviderId::GeminiCli => {
+                // No OAuth flow wired yet — treat as unconfigured.
+                "(not configured)".to_string()
+            }
+            ProviderId::Kimi => {
+                match crate::auth::kimi::load_credentials().ok().flatten() {
+                    None => "(not configured)".to_string(),
+                    Some(_) => "API key configured".to_string(),
+                }
+            }
+            ProviderId::OpenAiCustom => {
+                let has_base = state
+                    .persistence
+                    .settings
+                    .providers
+                    .openai_compatible
+                    .as_ref()
+                    .and_then(|o| o.base_url.as_deref())
+                    .is_some();
+                if has_base {
+                    "configured".to_string()
+                } else {
+                    "(not configured)".to_string()
+                }
+            }
+        };
+        rows.push(settings_ro(provider.label(), auth_display));
+    }
+
+    rows.push(settings_blank());
+    rows.push(settings_ro("MCP servers", "(client lands in Phase 3)"));
+    rows
 }
 
 fn config_rows(state: &super::state::ConversationState) -> Vec<MenuOption> {
@@ -1922,6 +1963,32 @@ mod tests {
             joined.push('\n');
         }
         (joined, buf)
+    }
+
+    #[test]
+    fn status_tab_drops_session_name_row() {
+        let st = crate::tui::state::ConversationState::default();
+        let m = OverlayMenu::new_settings(SettingsTab::Status, &st);
+        let labels: Vec<String> = m.options.iter().map(|o| o.label.clone()).collect();
+        assert!(
+            !labels.iter().any(|l| l == "Session name"),
+            "Status tab must not render a Session name row (user directive 2026-04-23)"
+        );
+    }
+
+    #[test]
+    fn status_tab_lists_every_provider_auth_state() {
+        use crate::config::providers::PROVIDER_ORDER;
+        let st = crate::tui::state::ConversationState::default();
+        let m = OverlayMenu::new_settings(SettingsTab::Status, &st);
+        let labels: Vec<String> = m.options.iter().map(|o| o.label.clone()).collect();
+        for provider in PROVIDER_ORDER {
+            let want = provider.label();
+            assert!(
+                labels.iter().any(|l| l == want),
+                "Status tab must surface a row for every provider — missing {want}"
+            );
+        }
     }
 
     #[test]
