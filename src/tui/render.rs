@@ -100,7 +100,19 @@ pub fn render(
                     if panel.running.is_empty() { 1 } else { panel.running.len() as u16 }
                 }
                 super::slash::agents_panel::Tab::Library => {
-                    1 + panel.library.len() as u16
+                    // Match library_body's actual emission shape:
+                    //   1 `Create new agent` row
+                    //   + 1 blank separator
+                    //   + (0 or 2 + user_agents.len()) for User agents section
+                    //     (header + rows + trailing blank — only when non-empty)
+                    //   + 1 `Built-in agents (always available)` header
+                    //   + panel.library.len() built-in rows
+                    let user_block = if panel.user_agents.is_empty() {
+                        0
+                    } else {
+                        2 + panel.user_agents.len() as u16
+                    };
+                    1 + 1 + user_block + 1 + panel.library.len() as u16
                 }
             };
             (body_rows + 5).min(remaining).max(8)
