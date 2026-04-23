@@ -617,6 +617,95 @@ fn draw_oauth_callback_panel(f: &mut Frame<'_>, area: Rect, st: &OAuthCallbackWa
     frame.render(f, area);
 }
 
+pub fn draw_api_key_paste(f: &mut Frame<'_>, area: Rect, st: &OAuthPasteState) {
+    let indent = indent_for(area.width);
+    let usable_w = usable_url_width(area.width, indent);
+    let url_lines = wrap_url(&st.url, usable_w).len() as u16;
+    let error_lines: u16 = if st.error.is_some() { 2 } else { 0 };
+    let panel_min: u16 = 4 + 1 + 1 + url_lines + 1 + 1 + 1 + 1 + error_lines;
+
+    let show_mascot =
+        area.height >= MASCOT_ROWS + panel_min + 4 && area.width >= MASCOT_COLS + 2;
+    let top_h: u16 = if show_mascot {
+        MASCOT_ROWS + 1 + 1 + 1 + 1
+    } else {
+        1 + 1 + 1
+    };
+
+    let outer = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(top_h), Constraint::Min(panel_min)])
+        .split(area);
+
+    draw_top_region(f, outer[0], show_mascot);
+    draw_api_key_panel(f, outer[1], st);
+}
+
+fn draw_api_key_panel(f: &mut Frame<'_>, area: Rect, st: &OAuthPasteState) {
+    let indent = indent_for(area.width);
+    let pad = " ".repeat(indent);
+    let usable_w = usable_url_width(area.width, indent);
+
+    let mut body: Vec<Line<'_>> = Vec::with_capacity(10);
+    body.push(Line::from(vec![
+        Span::raw(pad.clone()),
+        Span::styled(
+            "Create or copy a Kimi API key from:",
+            Style::default().fg(theme::TEXT),
+        ),
+    ]));
+    body.push(Line::raw(""));
+    for chunk in wrap_url(&st.url, usable_w) {
+        body.push(Line::from(vec![
+            Span::raw(pad.clone()),
+            Span::styled(
+                chunk,
+                Style::default()
+                    .fg(theme::PRIMARY)
+                    .add_modifier(Modifier::UNDERLINED),
+            ),
+        ]));
+    }
+    body.push(Line::raw(""));
+    body.push(Line::from(vec![
+        Span::raw(pad.clone()),
+        Span::styled(
+            "Paste your API key below:",
+            Style::default().fg(theme::TEXT),
+        ),
+    ]));
+    body.push(Line::raw(""));
+    body.push(Line::from(vec![
+        Span::raw(pad.clone()),
+        Span::styled("> ", Style::default().fg(theme::PRIMARY)),
+        Span::styled(st.input.clone(), Style::default().fg(theme::TEXT)),
+        Span::styled("\u{2588}", Style::default().fg(theme::PRIMARY)),
+    ]));
+    if let Some(err) = &st.error {
+        body.push(Line::raw(""));
+        body.push(Line::from(vec![
+            Span::raw(pad.clone()),
+            Span::styled(err.clone(), Style::default().fg(theme::ERROR)),
+        ]));
+    }
+
+    let frame = PanelFrame {
+        title: Some("\u{25B8} Sign in with Kimi"),
+        tabs: None,
+        active_tab: 0,
+        tabs_focused: false,
+        search: None,
+        body,
+        footer_hints: &[
+            ("Enter", "to submit"),
+            ("Esc", "to cancel"),
+            ("Ctrl+C", "to quit"),
+        ],
+        pagination_hint: None,
+    };
+    frame.render(f, area);
+}
+
 fn usable_url_width(area_w: u16, indent: usize) -> usize {
     (area_w as usize)
         .saturating_sub(indent + 1)

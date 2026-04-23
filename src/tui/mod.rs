@@ -278,6 +278,38 @@ pub async fn run(
                                 }
                             }
                         }
+                        ProviderId::Kimi => {
+                            let console_url =
+                                crate::fingerprint::kimi::CONSOLE_URL.to_string();
+                            match run_api_key_panel(
+                                &mut guard.terminal,
+                                console_url,
+                            )
+                            .await?
+                            {
+                                ApiKeyPanelOutcome::Submit(raw) => {
+                                    let creds = crate::auth::kimi::CachedCreds {
+                                        api_key: raw.trim().to_string(),
+                                    };
+                                    match crate::auth::kimi::save_credentials(&creds)
+                                    {
+                                        Ok(()) => {
+                                            initial_provider = provider;
+                                            base_model =
+                                                provider.default_model().to_string();
+                                            welcome_just_completed = true;
+                                            break 'welcome;
+                                        }
+                                        Err(_) => continue 'welcome,
+                                    }
+                                }
+                                ApiKeyPanelOutcome::Cancel => continue 'welcome,
+                                ApiKeyPanelOutcome::Quit => {
+                                    guard.restore();
+                                    return Ok(());
+                                }
+                            }
+                        }
                         _ => {
 
                             guard.restore();
@@ -518,6 +550,74 @@ fn parse_manual_codex_paste(raw: &str) -> std::result::Result<(String, String), 
     Err(format!(
         "couldn't parse paste — expected `<code>#<state>` or the full callback URL"
     ))
+}
+
+enum ApiKeyPanelOutcome {
+    Submit(String),
+    Cancel,
+    Quit,
+}
+
+async fn run_api_key_panel(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    console_url: String,
+) -> Result<ApiKeyPanelOutcome> {
+    use futures::StreamExt;
+
+    let mut st = welcome::OAuthPasteState {
+        url: console_url,
+        input: String::new(),
+        error: None,
+    };
+    let mut key_stream = EventStream::new();
+
+    terminal
+        .draw(|f| welcome::draw_api_key_paste(f, f.area(), &st))
+        .map_err(|e| Error::Tui(format!("draw api key panel: {e}")))?;
+
+    loop {
+        match key_stream.next().await {
+            Some(Ok(CtEvent::Paste(s))) => {
+                let cleaned = s.trim_end_matches(['\r', '\n']);
+                st.input.push_str(cleaned);
+                st.error = None;
+                terminal
+                    .draw(|f| welcome::draw_api_key_paste(f, f.area(), &st))
+                    .map_err(|e| Error::Tui(format!("draw api key panel: {e}")))?;
+            }
+            Some(Ok(CtEvent::Key(k))) => {
+                if k.kind != KeyEventKind::Press {
+                    continue;
+                }
+                match welcome::handle_paste_key(k, &mut st) {
+                    welcome::PasteOutcome::Stay => {
+                        terminal
+                            .draw(|f| welcome::draw_api_key_paste(f, f.area(), &st))
+                            .map_err(|e| Error::Tui(format!("draw api key panel: {e}")))?;
+                    }
+                    welcome::PasteOutcome::Submit(raw) => {
+                        return Ok(ApiKeyPanelOutcome::Submit(raw));
+                    }
+                    welcome::PasteOutcome::Cancel => {
+                        return Ok(ApiKeyPanelOutcome::Cancel);
+                    }
+                    welcome::PasteOutcome::Quit => {
+                        return Ok(ApiKeyPanelOutcome::Quit);
+                    }
+                }
+            }
+            Some(Ok(CtEvent::Resize(_, _))) => {
+                terminal
+                    .draw(|f| welcome::draw_api_key_paste(f, f.area(), &st))
+                    .map_err(|e| Error::Tui(format!("draw api key panel: {e}")))?;
+            }
+            Some(Ok(_)) => {}
+            Some(Err(e)) => {
+                return Err(Error::Tui(format!("api key event stream: {e}")));
+            }
+            None => return Ok(ApiKeyPanelOutcome::Quit),
+        }
+    }
 }
 
 async fn run_welcome_gate(
