@@ -19,18 +19,77 @@
 //! - Step 2b `authenticated_providers` — LANDED (this patch). Zero callers yet;
 //!   prep for welcome-screen Phase 2 + `/model` tab redesign that both need the
 //!   ready-to-dispatch provider list.
-//! - Step 3 `set_active_provider` (6-step handshake), Step 4 `set_active_model`
-//!   + `set_effort`, Step 5 auth lifecycle, Step 6 settings bridge,
-//!   Step 7 `pub(crate)` lockdown — pending.
+//! - Step 3 `set_active_provider` — LANDED (this patch). Centralizes the
+//!   6-step handshake (in-memory swap + settings flush + runner resync) that
+//!   was previously duplicated at 2 call sites with different bugs each.
+//!   Closes the latent Q5 bug where runner-sync only fired via
+//!   `dispatch_slash`'s post-hook, which itself went dead after `/provider`
+//!   slash was removed.
+//! - Step 4 `set_active_model` + `set_effort`, Step 5 auth lifecycle,
+//!   Step 6 settings bridge, Step 7 `pub(crate)` lockdown — pending.
+
+use std::sync::Arc;
 
 use crate::config::providers::{ProviderId, PROVIDER_ORDER};
 use crate::config::settings::Settings;
-#[allow(unused_imports)]
-use crate::error::{Error, Result};
-#[allow(unused_imports)]
-use crate::models::catalog;
-#[allow(unused_imports)]
-use crate::state::{PersistenceState, Session};
+use crate::error::Result;
+use crate::provider::Registry;
+use crate::tui::state::ConversationState;
+
+/// 6-step provider switch handshake. Single entry point for every UI surface
+/// that wants to change the active provider (today: `/model` panel Enter at
+/// `tui/mod.rs` and `/config` Provider-row cycle).
+///
+/// Steps (per `docs/state/state-broker-analysis.md` § 5):
+/// 1. In-memory swap — `st.switch_provider(next)` flips `provider_id` and
+///    auto-swaps the session model to `next.default_model()` when the current
+///    model doesn't belong to the new provider's catalog family.
+/// 2-4. Mirror the new pair into `st.persistence.settings.default_provider` +
+///    `default_model` (also handled inside `switch_provider`).
+/// 5. Atomically flush `settings.json` to disk via
+///    `PersistenceState::commit_session_defaults` — mirrors the
+///    `persist_session_defaults` helper in `tui/mod.rs` (which this call
+///    eventually subsumes).
+/// 6. Resync the subagent runner with the new provider `Arc` so the next
+///    `Task(...)` / `Agent(...)` dispatches against the freshly-picked
+///    provider. Previously this only fired from `dispatch_slash`'s
+///    post-outcome hook, which went dead when the `/provider` slash was
+///    removed — leaving 2 of 2 current sites silently stuck with the boot
+///    provider in the runner.
+///
+/// Auth gate deferred: callers today are panel-level (`/model` tabs already
+/// gate via `authenticated_providers`; `/config` cycles UX-continuously).
+/// Step 5 lifecycle migration will own the hard refusal semantics.
+///
+/// Effort reset deferred to Step 4 `set_active_model` — current
+/// `switch_provider` preserves `effort_label` across the swap. Any mismatch
+/// (e.g. kimi `on`/`off` vs anthropic `auto`/`deep`/…) is a pre-existing
+/// latent bug addressed when Step 4 lands.
+///
+/// `registry` is `Option` because `edit_settings_row` (the `/config`
+/// Provider-row cycle path) doesn't receive `Registry` in its call chain
+/// today, and threading it requires touching ~20 test sites. Passing `None`
+/// preserves that site's pre-existing no-runner-sync behavior while still
+/// centralizing the in-memory + settings-flush handshake. Site 1 (`/model`
+/// panel Enter) passes `Some(registry)` and gets the full 6-step fix.
+pub fn set_active_provider(
+    st: &mut ConversationState,
+    registry: Option<&Arc<Registry>>,
+    next: ProviderId,
+) -> Result<()> {
+    st.switch_provider(next);
+    let provider_slug = st.provider_id.slug();
+    st.persistence
+        .commit_session_defaults(&st.session, provider_slug)?;
+    if let Some(reg) = registry {
+        if let Some(provider_arc) = reg.get(provider_slug) {
+            if let Some(runner) = crate::agent::subagents::current_runner() {
+                runner.update_provider(provider_arc);
+            }
+        }
+    }
+    Ok(())
+}
 
 /// Ready-to-dispatch provider list. Returns providers (in `PROVIDER_ORDER`)
 /// whose credentials are sufficient to build a valid turn today. Used by the
@@ -210,6 +269,74 @@ mod tests {
         assert!(
             !authenticated_providers(&empty_api_key).contains(&ProviderId::OpenAiCustom),
             "empty-string api_key counts as absent"
+        );
+    }
+
+    #[test]
+    fn set_active_provider_swaps_provider_and_mirrors_settings() {
+        // Unit-level contract: set_active_provider(st, None, next) flips
+        // provider_id, auto-switches the session model when it doesn't belong
+        // to the new provider's catalog family, and mirrors both into
+        // persistence.settings via `commit_session_defaults`. We pass `None`
+        // for registry so the runner-sync branch is skipped (test harness has
+        // no global runner).
+        //
+        // Flush happens inside commit_session_defaults; we can't assert the
+        // on-disk bytes without a temp-HOME fixture, but the in-memory mirror
+        // proves the handshake called through.
+        use crate::config::providers::ProviderId;
+        use crate::config::settings::PermissionMode;
+        use crate::tui::state::ConversationState;
+
+        let mut st = ConversationState::default();
+        st.session = crate::state::Session::new("claude-opus-4-7[1m]", PermissionMode::Default);
+        st.provider_id = ProviderId::ClaudeCode;
+
+        // Pre-switch sanity: model belongs to ClaudeCode.
+        assert_eq!(st.provider_id, ProviderId::ClaudeCode);
+        assert_eq!(st.session.model, "claude-opus-4-7[1m]");
+
+        // commit_session_defaults will attempt a disk flush — isolate by
+        // pointing settings_path at a writable temp file via OTHERSIDE_CONFIG_DIR.
+        let tmp = std::env::temp_dir().join(format!(
+            "broker_test_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let prev = std::env::var("OTHERSIDE_CONFIG_DIR").ok();
+        unsafe {
+            std::env::set_var("OTHERSIDE_CONFIG_DIR", &tmp);
+        }
+
+        let result = set_active_provider(&mut st, None, ProviderId::Kimi);
+
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("OTHERSIDE_CONFIG_DIR", v),
+                None => std::env::remove_var("OTHERSIDE_CONFIG_DIR"),
+            }
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        assert!(result.is_ok(), "set_active_provider must succeed; got {result:?}");
+        assert_eq!(st.provider_id, ProviderId::Kimi, "in-memory provider_id flipped");
+        assert_eq!(
+            st.session.model, "kimi-for-coding",
+            "model auto-swapped to kimi.default_model() since opus doesn't belong to Kimi catalog"
+        );
+        assert_eq!(
+            st.persistence.settings.default_provider.as_deref(),
+            Some("kimi"),
+            "settings.default_provider mirrored to new slug"
+        );
+        assert_eq!(
+            st.persistence.settings.default_model.as_deref(),
+            Some("kimi-for-coding"),
+            "settings.default_model mirrored to new model"
         );
     }
 

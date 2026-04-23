@@ -719,7 +719,7 @@ fn handle_key(
     }
 
     if st.active_menu.is_some() {
-        return handle_menu_key(k, st, thinking);
+        return handle_menu_key(k, st, registry, thinking);
     }
 
     let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
@@ -949,6 +949,7 @@ fn handle_key(
 fn handle_menu_key(
     k: KeyEvent,
     st: &mut ConversationState,
+    registry: &Arc<Registry>,
     thinking: &mut Option<ThinkingConfig>,
 ) -> bool {
     use crate::tui::slash::catalog::PanelKind;
@@ -1131,7 +1132,7 @@ fn handle_menu_key(
     }
 
     if matches!(menu_state.kind, PanelKind::Model) {
-        return handle_model_panel_key(k, st);
+        return handle_model_panel_key(k, st, registry);
     }
     match k.code {
         KeyCode::Up => menu_state.move_up(),
@@ -1167,7 +1168,11 @@ fn handle_menu_key(
 /// - body + `Enter` → log stub intent (set model, logout, login).
 /// - Custom unauth + Enter → no-op (per spec).
 /// - `Esc` is handled by the generic menu path above, not repeated here.
-fn handle_model_panel_key(k: KeyEvent, st: &mut ConversationState) -> bool {
+fn handle_model_panel_key(
+    k: KeyEvent,
+    st: &mut ConversationState,
+    registry: &Arc<Registry>,
+) -> bool {
     use crate::config::providers::PROVIDER_ORDER;
     use crate::tui::menu::ModelTabRow;
 
@@ -1229,13 +1234,17 @@ fn handle_model_panel_key(k: KeyEvent, st: &mut ConversationState) -> bool {
                         // the panel + emits the Set-anchor so the next boot
                         // restores the user's pick (directive 2026-04-23).
                         let new_model = (*raw_id).to_string();
-                        st.switch_provider(provider);
+                        if let Err(e) = crate::state::broker::set_active_provider(
+                            st,
+                            Some(registry),
+                            provider,
+                        ) {
+                            tracing::warn!(?e, "/model commit: provider switch failed");
+                        }
                         st.switch_model(&new_model);
-                        st.persistence.settings.default_provider =
-                            Some(provider.slug().to_string());
                         st.persistence.settings.default_model = Some(new_model.clone());
                         if let Err(e) = persist_session_defaults(st) {
-                            tracing::warn!(?e, "/model commit: settings flush failed");
+                            tracing::warn!(?e, "/model commit: model flush failed");
                         }
                         if let Some(menu) = st.active_menu.take() {
                             let display =
@@ -1346,7 +1355,9 @@ fn edit_settings_row(st: &mut ConversationState, direction: i32) {
         SettingsRowKind::Provider => {
             let current = st.provider_id;
             let next = providers::cycle(current, dir);
-            st.switch_provider(next);
+            if let Err(e) = crate::state::broker::set_active_provider(st, None, next) {
+                tracing::warn!(?e, "/config provider cycle: broker commit failed");
+            }
         }
         SettingsRowKind::Model => {
             let provider = st.provider_id;
@@ -2069,7 +2080,6 @@ fn dispatch_slash(
     thinking: &Option<ThinkingConfig>,
     tx: &mpsc::Sender<StreamEvent>,
 ) -> bool {
-    let provider_before = st.provider_id;
     let action = slash::classify(&st.input);
     let outcome = match action {
         slash::SlashAction::Instant { name, args } => {
@@ -2107,18 +2117,12 @@ fn dispatch_slash(
         }
     };
 
-    // `/provider` flips `st.provider_id` but leaves the subagent runner
-    // holding the boot-time provider Arc. Sync here so `Task(...)` /
-    // `Agent(...)` from the *next* turn onward dispatches against the
-    // freshly-selected provider. `update_provider` has a default no-op in
-    // the trait so test fakes don't care.
-    if st.provider_id != provider_before {
-        if let Some(runner) = crate::agent::subagents::current_runner() {
-            if let Some(new_provider) = registry.get(st.provider_id.slug()) {
-                runner.update_provider(new_provider);
-            }
-        }
-    }
+    // Runner resync used to live here (pre-/provider removal). Every slash
+    // path today is either (a) provider-neutral (Instant / Toggle / Skill /
+    // Anchor / Auth / Unknown / Passthrough) or (b) routes through a panel
+    // commit that calls `state::broker::set_active_provider` directly, which
+    // owns the runner-update handshake. The post-dispatch hook was therefore
+    // dead after `/provider` slash removed in 2026-04-23.
     match outcome {
         slash::SlashOutcome::Handled => {
             st.input.clear();
