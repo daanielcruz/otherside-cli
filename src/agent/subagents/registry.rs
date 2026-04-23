@@ -54,7 +54,6 @@ const GENERAL_PURPOSE_SRC: &str = include_str!("../../../agents_corpus/general-p
 const EXPLORE_SRC: &str = include_str!("../../../agents_corpus/explore.md");
 const PLAN_SRC: &str = include_str!("../../../agents_corpus/plan.md");
 const VERIFICATION_SRC: &str = include_str!("../../../agents_corpus/verification.md");
-const STATUSLINE_SETUP_SRC: &str = include_str!("../../../agents_corpus/statusline-setup.md");
 
 fn bundled() -> &'static [AgentDefinition] {
     static CELL: OnceLock<Vec<AgentDefinition>> = OnceLock::new();
@@ -64,7 +63,6 @@ fn bundled() -> &'static [AgentDefinition] {
             parse_bundled("explore.md", EXPLORE_SRC),
             parse_bundled("plan.md", PLAN_SRC),
             parse_bundled("verification.md", VERIFICATION_SRC),
-            parse_bundled("statusline-setup.md", STATUSLINE_SETUP_SRC),
         ]
     })
     .as_slice()
@@ -102,12 +100,6 @@ mod tests {
         assert!(names.contains(&"Explore"));
         assert!(names.contains(&"Plan"));
         assert!(names.contains(&"verification"));
-        assert!(names.contains(&"statusline-setup"));
-        assert!(!names.contains(&"reader"));
-        assert!(
-            !names.contains(&"claude-code-guide"),
-            "claude-code-guide was removed from the bundled registry per 2026-04-22 user directive"
-        );
     }
 
     #[test]

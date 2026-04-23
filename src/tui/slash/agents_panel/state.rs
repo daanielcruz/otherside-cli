@@ -448,7 +448,6 @@ mod tests {
             "Explore",
             "Plan",
             "verification",
-            "statusline-setup",
         ] {
             assert!(
                 names.contains(&expected),

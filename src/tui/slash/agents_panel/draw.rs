@@ -475,7 +475,6 @@ mod tests {
             "Explore",
             "Plan",
             "verification",
-            "statusline-setup",
         ] {
             assert!(text.contains(name), "library missing {name}: {text}");
         }

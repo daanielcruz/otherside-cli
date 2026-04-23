@@ -71,7 +71,7 @@ pub fn read(args: &Value) -> Result<Value, ToolError> {
     // says don't — completion arrives via notification.
     if is_hallucinated_task_output_path(&canonical) {
         return Err(ToolError::InvalidArgs(
-            "do not poll subagent output — wait for the completion notification. The agent's result lands via a system notification automatically. Do NOT call Read/Bash/TaskOutput on any ~/.otherside/tasks or ~/.claude/tasks path.".to_string(),
+            "do not poll subagent output — wait for the completion notification. The agent's result lands via a system notification automatically. Do NOT call Read/Bash/TaskOutput on any `tasks/*.log` path under ~/.otherside or similar home-directory locations.".to_string(),
         ));
     }
 
