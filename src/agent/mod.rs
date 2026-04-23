@@ -297,13 +297,7 @@ impl ToolDispatcher for GatedDispatcher {
 }
 
 pub fn tool_result_message(call_id: &str, result: &Value) -> OpenAiChatMessage {
-    let content = result
-        .get("content")
-        .and_then(Value::as_str)
-        .map(str::to_string)
-        .unwrap_or_else(|| {
-            serde_json::to_string(result).unwrap_or_else(|_| result.to_string())
-        });
+    let content = extract_tool_result_content(result);
     OpenAiChatMessage {
         role: OpenAiChatRole::Tool,
         content,
@@ -313,6 +307,46 @@ pub fn tool_result_message(call_id: &str, result: &Value) -> OpenAiChatMessage {
         reasoning_content: None,
         thinking_signature: None,
     }
+}
+
+/// Unwrap the tool-result content the model will see as `tool_result.content`.
+///
+/// Three shapes supported:
+/// 1. `"string"` — flat string. Used directly.
+/// 2. `[{"type": "text", "text": "…"}, …]` — Anthropic/upstream-shape block
+///    array. The subagent runner + backgrounded Agent path both emit this;
+///    concatenate all text blocks so a multi-block payload survives the
+///    collapse to a single string (the wire types we ship expose
+///    `tool_result.content` as `String`).
+/// 3. Anything else — fall back to serializing the entire result JSON blob.
+///    Last-ditch path for tools that forget to set `content`; keeps the
+///    model from seeing an empty string.
+///
+/// Before this extractor, shape #2 fell through to the JSON-blob fallback
+/// — kimi self-reported seeing `{"status":"backgrounded",...,"content":[…]}`
+/// as the tool_result for a backgrounded Agent call and re-dispatched
+/// thinking the first attempt failed (live session 2026-04-24).
+fn extract_tool_result_content(result: &Value) -> String {
+    if let Some(s) = result.get("content").and_then(Value::as_str) {
+        return s.to_string();
+    }
+    if let Some(arr) = result.get("content").and_then(Value::as_array) {
+        let mut texts: Vec<String> = Vec::with_capacity(arr.len());
+        for block in arr {
+            let kind = block.get("type").and_then(Value::as_str);
+            if matches!(kind, Some("text") | None) {
+                if let Some(t) = block.get("text").and_then(Value::as_str) {
+                    if !t.is_empty() {
+                        texts.push(t.to_string());
+                    }
+                }
+            }
+        }
+        if !texts.is_empty() {
+            return texts.join("\n");
+        }
+    }
+    serde_json::to_string(result).unwrap_or_else(|_| result.to_string())
 }
 
 pub struct AgentLoop<D: ToolDispatcher, O: LoopObserver = NoOpObserver> {
@@ -1107,5 +1141,52 @@ mod tests {
 
         assert!(msg.content.starts_with('{'));
         assert!(msg.content.contains("\"numLines\":3"));
+    }
+
+    #[test]
+    fn tool_result_message_extracts_text_from_block_array() {
+        // Backgrounded Agent + subagent runner both emit `content:
+        // [{"type":"text","text":"..."}]`. Before the block-array
+        // extractor, this fell through to JSON-blob stringify and
+        // kimi saw `{"status":"backgrounded",...}` as the tool_result
+        // — re-dispatched the Agent thinking the first attempt failed
+        // (live session 2026-04-24).
+        let msg = tool_result_message(
+            "tu_bg",
+            &json!({
+                "status": "backgrounded",
+                "task_id": "task_abc",
+                "agent_id": "a1234567890abcde",
+                "content": [
+                    {"type": "text", "text": "Async agent launched successfully.\nagentId: a1234..."}
+                ],
+            }),
+        );
+        assert_eq!(
+            msg.content,
+            "Async agent launched successfully.\nagentId: a1234...",
+            "text block must be unwrapped — not stringified as JSON",
+        );
+        assert!(!msg.content.starts_with('{'), "no JSON blob leaking");
+    }
+
+    #[test]
+    fn tool_result_message_joins_multiple_text_blocks() {
+        let msg = tool_result_message(
+            "tu_multi",
+            &json!({
+                "content": [
+                    {"type": "text", "text": "first block"},
+                    {"type": "text", "text": "second block"},
+                ],
+            }),
+        );
+        assert_eq!(msg.content, "first block\nsecond block");
+    }
+
+    #[test]
+    fn tool_result_message_empty_block_array_falls_back_to_json() {
+        let msg = tool_result_message("tu_empty", &json!({"content": []}));
+        assert!(msg.content.starts_with('{'));
     }
 }
