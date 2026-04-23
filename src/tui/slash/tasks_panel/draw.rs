@@ -24,9 +24,9 @@ pub fn draw_panel(f: &mut Frame<'_>, area: Rect, state: &TasksPanelState) {
 fn draw_list(f: &mut Frame<'_>, area: Rect, state: &TasksPanelState) {
     let body = list_body(state);
     let footer_hints: &[(&str, &str)] = &[
-        ("\u{2191}/\u{2193}", "select"),
-        ("Enter", "view"),
-        ("\u{2190}/Esc", "close"),
+        ("\u{2191}/\u{2193}", "to select"),
+        ("Enter", "to view"),
+        ("\u{2190}/Esc", "to close"),
     ];
     let panel = PanelFrame {
         title: Some("Background tasks"),
