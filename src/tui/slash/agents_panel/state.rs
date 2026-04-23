@@ -106,6 +106,7 @@ pub fn discover_user_agents() -> Vec<UserAgentRow> {
 pub struct AgentsPanelState {
     pub tab: Tab,
     pub running_cursor: usize,
+    pub library_cursor: usize,
     pub running: Vec<RunningRow>,
     pub recently_completed: Vec<CompletedRow>,
     pub library: Vec<LibraryRow>,
@@ -179,12 +180,19 @@ impl AgentsPanelState {
         Self {
             tab: Tab::Running,
             running_cursor: 0,
+            library_cursor: 0,
             running,
             recently_completed,
             library,
             user_agents: discover_user_agents(),
             user_agents_dir: discover_user_agents_dir(),
         }
+    }
+
+    /// Total selectable rows on the Library tab:
+    /// 1 (`Create new agent`) + user_agents + builtins (library).
+    pub fn library_selectable_count(&self) -> usize {
+        1 + self.user_agents.len() + self.library.len()
     }
 
     /// Re-pull live state from the TaskStore without dropping user UI
@@ -245,18 +253,40 @@ impl AgentsPanelState {
     }
 
     pub fn cursor_up(&mut self) {
-        if matches!(self.tab, Tab::Running) && !self.running.is_empty() {
-            if self.running_cursor > 0 {
-                self.running_cursor -= 1;
-            } else {
-                self.running_cursor = self.running.len() - 1;
+        match self.tab {
+            Tab::Running if !self.running.is_empty() => {
+                if self.running_cursor > 0 {
+                    self.running_cursor -= 1;
+                } else {
+                    self.running_cursor = self.running.len() - 1;
+                }
             }
+            Tab::Library => {
+                let n = self.library_selectable_count();
+                if n > 0 {
+                    if self.library_cursor > 0 {
+                        self.library_cursor -= 1;
+                    } else {
+                        self.library_cursor = n - 1;
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
     pub fn cursor_down(&mut self) {
-        if matches!(self.tab, Tab::Running) && !self.running.is_empty() {
-            self.running_cursor = (self.running_cursor + 1) % self.running.len();
+        match self.tab {
+            Tab::Running if !self.running.is_empty() => {
+                self.running_cursor = (self.running_cursor + 1) % self.running.len();
+            }
+            Tab::Library => {
+                let n = self.library_selectable_count();
+                if n > 0 {
+                    self.library_cursor = (self.library_cursor + 1) % n;
+                }
+            }
+            _ => {}
         }
     }
 
@@ -264,6 +294,12 @@ impl AgentsPanelState {
         self.tab = self.tab.cycle();
         if matches!(self.tab, Tab::Running) && self.running_cursor >= self.running.len() {
             self.running_cursor = 0;
+        }
+        if matches!(self.tab, Tab::Library) {
+            let n = self.library_selectable_count();
+            if n > 0 && self.library_cursor >= n {
+                self.library_cursor = 0;
+            }
         }
     }
 }
@@ -424,5 +460,22 @@ mod tests {
         st.cursor_down();
         st.cursor_up();
         assert_eq!(st.running_cursor, 0);
+    }
+
+    #[test]
+    fn library_cursor_walks_create_user_builtin_rows() {
+        let mut st = AgentsPanelState::new(&TaskStore::new(), registry::all());
+        st.tab = Tab::Library;
+        let n = st.library_selectable_count();
+        assert!(n >= 1 + st.library.len(), "at least create + built-ins");
+        assert_eq!(st.library_cursor, 0);
+        st.cursor_down();
+        assert_eq!(st.library_cursor, 1);
+        for _ in 0..(n - 1) {
+            st.cursor_down();
+        }
+        assert_eq!(st.library_cursor, 0, "cursor must wrap at end");
+        st.cursor_up();
+        assert_eq!(st.library_cursor, n - 1, "cursor_up wraps to last");
     }
 }

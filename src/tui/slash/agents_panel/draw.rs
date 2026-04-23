@@ -1,5 +1,5 @@
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::Frame;
 
@@ -151,18 +151,23 @@ fn library_body(state: &AgentsPanelState) -> Vec<Line<'static>> {
 
     // Upstream ordering (AgentsList.tsx): Create new agent → User agents →
     // Plugin agents → Built-in agents. Sections separated by blank rows.
+    //
+    // Selection cursor walks a flat index across the 3 selectable kinds:
+    // 0 = `Create new agent`, 1..=user_agents.len() = user, rest = built-ins.
+    // Section-header and blank rows are non-selectable; the cursor index
+    // lives on AgentsPanelState.library_cursor and increments per rendered
+    // selectable row.
+    let cursor = state.library_cursor;
+    let mut flat_idx: usize = 0;
 
-    // Create new agent (visual placeholder — actual creation flow pending).
-    lines.push(Line::from(vec![
-        Span::raw(BODY_INDENT),
-        Span::styled(
-            "Create new agent".to_string(),
-            Style::default().fg(theme::MUTED).add_modifier(Modifier::DIM),
-        ),
-    ]));
+    lines.push(body_row(
+        "Create new agent".to_string(),
+        flat_idx == cursor,
+        false,
+    ));
+    flat_idx += 1;
     lines.push(Line::from(""));
 
-    // User agents: scanned from ~/.claude/agents/*.md via frontmatter.
     if !state.user_agents.is_empty() {
         let header = match state.user_agents_dir.as_ref() {
             Some(p) => format!("User agents ({})", p.display()),
@@ -173,20 +178,15 @@ fn library_body(state: &AgentsPanelState) -> Vec<Line<'static>> {
             Span::styled(header, Style::default().fg(theme::TEXT)),
         ]));
         for row in &state.user_agents {
-            lines.push(Line::from(vec![
-                Span::raw(BODY_INDENT),
-                Span::styled(
-                    format!("{} \u{00B7} {} \u{00B7} user memory", row.name, row.model),
-                    Style::default().fg(theme::TEXT),
-                ),
-            ]));
+            lines.push(body_row(
+                format!("{} \u{00B7} {} \u{00B7} user memory", row.name, row.model),
+                flat_idx == cursor,
+                false,
+            ));
+            flat_idx += 1;
         }
         lines.push(Line::from(""));
     }
-
-    // Plugin agents section is gated behind plugin-manifest discovery
-    // (Phase 3). Emit a placeholder header only when state surfaces some
-    // future `plugin_agents` vector — for now skip.
 
     // Built-in agents (always available) — closes the section list.
     lines.push(Line::from(vec![
@@ -197,21 +197,18 @@ fn library_body(state: &AgentsPanelState) -> Vec<Line<'static>> {
         ),
     ]));
     for row in &state.library {
-        let mut spans: Vec<Span<'static>> = vec![
-            Span::raw(BODY_INDENT),
-            Span::styled(
-                format!("{} \u{00B7} {}", row.name, row.model),
-                Style::default().fg(theme::TEXT),
-            ),
-        ];
-        if row.running_count > 0 {
-            spans.push(Span::styled(
-                format!(" \u{1F7E2} {} running", row.running_count),
-                Style::default().fg(theme::SUCCESS),
-            ));
-        }
-        lines.push(Line::from(spans));
+        let label = if row.running_count > 0 {
+            format!(
+                "{} \u{00B7} {}  \u{1F7E2} {} running",
+                row.name, row.model, row.running_count
+            )
+        } else {
+            format!("{} \u{00B7} {}", row.name, row.model)
+        };
+        lines.push(body_row(label, flat_idx == cursor, false));
+        flat_idx += 1;
     }
+    let _ = flat_idx;
     lines
 }
 
@@ -277,9 +274,10 @@ mod tests {
         let s = AgentsPanelState::new(&TaskStore::new(), registry::all());
         let lines = library_body(&s);
         let text = collect_text(&lines);
+        let first_line = text.lines().next().unwrap_or("");
         assert!(
-            text.trim_start().starts_with("Create new agent"),
-            "library tab must open with `Create new agent` selectable row (upstream AgentsList.tsx:33,47-52): {text:?}"
+            first_line.contains("Create new agent"),
+            "first row must carry `Create new agent` (upstream AgentsList.tsx:33,47-52): {text:?}"
         );
     }
 
