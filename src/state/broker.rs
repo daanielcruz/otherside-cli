@@ -581,6 +581,103 @@ mod tests {
         );
     }
 
+    fn strip_cfg_test_modules(src: &str) -> String {
+        let mut out = String::with_capacity(src.len());
+        let mut in_test = false;
+        let mut brace_depth = 0i32;
+        let mut saw_cfg = false;
+        for line in src.lines() {
+            if !in_test {
+                if line.trim_start().starts_with("#[cfg(test)]") {
+                    saw_cfg = true;
+                    out.push('\n');
+                    continue;
+                }
+                if saw_cfg {
+                    saw_cfg = false;
+                    if line.contains("mod ") && line.contains('{') {
+                        in_test = true;
+                        brace_depth = 1;
+                        out.push('\n');
+                        continue;
+                    }
+                }
+                out.push_str(line);
+                out.push('\n');
+            } else {
+                for c in line.chars() {
+                    if c == '{' { brace_depth += 1; }
+                    if c == '}' { brace_depth -= 1; }
+                }
+                out.push('\n');
+                if brace_depth <= 0 {
+                    in_test = false;
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn no_dialog_dismissed_wording_in_production() {
+        // User directive 2026-04-24: "nao mencionar slashs dismisseds na
+        // tela de mensagens, fazer isso de maneira silenciosa." This gate
+        // fails if any non-test file emits the old dismiss wordings.
+        use std::path::Path;
+
+        let needles = [
+            "dialog dismissed",
+            "Resume cancelled",
+            "Background tasks dialog dismissed",
+        ];
+
+        fn scan(dir: &Path, needles: &[&str], hits: &mut Vec<String>) {
+            if dir.file_name().and_then(|n| n.to_str()) == Some("target") {
+                return;
+            }
+            let entries = match std::fs::read_dir(dir) {
+                Ok(e) => e,
+                Err(_) => return,
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    scan(&path, needles, hits);
+                    continue;
+                }
+                if path.extension().and_then(|s| s.to_str()) != Some("rs") {
+                    continue;
+                }
+                let Ok(src) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
+                let stripped = strip_cfg_test_modules(&src);
+                for (line_no, line) in stripped.lines().enumerate() {
+                    for needle in needles {
+                        if line.contains(needle) {
+                            hits.push(format!(
+                                "{}:{}: {}",
+                                path.display(),
+                                line_no + 1,
+                                line.trim(),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        let crate_src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut hits = Vec::new();
+        scan(&crate_src, &needles, &mut hits);
+
+        assert!(
+            hits.is_empty(),
+            "dismiss wording leaked outside #[cfg(test)] — silence the panel:\n{}",
+            hits.iter().map(String::as_str).collect::<Vec<_>>().join("\n"),
+        );
+    }
+
     #[test]
     fn persistence_settings_writers_are_broker_only() {
         // Step 7 lockdown (per docs/state/state-broker-analysis.md): every
@@ -662,43 +759,6 @@ mod tests {
                 Some('=') => !matches!(iter.peek(), Some('=')),
                 _ => false,
             }
-        }
-
-        fn strip_cfg_test_modules(src: &str) -> String {
-            let mut out = String::with_capacity(src.len());
-            let mut in_test = false;
-            let mut brace_depth = 0i32;
-            let mut saw_cfg = false;
-            for line in src.lines() {
-                if !in_test {
-                    if line.trim_start().starts_with("#[cfg(test)]") {
-                        saw_cfg = true;
-                        out.push('\n');
-                        continue;
-                    }
-                    if saw_cfg {
-                        saw_cfg = false;
-                        if line.contains("mod ") && line.contains('{') {
-                            in_test = true;
-                            brace_depth = 1;
-                            out.push('\n');
-                            continue;
-                        }
-                    }
-                    out.push_str(line);
-                    out.push('\n');
-                } else {
-                    for c in line.chars() {
-                        if c == '{' { brace_depth += 1; }
-                        if c == '}' { brace_depth -= 1; }
-                    }
-                    out.push('\n');
-                    if brace_depth <= 0 {
-                        in_test = false;
-                    }
-                }
-            }
-            out
         }
 
         let crate_src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");

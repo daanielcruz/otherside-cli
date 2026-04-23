@@ -1596,13 +1596,8 @@ fn handle_tasks_panel_key(k: KeyEvent, st: &mut ConversationState) {
     panel.refresh(&st.tasks);
     match handle_key(k, panel) {
         KeyOutcome::Dismiss => {
+            // Silent dismiss per user directive 2026-04-24.
             st.active_tasks_panel = None;
-            st.push_anchor(
-                "tasks",
-                "",
-                "Background tasks dialog dismissed",
-                DisplayOrigin::Chrome,
-            );
         }
         KeyOutcome::StopFocused => {
             // Upstream `x` from detail: kill the task. Otherside signals
