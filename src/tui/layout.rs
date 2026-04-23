@@ -34,7 +34,10 @@ pub struct FrameSlots {
     pub info: Rect,
 }
 
-pub const QUEUE_CHROME_ROWS: u16 = 1;
+// Outer gap row above the chip + 1 bg-filled pad row inside top + 1 inside
+// bottom. Matches upstream's `marginTop={1}` + interior `paddingY` on the
+// QueuedMessage box (user diff #3 2026-04-24).
+pub const QUEUE_CHROME_ROWS: u16 = 3;
 
 pub fn split_frame(
     area: Rect,

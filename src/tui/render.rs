@@ -505,18 +505,52 @@ fn draw_queue_lines(f: &mut Frame<'_>, area: Rect, state: &ConversationState) {
         return;
     }
     let total_rows = area.height as usize;
-    // Upstream inserts a blank row between the streaming/loading trailer and
-    // the queue chip (context/QueuedMessageContext.tsx:27 `marginTop={1}`).
-    let body_budget = total_rows.saturating_sub(1);
+    // Upstream chip shape (components/messages/QueuedMessage.tsx):
+    //   [blank gap above the chip, no bg]
+    //   [bg-filled pad row]
+    //   [❯ <msg 1>]
+    //   [❯ <msg 2>]
+    //   ...
+    //   [bg-filled pad row]
+    // The outer gap + interior top+bottom pad matches the upstream box's
+    // `marginY=1` + `paddingY=0` + explicit 1-line inner pads that give
+    // the chip visible breathing room (user diff #3 2026-04-24).
+    let outer_gap = 1usize;
+    let inner_pad = 1usize; // top + bottom each
+    let reserved = outer_gap.saturating_add(inner_pad).saturating_add(inner_pad);
+    let body_budget = total_rows.saturating_sub(reserved);
+    if body_budget == 0 {
+        // Terminal too short — fall back to just the gap + one row packed.
+        let fallback_budget = total_rows.saturating_sub(outer_gap).max(1);
+        let mut lines: Vec<Line<'_>> = Vec::with_capacity(total_rows);
+        lines.push(Line::from(""));
+        for msg in state.queued_messages.iter().take(fallback_budget) {
+            let first_line = msg.lines().next().unwrap_or("");
+            lines.push(queue_preview_row(first_line, area.width));
+        }
+        f.render_widget(Paragraph::new(lines), area);
+        return;
+    }
 
     let mut lines: Vec<Line<'_>> = Vec::with_capacity(total_rows);
     lines.push(Line::from(""));
+    lines.push(queue_pad_row(area.width));
     for msg in state.queued_messages.iter().take(body_budget) {
         let first_line = msg.lines().next().unwrap_or("");
         lines.push(queue_preview_row(first_line, area.width));
     }
+    lines.push(queue_pad_row(area.width));
 
     f.render_widget(Paragraph::new(lines), area);
+}
+
+/// Interior padding row — full-width band at `theme::QUEUE_BG` so the chip
+/// shape looks boxed instead of a row of chevroned text (upstream diff #3
+/// 2026-04-24). Reuses the preview row's bg color for pixel continuity
+/// with the chevron+body rows above/below.
+fn queue_pad_row(width: u16) -> Line<'static> {
+    let pad_style = Style::default().bg(theme::QUEUE_BG);
+    Line::from(Span::styled(" ".repeat(width as usize), pad_style))
 }
 
 fn queue_preview_row(body: &str, width: u16) -> Line<'static> {
@@ -1484,7 +1518,8 @@ mod tests {
         st.queued_messages.push("first queued".into());
         st.queued_messages.push("second queued".into());
 
-        let s = render_queue_lines_to_string(&st, 80, 3);
+        // 2 msgs + 3 chrome rows (outer gap + 2 interior pads).
+        let s = render_queue_lines_to_string(&st, 80, 5);
         assert!(s.contains("❯ first queued"), "rendered: {s:?}");
         assert!(s.contains("❯ second queued"), "rendered: {s:?}");
     }
@@ -1497,12 +1532,48 @@ mod tests {
         st.queued_messages.push("msg-1".into());
         st.queued_messages.push("msg-2".into());
 
-        // slot = count + 1 margin row (matches layout.rs QUEUE_CHROME_ROWS).
-        let s = render_queue_lines_to_string(&st, 80, 4);
+        // slot = count + QUEUE_CHROME_ROWS (3: outer gap + top+bottom pad).
+        let s = render_queue_lines_to_string(&st, 80, 6);
         assert!(s.contains("❯ msg-0"), "rendered: {s:?}");
         assert!(s.contains("❯ msg-1"), "rendered: {s:?}");
         assert!(s.contains("❯ msg-2"), "rendered: {s:?}");
         assert!(!s.contains("more queued"), "overflow summary leaked: {s:?}");
+    }
+
+    #[test]
+    fn queue_emits_interior_bg_pad_above_and_below_entries() {
+        use super::super::state::ConversationState;
+        use ratatui::backend::TestBackend;
+        use ratatui::layout::Rect;
+        use ratatui::style::Color;
+        use ratatui::Terminal;
+
+        let mut st = ConversationState::new();
+        st.queued_messages.push("queued".into());
+
+        let width: u16 = 40;
+        let height: u16 = 4; // gap + top-pad + entry + bottom-pad
+        let backend = TestBackend::new(width, height);
+        let mut term = Terminal::new(backend).expect("terminal");
+        term.draw(|f| {
+            let area = Rect::new(0, 0, width, height);
+            draw_queue_lines(f, area, &st);
+        })
+        .unwrap();
+        let buf = term.backend().buffer().clone();
+
+        // Row 0 = outer gap (no bg), row 1 = top pad (bg), row 2 = entry
+        // (bg), row 3 = bottom pad (bg).
+        let top_pad = &buf[(20, 1)];
+        assert_eq!(
+            top_pad.bg, Color::Indexed(237),
+            "top interior pad must have chip bg: {top_pad:?}"
+        );
+        let bottom_pad = &buf[(20, 3)];
+        assert_eq!(
+            bottom_pad.bg, Color::Indexed(237),
+            "bottom interior pad must have chip bg: {bottom_pad:?}"
+        );
     }
 
     #[test]
