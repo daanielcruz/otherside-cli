@@ -2,6 +2,7 @@
 
 use crate::config::PermissionMode;
 use crate::models::catalog;
+use crate::thinking::ThinkingConfig;
 
 #[derive(Debug, Clone)]
 pub struct Session {
@@ -13,6 +14,8 @@ pub struct Session {
     pub permission_mode: PermissionMode,
 
     pub context_window: u64,
+
+    pub thinking: Option<ThinkingConfig>,
 }
 
 impl Session {
@@ -23,7 +26,12 @@ impl Session {
             permission_mode,
             model: raw_model.to_string(),
             effort_label: None,
+            thinking: None,
         }
+    }
+
+    pub fn set_thinking(&mut self, thinking: Option<ThinkingConfig>) {
+        self.thinking = thinking;
     }
 
     pub fn set_model(&mut self, new_raw: &str) {

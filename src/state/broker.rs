@@ -28,12 +28,9 @@
 //! - Step 4 `set_active_model` + `set_effort`, Step 5 auth lifecycle,
 //!   Step 6 settings bridge, Step 7 `pub(crate)` lockdown — pending.
 
-use std::sync::Arc;
-
 use crate::config::providers::{ProviderId, PROVIDER_ORDER};
 use crate::config::settings::Settings;
 use crate::error::Result;
-use crate::provider::Registry;
 use crate::tui::state::ConversationState;
 
 /// 6-step provider switch handshake. Single entry point for every UI surface
@@ -66,28 +63,59 @@ use crate::tui::state::ConversationState;
 /// (e.g. kimi `on`/`off` vs anthropic `auto`/`deep`/…) is a pre-existing
 /// latent bug addressed when Step 4 lands.
 ///
-/// `registry` is `Option` because `edit_settings_row` (the `/config`
-/// Provider-row cycle path) doesn't receive `Registry` in its call chain
-/// today, and threading it requires touching ~20 test sites. Passing `None`
-/// preserves that site's pre-existing no-runner-sync behavior while still
-/// centralizing the in-memory + settings-flush handshake. Site 1 (`/model`
-/// panel Enter) passes `Some(registry)` and gets the full 6-step fix.
+/// Registry access is routed through `state::dispatch::provider_by_slug` so
+/// every UI surface (both `/model` panel Enter and `/config` Provider cycle)
+/// gets the full snapshot+runner handshake without threading `Arc<Registry>`
+/// through the call chain. Main installs the registry at boot via
+/// `dispatch::install_registry`.
 pub fn set_active_provider(
     st: &mut ConversationState,
-    registry: Option<&Arc<Registry>>,
     next: ProviderId,
 ) -> Result<()> {
     st.switch_provider(next);
     let provider_slug = st.provider_id.slug();
     st.persistence
         .commit_session_defaults(&st.session, provider_slug)?;
-    if let Some(reg) = registry {
-        if let Some(provider_arc) = reg.get(provider_slug) {
-            if let Some(runner) = crate::agent::subagents::current_runner() {
-                runner.update_provider(provider_arc);
-            }
-        }
+    if let Some(provider_arc) = crate::state::dispatch::provider_by_slug(provider_slug) {
+        crate::state::dispatch::set_provider(provider_arc);
     }
+    // Model may have auto-swapped inside `switch_provider` — keep the
+    // dispatch snapshot aligned with the session-live model so the subagent
+    // runner reads the same model the main turn will.
+    crate::state::dispatch::set_model(st.session.model.clone());
+    Ok(())
+}
+
+/// Switch the active model in-memory, mirror into settings, flush to disk,
+/// and update the dispatch snapshot. The model catalog guarantees the slug
+/// belongs to the currently-active provider — caller is responsible for
+/// gating cross-provider selection.
+pub fn set_active_model(st: &mut ConversationState, model: impl Into<String>) -> Result<()> {
+    let model = model.into();
+    st.session.set_model(&model);
+    let provider_slug = st.provider_id.slug();
+    st.persistence
+        .commit_session_defaults(&st.session, provider_slug)?;
+    crate::state::dispatch::set_model(model);
+    Ok(())
+}
+
+/// Switch the active thinking config in-memory + snapshot, and mirror the
+/// effort label into settings. `thinking = None` clears effort.
+pub fn set_effort(
+    st: &mut ConversationState,
+    thinking: Option<crate::thinking::ThinkingConfig>,
+    effort_level: Option<String>,
+) -> Result<()> {
+    st.session.set_thinking(thinking);
+    st.session.effort_label = thinking
+        .as_ref()
+        .and_then(crate::thinking::label_from_thinking);
+    st.persistence.settings.effort_level = effort_level;
+    let provider_slug = st.provider_id.slug();
+    st.persistence
+        .commit_session_defaults(&st.session, provider_slug)?;
+    crate::state::dispatch::set_thinking(thinking);
     Ok(())
 }
 
@@ -274,12 +302,12 @@ mod tests {
 
     #[test]
     fn set_active_provider_swaps_provider_and_mirrors_settings() {
-        // Unit-level contract: set_active_provider(st, None, next) flips
+        // Unit-level contract: set_active_provider(st, next) flips
         // provider_id, auto-switches the session model when it doesn't belong
         // to the new provider's catalog family, and mirrors both into
-        // persistence.settings via `commit_session_defaults`. We pass `None`
-        // for registry so the runner-sync branch is skipped (test harness has
-        // no global runner).
+        // persistence.settings via `commit_session_defaults`. When no
+        // registry has been installed at `dispatch::install_registry`, the
+        // provider-snapshot write silently no-ops (test harness path).
         //
         // Flush happens inside commit_session_defaults; we can't assert the
         // on-disk bytes without a temp-HOME fixture, but the in-memory mirror
@@ -312,7 +340,7 @@ mod tests {
             std::env::set_var("OTHERSIDE_CONFIG_DIR", &tmp);
         }
 
-        let result = set_active_provider(&mut st, None, ProviderId::Kimi);
+        let result = set_active_provider(&mut st, ProviderId::Kimi);
 
         unsafe {
             match prev {
@@ -337,6 +365,155 @@ mod tests {
             st.persistence.settings.default_model.as_deref(),
             Some("kimi-for-coding"),
             "settings.default_model mirrored to new model"
+        );
+    }
+
+    #[test]
+    fn set_active_model_mirrors_session_settings_and_dispatch_snapshot() {
+        use crate::config::settings::PermissionMode;
+        use crate::provider::{ChunkStream, Provider};
+        use crate::state::dispatch::{self, DispatchSnapshot};
+        use crate::tui::state::ConversationState;
+        use futures::stream;
+        use std::pin::Pin;
+        use std::sync::Arc;
+
+        struct FakeProvider;
+        impl Provider for FakeProvider {
+            fn id(&self) -> &'static str { "claude-code" }
+            fn stream<'a>(
+                &'a self,
+                _req: crate::inference::OpenAiChatRequest,
+                _thinking: Option<crate::thinking::ThinkingConfig>,
+            ) -> Pin<Box<dyn std::future::Future<Output = crate::error::Result<ChunkStream>> + Send + 'a>>
+            {
+                Box::pin(async move { Ok(Box::pin(stream::empty()) as ChunkStream) })
+            }
+        }
+
+        dispatch::install_for_test(DispatchSnapshot {
+            provider: Arc::new(FakeProvider) as Arc<dyn Provider>,
+            model: "boot-model".into(),
+            thinking: None,
+        });
+
+        let mut st = ConversationState::default();
+        st.session = crate::state::Session::new("claude-opus-4-7", PermissionMode::Default);
+        st.provider_id = ProviderId::ClaudeCode;
+
+        let tmp = std::env::temp_dir().join(format!(
+            "broker_model_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let prev = std::env::var("OTHERSIDE_CONFIG_DIR").ok();
+        unsafe { std::env::set_var("OTHERSIDE_CONFIG_DIR", &tmp); }
+
+        let result = set_active_model(&mut st, "claude-haiku-4-5");
+
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("OTHERSIDE_CONFIG_DIR", v),
+                None => std::env::remove_var("OTHERSIDE_CONFIG_DIR"),
+            }
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        assert!(result.is_ok(), "set_active_model must succeed; got {result:?}");
+        assert_eq!(st.session.model, "claude-haiku-4-5", "session model flipped");
+        assert_eq!(
+            st.persistence.settings.default_model.as_deref(),
+            Some("claude-haiku-4-5"),
+            "settings mirror matches",
+        );
+        assert_eq!(
+            dispatch::snapshot().expect("snapshot installed").model,
+            "claude-haiku-4-5",
+            "dispatch snapshot is in lock-step with session model",
+        );
+    }
+
+    #[test]
+    fn set_effort_mirrors_session_settings_and_dispatch_snapshot() {
+        use crate::config::settings::PermissionMode;
+        use crate::provider::{ChunkStream, Provider};
+        use crate::state::dispatch::{self, DispatchSnapshot};
+        use crate::thinking::{ThinkingConfig, ThinkingLevel};
+        use crate::tui::state::ConversationState;
+        use futures::stream;
+        use std::pin::Pin;
+        use std::sync::Arc;
+
+        struct FakeProvider;
+        impl Provider for FakeProvider {
+            fn id(&self) -> &'static str { "claude-code" }
+            fn stream<'a>(
+                &'a self,
+                _req: crate::inference::OpenAiChatRequest,
+                _thinking: Option<ThinkingConfig>,
+            ) -> Pin<Box<dyn std::future::Future<Output = crate::error::Result<ChunkStream>> + Send + 'a>>
+            {
+                Box::pin(async move { Ok(Box::pin(stream::empty()) as ChunkStream) })
+            }
+        }
+
+        dispatch::install_for_test(DispatchSnapshot {
+            provider: Arc::new(FakeProvider) as Arc<dyn Provider>,
+            model: "claude-opus-4-7".into(),
+            thinking: None,
+        });
+
+        let mut st = ConversationState::default();
+        st.session = crate::state::Session::new("claude-opus-4-7", PermissionMode::Default);
+        st.provider_id = ProviderId::ClaudeCode;
+
+        let tmp = std::env::temp_dir().join(format!(
+            "broker_effort_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let prev = std::env::var("OTHERSIDE_CONFIG_DIR").ok();
+        unsafe { std::env::set_var("OTHERSIDE_CONFIG_DIR", &tmp); }
+
+        let result = set_effort(
+            &mut st,
+            Some(ThinkingConfig::level(ThinkingLevel::High)),
+            Some("high".to_string()),
+        );
+
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("OTHERSIDE_CONFIG_DIR", v),
+                None => std::env::remove_var("OTHERSIDE_CONFIG_DIR"),
+            }
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        assert!(result.is_ok(), "set_effort must succeed; got {result:?}");
+        assert_eq!(
+            st.session.thinking.map(|t| t.level),
+            Some(ThinkingLevel::High),
+            "session thinking set",
+        );
+        assert_eq!(st.session.effort_label, Some("high"), "label derived");
+        assert_eq!(
+            st.persistence.settings.effort_level.as_deref(),
+            Some("high"),
+            "settings mirror matches",
+        );
+        let snap = dispatch::snapshot().expect("snapshot installed");
+        assert_eq!(
+            snap.thinking.map(|t| t.level),
+            Some(ThinkingLevel::High),
+            "dispatch snapshot thinking in lock-step",
         );
     }
 

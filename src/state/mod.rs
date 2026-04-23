@@ -1,6 +1,7 @@
 
 
 pub mod broker;
+pub mod dispatch;
 pub mod persistence;
 pub mod session;
 

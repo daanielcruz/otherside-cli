@@ -7,7 +7,6 @@ use serde_json::{json, Value};
 use crate::agent::{AgentLoop, ControlFlow, GatedDispatcher, LoopObserver, MAX_AUTO_TURNS};
 use crate::error::Error;
 use crate::inference::{OpenAiChatMessage, OpenAiChatRole};
-use crate::provider::Provider;
 
 use super::{registry, AgentInvocation, NestedEmitter, RunnerError, SubagentRunner};
 
@@ -62,21 +61,15 @@ impl LoopObserver for NestedObserver {
 
 pub const SUBAGENT_MAX_TURNS: u32 = MAX_AUTO_TURNS;
 
-pub struct InnerLoopRunner {
-    provider: std::sync::RwLock<Arc<dyn Provider>>,
-    default_model: String,
-}
+/// Zero-state runner. The `(provider, model, thinking)` triple is read
+/// live from `state::dispatch::snapshot()` on every dispatch, so
+/// mid-session `/model` / `/effort` / provider swaps are always honored.
+/// No cached triple, no boot capture.
+pub struct InnerLoopRunner;
 
 impl InnerLoopRunner {
-    pub fn new(provider: Arc<dyn Provider>, default_model: String) -> Arc<dyn SubagentRunner> {
-        Arc::new(Self {
-            provider: std::sync::RwLock::new(provider),
-            default_model,
-        })
-    }
-
-    fn current_provider(&self) -> Arc<dyn Provider> {
-        self.provider.read().expect("InnerLoopRunner provider lock poisoned").clone()
+    pub fn new() -> Arc<dyn SubagentRunner> {
+        Arc::new(Self)
     }
 
     fn run_inner(
@@ -87,13 +80,19 @@ impl InnerLoopRunner {
         invocation: &AgentInvocation,
     ) -> Result<Value, RunnerError> {
         let started = std::time::Instant::now();
+        let snap = crate::state::dispatch::snapshot().ok_or_else(|| {
+            RunnerError::Internal(
+                "dispatch snapshot not installed — the binary did not call `state::dispatch::install` at startup".into(),
+            )
+        })?;
         let model = crate::models::agents::resolve_agent_model(
             invocation.model.as_deref(),
             definition.model.as_deref(),
-            &self.default_model,
+            &snap.model,
         );
 
-        let provider = self.current_provider();
+        let provider = snap.provider.clone();
+        let thinking = snap.thinking;
         tracing::info!(
             target: "otherside::dispatch",
             provider = provider.id(),
@@ -152,7 +151,7 @@ impl InnerLoopRunner {
         let subagent_tools = subagent_openai_tools(&definition.tools);
         let loop_ = AgentLoop {
             model: model.clone(),
-            thinking: None,
+            thinking,
             max_turns: SUBAGENT_MAX_TURNS,
             tools: subagent_tools,
             tool_choice: None,
@@ -227,13 +226,6 @@ impl SubagentRunner for InnerLoopRunner {
         invocation: &AgentInvocation,
     ) -> Result<Value, RunnerError> {
         self.run_inner(definition, prompt, depth, invocation)
-    }
-
-    fn update_provider(&self, provider: Arc<dyn Provider>) {
-        *self
-            .provider
-            .write()
-            .expect("InnerLoopRunner provider lock poisoned") = provider;
     }
 }
 

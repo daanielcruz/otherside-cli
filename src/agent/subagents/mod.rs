@@ -44,12 +44,6 @@ pub trait SubagentRunner: Send + Sync {
         depth: u32,
         invocation: &AgentInvocation,
     ) -> Result<Value, RunnerError>;
-
-    /// Swap the provider the runner will dispatch against. Default no-op so
-    /// test fakes don't need to care; the InnerLoopRunner override keeps
-    /// subagents on the runtime-selected provider after `/provider <slug>`
-    /// instead of the boot-time capture.
-    fn update_provider(&self, _provider: std::sync::Arc<dyn crate::provider::Provider>) {}
 }
 
 pub trait NestedEmitter: Send + Sync {

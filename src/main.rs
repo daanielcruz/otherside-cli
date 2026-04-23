@@ -419,11 +419,18 @@ async fn cmd_tui(cli: &Cli) -> Result<()> {
     let registry = Arc::new(registry);
 
     if let Some(provider) = registry.get(&provider_id) {
+        let (dispatch_model, dispatch_thinking) =
+            otherside::thinking::parse_suffix(&raw_model).unwrap_or((raw_model.clone(), None));
+        let _ = otherside::state::dispatch::install(
+            otherside::state::dispatch::DispatchSnapshot {
+                provider: provider.clone(),
+                model: dispatch_model,
+                thinking: dispatch_thinking,
+            },
+        );
+        let _ = otherside::state::dispatch::install_registry(registry.clone());
         let _ = otherside::agent::subagents::install_runner(
-            otherside::agent::subagents::InnerLoopRunner::new(
-                provider.clone(),
-                raw_model.clone(),
-            ),
+            otherside::agent::subagents::InnerLoopRunner::new(),
         );
     }
 

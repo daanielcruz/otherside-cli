@@ -369,9 +369,15 @@ async fn event_loop(
         tracing::warn!(?e, "initial settings write failed");
     }
 
+    st.session.thinking = thinking;
     st.session.effort_label = thinking
         .as_ref()
         .and_then(crate::thinking::label_from_thinking);
+    // Align dispatch snapshot with the finalized boot state (settings may
+    // have promoted a `None` into an effort level; main.rs installed
+    // against `raw_model` suffix only).
+    crate::state::dispatch::set_model(st.session.model.clone());
+    crate::state::dispatch::set_thinking(thinking);
     let mut key_stream = EventStream::new();
 
     let mut ticker = tokio::time::interval(Duration::from_millis(50));
@@ -418,7 +424,7 @@ async fn event_loop(
                 }
 
                 let _ = auto_trigger_pending_notifications(
-                    &mut st, &registry, &base_model, &thinking, &tx,
+                    &mut st, &registry, &base_model, &tx,
                 );
             }
 
@@ -487,13 +493,13 @@ async fn event_loop(
                         st.finish_stream();
 
                         drain_pending_inputs(
-                            &mut st, &registry, &base_model, &thinking, &tx,
+                            &mut st, &registry, &base_model, &tx,
                         );
                     }
                     Some(StreamEvent::Error(e)) => {
                         st.fail_stream(e);
                         drain_pending_inputs(
-                            &mut st, &registry, &base_model, &thinking, &tx,
+                            &mut st, &registry, &base_model, &tx,
                         );
                     }
                     Some(StreamEvent::ToolCallStart { id, name, args }) => {
@@ -630,7 +636,7 @@ async fn event_loop(
                             state::DisplayOrigin::Transcript,
                         );
                         drain_pending_inputs(
-                            &mut st, &registry, &base_model, &thinking, &tx,
+                            &mut st, &registry, &base_model, &tx,
                         );
                     }
                     Some(StreamEvent::CompactFailed { message }) => {
@@ -642,7 +648,7 @@ async fn event_loop(
                         if st.streaming {
                             st.finish_stream();
                             drain_queue_head_if_any(
-                                &mut st, &registry, &base_model, &thinking, &tx,
+                                &mut st, &registry, &base_model, &tx,
                             );
                         }
                     }
@@ -652,7 +658,7 @@ async fn event_loop(
             maybe = key_stream.next() => {
                 match maybe {
                     Some(Ok(CtEvent::Key(k))) => {
-                        if handle_key(k, &mut st, &registry, &base_model, &mut thinking, &tx) {
+                        if handle_key(k, &mut st, &registry, &base_model, &tx) {
                             break;
                         }
                     }
@@ -690,7 +696,6 @@ fn handle_key(
     st: &mut ConversationState,
     registry: &Arc<Registry>,
     base_model: &str,
-    thinking: &mut Option<ThinkingConfig>,
     tx: &mpsc::Sender<StreamEvent>,
 ) -> bool {
 
@@ -719,7 +724,7 @@ fn handle_key(
     }
 
     if st.active_menu.is_some() {
-        return handle_menu_key(k, st, registry, thinking);
+        return handle_menu_key(k, st);
     }
 
     let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
@@ -915,7 +920,6 @@ fn handle_key(
                     st,
                     registry,
                     base_model,
-                    thinking,
                     tx,
                 ) {
                     return true;
@@ -949,8 +953,6 @@ fn handle_key(
 fn handle_menu_key(
     k: KeyEvent,
     st: &mut ConversationState,
-    registry: &Arc<Registry>,
-    thinking: &mut Option<ThinkingConfig>,
 ) -> bool {
     use crate::tui::slash::catalog::PanelKind;
     if matches!(k.code, KeyCode::Esc) {
@@ -1132,7 +1134,7 @@ fn handle_menu_key(
     }
 
     if matches!(menu_state.kind, PanelKind::Model) {
-        return handle_model_panel_key(k, st, registry);
+        return handle_model_panel_key(k, st);
     }
     match k.code {
         KeyCode::Up => menu_state.move_up(),
@@ -1144,7 +1146,7 @@ fn handle_menu_key(
             let menu = st.active_menu.take().expect("active_menu present");
             emit_panel_dismiss_anchor(st, &menu, outcome.as_ref());
             if let Some(outcome) = outcome {
-                return apply_menu_outcome(st, thinking, outcome);
+                return apply_menu_outcome(st, outcome);
             }
         }
         _ => {}
@@ -1165,7 +1167,6 @@ fn handle_menu_key(
 fn handle_model_panel_key(
     k: KeyEvent,
     st: &mut ConversationState,
-    registry: &Arc<Registry>,
 ) -> bool {
     use crate::config::providers::PROVIDER_ORDER;
     use crate::tui::menu::ModelTabRow;
@@ -1230,14 +1231,11 @@ fn handle_model_panel_key(
                         let new_model = (*raw_id).to_string();
                         if let Err(e) = crate::state::broker::set_active_provider(
                             st,
-                            Some(registry),
                             provider,
                         ) {
                             tracing::warn!(?e, "/model commit: provider switch failed");
                         }
-                        st.switch_model(&new_model);
-                        st.persistence.settings.default_model = Some(new_model.clone());
-                        if let Err(e) = persist_session_defaults(st) {
+                        if let Err(e) = crate::state::broker::set_active_model(st, &new_model) {
                             tracing::warn!(?e, "/model commit: model flush failed");
                         }
                         if let Some(menu) = st.active_menu.take() {
@@ -1349,7 +1347,7 @@ fn edit_settings_row(st: &mut ConversationState, direction: i32) {
         SettingsRowKind::Provider => {
             let current = st.provider_id;
             let next = providers::cycle(current, dir);
-            if let Err(e) = crate::state::broker::set_active_provider(st, None, next) {
+            if let Err(e) = crate::state::broker::set_active_provider(st, next) {
                 tracing::warn!(?e, "/config provider cycle: broker commit failed");
             }
         }
@@ -1366,25 +1364,23 @@ fn edit_settings_row(st: &mut ConversationState, direction: i32) {
             let n = list.len() as i32;
             let next_idx = (((idx as i32) + dir).rem_euclid(n)) as usize;
             let next_model = list[next_idx].id;
-            st.switch_model(next_model);
-            st.persistence.settings.default_model = Some(next_model.to_string());
+            if let Err(e) = crate::state::broker::set_active_model(st, next_model) {
+                tracing::warn!(?e, "/config model cycle: broker write failed");
+            }
             // Effort reset when the new model doesn't support the current
             // effort label (e.g. cycling from kimi-for-coding `on` to a
-            // haiku row which exposes `low/medium/high`). Mirrors the
-            // `apply_model_outcome` contract that was dead since SetModel
-            // stopped being emitted.
+            // haiku row which exposes `low/medium/high`).
             let current_effort = st.session.effort_label.unwrap_or("auto");
             if !crate::models::catalog::supports_effort(next_model, current_effort) {
                 let next_effort = crate::models::catalog::default_effort_for(next_model);
-                if next_effort == "auto" {
-                    st.session.effort_label = None;
-                } else {
-                    st.session.effort_label = Some(next_effort);
+                let thinking = crate::thinking::config_from_effort_label(next_effort);
+                if let Err(e) = crate::state::broker::set_effort(
+                    st,
+                    thinking,
+                    Some(next_effort.to_string()),
+                ) {
+                    tracing::warn!(?e, "/config model cycle: effort reset failed");
                 }
-                st.persistence.settings.effort_level = Some(next_effort.to_string());
-            }
-            if let Err(e) = persist_session_defaults(st) {
-                tracing::warn!(?e, "/config model cycle: settings flush failed");
             }
         }
         SettingsRowKind::PermissionMode => {
@@ -1413,10 +1409,14 @@ fn edit_settings_row(st: &mut ConversationState, direction: i32) {
             let idx = levels.iter().position(|l| *l == current).unwrap_or(0);
             let n = levels.len() as i32;
             let next_idx = (((idx as i32) + dir).rem_euclid(n)) as usize;
-            st.session.effort_label = Some(levels[next_idx]);
-            st.persistence.settings.effort_level = Some(levels[next_idx].to_string());
-            if let Err(e) = persist_session_defaults(st) {
-                tracing::warn!(?e, "/config effort cycle: settings flush failed");
+            let next_level = levels[next_idx];
+            let thinking = crate::thinking::config_from_effort_label(next_level);
+            if let Err(e) = crate::state::broker::set_effort(
+                st,
+                thinking,
+                Some(next_level.to_string()),
+            ) {
+                tracing::warn!(?e, "/config effort cycle: broker write failed");
             }
         }
         SettingsRowKind::Bool(id) => {
@@ -1777,12 +1777,11 @@ fn session_rule_for(tool_name: &str, args_preview: &str) -> String {
 
 fn apply_menu_outcome(
     st: &mut ConversationState,
-    thinking: &mut Option<ThinkingConfig>,
     outcome: menu::OverlayMenuOutcome,
 ) -> bool {
     match outcome {
         menu::OverlayMenuOutcome::SetEffort { action_id, label } => {
-            apply_effort_outcome(st, thinking, &action_id, &label);
+            apply_effort_outcome(st, &action_id, &label);
         }
         menu::OverlayMenuOutcome::SetPermissionMode { action_id } => {
             apply_permission_outcome(st, &action_id);
@@ -1808,27 +1807,28 @@ fn apply_permission_outcome(st: &mut ConversationState, action_id: &str) {
 
 fn apply_effort_outcome(
     st: &mut ConversationState,
-    thinking: &mut Option<ThinkingConfig>,
     action_id: &str,
     label: &str,
 ) {
     use crate::thinking::ThinkingLevel;
     use std::str::FromStr;
     if action_id.eq_ignore_ascii_case("auto") {
-        *thinking = Some(ThinkingConfig::auto());
-        st.session.effort_label = None;
-        st.persistence.settings.effort_level = Some("auto".to_string());
-        if let Err(e) = persist_session_defaults(st) {
+        if let Err(e) = crate::state::broker::set_effort(
+            st,
+            Some(ThinkingConfig::auto()),
+            Some("auto".to_string()),
+        ) {
             st.push_system_note(format!("settings write failed: {e}"));
         }
         return;
     }
     match ThinkingLevel::from_str(action_id) {
         Ok(level) => {
-            *thinking = Some(ThinkingConfig::level(level));
-            st.session.effort_label = Some(level.as_label());
-            st.persistence.settings.effort_level = Some(action_id.to_string());
-            if let Err(e) = persist_session_defaults(st) {
+            if let Err(e) = crate::state::broker::set_effort(
+                st,
+                Some(ThinkingConfig::level(level)),
+                Some(action_id.to_string()),
+            ) {
                 st.push_system_note(format!("settings write failed: {e}"));
             }
         }
@@ -1843,7 +1843,6 @@ fn spawn_agent_turn(
     st: &mut ConversationState,
     registry: &Arc<Registry>,
     _base_model: &str,
-    thinking: &Option<ThinkingConfig>,
     tx: &mpsc::Sender<StreamEvent>,
     history: Vec<crate::inference::OpenAiChatMessage>,
 ) {
@@ -1866,7 +1865,7 @@ fn spawn_agent_turn(
         return;
     };
 
-    let thinking = *thinking;
+    let thinking = st.session.thinking;
     let tx = tx.clone();
 
     let model = st.session.model.clone();
@@ -1927,16 +1926,15 @@ fn drain_pending_inputs(
     st: &mut ConversationState,
     registry: &Arc<Registry>,
     base_model: &str,
-    thinking: &Option<ThinkingConfig>,
     tx: &mpsc::Sender<StreamEvent>,
 ) -> bool {
-    if auto_fire_compact_if_needed(st, registry, base_model, thinking, tx) {
+    if auto_fire_compact_if_needed(st, registry, base_model, tx) {
         return true;
     }
-    if drain_queue_head_if_any(st, registry, base_model, thinking, tx) {
+    if drain_queue_head_if_any(st, registry, base_model, tx) {
         return true;
     }
-    auto_trigger_pending_notifications(st, registry, base_model, thinking, tx)
+    auto_trigger_pending_notifications(st, registry, base_model, tx)
 }
 
 /// Mirrors upstream `autoCompactIfNeeded` gate (minus rapid-refill + failure
@@ -1947,7 +1945,6 @@ fn auto_fire_compact_if_needed(
     st: &mut ConversationState,
     registry: &Arc<Registry>,
     base_model: &str,
-    thinking: &Option<ThinkingConfig>,
     tx: &mpsc::Sender<StreamEvent>,
 ) -> bool {
     if st.streaming {
@@ -1977,7 +1974,7 @@ fn auto_fire_compact_if_needed(
         threshold,
         "auto-fire: crossing auto-compact threshold, dispatching silent summary turn"
     );
-    spawn_compact_turn(st, registry, base_model, thinking, tx, "", true);
+    spawn_compact_turn(st, registry, base_model, tx, "", true);
     true
 }
 
@@ -1985,7 +1982,6 @@ fn auto_trigger_pending_notifications(
     st: &mut ConversationState,
     registry: &Arc<Registry>,
     base_model: &str,
-    thinking: &Option<ThinkingConfig>,
     tx: &mpsc::Sender<StreamEvent>,
 ) -> bool {
     if st.streaming {
@@ -2008,7 +2004,7 @@ fn auto_trigger_pending_notifications(
         history_len = history.len(),
         "auto-trigger: notifications drained, dispatching synthetic turn"
     );
-    spawn_agent_turn(st, registry, base_model, thinking, tx, history);
+    spawn_agent_turn(st, registry, base_model, tx, history);
     true
 }
 
@@ -2016,7 +2012,6 @@ fn drain_queue_head_if_any(
     st: &mut ConversationState,
     registry: &Arc<Registry>,
     base_model: &str,
-    thinking: &Option<ThinkingConfig>,
     tx: &mpsc::Sender<StreamEvent>,
 ) -> bool {
     tracing::info!(
@@ -2036,7 +2031,7 @@ fn drain_queue_head_if_any(
         "queue head consumed; dispatching"
     );
 
-    let exit_signal = dispatch_slash(st, registry, base_model, thinking, tx);
+    let exit_signal = dispatch_slash(st, registry, base_model, tx);
     tracing::info!(
         target: "otherside::queue",
         exit_signal,
@@ -2054,7 +2049,6 @@ fn dispatch_slash(
     st: &mut ConversationState,
     registry: &Arc<Registry>,
     base_model: &str,
-    thinking: &Option<ThinkingConfig>,
     tx: &mpsc::Sender<StreamEvent>,
 ) -> bool {
     let action = slash::classify(&st.input);
@@ -2069,7 +2063,7 @@ fn dispatch_slash(
             slash::skill::handle(&name, &args, st)
         }
         slash::SlashAction::Anchor { name, args } if name == "compact" => {
-            spawn_compact_turn(st, registry, base_model, thinking, tx, &args, false);
+            spawn_compact_turn(st, registry, base_model, tx, &args, false);
             slash::SlashOutcome::Handled
         }
         slash::SlashAction::Anchor { name, args } => {
@@ -2089,7 +2083,7 @@ fn dispatch_slash(
             slash::SlashOutcome::Handled
         }
         slash::SlashAction::Passthrough => {
-            submit_current_input(st, registry, base_model, thinking, tx);
+            submit_current_input(st, registry, base_model, tx);
             return false;
         }
     };
@@ -2117,7 +2111,7 @@ fn dispatch_slash(
             };
             st.pending_wire_override = Some(body);
             st.input = echo;
-            submit_current_input(st, registry, base_model, thinking, tx);
+            submit_current_input(st, registry, base_model, tx);
             false
         }
     }
@@ -2127,7 +2121,6 @@ fn submit_current_input(
     st: &mut ConversationState,
     registry: &Arc<Registry>,
     base_model: &str,
-    thinking: &Option<ThinkingConfig>,
     tx: &mpsc::Sender<StreamEvent>,
 ) {
     let submitted_text = st.input.clone();
@@ -2138,7 +2131,7 @@ fn submit_current_input(
             provider: Some(st.provider_id.slug().to_string()),
             model: Some(st.session.model.clone()),
         });
-        spawn_agent_turn(st, registry, base_model, thinking, tx, history);
+        spawn_agent_turn(st, registry, base_model, tx, history);
     }
 }
 
@@ -2146,7 +2139,6 @@ fn spawn_compact_turn(
     st: &mut ConversationState,
     registry: &Arc<Registry>,
     base_model: &str,
-    thinking: &Option<ThinkingConfig>,
     tx: &mpsc::Sender<StreamEvent>,
     custom_instructions: &str,
     is_auto: bool,
@@ -2175,7 +2167,7 @@ fn spawn_compact_turn(
     });
 
     let model = base_model.to_string();
-    let thinking_cfg = *thinking;
+    let thinking_cfg = st.session.thinking;
     let tx = tx.clone();
     let custom = {
         let trimmed = custom_instructions.trim();
@@ -2797,11 +2789,22 @@ mod settings_edit_tests {
         if let Some(m) = st.active_menu.as_mut() {
             focus_row(m, "Effort");
         }
-        const EXPECTED: &[&str] = &["low", "medium", "high", "xhigh", "max", "auto"];
+        // Broker stores `None` for auto/none (label_from_thinking rule); the
+        // persistence mirror keeps the literal "auto" for round-trip. UI
+        // surfaces display `effort_label.unwrap_or("auto")`.
+        const EXPECTED: &[Option<&str>] = &[
+            Some("low"),
+            Some("medium"),
+            Some("high"),
+            Some("xhigh"),
+            Some("max"),
+            None,
+        ];
         for want in EXPECTED {
             edit_settings_row(&mut st, 1);
-            assert_eq!(st.session.effort_label, Some(*want));
+            assert_eq!(st.session.effort_label, *want);
         }
+        assert_eq!(st.persistence.settings.effort_level.as_deref(), Some("auto"));
     }
 
     #[test]
