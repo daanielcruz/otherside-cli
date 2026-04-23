@@ -740,27 +740,15 @@ fn handle_key(
         if let Some(action) = kb_dispatch(&k, &pred_ctx) {
             match action {
                 Action::TaskBackground => {
-                    // Upstream binds `chat:taskBackground` to Ctrl+B Ctrl+B
-                    // (doubled) — a single press arms, a second press within
-                    // `CTRL_B_DOUBLE_TAP_WINDOW_MS` backgrounds. Prevents
-                    // fat-finger flip while typing.
-                    use std::time::Instant;
-                    let now = Instant::now();
-                    let armed = match st.ctrl_b_armed_at {
-                        Some(at) => {
-                            now.duration_since(at).as_millis()
-                                < crate::tui::state::CTRL_B_DOUBLE_TAP_WINDOW_MS
-                        }
-                        None => false,
-                    };
-                    if armed {
-                        st.ctrl_b_armed_at = None;
-                        let _ = st.tasks.background_all_running_foreground();
-                        let _ = crate::tools::background_signal::signal_all();
-                    } else {
-                        st.ctrl_b_armed_at = Some(now);
-                        st.set_feedback("press Ctrl+B again to background");
-                    }
+                    // Upstream binds `task:background` directly to Ctrl+B
+                    // (single press) — see `reconstructed/2.1.117/source/
+                    // keybindings/defaultBindings.ts:200` + `BashTool/UI.tsx:46`.
+                    // The previous double-tap arming was a misread of upstream
+                    // and forced the user to press Ctrl+B twice (user bug
+                    // 2026-04-23). Single press fires immediately now.
+                    st.ctrl_b_armed_at = None;
+                    let _ = st.tasks.background_all_running_foreground();
+                    let _ = crate::tools::background_signal::signal_all();
                     return false;
                 }
                 Action::OpenBackgroundTasksDialog => {
