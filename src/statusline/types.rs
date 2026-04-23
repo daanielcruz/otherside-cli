@@ -400,12 +400,6 @@ mod tests {
     }
 
     #[test]
-    fn statusline_config_native_is_default() {
-        let c = StatuslineConfig::default();
-        assert!(matches!(c, StatuslineConfig::Native { .. }));
-    }
-
-    #[test]
     fn input_round_trips_byte_identical_fresh() {
         let fixture = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),

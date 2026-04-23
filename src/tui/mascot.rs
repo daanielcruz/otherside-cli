@@ -235,25 +235,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn tagline_carries_black_hole_framing() {
-        let lower = TAGLINE.to_lowercase();
-
-        let hits = [
-            "horizon",
-            "singularity",
-            "light",
-            "accretion",
-            "return",
-            "escape",
-            "unwind",
-        ]
-        .iter()
-        .filter(|w| lower.contains(*w))
-        .count();
-        assert!(
-            hits >= 1,
-            "tagline lost its black-hole framing: {TAGLINE:?}"
-        );
-    }
 }

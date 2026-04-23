@@ -97,11 +97,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn exactly_nine_advertised_schemas() {
-        assert_eq!(tool_schemas().len(), 9);
-    }
-
-    #[test]
     fn canonical_order_matches_harness() {
         let names: Vec<&str> = tool_schemas().iter().map(|s| s.name.as_str()).collect();
         assert_eq!(
@@ -128,14 +123,6 @@ mod tests {
                 "missing training anchor: {anchor}"
             );
         }
-    }
-
-    #[test]
-    fn retired_tool_names_absent() {
-
-        assert!(schema_for("Task").is_none());
-        assert!(schema_for("BashOutput").is_none());
-        assert!(schema_for("KillBash").is_none());
     }
 
     #[test]

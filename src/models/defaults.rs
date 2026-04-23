@@ -53,61 +53,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn claude_code_defaults_to_opus_1m() {
-        assert_eq!(default_model_for(ProviderId::ClaudeCode), "claude-opus-4-7[1m]");
-    }
-
-    #[test]
-    fn codex_defaults_to_gpt54() {
-        assert_eq!(default_model_for(ProviderId::Codex), "gpt-5.4");
-    }
-
-    #[test]
-    fn gemini_defaults_to_3_1_pro_preview() {
-        assert_eq!(default_model_for(ProviderId::GeminiCli), "gemini-3.1-pro-preview");
-    }
-
-    #[test]
-    fn kimi_defaults_to_for_coding() {
-        assert_eq!(default_model_for(ProviderId::Kimi), "kimi-for-coding");
-    }
-
-    #[test]
-    fn openai_custom_is_empty() {
-        assert_eq!(default_model_for(ProviderId::OpenAiCustom), "");
-    }
-
-    #[test]
-    fn ant_internal_gets_opus_1m() {
-        assert_eq!(
-            default_claude_code_for_tier(SubscriptionTier::AntInternal),
-            "claude-opus-4-7[1m]"
-        );
-    }
-
-    #[test]
-    fn max_gets_opus_1m() {
-        assert_eq!(
-            default_claude_code_for_tier(SubscriptionTier::Max),
-            "claude-opus-4-7[1m]"
-        );
-    }
-
-    #[test]
-    fn team_premium_gets_opus_1m() {
-        assert_eq!(
-            default_claude_code_for_tier(SubscriptionTier::TeamPremium),
-            "claude-opus-4-7[1m]"
-        );
-    }
-
-    #[test]
-    fn non_premium_gets_non_1m_opus() {
-
-        assert_eq!(
-            default_claude_code_for_tier(SubscriptionTier::NonPremium),
-            "claude-opus-4-7"
-        );
+    fn claude_code_tier_mapping_covers_all_variants() {
+        // Single table-driven replacement for the four per-tier asserts
+        // and the four per-provider asserts on `default_model_for` (those
+        // are already locked upstream by
+        // `config::providers::default_model_mapping_matches_spec_table`).
+        let cases = [
+            (SubscriptionTier::AntInternal, "claude-opus-4-7[1m]"),
+            (SubscriptionTier::Max, "claude-opus-4-7[1m]"),
+            (SubscriptionTier::TeamPremium, "claude-opus-4-7[1m]"),
+            (SubscriptionTier::NonPremium, "claude-opus-4-7"),
+        ];
+        for (tier, expected) in cases {
+            assert_eq!(
+                default_claude_code_for_tier(tier),
+                expected,
+                "tier {tier:?}",
+            );
+        }
     }
 
     #[test]

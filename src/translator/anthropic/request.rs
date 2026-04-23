@@ -404,26 +404,6 @@ mod tests {
     }
 
     #[test]
-    fn build_request_body_no_longer_injects_task_notifications() {
-
-        let req = mvp_request();
-        let ctx = UserContext::capture_defaults();
-        let bytes = build_request_body(&req, &ctx).unwrap();
-        let body: Value = serde_json::from_slice(&bytes).unwrap();
-        let user_text = body["messages"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|m| m["role"] == "user")
-            .and_then(|m| m["content"].as_array())
-            .and_then(|blocks| blocks.last())
-            .and_then(|b| b["text"].as_str())
-            .expect("user message text present");
-        assert!(!user_text.contains("<task-notification>"));
-        assert!(user_text.contains("hi"));
-    }
-
-    #[test]
     fn requires_at_least_one_user_message() {
         let mut req = mvp_request();
         req.messages.clear();

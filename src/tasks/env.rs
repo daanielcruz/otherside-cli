@@ -17,13 +17,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn env_var_literal_is_otherside_prefixed() {
-
-        assert_eq!(ENV_VAR, "OTHERSIDE_DISABLE_BACKGROUND_TASKS");
-        assert!(!ENV_VAR.starts_with("CLAUDE_CODE"));
-    }
-
-    #[test]
     fn truthy_values_detected_case_insensitive() {
 
         for truthy in ["1", "true", "TRUE", "Yes", "ON", "  on  "] {

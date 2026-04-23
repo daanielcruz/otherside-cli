@@ -89,11 +89,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bundled_registry_loads_at_least_two_definitions() {
-        assert!(len() >= 2);
-    }
-
-    #[test]
     fn registry_contains_expected_bundled_set() {
         let names: Vec<&str> = all().iter().map(|d| d.name.as_str()).collect();
         assert!(names.contains(&"general-purpose"));

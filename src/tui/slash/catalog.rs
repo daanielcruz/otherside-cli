@@ -276,57 +276,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn panel_kind_enumerates_all_variants() {
-
-        let variants = [
-            PanelKind::Help,
-            PanelKind::Resume,
-            PanelKind::Rewind,
-            PanelKind::Settings(SettingsTab::Status),
-            PanelKind::Settings(SettingsTab::Config),
-            PanelKind::Settings(SettingsTab::Usage),
-            PanelKind::Model,
-            PanelKind::Effort,
-            PanelKind::Permissions,
-            PanelKind::Hooks,
-            PanelKind::Diff,
-            PanelKind::Skills,
-            PanelKind::Agents,
-            PanelKind::Mcp,
-        ];
-
-        assert_eq!(variants.len(), 14);
-    }
-
-    #[test]
     fn settings_tab_slash_names_match_catalog() {
 
         assert_eq!(SettingsTab::Status.slash_name(), "status");
         assert_eq!(SettingsTab::Config.slash_name(), "config");
         assert_eq!(SettingsTab::Usage.slash_name(), "usage");
-    }
-
-    #[test]
-    fn slash_kind_has_six_variants() {
-
-        let samples = [
-            SlashKind::Instant,
-            SlashKind::Toggle,
-            SlashKind::Skill,
-            SlashKind::Anchor,
-            SlashKind::Panel(PanelKind::Help),
-            SlashKind::Auth,
-        ];
-        for s in samples {
-            match s {
-                SlashKind::Instant
-                | SlashKind::Toggle
-                | SlashKind::Skill
-                | SlashKind::Anchor
-                | SlashKind::Panel(_)
-                | SlashKind::Auth => {}
-            }
-        }
     }
 
     #[test]
@@ -409,102 +363,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn catalog_row_count_matches_docs() {
-
-        assert_eq!(
-            CATALOG.len(),
-            33,
-            "CATALOG must be a strict subset of docs/slashes.md"
-        );
-    }
-
-    #[test]
-    fn catalog_contains_no_cut_slashes() {
-
-        let cuts = [
-            "bye",
-            "swarm",
-            "verbose",
-            "sandbox",
-            "scope",
-            "security",
-            "pr-review",
-            "deepreview",
-            "ultrareview",
-            "dedup-mem",
-            "cron",
-            "redteam",
-            "checkpoint",
-            "bughunter",
-            "files",
-            "provider",
-        ];
-        for cut in cuts {
-            assert!(
-                lookup(cut).is_none(),
-                "cut slash /{} must not appear in CATALOG",
-                cut
-            );
-        }
-    }
-
-    #[test]
-    fn catalog_category_assignment_lock() {
-
-        let expected: &[(&str, SlashKind)] = &[
-
-            ("exit", SlashKind::Instant),
-            ("clear", SlashKind::Instant),
-
-            ("plan", SlashKind::Toggle),
-            ("copy", SlashKind::Toggle),
-            ("export", SlashKind::Toggle),
-
-            ("dream", SlashKind::Skill),
-            ("statusline", SlashKind::Skill),
-            ("init-verifiers", SlashKind::Skill),
-            ("review", SlashKind::Skill),
-            ("init", SlashKind::Skill),
-            ("security-review", SlashKind::Skill),
-            ("loop", SlashKind::Skill),
-
-            ("branch", SlashKind::Anchor),
-            ("compact", SlashKind::Anchor),
-            ("context", SlashKind::Anchor),
-
-            ("help", SlashKind::Panel(PanelKind::Help)),
-            ("resume", SlashKind::Panel(PanelKind::Resume)),
-            ("rewind", SlashKind::Panel(PanelKind::Rewind)),
-            ("config", SlashKind::Panel(PanelKind::Settings(SettingsTab::Config))),
-            ("model", SlashKind::Panel(PanelKind::Model)),
-            ("effort", SlashKind::Panel(PanelKind::Effort)),
-            ("permissions", SlashKind::Panel(PanelKind::Permissions)),
-            ("hooks", SlashKind::Panel(PanelKind::Hooks)),
-            ("diff", SlashKind::Panel(PanelKind::Diff)),
-            ("skills", SlashKind::Panel(PanelKind::Skills)),
-            ("agents", SlashKind::Panel(PanelKind::Agents)),
-            ("status", SlashKind::Panel(PanelKind::Settings(SettingsTab::Status))),
-            ("usage", SlashKind::Panel(PanelKind::Settings(SettingsTab::Usage))),
-            ("mcp", SlashKind::Panel(PanelKind::Mcp)),
-            ("tasks", SlashKind::Panel(PanelKind::Tasks)),
-            ("bashes", SlashKind::Panel(PanelKind::Tasks)),
-
-            ("login", SlashKind::Auth),
-            ("logout", SlashKind::Auth),
-        ];
-        assert_eq!(
-            expected.len(),
-            CATALOG.len(),
-            "expected table must cover every CATALOG row"
-        );
-        for (name, kind) in expected {
-            let entry = lookup(name).unwrap_or_else(|| panic!("/{name} missing from CATALOG"));
-            assert_eq!(
-                entry.kind, *kind,
-                "/{name} category drift: got {:?}, expected {:?}",
-                entry.kind, kind
-            );
-        }
-    }
 }

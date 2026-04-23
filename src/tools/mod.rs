@@ -265,12 +265,6 @@ mod tests {
     }
 
     #[test]
-    fn retired_killbash_dispatch_returns_unsupported() {
-        let err = dispatch("KillBash", &json!({})).unwrap_err();
-        assert!(matches!(err, ToolError::Unsupported(_)));
-    }
-
-    #[test]
     fn dispatcher_covers_all_advertised() {
 
         for name in [

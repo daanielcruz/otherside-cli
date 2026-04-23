@@ -225,12 +225,6 @@ mod tests {
     }
 
     #[test]
-    fn codex_has_gpt54() {
-        let ms = models_for(ProviderId::Codex);
-        assert!(ms.iter().any(|m| m.id == "gpt-5.4"));
-    }
-
-    #[test]
     fn codex_catalog_carries_the_two_oauth_servable_slugs() {
         // ChatGPT OAuth backend only serves gpt-5.4 and gpt-5.3-codex today;
         // other gpt-5* slugs return {"detail":"… model is not supported

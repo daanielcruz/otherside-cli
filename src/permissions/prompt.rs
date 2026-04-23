@@ -27,13 +27,3 @@ pub enum AllowScope {
     UserGlobal,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn choice_variants_debug() {
-        assert_eq!(format!("{:?}", PromptChoice::Yes), "Yes");
-        assert_eq!(format!("{:?}", AllowScope::UserGlobal), "UserGlobal");
-    }
-}

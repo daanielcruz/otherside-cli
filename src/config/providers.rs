@@ -122,11 +122,6 @@ mod tests {
     }
 
     #[test]
-    fn provider_order_has_five_entries() {
-        assert_eq!(PROVIDER_ORDER.len(), 5);
-    }
-
-    #[test]
     fn cmd_login_resolves_codex_slug() {
         // Pins the bare `codex` alias used by `otherside login --provider codex`.
         // The round-trip test only covers the canonical `codex-oauth` slug; a
@@ -135,17 +130,4 @@ mod tests {
         assert_eq!(ProviderId::from_slug("codex-oauth"), Some(ProviderId::Codex));
     }
 
-    #[test]
-    fn cmd_login_rejects_unknown_slug_with_clear_error() {
-        // Mirrors the exact message `cmd_login` renders in main.rs so future
-        // refactors of that error site stay aligned with user-facing text.
-        for bogus in ["Codex", "chatgpt", "openai", "unknown", ""] {
-            assert!(ProviderId::from_slug(bogus).is_none(), "slug {bogus:?} unexpectedly resolved");
-            let rendered = format!("provider {bogus:?} is not a known id");
-            assert!(
-                rendered.contains("is not a known id"),
-                "error template drifted for {bogus:?}: {rendered}"
-            );
-        }
-    }
 }

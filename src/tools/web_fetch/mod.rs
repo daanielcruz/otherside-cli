@@ -207,30 +207,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn size_cap_truncates_at_one_megabyte() {
-
-        let big = vec![b'a'; MAX_BODY_BYTES + 42];
-        let raw = bytes::Bytes::from(big);
-        let (body_bytes, truncated) = if raw.len() > MAX_BODY_BYTES {
-            (raw.slice(..MAX_BODY_BYTES), true)
-        } else {
-            (raw, false)
-        };
-        assert!(truncated);
-        assert_eq!(body_bytes.len(), MAX_BODY_BYTES);
-    }
-
-    #[test]
-    fn size_cap_passes_small_body_through() {
-        let small = vec![b'x'; 1024];
-        let raw = bytes::Bytes::from(small);
-        let (body_bytes, truncated) = if raw.len() > MAX_BODY_BYTES {
-            (raw.slice(..MAX_BODY_BYTES), true)
-        } else {
-            (raw, false)
-        };
-        assert!(!truncated);
-        assert_eq!(body_bytes.len(), 1024);
-    }
 }

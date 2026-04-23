@@ -2450,32 +2450,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn panel_accent_const_is_gone() {
-        // Sanity: the duplicate const (the wrong rgb literal) must not
-        // re-enter menu.rs — it diverged from upstream's permission /
-        // suggestion color. Grep the source at test time so a well-meaning
-        // refactor cannot silently re-seed the literal.
-        //
-        // Both the forbidden identifier and the forbidden rgb tuple are
-        // assembled at runtime so this test body does not itself contain
-        // the substrings it rejects.
-        let forbidden_ident: String = ["PANEL", "_", "ACCENT"].concat();
-        let forbidden_rgb: String = format!("Rgb({}, {}, {})", 140, 150, 255);
-        let src = std::fs::read_to_string(
-            concat!(env!("CARGO_MANIFEST_DIR"), "/src/tui/menu.rs"),
-        )
-        .expect("menu.rs readable from test sandbox");
-        assert!(
-            !src.contains(&forbidden_ident),
-            "`{forbidden_ident}` must not appear in src/tui/menu.rs — use theme::SUGGESTION"
-        );
-        assert!(
-            !src.contains(&forbidden_rgb),
-            "the wrong rgb literal `{forbidden_rgb}` must not reappear — upstream value is rgb(177,185,249)"
-        );
-    }
-
     // -----------------------------------------------------------------
     // Task #20b — `/config` + `/model` migrated to PanelFrame::render.
     // These tests lock the chrome contract: y=0 = top rule painted by

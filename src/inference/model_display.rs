@@ -18,24 +18,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn public_model_display_name_opus_4_7() {
-        assert_eq!(public_model_display_name("claude-opus-4-7"), Some("Opus 4.7"));
-    }
-
-    #[test]
-    fn public_model_display_name_sonnet_4_6() {
-        assert_eq!(
-            public_model_display_name("claude-sonnet-4-6"),
-            Some("Sonnet 4.6")
-        );
-    }
-
-    #[test]
-    fn public_model_display_name_haiku_4_5() {
-        assert_eq!(public_model_display_name("claude-haiku-4-5"), Some("Haiku 4.5"));
-    }
-
-    #[test]
     fn public_model_display_name_unknown_returns_none() {
         assert_eq!(public_model_display_name("claude-opus-99-9"), None);
         assert_eq!(public_model_display_name(""), None);

@@ -76,14 +76,4 @@ mod tests {
         assert!(s.contains("missing toolName"));
     }
 
-    #[test]
-    fn scope_kind_equality_works_for_filtering() {
-        let a = ValidationWarning::new(
-            Scope::Policy,
-            WarningKind::IgnoredShadowEnv,
-            "OTHERSIDE_PERMISSION_MODE ignored",
-        );
-        let b = a.clone();
-        assert_eq!(a, b);
-    }
 }
