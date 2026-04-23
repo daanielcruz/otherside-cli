@@ -1085,7 +1085,20 @@ impl ConversationState {
         }
         let count = drained.len();
         for record in drained {
-            let output_path = format!("~/.otherside/tasks/{}.log", record.id.as_str());
+            // Emit the REAL on-disk path so the model can Read it. The
+            // upstream-shape path lives under
+            // `<session_root>/tasks/<agent_id>.output`, mirrored by
+            // `tasks::disk_output::write_task_output` when the session
+            // root is installed. Fallback to the upstream-shape string
+            // when the root isn't installed yet (test / headless).
+            let output_path = record
+                .agent_id
+                .as_deref()
+                .and_then(|aid| crate::tasks::disk_output::task_output_path(aid))
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| {
+                    format!("tasks/{}.output", record.id.as_str())
+                });
             let joined: String = record
                 .output
                 .iter()
@@ -2248,6 +2261,46 @@ mod tests {
         assert!(last.content.contains(id.as_str()));
         assert!(last.content.contains("<tool-use-id>toolu_unit_test"));
         assert!(last.content.contains("<status>completed</status>"));
+    }
+
+    #[test]
+    fn notification_output_file_never_points_at_read_intercepted_path() {
+        // Regression guard for kimi self-report 2026-04-24 — previously we
+        // emitted `~/.otherside/tasks/<task_id>.log` which Read's
+        // hallucinated-path intercept blocks, leaving the model unable to
+        // peek the result. Notification must emit the real disk path (from
+        // `tasks::disk_output::task_output_path`) OR the relative fallback
+        // `tasks/<task_id>.output` — never the intercepted shape.
+        use crate::tasks::{TaskId, TaskRecord, TaskState as TS, TaskStore};
+        let store = TaskStore::new();
+        let id = TaskId::generate();
+        let mut record = TaskRecord::new_agent(
+            id.clone(),
+            "kimi subagent".into(),
+            "do it".into(),
+        );
+        record.state = TS::Completed;
+        record.is_backgrounded = true;
+        record.inject_on_next_turn = true;
+        record.agent_id = Some("a1234567890abcde".into());
+        store.insert(record);
+
+        let mut st = ConversationState::new();
+        st.consume_pending_notifications(&store);
+        let last = st.messages.last().expect("synthetic message present");
+        // The exact path depends on whether disk_output::install_root ran
+        // in this process; either way, it must not contain a path the Read
+        // intercept would block.
+        assert!(
+            !last.content.contains(".otherside/tasks/"),
+            "output-file must not emit an .otherside/tasks/ path — Read intercept would block it; got: {}",
+            last.content,
+        );
+        assert!(
+            !last.content.contains(".claude/tasks/"),
+            "output-file must not emit a .claude/tasks/ path; got: {}",
+            last.content,
+        );
     }
 
     #[test]

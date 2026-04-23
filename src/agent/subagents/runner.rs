@@ -172,13 +172,8 @@ impl InnerLoopRunner {
         .map_err(|e| RunnerError::Internal(format!("inner agent loop: {e}")))?;
 
         let duration_ms = started.elapsed().as_millis() as u64;
-        let assistant_text = loop_result
-            .history
-            .iter()
-            .rev()
-            .find(|m| m.role == OpenAiChatRole::Assistant)
-            .map(|m| m.content.clone())
-            .unwrap_or_default();
+        let assistant_text =
+            resolve_assistant_text(&loop_result.history, loop_result.hit_turn_limit);
         let total_tool_uses: u64 = loop_result
             .history
             .iter()
@@ -249,5 +244,126 @@ impl NestedEmitter for NullEmitter {
     fn on_tool_start(&self, _name: &str, _args: &Value) {}
     fn on_tool_finish(&self, _success: bool) {}
     fn on_usage(&self, _input_tokens: Option<u64>, _output_tokens: Option<u64>) {}
+}
+
+/// Scan backwards for the last assistant turn that produced user-visible
+/// text. A naive `.find(Assistant)` grabs the last turn — which, when the
+/// subagent loop hits the turn budget or ends on a tool_use-only turn, is
+/// an empty string. Empty `<result>` → parent model sees "Agent completed"
+/// with nothing useful (kimi self-report 2026-04-24).
+fn resolve_assistant_text(
+    history: &[OpenAiChatMessage],
+    hit_turn_limit: bool,
+) -> String {
+    if let Some(text) = history
+        .iter()
+        .rev()
+        .filter(|m| m.role == OpenAiChatRole::Assistant)
+        .map(|m| m.content.clone())
+        .find(|c| !c.trim().is_empty())
+    {
+        return text;
+    }
+    let tool_count: usize = history
+        .iter()
+        .filter(|m| m.role == OpenAiChatRole::Assistant)
+        .map(|m| m.tool_calls.len())
+        .sum();
+    let reason = if hit_turn_limit {
+        "exhausted its turn budget"
+    } else {
+        "ended without a final summary"
+    };
+    format!(
+        "Subagent {reason} after {tool_count} tool call(s) and did not produce a final text response."
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::inference::{OpenAiChatMessage, OpenAiChatRole, OpenAiToolCall, OpenAiToolCallFunction};
+
+    fn asst(content: &str) -> OpenAiChatMessage {
+        OpenAiChatMessage {
+            role: OpenAiChatRole::Assistant,
+            content: content.into(),
+            ..Default::default()
+        }
+    }
+
+    fn asst_tool_only(call_id: &str) -> OpenAiChatMessage {
+        OpenAiChatMessage {
+            role: OpenAiChatRole::Assistant,
+            content: String::new(),
+            tool_calls: vec![OpenAiToolCall {
+                id: call_id.into(),
+                kind: "function".into(),
+                function: OpenAiToolCallFunction {
+                    name: "Glob".into(),
+                    arguments: "{}".into(),
+                },
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn user(content: &str) -> OpenAiChatMessage {
+        OpenAiChatMessage {
+            role: OpenAiChatRole::User,
+            content: content.into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn resolve_picks_last_non_empty_assistant_text() {
+        let history = vec![
+            user("find auth bugs"),
+            asst("thinking about it"),
+            asst_tool_only("tc1"),
+            asst("Here is the analysis: X."),
+            asst_tool_only("tc2"),
+        ];
+        assert_eq!(
+            resolve_assistant_text(&history, false),
+            "Here is the analysis: X.",
+            "must scan past a trailing tool_use-only turn",
+        );
+    }
+
+    #[test]
+    fn resolve_fallback_when_only_tool_use_turns() {
+        let history = vec![
+            user("analyze"),
+            asst_tool_only("tc1"),
+            asst_tool_only("tc2"),
+        ];
+        let result = resolve_assistant_text(&history, false);
+        assert!(
+            result.contains("2 tool call(s)") && result.contains("ended without a final summary"),
+            "fallback must count tool calls + cite no-summary reason; got: {result}",
+        );
+    }
+
+    #[test]
+    fn resolve_fallback_when_turn_limit_hit() {
+        let history = vec![user("analyze"), asst_tool_only("tc1")];
+        let result = resolve_assistant_text(&history, true);
+        assert!(
+            result.contains("exhausted its turn budget"),
+            "budget-exceeded must be surfaced to parent; got: {result}",
+        );
+    }
+
+    #[test]
+    fn resolve_whitespace_only_content_is_treated_as_empty() {
+        let history = vec![
+            user("go"),
+            asst("   \n  "),
+            asst("real answer"),
+        ];
+        assert_eq!(resolve_assistant_text(&history, false), "real answer");
+    }
 }
 
