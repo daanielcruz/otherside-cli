@@ -43,7 +43,7 @@ pub fn mascot_rows() -> Vec<&'static str> {
     MASCOT.lines().filter(|l| !l.is_empty()).collect()
 }
 
-fn padded_rows() -> Vec<String> {
+pub fn padded_rows() -> Vec<String> {
     let rows = mascot_rows();
     let max = rows.iter().map(|r| r.chars().count()).max().unwrap_or(0);
     rows.into_iter()

@@ -37,6 +37,7 @@ pub mod state;
 pub mod tips;
 pub mod todos;
 pub mod tool_render;
+pub mod welcome;
 
 use state::{ConversationState, DisplayOrigin};
 
@@ -137,6 +138,24 @@ pub async fn run(
         .map_err(|e| Error::Other(format!("invalid model suffix: {e}")))?;
 
     let mut guard = TerminalGuard::enter()?;
+
+    // Zero-cred floor: if no provider has stored credentials, drop the
+    // welcome screen in BEFORE `event_loop`. Phase 1 is UI-only — on
+    // Enter for an enabled row we log intent and fall through into
+    // event_loop anyway (no auth mutation). On Ctrl+C we restore the
+    // terminal and exit cleanly. See `docs/ui-panels/welcome-screen.md`.
+    if !crate::state::broker::has_any_credentials(&settings) {
+        match run_welcome_gate(&mut guard.terminal).await? {
+            WelcomeGateOutcome::Proceed(provider) => {
+                eprintln!("welcome UI stub: would login to {}", provider.slug());
+            }
+            WelcomeGateOutcome::Quit => {
+                guard.restore();
+                return Ok(());
+            }
+        }
+    }
+
     let res = event_loop(
         &mut guard.terminal,
         registry,
@@ -162,6 +181,78 @@ pub async fn run(
             Ok(())
         }
         Err(e) => Err(e),
+    }
+}
+
+/// Outcome of the Phase 1 welcome gate. `Proceed` means the user picked
+/// an enabled provider row — we log the intent and fall through to the
+/// main event loop (UI-only; no auth mutation). `Quit` means Ctrl+C.
+enum WelcomeGateOutcome {
+    Proceed(crate::config::providers::ProviderId),
+    Quit,
+}
+
+/// Drive the welcome screen until the user presses Enter on an enabled
+/// row or Ctrl+C. Uses a minimal crossterm `EventStream` + ticker loop
+/// (no provider stream, no task store) — this runs strictly before any
+/// chat state is constructed.
+async fn run_welcome_gate(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+) -> Result<WelcomeGateOutcome> {
+    use futures::StreamExt;
+
+    let mut state = welcome::WelcomeState::new();
+    let mut key_stream = EventStream::new();
+    let mut ticker = tokio::time::interval(Duration::from_millis(50));
+
+    terminal
+        .draw(|f| welcome::draw(f, f.area(), &state))
+        .map_err(|e| Error::Tui(format!("draw welcome: {e}")))?;
+
+    loop {
+        tokio::select! {
+            _ = ticker.tick() => {
+                // Ticker keeps the loop responsive; no periodic work on
+                // the welcome floor yet.
+            }
+            maybe_evt = key_stream.next() => {
+                match maybe_evt {
+                    Some(Ok(CtEvent::Key(k))) => {
+                        if k.kind != KeyEventKind::Press {
+                            continue;
+                        }
+                        match welcome::handle_key(k, &mut state) {
+                            welcome::WelcomeOutcome::Stay => {
+                                terminal
+                                    .draw(|f| welcome::draw(f, f.area(), &state))
+                                    .map_err(|e| Error::Tui(format!("draw welcome: {e}")))?;
+                            }
+                            welcome::WelcomeOutcome::LoginIntent(p) => {
+                                return Ok(WelcomeGateOutcome::Proceed(p));
+                            }
+                            welcome::WelcomeOutcome::Quit => {
+                                return Ok(WelcomeGateOutcome::Quit);
+                            }
+                        }
+                    }
+                    Some(Ok(CtEvent::Resize(_, _))) => {
+                        terminal
+                            .draw(|f| welcome::draw(f, f.area(), &state))
+                            .map_err(|e| Error::Tui(format!("draw welcome: {e}")))?;
+                    }
+                    Some(Ok(_)) => {
+                        // Mouse / paste / focus — drop silently like the
+                        // main event loop does.
+                    }
+                    Some(Err(e)) => {
+                        return Err(Error::Tui(format!("welcome event stream: {e}")));
+                    }
+                    None => {
+                        return Ok(WelcomeGateOutcome::Quit);
+                    }
+                }
+            }
+        }
     }
 }
 
