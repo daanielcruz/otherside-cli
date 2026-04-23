@@ -112,6 +112,7 @@ impl InnerLoopRunner {
                     tool_calls: Vec::new(),
                     tool_call_id: None,
                     reasoning_content: None,
+                    thinking_signature: None,
                 });
             }
             other => {
@@ -128,6 +129,7 @@ impl InnerLoopRunner {
             tool_calls: Vec::new(),
             tool_call_id: None,
             reasoning_content: None,
+            thinking_signature: None,
         });
 
         let provider_id = crate::config::providers::ProviderId::from_slug(provider.id())

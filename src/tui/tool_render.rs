@@ -361,7 +361,7 @@ pub fn render_tool_call(view: &ToolCallView<'_>) -> Vec<Line<'static>> {
         out.push(Line::from(vec![
             Span::styled(GUTTER_CONT.to_string(), Style::default().fg(theme::MUTED)),
             Span::styled(
-                "(ctrl+b ctrl+b (twice) to run in background)".to_string(),
+                "(ctrl+b to run in background)".to_string(),
                 Style::default().fg(theme::MUTED),
             ),
         ]));
@@ -2064,7 +2064,7 @@ mod tests {
         };
         let text = collect_text(&render_tool_call(&view));
         assert!(
-            text.contains("(ctrl+b ctrl+b (twice) to run in background)"),
+            text.contains("(ctrl+b to run in background)"),
             "Agent block must emit inline ctrl+b hint per upstream BashTool/UI.tsx:63-73: {text:?}"
         );
     }
@@ -2106,7 +2106,7 @@ mod tests {
         };
         let text = collect_text(&render_tool_call(&view));
         assert!(
-            text.contains("(ctrl+b ctrl+b (twice) to run in background)"),
+            text.contains("(ctrl+b to run in background)"),
             "Bash running block must emit inline ctrl+b hint: {text:?}"
         );
     }

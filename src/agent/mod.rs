@@ -30,12 +30,17 @@ pub struct Turn {
 
     pub pending_usage: Option<crate::inference::OpenAiUsage>,
 
-    // Accumulates `reasoning_content` deltas from the stream (kimi
-    // `thinking_delta` / `reasoning_content_delta`). At end-of-turn, a
-    // non-empty buffer is attached to the assistant tool-call message
-    // so the next request round-trips it back to kimi (required by its
-    // validator when `thinking` is on).
+    // Accumulates thinking-block body text from `thinking_delta` SSE
+    // events. Half of a round-trip pair; the other half is
+    // `thinking_signature`. Both must be non-empty for the next request
+    // to re-emit a Block::Thinking content block. Empty = drop the
+    // thinking block entirely (kimi-cli pattern).
     pub reasoning_content: String,
+
+    // Accumulates thinking-block signature from `signature_delta` SSE
+    // events. Cryptographic integrity token over the thinking body;
+    // kimi/anthropic validator rejects unsigned reused thinking.
+    pub thinking_signature: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -104,6 +109,11 @@ impl Turn {
         if let Some(rc) = delta.reasoning_content {
             if !rc.is_empty() {
                 self.reasoning_content.push_str(&rc);
+            }
+        }
+        if let Some(sig) = delta.thinking_signature {
+            if !sig.is_empty() {
+                self.thinking_signature.push_str(&sig);
             }
         }
         for tc in delta.tool_calls {
@@ -301,6 +311,7 @@ pub fn tool_result_message(call_id: &str, result: &Value) -> OpenAiChatMessage {
         tool_calls: Vec::new(),
         tool_call_id: Some(call_id.to_string()),
         reasoning_content: None,
+        thinking_signature: None,
     }
 }
 
@@ -419,10 +430,19 @@ impl<D: ToolDispatcher, O: LoopObserver> AgentLoop<D, O> {
 
             if turn.wants_tool_dispatch() && turn.has_pending_calls() {
                 let tool_calls = turn.drain_calls();
-                let captured_reasoning = if turn.reasoning_content.is_empty() {
-                    None
+                // Pair captured (reasoning_content, thinking_signature).
+                // kimi-cli rule: signature-less thinking is STRIPPED, not
+                // sent as empty. We mirror: both Some → thinking block
+                // round-trips; either None → both become None.
+                let (captured_reasoning, captured_signature) = if turn.reasoning_content.is_empty()
+                    || turn.thinking_signature.is_empty()
+                {
+                    (None, None)
                 } else {
-                    Some(std::mem::take(&mut turn.reasoning_content))
+                    (
+                        Some(std::mem::take(&mut turn.reasoning_content)),
+                        Some(std::mem::take(&mut turn.thinking_signature)),
+                    )
                 };
                 let assistant_msg = OpenAiChatMessage {
                     role: OpenAiChatRole::Assistant,
@@ -431,6 +451,7 @@ impl<D: ToolDispatcher, O: LoopObserver> AgentLoop<D, O> {
                     tool_calls: tool_calls.clone(),
                     tool_call_id: None,
                     reasoning_content: captured_reasoning,
+                    thinking_signature: captured_signature,
                 };
                 history.push(assistant_msg);
                 for call in &tool_calls {
@@ -502,6 +523,7 @@ impl<D: ToolDispatcher, O: LoopObserver> AgentLoop<D, O> {
                     tool_calls: Vec::new(),
                     tool_call_id: None,
                     reasoning_content: None,
+                    thinking_signature: None,
                 });
             }
             return Ok(LoopResult {
@@ -703,6 +725,24 @@ mod tests {
         }
     }
 
+    fn signature_chunk(text: &str) -> OpenAiChunk {
+        OpenAiChunk {
+            id: "chatcmpl-t".into(),
+            object: OpenAiChunk::OBJECT.into(),
+            created: 0,
+            model: "m".into(),
+            choices: vec![OpenAiChoice {
+                index: 0,
+                delta: OpenAiDelta {
+                    thinking_signature: Some(text.to_string()),
+                    ..Default::default()
+                },
+                finish_reason: None,
+            }],
+            usage: None,
+        }
+    }
+
     #[test]
     fn turn_fold_captures_reasoning_content_from_stream() {
         // Simulate the translator emitting `thinking_delta` / `reasoning_content_delta`
@@ -740,13 +780,15 @@ mod tests {
 
     #[tokio::test]
     async fn agent_loop_attaches_reasoning_content_to_tool_call_assistant_msg() {
-        // End-to-end check: reasoning chunks flow through the stream,
-        // Turn folds them, and the assistant tool-call message pushed
-        // into history carries the captured content. This is what lets
-        // the next request body emit the real reasoning instead of "".
+        // End-to-end check: thinking_delta + signature_delta chunks flow
+        // through the stream, Turn folds them as a pair, and the
+        // assistant tool-call message pushed into history carries BOTH
+        // the captured reasoning AND the signature. kimi-cli rule:
+        // signature-less thinking is dropped; both must round-trip.
         let turn1: Vec<std::result::Result<OpenAiChunk, Error>> = vec![
             Ok(reasoning_chunk("kimi-think-step-1 ")),
             Ok(reasoning_chunk("kimi-think-step-2")),
+            Ok(signature_chunk("sig-from-wire")),
             Ok(tool_chunk(
                 0,
                 OpenAiToolCallDelta {
@@ -799,6 +841,78 @@ mod tests {
             assistant_tool_msg.reasoning_content.as_deref(),
             Some("kimi-think-step-1 kimi-think-step-2"),
             "captured reasoning must ride on the tool-call assistant message",
+        );
+        assert_eq!(
+            assistant_tool_msg.thinking_signature.as_deref(),
+            Some("sig-from-wire"),
+            "captured signature must pair with reasoning for the round-trip",
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_loop_drops_thinking_when_signature_missing() {
+        // kimi-cli rule regression. Stream emits reasoning_content but
+        // never a signature_delta (real-world case: malformed wire, or
+        // a provider that doesn't emit signatures). Agent loop MUST
+        // drop both halves — signature-less thinking would 400 on kimi
+        // round-trip anyway.
+        let turn1: Vec<std::result::Result<OpenAiChunk, Error>> = vec![
+            Ok(reasoning_chunk("unsigned reasoning")),
+            Ok(tool_chunk(
+                0,
+                OpenAiToolCallDelta {
+                    index: 0,
+                    id: Some("tu_unsig".into()),
+                    kind: Some("function".into()),
+                    function: Some(OpenAiToolCallFunctionDelta {
+                        name: Some("Glob".into()),
+                        arguments: Some("{}".into()),
+                    }),
+                },
+                Some("tool_calls"),
+            )),
+        ];
+        let turn2: Vec<std::result::Result<OpenAiChunk, Error>> =
+            vec![Ok(text_chunk("done", Some("stop")))];
+        let mut inbox = vec![turn1, turn2];
+
+        let loop_ = AgentLoop {
+            model: "kimi".into(),
+            thinking: None,
+            max_turns: 5,
+            tools: Vec::new(),
+            tool_choice: None,
+            dispatcher: FakeDispatcher,
+            observer: NoOpObserver,
+        };
+        let initial = vec![OpenAiChatMessage {
+            role: OpenAiChatRole::User,
+            content: "list".into(),
+            ..Default::default()
+        }];
+        let result = loop_
+            .run(initial, |_req, _t| {
+                let chunks = inbox.remove(0);
+                async move {
+                    let s: ChunkStream = Box::pin(stream::iter(chunks));
+                    Ok(s)
+                }
+            })
+            .await
+            .unwrap();
+
+        let assistant_tool_msg = result
+            .history
+            .iter()
+            .find(|m| m.role == OpenAiChatRole::Assistant && !m.tool_calls.is_empty())
+            .expect("assistant tool-call message landed in history");
+        assert!(
+            assistant_tool_msg.reasoning_content.is_none(),
+            "reasoning dropped when signature missing (kimi-cli pattern)",
+        );
+        assert!(
+            assistant_tool_msg.thinking_signature.is_none(),
+            "signature stays None when pair broken",
         );
     }
 

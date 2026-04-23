@@ -23,21 +23,19 @@ pub fn build_with_flavor(
     build_with_flavor_and_shim(messages, ctx, flavor, false)
 }
 
-/// When `emit_reasoning_shim` is true, every assistant message carrying
-/// at least one `tool_use` block gets an empty-string `reasoning_content`
-/// sibling on the message object. Gated by the caller to kimi-flavored
-/// requests with `thinking` enabled — see `request.rs`.
+/// Deprecated shim flag is now a no-op — thinking rounds through
+/// `Block::Thinking` content blocks emitted by `normalize_with_flavor`
+/// when a paired (reasoning_content, signature) is present. Kept for
+/// call-site compatibility during the transition; remove the `_shim`
+/// arg and merge this into `build_with_flavor` in a follow-up.
 pub fn build_with_flavor_and_shim(
     messages: &[OpenAiChatMessage],
     ctx: &UserContext<'_>,
     flavor: SystemFlavor,
-    emit_reasoning_shim: bool,
+    _emit_reasoning_shim: bool,
 ) -> Vec<Value> {
     let mut normalized = normalize_with_flavor(messages, ctx, flavor);
     add_cache_breakpoints(&mut normalized);
-    if emit_reasoning_shim {
-        attach_reasoning_content_shim(&mut normalized);
-    }
     normalized.iter().map(|m| m.to_json()).collect()
 }
 
@@ -95,12 +93,35 @@ pub fn normalize_with_flavor(
                 out.push(AnthropicMessage {
                     role: Role::User,
                     content: blocks,
-                    reasoning_content: None,
                 });
             }
             OpenAiChatRole::Assistant => {
                 flush_tool_results(&mut pending_tool_results, &mut out);
                 let mut blocks: Vec<Block> = Vec::new();
+
+                // Prepend thinking block FIRST in content when the turn
+                // carried captured (reasoning_content, thinking_signature).
+                // kimi-cli reference: signature-less thinking MUST be
+                // dropped (never sent empty). Flavor gate: ClaudeCode
+                // rejects thinking blocks smuggled from a prior
+                // ThirdParty turn across provider switches, so we strip
+                // there too — matches the existing billing-header gate
+                // in system.rs.
+                let carry_thinking = match flavor {
+                    SystemFlavor::ThirdParty => {
+                        match (msg.reasoning_content.as_deref(), msg.thinking_signature.as_deref()) {
+                            (Some(text), Some(sig)) if !text.is_empty() && !sig.is_empty() => {
+                                Some((text.to_string(), sig.to_string()))
+                            }
+                            _ => None,
+                        }
+                    }
+                    SystemFlavor::ClaudeCode => None,
+                };
+                if let Some((thinking, signature)) = carry_thinking {
+                    blocks.push(Block::Thinking { thinking, signature });
+                }
+
                 if !msg.content.is_empty() {
                     blocks.push(Block::Text {
                         text: msg.content.clone(),
@@ -125,22 +146,9 @@ pub fn normalize_with_flavor(
                     });
                 }
                 if !blocks.is_empty() {
-                    // Forward captured reasoning ONLY for third-party
-                    // flavors (kimi). Anthropic's own /v1/messages rejects
-                    // the field outright, and a mid-session provider
-                    // switch kimi→anthropic would otherwise smuggle the
-                    // kimi-era reasoning into an anthropic request and 400.
-                    // The shim (attach_reasoning_content_shim) is also
-                    // flavor-gated at the caller, so anthropic flavors
-                    // never see this field.
-                    let forwarded_reasoning = match flavor {
-                        SystemFlavor::ThirdParty => msg.reasoning_content.clone(),
-                        SystemFlavor::ClaudeCode => None,
-                    };
                     out.push(AnthropicMessage {
                         role: Role::Assistant,
                         content: blocks,
-                        reasoning_content: forwarded_reasoning,
                     });
                 }
             }
@@ -166,36 +174,7 @@ fn flush_tool_results(pending: &mut Vec<Block>, out: &mut Vec<AnthropicMessage>)
         out.push(AnthropicMessage {
             role: Role::User,
             content: std::mem::take(pending),
-            reasoning_content: None,
         });
-    }
-}
-
-/// For every assistant message that carries at least one `tool_use`
-/// block, ensure a `reasoning_content` sibling exists. When the source
-/// `OpenAiChatMessage` carried captured reasoning (kimi round-trip from
-/// `thinking_delta` / `reasoning_content_delta` SSE deltas), that value
-/// has already been forwarded into `AnthropicMessage.reasoning_content`
-/// by `normalize_with_flavor`. This pass only fills in an empty-string
-/// fallback when no real content was captured — e.g. history loaded
-/// from disk pre-this-field, or assistant turns produced by a non-kimi
-/// provider mid-session before a switch. The empty string keeps the
-/// kimi validator passing ("field present") even without real content.
-/// Assistant turns with no tool_use (plain text answers) are left
-/// untouched — the upstream error message ("in assistant tool call
-/// message") scopes the requirement to tool-carrying turns only.
-fn attach_reasoning_content_shim(messages: &mut [AnthropicMessage]) {
-    for msg in messages.iter_mut() {
-        if msg.role != Role::Assistant {
-            continue;
-        }
-        let has_tool_use = msg
-            .content
-            .iter()
-            .any(|b| matches!(b, Block::ToolUse { .. }));
-        if has_tool_use && msg.reasoning_content.is_none() {
-            msg.reasoning_content = Some(String::new());
-        }
     }
 }
 

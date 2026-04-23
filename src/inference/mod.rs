@@ -78,14 +78,22 @@ pub struct OpenAiChatMessage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
 
-    // Kimi round-trip: when `thinking` is on, every assistant tool-call
-    // message must carry a `reasoning_content` sibling on the NEXT
-    // request. Captured from the SSE delta stream during the turn that
-    // produced the tool_calls, then re-emitted by the request builder.
-    // None for turns that didn't carry reasoning (non-kimi providers,
-    // thinking-off turns, or history loaded from disk pre-this-field).
+    // Kimi / Anthropic interleaved-thinking round-trip. When the previous
+    // turn streamed a thinking content block, we capture the (text,
+    // signature) pair here so the NEXT request can re-emit
+    // `{"type":"thinking","thinking":...,"signature":...}` as the first
+    // content block on the assistant message. Kimi's `/coding/v1/messages`
+    // validator rejects assistant-with-tool_use turns that lose the
+    // thinking block (error: "thinking is enabled but reasoning_content
+    // is missing"). Reference: MoonshotAI/kimi-cli
+    // `kosong/contrib/chat_provider/anthropic.py` — ThinkPart round-trip
+    // gates on `part.encrypted is not None`; missing-signature thinking
+    // blocks are dropped rather than sent as empty.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_content: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_signature: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -137,13 +145,19 @@ pub struct OpenAiDelta {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<OpenAiToolCallDelta>,
 
-    // Streaming carrier for kimi `reasoning_content` deltas. The translator
-    // emits one chunk per `thinking_delta` / `reasoning_content_delta`
-    // SSE event with this field set; the agent loop folds them into
-    // `OpenAiChatMessage.reasoning_content` so the next request body
-    // can round-trip it on the assistant tool-call message.
+    // Streaming carrier for `thinking_delta` SSE events (the thinking block
+    // body text). Agent loop folds into `OpenAiChatMessage.reasoning_content`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_content: Option<String>,
+
+    // Streaming carrier for `signature_delta` SSE events (the thinking block
+    // signature — Anthropic/kimi's cryptographic integrity token for the
+    // reasoning content). Agent loop folds into
+    // `OpenAiChatMessage.thinking_signature`. Must be present alongside
+    // reasoning_content for the next request to round-trip the thinking
+    // block; signature-less thinking is dropped (kimi-cli pattern).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_signature: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]

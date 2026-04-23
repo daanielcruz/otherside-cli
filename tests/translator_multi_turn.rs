@@ -137,9 +137,7 @@ fn turn2_messages_fragment_matches_capture() {
                 text: TURN1_PROMPT.to_string(),
                 cache_control: None,
             },
-        ],
-        reasoning_content: None,
-    };
+        ],    };
     let assistant = AnthropicMessage {
         role: Role::Assistant,
         content: vec![
@@ -152,18 +150,14 @@ fn turn2_messages_fragment_matches_capture() {
                 name: "Glob".to_string(),
                 input: json!({ "pattern": "src/*.rs" }),
             },
-        ],
-        reasoning_content: None,
-    };
+        ],    };
     let user2 = AnthropicMessage {
         role: Role::User,
         content: vec![Block::ToolResult {
             tool_use_id: "XXX_TOOLUSE_ID_1_XXX".to_string(),
             content: "src/main.rs\nsrc/error.rs\nsrc/lib.rs".to_string(),
             cache_control: None,
-        }],
-        reasoning_content: None,
-    };
+        }],    };
     let mut msgs = vec![user1, assistant, user2];
     message_builder::add_cache_breakpoints(&mut msgs);
 
@@ -196,9 +190,7 @@ fn turn3_messages_fragment_matches_capture() {
                 text: TURN1_PROMPT.to_string(),
                 cache_control: None,
             },
-        ],
-        reasoning_content: None,
-    };
+        ],    };
     let assistant1 = AnthropicMessage {
         role: Role::Assistant,
         content: vec![
@@ -211,27 +203,21 @@ fn turn3_messages_fragment_matches_capture() {
                 name: "Glob".to_string(),
                 input: json!({ "pattern": "src/*.rs" }),
             },
-        ],
-        reasoning_content: None,
-    };
+        ],    };
     let user2 = AnthropicMessage {
         role: Role::User,
         content: vec![Block::ToolResult {
             tool_use_id: "XXX_TOOLUSE_ID_1_XXX".to_string(),
             content: "src/main.rs\nsrc/error.rs\nsrc/lib.rs".to_string(),
             cache_control: None,
-        }],
-        reasoning_content: None,
-    };
+        }],    };
     let assistant2 = AnthropicMessage {
         role: Role::Assistant,
         content: vec![Block::ToolUse {
             id: "XXX_TOOLUSE_ID_2_XXX".to_string(),
             name: "Read".to_string(),
             input: json!({ "file_path": "/workspace/src/main.rs" }),
-        }],
-        reasoning_content: None,
-    };
+        }],    };
     let user3 = AnthropicMessage {
         role: Role::User,
         content: vec![Block::ToolResult {
@@ -239,9 +225,7 @@ fn turn3_messages_fragment_matches_capture() {
             content: "1\tfn main() {\n2\t    println!(\"otherside capture target\");\n3\t}\n4\t"
                 .to_string(),
             cache_control: None,
-        }],
-        reasoning_content: None,
-    };
+        }],    };
     let mut msgs = vec![user1, assistant1, user2, assistant2, user3];
     message_builder::add_cache_breakpoints(&mut msgs);
 

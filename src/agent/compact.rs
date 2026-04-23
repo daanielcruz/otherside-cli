@@ -267,6 +267,7 @@ pub async fn compact_conversation(
         tool_calls: Vec::new(),
         tool_call_id: None,
         reasoning_content: None,
+        thinking_signature: None,
     });
 
     let req = OpenAiChatRequest {
@@ -498,6 +499,7 @@ mod tests {
             tool_calls: Vec::new(),
             tool_call_id: None,
             reasoning_content: None,
+            thinking_signature: None,
         }]
     }
 

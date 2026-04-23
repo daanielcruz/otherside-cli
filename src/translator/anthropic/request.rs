@@ -191,25 +191,16 @@ fn build_request_body_full(
     let strip_thinking_envelope =
         efforts == ["auto"] || efforts.is_empty() || kimi_effort_off;
 
-    // Kimi-specific shim: when talking to a ThirdParty flavor and the
-    // `thinking` envelope block actually rides the wire, every assistant
-    // tool-call message needs a `reasoning_content` sibling (see kimi 400
-    // error captured 2026-04-23: "thinking is enabled but reasoning_content
-    // is missing in assistant tool call message at index N"). Anthropic
-    // itself rejects this field, so the gate is flavor-scoped. Historically
-    // this gated on `thinking.is_some()` (caller's `Option<ThinkingConfig>`)
-    // but that's stale: the envelope defaults carry `thinking:{type:adaptive}`
-    // unconditionally, so the wire sent thinking-on even when the caller
-    // hadn't explicitly picked a level, and the missing shim triggered the
-    // 400 from turn 6+. Now the shim follows the same gate as the envelope
-    // strip — in lockstep with the actual wire.
-    let emit_reasoning_shim =
-        matches!(flavor, super::system::SystemFlavor::ThirdParty) && !strip_thinking_envelope;
+    // The thinking round-trip now happens at the content-block level via
+    // `Block::Thinking` in `normalize_with_flavor` (gated on flavor +
+    // paired signature). The shim flag here is vestigial — false keeps
+    // the old no-op path; message_builder handles the real work.
+    let _ = strip_thinking_envelope;
     let messages = message_builder::build_with_flavor_and_shim(
         &req.messages,
         ctx,
         flavor,
-        emit_reasoning_shim,
+        false,
     );
 
     let mut body = Map::with_capacity(10);
@@ -596,7 +587,13 @@ mod tests {
         }
 
         #[test]
-        fn request_emits_reasoning_content_for_kimi_thinking_on() {
+        fn request_omits_thinking_block_when_history_has_no_signature() {
+            // kimi-cli pattern: signature-less thinking is STRIPPED, not
+            // sent empty. history_with_tool_use_turn() has assistant
+            // tool_use with no captured reasoning+signature pair, so the
+            // wire MUST NOT emit a Block::Thinking nor a reasoning_content
+            // sibling. Prior shim-based approach leaked empty-string
+            // fallback and still failed validation.
             let cfg = ThinkingConfig::level(ThinkingLevel::On);
             let body = build(
                 history_with_tool_use_turn(),
@@ -604,22 +601,20 @@ mod tests {
                 Some(&cfg),
             );
             let msg = find_assistant_tool_use(&body);
-            let rc = msg
-                .get("reasoning_content")
-                .expect("reasoning_content sibling present on assistant tool-call message");
-            assert_eq!(
-                rc.as_str(),
-                Some(""),
-                "empty-string shim satisfies kimi validator; real content requires agent/* wire-up",
+            assert!(
+                msg.get("reasoning_content").is_none(),
+                "kimi-compat wire has no top-level reasoning_content; thinking rides as content block",
+            );
+            let content = msg["content"].as_array().expect("content is array");
+            assert!(
+                !content.iter().any(|b| b.get("type") == Some(&Value::String("thinking".into()))),
+                "no thinking block when history lacks captured signature",
             );
         }
 
         #[test]
-        fn request_omits_reasoning_content_when_thinking_off() {
-            // Kimi effort explicitly set to `off` by the caller. The wire
-            // strips the `thinking` envelope entirely, so the shim must
-            // also skip — otherwise we'd send reasoning_content with no
-            // thinking flag, which is nonsense.
+        fn request_omits_thinking_when_effort_off() {
+            // Kimi effort explicitly off → thinking envelope stripped.
             let cfg = ThinkingConfig::level(ThinkingLevel::Off);
             let body = build(
                 history_with_tool_use_turn(),
@@ -628,70 +623,56 @@ mod tests {
             );
             assert!(
                 body.get("thinking").is_none(),
-                "precondition: thinking envelope must be stripped for kimi effort=off"
+                "precondition: thinking envelope stripped for kimi effort=off"
             );
             let msg = find_assistant_tool_use(&body);
+            let content = msg["content"].as_array().expect("content is array");
             assert!(
-                msg.get("reasoning_content").is_none(),
-                "reasoning_content must NOT ride when kimi effort=off strips the envelope",
+                !content.iter().any(|b| b.get("type") == Some(&Value::String("thinking".into()))),
+                "no thinking block when effort=off",
             );
         }
 
         #[test]
-        fn request_emits_reasoning_content_when_caller_thinking_is_none_but_catalog_defaults_on() {
-            // THE 2026-04-23 BUG REGRESSION. `cmd_tui` boots kimi with
-            // `thinking: None` (model slug has no `(level)` suffix), but
-            // the envelope defaults ride `thinking:{type:adaptive}` and the
-            // catalog picks `on` as the default effort. Old shim gate
-            // (`thinking.is_some()`) missed this — wire sent thinking-on
-            // with NO reasoning_content on assistant tool-calls, and kimi
-            // 400'd at turn 6+ with "thinking is enabled but
-            // reasoning_content is missing".
-            //
-            // New gate keys off the actual wire state: if the thinking
-            // envelope rides the body, the shim must fire.
+        fn request_omits_thinking_when_caller_thinking_is_none_and_history_bare() {
+            // 2026-04-23 regression scenario follow-up. Caller None +
+            // envelope thinking-on + history without captured signature
+            // → signature-less thinking dropped (kimi-cli pattern).
             let body = build(
                 history_with_tool_use_turn(),
                 SystemFlavor::ThirdParty,
                 None,
             );
-            assert!(
-                body.get("thinking").is_some(),
-                "precondition: envelope defaults carry thinking even when caller passed None"
-            );
+            assert!(body.get("thinking").is_some(), "envelope thinking rides");
             let msg = find_assistant_tool_use(&body);
-            let rc = msg
-                .get("reasoning_content")
-                .expect("reasoning_content MUST ride because wire thinking is on");
-            assert_eq!(
-                rc.as_str(),
-                Some(""),
-                "empty-string shim is the validator-pass fallback when history has no captured content"
+            assert!(
+                msg.get("reasoning_content").is_none(),
+                "no empty-string shim in new wire semantics",
             );
         }
 
         #[test]
-        fn request_omits_reasoning_content_for_anthropic_flavor() {
-            // First-party Anthropic rejects the field entirely — even with
-            // thinking on, the builder must keep the wire clean.
+        fn request_omits_thinking_block_for_anthropic_flavor() {
             let cfg = ThinkingConfig::level(ThinkingLevel::High);
             let body = build(
-                history_with_tool_use_turn(),
+                history_with_captured_reasoning("kimi-era thought", "sig-kimi"),
                 SystemFlavor::ClaudeCode,
                 Some(&cfg),
             );
             let msg = find_assistant_tool_use(&body);
+            let content = msg["content"].as_array().expect("content is array");
+            assert!(
+                !content.iter().any(|b| b.get("type") == Some(&Value::String("thinking".into()))),
+                "Anthropic flavor strips thinking blocks carried from kimi history (mid-session switch safety)",
+            );
             assert!(
                 msg.get("reasoning_content").is_none(),
-                "reasoning_content must NEVER ride Anthropic's own API; gated on ThirdParty flavor",
+                "no reasoning_content sibling — that wire shape is dead",
             );
         }
 
         #[test]
-        fn request_omits_reasoning_content_when_no_tool_use() {
-            // Assistant text-only turn under kimi+thinking: the error only
-            // conditions on "assistant tool call message", so text-only
-            // assistant replies must NOT carry the field.
+        fn request_omits_thinking_when_no_tool_use() {
             let cfg = ThinkingConfig::level(ThinkingLevel::On);
             let body = build(
                 history_text_only_assistant(),
@@ -704,14 +685,16 @@ mod tests {
                 .iter()
                 .find(|m| m["role"] == "assistant")
                 .expect("assistant text-only message present");
+            let content = assistant_msg["content"].as_array().expect("content is array");
             assert!(
-                assistant_msg.get("reasoning_content").is_none(),
-                "shim scope is tool-call messages only, not blanket every assistant turn",
+                !content.iter().any(|b| b.get("type") == Some(&Value::String("thinking".into()))),
+                "text-only assistant turn — thinking block scope is tool-call turns only",
             );
         }
 
         fn history_with_captured_reasoning(
             captured: &str,
+            signature: &str,
         ) -> Vec<OpenAiChatMessage> {
             vec![
                 OpenAiChatMessage {
@@ -731,6 +714,7 @@ mod tests {
                         },
                     }],
                     reasoning_content: Some(captured.to_string()),
+                    thinking_signature: Some(signature.to_string()),
                     ..Default::default()
                 },
                 OpenAiChatMessage {
@@ -748,70 +732,29 @@ mod tests {
         }
 
         #[test]
-        fn request_emits_real_reasoning_content_when_history_has_it() {
-            // When the source OpenAiChatMessage carries captured content
-            // (from the fold_chunk path), the request body must emit that
-            // real content — NOT the empty-string fallback. This is what
-            // satisfies kimi's validator when it checks the value (not
-            // just field presence).
+        fn request_emits_thinking_block_when_history_has_reasoning_and_signature() {
+            // Round-trip happy path. Source message has paired (reasoning,
+            // signature) from the fold_chunk path. Wire body must carry
+            // `{"type":"thinking","thinking":...,"signature":...}` as
+            // content[0] BEFORE the tool_use. No top-level reasoning_content.
             let captured = "Let me think: I should Glob for *.rs first.";
+            let signature = "sig-abc-123";
             let cfg = ThinkingConfig::level(ThinkingLevel::On);
             let body = build(
-                history_with_captured_reasoning(captured),
+                history_with_captured_reasoning(captured, signature),
                 SystemFlavor::ThirdParty,
                 Some(&cfg),
             );
             let msg = find_assistant_tool_use(&body);
-            let rc = msg
-                .get("reasoning_content")
-                .expect("reasoning_content sibling present");
-            assert_eq!(
-                rc.as_str(),
-                Some(captured),
-                "real captured reasoning must round-trip; empty-string shim is fallback-only",
-            );
-        }
-
-        #[test]
-        fn anthropic_flavor_never_emits_reasoning_content_even_when_history_has_captured_it() {
-            // Regression guard for the mid-session switch kimi→anthropic
-            // scenario: even if history carries `reasoning_content` (because
-            // a prior kimi turn captured it), the Anthropic wire must NOT
-            // smuggle it into the request body. Anthropic's /v1/messages
-            // rejects this field entirely.
-            let cfg = ThinkingConfig::level(ThinkingLevel::High);
-            let body = build(
-                history_with_captured_reasoning("kimi-era thought"),
-                SystemFlavor::ClaudeCode,
-                Some(&cfg),
-            );
-            let msg = find_assistant_tool_use(&body);
+            let content = msg["content"].as_array().expect("content is array");
+            let first = &content[0];
+            assert_eq!(first["type"], "thinking", "thinking rides as content[0]");
+            assert_eq!(first["thinking"], captured);
+            assert_eq!(first["signature"], signature);
+            assert_eq!(content[1]["type"], "tool_use");
             assert!(
                 msg.get("reasoning_content").is_none(),
-                "Anthropic flavor must strip reasoning_content even when source history carries captured content (mid-session kimi→anthropic switch safety)",
-            );
-        }
-
-        #[test]
-        fn request_falls_back_to_empty_string_when_history_missing_reasoning_content() {
-            // Regression: assistant tool-call message loaded from disk
-            // pre-this-field, or produced by a non-kimi provider before a
-            // mid-session switch — reasoning_content is None on the source.
-            // The shim must still emit "" so the kimi validator passes.
-            let cfg = ThinkingConfig::level(ThinkingLevel::On);
-            let body = build(
-                history_with_tool_use_turn(), // reasoning_content defaults to None
-                SystemFlavor::ThirdParty,
-                Some(&cfg),
-            );
-            let msg = find_assistant_tool_use(&body);
-            let rc = msg
-                .get("reasoning_content")
-                .expect("reasoning_content sibling present as empty-string fallback");
-            assert_eq!(
-                rc.as_str(),
-                Some(""),
-                "fallback to empty string preserves validator pass when no real content was captured",
+                "no sibling field — thinking lives inside content array",
             );
         }
     }

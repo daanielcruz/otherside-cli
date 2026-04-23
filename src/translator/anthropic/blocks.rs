@@ -114,17 +114,6 @@ impl Block {
 pub struct AnthropicMessage {
     pub role: Role,
     pub content: Vec<Block>,
-
-    // Kimi-only sibling field on the assistant-message object. Kimi's
-    // Anthropic-compat endpoint requires `reasoning_content` to be
-    // present (even as `""`) on every assistant message that carries a
-    // `tool_use` block when `thinking` is enabled — otherwise it 400s
-    // with "thinking is enabled but reasoning_content is missing in
-    // assistant tool call message at index N". Anthropic's own
-    // `/v1/messages` rejects this field, so it is gated on
-    // `SystemFlavor::ThirdParty` at the builder level. See request.rs
-    // for the gate.
-    pub reasoning_content: Option<String>,
 }
 
 impl AnthropicMessage {
@@ -133,9 +122,6 @@ impl AnthropicMessage {
         m.insert("role".into(), Value::String(self.role.wire().into()));
         let arr: Vec<Value> = self.content.iter().map(|b| b.to_json()).collect();
         m.insert("content".into(), Value::Array(arr));
-        if let Some(rc) = &self.reasoning_content {
-            m.insert("reasoning_content".into(), Value::String(rc.clone()));
-        }
         Value::Object(m)
     }
 }
@@ -268,7 +254,6 @@ mod tests {
                 text: "x".into(),
                 cache_control: None,
             }],
-            reasoning_content: None,
         };
         let v = m.to_json();
         let keys: Vec<&str> = v.as_object().unwrap().keys().map(|s| s.as_str()).collect();
@@ -277,22 +262,35 @@ mod tests {
     }
 
     #[test]
-    fn anthropic_message_emits_reasoning_content_when_set() {
-        // kimi `reasoning_content` sibling lands after `content`. Empty
-        // string is the shim that satisfies the validator without leaking
-        // captured reasoning back to the provider.
+    fn anthropic_message_emits_thinking_block_before_tool_use_when_present() {
+        // kimi round-trip: when captured thinking + signature rides on
+        // the assistant turn, the next request body must start content
+        // with `{"type":"thinking",...}` BEFORE any `tool_use`. No
+        // top-level `reasoning_content` sibling — kimi-cli reference
+        // pattern.
         let m = AnthropicMessage {
             role: Role::Assistant,
-            content: vec![Block::ToolUse {
-                id: "tu".into(),
-                name: "Glob".into(),
-                input: json!({}),
-            }],
-            reasoning_content: Some(String::new()),
+            content: vec![
+                Block::Thinking {
+                    thinking: "Let me think.".into(),
+                    signature: "sig-abc".into(),
+                },
+                Block::ToolUse {
+                    id: "tu".into(),
+                    name: "Glob".into(),
+                    input: json!({}),
+                },
+            ],
         };
         let v = m.to_json();
-        let keys: Vec<&str> = v.as_object().unwrap().keys().map(|s| s.as_str()).collect();
-        assert_eq!(keys, vec!["role", "content", "reasoning_content"]);
-        assert_eq!(v["reasoning_content"], "");
+        let arr = v["content"].as_array().unwrap();
+        assert_eq!(arr[0]["type"], "thinking");
+        assert_eq!(arr[0]["thinking"], "Let me think.");
+        assert_eq!(arr[0]["signature"], "sig-abc");
+        assert_eq!(arr[1]["type"], "tool_use");
+        assert!(
+            v.get("reasoning_content").is_none(),
+            "no top-level reasoning_content sibling — kimi-cli wire",
+        );
     }
 }

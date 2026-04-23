@@ -195,6 +195,7 @@ async fn aggregate_response(
                 tool_calls: Vec::new(),
                 tool_call_id: None,
                 reasoning_content: None,
+                thinking_signature: None,
             },
             finish_reason,
         }],

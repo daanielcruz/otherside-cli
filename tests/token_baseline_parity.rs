@@ -29,6 +29,7 @@ fn anchor_request() -> OpenAiChatRequest {
             tool_calls: Vec::new(),
             tool_call_id: None,
             reasoning_content: None,
+            thinking_signature: None,
         }],
         ..Default::default()
     }
