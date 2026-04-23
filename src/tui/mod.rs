@@ -2721,6 +2721,24 @@ mod settings_edit_tests {
     }
 
     #[test]
+    fn paste_image_file_path_injects_as_plain_text_not_stripped() {
+        // macOS Terminal / iTerm2 emit the file path as bracketed-paste text
+        // when the user drags an image onto the terminal window. Confirm the
+        // path is preserved verbatim so downstream (Phase 2: wire-level image
+        // content-block wrap) can detect and lift the image.
+        let mut st = ConversationState::default();
+        super::handle_paste("/Users/me/Desktop/screenshot.png", &mut st);
+        assert_eq!(st.input, "/Users/me/Desktop/screenshot.png");
+
+        let mut st2 = ConversationState::default();
+        super::handle_paste(
+            "file:///Users/me/Downloads/capture.jpeg",
+            &mut st2,
+        );
+        assert_eq!(st2.input, "file:///Users/me/Downloads/capture.jpeg");
+    }
+
+    #[test]
     fn paste_empty_string_is_noop() {
         let mut st = ConversationState::default();
         st.input = "keep me".to_string();
