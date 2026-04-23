@@ -1292,6 +1292,58 @@ mod tests {
     }
 
     #[test]
+    fn task_pill_has_no_bg_when_unfocused() {
+        use super::super::state::ConversationState;
+        use crate::tasks::{TaskId, TaskRecord, TaskStore};
+        unsafe { std::env::remove_var(crate::tasks::env::ENV_VAR) };
+        let mut st = ConversationState::new();
+        st.pill_focused = false;
+        let store = TaskStore::new();
+        let mut r = TaskRecord::new_agent(
+            TaskId::generate(),
+            "swarm".into(),
+            "probe".into(),
+        );
+        r.is_backgrounded = true;
+        store.insert(r);
+        st.tasks = store;
+        let line = build_info_chip_line(&st);
+        for span in &line.spans {
+            if span.content.contains("local agent") {
+                assert_eq!(
+                    span.style.bg, None,
+                    "unfocused pill must paint no BG — got {:?}",
+                    span.style
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn task_pill_paints_accent_bg_when_focused() {
+        use super::super::state::ConversationState;
+        use crate::tasks::{TaskId, TaskRecord, TaskStore};
+        unsafe { std::env::remove_var(crate::tasks::env::ENV_VAR) };
+        let mut st = ConversationState::new();
+        st.pill_focused = true;
+        let store = TaskStore::new();
+        let mut r = TaskRecord::new_agent(
+            TaskId::generate(),
+            "swarm".into(),
+            "probe".into(),
+        );
+        r.is_backgrounded = true;
+        store.insert(r);
+        st.tasks = store;
+        let line = build_info_chip_line(&st);
+        let found_bg = line
+            .spans
+            .iter()
+            .any(|s| s.content.contains("local agent") && s.style.bg == Some(theme::AUTO_ACCEPT));
+        assert!(found_bg, "focused pill must paint theme::AUTO_ACCEPT BG");
+    }
+
+    #[test]
     fn default_mode_renders_no_chip() {
 
         use super::super::state::ConversationState;
