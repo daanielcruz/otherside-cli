@@ -71,10 +71,11 @@ pub async fn exchange_code_for_tokens(
     verifier: &str,
     port: u16,
 ) -> Result<ExchangedTokens> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()
-        .map_err(|e| Error::Other(format!("http client: {e}")))?;
+    let client = crate::tools::http::apply_extra_ca_roots(
+        reqwest::Client::builder().timeout(Duration::from_secs(30)),
+    )
+    .build()
+    .map_err(|e| Error::Other(format!("http client: {e}")))?;
     let redirect_uri = format!("http://localhost:{port}{CALLBACK_PATH}");
     let form = [
         ("grant_type", "authorization_code"),
@@ -106,10 +107,11 @@ pub async fn exchange_code_for_tokens(
 }
 
 pub async fn refresh_tokens(refresh_token: &str) -> Result<RefreshedTokens> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()
-        .map_err(|e| Error::Other(format!("http client: {e}")))?;
+    let client = crate::tools::http::apply_extra_ca_roots(
+        reqwest::Client::builder().timeout(Duration::from_secs(30)),
+    )
+    .build()
+    .map_err(|e| Error::Other(format!("http client: {e}")))?;
     let body = serde_json::json!({
         "client_id": CLIENT_ID,
         "grant_type": "refresh_token",

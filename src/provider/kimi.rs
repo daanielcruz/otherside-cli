@@ -38,10 +38,12 @@ impl KimiProvider {
         // hang, 2026-04-22). 10 minutes is generous enough for long
         // reasoning turns but finite — loops now fail-fast with an
         // error the inner agent can surface instead of hanging.
-        let http = reqwest::Client::builder()
-            .pool_idle_timeout(Duration::from_secs(90))
-            .timeout(Duration::from_secs(600))
-            .build()?;
+        let http = crate::tools::http::apply_extra_ca_roots(
+            reqwest::Client::builder()
+                .pool_idle_timeout(Duration::from_secs(90))
+                .timeout(Duration::from_secs(600)),
+        )
+        .build()?;
         Ok(Self { http })
     }
 

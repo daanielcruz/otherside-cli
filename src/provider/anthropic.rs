@@ -31,10 +31,10 @@ pub struct AnthropicProvider {
 impl AnthropicProvider {
 
     pub fn new() -> Result<Self> {
-        let http = reqwest::Client::builder()
-
-            .pool_idle_timeout(Duration::from_secs(90))
-            .build()?;
+        let http = crate::tools::http::apply_extra_ca_roots(
+            reqwest::Client::builder().pool_idle_timeout(Duration::from_secs(90)),
+        )
+        .build()?;
         Ok(Self { http })
     }
 

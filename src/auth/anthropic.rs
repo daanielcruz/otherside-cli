@@ -243,11 +243,13 @@ pub fn clear_credentials() -> Result<()> {
 }
 
 fn token_http_client() -> Result<reqwest::Client> {
-    reqwest::Client::builder()
-        .user_agent(fp::UA_AXIOS)
-        .timeout(Duration::from_secs(60))
-        .build()
-        .map_err(Error::from)
+    crate::tools::http::apply_extra_ca_roots(
+        reqwest::Client::builder()
+            .user_agent(fp::UA_AXIOS)
+            .timeout(Duration::from_secs(60)),
+    )
+    .build()
+    .map_err(Error::from)
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
