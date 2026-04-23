@@ -3,9 +3,10 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::Frame;
 
-use super::state::{AgentsPanelState, Tab};
+use super::state::{AgentsPanelState, BuiltInAgentSnapshot, LibraryDetailKind, Tab};
 use crate::tui::panel_frame::{body_row, PanelFrame, TabSpec};
 use crate::tui::render::theme;
+use ratatui::style::Modifier;
 
 /// Body-row label indent. PanelFrame body rows carry a 2-col chevron
 /// prefix already; we indent section headers and non-selectable rows
@@ -13,6 +14,10 @@ use crate::tui::render::theme;
 const BODY_INDENT: &str = "  ";
 
 pub fn draw_panel(f: &mut Frame<'_>, area: Rect, state: &AgentsPanelState) {
+    if let Some(kind) = state.detail {
+        draw_library_detail(f, area, state, kind);
+        return;
+    }
     let running_label = running_tab_label(state.running.len());
     let tabs: Vec<TabSpec<'_>> = vec![
         TabSpec { label: &running_label },
@@ -46,6 +51,185 @@ pub fn draw_panel(f: &mut Frame<'_>, area: Rect, state: &AgentsPanelState) {
         pagination_hint: None,
     };
     panel.render(f, area);
+}
+
+fn draw_library_detail(
+    f: &mut Frame<'_>,
+    area: Rect,
+    state: &AgentsPanelState,
+    kind: LibraryDetailKind,
+) {
+    let (title, body) = match kind {
+        LibraryDetailKind::CreateNewAgent => (
+            "Agents \u{203A} Create new agent".to_string(),
+            create_new_agent_placeholder_body(),
+        ),
+        LibraryDetailKind::UserAgent(idx) => {
+            let row = state.user_agents.get(idx);
+            let title = row
+                .map(|r| format!("Agents \u{203A} {}", r.name))
+                .unwrap_or_else(|| "Agents \u{203A} user agent".to_string());
+            let body = user_agent_detail_body(row);
+            (title, body)
+        }
+        LibraryDetailKind::BuiltIn(idx) => {
+            let snap = state.builtin_defs.get(idx);
+            let title = snap
+                .map(|s| format!("Agents \u{203A} {}", s.name))
+                .unwrap_or_else(|| "Agents \u{203A} built-in agent".to_string());
+            let body = builtin_detail_body(snap);
+            (title, body)
+        }
+    };
+    let footer_hints: &[(&str, &str)] = &[
+        ("\u{2190}/Esc", "back to list"),
+    ];
+    let panel = PanelFrame {
+        title: Some(&title),
+        tabs: None,
+        active_tab: 0,
+        tabs_focused: false,
+        search: None,
+        body,
+        footer_hints,
+        pagination_hint: None,
+    };
+    panel.render(f, area);
+}
+
+fn create_new_agent_placeholder_body() -> Vec<Line<'static>> {
+    vec![
+        Line::from(vec![
+            Span::raw(BODY_INDENT),
+            Span::styled(
+                "Agent creation wizard is not yet available on otherside.".to_string(),
+                Style::default().fg(theme::TEXT),
+            ),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::raw(BODY_INDENT),
+            Span::styled(
+                "Create a file under `~/.claude/agents/<name>.md` with the usual"
+                    .to_string(),
+                Style::default().fg(theme::MUTED),
+            ),
+        ]),
+        Line::from(vec![
+            Span::raw(BODY_INDENT),
+            Span::styled(
+                "frontmatter (`name`, `description`, `tools`, `model`) — it surfaces"
+                    .to_string(),
+                Style::default().fg(theme::MUTED),
+            ),
+        ]),
+        Line::from(vec![
+            Span::raw(BODY_INDENT),
+            Span::styled(
+                "under the User agents section on next panel open.".to_string(),
+                Style::default().fg(theme::MUTED),
+            ),
+        ]),
+    ]
+}
+
+fn user_agent_detail_body(
+    row: Option<&super::state::UserAgentRow>,
+) -> Vec<Line<'static>> {
+    let Some(row) = row else {
+        return vec![Line::from(vec![
+            Span::raw(BODY_INDENT),
+            Span::styled(
+                "(row not found)".to_string(),
+                Style::default().fg(theme::MUTED),
+            ),
+        ])];
+    };
+    vec![
+        kv_line("Model", &row.model),
+        kv_line("Source", "user memory"),
+        Line::from(""),
+        Line::from(vec![
+            Span::raw(BODY_INDENT),
+            Span::styled(
+                "Detail view for user agents is read-only on otherside.".to_string(),
+                Style::default().fg(theme::MUTED),
+            ),
+        ]),
+        Line::from(vec![
+            Span::raw(BODY_INDENT),
+            Span::styled(
+                format!(
+                    "Edit the markdown source at `~/.claude/agents/{}.md`.",
+                    row.name
+                ),
+                Style::default().fg(theme::MUTED),
+            ),
+        ]),
+    ]
+}
+
+fn builtin_detail_body(snap: Option<&BuiltInAgentSnapshot>) -> Vec<Line<'static>> {
+    let Some(snap) = snap else {
+        return vec![Line::from(vec![
+            Span::raw(BODY_INDENT),
+            Span::styled(
+                "(row not found)".to_string(),
+                Style::default().fg(theme::MUTED),
+            ),
+        ])];
+    };
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    lines.push(kv_line("Model", &snap.model));
+    let tools_str = if snap.tools_wildcard {
+        "(all tools)".to_string()
+    } else if snap.tools.is_empty() {
+        "(none)".to_string()
+    } else {
+        snap.tools.join(", ")
+    };
+    lines.push(kv_line("Tools", &tools_str));
+    lines.push(Line::from(""));
+    lines.push(section_header("Description"));
+    for body_line in snap.description.lines() {
+        lines.push(detail_body_line(body_line));
+    }
+    lines.push(Line::from(""));
+    lines.push(section_header("Prompt"));
+    for body_line in snap.prompt.lines().take(30) {
+        lines.push(detail_body_line(body_line));
+    }
+    lines
+}
+
+fn kv_line(key: &str, value: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::raw(BODY_INDENT),
+        Span::styled(
+            format!("{key}: "),
+            Style::default().fg(theme::MUTED),
+        ),
+        Span::styled(value.to_string(), Style::default().fg(theme::TEXT)),
+    ])
+}
+
+fn section_header(label: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::raw(BODY_INDENT),
+        Span::styled(
+            label.to_string(),
+            Style::default()
+                .fg(theme::TEXT)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ])
+}
+
+fn detail_body_line(text: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::raw("    "),
+        Span::styled(text.to_string(), Style::default().fg(theme::TEXT)),
+    ])
 }
 
 /// Compose the `Running` tab label, appending `(N)` when N > 0. Kept

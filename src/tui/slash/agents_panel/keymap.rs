@@ -9,6 +9,17 @@ pub enum KeyOutcome {
 }
 
 pub fn handle_key(event: KeyEvent, state: &mut AgentsPanelState) -> KeyOutcome {
+    // Detail view intercepts most keys: Esc/Left/Enter back to list, Esc at
+    // list dismisses.
+    if state.detail.is_some() {
+        return match event.code {
+            KeyCode::Esc | KeyCode::Left | KeyCode::Enter | KeyCode::Char(' ') => {
+                state.back_from_detail();
+                KeyOutcome::Consumed
+            }
+            _ => KeyOutcome::Consumed,
+        };
+    }
     match event.code {
         KeyCode::Esc => KeyOutcome::Dismiss,
         KeyCode::Tab | KeyCode::Right | KeyCode::Left | KeyCode::BackTab => {
@@ -25,10 +36,9 @@ pub fn handle_key(event: KeyEvent, state: &mut AgentsPanelState) -> KeyOutcome {
         }
         KeyCode::Enter => {
             if matches!(state.tab, Tab::Library) {
-                KeyOutcome::Consumed
-            } else {
-                KeyOutcome::Consumed
+                state.enter_library_detail();
             }
+            KeyOutcome::Consumed
         }
         _ => KeyOutcome::Consumed,
     }
@@ -70,5 +80,46 @@ mod tests {
         assert_eq!(s.tab, Tab::Library);
         handle_key(k(KeyCode::Left), &mut s);
         assert_eq!(s.tab, Tab::Running);
+    }
+
+    #[test]
+    fn library_enter_opens_detail_view() {
+        let mut s = st();
+        handle_key(k(KeyCode::Tab), &mut s);
+        assert_eq!(s.tab, Tab::Library);
+        handle_key(k(KeyCode::Enter), &mut s);
+        assert!(s.detail.is_some(), "Library Enter must drill into detail");
+    }
+
+    #[test]
+    fn detail_esc_returns_to_list_not_dismiss() {
+        let mut s = st();
+        handle_key(k(KeyCode::Tab), &mut s);
+        handle_key(k(KeyCode::Enter), &mut s);
+        assert!(s.detail.is_some());
+        let outcome = handle_key(k(KeyCode::Esc), &mut s);
+        assert_eq!(
+            outcome,
+            KeyOutcome::Consumed,
+            "Esc from detail must NOT dismiss panel — just return to list"
+        );
+        assert!(s.detail.is_none(), "detail must clear after Esc/Back");
+    }
+
+    #[test]
+    fn detail_left_also_returns_to_list() {
+        let mut s = st();
+        handle_key(k(KeyCode::Tab), &mut s);
+        handle_key(k(KeyCode::Enter), &mut s);
+        handle_key(k(KeyCode::Left), &mut s);
+        assert!(s.detail.is_none(), "← must return from detail");
+    }
+
+    #[test]
+    fn running_enter_does_not_open_library_detail() {
+        let mut s = st();
+        assert_eq!(s.tab, Tab::Running);
+        handle_key(k(KeyCode::Enter), &mut s);
+        assert!(s.detail.is_none(), "Running Enter must not open Library detail");
     }
 }

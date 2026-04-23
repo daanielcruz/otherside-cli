@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use crate::agent::subagents::frontmatter::ToolsField;
 use crate::agent::subagents::registry::AgentDefinition;
 use crate::tasks::{TaskKind, TaskState, TaskStore};
 
@@ -102,6 +103,14 @@ pub fn discover_user_agents() -> Vec<UserAgentRow> {
     rows
 }
 
+/// Which Library row kind is being drilled into when `detail_index` is set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LibraryDetailKind {
+    CreateNewAgent,
+    UserAgent(usize),
+    BuiltIn(usize),
+}
+
 #[derive(Debug, Clone)]
 pub struct AgentsPanelState {
     pub tab: Tab,
@@ -112,6 +121,27 @@ pub struct AgentsPanelState {
     pub library: Vec<LibraryRow>,
     pub user_agents: Vec<UserAgentRow>,
     pub user_agents_dir: Option<PathBuf>,
+    /// When `Some`, the Library tab is in detail-view mode showing the
+    /// selected agent's prompt/tools/model (view-only — upstream's Edit +
+    /// Delete + Create wizard are Phase 2).
+    pub detail: Option<LibraryDetailKind>,
+    /// Built-in agent definitions, cached at panel open so the detail view
+    /// has access to the full prompt body without round-tripping through
+    /// the registry.
+    pub builtin_defs: Vec<BuiltInAgentSnapshot>,
+}
+
+/// Snapshot of an `AgentDefinition` sufficient to render the detail view
+/// (`View agent` mode). Cached into the panel state so the panel can run
+/// without borrowing the global registry.
+#[derive(Debug, Clone)]
+pub struct BuiltInAgentSnapshot {
+    pub name: String,
+    pub model: String,
+    pub description: String,
+    pub prompt: String,
+    pub tools: Vec<String>,
+    pub tools_wildcard: bool,
 }
 
 fn short_model_name(model: Option<&str>) -> String {
@@ -177,6 +207,25 @@ impl AgentsPanelState {
             .collect();
         library.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
 
+        let mut builtin_defs: Vec<BuiltInAgentSnapshot> = defs
+            .iter()
+            .map(|d| {
+                let (tools, wildcard) = match &d.tools {
+                    ToolsField::Wildcard => (Vec::new(), true),
+                    ToolsField::List(list) => (list.clone(), false),
+                };
+                BuiltInAgentSnapshot {
+                    name: d.name.clone(),
+                    model: short_model_name(d.model.as_deref()),
+                    description: d.description.clone(),
+                    prompt: d.system_prompt.clone(),
+                    tools,
+                    tools_wildcard: wildcard,
+                }
+            })
+            .collect();
+        builtin_defs.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+
         Self {
             tab: Tab::Running,
             running_cursor: 0,
@@ -186,7 +235,45 @@ impl AgentsPanelState {
             library,
             user_agents: discover_user_agents(),
             user_agents_dir: discover_user_agents_dir(),
+            detail: None,
+            builtin_defs,
         }
+    }
+
+    /// Resolve the cursor's flat index into a `LibraryDetailKind`. Returns
+    /// `None` when the cursor is out of range (should not happen given
+    /// `library_selectable_count` gating, but defensive).
+    pub fn library_detail_kind(&self) -> Option<LibraryDetailKind> {
+        let idx = self.library_cursor;
+        if idx == 0 {
+            return Some(LibraryDetailKind::CreateNewAgent);
+        }
+        let user_len = self.user_agents.len();
+        if idx <= user_len {
+            return Some(LibraryDetailKind::UserAgent(idx - 1));
+        }
+        let builtin_idx = idx - 1 - user_len;
+        if builtin_idx < self.library.len() {
+            Some(LibraryDetailKind::BuiltIn(builtin_idx))
+        } else {
+            None
+        }
+    }
+
+    /// Drill into the detail view for the currently-selected Library row.
+    /// No-op when tab != Library or cursor is out of range.
+    pub fn enter_library_detail(&mut self) {
+        if !matches!(self.tab, Tab::Library) {
+            return;
+        }
+        if let Some(kind) = self.library_detail_kind() {
+            self.detail = Some(kind);
+        }
+    }
+
+    /// Leave detail view, back to list.
+    pub fn back_from_detail(&mut self) {
+        self.detail = None;
     }
 
     /// Total selectable rows on the Library tab:
@@ -249,6 +336,28 @@ impl AgentsPanelState {
             })
             .collect();
         self.library
+            .sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        // Keep `builtin_defs` in sync so the detail view walks the same
+        // sort order as the list (LibraryRow sorts case-insensitively;
+        // mirror that here).
+        self.builtin_defs = defs
+            .iter()
+            .map(|d| {
+                let (tools, wildcard) = match &d.tools {
+                    ToolsField::Wildcard => (Vec::new(), true),
+                    ToolsField::List(list) => (list.clone(), false),
+                };
+                BuiltInAgentSnapshot {
+                    name: d.name.clone(),
+                    model: short_model_name(d.model.as_deref()),
+                    description: d.description.clone(),
+                    prompt: d.system_prompt.clone(),
+                    tools,
+                    tools_wildcard: wildcard,
+                }
+            })
+            .collect();
+        self.builtin_defs
             .sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     }
 
