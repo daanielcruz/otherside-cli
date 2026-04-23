@@ -463,6 +463,31 @@ mod tests {
     }
 
     #[test]
+    fn discover_user_agents_parses_real_claude_dir() {
+        // If ~/.claude/agents/*.md exists, discover_user_agents must surface
+        // at least one row. Test skipped gracefully when the dir is empty
+        // (CI / clean envs).
+        let Some(dir) = discover_user_agents_dir() else {
+            return;
+        };
+        let Ok(iter) = std::fs::read_dir(&dir) else {
+            return;
+        };
+        let md_count = iter
+            .flatten()
+            .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("md"))
+            .count();
+        if md_count == 0 {
+            return;
+        }
+        let rows = discover_user_agents();
+        assert!(
+            !rows.is_empty(),
+            "~/.claude/agents has {md_count} .md files — discover must parse at least one"
+        );
+    }
+
+    #[test]
     fn library_cursor_walks_create_user_builtin_rows() {
         let mut st = AgentsPanelState::new(&TaskStore::new(), registry::all());
         st.tab = Tab::Library;

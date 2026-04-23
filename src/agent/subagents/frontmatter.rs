@@ -109,6 +109,16 @@ pub fn parse(src: &str) -> Result<Parsed, FrontmatterError> {
                     .filter(|s| !s.is_empty())
                     .collect();
                 tools = Some(ToolsField::List(list));
+            } else if val.contains(',') {
+                // Bare comma-separated list (YAML flow style without brackets),
+                // e.g. `tools: Bash, Read, Write` — upstream claude accepts
+                // this shape in user agent frontmatter.
+                let list: Vec<String> = val
+                    .split(',')
+                    .map(|s| unquote(s.trim()))
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                tools = Some(ToolsField::List(list));
             } else {
                 return Err(FrontmatterError::UnknownToolsValue(val));
             }
@@ -161,6 +171,23 @@ mod tests {
                 "Read".into(),
                 "Glob".into(),
                 "Grep".into()
+            ]))
+        );
+    }
+
+    #[test]
+    fn parses_bare_comma_separated_tools() {
+        // Matches the shape that lives in real user agents on disk
+        // (e.g. `~/.claude/agents/researcher.md`): comma-separated tools
+        // without surrounding brackets.
+        let src = "---\nname: r\ntools: Bash, Read, Glob\n---\nbody\n";
+        let p = parse(src).unwrap();
+        assert_eq!(
+            p.tools,
+            Some(ToolsField::List(vec![
+                "Bash".into(),
+                "Read".into(),
+                "Glob".into(),
             ]))
         );
     }
