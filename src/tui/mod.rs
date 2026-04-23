@@ -1436,10 +1436,22 @@ fn edit_settings_row(st: &mut ConversationState, direction: i32) {
         .as_ref()
         .and_then(|m| m.settings_header_focused)
         .unwrap_or(false);
+    let prev_body_focused = st
+        .active_menu
+        .as_ref()
+        .map(|m| m.settings_body_focused)
+        .unwrap_or(false);
+    let prev_search_query = st
+        .active_menu
+        .as_ref()
+        .map(|m| m.settings_search_query.clone())
+        .unwrap_or_default();
     st.active_menu = Some(menu::OverlayMenu::new_settings(tab, st));
     if let Some(m) = st.active_menu.as_mut() {
         m.cursor = prev_cursor.min(m.options.len().saturating_sub(1));
         m.settings_header_focused = Some(prev_header_focused);
+        m.settings_body_focused = prev_body_focused;
+        m.settings_search_query = prev_search_query;
     }
 }
 
@@ -2880,6 +2892,37 @@ mod settings_edit_tests {
         let snap = st.session.model.clone();
         edit_settings_row(&mut st, 1);
         assert_eq!(st.session.model, snap);
+    }
+
+    #[test]
+    fn edit_preserves_body_focus_and_search_query() {
+        // User bug 2026-04-23: toggling a bool row kicked focus back to the
+        // search region, so the user had to navigate down again on every
+        // change. `edit_settings_row` rebuilds the menu with fresh
+        // `OverlayMenu::new_settings` (which defaults body_focused=false,
+        // query=""); the rebuild must preserve both.
+        let mut st = ConversationState::default();
+        st.active_menu = Some(OverlayMenu::new_settings(SettingsTab::Config, &st));
+        if let Some(m) = st.active_menu.as_mut() {
+            m.settings_body_focused = true;
+            m.settings_search_query = "auto".into();
+            focus_row(m, "Auto-compact");
+        }
+        let cursor_before = st.active_menu.as_ref().unwrap().cursor;
+        edit_settings_row(&mut st, 1);
+        let m = st.active_menu.as_ref().expect("menu still present");
+        assert!(
+            m.settings_body_focused,
+            "body focus must survive edit — user bug 2026-04-23"
+        );
+        assert_eq!(
+            m.settings_search_query, "auto",
+            "search query must survive edit"
+        );
+        assert_eq!(
+            m.cursor, cursor_before,
+            "cursor row must not jump on edit"
+        );
     }
 
     #[test]
