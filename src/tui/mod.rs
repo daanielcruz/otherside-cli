@@ -359,13 +359,7 @@ async fn event_loop(
     }
     st.persistence.settings = settings;
 
-    if st.persistence.settings.default_provider.is_none() {
-        st.persistence.settings.default_provider = Some(st.provider_id.slug().to_string());
-    }
-    if st.persistence.settings.default_model.is_none() {
-        st.persistence.settings.default_model = Some(st.session.model.clone());
-    }
-    if let Err(e) = persist_session_defaults(&st) {
+    if let Err(e) = crate::state::broker::seed_boot_defaults(&mut st) {
         tracing::warn!(?e, "initial settings write failed");
     }
 

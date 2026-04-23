@@ -100,6 +100,24 @@ pub fn set_active_model(st: &mut ConversationState, model: impl Into<String>) ->
     Ok(())
 }
 
+/// Boot-time seed: fill `default_provider` + `default_model` if the user's
+/// `settings.json` left them blank, then flush. Called once from the TUI
+/// event loop after `settings.json` has been loaded and `ConversationState`
+/// is constructed. No dispatch-snapshot sync — main.rs installs the
+/// snapshot before this runs with the same `(provider, model)` pair.
+pub fn seed_boot_defaults(st: &mut ConversationState) -> Result<()> {
+    if st.persistence.settings.default_provider.is_none() {
+        st.persistence.settings.default_provider =
+            Some(st.provider_id.slug().to_string());
+    }
+    if st.persistence.settings.default_model.is_none() {
+        st.persistence.settings.default_model = Some(st.session.model.clone());
+    }
+    let provider_slug = st.provider_id.slug();
+    st.persistence
+        .commit_session_defaults(&st.session, provider_slug)
+}
+
 /// Boolean-setting bridge for `/config` bool-row toggles. Mutates the in-
 /// memory settings, mirrors into the matching `ConversationState` flag when
 /// the setting has a runtime shadow (`verbose` → `render_verbose`), and
@@ -560,6 +578,153 @@ mod tests {
             snap.thinking.map(|t| t.level),
             Some(ThinkingLevel::High),
             "dispatch snapshot thinking in lock-step",
+        );
+    }
+
+    #[test]
+    fn persistence_settings_writers_are_broker_only() {
+        // Step 7 lockdown (per docs/state/state-broker-analysis.md): every
+        // `st.persistence.settings.<field> = ...` site in the crate must
+        // live inside this file, be a test site (`#[cfg(test)]`), or be the
+        // `switch_provider` method in `tui/state/mod.rs` which is invoked
+        // ONLY by `broker::set_active_provider`. Any other production
+        // writer is a SoT drift: it bypasses the broker's
+        // mutate+mirror+flush handshake and the dispatch-snapshot sync
+        // that rides with it.
+        use std::path::Path;
+
+        fn scan(dir: &Path, hits: &mut Vec<String>) {
+            if dir.file_name().and_then(|n| n.to_str()) == Some("target") {
+                return;
+            }
+            let entries = match std::fs::read_dir(dir) {
+                Ok(e) => e,
+                Err(_) => return,
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    scan(&path, hits);
+                    continue;
+                }
+                if path.extension().and_then(|s| s.to_str()) != Some("rs") {
+                    continue;
+                }
+                let Ok(src) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
+                // Cheap cfg(test) module stripper: drop every span between
+                // `#[cfg(test)]\nmod ...` (or `#[cfg(test)]\npub mod ...`)
+                // and the closing module brace at col 0. This is
+                // conservative — inner test-only helpers outside a
+                // `#[cfg(test)]` block still get scanned.
+                let stripped = strip_cfg_test_modules(&src);
+                for (line_no, line) in stripped.lines().enumerate() {
+                    let trimmed = line.trim_start();
+                    if trimmed.starts_with("//") || trimmed.starts_with("/*") {
+                        continue;
+                    }
+                    if is_assignment_to_settings_field(line) {
+                        hits.push(format!(
+                            "{}:{}: {}",
+                            path.display(),
+                            line_no + 1,
+                            line.trim(),
+                        ));
+                    }
+                }
+            }
+        }
+
+        /// Matches `persistence.settings.<ident> = <rhs>` where the `=` is
+        /// the first non-ident, non-whitespace char after the field name
+        /// (so `.clone()`, `.unwrap_or(...)`, `==`, `=>` all skip cleanly).
+        fn is_assignment_to_settings_field(line: &str) -> bool {
+            let needle = "persistence.settings.";
+            let Some(idx) = line.find(needle) else { return false; };
+            let tail = &line[idx + needle.len()..];
+            let mut iter = tail.chars().peekable();
+            // Consume the <ident> part (alphanum + underscore).
+            while let Some(&c) = iter.peek() {
+                if c.is_alphanumeric() || c == '_' {
+                    iter.next();
+                } else {
+                    break;
+                }
+            }
+            // Skip whitespace between ident and next token.
+            while let Some(&c) = iter.peek() {
+                if c.is_whitespace() { iter.next(); } else { break; }
+            }
+            // Next char must be `=`, followed by something that isn't `=`
+            // (rules out `==`).
+            match iter.next() {
+                Some('=') => !matches!(iter.peek(), Some('=')),
+                _ => false,
+            }
+        }
+
+        fn strip_cfg_test_modules(src: &str) -> String {
+            let mut out = String::with_capacity(src.len());
+            let mut in_test = false;
+            let mut brace_depth = 0i32;
+            let mut saw_cfg = false;
+            for line in src.lines() {
+                if !in_test {
+                    if line.trim_start().starts_with("#[cfg(test)]") {
+                        saw_cfg = true;
+                        out.push('\n');
+                        continue;
+                    }
+                    if saw_cfg {
+                        saw_cfg = false;
+                        if line.contains("mod ") && line.contains('{') {
+                            in_test = true;
+                            brace_depth = 1;
+                            out.push('\n');
+                            continue;
+                        }
+                    }
+                    out.push_str(line);
+                    out.push('\n');
+                } else {
+                    for c in line.chars() {
+                        if c == '{' { brace_depth += 1; }
+                        if c == '}' { brace_depth -= 1; }
+                    }
+                    out.push('\n');
+                    if brace_depth <= 0 {
+                        in_test = false;
+                    }
+                }
+            }
+            out
+        }
+
+        let crate_src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut hits = Vec::new();
+        scan(&crate_src, &mut hits);
+
+        // Allowlist: broker's own writes + the `switch_provider` shim
+        // invoked only by `broker::set_active_provider`.
+        let allowed_file_suffixes = ["state/broker.rs", "tui/state/mod.rs"];
+        let unexpected: Vec<&String> = hits
+            .iter()
+            .filter(|h| {
+                !allowed_file_suffixes
+                    .iter()
+                    .any(|s| h.contains(s))
+            })
+            .collect();
+
+        assert!(
+            unexpected.is_empty(),
+            "non-broker writer(s) of persistence.settings detected — route through state::broker::* instead:\n{}",
+            unexpected
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join("\n"),
         );
     }
 
