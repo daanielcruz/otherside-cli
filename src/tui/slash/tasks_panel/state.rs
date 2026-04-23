@@ -21,6 +21,7 @@ pub struct TaskRow {
     /// the task is cleared from the store.
     pub prompt: String,
     pub tool_use_id: Option<String>,
+    pub error: Option<String>,
 }
 
 impl From<&TaskRecord> for TaskRow {
@@ -36,6 +37,7 @@ impl From<&TaskRecord> for TaskRow {
             output: r.output.iter().cloned().collect(),
             prompt: r.command.clone(),
             tool_use_id: r.tool_use_id.clone(),
+            error: r.error.clone(),
         }
     }
 }

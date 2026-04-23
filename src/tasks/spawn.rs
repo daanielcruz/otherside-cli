@@ -89,6 +89,7 @@ fn finalize(
                 if let Some(agent_id) = r.agent_id.as_ref() {
                     disk_payload = Some((agent_id.clone(), err_line));
                 }
+                r.error = Some(e.to_string());
                 r.state = TaskState::Failed;
                 r.exit_code = Some(1);
             }

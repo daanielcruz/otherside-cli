@@ -70,6 +70,12 @@ pub struct TaskRecord {
     pub description: Option<String>,
 
     pub tokens: u64,
+
+    /// Structured error message captured when `state` transitions to Failed.
+    /// Rendered by the agent-detail view's Error section (upstream
+    /// AsyncAgentDetailDialog.tsx:188-194). Independent of `output` so the
+    /// failure text doesn't have to be scraped out of the progress log.
+    pub error: Option<String>,
 }
 
 impl TaskRecord {
@@ -94,6 +100,7 @@ impl TaskRecord {
             subagent_type: None,
             description: None,
             tokens: 0,
+            error: None,
         }
     }
 
@@ -115,6 +122,7 @@ impl TaskRecord {
             subagent_type: None,
             description: None,
             tokens: 0,
+            error: None,
         }
     }
 

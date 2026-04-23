@@ -259,6 +259,35 @@ fn detail_body_lines(row: &TaskRow) -> Vec<Line<'static>> {
         }
     }
 
+    // Error section — mirrors AsyncAgentDetailDialog.tsx:188-194 (bold red
+    // "Error" header + red body) when the task failed and carries a
+    // captured error message.
+    if matches!(row.state, TaskState::Failed) {
+        if let Some(err) = row.error.as_deref() {
+            if !err.trim().is_empty() {
+                lines.push(Line::from(vec![
+                    Span::raw(BODY_INDENT),
+                    Span::styled(
+                        "Error".to_string(),
+                        Style::default()
+                            .fg(theme::ERROR)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ]));
+                for body_line in err.lines() {
+                    lines.push(Line::from(vec![
+                        Span::raw(BODY_SUB_INDENT),
+                        Span::styled(
+                            body_line.to_string(),
+                            Style::default().fg(theme::ERROR),
+                        ),
+                    ]));
+                }
+                lines.push(Line::from(""));
+            }
+        }
+    }
+
     lines
 }
 
@@ -723,6 +752,7 @@ mod tests {
                 output: Vec::new(),
                 prompt: "p".into(),
                 tool_use_id: None,
+                error: None,
             };
             TasksPanelState {
                 mode: Mode::Detail(0),
@@ -809,6 +839,7 @@ mod tests {
                 output: Vec::new(),
                 prompt: "p".into(),
                 tool_use_id: None,
+                error: None,
             }],
             came_from_list: false,
         };
@@ -925,6 +956,62 @@ mod tests {
         assert!(
             title_cell.modifier.contains(Modifier::BOLD),
             "title cell must be bold: {title_cell:?}"
+        );
+    }
+
+    fn mk_row(state: TaskState, error: Option<String>) -> TaskRow {
+        TaskRow {
+            name: "probe".into(),
+            description: Some("p".into()),
+            subagent_type: Some("swarm".into()),
+            kind: TaskKind::Agent,
+            state,
+            runtime_secs: 1,
+            tokens: 0,
+            output: Vec::new(),
+            prompt: "p".into(),
+            tool_use_id: None,
+            error,
+        }
+    }
+
+    #[test]
+    fn detail_body_renders_error_section_when_failed_with_error() {
+        let row = mk_row(
+            TaskState::Failed,
+            Some("connection refused to api.kimi.com:443".into()),
+        );
+        let body = detail_body_lines(&row);
+        let text = collect_text(&body);
+        assert!(text.contains("Error"), "Error header must render: {text:?}");
+        assert!(
+            text.contains("connection refused to api.kimi.com:443"),
+            "error body must render: {text:?}"
+        );
+    }
+
+    #[test]
+    fn detail_body_omits_error_section_when_running() {
+        let row = mk_row(
+            TaskState::Running,
+            Some("would be rendered but running".into()),
+        );
+        let body = detail_body_lines(&row);
+        let text = collect_text(&body);
+        assert!(
+            !text.contains("would be rendered but running"),
+            "Error section must not render when state != Failed: {text:?}"
+        );
+    }
+
+    #[test]
+    fn detail_body_omits_error_section_when_failed_without_error() {
+        let row = mk_row(TaskState::Failed, None);
+        let body = detail_body_lines(&row);
+        let text = collect_text(&body);
+        assert!(
+            !text.contains("Error\n") && !text.contains("Error "),
+            "no Error header when failed without captured error: {text:?}"
         );
     }
 }
