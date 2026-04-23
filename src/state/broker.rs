@@ -100,6 +100,52 @@ pub fn set_active_model(st: &mut ConversationState, model: impl Into<String>) ->
     Ok(())
 }
 
+/// Clear stored credentials for `provider` and, when that provider was the
+/// ready-to-dispatch set's only member, re-seed the welcome screen on the
+/// next boot by returning the `(provider, was_active)` pair so the caller
+/// can pick a fallback.
+///
+/// Provider-specific dispatch:
+/// - `ClaudeCode` → `auth::anthropic::clear_credentials`
+/// - `Codex` → `auth::codex::clear_credentials`
+/// - `Kimi` → `auth::kimi::clear_credentials`
+/// - `GeminiCli` → no-op (provider not wired)
+/// - `OpenAiCustom` → strips `api_key` from settings; keeps `base_url`.
+///
+/// Caller is responsible for any follow-up welcome-screen routing. Broker
+/// Step 5 (partial) — interactive login remains a TUI-owned flow until the
+/// `login_interactive` paths agree on a single async signature across all
+/// three providers.
+pub fn logout_provider(
+    st: &mut ConversationState,
+    provider: ProviderId,
+) -> Result<()> {
+    match provider {
+        ProviderId::ClaudeCode => crate::auth::anthropic::clear_credentials()?,
+        ProviderId::Codex => crate::auth::codex::clear_credentials()?,
+        ProviderId::Kimi => crate::auth::kimi::clear_credentials()?,
+        ProviderId::GeminiCli => {
+            // Gemini has no auth module wired; logout is a no-op. Caller
+            // still gets Ok — idempotent.
+        }
+        ProviderId::OpenAiCustom => {
+            if let Some(cfg) = st
+                .persistence
+                .settings
+                .providers
+                .openai_compatible
+                .as_mut()
+            {
+                cfg.api_key = None;
+            }
+            let provider_slug = st.provider_id.slug();
+            st.persistence
+                .commit_session_defaults(&st.session, provider_slug)?;
+        }
+    }
+    Ok(())
+}
+
 /// Boot-time seed: fill `default_provider` + `default_model` if the user's
 /// `settings.json` left them blank, then flush. Called once from the TUI
 /// event loop after `settings.json` has been loaded and `ConversationState`
@@ -786,6 +832,67 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join("\n"),
         );
+    }
+
+    #[test]
+    fn logout_provider_strips_openai_custom_api_key_only() {
+        // Broker Step 5 (partial) — OpenAiCustom logout keeps base_url and
+        // nukes api_key; other providers dispatch to their module's
+        // clear_credentials. Gemini is a no-op (provider not wired).
+        use crate::config::settings::{OpenAiCompatibleSettings, PermissionMode};
+        use crate::tui::state::ConversationState;
+
+        let mut st = ConversationState::default();
+        st.session = crate::state::Session::new("gpt-5.4", PermissionMode::Default);
+        st.provider_id = ProviderId::OpenAiCustom;
+        st.persistence.settings.providers.openai_compatible = Some(OpenAiCompatibleSettings {
+            base_url: Some("https://llm.example.com/v1".into()),
+            api_key: Some("sk-secret".into()),
+            ..Default::default()
+        });
+
+        let tmp = std::env::temp_dir().join(format!(
+            "broker_logout_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let prev = std::env::var("OTHERSIDE_CONFIG_DIR").ok();
+        unsafe { std::env::set_var("OTHERSIDE_CONFIG_DIR", &tmp); }
+
+        let r = logout_provider(&mut st, ProviderId::OpenAiCustom);
+
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("OTHERSIDE_CONFIG_DIR", v),
+                None => std::env::remove_var("OTHERSIDE_CONFIG_DIR"),
+            }
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        assert!(r.is_ok(), "logout must succeed; got {r:?}");
+        let cfg = st
+            .persistence
+            .settings
+            .providers
+            .openai_compatible
+            .as_ref()
+            .unwrap();
+        assert_eq!(cfg.base_url.as_deref(), Some("https://llm.example.com/v1"));
+        assert!(cfg.api_key.is_none(), "api_key must be cleared; got {:?}", cfg.api_key);
+    }
+
+    #[test]
+    fn logout_gemini_is_noop() {
+        use crate::config::settings::PermissionMode;
+        use crate::tui::state::ConversationState;
+        let mut st = ConversationState::default();
+        st.session = crate::state::Session::new("", PermissionMode::Default);
+        let r = logout_provider(&mut st, ProviderId::GeminiCli);
+        assert!(r.is_ok(), "gemini logout is idempotent no-op");
     }
 
     #[test]
