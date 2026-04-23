@@ -169,14 +169,42 @@ fn build_request_body_full(
 
     let tools = super::tools::build_tools_array();
 
-    // Kimi-specific shim: when talking to a ThirdParty flavor with
-    // thinking enabled, every assistant tool-call message needs a
-    // `reasoning_content` sibling (see kimi 400 error captured
-    // 2026-04-23: "thinking is enabled but reasoning_content is
-    // missing in assistant tool call message at index N"). Anthropic
-    // itself rejects this field, so the gate is flavor-scoped.
+    let (stripped_for_effort, _) = strip_1m_suffix(&req.model);
+
+    // Effort selection: caller-supplied `thinking` wins when the level maps
+    // to a non-auto effort AND the model accepts it; otherwise fall back to
+    // the catalog's default effort for this model. Haiku-class models
+    // (supported_efforts == ["auto"]) never carry an `effort` field.
+    let selected_effort = thinking_to_effort(thinking)
+        .filter(|level| crate::models::catalog::supports_effort(&stripped_for_effort, level))
+        .unwrap_or_else(|| crate::models::catalog::default_effort_for(&stripped_for_effort));
+
+    let efforts = crate::models::catalog::by_id(&stripped_for_effort)
+        .map(|m| m.supported_efforts)
+        .unwrap_or(&[]);
+    // Three paths that strip the `thinking` + `context_management`
+    // envelope blocks:
+    //   1. Model advertises only `auto` (claude haiku class).
+    //   2. Catalog is empty / unknown slug (defensive fallback).
+    //   3. Kimi `effort=off` — explicit user request to skip reasoning.
+    let kimi_effort_off = efforts == ["on", "off"] && selected_effort == "off";
+    let strip_thinking_envelope =
+        efforts == ["auto"] || efforts.is_empty() || kimi_effort_off;
+
+    // Kimi-specific shim: when talking to a ThirdParty flavor and the
+    // `thinking` envelope block actually rides the wire, every assistant
+    // tool-call message needs a `reasoning_content` sibling (see kimi 400
+    // error captured 2026-04-23: "thinking is enabled but reasoning_content
+    // is missing in assistant tool call message at index N"). Anthropic
+    // itself rejects this field, so the gate is flavor-scoped. Historically
+    // this gated on `thinking.is_some()` (caller's `Option<ThinkingConfig>`)
+    // but that's stale: the envelope defaults carry `thinking:{type:adaptive}`
+    // unconditionally, so the wire sent thinking-on even when the caller
+    // hadn't explicitly picked a level, and the missing shim triggered the
+    // 400 from turn 6+. Now the shim follows the same gate as the envelope
+    // strip — in lockstep with the actual wire.
     let emit_reasoning_shim =
-        matches!(flavor, super::system::SystemFlavor::ThirdParty) && thinking.is_some();
+        matches!(flavor, super::system::SystemFlavor::ThirdParty) && !strip_thinking_envelope;
     let messages = message_builder::build_with_flavor_and_shim(
         &req.messages,
         ctx,
@@ -202,16 +230,6 @@ fn build_request_body_full(
         }
     }
 
-    let (stripped_for_effort, _) = strip_1m_suffix(&req.model);
-
-    // Effort selection: caller-supplied `thinking` wins when the level maps
-    // to a non-auto effort AND the model accepts it; otherwise fall back to
-    // the catalog's default effort for this model. Haiku-class models
-    // (supported_efforts == ["auto"]) never carry an `effort` field.
-    let selected_effort = thinking_to_effort(thinking)
-        .filter(|level| crate::models::catalog::supports_effort(&stripped_for_effort, level))
-        .unwrap_or_else(|| crate::models::catalog::default_effort_for(&stripped_for_effort));
-
     if let Some(out_cfg) = body.get_mut("output_config").and_then(|v| v.as_object_mut()) {
         // Numeric levels ride on `output_config.effort`. Kimi's on/off
         // binary + claude's `auto` bucket are non-numeric and handled by
@@ -227,16 +245,7 @@ fn build_request_body_full(
         }
     }
 
-    let efforts = crate::models::catalog::by_id(&stripped_for_effort)
-        .map(|m| m.supported_efforts)
-        .unwrap_or(&[]);
-    // Three paths that strip the `thinking` + `context_management`
-    // envelope blocks:
-    //   1. Model advertises only `auto` (claude haiku class).
-    //   2. Catalog is empty / unknown slug (defensive fallback).
-    //   3. Kimi `effort=off` — explicit user request to skip reasoning.
-    let kimi_effort_off = efforts == ["on", "off"] && selected_effort == "off";
-    if efforts == ["auto"] || efforts.is_empty() || kimi_effort_off {
+    if strip_thinking_envelope {
         body.remove("thinking");
 
         body.remove("context_management");
@@ -552,8 +561,13 @@ mod tests {
             flavor: SystemFlavor,
             thinking: Option<&ThinkingConfig>,
         ) -> Value {
+            // Use the LIVE kimi model — `kimi-for-coding` — so the shim gate
+            // exercises the actual wire path. Previous ghost slug
+            // `kimi-k2-thinking` fell to `catalog::by_id == None` → efforts
+            // empty → thinking-envelope stripped → shim skipped, masking
+            // the 400 we're regressing against.
             let req = OpenAiChatRequest {
-                model: "kimi-k2-thinking".to_string(),
+                model: "kimi-for-coding".to_string(),
                 messages: history,
                 stream: Some(true),
                 ..Default::default()
@@ -602,16 +616,57 @@ mod tests {
 
         #[test]
         fn request_omits_reasoning_content_when_thinking_off() {
-            // thinking = None → no shim, regardless of flavor.
+            // Kimi effort explicitly set to `off` by the caller. The wire
+            // strips the `thinking` envelope entirely, so the shim must
+            // also skip — otherwise we'd send reasoning_content with no
+            // thinking flag, which is nonsense.
+            let cfg = ThinkingConfig::level(ThinkingLevel::Off);
+            let body = build(
+                history_with_tool_use_turn(),
+                SystemFlavor::ThirdParty,
+                Some(&cfg),
+            );
+            assert!(
+                body.get("thinking").is_none(),
+                "precondition: thinking envelope must be stripped for kimi effort=off"
+            );
+            let msg = find_assistant_tool_use(&body);
+            assert!(
+                msg.get("reasoning_content").is_none(),
+                "reasoning_content must NOT ride when kimi effort=off strips the envelope",
+            );
+        }
+
+        #[test]
+        fn request_emits_reasoning_content_when_caller_thinking_is_none_but_catalog_defaults_on() {
+            // THE 2026-04-23 BUG REGRESSION. `cmd_tui` boots kimi with
+            // `thinking: None` (model slug has no `(level)` suffix), but
+            // the envelope defaults ride `thinking:{type:adaptive}` and the
+            // catalog picks `on` as the default effort. Old shim gate
+            // (`thinking.is_some()`) missed this — wire sent thinking-on
+            // with NO reasoning_content on assistant tool-calls, and kimi
+            // 400'd at turn 6+ with "thinking is enabled but
+            // reasoning_content is missing".
+            //
+            // New gate keys off the actual wire state: if the thinking
+            // envelope rides the body, the shim must fire.
             let body = build(
                 history_with_tool_use_turn(),
                 SystemFlavor::ThirdParty,
                 None,
             );
-            let msg = find_assistant_tool_use(&body);
             assert!(
-                msg.get("reasoning_content").is_none(),
-                "reasoning_content must NOT ride when thinking is disabled",
+                body.get("thinking").is_some(),
+                "precondition: envelope defaults carry thinking even when caller passed None"
+            );
+            let msg = find_assistant_tool_use(&body);
+            let rc = msg
+                .get("reasoning_content")
+                .expect("reasoning_content MUST ride because wire thinking is on");
+            assert_eq!(
+                rc.as_str(),
+                Some(""),
+                "empty-string shim is the validator-pass fallback when history has no captured content"
             );
         }
 
