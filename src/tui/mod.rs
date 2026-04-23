@@ -1523,57 +1523,18 @@ fn emit_panel_dismiss_anchor(
     outcome: Option<&menu::OverlayMenuOutcome>,
 ) {
     use crate::tui::slash::catalog::PanelKind;
-    let (slash, text) = match menu.kind {
-
-        PanelKind::Rewind => return,
-        // Phase 1 `/model` is UI-only; Enter / Esc never mutate session model.
-        // Match upstream wording: `Kept model as <displayName>` (commands/model/model.tsx:82).
-        // Phase 2 will add `Set model to X` once the broker commits.
-        PanelKind::Model => {
-            let display = crate::models::catalog::display_name_for(&st.session.model)
-                .unwrap_or(st.session.model.as_str());
-            let is_default = st
-                .persistence
-                .settings
-                .default_model
-                .as_deref()
-                .is_some_and(|d| d == st.session.model.as_str());
-            let suffix = if is_default { " (default)" } else { "" };
-            ("model", format!("Kept model as {display}{suffix}"))
+    // User directive 2026-04-24: "nao mencionar slashs dismisseds na tela
+    // de mensagens, fazer isso de maneira silenciosa." Panels close
+    // silently; only real DECISIONS (SetEffort, SetPermissionMode) still
+    // emit an anchor so the transcript records the user's choice.
+    let (slash, text) = match (menu.kind, outcome) {
+        (PanelKind::Permissions, Some(menu::OverlayMenuOutcome::SetPermissionMode { action_id })) => {
+            ("permissions", format!("Set permission mode to {action_id}"))
         }
-        PanelKind::Permissions => match outcome {
-            Some(menu::OverlayMenuOutcome::SetPermissionMode { action_id }) => {
-                ("permissions", format!("Set permission mode to {action_id}"))
-            }
-            _ => ("permissions", "Permissions dialog dismissed".to_string()),
-        },
-        PanelKind::Effort => match outcome {
-            Some(menu::OverlayMenuOutcome::SetEffort { label, .. }) => {
-                ("effort", format!("Set thinking effort to {label}"))
-            }
-
-            _ => ("effort", "Cancelled".to_string()),
-        },
-        PanelKind::Help => ("help", "Help dialog dismissed".to_string()),
-
-        PanelKind::Settings(tab) => {
-            use crate::tui::slash::catalog::SettingsTab;
-            let wording = match tab {
-                SettingsTab::Config => "Config dialog dismissed",
-                SettingsTab::Status => "Status dialog dismissed",
-                SettingsTab::Usage => "Status dialog dismissed",
-            };
-            (tab.slash_name(), wording.to_string())
+        (PanelKind::Effort, Some(menu::OverlayMenuOutcome::SetEffort { label, .. })) => {
+            ("effort", format!("Set thinking effort to {label}"))
         }
-        PanelKind::Skills => ("skills", "Skills dialog dismissed".to_string()),
-        PanelKind::Agents => ("agents", "Agents dialog dismissed".to_string()),
-        PanelKind::Mcp => ("mcp", "MCP dialog dismissed".to_string()),
-        PanelKind::Hooks => ("hooks", "Hooks dialog dismissed".to_string()),
-        PanelKind::Diff => ("diff", "Diff dialog dismissed".to_string()),
-
-        PanelKind::Resume => ("resume", "Resume cancelled".to_string()),
-
-        PanelKind::Tasks => ("tasks", "Background tasks dialog dismissed".to_string()),
+        _ => return,
     };
 
     st.push_anchor(slash, "", text, DisplayOrigin::Chrome);
@@ -1644,8 +1605,8 @@ fn handle_agents_panel_key(k: KeyEvent, st: &mut ConversationState) {
     };
     match handle_key(k, panel) {
         KeyOutcome::Dismiss => {
+            // Silent dismiss per user directive 2026-04-24.
             st.active_agents_panel = None;
-            st.push_anchor("agents", "", "Agents dialog dismissed", DisplayOrigin::Chrome);
         }
         KeyOutcome::Consumed => {}
     }
@@ -2389,13 +2350,21 @@ impl Drop for TerminalGuard {
 
 #[cfg(test)]
 mod panel_anchor_tests {
+    // User directive 2026-04-24: "nao mencionar slashs dismisseds na tela
+    // de mensagens, fazer isso de maneira silenciosa." Pure dismisses emit
+    // zero messages. Only real decisions (SetEffort, SetPermissionMode)
+    // still leave an anchor in the transcript.
     use super::*;
     use crate::tui::menu::{OverlayMenu, OverlayMenuOutcome};
     use crate::tui::slash::catalog::PanelKind;
 
-    fn anchor_lines(st: &ConversationState) -> (String, String) {
+    fn decision_anchor(st: &ConversationState) -> (String, String) {
         let n = st.messages.len();
-        assert!(n >= 2, "expected ≥2 messages, got {n}");
+        assert!(
+            n >= 2,
+            "decision anchor pair expected; got {n} messages: {:?}",
+            st.messages,
+        );
         (
             st.messages[n - 2].content.clone(),
             st.messages[n - 1].content.clone(),
@@ -2403,11 +2372,7 @@ mod panel_anchor_tests {
     }
 
     #[test]
-    fn model_dismiss_emits_kept_model_as_upstream_wording() {
-        // Upstream (`commands/model/model.tsx:82`) emits
-        // `Kept model as <displayName>` on Esc-without-commit. Phase 1 still
-        // UI-only so every dismiss is `Kept model as current_model`.
-        // Appends `(default)` when session.model == settings.default_model.
+    fn model_panel_dismiss_is_silent() {
         let mut st = ConversationState::default();
         st.session.model = "claude-opus-4-7".into();
         let menu = OverlayMenu::new_model_tabbed(
@@ -2418,97 +2383,42 @@ mod panel_anchor_tests {
             0,
         );
         emit_panel_dismiss_anchor(&mut st, &menu, None);
-        let (echo, anchor) = anchor_lines(&st);
-        assert_eq!(echo, "/model");
-        assert_eq!(anchor, "⎿  Kept model as Opus 4.7");
+        assert!(st.messages.is_empty(), "got {:?}", st.messages);
     }
 
     #[test]
-    fn model_dismiss_appends_default_marker_when_session_model_equals_default() {
-        let mut st = ConversationState::default();
-        st.session.model = "claude-opus-4-7[1m]".into();
-        st.persistence.settings.default_model = Some("claude-opus-4-7[1m]".into());
-        let menu = OverlayMenu::new_model_tabbed(
-            &st.session.model,
-            &st.persistence.settings,
-            0,
-            true,
-            0,
-        );
-        emit_panel_dismiss_anchor(&mut st, &menu, None);
-        let (_, anchor) = anchor_lines(&st);
-        assert_eq!(anchor, "⎿  Kept model as Opus 4.7 (1M context) (default)");
-    }
-
-    #[test]
-    fn tasks_dismiss_matches_upstream_background_tasks_wording() {
+    fn tasks_panel_dismiss_is_silent() {
         let mut st = ConversationState::default();
         let menu = OverlayMenu::new_info(PanelKind::Tasks, "Tasks".into(), vec![]);
         emit_panel_dismiss_anchor(&mut st, &menu, None);
-        let (echo, anchor) = anchor_lines(&st);
-        assert_eq!(echo, "/tasks");
-        assert_eq!(
-            anchor, "⎿  Background tasks dialog dismissed",
-            "upstream hardcodes 'Background tasks dialog dismissed' at components/tasks/BackgroundTasksDialog.tsx:268"
-        );
+        assert!(st.messages.is_empty());
     }
 
     #[test]
-    fn help_dismiss_emits_dialog_dismissed() {
+    fn help_panel_dismiss_is_silent() {
         let mut st = ConversationState::default();
         let menu = OverlayMenu::new_info(PanelKind::Help, "Help".into(), vec![]);
         emit_panel_dismiss_anchor(&mut st, &menu, None);
-        let (echo, anchor) = anchor_lines(&st);
-        assert_eq!(echo, "/help");
-        assert_eq!(anchor, "⎿  Help dialog dismissed");
+        assert!(st.messages.is_empty());
     }
 
     #[test]
-    fn permissions_dismiss_esc_emits_dismissed() {
+    fn permissions_esc_dismiss_is_silent() {
         let mut st = ConversationState::default();
         let menu = OverlayMenu::new_permissions(st.session.permission_mode);
         emit_panel_dismiss_anchor(&mut st, &menu, None);
-        let (echo, anchor) = anchor_lines(&st);
-        assert_eq!(echo, "/permissions");
-        assert_eq!(anchor, "⎿  Permissions dialog dismissed");
+        assert!(st.messages.is_empty());
     }
 
     #[test]
-    fn settings_tab_dismiss_wording_per_tab() {
-
+    fn settings_tabs_dismiss_is_silent() {
         use crate::tui::slash::catalog::SettingsTab;
-        let cases = [
-            (SettingsTab::Status, "⎿  Status dialog dismissed"),
-            (SettingsTab::Config, "⎿  Config dialog dismissed"),
-            (SettingsTab::Usage, "⎿  Status dialog dismissed"),
-        ];
-        for (tab, expected) in cases {
+        for tab in [SettingsTab::Status, SettingsTab::Config, SettingsTab::Usage] {
             let mut st = ConversationState::default();
             let menu = OverlayMenu::new_info(PanelKind::Settings(tab), "_".into(), vec![]);
             emit_panel_dismiss_anchor(&mut st, &menu, None);
-            let (echo, anchor) = anchor_lines(&st);
-            assert_eq!(echo, format!("/{}", tab.slash_name()));
-            assert_eq!(anchor, expected, "tab {:?} dismiss wording", tab);
+            assert!(st.messages.is_empty(), "tab {tab:?} must be silent");
         }
-    }
-
-    #[test]
-    fn settings_dismiss_anchor_is_chrome() {
-
-        use crate::tui::slash::catalog::SettingsTab;
-        let mut st = ConversationState::default();
-        let menu = OverlayMenu::new_info(
-            PanelKind::Settings(SettingsTab::Config),
-            "_".into(),
-            vec![],
-        );
-        emit_panel_dismiss_anchor(&mut st, &menu, None);
-
-        st.input = "what tests are in state.rs?".into();
-        let _ = st.submit();
-        let hist = st.history_for_request();
-        assert_eq!(hist.len(), 1);
-        assert_eq!(hist[0].content, "what tests are in state.rs?");
     }
 
     #[test]
@@ -2519,12 +2429,25 @@ mod panel_anchor_tests {
             action_id: "plan".into(),
         };
         emit_panel_dismiss_anchor(&mut st, &menu, Some(&outcome));
-        let (_, anchor) = anchor_lines(&st);
+        let (_, anchor) = decision_anchor(&st);
         assert_eq!(anchor, "⎿  Set permission mode to plan");
     }
 
     #[test]
-    fn agents_panel_dismiss_emits_paired_echo_plus_anchor() {
+    fn effort_dismiss_with_level_change_emits_set() {
+        let mut st = ConversationState::default();
+        let menu = OverlayMenu::new_info(PanelKind::Effort, "Effort".into(), vec![]);
+        let outcome = OverlayMenuOutcome::SetEffort {
+            action_id: "high".into(),
+            label: "high".into(),
+        };
+        emit_panel_dismiss_anchor(&mut st, &menu, Some(&outcome));
+        let (_, anchor) = decision_anchor(&st);
+        assert_eq!(anchor, "⎿  Set thinking effort to high");
+    }
+
+    #[test]
+    fn agents_panel_esc_is_silent() {
         use crate::agent::subagents::registry;
         use crate::tui::slash::agents_panel::AgentsPanelState;
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -2534,74 +2457,49 @@ mod panel_anchor_tests {
         let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
         handle_agents_panel_key(esc, &mut st);
 
-        assert!(st.active_agents_panel.is_none(), "panel must close on Esc");
-        let (echo, anchor) = anchor_lines(&st);
-        assert_eq!(echo, "/agents", "dismiss must emit paired `/agents` echo, not an orphan note (bug W)");
-        assert_eq!(anchor, "⎿  Agents dialog dismissed");
+        assert!(st.active_agents_panel.is_none(), "panel closes on Esc");
+        assert!(st.messages.is_empty(), "dismiss must be silent; got {:?}", st.messages);
     }
 
     #[test]
-    fn rewind_dismiss_emits_nothing() {
-
+    fn rewind_dismiss_is_silent() {
         let mut st = ConversationState::default();
         let menu = OverlayMenu::new_info(PanelKind::Rewind, "Rewind".into(), vec![]);
         emit_panel_dismiss_anchor(&mut st, &menu, None);
-        assert!(
-            st.messages.is_empty(),
-            "rewind dismiss must emit no messages; got {:?}",
-            st.messages
-        );
+        assert!(st.messages.is_empty());
     }
 
     #[test]
-    fn resume_dismiss_wording_matches_upstream() {
-
+    fn resume_dismiss_is_silent() {
         let mut st = ConversationState::default();
         let menu = OverlayMenu::new_info(PanelKind::Resume, "Resume".into(), vec![]);
         emit_panel_dismiss_anchor(&mut st, &menu, None);
-        let (echo, anchor) = anchor_lines(&st);
-        assert_eq!(echo, "/resume");
-        assert_eq!(anchor, "⎿  Resume cancelled");
+        assert!(st.messages.is_empty());
     }
 
     #[test]
-    fn effort_dismiss_wording_matches_upstream() {
-
+    fn effort_esc_without_change_is_silent() {
         let mut st = ConversationState::default();
         let menu = OverlayMenu::new_info(PanelKind::Effort, "Effort".into(), vec![]);
         emit_panel_dismiss_anchor(&mut st, &menu, None);
-        let (echo, anchor) = anchor_lines(&st);
-        assert_eq!(echo, "/effort");
-        assert_eq!(anchor, "⎿  Cancelled");
+        assert!(st.messages.is_empty());
     }
 
-    // `model_dismiss_with_1m_beta_appends_suffix` — removed with the Phase 1
-    // pivot. The `/model` panel no longer mutates the session on dismiss,
-    // so the "(default)" suffix logic against `default_model()` returns with
-    // the Phase 2 broker wiring.
-
     #[test]
-    fn anchor_line_uses_double_space_after_symbol() {
-
+    fn decision_anchor_line_uses_double_space_after_symbol() {
         let mut st = ConversationState::default();
-        let menu = OverlayMenu::new_info(PanelKind::Help, "Help".into(), vec![]);
-        emit_panel_dismiss_anchor(&mut st, &menu, None);
-        let (_, anchor) = anchor_lines(&st);
-        assert!(
-            anchor.starts_with("⎿  "),
-            "anchor must start with `⎿  ` (double space); got {:?}",
-            anchor
-        );
-
+        let menu = OverlayMenu::new_permissions(st.session.permission_mode);
+        let outcome = OverlayMenuOutcome::SetPermissionMode {
+            action_id: "yolo".into(),
+        };
+        emit_panel_dismiss_anchor(&mut st, &menu, Some(&outcome));
+        let (_, anchor) = decision_anchor(&st);
+        assert!(anchor.starts_with("⎿  "), "got {anchor:?}");
         let bytes = anchor.as_bytes();
-
         assert_eq!(&bytes[0..3], [0xE2, 0x8E, 0xBF]);
         assert_eq!(bytes[3], b' ');
         assert_eq!(bytes[4], b' ');
-        assert_ne!(
-            bytes[5], b' ',
-            "no third space allowed; only double-space between ⎿ and the result"
-        );
+        assert_ne!(bytes[5], b' ');
     }
 }
 
