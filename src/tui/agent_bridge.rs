@@ -310,29 +310,6 @@ async fn dispatch_agent_cancellable(
         };
     }
 
-    let call_id_for_late = tool_call_id.to_string();
-    let tx_for_late = tx.clone();
-    tokio::spawn(async move {
-        let outcome = join.await;
-        let summary = match outcome {
-            Ok(Ok(v)) => v
-                .get("content")
-                .and_then(|c| c.as_array())
-                .and_then(|arr| arr.first())
-                .and_then(|first| first.get("text"))
-                .and_then(|t| t.as_str())
-                .unwrap_or("(no text)")
-                .to_string(),
-            Ok(Err(e)) => format!("error: {e}"),
-            Err(e) => format!("join error: {e}"),
-        };
-        let _ = tx_for_late
-            .send(StreamEvent::BackgroundAgentCompleted {
-                tool_call_id: call_id_for_late,
-                summary,
-            })
-            .await;
-    });
     background_signal::unregister(tool_call_id);
     let subagent_type = args
         .get("subagent_type")
@@ -342,7 +319,7 @@ async fn dispatch_agent_cancellable(
         .get("description")
         .and_then(|v| v.as_str())
         .unwrap_or("");
-    
+
     let agent_id = {
         let task_id = crate::tasks::TaskId::from_string(tool_call_id.to_string());
         let store_opt = crate::tasks::store::current_global();
@@ -360,6 +337,93 @@ async fn dispatch_agent_cancellable(
             generated
         })
     };
+
+    let call_id_for_late = tool_call_id.to_string();
+    let tx_for_late = tx.clone();
+    let agent_id_for_late = agent_id.clone();
+    tokio::spawn(async move {
+        let outcome = join.await;
+        let task_id = crate::tasks::TaskId::from_string(call_id_for_late.clone());
+        let store_opt = crate::tasks::store::current_global();
+
+        match outcome {
+            Ok(Ok(v)) => {
+                let text = v
+                    .get("content")
+                    .and_then(|c| c.as_array())
+                    .and_then(|arr| arr.first())
+                    .and_then(|first| first.get("text"))
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let total_tokens = v.get("totalTokens").and_then(Value::as_u64);
+
+                if !text.is_empty() {
+                    if let Err(e) = crate::tasks::disk_output::write_task_output(
+                        &agent_id_for_late,
+                        &text,
+                    ) {
+                        tracing::warn!(
+                            ?e,
+                            agent_id = %agent_id_for_late,
+                            "ctrl+b handoff: disk-output mirror failed"
+                        );
+                    }
+                }
+
+                if let Some(store) = store_opt.as_ref() {
+                    store.update_with(&task_id, |r| {
+                        if !text.is_empty() {
+                            r.push_output(text);
+                        }
+                        if let Some(total) = total_tokens {
+                            r.tokens = total;
+                        }
+                        if !r.state.is_terminal() {
+                            r.state = crate::tasks::TaskState::Completed;
+                            r.exit_code = Some(0);
+                        }
+                        r.inject_on_next_turn = true;
+                    });
+                }
+            }
+            Ok(Err(e)) => {
+                let err_line = format!("error: {e}");
+                let err_string = e.to_string();
+                if let Some(store) = store_opt.as_ref() {
+                    store.update_with(&task_id, |r| {
+                        r.push_output(err_line.clone());
+                        r.error = Some(err_string.clone());
+                        if !r.state.is_terminal() {
+                            r.state = crate::tasks::TaskState::Failed;
+                            r.exit_code = Some(1);
+                        }
+                        r.inject_on_next_turn = true;
+                    });
+                }
+            }
+            Err(e) => {
+                let err_line = format!("join error: {e}");
+                if let Some(store) = store_opt.as_ref() {
+                    store.update_with(&task_id, |r| {
+                        r.push_output(err_line.clone());
+                        r.error = Some(format!("join error: {e}"));
+                        if !r.state.is_terminal() {
+                            r.state = crate::tasks::TaskState::Failed;
+                            r.exit_code = Some(1);
+                        }
+                        r.inject_on_next_turn = true;
+                    });
+                }
+            }
+        }
+
+        let _ = tx_for_late
+            .send(StreamEvent::BackgroundAgentCompleted {
+                tool_call_id: call_id_for_late,
+            })
+            .await;
+    });
     let upstream_text = format!(
         "Async agent launched successfully.\nagentId: {agent_id} (internal ID - do not mention to user. The agent is working in the background. You will be notified automatically when it completes.)\n\nDo not call TaskOutput or any other tool to check status — wait for the completion notification.",
     );

@@ -95,7 +95,6 @@ enum StreamEvent {
 
     BackgroundAgentCompleted {
         tool_call_id: String,
-        summary: String,
     },
 
     CompactDone {
@@ -883,9 +882,7 @@ async fn event_loop(
                     Some(StreamEvent::NestedUsage { input_tokens, output_tokens }) => {
                         st.push_nested_usage(input_tokens, output_tokens);
                     }
-                    Some(StreamEvent::BackgroundAgentCompleted { tool_call_id, summary }) => {
-                        let trimmed: String = summary.chars().take(160).collect();
-                        
+                    Some(StreamEvent::BackgroundAgentCompleted { tool_call_id }) => {
                         let task_id = crate::tasks::TaskId::from_string(tool_call_id.clone());
                         let display_id = st
                             .tasks
@@ -893,15 +890,8 @@ async fn event_loop(
                             .and_then(|r| r.agent_id.clone())
                             .unwrap_or_else(|| tool_call_id.clone());
                         st.push_system_note(format!(
-                            "⎿  Background agent {display_id} completed: {trimmed}"
+                            "⎿  Background agent {display_id} completed"
                         ));
-                        st.tasks.update_with(&task_id, |r| {
-                            if !r.state.is_terminal() {
-                                r.state = crate::tasks::TaskState::Completed;
-                                r.exit_code = Some(0);
-                            }
-                            r.inject_on_next_turn = true;
-                        });
                     }
                     Some(StreamEvent::CompactDone { summary, is_auto }) => {
                         let kept = st.messages.len() as u64;

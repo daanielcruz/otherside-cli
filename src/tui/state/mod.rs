@@ -286,10 +286,16 @@ pub fn hydrate_from_records(
     st.sticky_bottom = true;
 }
 
-fn backgroundable_kind(tool_name: &str) -> Option<crate::tasks::TaskKind> {
+fn backgroundable_kind(tool_name: &str, args: &Value) -> Option<crate::tasks::TaskKind> {
     match tool_name {
         "Agent" => Some(crate::tasks::TaskKind::Agent),
-        "Bash" => Some(crate::tasks::TaskKind::Shell),
+        "Bash" => {
+            let run_in_background = args
+                .get("run_in_background")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            run_in_background.then_some(crate::tasks::TaskKind::Shell)
+        }
         _ => None,
     }
 }
@@ -644,7 +650,7 @@ impl ConversationState {
     }
 
     pub fn begin_tool_call(&mut self, id: String, name: String, args: Value) {
-        if let Some(kind) = backgroundable_kind(&name) {
+        if let Some(kind) = backgroundable_kind(&name, &args) {
             let task_id = crate::tasks::TaskId::from_string(id.clone());
             let display_name = summarize_tool_invocation(&name, &args);
             let command = args.to_string();
@@ -760,6 +766,7 @@ impl ConversationState {
         entry.elapsed_ms = elapsed_ms;
         let verbose = self.render_verbose;
         let tool_name = entry.name.clone();
+        let tool_args = entry.args.clone();
         match &result {
             Ok(value) => {
                 entry.status = ToolStatus::Ok;
@@ -778,7 +785,7 @@ impl ConversationState {
             }
         }
 
-        if backgroundable_kind(&tool_name).is_some() {
+        if backgroundable_kind(&tool_name, &tool_args).is_some() {
             let task_id = crate::tasks::TaskId::from_string(id.to_string());
             self.tasks.update_with(&task_id, |r| {
                 
