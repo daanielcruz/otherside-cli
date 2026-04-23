@@ -473,10 +473,6 @@ pub enum OverlayMenuOutcome {
     SetEffort { action_id: String, label: String },
 
     SetPermissionMode { action_id: String },
-
-    SetModel { model_id: String },
-
-    CycleProvider { direction: i32 },
 }
 
 pub struct PendingPermissionPrompt {
@@ -1777,12 +1773,11 @@ mod tests {
 
     #[test]
     fn commit_model_panel_yields_none_in_phase_1() {
-        // Phase 1 `/model` panel is UI-only. Enter on any row logs intent
-        // via `tracing::info!` and MUST NOT emit a SetModel outcome — the
-        // panel key handler in `tui/mod.rs::handle_model_panel_key` owns
-        // the stub-log path, bypassing `commit_outcome` entirely. We keep
-        // this test as a guard against accidental re-wiring before the
-        // Phase 2 broker lands.
+        // Phase 1 `/model` panel is UI-only at the `commit_outcome` level —
+        // the Enter handler in `tui/mod.rs::handle_model_panel_key` routes
+        // directly through `state::broker::set_active_provider`, bypassing
+        // OverlayMenu's commit_outcome path entirely. Guard against
+        // accidental re-wiring that would reintroduce a menu-level outcome.
         let settings = crate::config::settings::Settings::default();
         let m = OverlayMenu::new_model_tabbed(
             "claude-opus-4-7",
@@ -1793,13 +1788,9 @@ mod tests {
         );
         assert!(
             m.commit_outcome().is_none(),
-            "Phase 1 model panel must not emit SetModel / CycleProvider"
+            "model panel must commit via broker, not OverlayMenuOutcome"
         );
     }
-
-    // `commit_provider_row_yields_cycle_provider` — removed. Provider
-    // switching now happens via tab navigation, not Enter on a provider row.
-    // The CycleProvider outcome variant is retained for source-compat only.
 
     // `new_model_for_codex_lists_codex_catalog` — replaced by
     // `authenticated_tab_body_renders_catalog_plus_logout_row` in

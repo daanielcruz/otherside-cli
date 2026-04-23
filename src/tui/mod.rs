@@ -1142,13 +1142,7 @@ fn handle_menu_key(
         KeyCode::Enter => {
             let outcome = menu_state.commit_outcome();
             let menu = st.active_menu.take().expect("active_menu present");
-            let is_cycle = matches!(
-                outcome,
-                Some(menu::OverlayMenuOutcome::CycleProvider { .. })
-            );
-            if !is_cycle {
-                emit_panel_dismiss_anchor(st, &menu, outcome.as_ref());
-            }
+            emit_panel_dismiss_anchor(st, &menu, outcome.as_ref());
             if let Some(outcome) = outcome {
                 return apply_menu_outcome(st, thinking, outcome);
             }
@@ -1374,6 +1368,24 @@ fn edit_settings_row(st: &mut ConversationState, direction: i32) {
             let next_model = list[next_idx].id;
             st.switch_model(next_model);
             st.persistence.settings.default_model = Some(next_model.to_string());
+            // Effort reset when the new model doesn't support the current
+            // effort label (e.g. cycling from kimi-for-coding `on` to a
+            // haiku row which exposes `low/medium/high`). Mirrors the
+            // `apply_model_outcome` contract that was dead since SetModel
+            // stopped being emitted.
+            let current_effort = st.session.effort_label.unwrap_or("auto");
+            if !crate::models::catalog::supports_effort(next_model, current_effort) {
+                let next_effort = crate::models::catalog::default_effort_for(next_model);
+                if next_effort == "auto" {
+                    st.session.effort_label = None;
+                } else {
+                    st.session.effort_label = Some(next_effort);
+                }
+                st.persistence.settings.effort_level = Some(next_effort.to_string());
+            }
+            if let Err(e) = persist_session_defaults(st) {
+                tracing::warn!(?e, "/config model cycle: settings flush failed");
+            }
         }
         SettingsRowKind::PermissionMode => {
             let order = [
@@ -1403,6 +1415,9 @@ fn edit_settings_row(st: &mut ConversationState, direction: i32) {
             let next_idx = (((idx as i32) + dir).rem_euclid(n)) as usize;
             st.session.effort_label = Some(levels[next_idx]);
             st.persistence.settings.effort_level = Some(levels[next_idx].to_string());
+            if let Err(e) = persist_session_defaults(st) {
+                tracing::warn!(?e, "/config effort cycle: settings flush failed");
+            }
         }
         SettingsRowKind::Bool(id) => {
             let current = match id {
@@ -1772,13 +1787,6 @@ fn apply_menu_outcome(
         menu::OverlayMenuOutcome::SetPermissionMode { action_id } => {
             apply_permission_outcome(st, &action_id);
         }
-        menu::OverlayMenuOutcome::SetModel { model_id } => {
-            apply_model_outcome(st, thinking, &model_id);
-        }
-        // The tabbed `/model` panel no longer emits CycleProvider — provider
-        // switching happens via tab navigation, not Enter. The variant is
-        // retained for source compatibility; treat as a no-op.
-        menu::OverlayMenuOutcome::CycleProvider { direction: _ } => {}
     }
     false
 }
@@ -1796,37 +1804,6 @@ fn apply_permission_outcome(st: &mut ConversationState, action_id: &str) {
         }
     };
     st.session.permission_mode = mode;
-}
-
-fn apply_model_outcome(
-    st: &mut ConversationState,
-    thinking: &mut Option<ThinkingConfig>,
-    model_id: &str,
-) {
-    let (_base, _thinking) = crate::thinking::parse_suffix(model_id)
-        .map(|(m, t)| (m, t))
-        .unwrap_or_else(|_| (model_id.to_string(), None));
-    st.session.set_model(model_id);
-
-    let current_effort = st.session.effort_label.unwrap_or("auto");
-    if !crate::models::catalog::supports_effort(model_id, current_effort) {
-        use crate::thinking::ThinkingLevel;
-        use std::str::FromStr;
-        let next = crate::models::catalog::default_effort_for(model_id);
-        if next == "auto" {
-            st.session.effort_label = None;
-            *thinking = Some(ThinkingConfig::auto());
-        } else if let Ok(level) = ThinkingLevel::from_str(next) {
-            st.session.effort_label = Some(next);
-            *thinking = Some(ThinkingConfig::level(level));
-        }
-        st.persistence.settings.effort_level = Some(next.to_string());
-    }
-
-    st.persistence.settings.default_model = Some(model_id.to_string());
-    if let Err(e) = persist_session_defaults(st) {
-        st.push_system_note(format!("settings write failed: {e}"));
-    }
 }
 
 fn apply_effort_outcome(
