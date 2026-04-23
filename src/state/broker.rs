@@ -100,6 +100,52 @@ pub fn set_active_model(st: &mut ConversationState, model: impl Into<String>) ->
     Ok(())
 }
 
+/// Boolean-setting bridge for `/config` bool-row toggles. Mutates the in-
+/// memory settings, mirrors into the matching `ConversationState` flag when
+/// the setting has a runtime shadow (`verbose` → `render_verbose`), and
+/// flushes `settings.json`. Returns `Err(...)` for unknown keys so callers
+/// get a loud signal instead of a silent no-op.
+///
+/// Broker-owned bool keys (matches `/config` Bool rows in `tui/menu.rs`):
+/// - `auto_compact`
+/// - `show_tips`
+/// - `verbose` — also mirrored into `st.render_verbose`.
+/// - `prefers_reduced_motion`
+/// - `file_checkpointing_enabled`
+/// - `auto_connect_ide`
+pub fn set_bool_setting(
+    st: &mut ConversationState,
+    key: &str,
+    value: bool,
+) -> Result<()> {
+    match key {
+        "auto_compact" => st.persistence.settings.auto_compact = Some(value),
+        "show_tips" => st.persistence.settings.show_tips = Some(value),
+        "verbose" => {
+            st.render_verbose = value;
+            st.persistence.settings.verbose = Some(value);
+        }
+        "prefers_reduced_motion" => {
+            st.persistence.settings.prefers_reduced_motion = Some(value)
+        }
+        "file_checkpointing_enabled" => {
+            st.persistence.settings.file_checkpointing_enabled = Some(value)
+        }
+        "auto_connect_ide" => {
+            st.persistence.settings.auto_connect_ide = Some(value)
+        }
+        other => {
+            return Err(crate::error::Error::Other(format!(
+                "set_bool_setting: unknown key `{other}`"
+            )));
+        }
+    }
+    let provider_slug = st.provider_id.slug();
+    st.persistence
+        .commit_session_defaults(&st.session, provider_slug)?;
+    Ok(())
+}
+
 /// Switch the active thinking config in-memory + snapshot, and mirror the
 /// effort label into settings. `thinking = None` clears effort.
 pub fn set_effort(
@@ -515,6 +561,45 @@ mod tests {
             Some(ThinkingLevel::High),
             "dispatch snapshot thinking in lock-step",
         );
+    }
+
+    #[test]
+    fn set_bool_setting_mutates_mirrors_and_shadows_verbose() {
+        use crate::config::settings::PermissionMode;
+        use crate::tui::state::ConversationState;
+
+        let mut st = ConversationState::default();
+        st.session = crate::state::Session::new("claude-opus-4-7", PermissionMode::Default);
+
+        let tmp = std::env::temp_dir().join(format!(
+            "broker_bool_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let prev = std::env::var("OTHERSIDE_CONFIG_DIR").ok();
+        unsafe { std::env::set_var("OTHERSIDE_CONFIG_DIR", &tmp); }
+
+        set_bool_setting(&mut st, "auto_compact", false).unwrap();
+        set_bool_setting(&mut st, "verbose", true).unwrap();
+
+        let unknown = set_bool_setting(&mut st, "nonexistent_key", true);
+
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("OTHERSIDE_CONFIG_DIR", v),
+                None => std::env::remove_var("OTHERSIDE_CONFIG_DIR"),
+            }
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        assert_eq!(st.persistence.settings.auto_compact, Some(false));
+        assert_eq!(st.persistence.settings.verbose, Some(true));
+        assert!(st.render_verbose, "verbose shadow must flip with the setting");
+        assert!(unknown.is_err(), "unknown key must not silently no-op");
     }
 
     #[test]

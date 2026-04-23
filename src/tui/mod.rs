@@ -1440,30 +1440,11 @@ fn edit_settings_row(st: &mut ConversationState, direction: i32) {
                 _ => return,
             };
             let next = !current;
-            match id {
-                "auto_compact" => st.persistence.settings.auto_compact = Some(next),
-                "show_tips" => st.persistence.settings.show_tips = Some(next),
-                "verbose" => {
-                    st.render_verbose = next;
-                    st.persistence.settings.verbose = Some(next);
-                }
-                "prefers_reduced_motion" => {
-                    st.persistence.settings.prefers_reduced_motion = Some(next)
-                }
-                "file_checkpointing_enabled" => {
-                    st.persistence.settings.file_checkpointing_enabled = Some(next)
-                }
-                "auto_connect_ide" => {
-                    st.persistence.settings.auto_connect_ide = Some(next)
-                }
-                _ => return,
+            if let Err(e) = crate::state::broker::set_bool_setting(st, id, next) {
+                st.push_system_note(format!("settings write failed: {e}"));
             }
         }
         SettingsRowKind::ReadOnly => return,
-    }
-
-    if let Err(e) = persist_session_defaults(st) {
-        st.push_system_note(format!("settings write failed: {e}"));
     }
 
     let prev_cursor = st.active_menu.as_ref().map(|m| m.cursor).unwrap_or(0);
