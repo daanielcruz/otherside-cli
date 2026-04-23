@@ -1406,6 +1406,24 @@ impl ConversationState {
             None => false,
         }
     }
+
+    /// Drain ALL queued-while-streaming messages into `self.input` as one
+    /// concatenated turn. Upstream directive 2026-04-24: "se houver duas
+    /// queue mensagem as duas devem ser enviadas ao mesmo tempo, assim
+    /// como upstream faz." Previously we popped one head per stream Done,
+    /// firing N consecutive turns for N queued entries.
+    ///
+    /// Entries join with `\n\n` so the model sees each as a distinct
+    /// paragraph — matches how the user typed them originally (one per
+    /// Enter).
+    pub fn consume_queue_all_into_input(&mut self) -> bool {
+        if self.queued_messages.is_empty() {
+            return false;
+        }
+        let drained: Vec<String> = self.queued_messages.drain(..).collect();
+        self.input = drained.join("\n\n");
+        true
+    }
 }
 
 #[cfg(test)]
@@ -2091,6 +2109,46 @@ mod tests {
 
         assert!(st.streaming);
         assert_eq!(hist.last().unwrap().content, "queued-a");
+    }
+
+    #[test]
+    fn consume_queue_all_into_input_batches_all_entries() {
+        // Upstream directive 2026-04-24: "se houver duas queue mensagem
+        // as duas devem ser enviadas ao mesmo tempo, assim como upstream
+        // faz." All queued entries flush as ONE turn on stream Done.
+        let mut st = ConversationState::new();
+        st.input = "first".into();
+        st.submit().unwrap();
+        st.push_to_queue("queued-a".into());
+        st.push_to_queue("queued-b".into());
+        st.push_to_queue("queued-c".into());
+        st.append_stream_delta("reply-one");
+        st.finish_stream();
+
+        assert!(st.consume_queue_all_into_input(), "drain reports non-empty");
+        assert_eq!(
+            st.input,
+            "queued-a\n\nqueued-b\n\nqueued-c",
+            "entries joined with blank-line separator",
+        );
+        assert!(
+            st.queued_messages.is_empty(),
+            "queue fully drained, no leftover entries",
+        );
+
+        let hist = st.submit().expect("batch submits as single turn");
+        assert_eq!(
+            hist.last().unwrap().content,
+            "queued-a\n\nqueued-b\n\nqueued-c",
+            "single turn carries concatenated payload",
+        );
+    }
+
+    #[test]
+    fn consume_queue_all_into_input_noop_when_empty() {
+        let mut st = ConversationState::new();
+        assert!(!st.consume_queue_all_into_input());
+        assert_eq!(st.input, "");
     }
 
     #[test]

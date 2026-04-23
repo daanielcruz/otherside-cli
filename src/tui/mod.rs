@@ -1979,9 +1979,12 @@ fn drain_queue_head_if_any(
         target: "otherside::queue",
         queue_depth = st.queued_messages.len(),
         streaming = st.streaming,
-        "drain_queue_head_if_any entered"
+        "drain_queue_all entered"
     );
-    if !st.consume_queue_head_into_input() {
+    // Batch drain: upstream flushes the full queued array as ONE turn on
+    // stream Done (user directive 2026-04-24). Previously we popped one
+    // head per drain, firing N consecutive turns for N queued entries.
+    if !st.consume_queue_all_into_input() {
         tracing::info!(target: "otherside::queue", "queue empty — no drain");
         return false;
     }
@@ -1989,7 +1992,7 @@ fn drain_queue_head_if_any(
         target: "otherside::queue",
         input_len = st.input.len(),
         streaming = st.streaming,
-        "queue head consumed; dispatching"
+        "queue drained as batch; dispatching"
     );
 
     let exit_signal = dispatch_slash(st, registry, base_model, tx);
