@@ -17,7 +17,10 @@ fn kimi_provider_registers_and_resolves_through_slug() {
     assert!(registry.get("kimi").is_some());
 
     assert!(registry.get("anthropic-oauth").is_some());
-    assert!(registry.get("codex").is_some());
+    // CodexProvider::ID is now "codex-oauth" to match ProviderId::Codex.slug()
+    // (turn-dispatch registry lookup). Legacy "codex" short form is resolved
+    // at config::providers::from_slug parse time only.
+    assert!(registry.get("codex-oauth").is_some());
 }
 
 #[test]

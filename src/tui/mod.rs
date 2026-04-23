@@ -1861,10 +1861,19 @@ fn spawn_agent_turn(
 ) {
     let provider_id = st.provider_id;
     let Some(provider) = registry.get(provider_id.slug()) else {
-        st.push_system_note(format!(
-            "provider {:?} not registered — cannot dispatch turn",
-            provider_id.slug()
-        ));
+        // Anchor shape (`⎿  …`) instead of the `system: …` plain line — this
+        // is a terminal turn-level error, not a side note. `push_anchor`
+        // emits the `⎿ ` prefix + an empty echo so the line sits under the
+        // user's prompt with chrome styling (user directive 2026-04-23).
+        st.push_anchor(
+            "",
+            "",
+            format!(
+                "provider {} not registered — cannot dispatch turn",
+                provider_id.slug()
+            ),
+            crate::tui::state::DisplayOrigin::Chrome,
+        );
         st.streaming = false;
         return;
     };
