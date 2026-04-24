@@ -369,7 +369,7 @@ fn summarize_tool_invocation(name: &str, args: &Value) -> String {
             })
             .unwrap_or_else(|| "agent".into()),
         "Bash" => {
-            
+
             if let Some(desc) = args.get("description").and_then(Value::as_str) {
                 if !desc.is_empty() {
                     return desc.to_string();
@@ -379,6 +379,21 @@ fn summarize_tool_invocation(name: &str, args: &Value) -> String {
                 .and_then(Value::as_str)
                 .map(|s| s.chars().take(40).collect::<String>())
                 .unwrap_or_else(|| "bash".into())
+        }
+        "SendMessage" => {
+            args.get("message")
+                .and_then(|v| {
+                    v.as_str()
+                        .map(str::to_string)
+                        .or_else(|| serde_json::to_string(v).ok())
+                })
+                .or_else(|| {
+                    args.get("summary")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+                .map(|s| s.chars().take(60).collect::<String>())
+                .unwrap_or_else(|| "send".into())
         }
         other => other.to_string(),
     }

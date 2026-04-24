@@ -179,10 +179,7 @@ pub fn dispatch(tool_name: &str, args: &Value) -> Result<Value, ToolError> {
                 .into(),
         )),
 
-        "SendMessage" => Err(ToolError::Unsupported(
-            "SendMessage requires a persistent coordinator registry keyed by agent id/name. otherside has no addressable agent store yet — spawn a fresh `Agent` with a self-contained prompt instead."
-                .into(),
-        )),
+        "SendMessage" => send_message::dispatch(args),
 
         "Task" => Err(ToolError::Unsupported(
             "tool `Task` is retired; use `Agent` for subagent dispatch (010 anchor selection)"
