@@ -169,12 +169,14 @@ pub fn render(
                 e.name == "Agent"
                     && matches!(e.status, super::tool_render::ToolStatus::Running)
                     && {
-                        let task_id = crate::tasks::TaskId::from_string(e.id.clone());
-                        !state
-                            .tasks
-                            .get(&task_id)
-                            .map(|r| r.is_backgrounded)
-                            .unwrap_or(false)
+                        match state.tasks.task_id_by_tool_use_id(&e.id) {
+                            Some(tid) => !state
+                                .tasks
+                                .get(&tid)
+                                .map(|r| r.is_backgrounded)
+                                .unwrap_or(false),
+                            None => true,
+                        }
                     }
             })
             .and_then(|e| {
@@ -259,10 +261,10 @@ fn draw_log(f: &mut Frame<'_>, area: Rect, state: &ConversationState, spinner_ti
     if !state.active_tool_calls.is_empty() {
         for entry in &state.active_tool_calls {
             lines.push(Line::raw(""));
-            let task_id = crate::tasks::TaskId::from_string(entry.id.clone());
             let is_backgrounded = state
                 .tasks
-                .get(&task_id)
+                .task_id_by_tool_use_id(&entry.id)
+                .and_then(|tid| state.tasks.get(&tid))
                 .map(|r| r.is_backgrounded)
                 .unwrap_or(false);
             let view = super::tool_render::ToolCallView {

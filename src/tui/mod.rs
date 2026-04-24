@@ -676,6 +676,189 @@ async fn run_welcome_gate(
     }
 }
 
+async fn dispatch_pending_login(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    provider: crate::config::providers::ProviderId,
+    st: &mut ConversationState,
+) -> Result<()> {
+    use crate::config::providers::ProviderId;
+    match provider {
+        ProviderId::ClaudeCode => {
+            let mut handshake = match crate::auth::anthropic::begin_login() {
+                Ok(h) => h,
+                Err(e) => {
+                    st.push_system_note(format!("⎿  login failed: {e}"));
+                    return Ok(());
+                }
+            };
+            let automatic_url = handshake.automatic_url().to_string();
+            let manual_url = handshake.manual_url().to_string();
+            let port = handshake.port();
+            let listener = match handshake.take_listener() {
+                Some(l) => l,
+                None => {
+                    st.push_system_note("⎿  login failed: listener unavailable".to_string());
+                    return Ok(());
+                }
+            };
+            let _ = crate::auth::browser::try_open(&automatic_url);
+            match run_oauth_callback_panel(
+                terminal,
+                "\u{25B8} Authorize with Anthropic".to_string(),
+                automatic_url,
+                Some(manual_url),
+                port,
+                listener,
+            )
+            .await?
+            {
+                CallbackPanelOutcome::Completed { code, state } => {
+                    match handshake.finalize(code, state, false).await {
+                        Ok(_) => {
+                            st.push_system_note(format!(
+                                "⎿  logged in: {}",
+                                provider.slug()
+                            ));
+                        }
+                        Err(e) => {
+                            st.push_system_note(format!("⎿  login failed: {e}"));
+                        }
+                    }
+                }
+                CallbackPanelOutcome::ManualSubmit(raw) => {
+                    match crate::auth::anthropic::parse_callback_input(&raw) {
+                        Ok((code, state)) => {
+                            match handshake.finalize(code, state, true).await {
+                                Ok(_) => {
+                                    st.push_system_note(format!(
+                                        "⎿  logged in: {}",
+                                        provider.slug()
+                                    ));
+                                }
+                                Err(e) => {
+                                    st.push_system_note(format!("⎿  login failed: {e}"));
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            st.push_system_note(format!("⎿  login failed: {e}"));
+                        }
+                    }
+                }
+                CallbackPanelOutcome::Cancel => {}
+                CallbackPanelOutcome::Quit => {}
+            }
+        }
+        ProviderId::Codex => {
+            let mut handshake = match crate::auth::codex::begin_login() {
+                Ok(h) => h,
+                Err(e) => {
+                    st.push_system_note(format!("⎿  login failed: {e}"));
+                    return Ok(());
+                }
+            };
+            let url = handshake.authorize_url().to_string();
+            let port = handshake.port();
+            let listener = match handshake.take_listener() {
+                Some(l) => l,
+                None => {
+                    st.push_system_note("⎿  login failed: listener unavailable".to_string());
+                    return Ok(());
+                }
+            };
+            let _ = crate::auth::browser::try_open(&url);
+            match run_oauth_callback_panel(
+                terminal,
+                "\u{25B8} Authorize with ChatGPT".to_string(),
+                url,
+                None,
+                port,
+                listener,
+            )
+            .await?
+            {
+                CallbackPanelOutcome::Completed { code, state } => {
+                    match handshake.finalize(code, state).await {
+                        Ok(_) => {
+                            st.push_system_note(format!(
+                                "⎿  logged in: {}",
+                                provider.slug()
+                            ));
+                        }
+                        Err(e) => {
+                            st.push_system_note(format!("⎿  login failed: {e}"));
+                        }
+                    }
+                }
+                CallbackPanelOutcome::ManualSubmit(raw) => {
+                    match parse_manual_codex_paste(&raw) {
+                        Ok((code, state)) => match handshake.finalize(code, state).await {
+                            Ok(_) => {
+                                st.push_system_note(format!(
+                                    "⎿  logged in: {}",
+                                    provider.slug()
+                                ));
+                            }
+                            Err(e) => {
+                                st.push_system_note(format!("⎿  login failed: {e}"));
+                            }
+                        },
+                        Err(e) => {
+                            st.push_system_note(format!("⎿  login failed: {e}"));
+                        }
+                    }
+                }
+                CallbackPanelOutcome::Cancel => {}
+                CallbackPanelOutcome::Quit => {}
+            }
+        }
+        ProviderId::Kimi => {
+            let console_url = crate::fingerprint::kimi::CONSOLE_URL.to_string();
+            match run_api_key_panel(terminal, console_url).await? {
+                ApiKeyPanelOutcome::Submit(raw) => {
+                    let creds = crate::auth::kimi::CachedCreds {
+                        api_key: raw.trim().to_string(),
+                    };
+                    match crate::auth::kimi::save_credentials(&creds) {
+                        Ok(()) => {
+                            st.push_system_note(format!(
+                                "⎿  logged in: {}",
+                                provider.slug()
+                            ));
+                        }
+                        Err(e) => {
+                            st.push_system_note(format!("⎿  login failed: {e}"));
+                        }
+                    }
+                }
+                ApiKeyPanelOutcome::Cancel => {}
+                ApiKeyPanelOutcome::Quit => {}
+            }
+        }
+        ProviderId::GeminiCli | ProviderId::OpenAiCustom => {
+            st.push_system_note(format!(
+                "⎿  login for {} not wired yet",
+                provider.slug()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn dispatch_pending_logout(
+    provider: crate::config::providers::ProviderId,
+    st: &mut ConversationState,
+) {
+    match crate::state::broker::logout_provider(st, provider) {
+        Ok(()) => {
+            st.push_system_note(format!("⎿  logged out: {}", provider.slug()));
+        }
+        Err(e) => {
+            st.push_system_note(format!("⎿  logout failed: {e}"));
+        }
+    }
+}
+
 async fn event_loop(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     registry: Arc<Registry>,
@@ -1024,6 +1207,12 @@ async fn event_loop(
                     Some(Ok(CtEvent::Key(k))) => {
                         if handle_key(k, &mut st, &registry, &base_model, &tx) {
                             break;
+                        }
+                        if let Some(provider) = st.pending_login_provider.take() {
+                            dispatch_pending_login(terminal, provider, &mut st).await?;
+                        }
+                        if let Some(provider) = st.pending_logout_provider.take() {
+                            dispatch_pending_logout(provider, &mut st);
                         }
                     }
                     Some(Ok(CtEvent::Resize(_, _))) => {
@@ -1585,18 +1774,14 @@ fn handle_model_panel_key(
                         return false;
                     }
                     Some(ModelTabRow::Logout) => {
-                        tracing::info!(
-                            target: "otherside::tui::model_panel",
-                            ?provider,
-                            "/model UI stub: would logout {provider:?}"
-                        );
+                        st.pending_logout_provider = Some(provider);
+                        st.active_menu = None;
+                        return false;
                     }
                     Some(ModelTabRow::LoginCta) => {
-                        tracing::info!(
-                            target: "otherside::tui::model_panel",
-                            ?provider,
-                            "/model UI stub: would login {provider:?}"
-                        );
+                        st.pending_login_provider = Some(provider);
+                        st.active_menu = None;
+                        return false;
                     }
                     
                     Some(ModelTabRow::CustomHint) | None => {}

@@ -321,16 +321,18 @@ async fn dispatch_agent_cancellable(
         .unwrap_or("");
 
     let agent_id = {
-        let task_id = crate::tasks::TaskId::from_string(tool_call_id.to_string());
         let store_opt = crate::tasks::store::current_global();
-        let existing = store_opt
+        let task_id = store_opt
             .as_ref()
-            .and_then(|s| s.get(&task_id))
+            .and_then(|s| s.task_id_by_tool_use_id(tool_call_id));
+        let existing = task_id
+            .as_ref()
+            .and_then(|tid| store_opt.as_ref().and_then(|s| s.get(tid)))
             .and_then(|r| r.agent_id.clone());
         existing.unwrap_or_else(|| {
             let generated = crate::tasks::id::create_agent_id(None);
-            if let Some(store) = store_opt.as_ref() {
-                store.update_with(&task_id, |r| {
+            if let (Some(store), Some(tid)) = (store_opt.as_ref(), task_id.as_ref()) {
+                store.update_with(tid, |r| {
                     r.agent_id.get_or_insert(generated.clone());
                 });
             }
@@ -343,8 +345,14 @@ async fn dispatch_agent_cancellable(
     let agent_id_for_late = agent_id.clone();
     tokio::spawn(async move {
         let outcome = join.await;
-        let task_id = crate::tasks::TaskId::from_string(call_id_for_late.clone());
         let store_opt = crate::tasks::store::current_global();
+        let task_id = match store_opt
+            .as_ref()
+            .and_then(|s| s.task_id_by_tool_use_id(&call_id_for_late))
+        {
+            Some(tid) => tid,
+            None => return,
+        };
 
         match outcome {
             Ok(Ok(v)) => {

@@ -141,6 +141,10 @@ pub struct ConversationState {
     pub model_panel_tabs_focused: bool,
 
     pub model_panel_body_cursor: usize,
+
+    pub pending_login_provider: Option<crate::config::providers::ProviderId>,
+
+    pub pending_logout_provider: Option<crate::config::providers::ProviderId>,
 }
 
 pub const CTRL_B_DOUBLE_TAP_WINDOW_MS: u128 = 1_000;
@@ -657,7 +661,7 @@ impl ConversationState {
 
     pub fn begin_tool_call(&mut self, id: String, name: String, args: Value) {
         if let Some(kind) = backgroundable_kind(&name, &args) {
-            let task_id = crate::tasks::TaskId::from_string(id.clone());
+            let task_id = crate::tasks::TaskId::generate();
             let display_name = summarize_tool_invocation(&name, &args);
             let command = args.to_string();
             let mut record = match kind {
@@ -743,8 +747,9 @@ impl ConversationState {
             .find(|e| e.name == "Agent" && matches!(e.status, ToolStatus::Running))
             .map(|e| e.id.clone());
         if let Some(id) = parent_id {
-            let task_id = crate::tasks::TaskId::from_string(id);
-            self.tasks.accumulate_tokens(&task_id, delta);
+            if let Some(task_id) = self.tasks.task_id_by_tool_use_id(&id) {
+                self.tasks.accumulate_tokens(&task_id, delta);
+            }
         }
     }
 
@@ -792,7 +797,9 @@ impl ConversationState {
         }
 
         if backgroundable_kind(&tool_name, &tool_args).is_some() {
-            let task_id = crate::tasks::TaskId::from_string(id.to_string());
+            let Some(task_id) = self.tasks.task_id_by_tool_use_id(id) else {
+                return;
+            };
             self.tasks.update_with(&task_id, |r| {
                 
                 if r.is_backgrounded {
@@ -1903,7 +1910,10 @@ mod tests {
             Ok(serde_json::json!({"status": "backgrounded"})),
             5,
         );
-        let task_id = crate::tasks::TaskId::from_string("tc-agent".to_string());
+        let task_id = st
+            .tasks
+            .task_id_by_tool_use_id("tc-agent")
+            .expect("task_id mapped from tool_use_id");
         let record = st.tasks.get(&task_id).expect("record present");
         assert_eq!(
             record.state,

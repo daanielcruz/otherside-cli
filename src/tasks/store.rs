@@ -66,6 +66,15 @@ impl TaskStore {
             .cloned()
     }
 
+    pub fn task_id_by_tool_use_id(&self, tool_use_id: &str) -> Option<TaskId> {
+        self.inner
+            .read()
+            .expect("task store rwlock poisoned")
+            .values()
+            .find(|r| r.tool_use_id.as_deref() == Some(tool_use_id))
+            .map(|r| r.id.clone())
+    }
+
     pub fn list(&self) -> Vec<TaskRecord> {
         self.inner
             .read()

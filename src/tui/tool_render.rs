@@ -356,12 +356,14 @@ pub fn render_tool_call(view: &ToolCallView<'_>) -> Vec<Line<'static>> {
         && matches!(view.status, ToolStatus::Running)
         && !view.is_backgrounded
     {
+        let hint = if std::env::var("TMUX").is_ok() {
+            "(ctrl+b ctrl+b (twice) to run in background)"
+        } else {
+            "(ctrl+b to run in background)"
+        };
         out.push(Line::from(vec![
             Span::styled(GUTTER_CONT.to_string(), Style::default().fg(theme::MUTED)),
-            Span::styled(
-                "(ctrl+b to run in background)".to_string(),
-                Style::default().fg(theme::MUTED),
-            ),
+            Span::styled(hint.to_string(), Style::default().fg(theme::MUTED)),
         ]));
     }
 

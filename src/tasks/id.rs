@@ -1,11 +1,10 @@
 
 use std::fmt;
 
-use rand::distr::{Alphanumeric, SampleString};
 use rand::rng;
 use rand::RngCore;
 
-pub const TASK_ID_LEN: usize = 9;
+pub const TASK_ID_LEN: usize = 17;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TaskId(String);
@@ -13,8 +12,10 @@ pub struct TaskId(String);
 impl TaskId {
 
     pub fn generate() -> Self {
-        let raw = Alphanumeric.sample_string(&mut rng(), TASK_ID_LEN);
-        Self(raw.to_lowercase())
+        let mut bytes = [0u8; 8];
+        rng().fill_bytes(&mut bytes);
+        let hex: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
+        Self(format!("a{hex}"))
     }
 
     pub fn from_string(s: impl Into<String>) -> Self {
@@ -47,7 +48,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn generate_produces_nine_lowercase_alphanumeric() {
+    fn generate_produces_seventeen_char_a_prefixed_hex() {
         for _ in 0..128 {
             let id = TaskId::generate();
             assert_eq!(
@@ -58,10 +59,17 @@ mod tests {
                 id.as_str().len(),
                 TASK_ID_LEN
             );
-            for c in id.as_str().chars() {
+            let mut chars = id.as_str().chars();
+            assert_eq!(
+                chars.next(),
+                Some('a'),
+                "id `{}` missing `a` prefix",
+                id.as_str()
+            );
+            for c in chars {
                 assert!(
-                    c.is_ascii_lowercase() || c.is_ascii_digit(),
-                    "id `{}` has non [a-z0-9] char `{c}`",
+                    c.is_ascii_hexdigit() && !c.is_ascii_uppercase(),
+                    "id `{}` has non lowercase-hex char `{c}`",
                     id.as_str()
                 );
             }
