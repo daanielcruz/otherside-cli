@@ -57,7 +57,7 @@ impl<'a> PanelFrame<'a> {
         if self.tabs.is_some() {
             constraints.push(Constraint::Length(1));
         }
-        if self.tabs.is_some() && self.search.is_some() {
+        if self.tabs.is_some() {
             constraints.push(Constraint::Length(1));
         }
 
@@ -101,7 +101,7 @@ impl<'a> PanelFrame<'a> {
             idx += 1;
         }
 
-        if self.tabs.is_some() && self.search.is_some() {
+        if self.tabs.is_some() {
             idx += 1;
         }
 

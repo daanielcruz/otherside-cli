@@ -255,10 +255,6 @@ mod tests {
 
     #[test]
     fn display_name_resolves_for_opus() {
-        // Per 2026-04-24 user directive, both opus variants render as plain
-        // `Opus 4.7` — the (1M context) suffix was dropped from the user-facing
-        // label. Catalog still carries supports_1m + context_window separately
-        // for wire routing.
         assert_eq!(display_name_for("claude-opus-4-7"), Some("Opus 4.7"));
         assert_eq!(display_name_for("claude-opus-4-7[1m]"), Some("Opus 4.7"));
     }

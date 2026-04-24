@@ -613,38 +613,6 @@ mod tests {
     }
 
     #[test]
-    fn login_body_matches_handwritten_bytes_exactly() {
-
-        let expected = concat!(
-            r#"{"grant_type":"authorization_code","#,
-            r#""code":"XXX_AUTH_CODE_XXX","#,
-            r#""redirect_uri":"https://platform.claude.com/oauth/code/callback","#,
-            r#""client_id":"9d1c250a-e61b-44d9-88ed-5944d1962f5e","#,
-            r#""code_verifier":"XXX_CODE_VERIFIER_XXX","#,
-            r#""state":"XXX_STATE_XXX"}"#,
-        );
-        let actual = build_login_body(
-            "XXX_AUTH_CODE_XXX",
-            "XXX_STATE_XXX",
-            "XXX_CODE_VERIFIER_XXX",
-        );
-        assert_eq!(std::str::from_utf8(&actual).unwrap(), expected);
-    }
-
-    #[test]
-    fn refresh_body_matches_handwritten_bytes_exactly() {
-
-        let expected = concat!(
-            r#"{"grant_type":"refresh_token","#,
-            r#""refresh_token":"XXX_REFRESH_TOKEN_XXX","#,
-            r#""client_id":"9d1c250a-e61b-44d9-88ed-5944d1962f5e","#,
-            r#""scope":"user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload"}"#,
-        );
-        let actual = build_refresh_body("XXX_REFRESH_TOKEN_XXX");
-        assert_eq!(std::str::from_utf8(&actual).unwrap(), expected);
-    }
-
-    #[test]
     fn refresh_body_matches_corpus_key_order() {
         let corpus_path = "../fingerprint_corpus/oauth/refresh.request.json";
         let expected = corpus_body(corpus_path);

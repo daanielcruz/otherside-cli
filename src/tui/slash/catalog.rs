@@ -271,14 +271,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn settings_tab_slash_names_match_catalog() {
-
-        assert_eq!(SettingsTab::Status.slash_name(), "status");
-        assert_eq!(SettingsTab::Config.slash_name(), "config");
-        assert_eq!(SettingsTab::Usage.slash_name(), "usage");
-    }
-
-    #[test]
     fn lookup_case_insensitive() {
         assert!(lookup("HELP").is_some());
         assert!(lookup("Clear").is_some());

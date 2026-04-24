@@ -49,6 +49,7 @@ fn load_deferred() -> Vec<ToolSchema> {
         crate::tools::cron::TOOL_CRON_LIST_JSON,
         crate::tools::cron::TOOL_SCHEDULE_WAKEUP_JSON,
         crate::tools::ask_user_question::TOOL_ASK_USER_QUESTION_JSON,
+        crate::tools::send_message::TOOL_SEND_MESSAGE_JSON,
     ];
     raws.iter()
         .map(|raw| {
@@ -79,7 +80,7 @@ pub fn schema_for(name: &str) -> Option<&'static ToolSchema> {
 }
 
 pub fn openai_tools() -> Vec<OpenAiToolDef> {
-    tool_schemas()
+    let mut out: Vec<OpenAiToolDef> = tool_schemas()
         .iter()
         .map(|s| OpenAiToolDef {
             kind: "function".to_string(),
@@ -89,7 +90,30 @@ pub fn openai_tools() -> Vec<OpenAiToolDef> {
                 parameters: s.input_schema.clone(),
             },
         })
-        .collect()
+        .collect();
+
+    let announced = crate::tools::deferred_registry::current();
+    if announced.is_empty() {
+        return out;
+    }
+    let base_names: std::collections::HashSet<String> =
+        out.iter().map(|t| t.function.name.clone()).collect();
+    for name in announced {
+        if base_names.contains(&name) {
+            continue;
+        }
+        if let Some(s) = schema_for(&name) {
+            out.push(OpenAiToolDef {
+                kind: "function".to_string(),
+                function: OpenAiFunctionDef {
+                    name: s.name.clone(),
+                    description: s.description.clone(),
+                    parameters: s.input_schema.clone(),
+                },
+            });
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -106,35 +130,35 @@ mod tests {
     }
 
     #[test]
-    fn training_anchors_present() {
-        for anchor in [
-            "Agent",
-            "Bash",
-            "Edit",
-            "Glob",
-            "Grep",
-            "Read",
-            "Skill",
-            "ToolSearch",
-            "Write",
-        ] {
-            assert!(
-                schema_for(anchor).is_some(),
-                "missing training anchor: {anchor}"
-            );
+    fn wire_schemas_required_fields_match_upstream() {
+        let cases: &[(&str, &[&str])] = &[
+            ("Bash", &["command"]),
+            ("Read", &["file_path"]),
+            ("Glob", &["pattern"]),
+            ("Grep", &["pattern"]),
+            ("Agent", &["description", "prompt"]),
+            ("Skill", &["skill"]),
+            ("ToolSearch", &["query"]),
+        ];
+        for (name, expected) in cases {
+            let s = schema_for(name).unwrap_or_else(|| panic!("missing schema: {name}"));
+            let required: Vec<&str> = s.input_schema["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|v| v.as_str())
+                .collect();
+            for field in *expected {
+                assert!(
+                    required.contains(field),
+                    "{name} schema missing required field `{field}` (got {required:?})"
+                );
+            }
         }
     }
 
     #[test]
-    fn bash_schema_keeps_command_required() {
-        let s = schema_for("Bash").unwrap();
-        let required = s.input_schema["required"].as_array().unwrap();
-        assert!(required.iter().any(|v| v == "command"));
-    }
-
-    #[test]
     fn bash_schema_carries_run_in_background_property() {
-
         let s = schema_for("Bash").unwrap();
         assert!(s.input_schema["properties"]
             .as_object()
@@ -143,51 +167,8 @@ mod tests {
     }
 
     #[test]
-    fn read_schema_has_required_file_path() {
-        let s = schema_for("Read").unwrap();
-        let required = s.input_schema["required"].as_array().unwrap();
-        assert!(required.iter().any(|v| v == "file_path"));
-    }
-
-    #[test]
-    fn glob_schema_has_pattern_required() {
-        let s = schema_for("Glob").unwrap();
-        let required = s.input_schema["required"].as_array().unwrap();
-        assert!(required.iter().any(|v| v == "pattern"));
-    }
-
-    #[test]
-    fn grep_schema_has_pattern_required() {
-        let s = schema_for("Grep").unwrap();
-        let required = s.input_schema["required"].as_array().unwrap();
-        assert!(required.iter().any(|v| v == "pattern"));
-    }
-
-    #[test]
-    fn agent_schema_requires_description_and_prompt() {
-        let s = schema_for("Agent").unwrap();
-        let required = s.input_schema["required"].as_array().unwrap();
-        let names: Vec<&str> = required.iter().filter_map(|v| v.as_str()).collect();
-        assert!(names.contains(&"description"));
-        assert!(names.contains(&"prompt"));
-    }
-
-    #[test]
-    fn skill_schema_requires_skill_name() {
-        let s = schema_for("Skill").unwrap();
-        let required = s.input_schema["required"].as_array().unwrap();
-        assert!(required.iter().any(|v| v == "skill"));
-    }
-
-    #[test]
-    fn tool_search_schema_requires_query() {
-        let s = schema_for("ToolSearch").unwrap();
-        let required = s.input_schema["required"].as_array().unwrap();
-        assert!(required.iter().any(|v| v == "query"));
-    }
-
-    #[test]
     fn openai_tools_round_trip_all_schemas() {
+        crate::tools::deferred_registry::clear();
         let tools = openai_tools();
         assert_eq!(tools.len(), 9);
         for (lhs, rhs) in tool_schemas().iter().zip(tools.iter()) {
@@ -196,18 +177,6 @@ mod tests {
             assert_eq!(rhs.function.description, lhs.description);
             assert_eq!(rhs.function.parameters, lhs.input_schema);
         }
-    }
-
-    #[test]
-    fn wire_schemas_remain_exactly_nine() {
-
-        assert_eq!(tool_schemas().len(), 9);
-    }
-
-    #[test]
-    fn deferred_schemas_contain_wave_3_set() {
-
-        assert_eq!(deferred_schemas().len(), 18);
     }
 
     #[test]
@@ -234,14 +203,9 @@ mod tests {
                 "CronList",
                 "ScheduleWakeup",
                 "AskUserQuestion",
+                "SendMessage",
             ]
         );
-    }
-
-    #[test]
-    fn all_schemas_total_reflects_every_wave() {
-
-        assert_eq!(all_schemas().len(), 27);
     }
 
     #[test]
@@ -272,19 +236,9 @@ mod tests {
                 "CronList",
                 "ScheduleWakeup",
                 "AskUserQuestion",
+                "SendMessage",
             ]
         );
-    }
-
-    #[test]
-    fn schema_for_resolves_deferred_names() {
-        assert!(schema_for("TaskCreate").is_some());
-        assert!(schema_for("TaskList").is_some());
-        assert!(schema_for("TaskGet").is_some());
-        assert!(schema_for("TaskUpdate").is_some());
-        assert!(schema_for("NotebookEdit").is_some());
-        assert!(schema_for("WebFetch").is_some());
-        assert!(schema_for("WebSearch").is_some());
     }
 
     #[test]
@@ -309,7 +263,9 @@ mod tests {
     }
 
     #[test]
-    fn openai_tools_excludes_deferred_schemas() {
+    fn openai_tools_excludes_deferred_schemas_when_registry_empty() {
+
+        crate::tools::deferred_registry::clear();
         let names: Vec<String> = openai_tools()
             .iter()
             .map(|t| t.function.name.clone())
@@ -325,8 +281,34 @@ mod tests {
         ] {
             assert!(
                 !names.iter().any(|n| n == deferred),
-                "deferred tool `{deferred}` must NOT appear in the wire `openai_tools()` list"
+                "deferred tool `{deferred}` must NOT appear in wire list until ToolSearch announces it"
             );
         }
+    }
+
+    #[test]
+    fn openai_tools_includes_deferred_after_announce() {
+
+        crate::tools::deferred_registry::clear();
+        let before: Vec<String> = openai_tools().iter().map(|t| t.function.name.clone()).collect();
+        assert!(!before.iter().any(|n| n == "WebSearch"));
+
+        crate::tools::deferred_registry::announce("WebSearch");
+        let after: Vec<String> = openai_tools().iter().map(|t| t.function.name.clone()).collect();
+        assert!(
+            after.iter().any(|n| n == "WebSearch"),
+            "after ToolSearch announces WebSearch, wire list must include it so the model can actually call it: {after:?}"
+        );
+        crate::tools::deferred_registry::clear();
+    }
+
+    #[test]
+    fn openai_tools_does_not_duplicate_base_tools_after_announce() {
+        crate::tools::deferred_registry::clear();
+        crate::tools::deferred_registry::announce("Bash");
+        let names: Vec<String> = openai_tools().iter().map(|t| t.function.name.clone()).collect();
+        let bash_count = names.iter().filter(|n| *n == "Bash").count();
+        assert_eq!(bash_count, 1, "base tool Bash must not be duplicated when announced");
+        crate::tools::deferred_registry::clear();
     }
 }

@@ -33,7 +33,7 @@ pub struct FrameSlots {
     pub info: Rect,
 }
 
-pub const QUEUE_CHROME_ROWS: u16 = 1;
+pub const QUEUE_CHROME_ROWS: u16 = 0;
 
 pub fn split_frame(
     area: Rect,
@@ -59,13 +59,15 @@ pub fn split_frame(
         constraints.push(Constraint::Length(1));
     }
     if queue_rows > 0 {
+        constraints.push(Constraint::Length(1));
         constraints.push(Constraint::Length(queue_rows));
+    } else {
+        constraints.push(Constraint::Length(1));
     }
-    constraints.push(Constraint::Length(1));
     constraints.push(Constraint::Length(3));
     if popup_active {
         constraints.push(Constraint::Length(popup_rows));
-        
+
         constraints.push(Constraint::Length(1));
     } else {
         constraints.push(Constraint::Length(1));
@@ -85,7 +87,7 @@ pub fn split_frame(
         (None, None, 1)
     };
     let (queue, prompt_idx) = if queue_rows > 0 {
-        (Some(chunks[after_tip_idx]), after_tip_idx + 2)
+        (Some(chunks[after_tip_idx + 1]), after_tip_idx + 2)
     } else {
         (None, after_tip_idx + 1)
     };
@@ -198,10 +200,27 @@ mod tests {
     }
 
     #[test]
-    fn queue_slot_sits_directly_above_prompt_top_pad() {
+    fn queue_slot_sits_directly_above_prompt_no_gap() {
+
         let slots = split_frame(area(30), true, 2, 0);
         let queue = slots.queue.unwrap();
-        assert_eq!(queue.y + queue.height + 1, slots.prompt.y);
+        assert_eq!(
+            queue.y + queue.height,
+            slots.prompt.y,
+            "queue must be flush to prompt top; gap sits between tip and queue, not queue and prompt"
+        );
+    }
+
+    #[test]
+    fn queue_slot_has_gap_above_separating_tip() {
+        let slots = split_frame(area(30), true, 2, 0);
+        let queue = slots.queue.unwrap();
+        let tip = slots.tip.unwrap();
+        assert_eq!(
+            queue.y,
+            tip.y + tip.height + 1,
+            "gap row sits between tip and queue so queue visually hugs prompt not thinking block"
+        );
     }
 
     #[test]

@@ -140,35 +140,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn state_terminality_is_exclusive_with_active() {
-        for s in [
-            TaskState::Pending,
-            TaskState::Running,
-            TaskState::Backgrounded,
-            TaskState::Completed,
-            TaskState::Failed,
-            TaskState::Stopped,
-        ] {
-            assert_ne!(
-                s.is_terminal(),
-                s.is_active(),
-                "state {s:?} is both terminal and active"
-            );
+    fn state_activity_matrix_matches_upstream() {
+        let cases: &[(TaskState, bool, bool)] = &[
+            (TaskState::Pending, true, false),
+            (TaskState::Running, true, false),
+            (TaskState::Backgrounded, true, false),
+            (TaskState::Completed, false, true),
+            (TaskState::Failed, false, true),
+            (TaskState::Stopped, false, true),
+        ];
+        for (s, active, terminal) in cases {
+            assert_eq!(s.is_active(), *active, "is_active({s:?})");
+            assert_eq!(s.is_terminal(), *terminal, "is_terminal({s:?})");
         }
-    }
-
-    #[test]
-    fn running_and_backgrounded_both_count_active() {
-        assert!(TaskState::Running.is_active());
-        assert!(TaskState::Backgrounded.is_active());
-        assert!(TaskState::Pending.is_active());
-    }
-
-    #[test]
-    fn completed_failed_stopped_are_terminal() {
-        assert!(TaskState::Completed.is_terminal());
-        assert!(TaskState::Failed.is_terminal());
-        assert!(TaskState::Stopped.is_terminal());
     }
 
     #[test]

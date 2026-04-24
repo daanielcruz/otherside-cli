@@ -74,6 +74,11 @@ impl InnerLoopRunner {
         depth: u32,
         invocation: &AgentInvocation,
     ) -> Result<Value, RunnerError> {
+        let _depth_guard = if super::is_running_inside_subagent() {
+            None
+        } else {
+            super::DepthGuard::try_push()
+        };
         let started = std::time::Instant::now();
         let snap = crate::state::dispatch::snapshot().ok_or_else(|| {
             RunnerError::Internal(
@@ -185,8 +190,13 @@ impl InnerLoopRunner {
         } else {
             "completed"
         };
+        let agent_id = format!(
+            "agent-{}",
+            &uuid::Uuid::new_v4().to_string().replace('-', "")[..12]
+        );
         Ok(json!({
             "status": status,
+            "agentId": agent_id,
             "subagent_type": definition.name,
             "agentType": definition.name,
             "content": [{"type": "text", "text": assistant_text}],
@@ -225,13 +235,32 @@ fn subagent_openai_tools(
     allowed: &super::frontmatter::ToolsField,
 ) -> Vec<crate::inference::OpenAiToolDef> {
     use super::frontmatter::ToolsField;
-    let full = crate::tools::openai_tools();
+
     match allowed {
-        ToolsField::Wildcard => full,
-        ToolsField::List(names) => full
-            .into_iter()
-            .filter(|t| names.iter().any(|n| n == &t.function.name))
-            .collect(),
+        ToolsField::Wildcard => crate::tools::openai_tools(),
+        ToolsField::List(names) => {
+            let mut out: Vec<crate::inference::OpenAiToolDef> = Vec::new();
+            let base: Vec<crate::inference::OpenAiToolDef> = crate::tools::openai_tools();
+            let base_map: std::collections::HashMap<String, crate::inference::OpenAiToolDef> =
+                base.iter().map(|t| (t.function.name.clone(), t.clone())).collect();
+            for n in names {
+                if let Some(t) = base_map.get(n) {
+                    out.push(t.clone());
+                    continue;
+                }
+                if let Some(s) = crate::tools::schemas::schema_for(n) {
+                    out.push(crate::inference::OpenAiToolDef {
+                        kind: "function".to_string(),
+                        function: crate::inference::OpenAiFunctionDef {
+                            name: s.name.clone(),
+                            description: s.description.clone(),
+                            parameters: s.input_schema.clone(),
+                        },
+                    });
+                }
+            }
+            out
+        }
     }
 }
 

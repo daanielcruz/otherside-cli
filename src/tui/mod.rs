@@ -2790,52 +2790,38 @@ mod panel_anchor_tests {
     }
 
     #[test]
-    fn model_panel_dismiss_is_silent() {
-        let mut st = ConversationState::default();
-        st.session.model = "claude-opus-4-7".into();
-        let menu = OverlayMenu::new_model_tabbed(
-            &st.session.model,
-            &st.persistence.settings,
+    fn every_panel_dismiss_without_outcome_is_silent() {
+        use crate::tui::slash::catalog::SettingsTab;
+        let mut st0 = ConversationState::default();
+        st0.session.model = "claude-opus-4-7".into();
+        let model_menu = OverlayMenu::new_model_tabbed(
+            &st0.session.model,
+            &st0.persistence.settings,
             0,
             true,
             0,
         );
-        emit_panel_dismiss_anchor(&mut st, &menu, None);
-        assert!(st.messages.is_empty(), "got {:?}", st.messages);
-    }
-
-    #[test]
-    fn tasks_panel_dismiss_is_silent() {
-        let mut st = ConversationState::default();
-        let menu = OverlayMenu::new_info(PanelKind::Tasks, "Tasks".into(), vec![]);
-        emit_panel_dismiss_anchor(&mut st, &menu, None);
-        assert!(st.messages.is_empty());
-    }
-
-    #[test]
-    fn help_panel_dismiss_is_silent() {
-        let mut st = ConversationState::default();
-        let menu = OverlayMenu::new_info(PanelKind::Help, "Help".into(), vec![]);
-        emit_panel_dismiss_anchor(&mut st, &menu, None);
-        assert!(st.messages.is_empty());
-    }
-
-    #[test]
-    fn permissions_esc_dismiss_is_silent() {
-        let mut st = ConversationState::default();
-        let menu = OverlayMenu::new_permissions(st.session.permission_mode);
-        emit_panel_dismiss_anchor(&mut st, &menu, None);
-        assert!(st.messages.is_empty());
-    }
-
-    #[test]
-    fn settings_tabs_dismiss_is_silent() {
-        use crate::tui::slash::catalog::SettingsTab;
-        for tab in [SettingsTab::Status, SettingsTab::Config, SettingsTab::Usage] {
+        let permissions_menu = OverlayMenu::new_permissions(st0.session.permission_mode);
+        let cases: Vec<(&str, OverlayMenu)> = vec![
+            ("model", model_menu),
+            ("tasks", OverlayMenu::new_info(PanelKind::Tasks, "Tasks".into(), vec![])),
+            ("help", OverlayMenu::new_info(PanelKind::Help, "Help".into(), vec![])),
+            ("permissions", permissions_menu),
+            ("rewind", OverlayMenu::new_info(PanelKind::Rewind, "Rewind".into(), vec![])),
+            ("resume", OverlayMenu::new_info(PanelKind::Resume, "Resume".into(), vec![])),
+            ("effort", OverlayMenu::new_info(PanelKind::Effort, "Effort".into(), vec![])),
+            ("status", OverlayMenu::new_info(PanelKind::Settings(SettingsTab::Status), "_".into(), vec![])),
+            ("config", OverlayMenu::new_info(PanelKind::Settings(SettingsTab::Config), "_".into(), vec![])),
+            ("usage", OverlayMenu::new_info(PanelKind::Settings(SettingsTab::Usage), "_".into(), vec![])),
+        ];
+        for (label, menu) in cases {
             let mut st = ConversationState::default();
-            let menu = OverlayMenu::new_info(PanelKind::Settings(tab), "_".into(), vec![]);
             emit_panel_dismiss_anchor(&mut st, &menu, None);
-            assert!(st.messages.is_empty(), "tab {tab:?} must be silent");
+            assert!(
+                st.messages.is_empty(),
+                "panel `{label}` dismiss must be silent; got {:?}",
+                st.messages
+            );
         }
     }
 
@@ -2877,30 +2863,6 @@ mod panel_anchor_tests {
 
         assert!(st.active_agents_panel.is_none(), "panel closes on Esc");
         assert!(st.messages.is_empty(), "dismiss must be silent; got {:?}", st.messages);
-    }
-
-    #[test]
-    fn rewind_dismiss_is_silent() {
-        let mut st = ConversationState::default();
-        let menu = OverlayMenu::new_info(PanelKind::Rewind, "Rewind".into(), vec![]);
-        emit_panel_dismiss_anchor(&mut st, &menu, None);
-        assert!(st.messages.is_empty());
-    }
-
-    #[test]
-    fn resume_dismiss_is_silent() {
-        let mut st = ConversationState::default();
-        let menu = OverlayMenu::new_info(PanelKind::Resume, "Resume".into(), vec![]);
-        emit_panel_dismiss_anchor(&mut st, &menu, None);
-        assert!(st.messages.is_empty());
-    }
-
-    #[test]
-    fn effort_esc_without_change_is_silent() {
-        let mut st = ConversationState::default();
-        let menu = OverlayMenu::new_info(PanelKind::Effort, "Effort".into(), vec![]);
-        emit_panel_dismiss_anchor(&mut st, &menu, None);
-        assert!(st.messages.is_empty());
     }
 
     #[test]
@@ -3017,8 +2979,6 @@ mod settings_edit_tests {
         st.session.effort_label = None;
         st.active_menu = Some(OverlayMenu::new_settings(SettingsTab::Config, &st));
         if let Some(m) = st.active_menu.as_mut() {
-            // Kimi Code renders this row as `Thinking` (binary on/off),
-            // not `Effort` — user directive 2026-04-24.
             focus_row(m, "Thinking");
         }
         edit_settings_row(&mut st, 1);

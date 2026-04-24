@@ -3,9 +3,32 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
-use crate::agent::subagents::{registry::AgentDefinition, AgentInvocation, SubagentRunner};
+use crate::agent::subagents::{
+    registry::AgentDefinition, AgentInvocation, NestedEmitter, SubagentRunner,
+};
 
 use super::{id::TaskId, state::TaskRecord, state::TaskState, store::TaskStore};
+
+struct BgProgressEmitter {
+    store: TaskStore,
+    task_id: TaskId,
+}
+
+impl NestedEmitter for BgProgressEmitter {
+    fn on_tool_start(&self, name: &str, args: &Value) {
+        let line = crate::tui::state::format_progress_line(name, args);
+        self.store.push_progress_line(&self.task_id, line);
+    }
+
+    fn on_tool_finish(&self, _success: bool) {}
+
+    fn on_usage(&self, input_tokens: Option<u64>, output_tokens: Option<u64>) {
+        let delta = input_tokens.unwrap_or(0).saturating_add(output_tokens.unwrap_or(0));
+        if delta > 0 {
+            self.store.accumulate_tokens(&self.task_id, delta);
+        }
+    }
+}
 
 pub struct SpawnOutcome {
     pub task_id: TaskId,
@@ -25,19 +48,28 @@ pub fn spawn_background_agent(
 ) -> SpawnOutcome {
     let id = TaskId::generate();
     let agent_id = super::id::create_agent_id(None);
-    let mut record = TaskRecord::new_agent(id.clone(), display_name, prompt.clone());
+    let mut record = TaskRecord::new_agent(id.clone(), display_name.clone(), prompt.clone());
 
     record.state = TaskState::Backgrounded;
     record.is_backgrounded = true;
     record.tool_use_id = tool_use_id;
     record.agent_id = Some(agent_id.clone());
     record.subagent_type = Some(definition.name.clone());
+    if display_name != definition.name {
+        record.description = Some(display_name);
+    }
     store.insert(record);
 
     let id_for_task = id.clone();
     let store_for_task = store.clone();
+    let bg_emitter: Arc<dyn NestedEmitter> = Arc::new(BgProgressEmitter {
+        store: store.clone(),
+        task_id: id.clone(),
+    });
     tokio::task::spawn_blocking(move || {
-        let result = runner.run(&definition, &prompt, depth, &invocation);
+        let result = crate::agent::subagents::with_nested_emitter(bg_emitter, || {
+            runner.run(&definition, &prompt, depth, &invocation)
+        });
         finalize(&store_for_task, &id_for_task, result);
     });
 

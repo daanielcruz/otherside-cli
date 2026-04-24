@@ -46,6 +46,12 @@ pub fn tool_search(args: &Value) -> Result<Value, ToolError> {
         })
         .collect();
 
+    let announced: Vec<&str> = tools
+        .iter()
+        .filter_map(|t| t.get("name").and_then(Value::as_str))
+        .collect();
+    crate::tools::deferred_registry::announce_many(&announced);
+
     Ok(json!({
         "query": query,
         "max_results": max_results,
@@ -57,17 +63,24 @@ pub fn tool_search(args: &Value) -> Result<Value, ToolError> {
 mod tests {
     use super::*;
 
+    fn reset_registry() {
+
+        crate::tools::deferred_registry::clear();
+    }
+
     #[test]
     fn tool_search_requires_query() {
+        reset_registry();
         assert!(tool_search(&json!({})).is_err());
     }
 
     #[test]
     fn tool_search_empty_query_returns_all_up_to_max() {
+        reset_registry();
         let res = tool_search(&json!({"query": "", "max_results": 100})).unwrap();
         let tools = res["tools"].as_array().unwrap();
 
-        assert_eq!(tools.len(), 27);
+        assert_eq!(tools.len(), 28);
     }
 
     #[test]

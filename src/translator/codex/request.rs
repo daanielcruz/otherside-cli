@@ -60,9 +60,22 @@ pub fn build_responses_body_with_ctx(
     user_ctx: Option<&UserContext<'_>>,
     service_tier: Option<&str>,
 ) -> Value {
+    build_responses_body_full(req, tools_json, thinking, user_ctx, service_tier, None, 1, false)
+}
+
+pub fn build_responses_body_full(
+    req: &OpenAiChatRequest,
+    tools_json: Vec<Value>,
+    thinking: Option<&ThinkingConfig>,
+    user_ctx: Option<&UserContext<'_>>,
+    service_tier: Option<&str>,
+    previous_response_id: Option<&str>,
+    turn: u32,
+    is_subagent: bool,
+) -> Value {
     let mut body = Map::new();
     body.insert("model".into(), Value::String(req.model.clone()));
-    
+
     let harness = claude_harness_instructions();
     let extra = extract_instructions(&req.messages);
     let instructions = match extra {
@@ -77,7 +90,11 @@ pub fn build_responses_body_with_ctx(
     );
     if !tools_json.is_empty() {
         body.insert("tools".into(), Value::Array(tools_json));
-        body.insert("tool_choice".into(), Value::String("auto".into()));
+        let tool_choice = req
+            .tool_choice
+            .clone()
+            .unwrap_or_else(|| Value::String("auto".into()));
+        body.insert("tool_choice".into(), tool_choice);
         body.insert("parallel_tool_calls".into(), Value::Bool(true));
     }
     if let Some(reasoning) = thinking.and_then(reasoning_json) {
@@ -87,9 +104,26 @@ pub fn build_responses_body_with_ctx(
         body.insert("service_tier".into(), Value::String(tier.to_string()));
     }
 
+    let _ = previous_response_id;
+
+    body.insert(
+        "client_metadata".into(),
+        json!({
+            "program": "codex",
+            "originator": crate::fingerprint::codex::ORIGINATOR,
+            "turn": turn.to_string(),
+            "subagent": is_subagent.to_string(),
+        }),
+    );
+
     body.insert("store".into(), Value::Bool(false));
     body.insert("stream".into(), Value::Bool(true));
-    body.insert("include".into(), Value::Array(Vec::new()));
+    let include = if thinking.and_then(reasoning_json).is_some() {
+        vec![Value::String("reasoning.encrypted_content".into())]
+    } else {
+        Vec::new()
+    };
+    body.insert("include".into(), Value::Array(include));
     Value::Object(body)
 }
 
@@ -112,34 +146,45 @@ fn messages_to_input(
         match msg.role {
             OpenAiChatRole::System => {}
             OpenAiChatRole::User => {
-                let mut content: Vec<Value> = Vec::new();
                 if first_user {
                     if let Some(ctx) = user_ctx {
-                        
-                        content.push(json!({
-                            "type": "input_text",
-                            "text": codex_deferred_tools_reminder(),
+
+                        out.push(json!({
+                            "type": "message",
+                            "role": "developer",
+                            "content": [{
+                                "type": "input_text",
+                                "text": codex_deferred_tools_reminder(),
+                            }],
                         }));
-                        content.push(json!({
-                            "type": "input_text",
-                            "text": REMINDER_SKILLS,
+                        out.push(json!({
+                            "type": "message",
+                            "role": "developer",
+                            "content": [{
+                                "type": "input_text",
+                                "text": REMINDER_SKILLS,
+                            }],
                         }));
-                        content.push(json!({
-                            "type": "input_text",
-                            "text": render_user_context_with_git(
-                                ctx.email,
-                                ctx.current_date,
-                                ctx.git_status,
-                            ),
+
+                        out.push(json!({
+                            "type": "message",
+                            "role": "user",
+                            "content": [{
+                                "type": "input_text",
+                                "text": render_user_context_with_git(
+                                    ctx.email,
+                                    ctx.current_date,
+                                    ctx.git_status,
+                                ),
+                            }],
                         }));
                     }
                     first_user = false;
                 }
-                content.push(json!({"type": "input_text", "text": msg.content}));
                 out.push(json!({
                     "type": "message",
                     "role": "user",
-                    "content": content,
+                    "content": [{"type": "input_text", "text": msg.content}],
                 }));
             }
             OpenAiChatRole::Assistant => {
@@ -151,20 +196,32 @@ fn messages_to_input(
                     }));
                 }
                 for tc in &msg.tool_calls {
-                    out.push(json!({
-                        "type": "function_call",
-                        "call_id": tc.id,
-                        "name": tc.function.name,
-                        "arguments": tc.function.arguments,
-                    }));
+                    let mut fc = Map::new();
+                    fc.insert("type".into(), Value::String("function_call".into()));
+                    fc.insert("call_id".into(), Value::String(tc.id.clone()));
+                    fc.insert("name".into(), Value::String(tc.function.name.clone()));
+                    fc.insert(
+                        "arguments".into(),
+                        Value::String(tc.function.arguments.clone()),
+                    );
+                    fc.insert("status".into(), Value::String("completed".into()));
+                    out.push(Value::Object(fc));
                 }
             }
             OpenAiChatRole::Tool => {
                 let call_id = msg.tool_call_id.clone().unwrap_or_default();
+                let output_value: Value = match serde_json::from_str::<Value>(&msg.content) {
+                    Ok(Value::Array(arr))
+                        if arr.iter().all(|v| v.is_object()) =>
+                    {
+                        Value::Array(arr)
+                    }
+                    _ => Value::String(msg.content.clone()),
+                };
                 out.push(json!({
                     "type": "function_call_output",
                     "call_id": call_id,
-                    "output": msg.content,
+                    "output": output_value,
                 }));
             }
         }
@@ -228,7 +285,8 @@ mod tests {
     }
 
     #[test]
-    fn body_with_ctx_prepends_reminders_on_first_user_only() {
+    fn body_with_ctx_splits_reminders_into_developer_and_user_messages() {
+
         let req = OpenAiChatRequest {
             model: "gpt-5-codex".into(),
             messages: vec![
@@ -246,58 +304,50 @@ mod tests {
         let body = build_responses_body_with_ctx(&req, vec![], None, Some(&ctx), None);
         let input = body["input"].as_array().unwrap();
 
-        assert_eq!(input[0]["role"], "user");
-        let first_content = input[0]["content"].as_array().unwrap();
         assert_eq!(
-            first_content.len(),
-            4,
-            "first user must carry 3 reminder blocks + 1 user text"
+            input[0]["role"], "developer",
+            "deferred-tools reminder must ride on a developer message, not user"
         );
-        let first_texts: Vec<&str> = first_content
-            .iter()
-            .map(|b| b["text"].as_str().unwrap_or(""))
-            .collect();
+        let deferred_text = input[0]["content"][0]["text"].as_str().unwrap();
         assert!(
-            first_texts[0].contains("<available-deferred-tools>"),
-            "block 0 must retain the deferred-tools tag: {:?}",
-            &first_texts[0][..first_texts[0].len().min(80)]
+            deferred_text.contains("<available-deferred-tools>"),
+            "developer item 0 must carry the deferred-tools tag: {:?}",
+            &deferred_text[..deferred_text.len().min(80)]
         );
         assert!(
-            first_texts[1].contains("</system-reminder>"),
-            "block 1 must be skills reminder with closing system-reminder tag"
+            deferred_text.contains("ADDITIVE"),
+            "codex deferred-tools reminder must prepend the additive clarifier"
         );
         assert!(
-            first_texts[2].contains("user@example.com"),
-            "block 2 must carry user email substitution"
+            deferred_text.contains("Do NOT refuse"),
+            "codex deferred-tools reminder must explicitly forbid refusal"
         );
-        assert!(
-            first_texts[2].contains("2026-04-22"),
-            "block 2 must carry current_date substitution"
-        );
-        assert!(
-            first_texts[2].contains("Current branch: main"),
-            "block 2 must carry git_status when populated"
-        );
-        
-        assert!(
-            first_texts[0].contains("ADDITIVE"),
-            "codex deferred-tools reminder must prepend the additive clarifier: {:?}",
-            first_texts[0],
-        );
-        assert!(
-            first_texts[0].contains("Do NOT refuse"),
-            "codex deferred-tools reminder must explicitly forbid refusal of tools in the main tools[] array",
-        );
-        assert_eq!(first_texts[3], "first turn");
 
-        assert_eq!(input[2]["role"], "user");
-        let second_content = input[2]["content"].as_array().unwrap();
-        assert_eq!(
-            second_content.len(),
-            1,
-            "second user must NOT carry reminders"
+        assert_eq!(input[1]["role"], "developer");
+        let skills_text = input[1]["content"][0]["text"].as_str().unwrap();
+        assert!(
+            skills_text.contains("</system-reminder>"),
+            "developer item 1 must be skills reminder with closing system-reminder tag"
         );
-        assert_eq!(second_content[0]["text"], "second turn");
+
+        assert_eq!(
+            input[2]["role"], "user",
+            "contextual user item (email/date/git) must stay role=user so the model treats it as conversation context"
+        );
+        let ctx_text = input[2]["content"][0]["text"].as_str().unwrap();
+        assert!(ctx_text.contains("user@example.com"));
+        assert!(ctx_text.contains("2026-04-22"));
+        assert!(ctx_text.contains("Current branch: main"));
+
+        assert_eq!(input[3]["role"], "user");
+        let first_real = input[3]["content"][0]["text"].as_str().unwrap();
+        assert_eq!(first_real, "first turn");
+
+        assert_eq!(
+            input[5]["role"], "user",
+            "second user turn must be plain user item, no reminder re-injection"
+        );
+        assert_eq!(input[5]["content"][0]["text"], "second turn");
     }
 
     #[test]
@@ -390,6 +440,26 @@ mod tests {
     }
 
     #[test]
+    fn body_opts_into_reasoning_encrypted_content_when_reasoning_enabled() {
+
+        let req = OpenAiChatRequest {
+            model: "gpt-5-codex".into(),
+            messages: vec![user("hi")],
+            ..Default::default()
+        };
+        let body = build_responses_body(
+            &req,
+            vec![],
+            Some(&ThinkingConfig::level(ThinkingLevel::High)),
+        );
+        let include = body["include"].as_array().unwrap();
+        assert!(
+            include.iter().any(|v| v == "reasoning.encrypted_content"),
+            "reasoning-enabled request must opt into encrypted_content roundtrip: {include:?}"
+        );
+    }
+
+    #[test]
     fn body_attaches_tools_and_tool_choice() {
         let req = OpenAiChatRequest {
             model: "gpt-5-codex".into(),
@@ -407,6 +477,40 @@ mod tests {
         assert_eq!(body["tools"].as_array().unwrap().len(), 1);
         assert_eq!(body["tool_choice"], "auto");
         assert_eq!(body["parallel_tool_calls"], true);
+    }
+
+    #[test]
+    fn body_respects_caller_tool_choice_required() {
+
+        let req = OpenAiChatRequest {
+            model: "gpt-5-codex".into(),
+            messages: vec![user("hi")],
+            tool_choice: Some(json!("required")),
+            ..Default::default()
+        };
+        let tool = json!({
+            "type": "function", "name": "Bash", "description": "",
+            "strict": false, "parameters": {"type":"object","properties":{}}
+        });
+        let body = build_responses_body(&req, vec![tool], None);
+        assert_eq!(body["tool_choice"], "required");
+    }
+
+    #[test]
+    fn body_respects_caller_tool_choice_specific_function() {
+        let req = OpenAiChatRequest {
+            model: "gpt-5-codex".into(),
+            messages: vec![user("hi")],
+            tool_choice: Some(json!({"type":"function","name":"Bash"})),
+            ..Default::default()
+        };
+        let tool = json!({
+            "type": "function", "name": "Bash", "description": "",
+            "strict": false, "parameters": {"type":"object","properties":{}}
+        });
+        let body = build_responses_body(&req, vec![tool], None);
+        assert_eq!(body["tool_choice"]["type"], "function");
+        assert_eq!(body["tool_choice"]["name"], "Bash");
     }
 
     #[test]
@@ -512,7 +616,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_role_becomes_function_call_output() {
+    fn tool_role_becomes_function_call_output_string_passthrough() {
         let msg = OpenAiChatMessage {
             role: OpenAiChatRole::Tool,
             content: "exit=0\nhello".into(),
@@ -529,6 +633,69 @@ mod tests {
         assert_eq!(input[0]["type"], "function_call_output");
         assert_eq!(input[0]["call_id"], "call-1");
         assert_eq!(input[0]["output"], "exit=0\nhello");
+    }
+
+    #[test]
+    fn tool_role_json_object_serialized_back_to_string() {
+
+        let msg = OpenAiChatMessage {
+            role: OpenAiChatRole::Tool,
+            content: r#"{"status":"completed","agentId":"agent-a1b"}"#.into(),
+            tool_call_id: Some("call-9".into()),
+            ..Default::default()
+        };
+        let req = OpenAiChatRequest {
+            model: "gpt-5-codex".into(),
+            messages: vec![msg],
+            ..Default::default()
+        };
+        let body = build_responses_body(&req, vec![], None);
+        let out = &body["input"].as_array().unwrap()[0]["output"];
+        assert!(out.is_string(), "codex /responses rejects object output — must be serialized string");
+        assert!(out.as_str().unwrap().contains("agent-a1b"));
+    }
+
+    #[test]
+    fn tool_role_preserves_structured_json_array() {
+        let msg = OpenAiChatMessage {
+            role: OpenAiChatRole::Tool,
+            content: r#"[{"path":"/a"},{"path":"/b"}]"#.into(),
+            tool_call_id: Some("call-10".into()),
+            ..Default::default()
+        };
+        let req = OpenAiChatRequest {
+            model: "gpt-5-codex".into(),
+            messages: vec![msg],
+            ..Default::default()
+        };
+        let body = build_responses_body(&req, vec![], None);
+        let out = &body["input"].as_array().unwrap()[0]["output"];
+        assert!(out.is_array());
+        assert_eq!(out.as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn assistant_tool_call_replay_includes_status_completed() {
+
+        let mut asst = OpenAiChatMessage::default();
+        asst.role = OpenAiChatRole::Assistant;
+        asst.tool_calls.push(crate::inference::OpenAiToolCall {
+            id: "call-r".into(),
+            kind: "function".into(),
+            function: crate::inference::OpenAiToolCallFunction {
+                name: "Bash".into(),
+                arguments: r#"{"command":"ls"}"#.into(),
+            },
+        });
+        let req = OpenAiChatRequest {
+            model: "gpt-5-codex".into(),
+            messages: vec![asst],
+            ..Default::default()
+        };
+        let body = build_responses_body(&req, vec![], None);
+        let input = body["input"].as_array().unwrap();
+        assert_eq!(input[0]["type"], "function_call");
+        assert_eq!(input[0]["status"], "completed");
     }
 
     fn tool(name: &str) -> OpenAiToolDef {
@@ -563,6 +730,21 @@ mod tests {
         let out = openai_tools_to_codex_tools(&tools);
         let names: Vec<&str> = out.iter().map(|v| v["name"].as_str().unwrap()).collect();
         assert_eq!(names, anchors.to_vec());
+    }
+
+    #[test]
+    fn websearch_announced_via_toolsearch_reaches_codex_as_server_tool() {
+
+        crate::tools::deferred_registry::clear();
+        crate::tools::deferred_registry::announce("WebSearch");
+        let wire_tools = crate::tools::openai_tools();
+        let codex_tools = openai_tools_to_codex_tools(&wire_tools);
+        let web = codex_tools
+            .iter()
+            .find(|v| v["type"] == "web_search")
+            .expect("after announce, WebSearch must reach codex tools[] as server-side web_search");
+        assert_eq!(web["external_web_access"], true);
+        crate::tools::deferred_registry::clear();
     }
 
     #[test]

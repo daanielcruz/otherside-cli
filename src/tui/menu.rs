@@ -934,7 +934,6 @@ fn draw_model_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
             .iter()
             .any(|r| matches!(r, ModelTabRow::Model { .. }));
 
-        const ROW_WIDTH: usize = 66;
         for (row_idx, row) in active_tab.rows.iter().enumerate() {
             let is_cursor = !menu.model_tabs_focused && row_idx == menu.model_body_cursor;
             match row {
@@ -1756,11 +1755,6 @@ mod tests {
 
     #[test]
     fn new_effort_without_model_uses_codex_safe_fallback() {
-        // Per 2026-04-24 user directive, `max` is Claude-only. The no-model
-        // fallback used to leak `max` into provider panels that reject it
-        // (codex /responses 400s on `max`). Fallback is the 4-position Codex
-        // ladder — Claude users get `max` only when `new_effort_for_model`
-        // is called with an opus id.
         let m = OverlayMenu::new_effort(None);
         let ids: Vec<&str> = m.options.iter().map(|o| o.action_id.as_str()).collect();
         assert_eq!(ids, vec!["low", "medium", "high", "xhigh"]);
@@ -1780,10 +1774,6 @@ mod tests {
 
     #[test]
     fn new_effort_for_haiku_falls_back_to_haiku_scale() {
-        // Haiku has no user-selectable effort scale. Catalog ships just
-        // `["auto"]`; we strip `auto` and return the family fallback which,
-        // for haiku, stays `&["auto"]` — the /effort panel short-circuits
-        // with a feedback message before rendering when options.len() < 3.
         let m = OverlayMenu::new_effort_for_model(None, "claude-haiku-4-5");
         let ids: Vec<&str> = m.options.iter().map(|o| o.action_id.as_str()).collect();
         assert_eq!(ids, vec!["auto"]);
@@ -1803,7 +1793,6 @@ mod tests {
 
     #[test]
     fn new_effort_preselects_current_level() {
-        // Fallback ladder (codex-safe, no `max`): low/medium/high/xhigh.
         let m = OverlayMenu::new_effort(Some("low"));
         assert_eq!(m.cursor, 0);
         let m = OverlayMenu::new_effort(Some("medium"));
@@ -1818,7 +1807,6 @@ mod tests {
 
     #[test]
     fn effort_slider_clamps_at_edges() {
-        // 4-position fallback ladder: low(0) / medium(1) / high(2) / xhigh(3).
         let mut m = OverlayMenu::new_effort(Some("low"));
         assert_eq!(m.cursor, 0);
         m.move_left();

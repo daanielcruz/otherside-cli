@@ -84,11 +84,9 @@ fn draw_detail(f: &mut Frame<'_>, area: Rect, state: &TasksPanelState) {
     let body = detail_body_lines(row);
 
     let mut hints: Vec<(&str, &str)> = Vec::with_capacity(3);
-    if state.came_from_list {
-        hints.push(("\u{2190}", "to go back"));
-    }
+    hints.push(("\u{2190}", "to go back"));
     hints.push(("Esc/Enter/Space", "to close"));
-    if matches!(row.state, TaskState::Running) {
+    if matches!(row.state, TaskState::Running | TaskState::Backgrounded) {
         hints.push(("x", "to stop"));
     }
 
@@ -624,8 +622,8 @@ mod tests {
             "running-state footer must render stop hint: {all}",
         );
         assert!(
-            !all.contains("go back"),
-            "auto-skip must not render `go back`: {all}"
+            all.contains("go back"),
+            "footer always carries go-back hint per upstream parity: {all}"
         );
     }
 
@@ -820,8 +818,8 @@ mod tests {
         }
         assert!(all2.contains("close"));
         assert!(
-            !all2.contains("go back"),
-            "auto-skip must NOT render `go back`: {all2}",
+            all2.contains("go back"),
+            "footer always carries go-back hint per upstream parity: {all2}"
         );
         assert!(
             !all2.contains(" stop"),

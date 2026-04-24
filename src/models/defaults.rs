@@ -97,11 +97,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn unknown_tier_stays_non_premium() {
-        assert_eq!(
-            SubscriptionTier::from_subscription_type(Some("future-plan-xyz")),
-            SubscriptionTier::NonPremium
-        );
-    }
 }

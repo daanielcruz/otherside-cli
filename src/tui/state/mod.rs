@@ -306,6 +306,55 @@ fn backgroundable_kind(tool_name: &str, args: &Value) -> Option<crate::tasks::Ta
     }
 }
 
+pub(crate) fn format_progress_line(name: &str, args: &Value) -> String {
+    let summary = match name {
+        "Bash" => args
+            .get("command")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        "Read" | "Write" | "Edit" => args
+            .get("file_path")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        "Glob" => args
+            .get("pattern")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        "Grep" => args
+            .get("pattern")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        "WebFetch" => args
+            .get("url")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        "WebSearch" => args
+            .get("query")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        "ToolSearch" => args
+            .get("query")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        "Agent" => args
+            .get("description")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        "Skill" => args
+            .get("skill")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        _ => None,
+    };
+    match summary {
+        Some(s) if !s.is_empty() => {
+            let trimmed: String = s.chars().take(120).collect();
+            format!("{name}({trimmed})")
+        }
+        _ => format!("{name}(…)"),
+    }
+}
+
 fn summarize_tool_invocation(name: &str, args: &Value) -> String {
     match name {
         "Agent" => args
@@ -689,7 +738,21 @@ impl ConversationState {
                     .get("description")
                     .and_then(|v| v.as_str())
                     .filter(|s| !s.is_empty())
-                    .map(|s| s.to_string());
+                    .map(|s| s.to_string())
+                    .or_else(|| {
+                        args.get("prompt")
+                            .and_then(|v| v.as_str())
+                            .and_then(|p| p.lines().next())
+                            .map(|s| s.trim())
+                            .filter(|s| !s.is_empty())
+                            .map(|s| {
+                                let mut out: String = s.chars().take(60).collect();
+                                if s.chars().count() > 60 {
+                                    out.push('…');
+                                }
+                                out
+                            })
+                    });
             }
             self.tasks.insert(record);
         }
@@ -707,6 +770,20 @@ impl ConversationState {
     }
 
     pub fn push_nested_tool_start(&mut self, name: &str, args: Value) {
+        let parent_id: Option<String> = self
+            .active_tool_calls
+            .iter()
+            .rev()
+            .find(|e| e.name == "Agent" && matches!(e.status, ToolStatus::Running))
+            .map(|e| e.id.clone());
+
+        if let Some(parent_id) = parent_id.as_deref() {
+            if let Some(task_id) = self.tasks.task_id_by_tool_use_id(parent_id) {
+                let label = format_progress_line(name, &args);
+                self.tasks.push_progress_line(&task_id, label);
+            }
+        }
+
         if let Some(parent) = self
             .active_tool_calls
             .iter_mut()

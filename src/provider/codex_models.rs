@@ -22,7 +22,7 @@ pub struct CodexModel {
     pub display_name: String,
 
     #[serde(default)]
-    pub priority: u32,
+    pub priority: i32,
 
     #[serde(default)]
     pub context_window: u64,
@@ -137,6 +137,7 @@ pub async fn fetch_models() -> Result<Vec<CodexModel>> {
     }
 
     out.retain(|m| m.slug != "codex-auto-review");
+    out.retain(|m| m.priority >= 0);
     out.sort_by_key(|m| m.priority);
 
     if let Ok(mut w) = cache().write() {
@@ -204,6 +205,22 @@ mod tests {
         assert_eq!(m.slug, "gpt-5.4");
         assert_eq!(m.context_window, 272000);
         assert_eq!(m.additional_speed_tiers, vec!["fast"]);
+    }
+
+    #[test]
+    fn codex_model_parses_negative_priority_but_fetch_filters_it() {
+
+        let j = serde_json::json!({
+            "slug": "gpt-5.4",
+            "priority": -1,
+            "context_window": 272000,
+            "supported_in_api": true,
+            "additional_speed_tiers": ["fast"]
+        });
+        let m: CodexModel = serde_json::from_value(j)
+            .expect("i32 priority parses negative values; filter happens in fetch_models retain pass");
+        assert_eq!(m.slug, "gpt-5.4");
+        assert_eq!(m.priority, -1);
     }
 
     #[test]

@@ -14,6 +14,8 @@ pub struct State {
     pub model: String,
     pub tool_call_indices: Vec<String>,
     pub finished: bool,
+
+    pub reasoning_items: Vec<Value>,
 }
 
 impl State {
@@ -23,6 +25,7 @@ impl State {
             model: model_hint.to_string(),
             tool_call_indices: Vec::new(),
             finished: false,
+            reasoning_items: Vec::new(),
         }
     }
 
@@ -75,6 +78,10 @@ impl State {
                         })]
                     }
                     
+                    "reasoning" if event == "response.output_item.done" => {
+                        self.reasoning_items.push(item.clone());
+                        Vec::new()
+                    }
                     "web_search_call" if event == "response.output_item.done" => {
                         let note = format_web_search_call(item);
                         if note.is_empty() {
@@ -152,11 +159,18 @@ impl State {
                     Some(reason),
                 )]
             }
-            "response.failed" | "response.error" | "response.cancelled" => {
+            "response.failed" | "response.error" => {
                 self.finished = true;
                 vec![self.final_chunk(
                     payload["response"]["usage"].clone(),
-                    Some("stop".to_string()),
+                    Some("error".to_string()),
+                )]
+            }
+            "response.cancelled" => {
+                self.finished = true;
+                vec![self.final_chunk(
+                    payload["response"]["usage"].clone(),
+                    Some("cancelled".to_string()),
                 )]
             }
             _ => Vec::new(),
@@ -428,7 +442,8 @@ mod tests {
     }
 
     #[test]
-    fn response_failed_emits_final_chunk_stop() {
+    fn response_failed_emits_finish_reason_error() {
+
         let mut s = State::new("gpt-5-codex");
         let out = s.ingest(
             "response.failed",
@@ -436,23 +451,56 @@ mod tests {
         );
         assert!(s.finished);
         assert_eq!(out.len(), 1);
-        assert_eq!(out[0].choices[0].finish_reason.as_deref(), Some("stop"));
+        assert_eq!(
+            out[0].choices[0].finish_reason.as_deref(),
+            Some("error"),
+            "failed turn must not masquerade as stop — harness needs distinct signal"
+        );
     }
 
     #[test]
-    fn response_error_emits_final_chunk_stop() {
+    fn response_error_emits_finish_reason_error() {
         let mut s = State::new("gpt-5-codex");
         let out = s.ingest("response.error", &json!({}));
         assert!(s.finished);
         assert_eq!(out.len(), 1);
+        assert_eq!(out[0].choices[0].finish_reason.as_deref(), Some("error"));
     }
 
     #[test]
-    fn response_cancelled_emits_final_chunk_stop() {
+    fn response_cancelled_emits_finish_reason_cancelled() {
         let mut s = State::new("gpt-5-codex");
         let out = s.ingest("response.cancelled", &json!({}));
         assert!(s.finished);
         assert_eq!(out.len(), 1);
+        assert_eq!(
+            out[0].choices[0].finish_reason.as_deref(),
+            Some("cancelled"),
+        );
+    }
+
+    #[test]
+    fn reasoning_done_item_is_captured_not_dropped() {
+
+        let mut s = State::new("gpt-5-codex");
+        let out = s.ingest(
+            "response.output_item.done",
+            &json!({
+                "item": {
+                    "id": "rs_1",
+                    "type": "reasoning",
+                    "encrypted_content": "ENCRYPTED_BLOB_BASE64",
+                    "summary": [{"type":"summary_text","text":"thinking"}]
+                }
+            }),
+        );
+        assert!(out.is_empty(), "reasoning.done must not emit chat chunk");
+        assert_eq!(s.reasoning_items.len(), 1);
+        assert_eq!(
+            s.reasoning_items[0]["encrypted_content"],
+            "ENCRYPTED_BLOB_BASE64",
+            "reasoning state must be preserved for next-turn replay"
+        );
     }
 
     #[test]

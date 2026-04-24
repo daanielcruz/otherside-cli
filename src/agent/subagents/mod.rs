@@ -84,6 +84,10 @@ thread_local! {
     static DEPTH: Cell<u32> = const { Cell::new(0) };
 }
 
+pub fn is_running_inside_subagent() -> bool {
+    DEPTH.with(|d| d.get() > 0)
+}
+
 pub mod depth {
     use super::{DEPTH, MAX_DEPTH};
 

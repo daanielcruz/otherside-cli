@@ -1,6 +1,6 @@
 
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
@@ -15,7 +15,7 @@ use crate::inference::{OpenAiChatRequest, OpenAiChunk};
 use crate::thinking::ThinkingConfig;
 use crate::translator::anthropic::UserContext;
 use crate::translator::codex::response;
-use crate::translator::codex::request::{build_responses_body_with_ctx, openai_tools_to_codex_tools};
+use crate::translator::codex::request::openai_tools_to_codex_tools;
 use crate::translator::sse::SseBuffer;
 
 use super::{ChunkStream, Provider};
@@ -25,6 +25,9 @@ pub const ID: &str = "codex-oauth";
 pub struct CodexProvider {
     http: reqwest::Client,
     session_id: String,
+    parent_thread_id: String,
+    turn_counter: RwLock<u32>,
+    last_response_id: Arc<RwLock<Option<String>>>,
 }
 
 impl CodexProvider {
@@ -36,11 +39,24 @@ impl CodexProvider {
         Ok(Self {
             http,
             session_id: fp::new_session_id(),
+            parent_thread_id: fp::new_session_id(),
+            turn_counter: RwLock::new(0),
+            last_response_id: Arc::new(RwLock::new(None)),
         })
     }
 
     pub fn arc() -> Result<Arc<dyn Provider>> {
         Ok(Arc::new(Self::new()?))
+    }
+
+    fn next_turn(&self) -> u32 {
+        let mut w = self.turn_counter.write().expect("turn_counter lock");
+        *w = w.saturating_add(1);
+        *w
+    }
+
+    fn last_response_id_snapshot(&self) -> Option<String> {
+        self.last_response_id.read().ok().and_then(|r| r.clone())
     }
 }
 
@@ -77,16 +93,22 @@ impl Provider for CodexProvider {
                 .unwrap_or(false);
             let service_tier =
                 if fast_mode && codex_model_supports_fast(&req.model) {
-                    Some("fast")
+                    Some("priority")
                 } else {
                     None
                 };
-            let body = build_responses_body_with_ctx(
+            let turn = self.next_turn();
+            let previous_response_id = self.last_response_id_snapshot();
+            let is_subagent = crate::agent::subagents::is_running_inside_subagent();
+            let body = crate::translator::codex::request::build_responses_body_full(
                 &req,
                 tools_json,
                 thinking.as_ref(),
                 Some(&user_ctx),
                 service_tier,
+                previous_response_id.as_deref(),
+                turn,
+                is_subagent,
             );
             let body_bytes = serde_json::to_vec(&body)
                 .map_err(|e| Error::Other(format!("codex body serialize: {e}")))?;
@@ -95,6 +117,10 @@ impl Provider for CodexProvider {
                 &bearer,
                 creds.account_id.as_deref(),
                 &self.session_id,
+                &self.parent_thread_id,
+                turn,
+                previous_response_id.is_some(),
+                is_subagent,
             )?;
 
             let url = format!("{}{}", fp::CHATGPT_BASE_URL, fp::RESPONSES_ENDPOINT);
@@ -144,7 +170,12 @@ impl Provider for CodexProvider {
 
             let bytes: BoxStream<'static, reqwest::Result<Bytes>> =
                 response.bytes_stream().boxed();
-            let stream: ChunkStream = Box::pin(CodexChunkStream::new(bytes, model_echo));
+            let response_id_sink = self.last_response_id.clone();
+            let stream: ChunkStream = Box::pin(CodexChunkStream::new(
+                bytes,
+                model_echo,
+                response_id_sink,
+            ));
             Ok(stream)
         })
     }
@@ -156,16 +187,30 @@ struct CodexChunkStream {
     translator: response::State,
     pending: std::collections::VecDeque<OpenAiChunk>,
     done: bool,
+    response_id_sink: Arc<RwLock<Option<String>>>,
 }
 
 impl CodexChunkStream {
-    fn new(bytes: BoxStream<'static, reqwest::Result<Bytes>>, model_hint: String) -> Self {
+    fn new(
+        bytes: BoxStream<'static, reqwest::Result<Bytes>>,
+        model_hint: String,
+        response_id_sink: Arc<RwLock<Option<String>>>,
+    ) -> Self {
         Self {
             bytes,
             buffer: SseBuffer::new(),
             translator: response::State::new(&model_hint),
             pending: std::collections::VecDeque::new(),
             done: false,
+            response_id_sink,
+        }
+    }
+
+    fn flush_response_id(&self) {
+        if let Some(id) = self.translator.response_id.as_ref() {
+            if let Ok(mut w) = self.response_id_sink.write() {
+                *w = Some(id.clone());
+            }
         }
     }
 }
@@ -197,6 +242,7 @@ impl Stream for CodexChunkStream {
                             self.pending.push_back(c);
                         }
                         if self.translator.finished {
+                            self.flush_response_id();
                             self.done = true;
                             break;
                         }
@@ -214,6 +260,7 @@ impl Stream for CodexChunkStream {
                             self.pending.push_back(c);
                         }
                     }
+                    self.flush_response_id();
                     self.done = true;
                 }
             }
@@ -225,6 +272,10 @@ fn build_responses_headers(
     bearer: &str,
     account_id: Option<&str>,
     session_id: &str,
+    parent_thread_id: &str,
+    turn: u32,
+    continuing: bool,
+    is_subagent: bool,
 ) -> Result<HeaderMap> {
     let mut h = HeaderMap::new();
     h.insert(
@@ -264,6 +315,26 @@ fn build_responses_headers(
         HeaderValue::from_str(&fp::window_id())
             .map_err(|e| Error::Header(format!("window-id header: {e}")))?,
     );
+    h.insert(
+        HeaderName::from_static("x-codex-parent-thread-id"),
+        HeaderValue::from_str(parent_thread_id)
+            .map_err(|e| Error::Header(format!("parent-thread-id header: {e}")))?,
+    );
+    let turn_state = if continuing { "continued" } else { "new" };
+    h.insert(
+        HeaderName::from_static("x-codex-turn-state"),
+        HeaderValue::from_static(turn_state),
+    );
+    let turn_metadata = format!(r#"{{"turn":{turn}}}"#);
+    h.insert(
+        HeaderName::from_static("x-codex-turn-metadata"),
+        HeaderValue::from_str(&turn_metadata)
+            .map_err(|e| Error::Header(format!("turn-metadata header: {e}")))?,
+    );
+    h.insert(
+        HeaderName::from_static("x-openai-subagent"),
+        HeaderValue::from_static(if is_subagent { "true" } else { "false" }),
+    );
     if let Some(acct) = account_id {
         h.insert(
             HeaderName::from_static("chatgpt-account-id"),
@@ -292,7 +363,7 @@ mod tests {
 
     #[test]
     fn headers_include_all_fingerprint_fields() {
-        let h = build_responses_headers("Bearer AT", Some("acct-xyz"), "sess-1").unwrap();
+        let h = build_responses_headers("Bearer AT", Some("acct-xyz"), "sess-1", "thr-1", 1, false, false).unwrap();
         assert_eq!(h.get("authorization").unwrap(), "Bearer AT");
         assert_eq!(h.get("content-type").unwrap(), "application/json");
         assert_eq!(h.get("accept").unwrap(), "text/event-stream");
@@ -301,12 +372,29 @@ mod tests {
         assert_eq!(h.get("chatgpt-account-id").unwrap(), "acct-xyz");
         assert!(h.contains_key("x-codex-installation-id"));
         assert!(h.contains_key("x-codex-window-id"));
+        assert_eq!(h.get("x-codex-parent-thread-id").unwrap(), "thr-1");
+        assert_eq!(h.get("x-codex-turn-state").unwrap(), "new");
+        assert_eq!(h.get("x-codex-turn-metadata").unwrap(), "{\"turn\":1}");
+        assert_eq!(h.get("x-openai-subagent").unwrap(), "false");
         assert!(h.get("user-agent").unwrap().to_str().unwrap().starts_with("codex_cli_rs/"));
     }
 
     #[test]
     fn headers_skip_account_id_when_none() {
-        let h = build_responses_headers("Bearer AT", None, "sess-2").unwrap();
+        let h = build_responses_headers("Bearer AT", None, "sess-2", "thr-2", 1, false, false).unwrap();
         assert!(!h.contains_key("chatgpt-account-id"));
+    }
+
+    #[test]
+    fn headers_turn_state_continued_when_previous_response_id_present() {
+        let h = build_responses_headers("Bearer AT", None, "sess-3", "thr-3", 4, true, false).unwrap();
+        assert_eq!(h.get("x-codex-turn-state").unwrap(), "continued");
+        assert_eq!(h.get("x-codex-turn-metadata").unwrap(), "{\"turn\":4}");
+    }
+
+    #[test]
+    fn headers_subagent_flag_flips_to_true_when_running_inside_subagent_scope() {
+        let h = build_responses_headers("Bearer AT", None, "sess-4", "thr-4", 2, false, true).unwrap();
+        assert_eq!(h.get("x-openai-subagent").unwrap(), "true");
     }
 }

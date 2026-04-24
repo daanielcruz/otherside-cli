@@ -172,6 +172,14 @@ impl TaskStore {
         }
     }
 
+    pub fn push_progress_line(&self, id: &TaskId, line: String) {
+        let mut map = self.inner.write().expect("task store rwlock poisoned");
+        if let Some(r) = map.get_mut(id) {
+            r.push_output(line);
+            r.tool_uses = r.tool_uses.saturating_add(1);
+        }
+    }
+
     pub fn any_backgrounded(&self) -> bool {
         self.inner
             .read()

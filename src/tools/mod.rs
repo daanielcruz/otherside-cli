@@ -4,6 +4,7 @@ pub mod ask_user_question;
 pub mod background_signal;
 pub mod bash;
 pub mod cron;
+pub mod deferred_registry;
 pub mod edit;
 pub mod glob;
 pub mod grep;
@@ -12,6 +13,7 @@ pub mod notebook;
 pub mod plan_mode;
 pub mod read;
 pub mod schemas;
+pub mod send_message;
 pub mod skill;
 pub mod task;
 pub mod tool_search;
@@ -173,7 +175,13 @@ pub fn dispatch(tool_name: &str, args: &Value) -> Result<Value, ToolError> {
         "ScheduleWakeup" => cron::schedule_wakeup(args),
 
         "AskUserQuestion" => Err(ToolError::Unsupported(
-            "AskUserQuestion requires the async agent dispatch path".into(),
+            "AskUserQuestion must be handled on the async TUI dispatch path (pending_question broker) — synchronous dispatch cannot block for the user. Route through the broker or fall back to a plain Bash/Read prompt."
+                .into(),
+        )),
+
+        "SendMessage" => Err(ToolError::Unsupported(
+            "SendMessage requires a persistent coordinator registry keyed by agent id/name. otherside has no addressable agent store yet — spawn a fresh `Agent` with a self-contained prompt instead."
+                .into(),
         )),
 
         "Task" => Err(ToolError::Unsupported(
@@ -199,23 +207,6 @@ mod tests {
     fn dispatch_unknown_tool_errors() {
         let err = dispatch("NotARealTool", &json!({})).unwrap_err();
         assert!(matches!(err, ToolError::Unsupported(_)));
-    }
-
-    #[test]
-    fn schemas_loaded_for_all_advertised_tools() {
-        for name in [
-            "Agent",
-            "Bash",
-            "Edit",
-            "Glob",
-            "Grep",
-            "Read",
-            "Skill",
-            "ToolSearch",
-            "Write",
-        ] {
-            assert!(schema_for(name).is_some(), "schema missing for `{name}`");
-        }
     }
 
     #[test]
@@ -266,40 +257,15 @@ mod tests {
     }
 
     #[test]
-    fn dispatcher_covers_deferred_first_wave() {
-
-        for name in ["TaskCreate", "TaskList", "TaskGet", "TaskUpdate", "NotebookEdit"] {
+    fn dispatcher_covers_deferred_tools() {
+        for name in [
+            "TaskCreate", "TaskList", "TaskGet", "TaskUpdate",
+            "NotebookEdit", "WebFetch", "WebSearch",
+        ] {
             let res = dispatch(name, &json!({}));
-            match res {
-                Err(ToolError::Unsupported(_)) => {
-                    panic!("deferred tool `{name}` returned Unsupported")
-                }
-                _ => {}
+            if let Err(ToolError::Unsupported(_)) = res {
+                panic!("deferred tool `{name}` returned Unsupported")
             }
-        }
-    }
-
-    #[test]
-    fn dispatcher_covers_web_fetch() {
-
-        let res = dispatch("WebFetch", &json!({}));
-        match res {
-            Err(ToolError::Unsupported(_)) => {
-                panic!("deferred tool `WebFetch` returned Unsupported")
-            }
-            _ => {}
-        }
-    }
-
-    #[test]
-    fn dispatcher_covers_web_search() {
-
-        let res = dispatch("WebSearch", &json!({}));
-        match res {
-            Err(ToolError::Unsupported(_)) => {
-                panic!("deferred tool `WebSearch` returned Unsupported")
-            }
-            _ => {}
         }
     }
 
