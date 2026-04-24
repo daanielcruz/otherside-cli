@@ -93,6 +93,10 @@ pub fn set_bool_setting(
         "auto_connect_ide" => {
             st.persistence.settings.auto_connect_ide = Some(value)
         }
+        "fast_mode" => {
+            st.persistence.settings.fast_mode = Some(value);
+            crate::state::dispatch::set_fast_mode(value);
+        }
         other => {
             return Err(crate::error::Error::Other(format!(
                 "set_bool_setting: unknown key `{other}`"
@@ -356,6 +360,7 @@ mod tests {
             provider: Arc::new(FakeProvider) as Arc<dyn Provider>,
             model: "boot-model".into(),
             thinking: None,
+            fast_mode: false,
         });
 
         let mut st = ConversationState::default();
@@ -426,6 +431,7 @@ mod tests {
             provider: Arc::new(FakeProvider) as Arc<dyn Provider>,
             model: "claude-opus-4-7".into(),
             thinking: None,
+            fast_mode: false,
         });
 
         let mut st = ConversationState::default();

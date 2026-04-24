@@ -1342,6 +1342,12 @@ fn config_rows(state: &super::state::ConversationState) -> Vec<MenuOption> {
             state.persistence.settings.auto_connect_ide,
             false,
         ),
+        bool_row(
+            "Fast mode",
+            "fast_mode",
+            state.persistence.settings.fast_mode,
+            false,
+        ),
 
     ]
 }

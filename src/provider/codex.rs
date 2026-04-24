@@ -72,11 +72,21 @@ impl Provider for CodexProvider {
                 memory_dir: &env.memory_dir,
                 git_status: &env.git_status,
             };
+            let fast_mode = crate::state::dispatch::snapshot()
+                .map(|s| s.fast_mode)
+                .unwrap_or(false);
+            let service_tier =
+                if fast_mode && codex_model_supports_fast(&req.model) {
+                    Some("fast")
+                } else {
+                    None
+                };
             let body = build_responses_body_with_ctx(
                 &req,
                 tools_json,
                 thinking.as_ref(),
                 Some(&user_ctx),
+                service_tier,
             );
             let body_bytes = serde_json::to_vec(&body)
                 .map_err(|e| Error::Other(format!("codex body serialize: {e}")))?;
@@ -262,6 +272,10 @@ fn build_responses_headers(
         );
     }
     Ok(h)
+}
+
+fn codex_model_supports_fast(model: &str) -> bool {
+    matches!(model, "gpt-5.4")
 }
 
 fn truncate(s: &str, max: usize) -> String {

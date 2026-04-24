@@ -9,6 +9,7 @@ pub struct DispatchSnapshot {
     pub provider: Arc<dyn Provider>,
     pub model: String,
     pub thinking: Option<ThinkingConfig>,
+    pub fast_mode: bool,
 }
 
 static SNAPSHOT: OnceLock<Arc<RwLock<DispatchSnapshot>>> = OnceLock::new();
@@ -49,6 +50,14 @@ pub(crate) fn set_thinking(thinking: Option<ThinkingConfig>) {
         lock.write()
             .expect("dispatch snapshot lock poisoned")
             .thinking = thinking;
+    }
+}
+
+pub(crate) fn set_fast_mode(enabled: bool) {
+    if let Some(lock) = SNAPSHOT.get() {
+        lock.write()
+            .expect("dispatch snapshot lock poisoned")
+            .fast_mode = enabled;
     }
 }
 
@@ -98,6 +107,7 @@ mod tests {
             provider: Arc::new(FakeProvider("stub-a")) as Arc<dyn Provider>,
             model: "m-a".into(),
             thinking: None,
+            fast_mode: false,
         });
         let snap = snapshot().expect("snapshot present after install");
         assert_eq!(snap.provider.id(), "stub-a");
@@ -111,6 +121,7 @@ mod tests {
             provider: Arc::new(FakeProvider("before")) as Arc<dyn Provider>,
             model: "before-model".into(),
             thinking: None,
+            fast_mode: false,
         });
 
         set_provider(Arc::new(FakeProvider("after")) as Arc<dyn Provider>);

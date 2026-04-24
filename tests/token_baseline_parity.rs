@@ -154,7 +154,7 @@ fn codex_first_turn_instructions_carry_preamble_plus_main() {
         .collect();
     let codex_tools = openai_tools_to_codex_tools(&anth_tools);
 
-    let body = build_responses_body_with_ctx(&req, codex_tools, None, Some(&ctx));
+    let body = build_responses_body_with_ctx(&req, codex_tools, None, Some(&ctx), None);
 
     let instructions = body["instructions"]
         .as_str()
@@ -231,6 +231,7 @@ fn harness_body_size_within_fifteen_percent_across_providers() {
         openai_tools_to_codex_tools(&anth_tools),
         None,
         Some(&ctx),
+        None,
     ))
     .unwrap();
 

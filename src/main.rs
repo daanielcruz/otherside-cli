@@ -408,6 +408,7 @@ async fn cmd_tui(cli: &Cli) -> Result<()> {
                 provider: provider.clone(),
                 model: dispatch_model,
                 thinking: dispatch_thinking,
+                fast_mode: settings.fast_mode.unwrap_or(false),
             },
         );
         let _ = otherside::state::dispatch::install_registry(registry.clone());

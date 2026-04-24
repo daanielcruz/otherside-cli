@@ -50,7 +50,7 @@ pub fn build_responses_body(
     tools_json: Vec<Value>,
     thinking: Option<&ThinkingConfig>,
 ) -> Value {
-    build_responses_body_with_ctx(req, tools_json, thinking, None)
+    build_responses_body_with_ctx(req, tools_json, thinking, None, None)
 }
 
 pub fn build_responses_body_with_ctx(
@@ -58,6 +58,7 @@ pub fn build_responses_body_with_ctx(
     tools_json: Vec<Value>,
     thinking: Option<&ThinkingConfig>,
     user_ctx: Option<&UserContext<'_>>,
+    service_tier: Option<&str>,
 ) -> Value {
     let mut body = Map::new();
     body.insert("model".into(), Value::String(req.model.clone()));
@@ -81,6 +82,9 @@ pub fn build_responses_body_with_ctx(
     }
     if let Some(reasoning) = thinking.and_then(reasoning_json) {
         body.insert("reasoning".into(), reasoning);
+    }
+    if let Some(tier) = service_tier {
+        body.insert("service_tier".into(), Value::String(tier.to_string()));
     }
 
     body.insert("store".into(), Value::Bool(false));
@@ -239,7 +243,7 @@ mod tests {
             ..Default::default()
         };
         let ctx = user_ctx();
-        let body = build_responses_body_with_ctx(&req, vec![], None, Some(&ctx));
+        let body = build_responses_body_with_ctx(&req, vec![], None, Some(&ctx), None);
         let input = body["input"].as_array().unwrap();
 
         assert_eq!(input[0]["role"], "user");

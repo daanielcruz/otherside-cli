@@ -57,6 +57,9 @@ pub struct Settings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_connect_ide: Option<bool>,
 
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fast_mode: Option<bool>,
+
     pub strict_plugin_only_customization: Option<bool>,
 
     pub allow_managed_hooks_only: Option<bool>,
