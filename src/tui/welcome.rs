@@ -50,14 +50,14 @@ impl Row {
         match self {
             Row::Anthropic => "OAuth — claude.ai",
             Row::Codex => "OAuth — chatgpt.com",
-            Row::Gemini => "OAuth — google (not yet available)",
+            Row::Gemini => "OAuth — google",
             Row::Kimi => "API Key — moonshot.cn",
             Row::Custom => "OpenAI-compatible (base URL + key)",
         }
     }
 
     pub fn enabled(self) -> bool {
-        !matches!(self, Row::Gemini | Row::Custom)
+        !matches!(self, Row::Gemini)
     }
 
     pub fn provider(self) -> ProviderId {
@@ -617,6 +617,109 @@ fn draw_oauth_callback_panel(f: &mut Frame<'_>, area: Rect, st: &OAuthCallbackWa
     frame.render(f, area);
 }
 
+#[derive(Debug, Clone)]
+pub struct TextFieldState {
+    pub title: String,
+    pub instructions: String,
+    pub placeholder: String,
+    pub input: String,
+    pub error: Option<String>,
+}
+
+pub fn draw_text_field_panel(f: &mut Frame<'_>, area: Rect, st: &TextFieldState) {
+    let indent = indent_for(area.width);
+    let pad = " ".repeat(indent);
+    let error_lines: u16 = if st.error.is_some() { 2 } else { 0 };
+    let hint_lines: u16 = if st.placeholder.is_empty() { 0 } else { 1 };
+    let panel_min: u16 = 2 + 1 + 1 + 1 + 1 + hint_lines + error_lines;
+
+    let show_mascot =
+        area.height >= MASCOT_ROWS + panel_min + 4 && area.width >= MASCOT_COLS + 2;
+    let top_h: u16 = if show_mascot {
+        MASCOT_ROWS + 1 + 1 + 1 + 1
+    } else {
+        1 + 1 + 1
+    };
+
+    let outer = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(top_h), Constraint::Min(panel_min)])
+        .split(area);
+
+    draw_top_region(f, outer[0], show_mascot);
+
+    let mut body: Vec<Line<'_>> = Vec::with_capacity(8);
+    body.push(Line::from(vec![
+        Span::raw(pad.clone()),
+        Span::styled(
+            st.instructions.clone(),
+            Style::default().fg(theme::TEXT),
+        ),
+    ]));
+    body.push(Line::raw(""));
+    body.push(Line::from(vec![
+        Span::raw(pad.clone()),
+        Span::styled("> ", Style::default().fg(theme::PRIMARY)),
+        Span::styled(st.input.clone(), Style::default().fg(theme::TEXT)),
+        Span::styled("\u{2588}", Style::default().fg(theme::PRIMARY)),
+    ]));
+    if !st.placeholder.is_empty() {
+        body.push(Line::from(vec![
+            Span::raw(pad.clone()),
+            Span::styled(
+                format!("  (blank \u{2192} {})", st.placeholder),
+                Style::default().fg(theme::MUTED),
+            ),
+        ]));
+    }
+    if let Some(err) = &st.error {
+        body.push(Line::raw(""));
+        body.push(Line::from(vec![
+            Span::raw(pad.clone()),
+            Span::styled(err.clone(), Style::default().fg(theme::ERROR)),
+        ]));
+    }
+
+    let frame = PanelFrame {
+        title: Some(st.title.as_str()),
+        tabs: None,
+        active_tab: 0,
+        tabs_focused: false,
+        search: None,
+        body,
+        footer_hints: &[
+            ("Enter", "to submit"),
+            ("Esc", "to cancel"),
+            ("Ctrl+C", "to quit"),
+        ],
+        pagination_hint: None,
+    };
+    frame.render(f, area);
+}
+
+pub fn handle_text_field_key(k: KeyEvent, st: &mut TextFieldState) -> PasteOutcome {
+    if k.modifiers.contains(KeyModifiers::CONTROL)
+        && matches!(k.code, KeyCode::Char('c') | KeyCode::Char('C'))
+    {
+        return PasteOutcome::Quit;
+    }
+    match k.code {
+        KeyCode::Esc => PasteOutcome::Cancel,
+        KeyCode::Enter => PasteOutcome::Submit(st.input.trim().to_string()),
+        KeyCode::Backspace => {
+            st.input.pop();
+            st.error = None;
+            PasteOutcome::Stay
+        }
+        KeyCode::Char(c) => {
+            st.input.push(c);
+            st.error = None;
+            PasteOutcome::Stay
+        }
+        _ => PasteOutcome::Stay,
+    }
+}
+
 pub fn draw_api_key_paste(f: &mut Frame<'_>, area: Rect, st: &OAuthPasteState) {
     let indent = indent_for(area.width);
     let usable_w = usable_url_width(area.width, indent);
@@ -770,7 +873,7 @@ mod tests {
 
     #[test]
     fn arrow_nav_skips_disabled_rows() {
-        
+
         let mut state = WelcomeState::new();
         assert_eq!(state.current_row(), Row::Anthropic);
 
@@ -787,15 +890,22 @@ mod tests {
         assert_eq!(handle_key(key(KeyCode::Down), &mut state), WelcomeOutcome::Stay);
         assert_eq!(
             state.current_row(),
+            Row::Custom,
+            "Down from Kimi must land on now-enabled Custom"
+        );
+
+        assert_eq!(handle_key(key(KeyCode::Down), &mut state), WelcomeOutcome::Stay);
+        assert_eq!(
+            state.current_row(),
             Row::Anthropic,
-            "Down from Kimi must skip disabled Custom and wrap to Anthropic"
+            "Down from Custom must wrap to Anthropic"
         );
 
         assert_eq!(handle_key(key(KeyCode::Up), &mut state), WelcomeOutcome::Stay);
         assert_eq!(
             state.current_row(),
-            Row::Kimi,
-            "Up from Anthropic must skip disabled Custom and wrap to Kimi"
+            Row::Custom,
+            "Up from Anthropic must land on Custom"
         );
     }
 
@@ -812,18 +922,21 @@ mod tests {
 
     #[test]
     fn enter_on_disabled_row_is_noop() {
-        
+
         let gemini_idx = Row::ALL.iter().position(|r| *r == Row::Gemini).unwrap();
         let mut state = WelcomeState { cursor: gemini_idx };
         assert_eq!(state.current_row(), Row::Gemini);
         let out = handle_key(key(KeyCode::Enter), &mut state);
         assert_eq!(out, WelcomeOutcome::Stay);
         assert_eq!(state.current_row(), Row::Gemini, "Enter must not move cursor");
+    }
 
+    #[test]
+    fn enter_on_custom_row_emits_loginintent_for_openai_custom() {
         let custom_idx = Row::ALL.iter().position(|r| *r == Row::Custom).unwrap();
         let mut state = WelcomeState { cursor: custom_idx };
         let out = handle_key(key(KeyCode::Enter), &mut state);
-        assert_eq!(out, WelcomeOutcome::Stay);
+        assert_eq!(out, WelcomeOutcome::LoginIntent(ProviderId::OpenAiCustom));
     }
 
     #[test]

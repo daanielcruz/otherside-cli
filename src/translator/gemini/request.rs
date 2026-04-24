@@ -1,7 +1,9 @@
 
 use serde_json::{json, Map, Value};
 
-use crate::inference::{OpenAiChatMessage, OpenAiChatRequest, OpenAiChatRole, OpenAiToolDef};
+use crate::inference::{OpenAiChatRequest, OpenAiChatRole, OpenAiToolDef};
+#[cfg(test)]
+use crate::inference::OpenAiChatMessage;
 use crate::thinking::{ThinkingConfig, ThinkingLevel, ThinkingMode};
 
 pub fn build_request_body(
@@ -418,9 +420,9 @@ mod tests {
         };
         let body = build_request_body(&req, None, None, None, None);
         let gc = &body["request"]["generationConfig"];
-        assert_eq!(gc["temperature"], 0.7);
+        assert!((gc["temperature"].as_f64().unwrap() - 0.7).abs() < 1e-6);
+        assert!((gc["topP"].as_f64().unwrap() - 0.95).abs() < 1e-6);
         assert_eq!(gc["maxOutputTokens"], 1024);
-        assert_eq!(gc["topP"], 0.95);
     }
 
     #[test]

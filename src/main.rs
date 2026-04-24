@@ -12,8 +12,8 @@ use otherside::config;
 use otherside::error::{Error, Result};
 use otherside::inference::{OpenAiChatMessage, OpenAiChatRequest, OpenAiChatRole};
 use otherside::provider::{
-    anthropic::AnthropicProvider, codex::CodexProvider, kimi::KimiProvider,
-    openai_custom::OpenAiCustomProvider, Registry,
+    anthropic::AnthropicProvider, codex::CodexProvider, gemini::GeminiProvider,
+    kimi::KimiProvider, openai_custom::OpenAiCustomProvider, Registry,
 };
 use otherside::serve;
 use otherside::thinking::parse_suffix;
@@ -180,8 +180,18 @@ async fn cmd_login(provider: &str) -> Result<()> {
             println!("  api_key: {}", mask_key(&creds.api_key));
             Ok(())
         }
-        ProviderId::GeminiCli | ProviderId::OpenAiCustom => Err(Error::Other(format!(
-            "provider {provider:?} has no login flow — try `anthropic-oauth`, `codex`, or `kimi`"
+        ProviderId::GeminiCli => {
+            let creds = auth::gemini::login_interactive().await?;
+            println!("\nLogged in to gemini (Google OAuth).");
+            if let Some(email) = creds.email.as_deref() {
+                println!("  email: {email}");
+            }
+            println!("  scopes: {}", creds.scopes.join(", "));
+            println!("  expires_at (epoch ms): {}", creds.expires_at);
+            Ok(())
+        }
+        ProviderId::OpenAiCustom => Err(Error::Other(format!(
+            "provider {provider:?} has no login flow — try `anthropic-oauth`, `codex`, `kimi`, or `gemini`"
         ))),
     }
 }
@@ -216,7 +226,12 @@ fn cmd_logout(provider: &str) -> Result<()> {
             println!("Cleared cached credentials for kimi.");
             Ok(())
         }
-        ProviderId::GeminiCli | ProviderId::OpenAiCustom => Err(Error::Other(format!(
+        ProviderId::GeminiCli => {
+            auth::gemini::clear_credentials()?;
+            println!("Cleared cached credentials for gemini.");
+            Ok(())
+        }
+        ProviderId::OpenAiCustom => Err(Error::Other(format!(
             "provider {provider:?} has no credential store to clear"
         ))),
     }
@@ -289,6 +304,7 @@ async fn cmd_print(cli: &Cli, prompt: &str) -> Result<()> {
     let registry = Registry::builder()
         .with(AnthropicProvider::arc()?)
         .with(CodexProvider::arc()?)
+        .with(GeminiProvider::arc()?)
         .with(KimiProvider::arc()?)
         .with(openai_custom_from_settings(&settings)?)
         .build();
@@ -341,6 +357,7 @@ async fn cmd_serve(cli: &Cli, host: IpAddr, port: u16) -> Result<()> {
     let registry = Registry::builder()
         .with(AnthropicProvider::arc()?)
         .with(CodexProvider::arc()?)
+        .with(GeminiProvider::arc()?)
         .with(KimiProvider::arc()?)
         .with(openai_custom_from_settings(&settings)?)
         .build();
@@ -401,6 +418,7 @@ async fn cmd_tui(cli: &Cli) -> Result<()> {
     let registry = Registry::builder()
         .with(AnthropicProvider::arc()?)
         .with(CodexProvider::arc()?)
+        .with(GeminiProvider::arc()?)
         .with(KimiProvider::arc()?)
         .with(openai_custom_from_settings(&settings)?)
         .build();

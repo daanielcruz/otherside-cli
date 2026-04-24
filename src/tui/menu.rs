@@ -840,7 +840,10 @@ fn provider_is_authed(
             .ok()
             .flatten()
             .is_some(),
-        ProviderId::GeminiCli => false,
+        ProviderId::GeminiCli => crate::auth::gemini::load_credentials()
+            .ok()
+            .flatten()
+            .is_some(),
         ProviderId::OpenAiCustom => settings
             .providers
             .openai_compatible
@@ -861,6 +864,16 @@ fn build_tab_rows(
             ProviderId::OpenAiCustom => vec![ModelTabRow::CustomHint],
             _ => vec![ModelTabRow::LoginCta],
         };
+    }
+    if matches!(provider, ProviderId::OpenAiCustom) {
+        let mut rows = vec![ModelTabRow::Model {
+            raw_id: active_model_id.to_string(),
+            display_name: active_model_id.to_string(),
+            active: true,
+        }];
+        rows.push(ModelTabRow::CustomHint);
+        rows.push(ModelTabRow::Logout);
+        return rows;
     }
     let mut rows: Vec<ModelTabRow> = if matches!(provider, ProviderId::Codex) {
         let live = crate::provider::codex_models::cached_models();
@@ -975,6 +988,23 @@ fn draw_model_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
                     spans.push(Span::styled("Logout".to_string(), label_style));
                     body.push(Line::from(spans));
                 }
+                ModelTabRow::CustomHint => {
+                    let label_style = if is_cursor {
+                        Style::default()
+                            .fg(theme::PRIMARY)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(theme::MUTED)
+                    };
+                    let prefix_line = body_row("", is_cursor, false);
+                    let mut spans: Vec<Span<'static>> =
+                        prefix_line.spans.iter().cloned().collect();
+                    spans.push(Span::styled(
+                        "Reconfigure endpoint (URL / key / model)".to_string(),
+                        label_style,
+                    ));
+                    body.push(Line::from(spans));
+                }
                 _ => {}
             }
             
@@ -999,16 +1029,70 @@ fn draw_model_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
             Some(ModelTabRow::CustomHint) => {
                 body.push(Line::raw(""));
                 body.push(Line::from(Span::styled(
-                    "  Custom (OpenAI-compatible) requires base URL + API key in settings."
-                        .to_string(),
+                    "  Custom (OpenAI-compatible) endpoint is not configured.".to_string(),
                     Style::default().fg(theme::MUTED),
                 )));
                 body.push(Line::raw(""));
-                body.push(Line::from(Span::styled(
-                    "  Open /config \u{2192} Providers \u{2192} Custom to configure."
-                        .to_string(),
-                    Style::default().fg(theme::MUTED),
-                )));
+                let cta_focused = !menu.model_tabs_focused;
+                let cta_label = "Configure Custom endpoint";
+                let pad = 3;
+                let inner_cols = pad * 2 + cta_label.chars().count();
+
+                if cta_focused {
+                    let fill_style = Style::default()
+                        .fg(Color::White)
+                        .bg(theme::PRIMARY)
+                        .add_modifier(Modifier::BOLD);
+                    let filler = " ".repeat(inner_cols);
+                    body.push(Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(filler.clone(), fill_style),
+                    ]));
+                    body.push(Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(
+                            format!(
+                                "{}{}{}",
+                                " ".repeat(pad),
+                                cta_label,
+                                " ".repeat(pad)
+                            ),
+                            fill_style,
+                        ),
+                    ]));
+                    body.push(Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(filler, fill_style),
+                    ]));
+                } else {
+                    let border_style = Style::default().fg(theme::SUBTLE);
+                    let label_style =
+                        Style::default().fg(theme::TEXT).add_modifier(Modifier::BOLD);
+                    let top = format!("\u{256D}{}\u{256E}", "\u{2500}".repeat(inner_cols));
+                    let bot = format!("\u{2570}{}\u{256F}", "\u{2500}".repeat(inner_cols));
+                    body.push(Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(top, border_style),
+                    ]));
+                    body.push(Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled("\u{2502}".to_string(), border_style),
+                        Span::styled(
+                            format!(
+                                "{}{}{}",
+                                " ".repeat(pad),
+                                cta_label,
+                                " ".repeat(pad)
+                            ),
+                            label_style,
+                        ),
+                        Span::styled("\u{2502}".to_string(), border_style),
+                    ]));
+                    body.push(Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(bot, border_style),
+                    ]));
+                }
             }
             Some(ModelTabRow::LoginCta) => {
                 body.push(Line::raw(""));
@@ -1091,9 +1175,11 @@ fn draw_model_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
             ("Enter", "select"),
             ("Esc", "close"),
         ],
-        (false, Some(ModelTabRow::CustomHint)) => {
-            &[("\u{2190}/\u{2192}", "switch tabs"), ("Esc", "close")]
-        }
+        (false, Some(ModelTabRow::CustomHint)) => &[
+            ("\u{2190}/\u{2192}", "switch tabs"),
+            ("Enter", "configure"),
+            ("Esc", "close"),
+        ],
         (false, _) => &[
             ("\u{2190}/\u{2192}", "switch tabs"),
             ("Enter", "to login"),
@@ -1209,6 +1295,14 @@ fn draw_effort_slider(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
     frame.render(f, area);
 }
 
+fn tail_chars(s: &str, n: usize) -> String {
+    let count = s.chars().count();
+    if count <= n {
+        return s.to_string();
+    }
+    s.chars().skip(count - n).collect()
+}
+
 fn truncate_url(url: &str, max_chars: usize) -> String {
     let stripped = url
         .trim_start_matches("https://")
@@ -1243,13 +1337,18 @@ fn status_rows(state: &super::state::ConversationState) -> Vec<MenuOption> {
     let provider_is_kimi = matches!(state.provider_id, ProviderId::Kimi);
     let effort_label = if provider_is_kimi { "Thinking" } else { "Effort" };
     let effort_value = if provider_is_kimi {
-        // Normalize auto/None to `on` — Kimi Code's thinking surface is binary.
         match state.session.effort_label {
             Some("off") => "off",
             _ => "on",
         }
     } else {
-        state.session.effort_label.unwrap_or("auto")
+        state
+            .session
+            .effort_label
+            .or_else(|| {
+                crate::models::catalog::default_effort_for_static(&state.session.model)
+            })
+            .unwrap_or("auto")
     };
 
     let mut rows = vec![
@@ -1284,11 +1383,19 @@ fn status_rows(state: &super::state::ConversationState) -> Vec<MenuOption> {
                         .unwrap_or_else(|| "OAuth".to_string()),
                 }
             }
-            ProviderId::GeminiCli => "(not signed in)".to_string(),
+            ProviderId::GeminiCli => {
+                match crate::auth::gemini::load_credentials().ok().flatten() {
+                    None => "(not signed in)".to_string(),
+                    Some(c) => c
+                        .email
+                        .clone()
+                        .unwrap_or_else(|| "OAuth".to_string()),
+                }
+            }
             ProviderId::Kimi => {
                 match crate::auth::kimi::load_credentials().ok().flatten() {
                     None => "(not configured)".to_string(),
-                    Some(_) => "API key ****redacted".to_string(),
+                    Some(c) => format!("API key ****{}", tail_chars(&c.api_key, 3)),
                 }
             }
             ProviderId::OpenAiCustom => {
@@ -1304,8 +1411,8 @@ fn status_rows(state: &super::state::ConversationState) -> Vec<MenuOption> {
                     .filter(|s| !s.is_empty());
                 if base.is_empty() {
                     "(not configured)".to_string()
-                } else if key.is_some() {
-                    "API key ****redacted".to_string()
+                } else if let Some(k) = key {
+                    format!("API key ****{}", tail_chars(k, 3))
                 } else {
                     let model = cfg
                         .and_then(|o| o.model.as_deref())
@@ -2350,13 +2457,13 @@ mod tests {
     }
 
     #[test]
-    fn custom_unauthenticated_body_points_to_config() {
-        
+    fn custom_unauthenticated_body_shows_configure_cta() {
+
         let settings = crate::config::settings::Settings::default();
         let m = OverlayMenu::new_model_tabbed(
             "",
             &settings,
-            4, 
+            4,
             false,
             0,
         );
@@ -2367,17 +2474,16 @@ mod tests {
 
         let joined = render_overlay(&m, 120, 20);
         assert!(
-            joined.contains("Custom (OpenAI-compatible) requires base URL + API key"),
-            "custom unauth must explain requirement, got:\n{joined}"
+            joined.contains("Custom (OpenAI-compatible) endpoint is not configured"),
+            "custom unauth must explain state, got:\n{joined}"
         );
         assert!(
-            joined.contains("/config"),
-            "custom unauth must point to /config, got:\n{joined}"
+            joined.contains("Configure Custom endpoint"),
+            "custom unauth must show a configure CTA, got:\n{joined}"
         );
-        
         assert!(
             !joined.contains("Login to Custom"),
-            "Custom must NOT show a Login CTA"
+            "Custom must NOT show a Login CTA",
         );
     }
 

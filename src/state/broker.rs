@@ -69,9 +69,7 @@ pub fn logout_provider(
         ProviderId::ClaudeCode => crate::auth::anthropic::clear_credentials()?,
         ProviderId::Codex => crate::auth::codex::clear_credentials()?,
         ProviderId::Kimi => crate::auth::kimi::clear_credentials()?,
-        ProviderId::GeminiCli => {
-            
-        }
+        ProviderId::GeminiCli => crate::auth::gemini::clear_credentials()?,
         ProviderId::OpenAiCustom => {
             if let Some(cfg) = st
                 .persistence
@@ -176,7 +174,10 @@ pub fn authenticated_providers(settings: &Settings) -> Vec<ProviderId> {
                 .ok()
                 .flatten()
                 .is_some(),
-            ProviderId::GeminiCli => false,
+            ProviderId::GeminiCli => crate::auth::gemini::load_credentials()
+                .ok()
+                .flatten()
+                .is_some(),
             ProviderId::OpenAiCustom => settings
                 .providers
                 .openai_compatible
@@ -208,7 +209,10 @@ pub fn has_any_credentials(settings: &Settings) -> bool {
     if crate::auth::kimi::load_credentials().ok().flatten().is_some() {
         return true;
     }
-    
+    if crate::auth::gemini::load_credentials().ok().flatten().is_some() {
+        return true;
+    }
+
     if settings
         .providers
         .openai_compatible
@@ -218,7 +222,7 @@ pub fn has_any_credentials(settings: &Settings) -> bool {
     {
         return true;
     }
-    
+
     false
 }
 

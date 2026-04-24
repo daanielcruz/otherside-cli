@@ -389,7 +389,10 @@ async fn run_provider_login(
         ProviderId::Kimi => {
             crate::auth::kimi::login_interactive().map(|_| ())
         }
-        ProviderId::GeminiCli | ProviderId::OpenAiCustom => Err(Error::Other(format!(
+        ProviderId::GeminiCli => {
+            crate::auth::gemini::login_interactive().await.map(|_| ())
+        }
+        ProviderId::OpenAiCustom => Err(Error::Other(format!(
             "provider {} has no login flow",
             provider.slug()
         ))),
@@ -554,6 +557,143 @@ enum ApiKeyPanelOutcome {
     Submit(String),
     Cancel,
     Quit,
+}
+
+enum TextFieldOutcome {
+    Submit(String),
+    Cancel,
+    Quit,
+}
+
+async fn run_text_field_panel(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    title: String,
+    instructions: String,
+    placeholder: String,
+    prefill: String,
+) -> Result<TextFieldOutcome> {
+    use futures::StreamExt;
+
+    let mut st = welcome::TextFieldState {
+        title,
+        instructions,
+        placeholder,
+        input: prefill,
+        error: None,
+    };
+    let mut key_stream = EventStream::new();
+
+    terminal
+        .draw(|f| welcome::draw_text_field_panel(f, f.area(), &st))
+        .map_err(|e| Error::Tui(format!("draw text field: {e}")))?;
+
+    loop {
+        match key_stream.next().await {
+            Some(Ok(CtEvent::Paste(s))) => {
+                let cleaned = s.trim_end_matches(['\r', '\n']);
+                st.input.push_str(cleaned);
+                st.error = None;
+                terminal
+                    .draw(|f| welcome::draw_text_field_panel(f, f.area(), &st))
+                    .map_err(|e| Error::Tui(format!("draw text field: {e}")))?;
+            }
+            Some(Ok(CtEvent::Key(k))) => {
+                if k.kind != KeyEventKind::Press {
+                    continue;
+                }
+                match welcome::handle_text_field_key(k, &mut st) {
+                    welcome::PasteOutcome::Stay => {
+                        terminal
+                            .draw(|f| welcome::draw_text_field_panel(f, f.area(), &st))
+                            .map_err(|e| Error::Tui(format!("draw text field: {e}")))?;
+                    }
+                    welcome::PasteOutcome::Submit(raw) => {
+                        return Ok(TextFieldOutcome::Submit(raw));
+                    }
+                    welcome::PasteOutcome::Cancel => {
+                        return Ok(TextFieldOutcome::Cancel);
+                    }
+                    welcome::PasteOutcome::Quit => {
+                        return Ok(TextFieldOutcome::Quit);
+                    }
+                }
+            }
+            Some(Ok(CtEvent::Resize(_, _))) => {
+                terminal
+                    .draw(|f| welcome::draw_text_field_panel(f, f.area(), &st))
+                    .map_err(|e| Error::Tui(format!("draw text field: {e}")))?;
+            }
+            Some(Ok(_)) => {}
+            Some(Err(e)) => {
+                return Err(Error::Tui(format!("text field event stream: {e}")));
+            }
+            None => return Ok(TextFieldOutcome::Quit),
+        }
+    }
+}
+
+async fn run_openai_custom_form(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    existing: Option<crate::config::settings::OpenAiCompatibleSettings>,
+) -> Result<Option<(Option<String>, Option<String>, Option<String>)>> {
+    use crate::config::settings::OpenAiCompatibleSettings;
+    let existing = existing.unwrap_or_default();
+
+    let base_prefill = existing.base_url.clone().unwrap_or_default();
+    let base_url = match run_text_field_panel(
+        terminal,
+        "\u{25B8} OpenAI Custom \u{00B7} 1/3 Base URL".into(),
+        "Enter the base URL of your OpenAI-compatible endpoint:".into(),
+        OpenAiCompatibleSettings::DEFAULT_BASE_URL.to_string(),
+        base_prefill,
+    )
+    .await?
+    {
+        TextFieldOutcome::Submit(v) => {
+            if v.is_empty() {
+                Some(OpenAiCompatibleSettings::DEFAULT_BASE_URL.to_string())
+            } else {
+                Some(v)
+            }
+        }
+        TextFieldOutcome::Cancel | TextFieldOutcome::Quit => return Ok(None),
+    };
+
+    let key_prefill = existing.api_key.clone().unwrap_or_default();
+    let api_key = match run_text_field_panel(
+        terminal,
+        "\u{25B8} OpenAI Custom \u{00B7} 2/3 API key (optional)".into(),
+        "Paste an API key, or leave blank for unauthenticated local endpoints:".into(),
+        "unauthenticated".into(),
+        key_prefill,
+    )
+    .await?
+    {
+        TextFieldOutcome::Submit(v) => Some(v),
+        TextFieldOutcome::Cancel | TextFieldOutcome::Quit => return Ok(None),
+    };
+
+    let model_prefill = existing.model.clone().unwrap_or_default();
+    let model = match run_text_field_panel(
+        terminal,
+        "\u{25B8} OpenAI Custom \u{00B7} 3/3 Model slug".into(),
+        "Enter the default model slug your endpoint serves:".into(),
+        OpenAiCompatibleSettings::DEFAULT_MODEL.to_string(),
+        model_prefill,
+    )
+    .await?
+    {
+        TextFieldOutcome::Submit(v) => {
+            if v.is_empty() {
+                Some(OpenAiCompatibleSettings::DEFAULT_MODEL.to_string())
+            } else {
+                Some(v)
+            }
+        }
+        TextFieldOutcome::Cancel | TextFieldOutcome::Quit => return Ok(None),
+    };
+
+    Ok(Some((base_url, api_key, model)))
 }
 
 async fn run_api_key_panel(
@@ -796,8 +936,64 @@ async fn dispatch_pending_login(
                 ApiKeyPanelOutcome::Cancel | ApiKeyPanelOutcome::Quit => {}
             }
         }
-        ProviderId::GeminiCli | ProviderId::OpenAiCustom => {
-            st.set_feedback(format!("login for {} not wired yet", provider.slug()));
+        ProviderId::OpenAiCustom => {
+            let existing = st
+                .persistence
+                .settings
+                .providers
+                .openai_compatible
+                .clone();
+            match run_openai_custom_form(terminal, existing).await? {
+                Some((base_url, api_key, model)) => {
+                    if let Err(e) = crate::state::broker::set_openai_custom_fields(
+                        st, base_url, api_key, model,
+                    ) {
+                        st.set_feedback(format!("openai-custom save failed: {e}"));
+                    } else {
+                        succeeded = true;
+                    }
+                }
+                None => {}
+            }
+        }
+        ProviderId::GeminiCli => {
+            let mut handshake = match crate::auth::gemini::begin_login() {
+                Ok(h) => h,
+                Err(e) => {
+                    st.set_feedback(format!("login failed: {e}"));
+                    return Ok(());
+                }
+            };
+            let url = handshake.authorize_url().to_string();
+            let port = handshake.port();
+            let listener = match handshake.take_listener() {
+                Some(l) => l,
+                None => {
+                    st.set_feedback("login failed: listener unavailable");
+                    return Ok(());
+                }
+            };
+            let _ = crate::auth::browser::try_open(&url);
+            match run_oauth_callback_panel(
+                terminal,
+                "\u{25B8} Authorize with Google".to_string(),
+                url,
+                None,
+                port,
+                listener,
+            )
+            .await?
+            {
+                CallbackPanelOutcome::Completed { code, state } => {
+                    match handshake.finalize(code, state).await {
+                        Ok(_) => succeeded = true,
+                        Err(e) => st.set_feedback(format!("login failed: {e}")),
+                    }
+                }
+                CallbackPanelOutcome::ManualSubmit(_)
+                | CallbackPanelOutcome::Cancel
+                | CallbackPanelOutcome::Quit => {}
+            }
         }
     }
 
@@ -1750,8 +1946,12 @@ fn handle_model_panel_key(
                         st.active_menu = None;
                         return false;
                     }
-                    
-                    Some(ModelTabRow::CustomHint) | None => {}
+                    Some(ModelTabRow::CustomHint) => {
+                        st.pending_login_provider = Some(provider);
+                        st.active_menu = None;
+                        return false;
+                    }
+                    None => {}
                 }
             }
             false
