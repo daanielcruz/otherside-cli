@@ -133,6 +133,11 @@ pub const CATALOG: &[SlashEntry] = &[
         kind: SlashKind::Skill,
     },
     SlashEntry {
+        name: "deep-security-review",
+        brief: "deep bughunter sweep of the entire repo",
+        kind: SlashKind::Skill,
+    },
+    SlashEntry {
         name: "loop",
         brief: "run a prompt or slash on a recurring interval",
         kind: SlashKind::Skill,

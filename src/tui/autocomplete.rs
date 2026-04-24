@@ -308,7 +308,7 @@ mod tests {
                      "effort", "plan", "permissions", "diff", "skills",
                      "agents", "context",
                      "dream",
-                     "pr-review", "pr-security-review", "loop"] {
+                     "pr-review", "pr-security-review", "deep-security-review", "loop"] {
             let prefix = &name[..1];
             let ac = Autocomplete::from_input(&format!("/{prefix}"))
                 .unwrap_or_else(|| panic!("no matches for prefix /{prefix}"));

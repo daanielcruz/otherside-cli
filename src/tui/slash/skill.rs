@@ -11,6 +11,10 @@ const SKILL_BODIES: &[(&str, &str)] = &[
         "pr-security-review",
         include_str!("../../../skills_corpus/pr-security-review/SKILL.md"),
     ),
+    (
+        "deep-security-review",
+        include_str!("../../../skills_corpus/deep-security-review/SKILL.md"),
+    ),
 ];
 
 pub fn lookup_body(name: &str) -> Option<&'static str> {
@@ -55,6 +59,7 @@ mod tests {
             "init",
             "pr-review",
             "pr-security-review",
+            "deep-security-review",
         ];
         for name in expected {
             let body = lookup_body(name).unwrap_or_else(|| panic!("/{name} missing body"));
