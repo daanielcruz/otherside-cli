@@ -1303,7 +1303,7 @@ impl ConversationState {
         self.streaming = false;
         self.request_started_at = None;
         self.turn_verb = None;
-        self.push_system_note("⎿  Interrupted · What should Claude do instead?");
+        self.push_system_note("⎿  Interrupted · What should otherside do instead?");
         true
     }
 
@@ -2102,8 +2102,8 @@ mod tests {
         let last = st.messages.last().unwrap();
         assert_eq!(last.role, OpenAiChatRole::System);
         assert_eq!(
-            last.content, "⎿  Interrupted · What should Claude do instead?",
-            "upstream hardcodes this hint at components/InterruptedByUser.tsx:8 + InterruptedHint.tsx:8"
+            last.content, "⎿  Interrupted · What should otherside do instead?",
+            "otherside mirrors upstream InterruptedByUser.tsx:8 structure but swaps `Claude` for `otherside` per identity-zone rule"
         );
         assert!(!st.streaming);
     }

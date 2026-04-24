@@ -337,9 +337,10 @@ fn is_chrome_anchor_pair(
     use crate::tui::state::DisplayOrigin;
     prev.role == OpenAiChatRole::User
         && curr.role == OpenAiChatRole::System
-        && prev.origin == DisplayOrigin::Chrome
         && curr.origin == DisplayOrigin::Chrome
         && curr.content.starts_with("⎿ ")
+        && (prev.origin == DisplayOrigin::Chrome
+            || prev.origin == DisplayOrigin::Transcript)
 }
 
 fn render_message(role: OpenAiChatRole, content: &str, width: u16) -> Vec<Line<'static>> {
