@@ -41,7 +41,7 @@ pub fn spawn_background_agent(
     definition: AgentDefinition,
     prompt: String,
     depth: u32,
-    invocation: AgentInvocation,
+    mut invocation: AgentInvocation,
     store: TaskStore,
     display_name: String,
     tool_use_id: Option<String>,
@@ -52,13 +52,19 @@ pub fn spawn_background_agent(
 
     record.state = TaskState::Backgrounded;
     record.is_backgrounded = true;
-    record.tool_use_id = tool_use_id;
+    record.tool_use_id = tool_use_id.clone();
     record.agent_id = Some(agent_id.clone());
     record.subagent_type = Some(definition.name.clone());
     if display_name != definition.name {
         record.description = Some(display_name);
     }
     store.insert(record);
+
+    let cancel_key = tool_use_id.clone();
+    if let Some(key) = cancel_key.as_deref() {
+        let flag = crate::tools::background_signal::register_bg(key);
+        invocation.cancel = Some(flag);
+    }
 
     let id_for_task = id.clone();
     let store_for_task = store.clone();
@@ -70,6 +76,9 @@ pub fn spawn_background_agent(
         let result = crate::agent::subagents::with_nested_emitter(bg_emitter, || {
             runner.run(&definition, &prompt, depth, &invocation)
         });
+        if let Some(key) = cancel_key.as_deref() {
+            crate::tools::background_signal::unregister_bg(key);
+        }
         finalize(&store_for_task, &id_for_task, result);
     });
 
@@ -109,7 +118,7 @@ fn finalize(
                 let status = v.get("status").and_then(Value::as_str).unwrap_or("");
                 r.state = match status {
                     "completed" => TaskState::Completed,
-                    "budget_exceeded" => TaskState::Stopped,
+                    "budget_exceeded" | "stopped" => TaskState::Stopped,
                     _ => TaskState::Completed,
                 };
                 r.exit_code = Some(0);

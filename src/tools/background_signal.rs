@@ -1,11 +1,17 @@
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use tokio::sync::watch;
 
 fn registry() -> &'static Mutex<HashMap<String, watch::Sender<bool>>> {
     static REGISTRY: OnceLock<Mutex<HashMap<String, watch::Sender<bool>>>> = OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn bg_flags() -> &'static Mutex<HashMap<String, Arc<AtomicBool>>> {
+    static FLAGS: OnceLock<Mutex<HashMap<String, Arc<AtomicBool>>>> = OnceLock::new();
+    FLAGS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 pub fn register(tool_call_id: &str) -> watch::Receiver<bool> {
@@ -24,33 +30,80 @@ pub fn unregister(tool_call_id: &str) {
         .remove(tool_call_id);
 }
 
-pub fn signal_all() -> Vec<String> {
-    let mut map = registry()
+pub fn register_bg(tool_call_id: &str) -> Arc<AtomicBool> {
+    let flag = Arc::new(AtomicBool::new(false));
+    bg_flags()
         .lock()
-        .expect("background_signal registry poisoned");
-    let ids: Vec<String> = map.keys().cloned().collect();
-    for (_, tx) in map.drain() {
-        let _: std::result::Result<(), watch::error::SendError<bool>> = tx.send(true);
+        .expect("background_signal bg_flags poisoned")
+        .insert(tool_call_id.to_string(), flag.clone());
+    flag
+}
+
+pub fn unregister_bg(tool_call_id: &str) {
+    bg_flags()
+        .lock()
+        .expect("background_signal bg_flags poisoned")
+        .remove(tool_call_id);
+}
+
+pub fn signal_all() -> Vec<String> {
+    let mut ids: Vec<String> = {
+        let mut map = registry()
+            .lock()
+            .expect("background_signal registry poisoned");
+        let ids: Vec<String> = map.keys().cloned().collect();
+        for (_, tx) in map.drain() {
+            let _: std::result::Result<(), watch::error::SendError<bool>> = tx.send(true);
+        }
+        ids
+    };
+    let mut flags = bg_flags()
+        .lock()
+        .expect("background_signal bg_flags poisoned");
+    for (id, flag) in flags.iter() {
+        flag.store(true, Ordering::Relaxed);
+        if !ids.iter().any(|x| x == id) {
+            ids.push(id.clone());
+        }
     }
+    flags.clear();
     ids
 }
 
 pub fn signal(tool_call_id: &str) -> bool {
-    let mut map = registry()
-        .lock()
-        .expect("background_signal registry poisoned");
-    if let Some(tx) = map.remove(tool_call_id) {
-        let _: std::result::Result<(), watch::error::SendError<bool>> = tx.send(true);
-        true
-    } else {
-        false
+    let mut fired = false;
+    {
+        let mut map = registry()
+            .lock()
+            .expect("background_signal registry poisoned");
+        if let Some(tx) = map.remove(tool_call_id) {
+            let _: std::result::Result<(), watch::error::SendError<bool>> = tx.send(true);
+            fired = true;
+        }
     }
+    {
+        let flags = bg_flags()
+            .lock()
+            .expect("background_signal bg_flags poisoned");
+        if let Some(flag) = flags.get(tool_call_id) {
+            flag.store(true, Ordering::Relaxed);
+            fired = true;
+        }
+    }
+    fired
 }
 
 pub fn is_registered(tool_call_id: &str) -> bool {
-    registry()
+    if registry()
         .lock()
         .expect("background_signal registry poisoned")
+        .contains_key(tool_call_id)
+    {
+        return true;
+    }
+    bg_flags()
+        .lock()
+        .expect("background_signal bg_flags poisoned")
         .contains_key(tool_call_id)
 }
 

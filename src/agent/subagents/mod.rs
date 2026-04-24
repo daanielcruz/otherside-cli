@@ -33,6 +33,8 @@ pub struct AgentInvocation {
     pub run_in_background: Option<bool>,
 
     pub isolation: Option<String>,
+
+    pub cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 pub trait SubagentRunner: Send + Sync {

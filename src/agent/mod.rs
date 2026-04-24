@@ -329,6 +329,7 @@ pub struct AgentLoop<D: ToolDispatcher, O: LoopObserver = NoOpObserver> {
     pub tool_choice: Option<Value>,
     pub dispatcher: D,
     pub observer: O,
+    pub cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 #[derive(Debug, Default)]
@@ -365,7 +366,24 @@ impl<D: ToolDispatcher, O: LoopObserver> AgentLoop<D, O> {
         let mut total_input_tokens: u64 = 0;
         let mut total_output_tokens: u64 = 0;
 
+        let is_cancelled = || {
+            self.cancel
+                .as_ref()
+                .map(|f| f.load(std::sync::atomic::Ordering::Relaxed))
+                .unwrap_or(false)
+        };
+
         while turns < self.max_turns {
+            if is_cancelled() {
+                return Ok(LoopResult {
+                    history,
+                    turns,
+                    hit_turn_limit: false,
+                    aborted: true,
+                    total_input_tokens,
+                    total_output_tokens,
+                });
+            }
             turns += 1;
             let req = OpenAiChatRequest {
                 model: self.model.clone(),
@@ -458,6 +476,16 @@ impl<D: ToolDispatcher, O: LoopObserver> AgentLoop<D, O> {
                 };
                 history.push(assistant_msg);
                 for call in &tool_calls {
+                    if is_cancelled() {
+                        return Ok(LoopResult {
+                            history,
+                            turns,
+                            hit_turn_limit: false,
+                            aborted: true,
+                            total_input_tokens,
+                            total_output_tokens,
+                        });
+                    }
                     let args_value: Value = serde_json::from_str(&call.function.arguments)
                         .unwrap_or_else(|_| Value::String(call.function.arguments.clone()));
                     let started = std::time::Instant::now();
@@ -565,6 +593,7 @@ pub async fn run_with_provider<P: Provider + ?Sized>(
         tool_choice: None,
         dispatcher: GatedDispatcher::unrestricted(),
         observer: NoOpObserver,
+        cancel: None,
     };
     loop_
         .run(history, |req, thinking_cfg| async move {
@@ -810,6 +839,7 @@ mod tests {
             tool_choice: None,
             dispatcher: FakeDispatcher,
             observer: NoOpObserver,
+            cancel: None,
         };
         let initial = vec![OpenAiChatMessage {
             role: OpenAiChatRole::User,
@@ -875,6 +905,7 @@ mod tests {
             tool_choice: None,
             dispatcher: FakeDispatcher,
             observer: NoOpObserver,
+            cancel: None,
         };
         let initial = vec![OpenAiChatMessage {
             role: OpenAiChatRole::User,
@@ -952,6 +983,7 @@ mod tests {
             tool_choice: None,
             dispatcher: FakeDispatcher,
             observer: NoOpObserver,
+            cancel: None,
         };
         let initial = vec![OpenAiChatMessage {
             role: OpenAiChatRole::User,
@@ -991,6 +1023,7 @@ mod tests {
             tool_choice: None,
             dispatcher: FakeDispatcher,
             observer: NoOpObserver,
+            cancel: None,
         };
         let initial = vec![OpenAiChatMessage {
             role: OpenAiChatRole::User,
@@ -1019,6 +1052,143 @@ mod tests {
             .unwrap();
         assert_eq!(result.turns, 3);
         assert!(result.hit_turn_limit);
+    }
+
+    #[tokio::test]
+    async fn agent_loop_aborts_when_cancel_flag_flipped_before_turn() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        cancel.store(true, Ordering::Relaxed);
+
+        let loop_ = AgentLoop {
+            model: "m".into(),
+            thinking: None,
+            max_turns: 5,
+            tools: Vec::new(),
+            tool_choice: None,
+            dispatcher: FakeDispatcher,
+            observer: NoOpObserver,
+            cancel: Some(cancel.clone()),
+        };
+        let initial = vec![OpenAiChatMessage {
+            role: OpenAiChatRole::User,
+            content: "hi".into(),
+            ..Default::default()
+        }];
+        let result = loop_
+            .run(initial, |_req, _t| async {
+                let chunks: Vec<std::result::Result<OpenAiChunk, Error>> =
+                    vec![Ok(text_chunk("ignored", Some("stop")))];
+                let s: ChunkStream = Box::pin(stream::iter(chunks));
+                Ok(s)
+            })
+            .await
+            .unwrap();
+
+        assert!(
+            result.aborted,
+            "cancel flag must abort the loop before the first turn dispatches",
+        );
+        assert_eq!(result.turns, 0, "aborted before any turn fired");
+    }
+
+    #[tokio::test]
+    async fn agent_loop_aborts_mid_dispatch_when_cancel_flips_between_tool_calls() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let flipper = cancel.clone();
+
+        #[derive(Default)]
+        struct FlipOnFirstDispatch(std::sync::Arc<std::sync::atomic::AtomicBool>);
+        impl ToolDispatcher for FlipOnFirstDispatch {
+            fn dispatch<'a>(
+                &'a self,
+                _tool_call_id: &'a str,
+                name: &'a str,
+                _args: &'a Value,
+            ) -> impl Future<Output = Result<Value>> + Send + 'a {
+                let name = name.to_string();
+                let flag = self.0.clone();
+                async move {
+                    flag.store(true, Ordering::Relaxed);
+                    Ok(json!({"ok": name}))
+                }
+            }
+        }
+
+        let turn1: Vec<std::result::Result<OpenAiChunk, Error>> = vec![
+            Ok(tool_chunk(
+                0,
+                OpenAiToolCallDelta {
+                    index: 0,
+                    id: Some("tu_a".into()),
+                    kind: Some("function".into()),
+                    function: Some(OpenAiToolCallFunctionDelta {
+                        name: Some("Read".into()),
+                        arguments: Some("{}".into()),
+                    }),
+                },
+                None,
+            )),
+            Ok(tool_chunk(
+                1,
+                OpenAiToolCallDelta {
+                    index: 1,
+                    id: Some("tu_b".into()),
+                    kind: Some("function".into()),
+                    function: Some(OpenAiToolCallFunctionDelta {
+                        name: Some("Read".into()),
+                        arguments: Some("{}".into()),
+                    }),
+                },
+                Some("tool_calls"),
+            )),
+        ];
+        let mut inbox = vec![turn1];
+
+        let loop_ = AgentLoop {
+            model: "m".into(),
+            thinking: None,
+            max_turns: 5,
+            tools: Vec::new(),
+            tool_choice: None,
+            dispatcher: FlipOnFirstDispatch(flipper),
+            observer: NoOpObserver,
+            cancel: Some(cancel.clone()),
+        };
+        let initial = vec![OpenAiChatMessage {
+            role: OpenAiChatRole::User,
+            content: "run both".into(),
+            ..Default::default()
+        }];
+        let result = loop_
+            .run(initial, |_req, _t| {
+                let chunks = inbox.remove(0);
+                async move {
+                    let s: ChunkStream = Box::pin(stream::iter(chunks));
+                    Ok(s)
+                }
+            })
+            .await
+            .unwrap();
+
+        assert!(
+            result.aborted,
+            "loop must observe the flag flip between tool dispatches",
+        );
+        let tool_msgs = result
+            .history
+            .iter()
+            .filter(|m| m.role == OpenAiChatRole::Tool)
+            .count();
+        assert_eq!(
+            tool_msgs, 1,
+            "exactly one tool dispatch should have completed before cancel kicked in; got {tool_msgs}",
+        );
     }
 
     #[test]

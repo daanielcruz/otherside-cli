@@ -2909,6 +2909,7 @@ async fn run_agent_turns(
         tool_choice: None,
         dispatcher,
         observer,
+        cancel: None,
     };
 
     let provider = provider.clone();

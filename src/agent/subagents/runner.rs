@@ -159,6 +159,7 @@ impl InnerLoopRunner {
             tool_choice: None,
             dispatcher,
             observer,
+            cancel: invocation.cancel.clone(),
         };
 
         let loop_result = tokio::task::block_in_place(|| {
@@ -185,7 +186,9 @@ impl InnerLoopRunner {
         let total_tokens = loop_result
             .total_input_tokens
             .saturating_add(loop_result.total_output_tokens);
-        let status = if loop_result.hit_turn_limit {
+        let status = if loop_result.aborted {
+            "stopped"
+        } else if loop_result.hit_turn_limit {
             "budget_exceeded"
         } else {
             "completed"

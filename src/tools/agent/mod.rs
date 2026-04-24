@@ -33,6 +33,7 @@ pub fn agent(args: &Value) -> Result<Value, ToolError> {
             .get("isolation")
             .and_then(Value::as_str)
             .map(str::to_string),
+        cancel: None,
     };
 
     let Some(definition) = registry::resolve(subagent_type) else {
