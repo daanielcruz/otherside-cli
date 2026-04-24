@@ -943,11 +943,13 @@ fn draw_model_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
                     display_name,
                     active,
                 } => {
-                    let context_label =
-                        context_window_label_for(raw_id);
-                    let left_cols = 2 + display_name.chars().count();
-                    let right_cols = context_label.chars().count();
-                    let pad = ROW_WIDTH.saturating_sub(left_cols + right_cols).max(2);
+                    let full_label = model_display_with_context(raw_id);
+                    let fallback = display_name.clone();
+                    let label = if full_label.is_empty() {
+                        fallback
+                    } else {
+                        full_label
+                    };
                     let name_style = if is_cursor {
                         Style::default()
                             .fg(theme::PRIMARY)
@@ -958,14 +960,7 @@ fn draw_model_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
                     let prefix_line = body_row("", is_cursor, *active);
                     let mut spans: Vec<Span<'static>> =
                         prefix_line.spans.iter().cloned().collect();
-                    spans.push(Span::styled(display_name.clone(), name_style));
-                    spans.push(Span::raw(" ".repeat(pad)));
-                    spans.push(Span::styled(
-                        context_label,
-                        Style::default()
-                            .fg(theme::MUTED)
-                            .add_modifier(Modifier::DIM),
-                    ));
+                    spans.push(Span::styled(label, name_style));
                     body.push(Line::from(spans));
                 }
                 ModelTabRow::Logout => {
@@ -1351,8 +1346,9 @@ fn config_rows(state: &super::state::ConversationState) -> Vec<MenuOption> {
         }
     }
 
-    let rows: Vec<MenuOption> = vec![
+    let haiku_active = state.session.model.to_ascii_lowercase().starts_with("claude-haiku");
 
+    let mut rows: Vec<MenuOption> = vec![
         MenuOption {
             label: "Provider".into(),
             action_id: "setting:provider".into(),
@@ -1361,7 +1357,6 @@ fn config_rows(state: &super::state::ConversationState) -> Vec<MenuOption> {
             hint: None,
             ..Default::default()
         },
-
         MenuOption {
             label: "Model".into(),
             action_id: "setting:model".into(),
@@ -1370,7 +1365,6 @@ fn config_rows(state: &super::state::ConversationState) -> Vec<MenuOption> {
             hint: None,
             ..Default::default()
         },
-
         MenuOption {
             label: "Default permission mode".into(),
             action_id: "setting:permission-mode".into(),
@@ -1379,11 +1373,9 @@ fn config_rows(state: &super::state::ConversationState) -> Vec<MenuOption> {
             hint: None,
             ..Default::default()
         },
-
-        // Provider-scoped row: Kimi Code surfaces reasoning as a binary
-        // `Thinking on/off` — its catalog only exposes those two positions.
-        // Every other provider keeps the full Effort picker.
-        MenuOption {
+    ];
+    if !haiku_active {
+        rows.push(MenuOption {
             label: if matches!(provider, ProviderId::Kimi) {
                 "Thinking".into()
             } else {
@@ -1394,9 +1386,10 @@ fn config_rows(state: &super::state::ConversationState) -> Vec<MenuOption> {
             settings_kind: Some(SettingsRowKind::Effort),
             hint: None,
             ..Default::default()
-        },
-        settings_blank(),
-
+        });
+    }
+    rows.push(settings_blank());
+    let rows_tail: Vec<MenuOption> = vec![
         bool_row("Auto-compact", "auto_compact", state.persistence.settings.auto_compact, true),
         bool_row("Show tips", "show_tips", state.persistence.settings.show_tips, true),
 
@@ -1444,22 +1437,18 @@ fn config_rows(state: &super::state::ConversationState) -> Vec<MenuOption> {
         },
 
     ];
+    rows.extend(rows_tail);
 
-    // Provider-scoped Fast mode: only Codex, Gemini, and Custom providers
-    // expose a `service_tier: "fast"` wire flag. Anthropic and Kimi Code
-    // reject the field — hide the row to avoid a toggle that silently no-ops.
     if matches!(
         provider,
         ProviderId::Codex | ProviderId::GeminiCli | ProviderId::OpenAiCustom
     ) {
-        let mut out = rows;
-        out.push(bool_row(
+        rows.push(bool_row(
             "Fast mode",
             "fast_mode",
             state.persistence.settings.fast_mode,
             false,
         ));
-        return out;
     }
     rows
 }

@@ -910,17 +910,30 @@ impl ConversationState {
 
     pub fn switch_model(&mut self, new_raw: &str) {
         self.session.set_model(new_raw);
-        // Re-anchor effort_label to whatever the new model actually supports.
-        // Example: user flips from kimi-for-coding (effort `on`) to opus 4.7
-        // (supports `auto/low/medium/high/xhigh/max`) — `on` would be invalid.
         let current = self.session.effort_label.unwrap_or("auto");
-        if !crate::models::catalog::supports_effort(new_raw, current) {
-            let default = crate::models::catalog::default_effort_for_static(new_raw);
-            self.session.effort_label = default;
-            self.session.thinking = default.and_then(|lvl| {
-                crate::thinking::config_from_effort_label(lvl)
-            });
+        let levels = crate::models::catalog::effort_levels_for_model(new_raw);
+        let current_compatible = levels
+            .iter()
+            .any(|l| l.eq_ignore_ascii_case(current));
+        if current_compatible {
+            return;
         }
+        let cataloged = crate::models::catalog::by_id(new_raw).is_some();
+        let next_effort: Option<&'static str> = if cataloged {
+            crate::models::catalog::default_effort_for_static(new_raw)
+        } else {
+            levels
+                .iter()
+                .find(|l| {
+                    matches!(**l, "xhigh" | "high" | "on" | "medium" | "low" | "auto")
+                })
+                .or_else(|| levels.first())
+                .copied()
+        };
+        self.session.effort_label = next_effort;
+        self.session.thinking = next_effort.and_then(|lvl| {
+            crate::thinking::config_from_effort_label(lvl)
+        });
     }
 
     pub fn compact_history(&mut self) {

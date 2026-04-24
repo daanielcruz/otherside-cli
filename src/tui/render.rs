@@ -668,12 +668,9 @@ fn draw_statusline(
     let (canonical, has_1m) =
         crate::translator::anthropic::strip_1m_suffix(model);
 
+    let _ = has_1m;
     let base = crate::inference::model_display::resolve_model_label(&canonical);
-    let mut display_name = if has_1m {
-        format!("{base} [1M]")
-    } else {
-        base.clone()
-    };
+    let mut display_name = base.clone();
     if let Some(suffix) = effort_statusline_suffix(state) {
         display_name.push(' ');
         display_name.push_str(&suffix);

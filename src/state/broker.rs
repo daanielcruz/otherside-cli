@@ -22,7 +22,7 @@ pub fn set_active_provider(
 
 pub fn set_active_model(st: &mut ConversationState, model: impl Into<String>) -> Result<()> {
     let model = model.into();
-    st.session.set_model(&model);
+    st.switch_model(&model);
     let provider_slug = st.provider_id.slug();
     st.persistence
         .commit_session_defaults(&st.session, provider_slug)?;
