@@ -187,8 +187,30 @@ pub struct GeminiCliSettings {
 pub struct OpenAiCompatibleSettings {
     pub base_url: Option<String>,
     pub api_key: Option<String>,
+    pub model: Option<String>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
+}
+
+impl OpenAiCompatibleSettings {
+    pub const DEFAULT_BASE_URL: &'static str = "http://127.0.0.1:8317";
+    pub const DEFAULT_MODEL: &'static str = "gpt-5.5";
+
+    pub fn resolved_base_url(&self) -> String {
+        self.base_url
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(Self::DEFAULT_BASE_URL)
+            .to_string()
+    }
+
+    pub fn resolved_model(&self) -> String {
+        self.model
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(Self::DEFAULT_MODEL)
+            .to_string()
+    }
 }
 
 #[cfg(test)]

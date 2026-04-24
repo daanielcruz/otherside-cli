@@ -177,33 +177,20 @@ mod tests {
     }
 
     #[test]
-    fn parse_level_xhigh() {
-        let (id, cfg) = parse_suffix("claude-opus-4-7(xhigh)").unwrap();
-        assert_eq!(id, "claude-opus-4-7");
-        let cfg = cfg.unwrap();
-        assert_eq!(cfg.mode, ThinkingMode::Level);
-        assert_eq!(cfg.level, ThinkingLevel::XHigh);
-    }
-
-    #[test]
-    fn parse_level_max() {
-        let (_, cfg) = parse_suffix("claude-opus-4-7(max)").unwrap();
-        let cfg = cfg.unwrap();
-        assert_eq!(cfg.level, ThinkingLevel::Max);
-    }
-
-    #[test]
-    fn parse_level_minimal_low_medium_high() {
+    fn parse_level_suffix_covers_every_level_name() {
         for (name, expected) in [
             ("minimal", ThinkingLevel::Minimal),
             ("low", ThinkingLevel::Low),
             ("medium", ThinkingLevel::Medium),
             ("high", ThinkingLevel::High),
+            ("xhigh", ThinkingLevel::XHigh),
+            ("max", ThinkingLevel::Max),
         ] {
-            let (_, cfg) = parse_suffix(&format!("gpt-5({name})")).unwrap();
+            let (id, cfg) = parse_suffix(&format!("claude-opus-4-7({name})")).unwrap();
+            assert_eq!(id, "claude-opus-4-7");
             let cfg = cfg.unwrap();
             assert_eq!(cfg.mode, ThinkingMode::Level);
-            assert_eq!(cfg.level, expected, "expected {:?} for {}", expected, name);
+            assert_eq!(cfg.level, expected, "level {name}");
         }
     }
 

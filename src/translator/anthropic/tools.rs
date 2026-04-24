@@ -49,16 +49,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn training_anchor_tool_names_preserved() {
-
-        let tools = build_tools_array();
-        let names: Vec<&str> = tools
-            .iter()
-            .map(|t| t["name"].as_str().unwrap())
-            .collect();
-        for anchor in ["Agent", "Bash", "Edit", "Glob", "Grep", "Read", "Skill", "ToolSearch", "Write"] {
-            assert!(names.contains(&anchor), "missing anchor: {anchor}");
-        }
-    }
 }

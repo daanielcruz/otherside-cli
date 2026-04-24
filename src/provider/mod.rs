@@ -13,8 +13,11 @@ use crate::thinking::ThinkingConfig;
 pub mod anthropic;
 pub mod codex;
 pub mod codex_models;
+pub mod gemini;
+pub mod gemini_models;
 pub mod kimi;
 pub mod kimi_models;
+pub mod openai_custom;
 
 pub type ChunkStream = BoxStream<'static, Result<OpenAiChunk>>;
 

@@ -2270,21 +2270,11 @@ mod tests {
     }
 
     #[test]
-    fn relativize_path_strips_cwd_prefix_when_inside() {
+    fn relativize_path_rules() {
         let cwd = std::env::current_dir().expect("cwd");
         let inside = cwd.join("child/file.md");
-        let rel = relativize_path(inside.to_str().unwrap());
-        assert_eq!(rel, "child/file.md");
-    }
-
-    #[test]
-    fn relativize_path_leaves_unrelated_absolute_paths_alone() {
-        let outside = "/etc/hosts";
-        assert_eq!(relativize_path(outside), "/etc/hosts");
-    }
-
-    #[test]
-    fn relativize_path_leaves_tilde_paths_alone() {
+        assert_eq!(relativize_path(inside.to_str().unwrap()), "child/file.md");
+        assert_eq!(relativize_path("/etc/hosts"), "/etc/hosts");
         assert_eq!(relativize_path("~/x.md"), "~/x.md");
     }
 

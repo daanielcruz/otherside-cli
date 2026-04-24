@@ -277,40 +277,21 @@ mod tests {
     }
 
     #[test]
-    fn heading_has_no_literal_hash() {
-
-        let lines = render("# Title");
-        let text: String = lines[0]
-            .spans
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect();
-        assert!(!text.contains('#'), "heading span leaked `#`: {text:?}");
-        assert!(text.contains("Title"));
-    }
-
-    #[test]
-    fn heading_level_two_has_no_literal_hash() {
-        let lines = render("## Section");
-        let text: String = lines[0]
-            .spans
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect();
-        assert!(!text.contains('#'), "h2 span leaked `#`: {text:?}");
-        assert!(text.contains("Section"));
-    }
-
-    #[test]
-    fn heading_level_three_has_no_literal_hash() {
-        let lines = render("### Sub");
-        let text: String = lines[0]
-            .spans
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect();
-        assert!(!text.contains('#'), "h3 span leaked `#`: {text:?}");
-        assert!(text.contains("Sub"));
+    fn headings_strip_hash_at_every_level() {
+        for (src, body) in [
+            ("# Title", "Title"),
+            ("## Section", "Section"),
+            ("### Sub", "Sub"),
+        ] {
+            let lines = render(src);
+            let text: String = lines[0]
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect();
+            assert!(!text.contains('#'), "heading span leaked `#`: {text:?}");
+            assert!(text.contains(body));
+        }
     }
 
     #[test]

@@ -43,7 +43,7 @@ pub fn default_model_for(provider: ProviderId) -> &'static str {
         ProviderId::Codex => "gpt-5.4",
         ProviderId::GeminiCli => "gemini-3.1-pro-preview",
         ProviderId::Kimi => "kimi-for-coding",
-        ProviderId::OpenAiCustom => "",
+        ProviderId::OpenAiCustom => "gpt-5.5",
     }
 }
 

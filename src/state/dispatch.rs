@@ -14,6 +14,31 @@ pub struct DispatchSnapshot {
 
 static SNAPSHOT: OnceLock<Arc<RwLock<DispatchSnapshot>>> = OnceLock::new();
 static REGISTRY: OnceLock<Arc<Registry>> = OnceLock::new();
+static OPENAI_CUSTOM_SETTINGS: OnceLock<
+    Arc<RwLock<Option<crate::config::settings::OpenAiCompatibleSettings>>>,
+> = OnceLock::new();
+
+fn openai_custom_slot()
+    -> &'static Arc<RwLock<Option<crate::config::settings::OpenAiCompatibleSettings>>>
+{
+    OPENAI_CUSTOM_SETTINGS.get_or_init(|| Arc::new(RwLock::new(None)))
+}
+
+pub fn set_openai_custom_settings(
+    settings: Option<crate::config::settings::OpenAiCompatibleSettings>,
+) {
+    let slot = openai_custom_slot();
+    if let Ok(mut w) = slot.write() {
+        *w = settings;
+    }
+}
+
+pub fn snapshot_openai_custom_settings()
+    -> Option<crate::config::settings::OpenAiCompatibleSettings>
+{
+    let slot = openai_custom_slot();
+    slot.read().ok().and_then(|r| r.clone())
+}
 
 pub fn install(snapshot: DispatchSnapshot) -> bool {
     SNAPSHOT.set(Arc::new(RwLock::new(snapshot))).is_ok()

@@ -30,6 +30,37 @@ pub fn set_active_model(st: &mut ConversationState, model: impl Into<String>) ->
     Ok(())
 }
 
+pub fn set_openai_custom_fields(
+    st: &mut ConversationState,
+    base_url: Option<String>,
+    api_key: Option<String>,
+    model: Option<String>,
+) -> Result<()> {
+    use crate::config::settings::OpenAiCompatibleSettings;
+    let slot = st
+        .persistence
+        .settings
+        .providers
+        .openai_compatible
+        .get_or_insert_with(OpenAiCompatibleSettings::default);
+    if let Some(v) = base_url {
+        slot.base_url = if v.is_empty() { None } else { Some(v) };
+    }
+    if let Some(v) = api_key {
+        slot.api_key = if v.is_empty() { None } else { Some(v) };
+    }
+    if let Some(v) = model {
+        slot.model = if v.is_empty() { None } else { Some(v) };
+    }
+    crate::state::dispatch::set_openai_custom_settings(
+        st.persistence.settings.providers.openai_compatible.clone(),
+    );
+    let provider_slug = st.provider_id.slug();
+    st.persistence
+        .commit_session_defaults(&st.session, provider_slug)?;
+    Ok(())
+}
+
 pub fn logout_provider(
     st: &mut ConversationState,
     provider: ProviderId,
@@ -51,6 +82,9 @@ pub fn logout_provider(
             {
                 cfg.api_key = None;
             }
+            crate::state::dispatch::set_openai_custom_settings(
+                st.persistence.settings.providers.openai_compatible.clone(),
+            );
             let provider_slug = st.provider_id.slug();
             st.persistence
                 .commit_session_defaults(&st.session, provider_slug)?;
@@ -147,10 +181,7 @@ pub fn authenticated_providers(settings: &Settings) -> Vec<ProviderId> {
                 .providers
                 .openai_compatible
                 .as_ref()
-                .is_some_and(|c| {
-                    c.base_url.as_deref().is_some_and(|s| !s.is_empty())
-                        && c.api_key.as_deref().is_some_and(|s| !s.is_empty())
-                }),
+                .is_some_and(|c| c.base_url.as_deref().is_some_and(|s| !s.is_empty())),
         };
         if live {
             out.push(*p);
@@ -213,13 +244,6 @@ mod tests {
     }
 
     #[test]
-    fn has_any_credentials_respects_configured_providers_only() {
-        
-        let s = Settings::default();
-        assert!(s.providers.openai_compatible.is_none());
-    }
-
-    #[test]
     fn authenticated_providers_excludes_gemini_unconditionally() {
         
         let s = Settings::default();
@@ -231,49 +255,35 @@ mod tests {
     }
 
     #[test]
-    fn authenticated_providers_includes_openai_custom_only_when_both_fields_set() {
+    fn authenticated_providers_openai_custom_base_url_is_sufficient() {
         use crate::config::settings::{OpenAiCompatibleSettings, ProviderSettings};
 
         let mut base_only = Settings::default();
         base_only.providers = ProviderSettings {
             openai_compatible: Some(OpenAiCompatibleSettings {
-                base_url: Some("https://llm.example.com/v1".into()),
+                base_url: Some("http://127.0.0.1:8317".into()),
                 api_key: None,
                 ..Default::default()
             }),
             ..Default::default()
         };
         assert!(
-            !authenticated_providers(&base_only).contains(&ProviderId::OpenAiCustom),
-            "base_url alone is the welcome-gate signal, not the dispatch-ready signal"
+            authenticated_providers(&base_only).contains(&ProviderId::OpenAiCustom),
+            "local endpoints frequently skip auth — base_url alone is dispatch-ready"
         );
 
-        let mut both = Settings::default();
-        both.providers = ProviderSettings {
+        let mut empty_base = Settings::default();
+        empty_base.providers = ProviderSettings {
             openai_compatible: Some(OpenAiCompatibleSettings {
-                base_url: Some("https://llm.example.com/v1".into()),
+                base_url: Some(String::new()),
                 api_key: Some("sk-secret".into()),
                 ..Default::default()
             }),
             ..Default::default()
         };
         assert!(
-            authenticated_providers(&both).contains(&ProviderId::OpenAiCustom),
-            "base_url + api_key both present → OpenAiCustom is dispatch-ready"
-        );
-
-        let mut empty_api_key = Settings::default();
-        empty_api_key.providers = ProviderSettings {
-            openai_compatible: Some(OpenAiCompatibleSettings {
-                base_url: Some("https://llm.example.com/v1".into()),
-                api_key: Some(String::new()),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-        assert!(
-            !authenticated_providers(&empty_api_key).contains(&ProviderId::OpenAiCustom),
-            "empty-string api_key counts as absent"
+            !authenticated_providers(&empty_base).contains(&ProviderId::OpenAiCustom),
+            "empty-string base_url counts as absent"
         );
     }
 

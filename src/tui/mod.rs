@@ -2935,7 +2935,7 @@ mod settings_edit_tests {
             Some("openai-custom")
         );
 
-        assert_eq!(st.session.model, "kimi-for-coding");
+        assert_eq!(st.session.model, "gpt-5.5");
 
         edit_settings_row(&mut st, 1);
         assert_eq!(

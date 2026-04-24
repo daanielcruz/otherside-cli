@@ -494,16 +494,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn schema_const_parses_as_json() {
+    fn schema_shape_matches_upstream_wire() {
         let v: Value = serde_json::from_str(TOOL_WEB_SEARCH_JSON).unwrap();
         assert_eq!(v["name"], "WebSearch");
         let required = v["input_schema"]["required"].as_array().unwrap();
         assert!(required.iter().any(|r| r == "query"));
-    }
-
-    #[test]
-    fn schema_carries_domain_filter_properties() {
-        let v: Value = serde_json::from_str(TOOL_WEB_SEARCH_JSON).unwrap();
         let props = v["input_schema"]["properties"].as_object().unwrap();
         assert!(props.contains_key("query"));
         assert!(props.contains_key("allowed_domains"));

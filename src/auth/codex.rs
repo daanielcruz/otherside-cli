@@ -167,6 +167,16 @@ pub fn parse_jwt_account_id(jwt: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+pub fn parse_jwt_email(jwt: &str) -> Option<String> {
+    let payload_b64 = jwt.split('.').nth(1)?;
+    let payload_bytes = URL_SAFE_NO_PAD.decode(payload_b64).ok()?;
+    let payload: Value = serde_json::from_slice(&payload_bytes).ok()?;
+    payload
+        .get("email")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CachedCreds {

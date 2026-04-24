@@ -845,10 +845,7 @@ fn provider_is_authed(
             .providers
             .openai_compatible
             .as_ref()
-            .map(|c| {
-                c.base_url.as_deref().map(|s| !s.is_empty()).unwrap_or(false)
-                    && c.api_key.as_deref().map(|s| !s.is_empty()).unwrap_or(false)
-            })
+            .map(|c| c.base_url.as_deref().map(|s| !s.is_empty()).unwrap_or(false))
             .unwrap_or(false),
     }
 }
@@ -1212,6 +1209,18 @@ fn draw_effort_slider(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
     frame.render(f, area);
 }
 
+fn truncate_url(url: &str, max_chars: usize) -> String {
+    let stripped = url
+        .trim_start_matches("https://")
+        .trim_start_matches("http://");
+    if stripped.chars().count() <= max_chars {
+        return stripped.to_string();
+    }
+    let keep = max_chars.saturating_sub(4);
+    let head: String = stripped.chars().take(keep).collect();
+    format!("{head}....")
+}
+
 fn status_rows(state: &super::state::ConversationState) -> Vec<MenuOption> {
     use crate::config::providers::{ProviderId, PROVIDER_ORDER};
     let cwd = std::env::current_dir()
@@ -1260,52 +1269,49 @@ fn status_rows(state: &super::state::ConversationState) -> Vec<MenuOption> {
     for provider in PROVIDER_ORDER {
         let auth_display = match provider {
             ProviderId::ClaudeCode => {
-                let creds = crate::auth::anthropic::load_credentials().ok().flatten();
-                match creds.as_ref() {
-                    None => "(not signed in)".to_string(),
-                    Some(c) => {
-                        let sub = c.subscription_type.as_deref().unwrap_or("claude");
-                        let email = c.account_email.as_deref().unwrap_or("OAuth");
-                        match c.organization_name.as_deref() {
-                            Some(org) => format!("{email} \u{00B7} {sub} \u{00B7} {org}"),
-                            None => format!("{email} \u{00B7} {sub}"),
-                        }
-                    }
-                }
-            }
-            ProviderId::Codex => {
-                let creds = crate::auth::codex::load_credentials().ok().flatten();
-                match creds.as_ref() {
+                match crate::auth::anthropic::load_credentials().ok().flatten() {
                     None => "(not signed in)".to_string(),
                     Some(c) => c
-                        .account_id
+                        .account_email
                         .clone()
                         .unwrap_or_else(|| "OAuth".to_string()),
                 }
             }
-            ProviderId::GeminiCli => {
-                
-                "(not configured)".to_string()
+            ProviderId::Codex => {
+                match crate::auth::codex::load_credentials().ok().flatten() {
+                    None => "(not signed in)".to_string(),
+                    Some(c) => crate::auth::codex::parse_jwt_email(&c.id_token)
+                        .unwrap_or_else(|| "OAuth".to_string()),
+                }
             }
+            ProviderId::GeminiCli => "(not signed in)".to_string(),
             ProviderId::Kimi => {
                 match crate::auth::kimi::load_credentials().ok().flatten() {
                     None => "(not configured)".to_string(),
-                    Some(_) => "API key configured".to_string(),
+                    Some(_) => "API key ****redacted".to_string(),
                 }
             }
             ProviderId::OpenAiCustom => {
-                let has_base = state
+                let cfg = state
                     .persistence
                     .settings
                     .providers
                     .openai_compatible
-                    .as_ref()
-                    .and_then(|o| o.base_url.as_deref())
-                    .is_some();
-                if has_base {
-                    "configured".to_string()
-                } else {
+                    .as_ref();
+                let base = cfg.and_then(|o| o.base_url.as_deref()).unwrap_or("");
+                let key = cfg
+                    .and_then(|o| o.api_key.as_deref())
+                    .filter(|s| !s.is_empty());
+                if base.is_empty() {
                     "(not configured)".to_string()
+                } else if key.is_some() {
+                    "API key ****redacted".to_string()
+                } else {
+                    let model = cfg
+                        .and_then(|o| o.model.as_deref())
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or("(no model)");
+                    format!("{model} [{}]", truncate_url(base, 32))
                 }
             }
         };

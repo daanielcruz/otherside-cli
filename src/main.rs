@@ -12,7 +12,8 @@ use otherside::config;
 use otherside::error::{Error, Result};
 use otherside::inference::{OpenAiChatMessage, OpenAiChatRequest, OpenAiChatRole};
 use otherside::provider::{
-    anthropic::AnthropicProvider, codex::CodexProvider, kimi::KimiProvider, Registry,
+    anthropic::AnthropicProvider, codex::CodexProvider, kimi::KimiProvider,
+    openai_custom::OpenAiCustomProvider, Registry,
 };
 use otherside::serve;
 use otherside::thinking::parse_suffix;
@@ -87,6 +88,15 @@ enum Command {
 
 const DEFAULT_PROVIDER: &str = "anthropic-oauth";
 const DEFAULT_MODEL: &str = "claude-opus-4-7";
+
+fn openai_custom_from_settings(
+    settings: &otherside::config::settings::Settings,
+) -> Result<std::sync::Arc<dyn otherside::provider::Provider>> {
+    otherside::state::dispatch::set_openai_custom_settings(
+        settings.providers.openai_compatible.clone(),
+    );
+    OpenAiCustomProvider::arc()
+}
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -280,6 +290,7 @@ async fn cmd_print(cli: &Cli, prompt: &str) -> Result<()> {
         .with(AnthropicProvider::arc()?)
         .with(CodexProvider::arc()?)
         .with(KimiProvider::arc()?)
+        .with(openai_custom_from_settings(&settings)?)
         .build();
     let provider = registry.get(&provider_id).ok_or_else(|| {
         Error::Other(format!(
@@ -331,6 +342,7 @@ async fn cmd_serve(cli: &Cli, host: IpAddr, port: u16) -> Result<()> {
         .with(AnthropicProvider::arc()?)
         .with(CodexProvider::arc()?)
         .with(KimiProvider::arc()?)
+        .with(openai_custom_from_settings(&settings)?)
         .build();
 
     if registry.get(&provider_id).is_none() {
@@ -390,6 +402,7 @@ async fn cmd_tui(cli: &Cli) -> Result<()> {
         .with(AnthropicProvider::arc()?)
         .with(CodexProvider::arc()?)
         .with(KimiProvider::arc()?)
+        .with(openai_custom_from_settings(&settings)?)
         .build();
 
     if registry.get(&provider_id).is_none() {
@@ -412,6 +425,9 @@ async fn cmd_tui(cli: &Cli) -> Result<()> {
             },
         );
         let _ = otherside::state::dispatch::install_registry(registry.clone());
+        otherside::state::dispatch::set_openai_custom_settings(
+            settings.providers.openai_compatible.clone(),
+        );
         let _ = otherside::agent::subagents::install_runner(
             otherside::agent::subagents::InnerLoopRunner::new(),
         );

@@ -49,37 +49,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn emits_four_blocks() {
-        let blocks = build_system_blocks();
-        assert_eq!(blocks.len(), 4);
-    }
-
-    #[test]
-    fn last_block_is_main_system_prompt() {
-        let blocks = build_system_blocks();
-        let last = blocks.last().unwrap();
-        assert_eq!(last["type"], "text");
-        assert!(
-            last["text"].as_str().unwrap().len() > 15000,
-            "system[3] must be the ~16KB main agent prompt"
-        );
-    }
-
-    #[test]
-    fn first_block_is_billing_header() {
-        let blocks = build_system_blocks();
-        let first = &blocks[0];
-        assert_eq!(first["type"], "text");
-        assert!(
-            first["text"]
-                .as_str()
-                .unwrap()
-                .starts_with("x-anthropic-billing-header:"),
-            "system[0] must be the billing header"
-        );
-    }
-
-    #[test]
     fn third_party_flavor_drops_billing_header_and_opener() {
         
         let blocks = build_system_blocks_for(SystemFlavor::ThirdParty);
@@ -105,12 +74,15 @@ mod tests {
     }
 
     #[test]
-    fn claude_code_flavor_still_includes_billing_and_opener() {
-        
+    fn claude_code_flavor_ships_four_blocks_with_billing_and_main_prompt() {
         let blocks = build_system_blocks_for(SystemFlavor::ClaudeCode);
         assert_eq!(blocks.len(), 4);
         assert!(blocks[0]["text"].as_str().unwrap().starts_with("x-anthropic-billing-header:"));
         assert!(blocks[1]["text"].as_str().unwrap().starts_with("You are Claude Code,"));
+        assert!(
+            blocks[3]["text"].as_str().unwrap().len() > 15_000,
+            "system[3] must be the ~16KB main agent prompt"
+        );
     }
 
     #[test]

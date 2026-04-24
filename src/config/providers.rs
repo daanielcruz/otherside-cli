@@ -80,7 +80,7 @@ mod tests {
         assert_eq!(ProviderId::Codex.default_model(), "gpt-5.4");
         assert_eq!(ProviderId::GeminiCli.default_model(), "gemini-3.1-pro-preview");
         assert_eq!(ProviderId::Kimi.default_model(), "kimi-for-coding");
-        assert_eq!(ProviderId::OpenAiCustom.default_model(), "");
+        assert_eq!(ProviderId::OpenAiCustom.default_model(), "gpt-5.5");
     }
 
     #[test]
