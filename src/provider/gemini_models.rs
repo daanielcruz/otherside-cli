@@ -54,7 +54,7 @@ mod tests {
     #[test]
     fn default_catalog_slug_matches_provider_defaults_row() {
         assert!(
-            by_id("gemini-3.1-pro-preview").is_some(),
+            by_id("gemini-3-pro-preview").is_some(),
             "the default_model_for(GeminiCli) slug must resolve in the catalog"
         );
     }

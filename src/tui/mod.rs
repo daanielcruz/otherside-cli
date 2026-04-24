@@ -3120,7 +3120,7 @@ mod settings_edit_tests {
             st.persistence.settings.default_provider.as_deref(),
             Some("gemini-oauth")
         );
-        assert_eq!(st.session.model, "gemini-3.1-pro-preview");
+        assert_eq!(st.session.model, "gemini-3-pro-preview");
 
         edit_settings_row(&mut st, 1);
         assert_eq!(

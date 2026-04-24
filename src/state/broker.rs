@@ -248,13 +248,17 @@ mod tests {
     }
 
     #[test]
-    fn authenticated_providers_excludes_gemini_unconditionally() {
-        
+    fn authenticated_providers_reflects_gemini_credentials_presence() {
         let s = Settings::default();
+        let has_gemini = crate::auth::gemini::load_credentials()
+            .ok()
+            .flatten()
+            .is_some();
         let list = authenticated_providers(&s);
-        assert!(
-            !list.contains(&ProviderId::GeminiCli),
-            "Gemini is not wired; broker must not advertise it as authenticated"
+        assert_eq!(
+            list.contains(&ProviderId::GeminiCli),
+            has_gemini,
+            "Gemini tab auth state must track the credential store, not a stub"
         );
     }
 

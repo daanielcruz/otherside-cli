@@ -41,7 +41,7 @@ pub fn default_model_for(provider: ProviderId) -> &'static str {
     match provider {
         ProviderId::ClaudeCode => "claude-opus-4-7[1m]",
         ProviderId::Codex => "gpt-5.4",
-        ProviderId::GeminiCli => "gemini-3.1-pro-preview",
+        ProviderId::GeminiCli => "gemini-3-pro-preview",
         ProviderId::Kimi => "kimi-for-coding",
         ProviderId::OpenAiCustom => "gpt-5.5",
     }

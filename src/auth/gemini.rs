@@ -515,6 +515,214 @@ pub async fn authorization_header() -> Result<String> {
     Ok(format!("Bearer {}", creds.access_token))
 }
 
+fn client_metadata(project_id: Option<&str>) -> Value {
+    let platform = match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => "DARWIN_ARM64",
+        ("macos", "x86_64") => "DARWIN_AMD64",
+        ("linux", "aarch64") => "LINUX_ARM64",
+        ("linux", "x86_64") => "LINUX_AMD64",
+        ("windows", _) => "WINDOWS_AMD64",
+        _ => "PLATFORM_UNSPECIFIED",
+    };
+    let mut m = serde_json::json!({
+        "ideType": "IDE_UNSPECIFIED",
+        "platform": platform,
+        "pluginType": "GEMINI",
+    });
+    if let Some(pid) = project_id {
+        m["duetProject"] = Value::String(pid.to_string());
+    }
+    m
+}
+
+async fn setup_http_client() -> Result<reqwest::Client> {
+    crate::tools::http::apply_extra_ca_roots(
+        reqwest::Client::builder().timeout(Duration::from_secs(30)),
+    )
+    .build()
+    .map_err(|e| Error::Other(format!("http client: {e}")))
+}
+
+async fn post_json(
+    client: &reqwest::Client,
+    url: &str,
+    bearer: &str,
+    body: &Value,
+) -> Result<Value> {
+    let resp = client
+        .post(url)
+        .bearer_auth(bearer)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .json(body)
+        .send()
+        .await
+        .map_err(|e| Error::Other(format!("POST {url}: {e}")))?;
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(Error::Other(format!(
+            "{url} returned {status}: {}",
+            truncate_body(&text, 500)
+        )));
+    }
+    if text.is_empty() {
+        return Ok(Value::Object(Map::new()));
+    }
+    serde_json::from_str(&text)
+        .map_err(|e| Error::Other(format!("parse {url}: {e} — body {}", truncate_body(&text, 500))))
+}
+
+async fn get_operation(
+    client: &reqwest::Client,
+    bearer: &str,
+    name: &str,
+) -> Result<Value> {
+    let url = fp::operation_url(name);
+    let resp = client
+        .get(&url)
+        .bearer_auth(bearer)
+        .send()
+        .await
+        .map_err(|e| Error::Other(format!("GET {url}: {e}")))?;
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(Error::Other(format!(
+            "{url} returned {status}: {}",
+            truncate_body(&text, 500)
+        )));
+    }
+    serde_json::from_str(&text)
+        .map_err(|e| Error::Other(format!("parse {url}: {e}")))
+}
+
+fn truncate_body(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let cut: String = s.chars().take(max).collect();
+    format!("{cut}…")
+}
+
+/// Runs the Code Assist onboarding flow — `loadCodeAssist` to pick a tier and
+/// learn the managed project id (free tier), fall back to `onboardUser` +
+/// operation polling when the server requires explicit onboarding.
+///
+/// Mirrors `packages/core/src/code_assist/setup.ts:setupUser`.
+pub async fn ensure_project_id(creds: &mut CachedCreds) -> Result<String> {
+    if let Some(pid) = creds.project_id.as_deref() {
+        if !pid.is_empty() {
+            return Ok(pid.to_string());
+        }
+    }
+
+    let env_project = std::env::var("GOOGLE_CLOUD_PROJECT")
+        .ok()
+        .or_else(|| std::env::var("GOOGLE_CLOUD_PROJECT_ID").ok())
+        .filter(|s| !s.is_empty());
+
+    let client = setup_http_client().await?;
+    let load_body = serde_json::json!({
+        "cloudaicompanionProject": env_project,
+        "metadata": client_metadata(env_project.as_deref()),
+    });
+    let load_res = post_json(
+        &client,
+        &fp::load_code_assist_url(),
+        &creds.access_token,
+        &load_body,
+    )
+    .await?;
+
+    if let Some(pid) = load_res
+        .get("cloudaicompanionProject")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    {
+        creds.project_id = Some(pid.to_string());
+        save_credentials(creds)?;
+        return Ok(pid.to_string());
+    }
+
+    if let Some(env_pid) = env_project.as_deref() {
+        if load_res.get("currentTier").is_some() {
+            creds.project_id = Some(env_pid.to_string());
+            save_credentials(creds)?;
+            return Ok(env_pid.to_string());
+        }
+    }
+
+    let default_tier = load_res
+        .get("allowedTiers")
+        .and_then(Value::as_array)
+        .and_then(|arr| {
+            arr.iter()
+                .find(|t| t.get("isDefault").and_then(Value::as_bool).unwrap_or(false))
+                .cloned()
+        });
+    let tier_id = default_tier
+        .as_ref()
+        .and_then(|t| t.get("id").and_then(Value::as_str))
+        .unwrap_or("legacy-tier")
+        .to_string();
+
+    let onboard_body = if tier_id == "free-tier" {
+        serde_json::json!({
+            "tierId": tier_id,
+            "metadata": client_metadata(None),
+        })
+    } else {
+        serde_json::json!({
+            "tierId": tier_id,
+            "cloudaicompanionProject": env_project,
+            "metadata": client_metadata(env_project.as_deref()),
+        })
+    };
+    let mut lro = post_json(
+        &client,
+        &fp::onboard_user_url(),
+        &creds.access_token,
+        &onboard_body,
+    )
+    .await?;
+
+    let op_name = lro.get("name").and_then(Value::as_str).map(str::to_string);
+    let mut done = lro.get("done").and_then(Value::as_bool).unwrap_or(false);
+    if !done {
+        let name = op_name.clone().ok_or_else(|| {
+            Error::Other("onboardUser returned non-final op without a name".into())
+        })?;
+        let deadline = SystemTime::now() + Duration::from_secs(60);
+        while !done {
+            if SystemTime::now() > deadline {
+                return Err(Error::Other(
+                    "onboardUser did not complete in 60s — retry login".into(),
+                ));
+            }
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            lro = get_operation(&client, &creds.access_token, &name).await?;
+            done = lro.get("done").and_then(Value::as_bool).unwrap_or(false);
+        }
+    }
+
+    let project_id = lro
+        .pointer("/response/cloudaicompanionProject/id")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or(env_project.clone());
+
+    match project_id {
+        Some(pid) if !pid.is_empty() => {
+            creds.project_id = Some(pid.clone());
+            save_credentials(creds)?;
+            Ok(pid)
+        }
+        _ => Err(Error::Other(
+            "onboardUser did not return a project id and GOOGLE_CLOUD_PROJECT is unset".into(),
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

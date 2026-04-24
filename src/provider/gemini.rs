@@ -70,16 +70,17 @@ impl Provider for GeminiProvider {
         thinking: Option<ThinkingConfig>,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<ChunkStream>> + Send + 'a>> {
         Box::pin(async move {
-            let creds = auth::current_credentials().await?;
-            let bearer = format!("Bearer {}", creds.access_token);
-
+            let mut creds = auth::current_credentials().await?;
             let project_id = match creds.project_id.clone() {
-                Some(p) if !p.is_empty() => Some(p),
-                _ => self.cached_project_id(),
+                Some(p) if !p.is_empty() => p,
+                _ => match self.cached_project_id() {
+                    Some(p) => p,
+                    None => auth::ensure_project_id(&mut creds).await?,
+                },
             };
-            if let Some(pid) = project_id.as_deref() {
-                self.remember_project_id(pid);
-            }
+            self.remember_project_id(&project_id);
+            let bearer = format!("Bearer {}", creds.access_token);
+            let project_id = Some(project_id);
 
             let user_prompt_id = Uuid::new_v4().to_string();
             let body = build_request_body(
