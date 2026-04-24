@@ -275,7 +275,7 @@ fn build_responses_headers(
 }
 
 fn codex_model_supports_fast(model: &str) -> bool {
-    matches!(model, "gpt-5.4")
+    crate::provider::codex_models::supports_fast_tier(model)
 }
 
 fn truncate(s: &str, max: usize) -> String {

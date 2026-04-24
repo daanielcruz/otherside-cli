@@ -880,11 +880,9 @@ fn build_tab_rows(
             live.iter()
                 .map(|m| ModelTabRow::Model {
                     raw_id: m.slug.clone(),
-                    display_name: if m.display_name.is_empty() {
-                        m.slug.clone()
-                    } else {
-                        m.display_name.clone()
-                    },
+                    display_name: crate::provider::codex_models::display_codex_name(
+                        &m.slug,
+                    ),
                     active: m.slug == active_model_id,
                 })
                 .collect()

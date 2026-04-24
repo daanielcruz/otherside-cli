@@ -12,6 +12,8 @@ const MODELS_ENDPOINT: &str = "/models";
 const CACHE_TTL: Duration = Duration::from_secs(300);
 const FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 
+const CLIENT_VERSION_QUERY: &str = "0.124.0";
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct CodexModel {
     pub slug: String,
@@ -54,12 +56,11 @@ pub fn cached_models() -> Vec<CodexModel> {
 
 pub async fn fetch_models() -> Result<Vec<CodexModel>> {
     let creds = auth::current_credentials().await?;
-    let client_version = env!("CARGO_PKG_VERSION");
     let url = format!(
         "{}{}?client_version={}",
         fp::CHATGPT_BASE_URL,
         MODELS_ENDPOINT,
-        client_version,
+        CLIENT_VERSION_QUERY,
     );
 
     let mut headers = HeaderMap::new();
@@ -119,6 +120,7 @@ pub async fn fetch_models() -> Result<Vec<CodexModel>> {
         }
     }
 
+    out.retain(|m| m.slug != "codex-auto-review");
     out.sort_by_key(|m| m.priority);
 
     if let Ok(mut w) = cache().write() {
@@ -128,6 +130,28 @@ pub async fn fetch_models() -> Result<Vec<CodexModel>> {
         });
     }
     Ok(out)
+}
+
+pub fn supports_fast_tier(slug: &str) -> bool {
+    cached_models()
+        .iter()
+        .find(|m| m.slug == slug)
+        .map(|m| m.additional_speed_tiers.iter().any(|t| t == "fast"))
+        .unwrap_or(false)
+}
+
+pub fn display_codex_name(slug: &str) -> String {
+    let mapped = match slug {
+        "gpt-5.5" => Some("GPT-5.5"),
+        "gpt-5.4" => Some("GPT-5.4"),
+        "gpt-5.4-mini" => Some("GPT-5.4 mini"),
+        "gpt-5.3-codex" => Some("GPT-5.3 Codex"),
+        "gpt-5.3-codex-spark" => Some("GPT-5.3 Codex Spark"),
+        "gpt-5.2" => Some("GPT-5.2"),
+        "codex-auto-review" => Some("Codex Auto-Review"),
+        _ => None,
+    };
+    mapped.map(str::to_string).unwrap_or_else(|| slug.to_string())
 }
 
 pub async fn get_or_fetch() -> Vec<CodexModel> {
