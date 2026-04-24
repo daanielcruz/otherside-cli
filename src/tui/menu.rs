@@ -911,7 +911,7 @@ fn build_tab_rows(
 }
 
 fn draw_model_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
-    use super::panel_frame::{body_row, PanelFrame, TabSpec, CHEVRON};
+    use super::panel_frame::{body_row, PanelFrame, TabSpec};
     use crate::config::providers::ProviderId;
     use ratatui::style::Color;
 

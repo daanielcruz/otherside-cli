@@ -4,12 +4,23 @@ pub fn public_model_display_name(canonical: &str) -> Option<&'static str> {
     crate::models::catalog::display_name_for(canonical)
 }
 
+pub fn resolve_model_label(canonical: &str) -> String {
+    if let Some(s) = crate::models::catalog::display_name_for(canonical) {
+        return s.to_string();
+    }
+    let live = crate::provider::codex_models::cached_models();
+    if live.iter().any(|m| m.slug == canonical) {
+        return crate::provider::codex_models::display_codex_name(canonical);
+    }
+    canonical.to_string()
+}
+
 pub fn render_model_name(canonical: &str, has_1m: bool) -> String {
-    let base = public_model_display_name(canonical).unwrap_or(canonical);
+    let base = resolve_model_label(canonical);
     if has_1m {
         format!("{base} (1M context)")
     } else {
-        base.to_string()
+        base
     }
 }
 

@@ -604,6 +604,36 @@ fn draw_prompt(f: &mut Frame<'_>, area: Rect, state: &ConversationState) {
     }
 }
 
+fn effort_statusline_suffix(state: &ConversationState) -> Option<String> {
+    use crate::config::providers::ProviderId;
+    let effort = state.session.effort_label?;
+    if state.provider_id == ProviderId::Kimi {
+        return match effort {
+            "on" => Some("Thinking".to_string()),
+            _ => None,
+        };
+    }
+    if effort == "auto" {
+        return None;
+    }
+    Some(match effort {
+        "xhigh" => "xHigh".to_string(),
+        "max" => "Max".to_string(),
+        "high" => "High".to_string(),
+        "low" => "Low".to_string(),
+        "medium" => "Medium".to_string(),
+        other => {
+            let mut c = other.chars();
+            match c.next() {
+                Some(first) => {
+                    first.to_ascii_uppercase().to_string() + c.as_str()
+                }
+                None => String::new(),
+            }
+        }
+    })
+}
+
 fn draw_statusline(
     f: &mut Frame<'_>,
     area: Rect,
@@ -626,14 +656,16 @@ fn draw_statusline(
     let (canonical, has_1m) =
         crate::translator::anthropic::strip_1m_suffix(model);
 
-    let base = crate::inference::model_display::public_model_display_name(&canonical)
-        .unwrap_or(&canonical)
-        .to_string();
-    let display_name = if has_1m {
+    let base = crate::inference::model_display::resolve_model_label(&canonical);
+    let mut display_name = if has_1m {
         format!("{base} [1M]")
     } else {
         base.clone()
     };
+    if let Some(suffix) = effort_statusline_suffix(state) {
+        display_name.push(' ');
+        display_name.push_str(&suffix);
+    }
 
     let window = state.session.context_window;
     let used = window.saturating_sub(state.context_available());
