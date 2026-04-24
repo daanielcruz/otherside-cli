@@ -2735,7 +2735,7 @@ fn submit_current_input(
 fn spawn_compact_turn(
     st: &mut ConversationState,
     registry: &Arc<Registry>,
-    base_model: &str,
+    _base_model: &str,
     tx: &mpsc::Sender<StreamEvent>,
     custom_instructions: &str,
     is_auto: bool,
@@ -2763,7 +2763,7 @@ fn spawn_compact_turn(
         "✻ Compacting conversation…"
     });
 
-    let model = base_model.to_string();
+    let model = st.session.model.clone();
     let thinking_cfg = st.session.thinking;
     let tx = tx.clone();
     let custom = {
