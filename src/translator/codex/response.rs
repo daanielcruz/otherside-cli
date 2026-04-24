@@ -26,6 +26,14 @@ impl State {
         }
     }
 
+    fn register_item(&mut self, item_id: &str) -> usize {
+        if let Some(pos) = self.tool_call_indices.iter().position(|c| c == item_id) {
+            return pos;
+        }
+        self.tool_call_indices.push(item_id.to_string());
+        self.tool_call_indices.len() - 1
+    }
+
     pub fn ingest(&mut self, event: &str, payload: &Value) -> Vec<OpenAiChunk> {
         match event {
             "response.created" => {
@@ -44,8 +52,13 @@ impl State {
                 match item_type {
                     "function_call" if event == "response.output_item.added" => {
                         let call_id = item["call_id"].as_str().unwrap_or("").to_string();
+                        let item_id = item["id"]
+                            .as_str()
+                            .map(str::to_string)
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or_else(|| call_id.clone());
                         let name = item["name"].as_str().unwrap_or("").to_string();
-                        let index = self.register_tool_call(&call_id) as u32;
+                        let index = self.register_item(&item_id) as u32;
                         vec![self.chunk_with_delta(OpenAiDelta {
                             role: None,
                             content: None,
@@ -92,8 +105,11 @@ impl State {
             }
             "response.function_call_arguments.delta"
             | "response.custom_tool_call_input.delta" => {
-                let call_id = payload["call_id"].as_str().unwrap_or("");
-                let index = self.register_tool_call(call_id) as u32;
+                let item_id = payload["item_id"]
+                    .as_str()
+                    .or_else(|| payload["call_id"].as_str())
+                    .unwrap_or("");
+                let index = self.register_item(item_id) as u32;
                 if let Some(delta) = payload["delta"].as_str() {
                     vec![self.chunk_with_delta(OpenAiDelta {
                         role: None,
@@ -115,9 +131,14 @@ impl State {
             }
             "response.completed" => {
                 self.finished = true;
+                let finish = if self.tool_call_indices.is_empty() {
+                    "stop"
+                } else {
+                    "tool_calls"
+                };
                 vec![self.final_chunk(
                     payload["response"]["usage"].clone(),
-                    Some("stop".to_string()),
+                    Some(finish.to_string()),
                 )]
             }
             "response.incomplete" => {
@@ -131,16 +152,15 @@ impl State {
                     Some(reason),
                 )]
             }
+            "response.failed" | "response.error" | "response.cancelled" => {
+                self.finished = true;
+                vec![self.final_chunk(
+                    payload["response"]["usage"].clone(),
+                    Some("stop".to_string()),
+                )]
+            }
             _ => Vec::new(),
         }
-    }
-
-    fn register_tool_call(&mut self, call_id: &str) -> usize {
-        if let Some(pos) = self.tool_call_indices.iter().position(|c| c == call_id) {
-            return pos;
-        }
-        self.tool_call_indices.push(call_id.to_string());
-        self.tool_call_indices.len() - 1
     }
 
     fn first_chunk(&self) -> OpenAiChunk {
@@ -341,6 +361,98 @@ mod tests {
         let usage = out[0].usage.as_ref().unwrap();
         assert_eq!(usage.input_tokens, Some(10));
         assert_eq!(usage.output_tokens, Some(20));
+    }
+
+    #[test]
+    fn delta_keyed_by_item_id_merges_with_added_event() {
+        let mut s = State::new("gpt-5-codex");
+        s.ingest(
+            "response.output_item.added",
+            &json!({
+                "output_index": 0,
+                "item": {
+                    "id": "fc_abc123",
+                    "type": "function_call",
+                    "call_id": "call_xyz",
+                    "name": "Bash"
+                }
+            }),
+        );
+        let out = s.ingest(
+            "response.function_call_arguments.delta",
+            &json!({
+                "item_id": "fc_abc123",
+                "output_index": 0,
+                "delta": "{\"command\":\"ls\"}"
+            }),
+        );
+        let tcs = &out[0].choices[0].delta.tool_calls;
+        assert_eq!(tcs.len(), 1);
+        assert_eq!(
+            tcs[0].index, 0,
+            "delta must share the same tool-call index seeded at output_item.added; /responses keys delta by item_id, added by item.id"
+        );
+        assert_eq!(
+            tcs[0].function.as_ref().unwrap().arguments.as_deref(),
+            Some("{\"command\":\"ls\"}")
+        );
+    }
+
+    #[test]
+    fn completed_after_tool_call_emits_finish_reason_tool_calls() {
+        let mut s = State::new("gpt-5-codex");
+        s.ingest(
+            "response.output_item.added",
+            &json!({
+                "item": {"type": "function_call", "call_id": "c1", "name": "Bash"}
+            }),
+        );
+        s.ingest(
+            "response.function_call_arguments.delta",
+            &json!({"call_id": "c1", "delta": "{\"command\":\"ls\"}"}),
+        );
+        let out = s.ingest(
+            "response.completed",
+            &json!({
+                "response": {
+                    "id": "resp_1",
+                    "usage": {"input_tokens": 5, "output_tokens": 3}
+                }
+            }),
+        );
+        assert_eq!(
+            out[0].choices[0].finish_reason.as_deref(),
+            Some("tool_calls"),
+            "agent loop gates dispatch on finish_reason==tool_calls; /responses has no native stop_reason field so we infer from registered tool_call_indices"
+        );
+    }
+
+    #[test]
+    fn response_failed_emits_final_chunk_stop() {
+        let mut s = State::new("gpt-5-codex");
+        let out = s.ingest(
+            "response.failed",
+            &json!({"response": {"id": "resp_x"}}),
+        );
+        assert!(s.finished);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].choices[0].finish_reason.as_deref(), Some("stop"));
+    }
+
+    #[test]
+    fn response_error_emits_final_chunk_stop() {
+        let mut s = State::new("gpt-5-codex");
+        let out = s.ingest("response.error", &json!({}));
+        assert!(s.finished);
+        assert_eq!(out.len(), 1);
+    }
+
+    #[test]
+    fn response_cancelled_emits_final_chunk_stop() {
+        let mut s = State::new("gpt-5-codex");
+        let out = s.ingest("response.cancelled", &json!({}));
+        assert!(s.finished);
+        assert_eq!(out.len(), 1);
     }
 
     #[test]

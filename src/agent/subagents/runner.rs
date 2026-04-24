@@ -80,14 +80,22 @@ impl InnerLoopRunner {
                 "dispatch snapshot not installed — the binary did not call `state::dispatch::install` at startup".into(),
             )
         })?;
-        let model = crate::models::agents::resolve_agent_model(
+        let snap_provider_id =
+            crate::config::providers::ProviderId::from_slug(snap.provider.id())
+                .unwrap_or(crate::config::providers::ProviderId::ClaudeCode);
+        let (model, effort_override) = crate::models::agents::resolve_agent_dispatch(
+            Some(definition.name.as_str()),
             invocation.model.as_deref(),
             definition.model.as_deref(),
             &snap.model,
+            snap_provider_id,
         );
 
         let provider = snap.provider.clone();
-        let thinking = snap.thinking;
+        let thinking = match effort_override {
+            Some(level) => Some(crate::thinking::ThinkingConfig::level(level)),
+            None => snap.thinking,
+        };
         tracing::info!(
             target: "otherside::dispatch",
             provider = provider.id(),
@@ -98,7 +106,7 @@ impl InnerLoopRunner {
         );
         let mut history: Vec<OpenAiChatMessage> = Vec::with_capacity(2);
         match provider.id() {
-            "codex" => {
+            id if id == crate::provider::codex::ID => {
                 history.push(OpenAiChatMessage {
                     role: OpenAiChatRole::System,
                     content: definition.system_prompt.clone(),

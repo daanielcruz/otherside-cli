@@ -40,11 +40,16 @@ pub fn build_preamble_blocks_with_git(
 }
 
 pub const THIRD_PARTY_DEFERRED_CLARIFIER: &str = "\
-The following deferred tools load on demand via the ToolSearch tool \
-during your response. They are ADDITIVE — every tool already listed in \
-the top-level `tools` array (Bash, Read, Edit, Glob, Grep, Write, \
-Agent, Skill, ToolSearch) remains fully callable. Do NOT refuse a call \
-for a tool in `tools[]` on the grounds that it isn't in this list.";
+The following deferred tools load on demand. To invoke one: first call \
+`ToolSearch(query: \"select:<ToolName>\")` to load its schema, THEN call \
+that tool directly by its own name. Do NOT dispatch a deferred tool via \
+the `Skill` tool — `Skill` is ONLY for bundled skill workflows \
+(e.g. `init`, `review`, `security-review`). TaskGet, TaskList, TaskOutput, \
+WebFetch, WebSearch, CronCreate, etc. are deferred TOOLS, never skills. \
+The deferred set is ADDITIVE — every tool already listed in the top-level \
+`tools` array (Bash, Read, Edit, Glob, Grep, Write, Agent, Skill, ToolSearch) \
+remains fully callable. Do NOT refuse a call for a tool in `tools[]` on the \
+grounds that it isn't in this list.";
 
 pub fn third_party_deferred_tools_reminder() -> String {
     format!("{THIRD_PARTY_DEFERRED_CLARIFIER}\n\n{}", REMINDER_DEFERRED_TOOLS)

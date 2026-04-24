@@ -6,14 +6,16 @@ use crate::agent::subagents::{registry, AgentInvocation, DepthGuard, RunnerError
 use crate::tools::ToolError;
 
 pub fn agent(args: &Value) -> Result<Value, ToolError> {
-    let description = args
-        .get("description")
-        .and_then(Value::as_str)
-        .ok_or_else(|| ToolError::InvalidArgs("description is required".into()))?;
     let prompt = args
         .get("prompt")
         .and_then(Value::as_str)
         .ok_or_else(|| ToolError::InvalidArgs("prompt is required".into()))?;
+    let description_owned = args
+        .get("description")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| derive_description_from_prompt(prompt));
+    let description = description_owned.as_str();
     let subagent_type = args
         .get("subagent_type")
         .and_then(Value::as_str)
@@ -130,6 +132,20 @@ fn dispatch_with_runner(
     }
 }
 
+fn derive_description_from_prompt(prompt: &str) -> String {
+    let trimmed = prompt.trim();
+    if trimmed.is_empty() {
+        return "Agent".to_string();
+    }
+    let first_line = trimmed.lines().next().unwrap_or(trimmed).trim();
+    let short: String = first_line.chars().take(60).collect();
+    if short.chars().count() < first_line.chars().count() {
+        format!("{short}…")
+    } else {
+        short
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,10 +161,28 @@ mod tests {
     }
 
     #[test]
-    fn requires_description_and_prompt() {
+    fn requires_prompt_but_derives_missing_description() {
         assert!(agent(&json!({})).is_err());
         assert!(agent(&json!({"description": "x"})).is_err());
-        assert!(agent(&json!({"prompt": "y"})).is_err());
+        let res = agent(&json!({"prompt": "Analyze project structure and report findings"}));
+        assert!(res.is_ok() || matches!(res, Err(ToolError::InvalidArgs(ref m)) if !m.contains("description is required")));
+    }
+
+    #[test]
+    fn derive_description_first_line_capped() {
+        assert_eq!(derive_description_from_prompt(""), "Agent");
+        assert_eq!(
+            derive_description_from_prompt("short prompt"),
+            "short prompt"
+        );
+        let long = "a".repeat(100);
+        let got = derive_description_from_prompt(&long);
+        assert!(got.ends_with('…'));
+        assert_eq!(got.chars().count(), 61);
+        assert_eq!(
+            derive_description_from_prompt("first line\nsecond line"),
+            "first line"
+        );
     }
 
     #[test]
