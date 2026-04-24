@@ -931,6 +931,7 @@ fn draw_model_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
         .collect();
 
     let mut body: Vec<Line<'static>> = Vec::new();
+    body.push(Line::raw(""));
 
     if active_tab.authed {
         
