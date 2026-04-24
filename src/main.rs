@@ -452,6 +452,20 @@ async fn cmd_tui(cli: &Cli) -> Result<()> {
             otherside::agent::subagents::InnerLoopRunner::new(),
         );
 
+        if let Ok(cfg) = otherside::config::config_dir() {
+            match otherside::sessions::retention::sweep(&cfg, 30) {
+                Ok(report) => {
+                    if !report.deleted.is_empty() {
+                        tracing::debug!(
+                            count = report.deleted.len(),
+                            "session retention sweep removed empty/stale transcripts"
+                        );
+                    }
+                }
+                Err(e) => tracing::debug!(?e, "session retention sweep failed at boot"),
+            }
+        }
+
         if otherside::auth::codex::load_credentials()
             .ok()
             .flatten()
