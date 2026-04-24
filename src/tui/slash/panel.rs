@@ -9,10 +9,31 @@ pub fn handle(kind: PanelKind, state: &mut ConversationState) -> SlashOutcome {
     state.input.clear();
     state.autocomplete = None;
     let overlay = match kind {
-        PanelKind::Effort => menu::OverlayMenu::new_effort_for_model(
-            state.session.effort_label,
-            &state.session.model,
-        ),
+        PanelKind::Effort => {
+            let candidate = menu::OverlayMenu::new_effort_for_model(
+                state.session.effort_label,
+                &state.session.model,
+            );
+            if candidate.options.len() < 3 {
+                let labels: Vec<String> = candidate
+                    .options
+                    .iter()
+                    .map(|o| o.label.clone())
+                    .collect();
+                let joined = if labels.is_empty() {
+                    "auto".to_string()
+                } else {
+                    labels.join(" / ")
+                };
+                state.set_feedback(format!(
+                    "{}: reasoning is {} — no granular effort scale",
+                    state.provider_id.slug(),
+                    joined
+                ));
+                return SlashOutcome::Handled;
+            }
+            candidate
+        }
         PanelKind::Permissions => menu::OverlayMenu::new_permissions(state.session.permission_mode),
         PanelKind::Model => {
             

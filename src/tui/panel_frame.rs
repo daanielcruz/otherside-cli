@@ -157,13 +157,15 @@ fn draw_tab_row(
 }
 
 fn chip_span(label: &str, active: bool, tabs_focused: bool) -> Span<'static> {
-    let _ = tabs_focused;
     let body = format!(" {label} ");
     let style = match (active, tabs_focused) {
         (false, _) => Style::default().fg(theme::MUTED),
-        (true, _) => Style::default()
+        (true, true) => Style::default()
             .fg(Color::White)
             .bg(theme::PRIMARY)
+            .add_modifier(Modifier::BOLD),
+        (true, false) => Style::default()
+            .fg(theme::PRIMARY)
             .add_modifier(Modifier::BOLD),
     };
     Span::styled(body, style)
@@ -393,28 +395,18 @@ mod tests {
         let cell_focused = focused[(probe_x, probe_y)].clone();
 
         assert_eq!(
-            cell_unfocused.bg, Color::Rgb(0x3E, 0xA0, 0xC3),
-            "unfocused active chip bg must be theme::PRIMARY: {cell_unfocused:?}"
-        );
-        assert_eq!(
-            cell_focused.bg, Color::Rgb(0x3E, 0xA0, 0xC3),
+            cell_focused.bg,
+            Color::Rgb(0x3E, 0xA0, 0xC3),
             "focused active chip bg must be theme::PRIMARY: {cell_focused:?}"
         );
         assert_eq!(
-            cell_unfocused.fg, Color::White,
-            "unfocused active chip fg must be white: {cell_unfocused:?}"
-        );
-        assert_eq!(
-            cell_focused.fg, Color::White,
+            cell_focused.fg,
+            Color::White,
             "focused active chip fg must be white: {cell_focused:?}"
         );
-        assert_eq!(
+        assert_ne!(
             cell_unfocused.bg, cell_focused.bg,
-            "active chip bg must be identical across tabs_focused states"
-        );
-        assert_eq!(
-            cell_unfocused.fg, cell_focused.fg,
-            "active chip fg must be identical across tabs_focused states"
+            "active chip bg must DIFFER when tabs_focused flips — user needs to see focus moved"
         );
     }
 

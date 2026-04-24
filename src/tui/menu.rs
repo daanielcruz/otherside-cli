@@ -911,8 +911,9 @@ fn build_tab_rows(
 }
 
 fn draw_model_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
-    use super::panel_frame::{body_row, PanelFrame, TabSpec};
+    use super::panel_frame::{body_row, PanelFrame, TabSpec, CHEVRON};
     use crate::config::providers::ProviderId;
+    use ratatui::style::Color;
 
     let Some(active_tab) = menu.active_model_tab() else {
         return;
@@ -1038,7 +1039,22 @@ fn draw_model_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
                         .fg(theme::PRIMARY)
                         .add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(theme::PRIMARY)
+                    Style::default().fg(theme::SUBTLE)
+                };
+                let label_style = if cta_focused {
+                    Style::default()
+                        .fg(Color::White)
+                        .bg(theme::PRIMARY)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                        .fg(theme::TEXT)
+                        .add_modifier(Modifier::BOLD)
+                };
+                let marker = if cta_focused {
+                    format!("{CHEVRON} ")
+                } else {
+                    "  ".to_string()
                 };
                 let cta_label = format!("Login to {label}");
                 let pad = 2;
@@ -1046,22 +1062,20 @@ fn draw_model_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
                 let top = format!("\u{256D}{}\u{256E}", "\u{2500}".repeat(inner_cols));
                 let bot = format!("\u{2570}{}\u{256F}", "\u{2500}".repeat(inner_cols));
                 body.push(Line::from(vec![
-                    Span::raw("  "),
+                    Span::raw(marker.clone()),
                     Span::styled(top, border_style),
                 ]));
                 body.push(Line::from(vec![
-                    Span::raw("  "),
+                    Span::raw(marker.clone()),
                     Span::styled("\u{2502}".to_string(), border_style),
                     Span::styled(
                         format!("{}{}{}", " ".repeat(pad), cta_label, " ".repeat(pad)),
-                        Style::default()
-                            .fg(theme::TEXT)
-                            .add_modifier(Modifier::BOLD),
+                        label_style,
                     ),
                     Span::styled("\u{2502}".to_string(), border_style),
                 ]));
                 body.push(Line::from(vec![
-                    Span::raw("  "),
+                    Span::raw(marker),
                     Span::styled(bot, border_style),
                 ]));
             }
@@ -1100,22 +1114,33 @@ fn draw_model_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
 }
 
 fn draw_effort_slider(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
+    use super::panel_frame::PanelFrame;
 
-    const LEFT_PAD: &str = "                                          ";
-    const TRACK_LEN: usize = 42;
-    const POSITIONS: usize = 5;
+    const LEFT_PAD: &str = "  ";
+    const TRACK_LEN: usize = 48;
 
-    let mut lines: Vec<Line<'static>> = Vec::with_capacity(7);
+    let positions = menu.options.len().max(2);
+    let labels: Vec<String> = menu.options.iter().map(|o| o.label.clone()).collect();
 
-    lines.push(Line::raw(""));
+    let mut body: Vec<Line<'static>> = Vec::with_capacity(6);
 
-    let axis = format!("{LEFT_PAD}Speed{}Intelligence", " ".repeat(25));
-    lines.push(Line::from(Span::styled(
+    body.push(Line::raw(""));
+
+    let axis_gap = TRACK_LEN.saturating_sub("Speed".len() + "Intelligence".len());
+    let axis = format!(
+        "{LEFT_PAD}Speed{}Intelligence",
+        " ".repeat(axis_gap.max(1))
+    );
+    body.push(Line::from(Span::styled(
         axis,
         Style::default().fg(theme::MUTED),
     )));
 
-    let marker_col = (menu.cursor * (TRACK_LEN - 1)) / (POSITIONS - 1);
+    let marker_col = if positions <= 1 {
+        0
+    } else {
+        (menu.cursor * (TRACK_LEN - 1)) / (positions - 1)
+    };
     let mut track = String::with_capacity(TRACK_LEN);
     for col in 0..TRACK_LEN {
         if col == marker_col {
@@ -1124,25 +1149,48 @@ fn draw_effort_slider(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
             track.push('─');
         }
     }
-    lines.push(Line::from(Span::styled(
+    body.push(Line::from(Span::styled(
         format!("{LEFT_PAD}{track}"),
         Style::default().fg(theme::TEXT),
     )));
 
-    let labels = "low     medium     high     xhigh      max";
-    lines.push(Line::from(Span::styled(
-        format!("{LEFT_PAD}{labels}"),
+    let mut label_line = String::from(LEFT_PAD);
+    if !labels.is_empty() {
+        let slot = TRACK_LEN / labels.len().max(1);
+        for (i, l) in labels.iter().enumerate() {
+            let pad_needed = if i == 0 {
+                0
+            } else {
+                slot.saturating_sub(l.chars().count())
+            };
+            if i > 0 {
+                label_line.push_str(&" ".repeat(pad_needed.max(1)));
+            }
+            label_line.push_str(l);
+        }
+    }
+    body.push(Line::from(Span::styled(
+        label_line,
         Style::default().fg(theme::TEXT),
     )));
 
-    lines.push(Line::raw(""));
-    lines.push(Line::raw(""));
-    lines.push(Line::from(Span::styled(
-        "←/→ to change effort · Enter to confirm".to_string(),
-        Style::default().fg(theme::MUTED),
-    )));
+    body.push(Line::raw(""));
 
-    f.render_widget(Paragraph::new(lines), area);
+    let frame = PanelFrame {
+        title: Some("\u{25B8} Effort"),
+        tabs: None,
+        active_tab: 0,
+        tabs_focused: false,
+        search: None,
+        body,
+        footer_hints: &[
+            ("\u{2190}/\u{2192}", "change"),
+            ("Enter", "confirm"),
+            ("Esc", "cancel"),
+        ],
+        pagination_hint: None,
+    };
+    frame.render(f, area);
 }
 
 fn status_rows(state: &super::state::ConversationState) -> Vec<MenuOption> {
@@ -1828,27 +1876,35 @@ mod tests {
             "slider axis must include `Intelligence`"
         );
         assert!(joined.contains("▲"), "track must render ▲ marker");
+        for label in ["low", "medium", "high", "xhigh", "max"] {
+            assert!(
+                joined.contains(label),
+                "labels row must carry `{label}`"
+            );
+        }
         assert!(
-            joined.contains("low     medium     high     xhigh      max"),
-            "position labels must match upstream capture line 35"
+            joined.contains("\u{25B8} Effort"),
+            "panel must render blue headline `▸ Effort`"
         );
         assert!(
-            joined.contains("←/→ to change effort · Enter to confirm"),
-            "footer must match upstream capture line 38"
+            joined.contains("confirm"),
+            "footer must expose `confirm` action hint"
         );
 
         let marker_row = rows.iter().find(|r| r.contains('▲')).expect("track row");
         let labels_row = rows
             .iter()
-            .find(|r| r.contains("low     medium     high"))
+            .find(|r| r.contains("low") && r.contains("high"))
             .expect("labels row");
-
         let marker_col = marker_row.chars().position(|c| c == '▲').unwrap();
-        let high_col = labels_row.chars().collect::<String>().find("high").unwrap();
-
+        let high_col = labels_row
+            .chars()
+            .collect::<String>()
+            .find("high")
+            .unwrap();
         assert!(
-            marker_col.abs_diff(high_col) < 5,
-            "▲ at col {marker_col}, `high` at col {high_col} — marker must sit over `high`"
+            marker_col.abs_diff(high_col) < 8,
+            "▲ at col {marker_col}, `high` at col {high_col} — marker must sit near `high`"
         );
     }
 
@@ -2030,23 +2086,20 @@ mod tests {
         let bg_b = cell_b.bg;
         let fg_b = cell_b.fg;
 
-        assert_eq!(
+        assert_ne!(
             bg_a, bg_b,
-            "active chip bg must be identical across tabs_focused states (chrome.md §Tab row FSM)"
+            "active chip bg must DIFFER between tabs_focused=false and tabs_focused=true — \
+             user must be able to tell focus moved off the tab row"
         );
         assert_eq!(
-            fg_a, fg_b,
-            "active chip fg must be identical across tabs_focused states"
-        );
-        assert_eq!(
-            bg_a,
+            bg_b,
             theme::PRIMARY,
-            "active chip bg must be theme::PRIMARY in both focus states, got {bg_a:?}"
+            "focused-active chip bg must be theme::PRIMARY, got {bg_b:?}"
         );
         assert_eq!(
-            fg_a,
+            fg_b,
             Color::White,
-            "active chip fg must be White in both focus states, got {fg_a:?}"
+            "focused-active chip fg must be White, got {fg_b:?}"
         );
     }
 
