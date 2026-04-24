@@ -41,7 +41,7 @@ impl Row {
             Row::Anthropic => "Anthropic",
             Row::Codex => "Codex",
             Row::Gemini => "Gemini",
-            Row::Kimi => "Kimi",
+            Row::Kimi => "Kimi Code",
             Row::Custom => "Custom",
         }
     }

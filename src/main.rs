@@ -427,6 +427,19 @@ async fn cmd_tui(cli: &Cli) -> Result<()> {
                 }
             });
         }
+
+        let kimi_authed = otherside::auth::kimi::api_key_from_env().is_some()
+            || otherside::auth::kimi::load_credentials()
+                .ok()
+                .flatten()
+                .is_some();
+        if kimi_authed {
+            tokio::spawn(async {
+                if let Err(e) = otherside::provider::kimi_models::fetch_models().await {
+                    tracing::debug!(?e, "kimi model catalog fetch failed (boot)");
+                }
+            });
+        }
     }
 
     let permission_mode = if cli.yolo {

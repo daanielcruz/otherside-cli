@@ -31,7 +31,7 @@ impl ProviderId {
             ProviderId::ClaudeCode => "Anthropic (OAuth)",
             ProviderId::Codex => "Codex (OAuth)",
             ProviderId::GeminiCli => "Gemini (OAuth)",
-            ProviderId::Kimi => "Kimi (API Key)",
+            ProviderId::Kimi => "Kimi Code (API Key)",
             ProviderId::OpenAiCustom => "OpenAI Custom",
         }
     }

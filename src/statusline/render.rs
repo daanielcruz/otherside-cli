@@ -35,15 +35,19 @@ pub fn native(ctx: &StatuslineCtx) -> StatuslineLine {
 }
 
 fn provider_short(provider_id: &str) -> String {
+    if provider_id.is_empty() {
+        return String::new();
+    }
+    // Source of truth: `ProviderId::label()`. Statusline resolves the same
+    // slug→label mapping as `/config` + `/model` so any rename (e.g. the
+    // 2026-04-24 `Kimi` → `Kimi Code` flip) propagates in one place.
+    if let Some(pid) = crate::config::providers::ProviderId::from_slug(provider_id) {
+        return pid.label().to_string();
+    }
+    // Legacy slug aliases not in `ProviderId::from_slug`.
     match provider_id {
-        "" => String::new(),
-        "anthropic" | "anthropic-oauth" | "anthropic-api" | "claude-code" => {
-            "Anthropic (OAuth)".to_string()
-        }
-        "codex" | "codex-oauth" | "openai" | "openai-api" => "Codex (OAuth)".to_string(),
-        "gemini" | "gemini-oauth" | "gemini-cli" => "Gemini (OAuth)".to_string(),
-        "kimi" | "kimi-code" | "moonshot" => "Kimi (API Key)".to_string(),
-        "openai-custom" => "OpenAI Custom".to_string(),
+        "anthropic-api" => "Anthropic (OAuth)".to_string(),
+        "openai" | "openai-api" => "Codex (OAuth)".to_string(),
         other => other.to_string(),
     }
 }

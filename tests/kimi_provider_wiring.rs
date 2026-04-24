@@ -75,5 +75,5 @@ fn kimi_catalog_carries_two_rows_both_at_262k() {
 
 #[test]
 fn kimi_provider_label_is_user_readable() {
-    assert_eq!(ProviderId::Kimi.label(), "Kimi (API Key)");
+    assert_eq!(ProviderId::Kimi.label(), "Kimi Code (API Key)");
 }

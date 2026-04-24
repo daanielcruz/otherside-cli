@@ -14,6 +14,7 @@ pub mod anthropic;
 pub mod codex;
 pub mod codex_models;
 pub mod kimi;
+pub mod kimi_models;
 
 pub type ChunkStream = BoxStream<'static, Result<OpenAiChunk>>;
 
