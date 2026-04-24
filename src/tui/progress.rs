@@ -244,7 +244,11 @@ pub fn format_progress_text(
         let secs = (thought_ms + 500) / 1000;
         format!(" · thought for {secs}s")
     } else if let Some(level) = effort_label {
-        format!(" · thinking with {level} effort")
+        if matches!(level, "on" | "off") {
+            format!(" · thinking {level}")
+        } else {
+            format!(" · thinking with {level} effort")
+        }
     } else {
         String::new()
     };
@@ -323,14 +327,41 @@ pub fn draw(
             let secs = (thought_ms + 500) / 1000;
             format!(" · thought for {secs}s")
         } else if let Some(level) = effort_label {
-            format!(" · thinking with {level} effort")
+            if matches!(level, "on" | "off") {
+                format!(" · thinking {level}")
+            } else {
+                format!(" · thinking with {level} effort")
+            }
         } else {
             String::new()
         };
+        let kimi_thinking_on =
+            thought_ms == 0 && matches!(effort_label, Some("on"));
         spans.push(Span::styled(
-            format!("({elapsed_str}{tokens_part}{thought_part})"),
+            format!("({elapsed_str}{tokens_part}"),
             Style::default().fg(theme::MUTED),
         ));
+        if kimi_thinking_on {
+            spans.push(Span::styled(
+                " · thinking ".to_string(),
+                Style::default().fg(theme::MUTED),
+            ));
+            spans.push(Span::styled(
+                "on".to_string(),
+                Style::default()
+                    .fg(theme::SUCCESS)
+                    .add_modifier(Modifier::BOLD),
+            ));
+            spans.push(Span::styled(
+                ")".to_string(),
+                Style::default().fg(theme::MUTED),
+            ));
+        } else {
+            spans.push(Span::styled(
+                format!("{thought_part})"),
+                Style::default().fg(theme::MUTED),
+            ));
+        }
     }
 
     f.render_widget(Paragraph::new(Line::from(spans)), area);

@@ -33,7 +33,7 @@ pub struct FrameSlots {
     pub info: Rect,
 }
 
-pub const QUEUE_CHROME_ROWS: u16 = 3;
+pub const QUEUE_CHROME_ROWS: u16 = 1;
 
 pub fn split_frame(
     area: Rect,

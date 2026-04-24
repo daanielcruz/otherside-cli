@@ -428,6 +428,20 @@ fn render_message(role: OpenAiChatRole, content: &str, width: u16) -> Vec<Line<'
                         raw.to_string(),
                         Style::default().fg(theme::TEXT),
                     )));
+                } else if raw.starts_with("\u{25CF} ") && i == 0 {
+                    let tail = &raw["\u{25CF} ".len()..];
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            "\u{25CF} ".to_string(),
+                            Style::default()
+                                .fg(theme::SUCCESS)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            tail.to_string(),
+                            Style::default().fg(theme::TEXT),
+                        ),
+                    ]));
                 } else {
                     let prefix = if i == 0 { "⎿ system: " } else { "           " };
                     lines.push(Line::from(vec![
@@ -486,45 +500,56 @@ fn draw_queue_lines(f: &mut Frame<'_>, area: Rect, state: &ConversationState) {
         return;
     }
     let total_rows = area.height as usize;
-    
-    let outer_gap = 1usize;
-    let inner_pad = 1usize; 
-    let reserved = outer_gap.saturating_add(inner_pad).saturating_add(inner_pad);
-    let body_budget = total_rows.saturating_sub(reserved);
-    if body_budget == 0 {
-        
-        let fallback_budget = total_rows.saturating_sub(outer_gap).max(1);
-        let mut lines: Vec<Line<'_>> = Vec::with_capacity(total_rows);
-        lines.push(Line::from(""));
-        for msg in state.queued_messages.iter().take(fallback_budget) {
-            let first_line = msg.lines().next().unwrap_or("");
-            lines.push(queue_preview_row(first_line, area.width));
-        }
-        f.render_widget(Paragraph::new(lines), area);
-        return;
-    }
 
+    const LEFT_INDENT: usize = 2;
+    const INNER_PAD: usize = 1;
+    const PREFIX: &str = "\u{276F} ";
+    const SIDE_GUTTER: usize = 1;
+
+    // Target box width = widest preview + prefix + 2x inner pad, clipped to
+    // terminal width minus the indent.
+    let max_body_cols = (area.width as usize)
+        .saturating_sub(LEFT_INDENT)
+        .saturating_sub(SIDE_GUTTER)
+        .saturating_sub(INNER_PAD * 2)
+        .saturating_sub(PREFIX.chars().count());
+    let widest = state
+        .queued_messages
+        .iter()
+        .take(total_rows)
+        .map(|m| m.lines().next().unwrap_or("").chars().count())
+        .max()
+        .unwrap_or(0)
+        .min(max_body_cols);
+    let box_body_width = widest + INNER_PAD * 2 + PREFIX.chars().count();
+
+    let msg_count = state.queued_messages.len().min(total_rows);
+    let top_gap = total_rows.saturating_sub(msg_count);
     let mut lines: Vec<Line<'_>> = Vec::with_capacity(total_rows);
-    lines.push(Line::from(""));
-    lines.push(queue_pad_row(area.width));
-    for msg in state.queued_messages.iter().take(body_budget) {
-        let first_line = msg.lines().next().unwrap_or("");
-        lines.push(queue_preview_row(first_line, area.width));
+    for _ in 0..top_gap {
+        lines.push(Line::raw(""));
     }
-    lines.push(queue_pad_row(area.width));
+    for msg in state.queued_messages.iter().take(msg_count) {
+        let first_line = msg.lines().next().unwrap_or("");
+        lines.push(queue_preview_row(
+            first_line,
+            LEFT_INDENT,
+            box_body_width,
+            INNER_PAD,
+            PREFIX,
+        ));
+    }
 
     f.render_widget(Paragraph::new(lines), area);
 }
 
-fn queue_pad_row(width: u16) -> Line<'static> {
-    let pad_style = Style::default().bg(theme::QUEUE_BG);
-    Line::from(Span::styled(" ".repeat(width as usize), pad_style))
-}
-
-fn queue_preview_row(body: &str, width: u16) -> Line<'static> {
-    
-    const SIDE_PAD: usize = 2;
-    let prefix = "❯ ";
+fn queue_preview_row(
+    body: &str,
+    left_indent: usize,
+    box_width: usize,
+    inner_pad: usize,
+    prefix: &str,
+) -> Line<'static> {
     let prefix_style = Style::default()
         .fg(theme::QUEUE_PREFIX)
         .bg(theme::QUEUE_BG);
@@ -534,23 +559,27 @@ fn queue_preview_row(body: &str, width: u16) -> Line<'static> {
     let pad_style = Style::default().bg(theme::QUEUE_BG);
 
     let prefix_cols = prefix.chars().count();
-    let width_usize = width as usize;
-    let reserved = SIDE_PAD.saturating_mul(2).saturating_add(prefix_cols);
-    let max_body_cols = width_usize.saturating_sub(reserved);
+    let max_body_cols = box_width
+        .saturating_sub(inner_pad * 2)
+        .saturating_sub(prefix_cols);
     let preview = truncate_for_width(body, max_body_cols);
     let preview_cols = preview.chars().count();
 
-    let pad = " ".repeat(SIDE_PAD);
-    let mut spans = vec![
-        Span::styled(pad.clone(), pad_style),
-        Span::styled(prefix.to_string(), prefix_style),
-        Span::styled(preview, body_style),
-    ];
-    
-    let used = SIDE_PAD.saturating_add(prefix_cols).saturating_add(preview_cols);
-    let trailing = width_usize.saturating_sub(used);
-    if trailing > 0 {
-        spans.push(Span::styled(" ".repeat(trailing), pad_style));
+    let mut spans: Vec<Span<'static>> = Vec::with_capacity(5);
+    // Left indent lives OUTSIDE the colored box (no bg).
+    if left_indent > 0 {
+        spans.push(Span::raw(" ".repeat(left_indent)));
+    }
+    // Inner left pad.
+    spans.push(Span::styled(" ".repeat(inner_pad), pad_style));
+    spans.push(Span::styled(prefix.to_string(), prefix_style));
+    spans.push(Span::styled(preview, body_style));
+
+    // Right pad to hit exactly `box_width` wide — no further trailing pad.
+    let used = inner_pad + prefix_cols + preview_cols;
+    let right_fill = box_width.saturating_sub(used);
+    if right_fill > 0 {
+        spans.push(Span::styled(" ".repeat(right_fill), pad_style));
     }
     Line::from(spans)
 }
@@ -595,8 +624,7 @@ fn draw_prompt(f: &mut Frame<'_>, area: Rect, state: &ConversationState) {
         .wrap(Wrap { trim: false });
     f.render_widget(para, area);
 
-    if !state.streaming {
-
+    {
         let cx = area.x + 2 + state.input.chars().count() as u16;
         let cy = area.y + 1;
         let max_x = area.x + area.width.saturating_sub(1);
@@ -608,6 +636,9 @@ fn effort_statusline_suffix(state: &ConversationState) -> Option<String> {
     use crate::config::providers::ProviderId;
     let effort = state.session.effort_label?;
     if state.provider_id == ProviderId::Kimi {
+        // Kimi Code surfaces reasoning as binary Thinking. `on` renders the
+        // Thinking chip; `off` hides the suffix entirely — source of truth
+        // for the 2026-04-24 user directive.
         return match effort {
             "on" => Some("Thinking".to_string()),
             _ => None,
@@ -1523,7 +1554,7 @@ mod tests {
     }
 
     #[test]
-    fn queue_emits_interior_bg_pad_above_and_below_entries() {
+    fn queue_emits_compact_row_without_outer_chrome() {
         use super::super::state::ConversationState;
         use ratatui::backend::TestBackend;
         use ratatui::layout::Rect;
@@ -1534,7 +1565,7 @@ mod tests {
         st.queued_messages.push("queued".into());
 
         let width: u16 = 40;
-        let height: u16 = 4; 
+        let height: u16 = 3;
         let backend = TestBackend::new(width, height);
         let mut term = Terminal::new(backend).expect("terminal");
         term.draw(|f| {
@@ -1544,15 +1575,16 @@ mod tests {
         .unwrap();
         let buf = term.backend().buffer().clone();
 
-        let top_pad = &buf[(20, 1)];
-        assert_eq!(
-            top_pad.bg, Color::Indexed(237),
-            "top interior pad must have chip bg: {top_pad:?}"
+        let msg_row = height - 1;
+        let outer = &buf[(0, msg_row)];
+        assert_ne!(
+            outer.bg, Color::Indexed(237),
+            "left indent must NOT paint box bg: {outer:?}"
         );
-        let bottom_pad = &buf[(20, 3)];
+        let inside = &buf[(3, msg_row)];
         assert_eq!(
-            bottom_pad.bg, Color::Indexed(237),
-            "bottom interior pad must have chip bg: {bottom_pad:?}"
+            inside.bg, Color::Indexed(237),
+            "chip interior must paint queue bg: {inside:?}"
         );
     }
 
@@ -1590,36 +1622,22 @@ mod tests {
         .unwrap();
         let buf = term.backend().buffer().clone();
 
-        let chip_row: u16 = 1;
-        let pad_cell = &buf[(0, chip_row)];
-        assert_eq!(pad_cell.bg, Color::Indexed(237), "leading pad bg: {:?}", pad_cell);
-        assert!(
-            !pad_cell.modifier.contains(Modifier::DIM),
-            "leading pad carries DIM: {:?}",
-            pad_cell
+        let chip_row: u16 = height - 1;
+
+        let outer = &buf[(0, chip_row)];
+        assert_ne!(
+            outer.bg, Color::Indexed(237),
+            "outer indent must have no bg: {outer:?}"
         );
 
-        let prefix_cell = &buf[(2, chip_row)];
+        let prefix_cell = &buf[(3, chip_row)];
         assert_eq!(prefix_cell.symbol(), "❯", "prefix glyph: {:?}", prefix_cell);
         assert_eq!(prefix_cell.fg, Color::Indexed(239), "prefix fg: {:?}", prefix_cell);
         assert_eq!(prefix_cell.bg, Color::Indexed(237), "prefix bg: {:?}", prefix_cell);
-        assert!(
-            !prefix_cell.modifier.contains(Modifier::DIM),
-            "prefix carries DIM: {:?}",
-            prefix_cell
-        );
 
-        let body_cell = &buf[(4, chip_row)];
+        let body_cell = &buf[(5, chip_row)];
         assert_eq!(body_cell.fg, Color::Indexed(231), "body fg: {:?}", body_cell);
         assert_eq!(body_cell.bg, Color::Indexed(237), "body bg: {:?}", body_cell);
-        assert!(
-            !body_cell.modifier.contains(Modifier::DIM),
-            "body carries DIM: {:?}",
-            body_cell
-        );
-
-        let tail_cell = &buf[(width - 1, chip_row)];
-        assert_eq!(tail_cell.bg, Color::Indexed(237), "trailing bg: {:?}", tail_cell);
     }
 
     #[test]

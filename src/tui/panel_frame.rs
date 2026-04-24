@@ -3,14 +3,14 @@ use std::borrow::Cow;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use ratatui::Frame;
 
 use crate::tui::render::theme;
 
 const FOOTER_SEP: &str = " \u{00B7} ";
 
-const SEARCH_GLYPH: &str = "\u{26B2}";
+const SEARCH_GLYPH: &str = "\u{2315}";
 
 pub const CHEVRON: &str = "\u{276F}";
 
@@ -57,18 +57,25 @@ impl<'a> PanelFrame<'a> {
         if self.tabs.is_some() {
             constraints.push(Constraint::Length(1));
         }
-        
+        if self.tabs.is_some() && self.search.is_some() {
+            constraints.push(Constraint::Length(1));
+        }
+
         if self.search.is_some() {
             constraints.push(Constraint::Length(3));
         }
-        
+        if self.search.is_some() {
+            constraints.push(Constraint::Length(1));
+        }
+
         constraints.push(Constraint::Min(0));
-        
+
         if self.pagination_hint.is_some() {
             constraints.push(Constraint::Length(1));
         }
-        
+
         if !self.footer_hints.is_empty() {
+            constraints.push(Constraint::Length(1));
             constraints.push(Constraint::Length(1));
         }
 
@@ -94,8 +101,16 @@ impl<'a> PanelFrame<'a> {
             idx += 1;
         }
 
+        if self.tabs.is_some() && self.search.is_some() {
+            idx += 1;
+        }
+
         if let Some(search) = self.search {
             draw_search_bar(f, chunks[idx], &search);
+            idx += 1;
+        }
+
+        if self.search.is_some() {
             idx += 1;
         }
 
@@ -108,6 +123,7 @@ impl<'a> PanelFrame<'a> {
         }
 
         if !self.footer_hints.is_empty() {
+            idx += 1;
             draw_footer(f, chunks[idx], self.footer_hints);
         }
     }
@@ -159,14 +175,15 @@ fn draw_tab_row(
 fn chip_span(label: &str, active: bool, tabs_focused: bool) -> Span<'static> {
     let body = format!(" {label} ");
     let style = match (active, tabs_focused) {
-        (false, _) => Style::default().fg(theme::MUTED),
         (true, true) => Style::default()
             .fg(Color::White)
             .bg(theme::PRIMARY)
             .add_modifier(Modifier::BOLD),
         (true, false) => Style::default()
-            .fg(theme::PRIMARY)
+            .fg(Color::Black)
+            .bg(Color::White)
             .add_modifier(Modifier::BOLD),
+        (false, _) => Style::default().fg(theme::MUTED),
     };
     Span::styled(body, style)
 }
@@ -196,14 +213,18 @@ pub fn body_row<'a>(
 }
 
 fn draw_search_bar(f: &mut Frame<'_>, area: Rect, spec: &SearchSpec<'_>) {
-    let border_color = if spec.focused || !spec.query.is_empty() {
-        theme::PRIMARY
+    let border_style = if spec.focused {
+        Style::default()
+            .fg(theme::PRIMARY)
+            .add_modifier(Modifier::BOLD)
     } else {
-        theme::MUTED
+        Style::default().fg(theme::MUTED)
     };
+
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(border_color));
+        .border_type(BorderType::Rounded)
+        .border_style(border_style);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -211,11 +232,15 @@ fn draw_search_bar(f: &mut Frame<'_>, area: Rect, spec: &SearchSpec<'_>) {
         return;
     }
 
-    let mut spans: Vec<Span<'static>> = Vec::with_capacity(3);
-    spans.push(Span::styled(
-        format!("{SEARCH_GLYPH} "),
-        Style::default().fg(border_color),
-    ));
+    let glyph_style = if spec.focused {
+        Style::default().fg(theme::PRIMARY)
+    } else {
+        Style::default().fg(theme::MUTED)
+    };
+
+    let mut spans: Vec<Span<'static>> = Vec::with_capacity(4);
+    spans.push(Span::raw(" "));
+    spans.push(Span::styled(format!("{SEARCH_GLYPH} "), glyph_style));
 
     if spec.query.is_empty() {
         spans.push(Span::styled(
@@ -235,7 +260,9 @@ fn draw_search_bar(f: &mut Frame<'_>, area: Rect, spec: &SearchSpec<'_>) {
     f.render_widget(para, inner);
 
     if spec.focused {
-        let prefix_cols: u16 = (SEARCH_GLYPH.chars().count() + 1) as u16;
+        const LEADING_PAD: u16 = 1;
+        let prefix_cols: u16 =
+            LEADING_PAD + (SEARCH_GLYPH.chars().count() + 1) as u16;
         let query_cols: u16 = spec
             .query
             .get(..spec.cursor_pos.min(spec.query.len()))
@@ -369,8 +396,11 @@ mod tests {
     }
 
     #[test]
-    fn active_tab_paint_uses_primary_bg_and_white_fg() {
-        
+    fn active_tab_paint_swaps_between_primary_blue_and_inverted_white() {
+        // 2026-04-24 user directive:
+        //   active + tabs_focused   → bg PRIMARY (blue), fg White
+        //   active + !tabs_focused  → bg White, fg Black (inverted)
+        //   inactive                → MUTED fg, no bg
         let tabs = [
             TabSpec { label: "A" },
             TabSpec { label: "B" },
@@ -396,17 +426,23 @@ mod tests {
 
         assert_eq!(
             cell_focused.bg,
-            Color::Rgb(0x3E, 0xA0, 0xC3),
-            "focused active chip bg must be theme::PRIMARY: {cell_focused:?}"
+            theme::PRIMARY,
+            "active+focused chip bg must be PRIMARY blue: {cell_focused:?}"
         );
         assert_eq!(
             cell_focused.fg,
             Color::White,
-            "focused active chip fg must be white: {cell_focused:?}"
+            "active+focused chip fg must be white: {cell_focused:?}"
         );
-        assert_ne!(
-            cell_unfocused.bg, cell_focused.bg,
-            "active chip bg must DIFFER when tabs_focused flips — user needs to see focus moved"
+        assert_eq!(
+            cell_unfocused.bg,
+            Color::White,
+            "active+unfocused chip bg must be white (inverted shape): {cell_unfocused:?}"
+        );
+        assert_eq!(
+            cell_unfocused.fg,
+            Color::Black,
+            "active+unfocused chip fg must be black: {cell_unfocused:?}"
         );
     }
 

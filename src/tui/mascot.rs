@@ -205,11 +205,12 @@ fn draw_mascot_with_core_accent(f: &mut Frame<'_>, area: Rect) {
         .into_iter()
         .enumerate()
         .map(|(idx, row)| {
-            let color = if (band_start..band_end).contains(&idx) {
-                theme::ACCENT_AMBER
-            } else {
-                theme::PRIMARY
-            };
+            // 2026-04-24 directive: collapse amber → primary across the UI.
+            // Mascot's mid-band now shares the primary hue instead of amber.
+            let _ = band_start;
+            let _ = band_end;
+            let _ = idx;
+            let color = theme::PRIMARY;
             Line::from(Span::styled(row, Style::default().fg(color)))
         })
         .collect();

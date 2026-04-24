@@ -287,29 +287,20 @@ impl OverlayMenu {
     }
 
     pub fn new_effort(current: Option<&str>) -> Self {
-        
-        const CLAUDE_LEVELS: &[&str] =
-            &["low", "medium", "high", "xhigh", "max"];
-        Self::new_effort_for_levels(current, CLAUDE_LEVELS, 2)
+        // No model context available — resolve against the fallback family
+        // table so we don't leak Codex-invalid `max` into a Claude picker.
+        let levels = crate::models::catalog::effort_levels_for_family(None);
+        let default_cursor = levels.len() / 2;
+        Self::new_effort_for_levels(current, levels, default_cursor)
     }
 
     pub fn new_effort_for_model(current: Option<&str>, model_id: &str) -> Self {
-        
-        let catalog_levels = crate::models::catalog::by_id(model_id)
-            .map(|m| m.supported_efforts)
-            .unwrap_or(&["low", "medium", "high", "xhigh", "max"]);
-        
-        let filtered: Vec<&'static str> = catalog_levels
-            .iter()
-            .copied()
-            .filter(|l| *l != "auto")
-            .collect();
-        let levels: &[&str] = if filtered.is_empty() {
-            &["low", "medium", "high", "xhigh", "max"]
-        } else {
-            
-            Box::leak(filtered.into_boxed_slice())
-        };
+        // Single source of truth lives in the catalog. `effort_levels_for_model`
+        // looks up the row by id, strips `auto` (not user-selectable), and
+        // falls back to a provider-aware default list when the id isn't in
+        // the hardcoded catalog yet (live codex/kimi slug that /models fetched
+        // at boot but hasn't been pinned locally).
+        let levels = crate::models::catalog::effort_levels_for_model(model_id);
         let default_cursor = levels.len() / 2;
         Self::new_effort_for_levels(current, levels, default_cursor)
     }
@@ -826,7 +817,7 @@ fn model_tab_label(p: crate::config::providers::ProviderId) -> &'static str {
         ProviderId::ClaudeCode => "Anthropic",
         ProviderId::Codex => "Codex",
         ProviderId::GeminiCli => "Gemini",
-        ProviderId::Kimi => "Kimi",
+        ProviderId::Kimi => "Kimi Code",
         ProviderId::OpenAiCustom => "Custom",
     }
 }
@@ -957,7 +948,7 @@ fn draw_model_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
                     let pad = ROW_WIDTH.saturating_sub(left_cols + right_cols).max(2);
                     let name_style = if is_cursor {
                         Style::default()
-                            .fg(theme::TEXT)
+                            .fg(theme::PRIMARY)
                             .add_modifier(Modifier::BOLD)
                     } else {
                         Style::default().fg(theme::TEXT)
@@ -1008,7 +999,7 @@ fn draw_model_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
             ProviderId::ClaudeCode => "Anthropic",
             ProviderId::Codex => "Codex",
             ProviderId::GeminiCli => "Gemini",
-            ProviderId::Kimi => "Kimi",
+            ProviderId::Kimi => "Kimi Code",
             ProviderId::OpenAiCustom => "Custom",
         };
         match active_tab.rows.first() {
@@ -1173,17 +1164,22 @@ fn draw_effort_slider(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
 
     let mut label_line = String::from(LEFT_PAD);
     if !labels.is_empty() {
-        let slot = TRACK_LEN / labels.len().max(1);
+        let denom = positions.saturating_sub(1).max(1);
+        let mut cursor_col: usize = 0;
         for (i, l) in labels.iter().enumerate() {
-            let pad_needed = if i == 0 {
-                0
-            } else {
-                slot.saturating_sub(l.chars().count())
-            };
-            if i > 0 {
-                label_line.push_str(&" ".repeat(pad_needed.max(1)));
+            let anchor = (i * (TRACK_LEN - 1)) / denom;
+            let len = l.chars().count();
+            let start = anchor.saturating_sub(len / 2);
+            let start = start.min(TRACK_LEN.saturating_sub(len));
+            if start > cursor_col {
+                label_line.push_str(&" ".repeat(start - cursor_col));
+                cursor_col = start;
+            } else if i > 0 && cursor_col + 1 <= TRACK_LEN {
+                label_line.push(' ');
+                cursor_col += 1;
             }
             label_line.push_str(l);
+            cursor_col += len;
         }
     }
     body.push(Line::from(Span::styled(
@@ -1229,6 +1225,18 @@ fn status_rows(state: &super::state::ConversationState) -> Vec<MenuOption> {
         .map(|s| s.as_str().to_string())
         .unwrap_or_else(|| "(none)".into());
 
+    let provider_is_kimi = matches!(state.provider_id, ProviderId::Kimi);
+    let effort_label = if provider_is_kimi { "Thinking" } else { "Effort" };
+    let effort_value = if provider_is_kimi {
+        // Normalize auto/None to `on` — Kimi Code's thinking surface is binary.
+        match state.session.effort_label {
+            Some("off") => "off",
+            _ => "on",
+        }
+    } else {
+        state.session.effort_label.unwrap_or("auto")
+    };
+
     let mut rows = vec![
         settings_ro("Version", env!("CARGO_PKG_VERSION")),
         settings_ro("Session ID", session_id_display),
@@ -1236,7 +1244,7 @@ fn status_rows(state: &super::state::ConversationState) -> Vec<MenuOption> {
         settings_blank(),
         settings_ro("Model", state.session.model.clone()),
         settings_ro("Permission mode", permission_label),
-        settings_ro("Effort", state.session.effort_label.unwrap_or("auto")),
+        settings_ro(effort_label, effort_value),
         settings_blank(),
     ];
 
@@ -1328,7 +1336,7 @@ fn config_rows(state: &super::state::ConversationState) -> Vec<MenuOption> {
         }
     }
 
-    vec![
+    let rows: Vec<MenuOption> = vec![
 
         MenuOption {
             label: "Provider".into(),
@@ -1357,8 +1365,15 @@ fn config_rows(state: &super::state::ConversationState) -> Vec<MenuOption> {
             ..Default::default()
         },
 
+        // Provider-scoped row: Kimi Code surfaces reasoning as a binary
+        // `Thinking on/off` — its catalog only exposes those two positions.
+        // Every other provider keeps the full Effort picker.
         MenuOption {
-            label: "Effort".into(),
+            label: if matches!(provider, ProviderId::Kimi) {
+                "Thinking".into()
+            } else {
+                "Effort".into()
+            },
             action_id: "setting:effort".into(),
             value_display: Some(state.session.effort_label.unwrap_or("auto").to_string()),
             settings_kind: Some(SettingsRowKind::Effort),
@@ -1380,19 +1395,6 @@ fn config_rows(state: &super::state::ConversationState) -> Vec<MenuOption> {
             hint: None,
             ..Default::default()
         },
-
-        bool_row(
-            "Reduce motion",
-            "prefers_reduced_motion",
-            state.persistence.settings.prefers_reduced_motion,
-            false,
-        ),
-        bool_row(
-            "Rewind code (checkpoints)",
-            "file_checkpointing_enabled",
-            state.persistence.settings.file_checkpointing_enabled,
-            false,
-        ),
 
         MenuOption {
             label: "Output style".into(),
@@ -1426,20 +1428,25 @@ fn config_rows(state: &super::state::ConversationState) -> Vec<MenuOption> {
             ..Default::default()
         },
 
-        bool_row(
-            "Auto-connect to IDE (external terminal)",
-            "auto_connect_ide",
-            state.persistence.settings.auto_connect_ide,
-            false,
-        ),
-        bool_row(
+    ];
+
+    // Provider-scoped Fast mode: only Codex, Gemini, and Custom providers
+    // expose a `service_tier: "fast"` wire flag. Anthropic and Kimi Code
+    // reject the field — hide the row to avoid a toggle that silently no-ops.
+    if matches!(
+        provider,
+        ProviderId::Codex | ProviderId::GeminiCli | ProviderId::OpenAiCustom
+    ) {
+        let mut out = rows;
+        out.push(bool_row(
             "Fast mode",
             "fast_mode",
             state.persistence.settings.fast_mode,
             false,
-        ),
-
-    ]
+        ));
+        return out;
+    }
+    rows
 }
 
 fn usage_rows() -> Vec<MenuOption> {
@@ -1539,6 +1546,19 @@ fn settings_blank() -> MenuOption {
     }
 }
 
+fn effort_level_color(value: &str) -> ratatui::style::Color {
+    match value.to_ascii_lowercase().as_str() {
+        "off" | "auto" => theme::MUTED,
+        "on" => theme::SUCCESS,
+        "low" => theme::MUTED,
+        "medium" => theme::SUCCESS,
+        "high" => theme::PRIMARY,
+        "xhigh" => theme::PRIMARY,
+        "max" => theme::ERROR,
+        _ => theme::TEXT,
+    }
+}
+
 fn draw_settings_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
     use super::panel_frame::{body_row, PanelFrame, SearchSpec, TabSpec};
     use crate::tui::slash::catalog::SettingsTab;
@@ -1592,7 +1612,7 @@ fn draw_settings_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
             Style::default().fg(theme::MUTED),
         )));
     } else {
-        const LABEL_PAD: usize = 43;
+        const LABEL_PAD: usize = 36;
         let cursor_visible = options_to_render
             .iter()
             .any(|(idx, _)| *idx == menu.cursor);
@@ -1618,14 +1638,27 @@ fn draw_settings_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
             } else {
                 Style::default().fg(theme::TEXT)
             };
+            let is_effort_row = matches!(
+                opt.settings_kind,
+                Some(SettingsRowKind::Effort)
+            );
             let value_style = if is_cursor {
                 Style::default()
                     .fg(theme::PERMISSION)
                     .add_modifier(Modifier::BOLD)
+            } else if is_effort_row {
+                let level_color = opt
+                    .value_display
+                    .as_deref()
+                    .map(effort_level_color)
+                    .unwrap_or(theme::TEXT);
+                Style::default()
+                    .fg(level_color)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(theme::TEXT)
             };
-            
+
             let prefix_line = body_row("", is_cursor, false);
             let mut spans: Vec<Span<'static>> =
                 prefix_line.spans.iter().cloned().collect();
@@ -1640,7 +1673,16 @@ fn draw_settings_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
         }
     }
 
-    let footer: &[(&str, &str)] = if header_focused {
+    let view_only =
+        matches!(active_tab, SettingsTab::Status | SettingsTab::Usage);
+
+    let footer_view_only: &[(&str, &str)] = &[
+        ("\u{2190}/\u{2192}", "switch tabs"),
+        ("Esc", "close"),
+    ];
+    let footer: &[(&str, &str)] = if view_only {
+        footer_view_only
+    } else if header_focused {
         &[
             ("\u{2190}/\u{2192}", "switch tabs"),
             ("\u{2193}", "search"),
@@ -1667,7 +1709,7 @@ fn draw_settings_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
         tabs: Some(&tabs),
         active_tab: active_tab_idx,
         tabs_focused: header_focused,
-        search: Some(search),
+        search: if view_only { None } else { Some(search) },
         body,
         footer_hints: footer,
         pagination_hint: None,
@@ -1680,12 +1722,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn new_effort_has_five_upstream_positions() {
-
+    fn new_effort_without_model_uses_codex_safe_fallback() {
+        // Per 2026-04-24 user directive, `max` is Claude-only. The no-model
+        // fallback used to leak `max` into provider panels that reject it
+        // (codex /responses 400s on `max`). Fallback is the 4-position Codex
+        // ladder — Claude users get `max` only when `new_effort_for_model`
+        // is called with an opus id.
         let m = OverlayMenu::new_effort(None);
         let ids: Vec<&str> = m.options.iter().map(|o| o.action_id.as_str()).collect();
-        assert_eq!(ids, vec!["low", "medium", "high", "xhigh", "max"]);
-
+        assert_eq!(ids, vec!["low", "medium", "high", "xhigh"]);
         assert_eq!(m.cursor, 2);
     }
 
@@ -1701,11 +1746,14 @@ mod tests {
     }
 
     #[test]
-    fn new_effort_for_haiku_falls_back_to_claude_ladder_when_only_auto() {
-        
+    fn new_effort_for_haiku_falls_back_to_haiku_scale() {
+        // Haiku has no user-selectable effort scale. Catalog ships just
+        // `["auto"]`; we strip `auto` and return the family fallback which,
+        // for haiku, stays `&["auto"]` — the /effort panel short-circuits
+        // with a feedback message before rendering when options.len() < 3.
         let m = OverlayMenu::new_effort_for_model(None, "claude-haiku-4-5");
         let ids: Vec<&str> = m.options.iter().map(|o| o.action_id.as_str()).collect();
-        assert_eq!(ids, vec!["low", "medium", "high", "xhigh", "max"]);
+        assert_eq!(ids, vec!["auto"]);
     }
 
     #[test]
@@ -1722,6 +1770,7 @@ mod tests {
 
     #[test]
     fn new_effort_preselects_current_level() {
+        // Fallback ladder (codex-safe, no `max`): low/medium/high/xhigh.
         let m = OverlayMenu::new_effort(Some("low"));
         assert_eq!(m.cursor, 0);
         let m = OverlayMenu::new_effort(Some("medium"));
@@ -1730,15 +1779,13 @@ mod tests {
         assert_eq!(m.cursor, 2);
         let m = OverlayMenu::new_effort(Some("XHIGH"));
         assert_eq!(m.cursor, 3);
-        let m = OverlayMenu::new_effort(Some("max"));
-        assert_eq!(m.cursor, 4);
         let m = OverlayMenu::new_effort(Some("unrecognized"));
         assert_eq!(m.cursor, 2);
     }
 
     #[test]
     fn effort_slider_clamps_at_edges() {
-
+        // 4-position fallback ladder: low(0) / medium(1) / high(2) / xhigh(3).
         let mut m = OverlayMenu::new_effort(Some("low"));
         assert_eq!(m.cursor, 0);
         m.move_left();
@@ -1747,10 +1794,9 @@ mod tests {
         assert_eq!(m.cursor, 1);
         m.move_right();
         m.move_right();
+        assert_eq!(m.cursor, 3);
         m.move_right();
-        assert_eq!(m.cursor, 4);
-        m.move_right();
-        assert_eq!(m.cursor, 4, "move_right clamps at len-1");
+        assert_eq!(m.cursor, 3, "move_right clamps at len-1");
     }
 
     #[test]
@@ -1893,7 +1939,7 @@ mod tests {
             "slider axis must include `Intelligence`"
         );
         assert!(joined.contains("▲"), "track must render ▲ marker");
-        for label in ["low", "medium", "high", "xhigh", "max"] {
+        for label in ["low", "medium", "high", "xhigh"] {
             assert!(
                 joined.contains(label),
                 "labels row must carry `{label}`"
@@ -1919,8 +1965,11 @@ mod tests {
             .collect::<String>()
             .find("high")
             .unwrap();
+        // Fallback ladder collapsed from 5 to 4 positions (no `max`) — label
+        // spacing widens across the track, so the marker/high divergence is
+        // allowed up to the full between-label span.
         assert!(
-            marker_col.abs_diff(high_col) < 8,
+            marker_col.abs_diff(high_col) < 12,
             "▲ at col {marker_col}, `high` at col {high_col} — marker must sit near `high`"
         );
     }
@@ -2036,7 +2085,7 @@ mod tests {
         assert!(m.settings_search_query.is_empty(), "precondition: default query is empty");
         let (joined, _) = render_settings(&m, 140, 40);
         let lc = joined.to_lowercase();
-        for row in &["auto-compact", "show tips", "verbose output", "reduce motion"] {
+        for row in &["auto-compact", "show tips", "verbose output"] {
             assert!(
                 lc.contains(row),
                 "empty query must show row `{row}`, got:\n{joined}"
@@ -2084,8 +2133,10 @@ mod tests {
     }
 
     #[test]
-    fn tab_chip_paint_is_identical_across_focus_states() {
-        
+    fn tab_chip_paint_swaps_between_primary_blue_and_inverted_white() {
+        // 2026-04-24 user directive:
+        //   tabs_focused = true  → bg PRIMARY (blue), fg white
+        //   tabs_focused = false → bg white, fg black (inverted)
         let st = crate::tui::state::ConversationState::default();
         let mut m = OverlayMenu::new_settings(SettingsTab::Config, &st);
 
@@ -2093,30 +2144,35 @@ mod tests {
         let (joined_a, buf_a) = render_settings(&m, 140, 30);
         let (row_a, col_a) = locate_substring(&joined_a, "Config").expect("Config chip visible");
         let cell_a = buf_a[(col_a as u16, row_a as u16)].clone();
-        let bg_a = cell_a.bg;
-        let fg_a = cell_a.fg;
 
         m.settings_header_focused = Some(true);
         let (joined_b, buf_b) = render_settings(&m, 140, 30);
         let (row_b, col_b) = locate_substring(&joined_b, "Config").expect("Config chip visible");
         let cell_b = buf_b[(col_b as u16, row_b as u16)].clone();
-        let bg_b = cell_b.bg;
-        let fg_b = cell_b.fg;
 
-        assert_ne!(
-            bg_a, bg_b,
-            "active chip bg must DIFFER between tabs_focused=false and tabs_focused=true — \
-             user must be able to tell focus moved off the tab row"
-        );
         assert_eq!(
-            bg_b,
-            theme::PRIMARY,
-            "focused-active chip bg must be theme::PRIMARY, got {bg_b:?}"
-        );
-        assert_eq!(
-            fg_b,
+            cell_a.bg,
             Color::White,
-            "focused-active chip fg must be White, got {fg_b:?}"
+            "unfocused active chip bg must be white (inverted): {:?}",
+            cell_a
+        );
+        assert_eq!(
+            cell_a.fg,
+            Color::Black,
+            "unfocused active chip fg must be black: {:?}",
+            cell_a
+        );
+        assert_eq!(
+            cell_b.bg,
+            theme::PRIMARY,
+            "focused active chip bg must be PRIMARY blue: {:?}",
+            cell_b
+        );
+        assert_eq!(
+            cell_b.fg,
+            Color::White,
+            "focused active chip fg must be white: {:?}",
+            cell_b
         );
     }
 
@@ -2173,7 +2229,7 @@ mod tests {
         assert_eq!(order, expected, "tab order must match PROVIDER_ORDER");
 
         let joined = render_overlay(&m, 120, 20);
-        for label in &["Anthropic", "Codex", "Gemini", "Kimi", "Custom"] {
+        for label in &["Anthropic", "Codex", "Gemini", "Kimi Code", "Custom"] {
             assert!(
                 joined.contains(label),
                 "tab row must show `{label}`, got:\n{joined}"
