@@ -7,7 +7,9 @@ use crate::agent::subagents::{
     registry::AgentDefinition, AgentInvocation, NestedEmitter, SubagentRunner,
 };
 
-use super::{id::TaskId, state::TaskRecord, state::TaskState, store::TaskStore};
+use super::{
+    id::TaskId, state::TaskDisplayMode, state::TaskRecord, state::TaskState, store::TaskStore,
+};
 
 struct BgProgressEmitter {
     store: TaskStore,
@@ -85,6 +87,50 @@ pub fn spawn_background_agent(
     SpawnOutcome { task_id: id, agent_id }
 }
 
+pub fn spawn_forked_skill_agent(
+    runner: Arc<dyn SubagentRunner>,
+    definition: AgentDefinition,
+    prompt: String,
+    mut invocation: AgentInvocation,
+    store: TaskStore,
+    display_name: String,
+    anchor_id: String,
+) -> SpawnOutcome {
+    let id = TaskId::generate();
+    let agent_id = super::id::create_agent_id(None);
+    let mut record = TaskRecord::new_agent(id.clone(), display_name.clone(), prompt.clone());
+    record.state = TaskState::Running;
+    record.is_backgrounded = false;
+    record.agent_id = Some(agent_id.clone());
+    record.subagent_type = Some(definition.name.clone());
+    record.display_mode = TaskDisplayMode::InlineAnchor;
+    record.anchor_id = Some(anchor_id.clone());
+    if display_name != definition.name {
+        record.description = Some(display_name);
+    }
+    store.insert(record);
+
+    let cancel_key = anchor_id.clone();
+    let flag = crate::tools::background_signal::register_bg(&cancel_key);
+    invocation.cancel = Some(flag);
+
+    let id_for_task = id.clone();
+    let store_for_task = store.clone();
+    let bg_emitter: Arc<dyn NestedEmitter> = Arc::new(BgProgressEmitter {
+        store: store.clone(),
+        task_id: id.clone(),
+    });
+    tokio::task::spawn_blocking(move || {
+        let result = crate::agent::subagents::with_nested_emitter(bg_emitter, || {
+            runner.run(&definition, &prompt, 0, &invocation)
+        });
+        crate::tools::background_signal::unregister_bg(&cancel_key);
+        finalize(&store_for_task, &id_for_task, result);
+    });
+
+    SpawnOutcome { task_id: id, agent_id }
+}
+
 fn finalize(
     store: &TaskStore,
     id: &TaskId,
@@ -135,7 +181,7 @@ fn finalize(
                 r.duration_ms = r.started_at.elapsed().as_millis() as u64;
             }
         }
-        r.inject_on_next_turn = true;
+        r.inject_on_next_turn = matches!(r.display_mode, TaskDisplayMode::Panel);
     });
 
     if let Some((agent_id, text)) = disk_payload {

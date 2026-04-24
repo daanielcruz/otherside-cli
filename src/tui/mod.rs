@@ -1166,10 +1166,18 @@ async fn event_loop(
                         {
                             continue;
                         }
+                        if matches!(
+                            record.display_mode,
+                            crate::tasks::TaskDisplayMode::InlineAnchor
+                        ) {
+                            continue;
+                        }
                         let line = render_completion_line(&record);
                         st.push_system_note(line);
                     }
                 }
+
+                refresh_fork_skill_anchor(&mut st);
 
                 let _ = auto_trigger_pending_notifications(
                     &mut st, &registry, &base_model, &tx,
@@ -2730,7 +2738,86 @@ fn dispatch_slash(
             submit_current_input(st, registry, base_model, tx);
             false
         }
+        slash::SlashOutcome::ForkSkill { name, body } => {
+            dispatch_forked_skill(st, &name, body);
+            st.input.clear();
+            st.autocomplete = None;
+            false
+        }
     }
+}
+
+fn refresh_fork_skill_anchor(st: &mut ConversationState) {
+    let Some((anchor_idx, task_id)) = st.fork_skill_tracker.clone() else {
+        return;
+    };
+    let Some(rec) = st.tasks.get(&task_id) else {
+        return;
+    };
+    if anchor_idx >= st.messages.len() {
+        st.fork_skill_tracker = None;
+        return;
+    }
+    let runtime = rec.runtime_secs();
+    let new_body = if rec.state.is_terminal() {
+        let summary = rec
+            .output
+            .back()
+            .cloned()
+            .unwrap_or_else(|| "(no output)".to_string());
+        let summary_trim: String = summary.chars().take(200).collect();
+        let verdict = match rec.state {
+            crate::tasks::TaskState::Completed => "completed",
+            crate::tasks::TaskState::Failed => "failed",
+            crate::tasks::TaskState::Stopped => "stopped",
+            _ => "done",
+        };
+        format!(
+            "⎿  /dream {verdict} · {tu} tool uses · {runtime}s\n   {summary_trim}",
+            tu = rec.tool_uses,
+        )
+    } else {
+        format!(
+            "⎿  /dream running · {tu} tool uses · {runtime}s",
+            tu = rec.tool_uses,
+        )
+    };
+    st.messages[anchor_idx].content = new_body;
+    if rec.state.is_terminal() {
+        st.fork_skill_tracker = None;
+    }
+}
+
+fn dispatch_forked_skill(st: &mut ConversationState, name: &str, body: String) {
+    let anchor_id = format!("fork-{name}-{}", uuid::Uuid::new_v4());
+    st.append_record(crate::sessions::Record::UserMessage {
+        ts: crate::sessions::record::now_iso(),
+        content: format!("/{name}"),
+        provider: Some(st.provider_id.slug().to_string()),
+        model: Some(st.session.model.clone()),
+    });
+    st.push_anchor(name, "", "Initializing…", DisplayOrigin::Chrome);
+    let anchor_msg_idx = st.messages.len().saturating_sub(1);
+
+    let definition = match crate::agent::subagents::registry::resolve("general-purpose") {
+        Some(d) => d.clone(),
+        None => {
+            st.push_system_note("fork dispatch failed: general-purpose subagent missing");
+            return;
+        }
+    };
+    let runner = crate::agent::subagents::runner::InnerLoopRunner::new();
+    let invocation = crate::agent::subagents::AgentInvocation::default();
+    let outcome = crate::tasks::spawn_forked_skill_agent(
+        runner,
+        definition,
+        body,
+        invocation,
+        st.tasks.clone(),
+        format!("/{name}"),
+        anchor_id.clone(),
+    );
+    st.fork_skill_tracker = Some((anchor_msg_idx, outcome.task_id));
 }
 
 fn submit_current_input(

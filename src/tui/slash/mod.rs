@@ -40,6 +40,8 @@ pub enum SlashOutcome {
     ExitApp,
 
     SendTurn(String),
+
+    ForkSkill { name: String, body: String },
 }
 
 pub fn classify(input: &str) -> SlashAction {

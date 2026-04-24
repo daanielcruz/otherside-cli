@@ -1,6 +1,7 @@
 ---
 name: dream
 description: Reflective memory consolidation — orient, gather, consolidate, prune.
+context: fork
 ---
 
 # Dream: Memory Consolidation

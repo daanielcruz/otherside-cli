@@ -28,6 +28,40 @@ pub fn bundled_names() -> Vec<&'static str> {
     SKILL_BODIES.iter().map(|(n, _)| *n).collect()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkillExecutionContext {
+    Inline,
+    Fork,
+}
+
+pub fn execution_context(name: &str) -> SkillExecutionContext {
+    match lookup_body(name) {
+        Some(body) => parse_context_frontmatter(body),
+        None => SkillExecutionContext::Inline,
+    }
+}
+
+fn parse_context_frontmatter(body: &str) -> SkillExecutionContext {
+    let rest = match body.strip_prefix("---\n") {
+        Some(r) => r,
+        None => return SkillExecutionContext::Inline,
+    };
+    let end = match rest.find("\n---") {
+        Some(e) => e,
+        None => return SkillExecutionContext::Inline,
+    };
+    for line in rest[..end].lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("context:") {
+            let val = rest.trim().trim_matches(|c: char| c == '"' || c == '\'');
+            if val.eq_ignore_ascii_case("fork") {
+                return SkillExecutionContext::Fork;
+            }
+        }
+    }
+    SkillExecutionContext::Inline
+}
+
 pub fn handle(name: &str, args: &str, _state: &mut ConversationState) -> SlashOutcome {
     let body = lookup_body(name).map(substitute_host_paths);
     let is_dream = name.eq_ignore_ascii_case("dream");
@@ -40,7 +74,13 @@ pub fn handle(name: &str, args: &str, _state: &mut ConversationState) -> SlashOu
         (None, true) => format!("/{name}"),
         (None, false) => format!("/{name} {args}"),
     };
-    SlashOutcome::SendTurn(user_turn)
+    match execution_context(name) {
+        SkillExecutionContext::Fork => SlashOutcome::ForkSkill {
+            name: name.to_string(),
+            body: user_turn,
+        },
+        SkillExecutionContext::Inline => SlashOutcome::SendTurn(user_turn),
+    }
 }
 
 fn substitute_host_paths(body: &str) -> String {
@@ -118,11 +158,11 @@ mod tests {
         let mut st = ConversationState::default();
         let outcome = handle("dream", "", &mut st);
         match outcome {
-            SlashOutcome::SendTurn(body) => {
+            SlashOutcome::ForkSkill { body, .. } => {
                 assert!(body.starts_with("---"));
                 assert!(body.contains("Reflective memory consolidation"));
             }
-            other => panic!("expected SendTurn, got {other:?}"),
+            other => panic!("expected ForkSkill, got {other:?}"),
         }
     }
 
@@ -131,8 +171,8 @@ mod tests {
         let mut st = ConversationState::default();
         let outcome = handle("dream", "", &mut st);
         let body = match outcome {
-            SlashOutcome::SendTurn(body) => body,
-            other => panic!("expected SendTurn, got {other:?}"),
+            SlashOutcome::ForkSkill { body, .. } => body,
+            other => panic!("expected ForkSkill, got {other:?}"),
         };
 
         assert!(
@@ -165,10 +205,10 @@ mod tests {
         let mut st = ConversationState::default();
         let outcome = handle("dream", "nightly", &mut st);
         match outcome {
-            SlashOutcome::SendTurn(body) => {
+            SlashOutcome::ForkSkill { body, .. } => {
                 assert!(body.contains("## Additional context\n\nnightly"));
             }
-            other => panic!("expected SendTurn, got {other:?}"),
+            other => panic!("expected ForkSkill, got {other:?}"),
         }
     }
 
@@ -177,7 +217,7 @@ mod tests {
         let mut st = ConversationState::default();
         let outcome = handle("dream", "", &mut st);
         match outcome {
-            SlashOutcome::SendTurn(body) => {
+            SlashOutcome::ForkSkill { body, .. } => {
                 assert!(!body.contains("{{MEMORY_ROOT}}"));
                 assert!(!body.contains("{{TRANSCRIPT_DIR}}"));
                 assert!(!body.contains("{{TEAM_GUIDANCE}}"));
@@ -188,8 +228,19 @@ mod tests {
                     "This directory already exists — write to it directly with the Write tool"
                 ));
             }
-            other => panic!("expected SendTurn, got {other:?}"),
+            other => panic!("expected ForkSkill, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn dream_frontmatter_parses_as_fork_context() {
+        assert_eq!(execution_context("dream"), SkillExecutionContext::Fork);
+    }
+
+    #[test]
+    fn non_fork_skill_stays_inline() {
+        assert_eq!(execution_context("pr-review"), SkillExecutionContext::Inline);
+        assert_eq!(execution_context("init"), SkillExecutionContext::Inline);
     }
 
     #[test]

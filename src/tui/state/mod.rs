@@ -149,6 +149,8 @@ pub struct ConversationState {
     pub pending_login_provider: Option<crate::config::providers::ProviderId>,
 
     pub pending_logout_provider: Option<crate::config::providers::ProviderId>,
+
+    pub fork_skill_tracker: Option<(usize, crate::tasks::id::TaskId)>,
 }
 
 pub const CTRL_B_DOUBLE_TAP_WINDOW_MS: u128 = 1_000;

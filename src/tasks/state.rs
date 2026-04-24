@@ -33,6 +33,18 @@ pub enum TaskKind {
     Generic,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskDisplayMode {
+    Panel,
+    InlineAnchor,
+}
+
+impl Default for TaskDisplayMode {
+    fn default() -> Self {
+        Self::Panel
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TaskRecord {
     pub id: TaskId,
@@ -69,6 +81,10 @@ pub struct TaskRecord {
     pub duration_ms: u64,
 
     pub error: Option<String>,
+
+    pub display_mode: TaskDisplayMode,
+
+    pub anchor_id: Option<String>,
 }
 
 impl TaskRecord {
@@ -96,6 +112,8 @@ impl TaskRecord {
             tool_uses: 0,
             duration_ms: 0,
             error: None,
+            display_mode: TaskDisplayMode::Panel,
+            anchor_id: None,
         }
     }
 
@@ -120,6 +138,8 @@ impl TaskRecord {
             tool_uses: 0,
             duration_ms: 0,
             error: None,
+            display_mode: TaskDisplayMode::Panel,
+            anchor_id: None,
         }
     }
 
