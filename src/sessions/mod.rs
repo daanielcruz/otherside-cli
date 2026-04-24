@@ -180,11 +180,14 @@ mod tests {
     }
 
     #[test]
-    fn open_new_creates_transcript_file_under_projects_slug() {
+    fn open_new_resolves_transcript_path_lazily_without_materializing_file() {
         let cfg = scratch_root();
         let cwd = scratch_cwd();
         let handle = open_new(&cfg, &cwd).unwrap();
-        assert!(handle.transcript_path.exists());
+        assert!(
+            !handle.transcript_path.exists(),
+            "empty session must not leak a zero-byte transcript; file materializes on first append",
+        );
         let expected_parent = paths::project_dir(&cfg, &cwd);
         assert_eq!(handle.transcript_path.parent().unwrap(), expected_parent);
         let name = handle.transcript_path.file_name().unwrap().to_string_lossy().to_string();
@@ -256,9 +259,16 @@ mod tests {
         let cfg = scratch_root();
         let cwd_a = scratch_cwd();
         let cwd_b = scratch_cwd();
-        let _handle_a = open_new(&cfg, &cwd_a).unwrap();
-        
-        let _handle_b = open_new(&cfg, &cwd_b).unwrap();
+        let mut handle_a = open_new(&cfg, &cwd_a).unwrap();
+        handle_a
+            .writer
+            .append(&Record::user_message("2026-04-24T00:00:00.000Z", "a"))
+            .unwrap();
+        let mut handle_b = open_new(&cfg, &cwd_b).unwrap();
+        handle_b
+            .writer
+            .append(&Record::user_message("2026-04-24T00:01:00.000Z", "b"))
+            .unwrap();
         let latest_a = resume_latest(&cfg, &cwd_a).unwrap().unwrap();
         assert_eq!(
             latest_a.0.transcript_path.parent().unwrap(),

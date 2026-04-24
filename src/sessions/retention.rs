@@ -69,9 +69,30 @@ pub fn sweep(config_dir: &Path, retention_days: u64) -> Result<SweepReport> {
                 continue;
             }
             report.scanned += 1;
-            let modified = transcript_entry
-                .metadata()
-                .and_then(|m| m.modified())
+            let metadata = transcript_entry.metadata().ok();
+            let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+            if size == 0 {
+                match std::fs::remove_file(&path) {
+                    Ok(_) => {
+                        let rel = path
+                            .strip_prefix(&root)
+                            .unwrap_or(&path)
+                            .to_string_lossy()
+                            .into_owned();
+                        report.deleted.push(rel);
+                    }
+                    Err(e) => {
+                        report.skipped_errors.push(format!(
+                            "{}: {}",
+                            path.to_string_lossy(),
+                            e
+                        ));
+                    }
+                }
+                continue;
+            }
+            let modified = metadata
+                .and_then(|m| m.modified().ok())
                 .unwrap_or(SystemTime::UNIX_EPOCH);
             let age = now.duration_since(modified).unwrap_or(Duration::ZERO);
             if age > threshold {
@@ -132,7 +153,7 @@ mod tests {
         let root = scratch();
         let project = root.join("projects").join("-fresh");
         std::fs::create_dir_all(&project).unwrap();
-        std::fs::write(project.join("abc.jsonl"), b"").unwrap();
+        std::fs::write(project.join("abc.jsonl"), b"{\"type\":\"marker\"}\n").unwrap();
         let report = sweep(&root, 30).unwrap();
         assert_eq!(report.scanned, 1);
         assert!(report.deleted.is_empty());
@@ -144,10 +165,27 @@ mod tests {
         let root = scratch();
         let project = root.join("projects").join("-mixed");
         std::fs::create_dir_all(&project).unwrap();
-        std::fs::write(project.join("session.jsonl"), b"").unwrap();
+        std::fs::write(project.join("session.jsonl"), b"{\"type\":\"marker\"}\n").unwrap();
         std::fs::write(project.join("notes.txt"), b"").unwrap();
         let report = sweep(&root, 30).unwrap();
         assert_eq!(report.scanned, 1, "txt file should be skipped");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn sweep_prunes_zero_byte_jsonl_from_empty_sessions() {
+        let root = scratch();
+        let project = root.join("projects").join("-empty-leftover");
+        std::fs::create_dir_all(&project).unwrap();
+        let stale = project.join("empty.jsonl");
+        std::fs::write(&stale, b"").unwrap();
+        let report = sweep(&root, 30).unwrap();
+        assert_eq!(
+            report.deleted.len(),
+            1,
+            "zero-byte transcripts from pre-lazy-writer crashes must be cleaned",
+        );
+        assert!(!stale.exists());
         std::fs::remove_dir_all(&root).ok();
     }
 }

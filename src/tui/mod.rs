@@ -1404,7 +1404,16 @@ async fn event_loop(
             .map_err(|e| Error::Tui(format!("draw: {e}")))?;
     }
 
-    Ok(st.session_id.clone())
+    let materialized = st
+        .session_writer
+        .as_ref()
+        .map(|w| w.is_materialized())
+        .unwrap_or(false);
+    if materialized {
+        Ok(st.session_id.clone())
+    } else {
+        Ok(None)
+    }
 }
 
 fn handle_key(

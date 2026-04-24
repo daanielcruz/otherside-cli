@@ -10,38 +10,49 @@ use crate::error::Result;
 #[derive(Debug)]
 pub struct Writer {
     path: PathBuf,
-    file: File,
+    file: Option<File>,
 }
 
 impl Writer {
     pub fn open(path: &Path) -> Result<Self> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let mut opts = OpenOptions::new();
-        opts.create(true).append(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            opts.mode(0o600);
-        }
-        let file = opts.open(path)?;
         Ok(Self {
             path: path.to_path_buf(),
-            file,
+            file: None,
         })
     }
 
     pub fn append(&mut self, record: &Record) -> Result<()> {
+        let file = match self.file.as_mut() {
+            Some(f) => f,
+            None => {
+                if let Some(parent) = self.path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                let mut opts = OpenOptions::new();
+                opts.create(true).append(true);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::OpenOptionsExt;
+                    opts.mode(0o600);
+                }
+                let f = opts.open(&self.path)?;
+                self.file = Some(f);
+                self.file.as_mut().expect("file just installed")
+            }
+        };
         let line = record.to_line();
-        self.file.write_all(line.as_bytes())?;
-        self.file.write_all(b"\n")?;
-        self.file.sync_data()?;
+        file.write_all(line.as_bytes())?;
+        file.write_all(b"\n")?;
+        file.sync_data()?;
         Ok(())
     }
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    pub fn is_materialized(&self) -> bool {
+        self.file.is_some()
     }
 }
 
@@ -133,11 +144,22 @@ mod tests {
     }
 
     #[test]
-    fn writer_creates_parent_dir() {
+    fn writer_open_does_not_materialize_until_first_append() {
         let root = tmp_path();
         let nested = root.join("a/b/transcript.jsonl");
-        let _ = Writer::open(&nested).unwrap();
-        assert!(nested.exists());
+        let mut w = Writer::open(&nested).unwrap();
+        assert!(
+            !nested.exists(),
+            "open must be lazy — empty sessions must not leak a zero-byte .jsonl that pollutes resume listings",
+        );
+        assert!(!w.is_materialized());
+        w.append(&Record::user_message(
+            "2026-04-24T00:00:00.000Z",
+            "first real turn",
+        ))
+        .unwrap();
+        assert!(nested.exists(), "file exists after first append");
+        assert!(w.is_materialized());
         std::fs::remove_dir_all(&root).ok();
     }
 }
