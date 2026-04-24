@@ -8,8 +8,8 @@ const SKILL_BODIES: &[(&str, &str)] = &[
     ("init", include_str!("../../../skills_corpus/init/SKILL.md")),
     ("pr-review", include_str!("../../../skills_corpus/pr-review/SKILL.md")),
     (
-        "security-review",
-        include_str!("../../../skills_corpus/security-review/SKILL.md"),
+        "pr-security-review",
+        include_str!("../../../skills_corpus/pr-security-review/SKILL.md"),
     ),
 ];
 
@@ -54,7 +54,7 @@ mod tests {
             "dream",
             "init",
             "pr-review",
-            "security-review",
+            "pr-security-review",
         ];
         for name in expected {
             let body = lookup_body(name).unwrap_or_else(|| panic!("/{name} missing body"));
@@ -69,7 +69,7 @@ mod tests {
     #[test]
     fn lookup_is_case_insensitive() {
         assert!(lookup_body("DREAM").is_some());
-        assert!(lookup_body("Security-Review").is_some());
+        assert!(lookup_body("PR-Security-Review").is_some());
     }
 
     #[test]

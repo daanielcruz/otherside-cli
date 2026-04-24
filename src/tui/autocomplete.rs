@@ -158,7 +158,6 @@ mod tests {
         let names: Vec<&str> = ac.matches.iter().map(|e| e.name).collect();
         assert!(names.contains(&"status"));
         assert!(names.contains(&"skills"));
-        assert!(names.contains(&"security-review"));
         assert!(!names.contains(&"swarm"), "/swarm cut in 011");
         assert!(!names.contains(&"statusline"), "/statusline cut — otherside has no statusLine feature");
     }
@@ -309,7 +308,7 @@ mod tests {
                      "effort", "plan", "permissions", "diff", "skills",
                      "agents", "context",
                      "dream",
-                     "pr-review", "security-review", "loop"] {
+                     "pr-review", "pr-security-review", "loop"] {
             let prefix = &name[..1];
             let ac = Autocomplete::from_input(&format!("/{prefix}"))
                 .unwrap_or_else(|| panic!("no matches for prefix /{prefix}"));

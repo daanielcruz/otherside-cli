@@ -128,7 +128,7 @@ pub const CATALOG: &[SlashEntry] = &[
         kind: SlashKind::Skill,
     },
     SlashEntry {
-        name: "security-review",
+        name: "pr-security-review",
         brief: "review pending changes for security issues",
         kind: SlashKind::Skill,
     },
@@ -314,7 +314,6 @@ mod tests {
         let names: Vec<&str> = prefix_matches("s").map(|e| e.name).collect();
         assert!(names.contains(&"status"));
         assert!(names.contains(&"skills"));
-        assert!(names.contains(&"security-review"));
         assert!(!names.contains(&"swarm"), "/swarm cut in 011");
         assert!(!names.contains(&"statusline"), "/statusline cut — otherside has no statusLine feature");
     }
