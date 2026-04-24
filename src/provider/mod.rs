@@ -12,6 +12,7 @@ use crate::thinking::ThinkingConfig;
 
 pub mod anthropic;
 pub mod codex;
+pub mod codex_models;
 pub mod kimi;
 
 pub type ChunkStream = BoxStream<'static, Result<OpenAiChunk>>;

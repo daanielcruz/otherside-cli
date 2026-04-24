@@ -874,14 +874,40 @@ fn build_tab_rows(
             _ => vec![ModelTabRow::LoginCta],
         };
     }
-    let mut rows: Vec<ModelTabRow> = crate::models::catalog::models_for(provider)
-        .iter()
-        .map(|m| ModelTabRow::Model {
-            raw_id: m.id.to_string(),
-            display_name: m.display_name.to_string(),
-            active: m.id == active_model_id,
-        })
-        .collect();
+    let mut rows: Vec<ModelTabRow> = if matches!(provider, ProviderId::Codex) {
+        let live = crate::provider::codex_models::cached_models();
+        if !live.is_empty() {
+            live.iter()
+                .map(|m| ModelTabRow::Model {
+                    raw_id: m.slug.clone(),
+                    display_name: if m.display_name.is_empty() {
+                        m.slug.clone()
+                    } else {
+                        m.display_name.clone()
+                    },
+                    active: m.slug == active_model_id,
+                })
+                .collect()
+        } else {
+            crate::models::catalog::models_for(provider)
+                .iter()
+                .map(|m| ModelTabRow::Model {
+                    raw_id: m.id.to_string(),
+                    display_name: m.display_name.to_string(),
+                    active: m.id == active_model_id,
+                })
+                .collect()
+        }
+    } else {
+        crate::models::catalog::models_for(provider)
+            .iter()
+            .map(|m| ModelTabRow::Model {
+                raw_id: m.id.to_string(),
+                display_name: m.display_name.to_string(),
+                active: m.id == active_model_id,
+            })
+            .collect()
+    };
     rows.push(ModelTabRow::Logout);
     rows
 }

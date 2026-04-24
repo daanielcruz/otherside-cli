@@ -415,6 +415,18 @@ async fn cmd_tui(cli: &Cli) -> Result<()> {
         let _ = otherside::agent::subagents::install_runner(
             otherside::agent::subagents::InnerLoopRunner::new(),
         );
+
+        if otherside::auth::codex::load_credentials()
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            tokio::spawn(async {
+                if let Err(e) = otherside::provider::codex_models::fetch_models().await {
+                    tracing::debug!(?e, "codex model catalog fetch failed (boot)");
+                }
+            });
+        }
     }
 
     let permission_mode = if cli.yolo {
