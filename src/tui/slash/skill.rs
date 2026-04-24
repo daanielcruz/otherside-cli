@@ -6,7 +6,7 @@ use super::SlashOutcome;
 const SKILL_BODIES: &[(&str, &str)] = &[
     ("dream", include_str!("../../../skills_corpus/dream/SKILL.md")),
     ("init", include_str!("../../../skills_corpus/init/SKILL.md")),
-    ("review", include_str!("../../../skills_corpus/review/SKILL.md")),
+    ("pr-review", include_str!("../../../skills_corpus/pr-review/SKILL.md")),
     (
         "security-review",
         include_str!("../../../skills_corpus/security-review/SKILL.md"),
@@ -53,7 +53,7 @@ mod tests {
         let expected = [
             "dream",
             "init",
-            "review",
+            "pr-review",
             "security-review",
         ];
         for name in expected {
@@ -114,7 +114,7 @@ mod tests {
     #[test]
     fn handle_known_skill_appends_args_after_body() {
         let mut st = ConversationState::default();
-        let outcome = handle("review", "#42", &mut st);
+        let outcome = handle("pr-review", "#42", &mut st);
         match outcome {
             SlashOutcome::SendTurn(body) => {
                 assert!(body.contains("---"));

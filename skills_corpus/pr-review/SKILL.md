@@ -1,5 +1,5 @@
 ---
-name: review
+name: pr-review
 description: Code review a pull request — summarize changes, flag issues, suggest improvements.
 ---
 

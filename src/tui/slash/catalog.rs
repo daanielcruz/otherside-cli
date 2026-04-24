@@ -118,7 +118,7 @@ pub const CATALOG: &[SlashEntry] = &[
         kind: SlashKind::Skill,
     },
     SlashEntry {
-        name: "review",
+        name: "pr-review",
         brief: "code review a pull request",
         kind: SlashKind::Skill,
     },
