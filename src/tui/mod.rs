@@ -682,12 +682,13 @@ async fn dispatch_pending_login(
     st: &mut ConversationState,
 ) -> Result<()> {
     use crate::config::providers::ProviderId;
+    let mut succeeded = false;
     match provider {
         ProviderId::ClaudeCode => {
             let mut handshake = match crate::auth::anthropic::begin_login() {
                 Ok(h) => h,
                 Err(e) => {
-                    st.push_system_note(format!("⎿  login failed: {e}"));
+                    st.set_feedback(format!("login failed: {e}"));
                     return Ok(());
                 }
             };
@@ -697,7 +698,7 @@ async fn dispatch_pending_login(
             let listener = match handshake.take_listener() {
                 Some(l) => l,
                 None => {
-                    st.push_system_note("⎿  login failed: listener unavailable".to_string());
+                    st.set_feedback("login failed: listener unavailable");
                     return Ok(());
                 }
             };
@@ -714,46 +715,31 @@ async fn dispatch_pending_login(
             {
                 CallbackPanelOutcome::Completed { code, state } => {
                     match handshake.finalize(code, state, false).await {
-                        Ok(_) => {
-                            st.push_system_note(format!(
-                                "⎿  logged in: {}",
-                                provider.slug()
-                            ));
-                        }
-                        Err(e) => {
-                            st.push_system_note(format!("⎿  login failed: {e}"));
-                        }
+                        Ok(_) => succeeded = true,
+                        Err(e) => st.set_feedback(format!("login failed: {e}")),
                     }
                 }
                 CallbackPanelOutcome::ManualSubmit(raw) => {
                     match crate::auth::anthropic::parse_callback_input(&raw) {
                         Ok((code, state)) => {
                             match handshake.finalize(code, state, true).await {
-                                Ok(_) => {
-                                    st.push_system_note(format!(
-                                        "⎿  logged in: {}",
-                                        provider.slug()
-                                    ));
-                                }
+                                Ok(_) => succeeded = true,
                                 Err(e) => {
-                                    st.push_system_note(format!("⎿  login failed: {e}"));
+                                    st.set_feedback(format!("login failed: {e}"))
                                 }
                             }
                         }
-                        Err(e) => {
-                            st.push_system_note(format!("⎿  login failed: {e}"));
-                        }
+                        Err(e) => st.set_feedback(format!("login failed: {e}")),
                     }
                 }
-                CallbackPanelOutcome::Cancel => {}
-                CallbackPanelOutcome::Quit => {}
+                CallbackPanelOutcome::Cancel | CallbackPanelOutcome::Quit => {}
             }
         }
         ProviderId::Codex => {
             let mut handshake = match crate::auth::codex::begin_login() {
                 Ok(h) => h,
                 Err(e) => {
-                    st.push_system_note(format!("⎿  login failed: {e}"));
+                    st.set_feedback(format!("login failed: {e}"));
                     return Ok(());
                 }
             };
@@ -762,7 +748,7 @@ async fn dispatch_pending_login(
             let listener = match handshake.take_listener() {
                 Some(l) => l,
                 None => {
-                    st.push_system_note("⎿  login failed: listener unavailable".to_string());
+                    st.set_feedback("login failed: listener unavailable");
                     return Ok(());
                 }
             };
@@ -779,37 +765,20 @@ async fn dispatch_pending_login(
             {
                 CallbackPanelOutcome::Completed { code, state } => {
                     match handshake.finalize(code, state).await {
-                        Ok(_) => {
-                            st.push_system_note(format!(
-                                "⎿  logged in: {}",
-                                provider.slug()
-                            ));
-                        }
-                        Err(e) => {
-                            st.push_system_note(format!("⎿  login failed: {e}"));
-                        }
+                        Ok(_) => succeeded = true,
+                        Err(e) => st.set_feedback(format!("login failed: {e}")),
                     }
                 }
                 CallbackPanelOutcome::ManualSubmit(raw) => {
                     match parse_manual_codex_paste(&raw) {
                         Ok((code, state)) => match handshake.finalize(code, state).await {
-                            Ok(_) => {
-                                st.push_system_note(format!(
-                                    "⎿  logged in: {}",
-                                    provider.slug()
-                                ));
-                            }
-                            Err(e) => {
-                                st.push_system_note(format!("⎿  login failed: {e}"));
-                            }
+                            Ok(_) => succeeded = true,
+                            Err(e) => st.set_feedback(format!("login failed: {e}")),
                         },
-                        Err(e) => {
-                            st.push_system_note(format!("⎿  login failed: {e}"));
-                        }
+                        Err(e) => st.set_feedback(format!("login failed: {e}")),
                     }
                 }
-                CallbackPanelOutcome::Cancel => {}
-                CallbackPanelOutcome::Quit => {}
+                CallbackPanelOutcome::Cancel | CallbackPanelOutcome::Quit => {}
             }
         }
         ProviderId::Kimi => {
@@ -820,27 +789,23 @@ async fn dispatch_pending_login(
                         api_key: raw.trim().to_string(),
                     };
                     match crate::auth::kimi::save_credentials(&creds) {
-                        Ok(()) => {
-                            st.push_system_note(format!(
-                                "⎿  logged in: {}",
-                                provider.slug()
-                            ));
-                        }
-                        Err(e) => {
-                            st.push_system_note(format!("⎿  login failed: {e}"));
-                        }
+                        Ok(()) => succeeded = true,
+                        Err(e) => st.set_feedback(format!("login failed: {e}")),
                     }
                 }
-                ApiKeyPanelOutcome::Cancel => {}
-                ApiKeyPanelOutcome::Quit => {}
+                ApiKeyPanelOutcome::Cancel | ApiKeyPanelOutcome::Quit => {}
             }
         }
         ProviderId::GeminiCli | ProviderId::OpenAiCustom => {
-            st.push_system_note(format!(
-                "⎿  login for {} not wired yet",
-                provider.slug()
-            ));
+            st.set_feedback(format!("login for {} not wired yet", provider.slug()));
         }
+    }
+
+    if succeeded {
+        if let Err(e) = crate::state::broker::set_active_provider(st, provider) {
+            tracing::warn!(?e, "post-login provider switch failed");
+        }
+        st.set_feedback(format!("logged in · {}", provider.slug()));
     }
     Ok(())
 }
@@ -850,12 +815,8 @@ fn dispatch_pending_logout(
     st: &mut ConversationState,
 ) {
     match crate::state::broker::logout_provider(st, provider) {
-        Ok(()) => {
-            st.push_system_note(format!("⎿  logged out: {}", provider.slug()));
-        }
-        Err(e) => {
-            st.push_system_note(format!("⎿  logout failed: {e}"));
-        }
+        Ok(()) => st.set_feedback(format!("logged out · {}", provider.slug())),
+        Err(e) => st.set_feedback(format!("logout failed: {e}")),
     }
 }
 
