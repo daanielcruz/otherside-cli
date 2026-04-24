@@ -27,7 +27,7 @@ You are reviewing a pull request. Follow these steps:
   regressions).
 - Test coverage (does a test actually exercise the new code path).
 - Project conventions (commit style, file layout, naming — read
-  `CLAUDE.md` for the rules).
+  `OTHERSIDE.md` for the rules).
 
 ## Arguments
 

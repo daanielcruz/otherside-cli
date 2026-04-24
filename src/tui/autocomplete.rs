@@ -157,10 +157,10 @@ mod tests {
         let ac = Autocomplete::from_input("/s").unwrap();
         let names: Vec<&str> = ac.matches.iter().map(|e| e.name).collect();
         assert!(names.contains(&"status"));
-        assert!(names.contains(&"statusline"));
         assert!(names.contains(&"skills"));
         assert!(names.contains(&"security-review"));
         assert!(!names.contains(&"swarm"), "/swarm cut in 011");
+        assert!(!names.contains(&"statusline"), "/statusline cut — otherside has no statusLine feature");
     }
 
     #[test]
@@ -308,7 +308,7 @@ mod tests {
         for name in ["config", "model", "login", "logout", "init", "mcp",
                      "effort", "plan", "permissions", "diff", "skills",
                      "agents", "context",
-                     "statusline", "dream",
+                     "dream",
                      "review", "security-review", "loop"] {
             let prefix = &name[..1];
             let ac = Autocomplete::from_input(&format!("/{prefix}"))

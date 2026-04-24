@@ -10,7 +10,7 @@ changes on the current branch. Treat every change as attack surface.
 
 1. Run `git diff HEAD` and `git diff origin/main...HEAD` so you
    see both uncommitted edits and all commits on this branch.
-2. Read `CLAUDE.md` if it exists — the operator has
+2. Read `OTHERSIDE.md` if it exists — the operator has
    scope-specific rules that override generic best-practice.
 3. For each change, check:
    - **Injection** — SQL, shell, LDAP, XPath, template, command.

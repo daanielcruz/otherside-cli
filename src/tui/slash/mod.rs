@@ -224,11 +224,14 @@ mod tests {
     }
 
     #[test]
-    fn statusline_is_skill() {
-        match classify("/statusline") {
-            SlashAction::Skill { name, .. } => assert_eq!(name, "statusline"),
-            other => panic!("expected Skill, got {other:?}"),
-        }
+    fn statusline_reclassified_as_unknown() {
+        assert_eq!(
+            classify("/statusline"),
+            SlashAction::Unknown {
+                name: "statusline".to_string(),
+                args: String::new(),
+            }
+        );
     }
 
     #[test]

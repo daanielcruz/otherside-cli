@@ -5,7 +5,6 @@ use super::SlashOutcome;
 
 const SKILL_BODIES: &[(&str, &str)] = &[
     ("dream", include_str!("../../../skills_corpus/dream/SKILL.md")),
-    ("statusline", include_str!("../../../skills_corpus/statusline/SKILL.md")),
     ("init", include_str!("../../../skills_corpus/init/SKILL.md")),
     ("review", include_str!("../../../skills_corpus/review/SKILL.md")),
     (
@@ -53,7 +52,6 @@ mod tests {
 
         let expected = [
             "dream",
-            "statusline",
             "init",
             "review",
             "security-review",
