@@ -150,6 +150,9 @@ pub fn default_effort_for(id: &str) -> &'static str {
 }
 
 pub fn context_window_for(id: &str) -> u64 {
+    if let Some(ctx) = crate::provider::codex_models::resolved_context_window(id) {
+        return ctx;
+    }
     if let Some(m) = by_id(id) {
         return m.context_window;
     }

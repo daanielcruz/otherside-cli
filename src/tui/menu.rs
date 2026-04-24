@@ -711,7 +711,7 @@ pub fn overlay_rows(menu: &OverlayMenu) -> u16 {
     }
 
     if matches!(menu.kind, PanelKind::Effort) {
-        return 7;
+        return 9;
     }
 
     if matches!(menu.kind, PanelKind::Model) {

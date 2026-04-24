@@ -28,10 +28,26 @@ pub struct CodexModel {
     pub context_window: u64,
 
     #[serde(default)]
+    pub max_context_window: u64,
+
+    #[serde(default)]
     pub supported_in_api: bool,
 
     #[serde(default)]
     pub additional_speed_tiers: Vec<String>,
+}
+
+pub fn resolved_context_window(slug: &str) -> Option<u64> {
+    if slug == "gpt-5.5" {
+        return Some(400_000);
+    }
+    cached_models().iter().find(|m| m.slug == slug).map(|m| {
+        if m.max_context_window > 0 {
+            m.max_context_window
+        } else {
+            m.context_window
+        }
+    })
 }
 
 #[derive(Debug)]
