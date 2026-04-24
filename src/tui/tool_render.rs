@@ -1121,6 +1121,12 @@ fn preview_payload(result: &Value) -> Option<ToolPayload> {
             if let Some(s) = obj.get("content").and_then(|v| v.as_str()) {
                 return Some(ToolPayload::Preview(one_line_preview(s, 240)));
             }
+            if let Some(msg) = obj.get("message").and_then(|v| v.as_str()) {
+                return Some(ToolPayload::Preview(one_line_preview(msg, 240)));
+            }
+            if let Some(err) = obj.get("error").and_then(|v| v.as_str()) {
+                return Some(ToolPayload::Preview(one_line_preview(err, 240)));
+            }
 
             format!("{} field{}", obj.len(), if obj.len() == 1 { "" } else { "s" })
         }
@@ -1416,6 +1422,47 @@ mod tests {
         });
         let payload = payload_from_result("Edit", &value, false, &serde_json::Value::Null).expect("diff");
         assert!(matches!(payload, ToolPayload::Diff(_)));
+    }
+
+    #[test]
+    fn payload_from_result_send_message_surfaces_message_field() {
+        let value = serde_json::json!({
+            "success": false,
+            "message": "No agent named 'ghost' is currently addressable.",
+        });
+        let payload =
+            payload_from_result("SendMessage", &value, false, &serde_json::Value::Null)
+                .expect("send-message payload");
+        match payload {
+            ToolPayload::Preview(s) => {
+                assert!(
+                    s.contains("No agent named"),
+                    "fallback lost the real message: {s}"
+                );
+                assert!(
+                    !s.contains(" fields"),
+                    "message field surfaced as generic `N fields` summary: {s}"
+                );
+            }
+            other => panic!("expected Preview, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn payload_from_result_prefers_error_field_over_fields_count() {
+        let value = serde_json::json!({
+            "success": false,
+            "error": "permission denied",
+        });
+        let payload = payload_from_result("Whatever", &value, false, &serde_json::Value::Null)
+            .expect("error payload");
+        match payload {
+            ToolPayload::Preview(s) => {
+                assert!(s.contains("permission denied"));
+                assert!(!s.contains(" fields"));
+            }
+            other => panic!("expected Preview, got {other:?}"),
+        }
     }
 
     #[test]
