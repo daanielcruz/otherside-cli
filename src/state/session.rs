@@ -21,11 +21,16 @@ pub struct Session {
 impl Session {
 
     pub fn new(raw_model: &str, permission_mode: PermissionMode) -> Self {
+        // Seed effort_label from the catalog's default for this model so the
+        // statusline surfaces something from boot (`xhigh`, `on`, etc.) —
+        // without this, the suffix stays silent until the user cycles the
+        // row in /config. Source of truth: `catalog::default_effort_for`.
+        let effort_label = catalog::default_effort_for_static(raw_model);
         Self {
             context_window: catalog::context_window_for(raw_model),
             permission_mode,
             model: raw_model.to_string(),
-            effort_label: None,
+            effort_label,
             thinking: None,
         }
     }

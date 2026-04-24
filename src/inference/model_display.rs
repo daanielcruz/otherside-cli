@@ -16,12 +16,8 @@ pub fn resolve_model_label(canonical: &str) -> String {
 }
 
 pub fn render_model_name(canonical: &str, has_1m: bool) -> String {
-    let base = resolve_model_label(canonical);
-    if has_1m {
-        format!("{base} (1M context)")
-    } else {
-        base
-    }
+    let _ = has_1m;
+    resolve_model_label(canonical)
 }
 
 #[cfg(test)]
@@ -40,10 +36,13 @@ mod tests {
     }
 
     #[test]
-    fn render_model_name_1m_suffix() {
+    fn render_model_name_1m_suffix_is_suppressed() {
+        // Per 2026-04-24 user directive, `(1M context)` suffix is no longer
+        // user-facing. The flag still exists on the catalog row for wire
+        // routing, but the display string stays clean.
         assert_eq!(
             render_model_name("claude-opus-4-7", true),
-            "Opus 4.7 (1M context)"
+            "Opus 4.7"
         );
     }
 
@@ -56,7 +55,7 @@ mod tests {
 
         assert_eq!(
             render_model_name("claude-opus-99-9", true),
-            "claude-opus-99-9 (1M context)"
+            "claude-opus-99-9"
         );
     }
 }

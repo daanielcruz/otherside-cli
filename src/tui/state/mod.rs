@@ -83,6 +83,8 @@ pub struct ConversationState {
 
     pub input_tokens: u64,
 
+    pub pending_token_reset: bool,
+
     pub session: crate::state::Session,
 
     pub provider_id: crate::config::providers::ProviderId,
@@ -645,9 +647,6 @@ impl ConversationState {
         self.current_assistant_buffer.clear();
         self.last_error = None;
         self.request_started_at = Some(Instant::now());
-        self.output_tokens = 0;
-        self.cumulative_output_tokens = 0;
-        self.thought_ms = 0;
         self.tip_rotation_index = self.tip_rotation_index.wrapping_add(1);
         self.autocomplete = None;
         self.scroll_to_bottom();
@@ -911,6 +910,17 @@ impl ConversationState {
 
     pub fn switch_model(&mut self, new_raw: &str) {
         self.session.set_model(new_raw);
+        // Re-anchor effort_label to whatever the new model actually supports.
+        // Example: user flips from kimi-for-coding (effort `on`) to opus 4.7
+        // (supports `auto/low/medium/high/xhigh/max`) — `on` would be invalid.
+        let current = self.session.effort_label.unwrap_or("auto");
+        if !crate::models::catalog::supports_effort(new_raw, current) {
+            let default = crate::models::catalog::default_effort_for_static(new_raw);
+            self.session.effort_label = default;
+            self.session.thinking = default.and_then(|lvl| {
+                crate::thinking::config_from_effort_label(lvl)
+            });
+        }
     }
 
     pub fn compact_history(&mut self) {

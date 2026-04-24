@@ -29,7 +29,7 @@ pub const CATALOG: &[Model] = &[
 
     Model {
         id: "claude-opus-4-7[1m]",
-        display_name: "Opus 4.7 (1M context)",
+        display_name: "Opus 4.7",
         supports_1m: true,
         provider: ProviderId::ClaudeCode,
         family_alias: Some("opus"),
@@ -37,7 +37,7 @@ pub const CATALOG: &[Model] = &[
         supported_efforts: &["auto", "low", "medium", "high", "xhigh", "max"],
         default_effort: "xhigh",
         context_window: 1_000_000,
-        display_hint: "Opus 4.7 with 1M context · Most capable for complex work",
+        display_hint: "Opus 4.7 · 1M context",
     },
     Model {
         id: "claude-opus-4-7",
@@ -49,7 +49,7 @@ pub const CATALOG: &[Model] = &[
         supported_efforts: &["auto", "low", "medium", "high", "xhigh", "max"],
         default_effort: "xhigh",
         context_window: 200_000,
-        display_hint: "Opus 4.7 · Most capable for complex work",
+        display_hint: "Opus 4.7 · 200k context",
     },
     Model {
         id: "claude-sonnet-4-6",
@@ -61,7 +61,7 @@ pub const CATALOG: &[Model] = &[
         supported_efforts: &["auto", "low", "medium", "high"],
         default_effort: "high",
         context_window: 200_000,
-        display_hint: "Sonnet 4.6 · Best for everyday tasks",
+        display_hint: "Sonnet 4.6 · 200k context",
     },
     Model {
         id: "claude-haiku-4-5",
@@ -73,20 +73,22 @@ pub const CATALOG: &[Model] = &[
         supported_efforts: &["auto"],
         default_effort: "auto",
         context_window: 200_000,
-        display_hint: "Haiku 4.5 · Fastest for quick answers",
+        display_hint: "Haiku 4.5 · 200k context",
     },
 
     Model {
         id: "gpt-5.4",
         display_name: "GPT 5.4",
-        supports_1m: false,
+        supports_1m: true,
         provider: ProviderId::Codex,
         family_alias: Some("gpt-5"),
         primary_for_family: true,
+        // Codex never carries a `max` tier — `/responses` rejects it. Default
+        // to `xhigh` so users land on the strongest available effort.
         supported_efforts: &["auto", "low", "medium", "high", "xhigh"],
-        default_effort: "auto",
-        context_window: 272_000,
-        display_hint: "GPT 5.4 · Codex default · Responses API",
+        default_effort: "xhigh",
+        context_window: 1_000_000,
+        display_hint: "GPT 5.4 · 1M context",
     },
     Model {
         id: "gpt-5.3-codex",
@@ -96,9 +98,9 @@ pub const CATALOG: &[Model] = &[
         family_alias: Some("gpt-5"),
         primary_for_family: false,
         supported_efforts: &["auto", "low", "medium", "high", "xhigh"],
-        default_effort: "auto",
+        default_effort: "xhigh",
         context_window: 272_000,
-        display_hint: "GPT 5.3 Codex · coding-tuned · Responses API",
+        display_hint: "GPT 5.3 Codex · 272k context",
     },
 
     Model {
@@ -125,7 +127,7 @@ pub const CATALOG: &[Model] = &[
         supported_efforts: &["on", "off"],
         default_effort: "on",
         context_window: 262_144,
-        display_hint: "Kimi K2.6 · 262k window · anthropic-compatible",
+        display_hint: "Kimi K2.6 · 262k context",
     },
 ];
 
@@ -147,6 +149,67 @@ pub fn models_for(provider: ProviderId) -> Vec<&'static Model> {
 
 pub fn default_effort_for(id: &str) -> &'static str {
     by_id(id).map(|m| m.default_effort).unwrap_or("auto")
+}
+
+pub fn default_effort_for_static(id: &str) -> Option<&'static str> {
+    by_id(id).map(|m| m.default_effort)
+}
+
+/// Single source of truth for the user-selectable effort scale per model.
+/// Strips the `auto` entry (selectable only as an implicit default) and
+/// falls back to a provider-inferred scale when the id isn't in the
+/// hardcoded catalog yet (live codex slugs the /models fetch returned
+/// at boot but we haven't pinned locally).
+pub fn effort_levels_for_model(model_id: &str) -> &'static [&'static str] {
+    if let Some(m) = by_id(model_id) {
+        let filtered: Vec<&'static str> = m
+            .supported_efforts
+            .iter()
+            .copied()
+            .filter(|l| *l != "auto")
+            .collect();
+        if !filtered.is_empty() {
+            return Box::leak(filtered.into_boxed_slice());
+        }
+    }
+    effort_levels_for_family(family_alias_from_slug(model_id))
+}
+
+/// Provider/family fallback when the model id isn't cataloged.
+/// Covers the "live fetch returned a slug we never baked in" case.
+pub fn effort_levels_for_family(
+    family_alias: Option<&'static str>,
+) -> &'static [&'static str] {
+    match family_alias {
+        // Codex: `/responses` rejects `max`. 4-position ladder.
+        Some("gpt-5") => &["low", "medium", "high", "xhigh"],
+        // Claude Sonnet caps at high per upstream; Opus adds xhigh + max;
+        // Haiku has no effort scale. Without a more specific hint we return
+        // the full Opus set so the picker renders a full ladder.
+        Some("opus") => &["low", "medium", "high", "xhigh", "max"],
+        Some("sonnet") => &["low", "medium", "high"],
+        Some("haiku") => &["auto"],
+        // Kimi: binary thinking on/off — keep as the only choice.
+        Some("kimi") => &["on", "off"],
+        _ => &["low", "medium", "high", "xhigh"],
+    }
+}
+
+fn family_alias_from_slug(model_id: &str) -> Option<&'static str> {
+    let lower = model_id.to_ascii_lowercase();
+    if lower.starts_with("gpt-5") {
+        Some("gpt-5")
+    } else if lower.starts_with("claude-opus") {
+        Some("opus")
+    } else if lower.starts_with("claude-sonnet") {
+        Some("sonnet")
+    } else if lower.starts_with("claude-haiku") {
+        Some("haiku")
+    } else if lower.starts_with("kimi-") {
+        Some("kimi")
+    } else {
+        None
+    }
 }
 
 pub fn context_window_for(id: &str) -> u64 {
@@ -192,12 +255,12 @@ mod tests {
 
     #[test]
     fn display_name_resolves_for_opus() {
+        // Per 2026-04-24 user directive, both opus variants render as plain
+        // `Opus 4.7` — the (1M context) suffix was dropped from the user-facing
+        // label. Catalog still carries supports_1m + context_window separately
+        // for wire routing.
         assert_eq!(display_name_for("claude-opus-4-7"), Some("Opus 4.7"));
-        assert_eq!(
-            display_name_for("claude-opus-4-7[1m]"),
-            Some("Opus 4.7 (1M context)"),
-            "the 1M variant carries a distinct label; `model_display_label` used to synthesize this, now catalog owns it"
-        );
+        assert_eq!(display_name_for("claude-opus-4-7[1m]"), Some("Opus 4.7"));
     }
 
     #[test]
