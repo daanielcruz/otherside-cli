@@ -759,6 +759,27 @@ fn draw_statusline(
 
     let (line, _warn) = statusline::dispatch(&ctx, None);
     let stripped = strip_ansi(&line.content);
+    let effort_token = effort_statusline_suffix(state);
+    if let Some(ref suffix) = effort_token {
+        if let Some(pos) = stripped.rfind(suffix.as_str()) {
+            let pre: String = stripped.chars().take(pos).collect();
+            let post_start = pos + suffix.len();
+            let post: String = stripped.chars().skip(pos + suffix.chars().count()).collect();
+            let _ = post_start;
+            let effort_label = state.session.effort_label.unwrap_or("");
+            let color = crate::tui::menu::effort_level_color(effort_label);
+            let para = Paragraph::new(Line::from(vec![
+                Span::styled(pre, Style::default().fg(theme::MUTED)),
+                Span::styled(
+                    suffix.clone(),
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(post, Style::default().fg(theme::MUTED)),
+            ]));
+            f.render_widget(para, area);
+            return;
+        }
+    }
     let para = Paragraph::new(Line::from(Span::styled(
         stripped,
         Style::default().fg(theme::MUTED),

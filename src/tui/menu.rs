@@ -943,8 +943,10 @@ fn draw_model_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
                     display_name,
                     active,
                 } => {
+                    let context_label =
+                        context_window_label_for(raw_id);
                     let left_cols = 2 + display_name.chars().count();
-                    let right_cols = raw_id.chars().count();
+                    let right_cols = context_label.chars().count();
                     let pad = ROW_WIDTH.saturating_sub(left_cols + right_cols).max(2);
                     let name_style = if is_cursor {
                         Style::default()
@@ -959,7 +961,7 @@ fn draw_model_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
                     spans.push(Span::styled(display_name.clone(), name_style));
                     spans.push(Span::raw(" ".repeat(pad)));
                     spans.push(Span::styled(
-                        raw_id.clone(),
+                        context_label,
                         Style::default()
                             .fg(theme::MUTED)
                             .add_modifier(Modifier::DIM),
@@ -1162,7 +1164,8 @@ fn draw_effort_slider(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
         Style::default().fg(theme::TEXT),
     )));
 
-    let mut label_line = String::from(LEFT_PAD);
+    let mut label_spans: Vec<Span<'static>> = Vec::with_capacity(labels.len() * 2 + 1);
+    label_spans.push(Span::raw(LEFT_PAD.to_string()));
     if !labels.is_empty() {
         let denom = positions.saturating_sub(1).max(1);
         let mut cursor_col: usize = 0;
@@ -1171,21 +1174,30 @@ fn draw_effort_slider(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
             let len = l.chars().count();
             let start = anchor.saturating_sub(len / 2);
             let start = start.min(TRACK_LEN.saturating_sub(len));
-            if start > cursor_col {
-                label_line.push_str(&" ".repeat(start - cursor_col));
-                cursor_col = start;
-            } else if i > 0 && cursor_col + 1 <= TRACK_LEN {
-                label_line.push(' ');
-                cursor_col += 1;
+            let pad = if start > cursor_col {
+                start - cursor_col
+            } else if i > 0 {
+                1
+            } else {
+                0
+            };
+            if pad > 0 {
+                label_spans.push(Span::raw(" ".repeat(pad)));
+                cursor_col = cursor_col.saturating_add(pad);
             }
-            label_line.push_str(l);
-            cursor_col += len;
+            let is_active = i == menu.cursor;
+            let style = if is_active {
+                Style::default()
+                    .fg(effort_level_color(l))
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme::MUTED)
+            };
+            label_spans.push(Span::styled(l.clone(), style));
+            cursor_col = cursor_col.saturating_add(len);
         }
     }
-    body.push(Line::from(Span::styled(
-        label_line,
-        Style::default().fg(theme::TEXT),
-    )));
+    body.push(Line::from(label_spans));
 
     body.push(Line::raw(""));
 
@@ -1242,7 +1254,12 @@ fn status_rows(state: &super::state::ConversationState) -> Vec<MenuOption> {
         settings_ro("Session ID", session_id_display),
         settings_ro("cwd", cwd),
         settings_blank(),
-        settings_ro("Model", state.session.model.clone()),
+        settings_ro(
+            "Model",
+            crate::inference::model_display::resolve_model_label(
+                &state.session.model,
+            ),
+        ),
         settings_ro("Permission mode", permission_label),
         settings_ro(effort_label, effort_value),
         settings_blank(),
@@ -1350,7 +1367,11 @@ fn config_rows(state: &super::state::ConversationState) -> Vec<MenuOption> {
         MenuOption {
             label: "Model".into(),
             action_id: "setting:model".into(),
-            value_display: Some(state.session.model.clone()),
+            value_display: Some(
+                crate::inference::model_display::resolve_model_label(
+                    &state.session.model,
+                ),
+            ),
             settings_kind: Some(SettingsRowKind::Model),
             hint: None,
             ..Default::default()
@@ -1546,7 +1567,7 @@ fn settings_blank() -> MenuOption {
     }
 }
 
-fn effort_level_color(value: &str) -> ratatui::style::Color {
+pub fn effort_level_color(value: &str) -> ratatui::style::Color {
     match value.to_ascii_lowercase().as_str() {
         "off" | "auto" => theme::MUTED,
         "on" => theme::SUCCESS,
@@ -1556,6 +1577,24 @@ fn effort_level_color(value: &str) -> ratatui::style::Color {
         "xhigh" => theme::PRIMARY,
         "max" => theme::ERROR,
         _ => theme::TEXT,
+    }
+}
+
+fn context_window_label_for(model_id: &str) -> String {
+    let window = crate::models::catalog::context_window_for(model_id);
+    if window >= 1_000_000 {
+        let m = window as f64 / 1_000_000.0;
+        if (m - m.floor()).abs() < 1e-6 {
+            format!("{:.0}M context", m)
+        } else {
+            format!("{:.1}M context", m)
+        }
+    } else if window >= 1_000 {
+        format!("{}k context", window / 1_000)
+    } else if window == 0 {
+        String::new()
+    } else {
+        format!("{window} context")
     }
 }
 
