@@ -44,7 +44,7 @@ The following deferred tools load on demand. To invoke one: first call \
 `ToolSearch(query: \"select:<ToolName>\")` to load its schema, THEN call \
 that tool directly by its own name. Do NOT dispatch a deferred tool via \
 the `Skill` tool — `Skill` is ONLY for bundled skill workflows \
-(e.g. `init`, `review`, `security-review`). TaskGet, TaskList, TaskOutput, \
+(e.g. `init`, `pr-review`, `pr-security-review`, `deep-security-review`). TaskGet, TaskList, TaskOutput,\
 WebFetch, WebSearch, CronCreate, etc. are deferred TOOLS, never skills. \
 The deferred set is ADDITIVE — every tool already listed in the top-level \
 `tools` array (Bash, Read, Edit, Glob, Grep, Write, Agent, Skill, ToolSearch) \
