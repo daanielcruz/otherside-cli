@@ -24,6 +24,10 @@ pub struct TaskRow {
 
 impl From<&TaskRecord> for TaskRow {
     fn from(r: &TaskRecord) -> Self {
+        let prompt = match r.kind {
+            TaskKind::Agent => extract_agent_prompt_field(&r.command),
+            _ => r.command.clone(),
+        };
         Self {
             name: r.name.clone(),
             description: r.description.clone(),
@@ -33,10 +37,25 @@ impl From<&TaskRecord> for TaskRow {
             runtime_secs: r.runtime_secs(),
             tokens: r.tokens,
             output: r.output.iter().cloned().collect(),
-            prompt: r.command.clone(),
+            prompt,
             tool_use_id: r.tool_use_id.clone(),
             error: r.error.clone(),
         }
+    }
+}
+
+fn extract_agent_prompt_field(command: &str) -> String {
+    let trimmed = command.trim();
+    if !trimmed.starts_with('{') {
+        return command.to_string();
+    }
+    match serde_json::from_str::<serde_json::Value>(trimmed) {
+        Ok(v) => v
+            .get("prompt")
+            .and_then(|p| p.as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| command.to_string()),
+        Err(_) => command.to_string(),
     }
 }
 

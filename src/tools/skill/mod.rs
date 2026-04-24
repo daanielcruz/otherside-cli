@@ -1,31 +1,36 @@
 
 
-use std::path::PathBuf;
-
 use serde_json::{json, Value};
 
 use crate::tools::ToolError;
 
-fn skill_path(name: &str) -> PathBuf {
-    PathBuf::from("skills").join(name).join("SKILL.md")
+const DEFERRED_TOOL_NAMES: &[&str] = &[
+    "AskUserQuestion",
+    "CronCreate",
+    "CronDelete",
+    "CronList",
+    "EnterPlanMode",
+    "EnterWorktree",
+    "ExitPlanMode",
+    "ExitWorktree",
+    "NotebookEdit",
+    "ScheduleWakeup",
+    "TaskCreate",
+    "TaskGet",
+    "TaskList",
+    "TaskOutput",
+    "TaskStop",
+    "TaskUpdate",
+    "WebFetch",
+    "WebSearch",
+];
+
+fn lookup_bundled_skill(name: &str) -> Option<&'static str> {
+    crate::tui::slash::skill::lookup_body(name)
 }
 
-fn list_bundled_skills() -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    let root = PathBuf::from("skills");
-    if let Ok(entries) = std::fs::read_dir(&root) {
-        for entry in entries.flatten() {
-            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                if entry.path().join("SKILL.md").exists() {
-                    if let Some(name) = entry.file_name().to_str() {
-                        out.push(name.to_string());
-                    }
-                }
-            }
-        }
-    }
-    out.sort();
-    out
+fn bundled_skill_names() -> Vec<&'static str> {
+    crate::tui::slash::skill::bundled_names()
 }
 
 pub fn skill(args: &Value) -> Result<Value, ToolError> {
@@ -38,32 +43,40 @@ pub fn skill(args: &Value) -> Result<Value, ToolError> {
             "invalid skill name: {name}"
         )));
     }
-    let path = skill_path(name);
-    let content = std::fs::read_to_string(&path).map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
 
-            let available = list_bundled_skills();
-            let hint = if available.is_empty() {
-                "no skills bundled in this build".to_string()
-            } else {
-                format!("available: {}", available.join(", "))
-            };
-            ToolError::InvalidArgs(format!(
-                "unknown skill: {name} ({hint})"
-            ))
-        } else {
-            ToolError::Io(e)
-        }
-    })?;
-    let forwarded_args = args
-        .get("args")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    Ok(json!({
-        "skill": name,
-        "args": forwarded_args,
-        "content": content,
-    }))
+    if let Some(content) = lookup_bundled_skill(name) {
+        let forwarded_args = args
+            .get("args")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        return Ok(json!({
+            "skill": name,
+            "args": forwarded_args,
+            "content": content,
+        }));
+    }
+
+    let mut hints: Vec<String> = Vec::new();
+    let available = bundled_skill_names();
+    if !available.is_empty() {
+        hints.push(format!("available skills: {}", available.join(", ")));
+    }
+    if DEFERRED_TOOL_NAMES
+        .iter()
+        .any(|n| n.eq_ignore_ascii_case(name))
+    {
+        hints.push(format!(
+            "`{name}` is a deferred TOOL, not a skill — load its schema via ToolSearch(query: \"select:{name}\") and then call {name} directly"
+        ));
+    }
+    let joined = if hints.is_empty() {
+        "no bundled skill by that name".to_string()
+    } else {
+        hints.join("; ")
+    };
+    Err(ToolError::InvalidArgs(format!(
+        "unknown skill: {name} ({joined})"
+    )))
 }
 
 #[cfg(test)]

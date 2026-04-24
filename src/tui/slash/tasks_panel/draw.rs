@@ -85,11 +85,11 @@ fn draw_detail(f: &mut Frame<'_>, area: Rect, state: &TasksPanelState) {
 
     let mut hints: Vec<(&str, &str)> = Vec::with_capacity(3);
     if state.came_from_list {
-        hints.push(("\u{2190}", "go back"));
+        hints.push(("\u{2190}", "to go back"));
     }
-    hints.push(("Esc/Enter/Space", "close"));
+    hints.push(("Esc/Enter/Space", "to close"));
     if matches!(row.state, TaskState::Running) {
-        hints.push(("x", "stop"));
+        hints.push(("x", "to stop"));
     }
 
     let panel = PanelFrame {
@@ -231,16 +231,21 @@ fn detail_body_lines(row: &TaskRow) -> Vec<Line<'static>> {
                         .add_modifier(Modifier::BOLD),
                 ),
             ]));
-            let preview = if row.prompt.chars().count() > 300 {
-                let head: String = row.prompt.chars().take(297).collect();
+            let capped = if row.prompt.chars().count() > 1200 {
+                let head: String = row.prompt.chars().take(1197).collect();
                 format!("{head}\u{2026}")
             } else {
                 row.prompt.clone()
             };
-            lines.push(Line::from(vec![
-                Span::raw(BODY_SUB_INDENT),
-                Span::styled(preview, Style::default().fg(theme::MUTED)),
-            ]));
+            for body_line in capped.lines() {
+                lines.push(Line::from(vec![
+                    Span::raw(BODY_SUB_INDENT),
+                    Span::styled(
+                        body_line.to_string(),
+                        Style::default().fg(theme::MUTED),
+                    ),
+                ]));
+            }
             lines.push(Line::from(""));
         }
     }
@@ -475,9 +480,9 @@ mod tests {
     }
 
     #[test]
-    fn prompt_truncates_at_297_plus_ellipsis_when_over_300() {
+    fn prompt_truncates_at_1197_plus_ellipsis_when_over_1200() {
         let s = TaskStore::new();
-        let long_prompt: String = "a".repeat(301);
+        let long_prompt: String = "a".repeat(1201);
         let mut r = TR::new_agent(
             TaskId::generate(),
             "general-purpose".into(),
@@ -502,8 +507,8 @@ mod tests {
             body.chars().take_while(|c| *c != '\u{2026}').collect();
         assert_eq!(
             pre_ellipsis.chars().count(),
-            297,
-            "upstream trims to exactly 297 chars before …, got {}",
+            1197,
+            "cap raised to 1200 to allow multi-paragraph prompts; truncates at 1197 chars + …, got {}",
             pre_ellipsis.chars().count()
         );
     }

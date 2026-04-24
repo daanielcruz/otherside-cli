@@ -955,13 +955,19 @@ async fn event_loop(
                     );
                 }
 
+                if let Some(panel) = st.active_tasks_panel.as_mut() {
+                    panel.refresh(&st.tasks);
+                }
+
                 for entry in crate::tools::cron::drain_due_wakeups() {
                     st.push_system_note(format!("⏰ wakeup: {}", entry.message));
                 }
 
                 if let Some(store) = crate::tasks::store::current_global() {
                     for record in store.drain_unrendered_completions() {
-                        if matches!(record.kind, crate::tasks::TaskKind::Agent) {
+                        if matches!(record.kind, crate::tasks::TaskKind::Agent)
+                            && !record.is_backgrounded
+                        {
                             continue;
                         }
                         let line = render_completion_line(&record);
@@ -1281,7 +1287,7 @@ fn handle_key(
 
         KeyCode::Char('c') if ctrl => {
             if st.cancel_stream() {
-
+                drain_queue_head_if_any(st, registry, base_model, tx);
             } else if st.exit_confirmed() {
                 return true;
             } else {
@@ -1298,6 +1304,7 @@ fn handle_key(
                 st.clear_input();
             } else if st.streaming {
                 st.cancel_stream();
+                drain_queue_head_if_any(st, registry, base_model, tx);
             } else {
                 st.clear_input();
             }
@@ -1346,13 +1353,12 @@ fn handle_key(
         KeyCode::Down => {
             if let Some(ac) = st.autocomplete.as_mut() {
                 ac.move_down();
-            } else if !st.streaming
-                && st.input.is_empty()
+            } else if st.input.is_empty()
                 && st.tasks.any_backgrounded()
                 && st.active_tasks_panel.is_none()
                 && st.active_agents_panel.is_none()
             {
-                
+
                 if !st.pill_focused {
                     st.pill_focused = true;
                 } else {
@@ -2296,19 +2302,31 @@ fn render_completion_line(r: &crate::tasks::TaskRecord) -> String {
         crate::tasks::TaskKind::Shell => "Background command",
         crate::tasks::TaskKind::Generic => "Background task",
     };
+    let display_name: &str = if matches!(r.kind, crate::tasks::TaskKind::Agent) {
+        r.description.as_deref().unwrap_or(r.name.as_str())
+    } else {
+        r.name.as_str()
+    };
     let status_phrase = match r.state {
-        crate::tasks::TaskState::Completed => "completed",
-        crate::tasks::TaskState::Failed => "failed",
-        crate::tasks::TaskState::Stopped => "was stopped",
+        crate::tasks::TaskState::Completed => "completed".to_string(),
+        crate::tasks::TaskState::Failed => match r.error.as_deref() {
+            Some(err) if !err.is_empty() => format!("failed: {err}"),
+            _ => "failed".to_string(),
+        },
+        crate::tasks::TaskState::Stopped => "was stopped".to_string(),
 
-        _ => "ended",
+        _ => "ended".to_string(),
     };
     let exit_suffix = r
         .exit_code
         .filter(|_| matches!(r.kind, crate::tasks::TaskKind::Shell))
         .map(|c| format!(" (exit code {c})"))
         .unwrap_or_default();
-    format!("⏺ {kind_label} \"{}\" {status_phrase}{exit_suffix}", r.name)
+    if matches!(r.kind, crate::tasks::TaskKind::Agent) {
+        format!("\u{25CF} {kind_label} \"{display_name}\" {status_phrase}{exit_suffix}")
+    } else {
+        format!("\u{25CF} {kind_label} \"{display_name}\" {status_phrase}{exit_suffix}")
+    }
 }
 
 fn drain_pending_inputs(
@@ -2999,13 +3017,89 @@ mod settings_edit_tests {
         st.session.effort_label = None;
         st.active_menu = Some(OverlayMenu::new_settings(SettingsTab::Config, &st));
         if let Some(m) = st.active_menu.as_mut() {
-            focus_row(m, "Effort");
+            // Kimi Code renders this row as `Thinking` (binary on/off),
+            // not `Effort` — user directive 2026-04-24.
+            focus_row(m, "Thinking");
         }
         edit_settings_row(&mut st, 1);
         assert!(
             matches!(st.session.effort_label, Some("on") | Some("off")),
             "Kimi effort cycle must land on one of on/off; got {:?}",
             st.session.effort_label
+        );
+    }
+
+    #[test]
+    fn config_tab_hides_fast_mode_for_anthropic() {
+        use crate::config::providers::ProviderId;
+
+        let mut st = ConversationState::default();
+        st.provider_id = ProviderId::ClaudeCode;
+        st.persistence.settings.default_provider = Some("anthropic-oauth".into());
+        st.active_menu = Some(OverlayMenu::new_settings(SettingsTab::Config, &st));
+        let labels: Vec<String> = st
+            .active_menu
+            .as_ref()
+            .unwrap()
+            .options
+            .iter()
+            .map(|o| o.label.clone())
+            .collect();
+        assert!(
+            !labels.iter().any(|l| l == "Fast mode"),
+            "Fast mode must be hidden on anthropic — /v1/messages rejects service_tier:fast; got {labels:?}"
+        );
+    }
+
+    #[test]
+    fn config_tab_hides_fast_mode_and_effort_for_kimi_shows_thinking() {
+        use crate::config::providers::ProviderId;
+
+        let mut st = ConversationState::default();
+        st.provider_id = ProviderId::Kimi;
+        st.persistence.settings.default_provider = Some("kimi".into());
+        st.active_menu = Some(OverlayMenu::new_settings(SettingsTab::Config, &st));
+        let labels: Vec<String> = st
+            .active_menu
+            .as_ref()
+            .unwrap()
+            .options
+            .iter()
+            .map(|o| o.label.clone())
+            .collect();
+        assert!(
+            !labels.iter().any(|l| l == "Fast mode"),
+            "Fast mode must be hidden on Kimi Code; got {labels:?}"
+        );
+        assert!(
+            !labels.iter().any(|l| l == "Effort"),
+            "Effort must be hidden on Kimi Code — it uses binary Thinking on/off instead; got {labels:?}"
+        );
+        assert!(
+            labels.iter().any(|l| l == "Thinking"),
+            "Kimi Code must surface the Thinking row; got {labels:?}"
+        );
+    }
+
+    #[test]
+    fn config_tab_shows_fast_mode_for_codex() {
+        use crate::config::providers::ProviderId;
+
+        let mut st = ConversationState::default();
+        st.provider_id = ProviderId::Codex;
+        st.persistence.settings.default_provider = Some("codex-oauth".into());
+        st.active_menu = Some(OverlayMenu::new_settings(SettingsTab::Config, &st));
+        let labels: Vec<String> = st
+            .active_menu
+            .as_ref()
+            .unwrap()
+            .options
+            .iter()
+            .map(|o| o.label.clone())
+            .collect();
+        assert!(
+            labels.iter().any(|l| l == "Fast mode"),
+            "Fast mode must be visible on Codex — /responses supports service_tier:fast; got {labels:?}"
         );
     }
 

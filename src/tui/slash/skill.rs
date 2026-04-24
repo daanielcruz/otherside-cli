@@ -21,6 +21,10 @@ pub fn lookup_body(name: &str) -> Option<&'static str> {
         .map(|(_, body)| *body)
 }
 
+pub fn bundled_names() -> Vec<&'static str> {
+    SKILL_BODIES.iter().map(|(n, _)| *n).collect()
+}
+
 pub fn handle(name: &str, args: &str, _state: &mut ConversationState) -> SlashOutcome {
     let body = lookup_body(name).map(substitute_host_paths);
     let user_turn = match (body, args.is_empty()) {

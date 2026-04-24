@@ -154,6 +154,48 @@ pub struct NestedEntry {
     pub running: bool,
 }
 
+fn agent_dispatch_suffix(args: &Value) -> Option<String> {
+    // Resolve the model + effort the subagent will actually dispatch against,
+    // using the currently-installed dispatch snapshot as the parent. Keeps
+    // the suffix in lockstep with what `InnerLoopRunner::run_inner` picks.
+    let obj = args.as_object()?;
+    let snap = crate::state::dispatch::snapshot()?;
+    let provider_id = crate::config::providers::ProviderId::from_slug(
+        snap.provider.id(),
+    )
+    .unwrap_or(crate::config::providers::ProviderId::ClaudeCode);
+    let subagent_type = obj
+        .get("subagent_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("general-purpose");
+    let invocation_model = obj.get("model").and_then(|v| v.as_str());
+    let (model, effort) = crate::models::agents::resolve_agent_dispatch(
+        Some(subagent_type),
+        invocation_model,
+        None,
+        &snap.model,
+        provider_id,
+    );
+    let model_display =
+        crate::inference::model_display::resolve_model_label(&model);
+    let effort_label = effort.map(|lvl| match lvl {
+        crate::thinking::ThinkingLevel::Minimal => "minimal",
+        crate::thinking::ThinkingLevel::Low => "low",
+        crate::thinking::ThinkingLevel::Medium => "medium",
+        crate::thinking::ThinkingLevel::High => "high",
+        crate::thinking::ThinkingLevel::XHigh => "xhigh",
+        crate::thinking::ThinkingLevel::Max => "max",
+        crate::thinking::ThinkingLevel::On => "on",
+        crate::thinking::ThinkingLevel::Off => "off",
+        crate::thinking::ThinkingLevel::Auto | crate::thinking::ThinkingLevel::None => "",
+    });
+    let suffix = match effort_label {
+        Some(e) if !e.is_empty() => format!("{model_display} {e}"),
+        _ => model_display,
+    };
+    if suffix.is_empty() { None } else { Some(suffix) }
+}
+
 fn user_facing_tool_name(tool_name: &str, args: &Value) -> String {
     if tool_name == "Agent" {
         if let Some(sub) = args
@@ -228,6 +270,16 @@ pub fn render_tool_call(view: &ToolCallView<'_>) -> Vec<Line<'static>> {
             Style::default().fg(theme::MUTED),
         ));
     }
+
+    if view.name == "Agent" {
+        if let Some(suffix) = agent_dispatch_suffix(view.args) {
+            header_spans.push(Span::styled(
+                format!(" {suffix}"),
+                Style::default().fg(theme::MUTED),
+            ));
+        }
+    }
+
     let _ = view.elapsed_ms;
     out.push(Line::from(header_spans));
 
