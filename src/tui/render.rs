@@ -286,6 +286,25 @@ fn draw_log(f: &mut Frame<'_>, area: Rect, state: &ConversationState, spinner_ti
         }
     }
 
+    if state.compacting {
+        lines.push(Line::raw(""));
+        let frame = super::progress::spinner_frame(spinner_tick);
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{frame} "),
+                Style::default()
+                    .fg(theme::PRIMARY)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "Compacting conversation…".to_string(),
+                Style::default()
+                    .fg(theme::MUTED)
+                    .add_modifier(Modifier::ITALIC),
+            ),
+        ]));
+    }
+
     if state.streaming {
 
         if !state.current_assistant_buffer.is_empty() {
@@ -415,7 +434,7 @@ fn render_message(role: OpenAiChatRole, content: &str, width: u16) -> Vec<Line<'
                                 .add_modifier(Modifier::ITALIC),
                         ),
                     ]));
-                } else if raw.starts_with("✻ ") && i == 0 {
+                } else if raw.starts_with("◇ ") && i == 0 {
 
                     lines.push(Line::from(Span::styled(
                         raw.to_string(),

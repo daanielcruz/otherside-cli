@@ -1338,11 +1338,12 @@ async fn event_loop(
                         });
                         st.compact_history_with_summary(Some(summary));
                         st.streaming = false;
-                        st.push_system_note("✻ Conversation compacted (ctrl+o for history)");
+                        st.compacting = false;
+                        st.push_system_note("◇ Conversation compacted (ctrl+o for history)");
                         st.push_anchor(
                             "compact",
                             "",
-                            "Compacted (ctrl+o to see full summary)",
+                            "Compacted",
                             state::DisplayOrigin::Transcript,
                         );
                         drain_pending_inputs(
@@ -1351,6 +1352,7 @@ async fn event_loop(
                     }
                     Some(StreamEvent::CompactFailed { message }) => {
                         st.streaming = false;
+                        st.compacting = false;
                         st.push_system_note(format!("⎿  compact failed: {message}"));
                     }
                     None => {
@@ -2768,11 +2770,7 @@ fn spawn_compact_turn(
     st.input.clear();
     st.autocomplete = None;
     st.streaming = true;
-    st.push_system_note(if is_auto {
-        "✻ Auto-compacting conversation…"
-    } else {
-        "✻ Compacting conversation…"
-    });
+    st.compacting = true;
 
     let model = st.session.model.clone();
     let thinking_cfg = st.session.thinking;

@@ -71,6 +71,8 @@ pub struct ConversationState {
 
     pub streaming: bool,
 
+    pub compacting: bool,
+
     pub current_assistant_buffer: String,
 
     pub last_error: Option<String>,
