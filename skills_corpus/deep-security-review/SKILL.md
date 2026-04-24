@@ -1,6 +1,7 @@
 ---
 name: deep-security-review
 description: Deep bughunter sweep of the entire repository — OWASP Top 10, CWE Top 25, NIST SP 800-53/SSDF, supply-chain, crypto, authn/authz, injection, memory safety, network/TLS, CI/CD. Every finding cites file, line range, snippet, CWE, OWASP category, severity, exploit path, and concrete fix.
+context: fork
 ---
 
 You are performing a deep, exhaustive security audit of the ENTIRE

@@ -192,11 +192,11 @@ mod tests {
         let mut st = ConversationState::default();
         let outcome = handle("pr-review", "#42", &mut st);
         match outcome {
-            SlashOutcome::SendTurn(body) => {
+            SlashOutcome::ForkSkill { body, .. } => {
                 assert!(body.contains("---"));
                 assert!(body.trim_end().ends_with("#42"));
             }
-            other => panic!("expected SendTurn, got {other:?}"),
+            other => panic!("expected ForkSkill, got {other:?}"),
         }
     }
 
@@ -238,9 +238,22 @@ mod tests {
     }
 
     #[test]
-    fn non_fork_skill_stays_inline() {
-        assert_eq!(execution_context("pr-review"), SkillExecutionContext::Inline);
-        assert_eq!(execution_context("init"), SkillExecutionContext::Inline);
+    fn every_bundled_skill_is_fork() {
+        for name in bundled_names() {
+            assert_eq!(
+                execution_context(name),
+                SkillExecutionContext::Fork,
+                "skill /{name} must declare `context: fork` in frontmatter"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_skill_defaults_to_inline() {
+        assert_eq!(
+            execution_context("not-a-bundled-skill"),
+            SkillExecutionContext::Inline
+        );
     }
 
     #[test]

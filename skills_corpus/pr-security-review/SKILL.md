@@ -1,6 +1,7 @@
 ---
 name: pr-security-review
 description: Complete a security review of the pending changes on the current branch.
+context: fork
 ---
 
 You are performing a security review of the uncommitted / pending

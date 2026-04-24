@@ -431,6 +431,12 @@ async fn cmd_tui(cli: &Cli) -> Result<()> {
 
     let registry = Arc::new(registry);
 
+    let permission_mode = if cli.yolo {
+        otherside::config::settings::PermissionMode::Yolo
+    } else {
+        otherside::config::settings::PermissionMode::AcceptEdits
+    };
+
     if let Some(provider) = registry.get(&provider_id) {
         let (dispatch_model, dispatch_thinking) =
             otherside::thinking::parse_suffix(&raw_model).unwrap_or((raw_model.clone(), None));
@@ -441,7 +447,7 @@ async fn cmd_tui(cli: &Cli) -> Result<()> {
                 thinking: dispatch_thinking,
                 fast_mode: settings.fast_mode.unwrap_or(false),
                 settings: Arc::new(settings.clone()),
-                permission_mode: otherside::config::settings::PermissionMode::Default,
+                permission_mode,
             },
         );
         let _ = otherside::state::dispatch::install_registry(registry.clone());
@@ -491,12 +497,6 @@ async fn cmd_tui(cli: &Cli) -> Result<()> {
             });
         }
     }
-
-    let permission_mode = if cli.yolo {
-        config::PermissionMode::Yolo
-    } else {
-        config::PermissionMode::AcceptEdits
-    };
 
     let resume_intent = if let Some(id_or_empty) = &cli.resume {
         if id_or_empty.is_empty() {

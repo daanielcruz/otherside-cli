@@ -1,6 +1,7 @@
 ---
 name: pr-review
 description: Code review a pull request — summarize changes, flag issues, suggest improvements.
+context: fork
 ---
 
 You are reviewing a pull request. Follow these steps:

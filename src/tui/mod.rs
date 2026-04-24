@@ -2748,7 +2748,7 @@ fn dispatch_slash(
 }
 
 fn refresh_fork_skill_anchor(st: &mut ConversationState) {
-    let Some((anchor_idx, task_id)) = st.fork_skill_tracker.clone() else {
+    let Some((anchor_idx, task_id, name)) = st.fork_skill_tracker.clone() else {
         return;
     };
     let Some(rec) = st.tasks.get(&task_id) else {
@@ -2773,12 +2773,12 @@ fn refresh_fork_skill_anchor(st: &mut ConversationState) {
             _ => "done",
         };
         format!(
-            "⎿  /dream {verdict} · {tu} tool uses · {runtime}s\n   {summary_trim}",
+            "⎿  /{name} {verdict} · {tu} tool uses · {runtime}s\n   {summary_trim}",
             tu = rec.tool_uses,
         )
     } else {
         format!(
-            "⎿  /dream running · {tu} tool uses · {runtime}s",
+            "⎿  /{name} running · {tu} tool uses · {runtime}s",
             tu = rec.tool_uses,
         )
     };
@@ -2817,7 +2817,7 @@ fn dispatch_forked_skill(st: &mut ConversationState, name: &str, body: String) {
         format!("/{name}"),
         anchor_id.clone(),
     );
-    st.fork_skill_tracker = Some((anchor_msg_idx, outcome.task_id));
+    st.fork_skill_tracker = Some((anchor_msg_idx, outcome.task_id, name.to_string()));
 }
 
 fn submit_current_input(

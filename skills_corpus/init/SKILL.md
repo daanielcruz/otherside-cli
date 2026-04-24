@@ -1,6 +1,7 @@
 ---
 name: init
 description: Initialize a new OTHERSIDE.md file with codebase documentation for cold-start sessions.
+context: fork
 ---
 
 You are creating `OTHERSIDE.md` for the current project. This file
