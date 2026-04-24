@@ -1256,9 +1256,7 @@ fn status_rows(state: &super::state::ConversationState) -> Vec<MenuOption> {
         settings_blank(),
         settings_ro(
             "Model",
-            crate::inference::model_display::resolve_model_label(
-                &state.session.model,
-            ),
+            model_display_with_context(&state.session.model),
         ),
         settings_ro("Permission mode", permission_label),
         settings_ro(effort_label, effort_value),
@@ -1367,11 +1365,7 @@ fn config_rows(state: &super::state::ConversationState) -> Vec<MenuOption> {
         MenuOption {
             label: "Model".into(),
             action_id: "setting:model".into(),
-            value_display: Some(
-                crate::inference::model_display::resolve_model_label(
-                    &state.session.model,
-                ),
-            ),
+            value_display: Some(model_display_with_context(&state.session.model)),
             settings_kind: Some(SettingsRowKind::Model),
             hint: None,
             ..Default::default()
@@ -1568,15 +1562,26 @@ fn settings_blank() -> MenuOption {
 }
 
 pub fn effort_level_color(value: &str) -> ratatui::style::Color {
+    use ratatui::style::Color;
     match value.to_ascii_lowercase().as_str() {
         "off" | "auto" => theme::MUTED,
         "on" => theme::SUCCESS,
-        "low" => theme::MUTED,
+        "low" => Color::White,
         "medium" => theme::SUCCESS,
         "high" => theme::PRIMARY,
-        "xhigh" => theme::PRIMARY,
+        "xhigh" => theme::WARNING,
         "max" => theme::ERROR,
         _ => theme::TEXT,
+    }
+}
+
+fn model_display_with_context(model_id: &str) -> String {
+    let label = crate::inference::model_display::resolve_model_label(model_id);
+    let context = context_window_label_for(model_id);
+    if context.is_empty() {
+        label
+    } else {
+        format!("{label} \u{00B7} {context}")
     }
 }
 

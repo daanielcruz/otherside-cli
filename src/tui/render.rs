@@ -504,31 +504,12 @@ fn draw_queue_lines(f: &mut Frame<'_>, area: Rect, state: &ConversationState) {
     const LEFT_INDENT: usize = 2;
     const INNER_PAD: usize = 1;
     const PREFIX: &str = "\u{276F} ";
-    const SIDE_GUTTER: usize = 1;
 
-    // Target box width = widest preview + prefix + 2x inner pad, clipped to
-    // terminal width minus the indent.
-    let max_body_cols = (area.width as usize)
-        .saturating_sub(LEFT_INDENT)
-        .saturating_sub(SIDE_GUTTER)
-        .saturating_sub(INNER_PAD * 2)
-        .saturating_sub(PREFIX.chars().count());
-    let widest = state
-        .queued_messages
-        .iter()
-        .take(total_rows)
-        .map(|m| m.lines().next().unwrap_or("").chars().count())
-        .max()
-        .unwrap_or(0)
-        .min(max_body_cols);
-    let box_body_width = widest + INNER_PAD * 2 + PREFIX.chars().count();
+    let box_body_width =
+        (area.width as usize).saturating_sub(LEFT_INDENT);
 
     let msg_count = state.queued_messages.len().min(total_rows);
-    let top_gap = total_rows.saturating_sub(msg_count);
     let mut lines: Vec<Line<'_>> = Vec::with_capacity(total_rows);
-    for _ in 0..top_gap {
-        lines.push(Line::raw(""));
-    }
     for msg in state.queued_messages.iter().take(msg_count) {
         let first_line = msg.lines().next().unwrap_or("");
         lines.push(queue_preview_row(
@@ -761,11 +742,9 @@ fn draw_statusline(
     let stripped = strip_ansi(&line.content);
     let effort_token = effort_statusline_suffix(state);
     if let Some(ref suffix) = effort_token {
-        if let Some(pos) = stripped.rfind(suffix.as_str()) {
-            let pre: String = stripped.chars().take(pos).collect();
-            let post_start = pos + suffix.len();
-            let post: String = stripped.chars().skip(pos + suffix.chars().count()).collect();
-            let _ = post_start;
+        if let Some(byte_pos) = stripped.rfind(suffix.as_str()) {
+            let pre: String = stripped[..byte_pos].to_string();
+            let post: String = stripped[byte_pos + suffix.len()..].to_string();
             let effort_label = state.session.effort_label.unwrap_or("");
             let color = crate::tui::menu::effort_level_color(effort_label);
             let para = Paragraph::new(Line::from(vec![
@@ -1596,7 +1575,7 @@ mod tests {
         .unwrap();
         let buf = term.backend().buffer().clone();
 
-        let msg_row = height - 1;
+        let msg_row = 0;
         let outer = &buf[(0, msg_row)];
         assert_ne!(
             outer.bg, Color::Indexed(237),
@@ -1643,7 +1622,7 @@ mod tests {
         .unwrap();
         let buf = term.backend().buffer().clone();
 
-        let chip_row: u16 = height - 1;
+        let chip_row: u16 = 0;
 
         let outer = &buf[(0, chip_row)];
         assert_ne!(
