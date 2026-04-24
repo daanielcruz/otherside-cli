@@ -440,6 +440,8 @@ async fn cmd_tui(cli: &Cli) -> Result<()> {
                 model: dispatch_model,
                 thinking: dispatch_thinking,
                 fast_mode: settings.fast_mode.unwrap_or(false),
+                settings: Arc::new(settings.clone()),
+                permission_mode: otherside::config::settings::PermissionMode::Default,
             },
         );
         let _ = otherside::state::dispatch::install_registry(registry.clone());

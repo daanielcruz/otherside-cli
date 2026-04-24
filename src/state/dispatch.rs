@@ -1,6 +1,7 @@
 
 use std::sync::{Arc, OnceLock, RwLock};
 
+use crate::config::settings::{PermissionMode, Settings};
 use crate::provider::{Provider, Registry};
 use crate::thinking::ThinkingConfig;
 
@@ -10,6 +11,8 @@ pub struct DispatchSnapshot {
     pub model: String,
     pub thinking: Option<ThinkingConfig>,
     pub fast_mode: bool,
+    pub settings: Arc<Settings>,
+    pub permission_mode: PermissionMode,
 }
 
 static SNAPSHOT: OnceLock<Arc<RwLock<DispatchSnapshot>>> = OnceLock::new();
@@ -86,6 +89,22 @@ pub(crate) fn set_fast_mode(enabled: bool) {
     }
 }
 
+pub(crate) fn set_permission_mode(mode: PermissionMode) {
+    if let Some(lock) = SNAPSHOT.get() {
+        lock.write()
+            .expect("dispatch snapshot lock poisoned")
+            .permission_mode = mode;
+    }
+}
+
+pub fn sync_settings_and_mode(settings: Settings, mode: PermissionMode) {
+    if let Some(lock) = SNAPSHOT.get() {
+        let mut snap = lock.write().expect("dispatch snapshot lock poisoned");
+        snap.settings = Arc::new(settings);
+        snap.permission_mode = mode;
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn install_for_test(snapshot: DispatchSnapshot) {
     
@@ -133,6 +152,8 @@ mod tests {
             model: "m-a".into(),
             thinking: None,
             fast_mode: false,
+            settings: Arc::new(Settings::default()),
+            permission_mode: PermissionMode::Default,
         });
         let snap = snapshot().expect("snapshot present after install");
         assert_eq!(snap.provider.id(), "stub-a");
@@ -147,6 +168,8 @@ mod tests {
             model: "before-model".into(),
             thinking: None,
             fast_mode: false,
+            settings: Arc::new(Settings::default()),
+            permission_mode: PermissionMode::Default,
         });
 
         set_provider(Arc::new(FakeProvider("after")) as Arc<dyn Provider>);

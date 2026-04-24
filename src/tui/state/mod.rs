@@ -1096,6 +1096,7 @@ impl ConversationState {
 
     pub fn cycle_permission_mode(&mut self) {
         self.session.cycle_permission_mode();
+        crate::state::dispatch::set_permission_mode(self.session.permission_mode);
     }
 
     pub fn submit_auto_notification_turn(

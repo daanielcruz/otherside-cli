@@ -138,6 +138,10 @@ pub fn set_bool_setting(
     let provider_slug = st.provider_id.slug();
     st.persistence
         .commit_session_defaults(&st.session, provider_slug)?;
+    crate::state::dispatch::sync_settings_and_mode(
+        st.persistence.settings.clone(),
+        st.session.permission_mode,
+    );
     Ok(())
 }
 
@@ -379,6 +383,8 @@ mod tests {
             model: "boot-model".into(),
             thinking: None,
             fast_mode: false,
+            settings: Arc::new(crate::config::settings::Settings::default()),
+            permission_mode: PermissionMode::Default,
         });
 
         let mut st = ConversationState::default();
@@ -450,6 +456,8 @@ mod tests {
             model: "claude-opus-4-7".into(),
             thinking: None,
             fast_mode: false,
+            settings: Arc::new(crate::config::settings::Settings::default()),
+            permission_mode: PermissionMode::Default,
         });
 
         let mut st = ConversationState::default();

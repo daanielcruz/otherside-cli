@@ -277,9 +277,19 @@ impl ToolDispatcher for GatedDispatcher {
                     "subagent cannot call tool `{name}` (not in allowlist)"
                 )));
             }
-            
+
             crate::tools::with_current_provider(self.provider_id, || {
-                tools::dispatch(name, args).map_err(|e| Error::Other(format!("tool `{name}`: {e}")))
+                match crate::state::dispatch::snapshot() {
+                    Some(snap) => tools::dispatch_gated(
+                        name,
+                        args,
+                        snap.settings.as_ref(),
+                        snap.permission_mode,
+                    )
+                    .map_err(|e| Error::Other(format!("tool `{name}`: {e}"))),
+                    None => tools::dispatch(name, args)
+                        .map_err(|e| Error::Other(format!("tool `{name}`: {e}"))),
+                }
             })
         }
     }
@@ -1256,6 +1266,48 @@ mod tests {
         let msg = format!("{err}");
         assert!(msg.contains("Bash"));
         assert!(msg.contains("allowlist"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn gated_dispatcher_routes_through_permission_mode_plan_denies_mutating() {
+        use crate::agent::subagents::frontmatter::ToolsField;
+        use crate::config::settings::{PermissionMode, Settings};
+        use crate::provider::{ChunkStream, Provider};
+        use crate::state::dispatch::{self, DispatchSnapshot};
+        use futures::stream;
+
+        struct FakeProvider;
+        impl Provider for FakeProvider {
+            fn id(&self) -> &'static str { "claude-code" }
+            fn stream<'a>(
+                &'a self,
+                _req: crate::inference::OpenAiChatRequest,
+                _thinking: Option<crate::thinking::ThinkingConfig>,
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::error::Result<ChunkStream>> + Send + 'a>>
+            {
+                Box::pin(async move { Ok(Box::pin(stream::empty()) as ChunkStream) })
+            }
+        }
+
+        dispatch::install_for_test(DispatchSnapshot {
+            provider: std::sync::Arc::new(FakeProvider) as std::sync::Arc<dyn Provider>,
+            model: "m".into(),
+            thinking: None,
+            fast_mode: false,
+            settings: std::sync::Arc::new(Settings::default()),
+            permission_mode: PermissionMode::Plan,
+        });
+
+        let g = GatedDispatcher::from_tools_field(ToolsField::Wildcard);
+        let err = g
+            .dispatch("", "Write", &json!({"file_path": "/tmp/x", "content": "y"}))
+            .await
+            .unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("plan-mode") || msg.contains("permission denied"),
+            "Plan mode must block mutating tools at the subagent dispatch layer; got {msg}",
+        );
     }
 
     #[test]

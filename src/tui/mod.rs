@@ -2075,6 +2075,7 @@ fn edit_settings_row(st: &mut ConversationState, direction: i32) {
             let n = order.len() as i32;
             let next_idx = (((idx as i32) + dir).rem_euclid(n)) as usize;
             st.session.permission_mode = order[next_idx];
+            crate::state::dispatch::set_permission_mode(st.session.permission_mode);
 
         }
         SettingsRowKind::Effort => {
@@ -2401,6 +2402,7 @@ fn apply_permission_outcome(st: &mut ConversationState, action_id: &str) {
         }
     };
     st.session.permission_mode = mode;
+    crate::state::dispatch::set_permission_mode(mode);
 }
 
 fn apply_effort_outcome(
