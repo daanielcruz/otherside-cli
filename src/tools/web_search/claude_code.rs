@@ -511,14 +511,20 @@ mod tests {
     }
 
     #[test]
-    fn schema_description_mentions_anthropic_oauth_requirement() {
-
+    fn schema_description_generic_across_providers() {
         let v: Value = serde_json::from_str(TOOL_WEB_SEARCH_JSON).unwrap();
         let desc = v["description"].as_str().unwrap();
-        assert!(desc.contains("anthropic-oauth"), "actual: {desc}");
         assert!(
-            desc.contains("web_search_20250305"),
-            "schema description must name the server-tool so the model picks it correctly"
+            !desc.to_ascii_lowercase().contains("anthropic"),
+            "WebSearch tool description must not leak the anthropic product name — tool is shipped across all providers: {desc}"
+        );
+        assert!(
+            !desc.contains("Claude"),
+            "WebSearch tool description must not leak upstream product identity: {desc}"
+        );
+        assert!(
+            desc.contains("web_search"),
+            "schema description must name the server-tool so the model can plan: {desc}"
         );
     }
 

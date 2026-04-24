@@ -117,7 +117,6 @@ write again — the unknown keys come back untouched.
 ## Security
 
 - Credentials at `~/.otherside/credentials.json`, mode `0600`, atomic rename
-- Keychain on `darwin` when the provider supports it
 - Zero analytics, zero error reporting, zero background traffic beyond the
   provider endpoint you chose
 - No managed-remote polling, no GrowthBook, no Sentry, no OTLP

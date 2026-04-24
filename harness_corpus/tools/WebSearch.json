@@ -1,6 +1,6 @@
 {
   "name": "WebSearch",
-  "description": "Search the web and return result links. Returns hits as {title, url} objects grouped by server-side search call. Supports optional allowed_domains or blocked_domains filters (not both in the same call). Read-only — does not modify files. Delegates to Anthropic's server-side web_search_20250305 tool; requires anthropic-oauth credentials. When no credentials are configured the tool returns a structured unavailable stub so the model can still plan.",
+  "description": "Search the web and return result links. Returns hits as {title, url} objects grouped by server-side search call. Supports optional allowed_domains or blocked_domains filters (not both in the same call). Read-only — does not modify files. Delegates to the active provider's server-side web_search tool; when the provider does not expose one (or credentials are missing) the tool returns a structured unavailable stub so the model can still plan.",
   "input_schema": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
