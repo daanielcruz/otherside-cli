@@ -1,14 +1,11 @@
-
-
 use std::collections::HashMap;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Settings {
-
     pub default_provider: Option<String>,
 
     pub default_model: Option<String>,
@@ -66,6 +63,9 @@ pub struct Settings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rtk_enabled: Option<bool>,
 
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_verification_enabled: Option<bool>,
+
     pub strict_plugin_only_customization: Option<bool>,
 
     pub allow_managed_hooks_only: Option<bool>,
@@ -84,7 +84,9 @@ pub enum PermissionMode {
     Default,
     AcceptEdits,
     Plan,
+    #[serde(rename = "bypassPermissions", alias = "yolo")]
     Yolo,
+    DontAsk,
 }
 
 impl Default for PermissionMode {
@@ -96,14 +98,24 @@ impl Default for PermissionMode {
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, rename_all = "camelCase")]
 pub struct PermissionsConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_mode: Option<PermissionMode>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disable_bypass_permissions_mode: Option<String>,
+
     pub allow: Vec<PermissionRule>,
     pub deny: Vec<PermissionRule>,
     pub ask: Vec<PermissionRule>,
+
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub additional_directories: Vec<String>,
+
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Serialize, PartialEq, Eq)]
 #[serde(default, rename_all = "camelCase")]
 pub struct PermissionRule {
     pub tool_name: Option<String>,
@@ -113,9 +125,66 @@ pub struct PermissionRule {
 }
 
 impl PermissionRule {
-
     pub fn is_valid(&self) -> bool {
-        self.tool_name.is_some() && self.match_pattern.is_some()
+        self.tool_name
+            .as_deref()
+            .map(|tool| !tool.trim().is_empty())
+            .unwrap_or(false)
+    }
+}
+
+impl<'de> Deserialize<'de> for PermissionRule {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum WireRule {
+            String(String),
+            Object(ObjectRule),
+        }
+
+        #[derive(Default, Deserialize)]
+        #[serde(default, rename_all = "camelCase")]
+        struct ObjectRule {
+            tool_name: Option<String>,
+            match_pattern: Option<String>,
+            #[serde(flatten)]
+            extra: Map<String, Value>,
+        }
+
+        match WireRule::deserialize(deserializer)? {
+            WireRule::Object(rule) => Ok(Self {
+                tool_name: rule.tool_name,
+                match_pattern: rule.match_pattern,
+                extra: rule.extra,
+            }),
+            WireRule::String(raw) => Ok(Self::from_rule_string(&raw)),
+        }
+    }
+}
+
+impl PermissionRule {
+    fn from_rule_string(raw: &str) -> Self {
+        match crate::permissions::matcher::parse(raw) {
+            Ok(parsed) => {
+                let tool_name = match parsed.tool {
+                    crate::permissions::MatcherTool::Any => "*".to_string(),
+                    crate::permissions::MatcherTool::Named(name) => name,
+                };
+                Self {
+                    tool_name: Some(tool_name),
+                    match_pattern: parsed.pattern,
+                    extra: Default::default(),
+                }
+            }
+            Err(_) => Self {
+                tool_name: None,
+                match_pattern: Some(raw.to_string()),
+                extra: Default::default(),
+            },
+        }
     }
 }
 
@@ -248,7 +317,10 @@ mod tests {
         assert!(s.permissions.is_some());
         assert!(s.hooks.is_some());
         assert!(s.providers.openai_compatible.is_some());
-        assert_eq!(s.env.get("GIT_AUTHOR_NAME").map(|s| s.as_str()), Some("Elliot"));
+        assert_eq!(
+            s.env.get("GIT_AUTHOR_NAME").map(|s| s.as_str()),
+            Some("Elliot")
+        );
         assert_eq!(s.strict_plugin_only_customization, Some(false));
         assert!(
             s.extra.contains_key("permissionMode"),
@@ -290,13 +362,12 @@ mod tests {
 
     #[test]
     fn corpus_invalid_permission_rule_keeps_file_parseable() {
-
         let s = parse(&corpus_root().join("settings/invalid_permission_rule.json")).unwrap();
         let p = s.permissions.unwrap();
         let valid_count = p.allow.iter().filter(|r| r.is_valid()).count();
         let invalid_count = p.allow.iter().filter(|r| !r.is_valid()).count();
-        assert_eq!(valid_count, 2, "Read and Grep wildcards survive");
-        assert_eq!(invalid_count, 2, "missing toolName + missing matchPattern rules flagged");
+        assert_eq!(valid_count, 3, "tool-wide Bash plus Read/Grep survive");
+        assert_eq!(invalid_count, 1, "missing toolName rule flagged");
     }
 
     #[test]
@@ -317,7 +388,6 @@ mod tests {
 
     #[test]
     fn permission_mode_is_not_a_typed_settings_field() {
-
         let json = r#"{"permissionMode":"yolo","defaultProvider":"anthropic-oauth"}"#;
         let s: Settings = serde_json::from_str(json).unwrap();
         assert_eq!(s.default_provider.as_deref(), Some("anthropic-oauth"));
@@ -329,7 +399,6 @@ mod tests {
 
     #[test]
     fn unknown_keys_round_trip_byte_identical_after_normalization() {
-
         let bytes = std::fs::read(corpus_root().join("settings/with_unknown_keys.json")).unwrap();
         let first: Settings = serde_json::from_slice(&bytes).unwrap();
         let reemitted = serde_json::to_vec(&first).unwrap();
@@ -376,9 +445,8 @@ mod tests {
 
     #[test]
     fn permission_rule_with_missing_field_is_invalid_but_parseable() {
-        let only_tool: PermissionRule =
-            serde_json::from_str(r#"{"toolName":"Bash"}"#).unwrap();
-        assert!(!only_tool.is_valid());
+        let only_tool: PermissionRule = serde_json::from_str(r#"{"toolName":"Bash"}"#).unwrap();
+        assert!(only_tool.is_valid());
 
         let only_pattern: PermissionRule =
             serde_json::from_str(r#"{"matchPattern":"cargo *"}"#).unwrap();
@@ -387,5 +455,50 @@ mod tests {
         let both: PermissionRule =
             serde_json::from_str(r#"{"toolName":"Bash","matchPattern":"ls"}"#).unwrap();
         assert!(both.is_valid());
+    }
+
+    #[test]
+    fn permissions_parse_upstream_string_rules() {
+        let json = r#"{
+            "permissions": {
+                "allow": ["Read", "Bash(git diff*)", "Write(**/notes.md)"],
+                "deny": ["Bash(rm -rf *)"],
+                "ask": ["Bash(git push*)"]
+            }
+        }"#;
+        let s: Settings = serde_json::from_str(json).unwrap();
+        let p = s.permissions.unwrap();
+        assert_eq!(p.allow[0].tool_name.as_deref(), Some("Read"));
+        assert_eq!(p.allow[0].match_pattern, None);
+        assert_eq!(p.allow[1].tool_name.as_deref(), Some("Bash"));
+        assert_eq!(p.allow[1].match_pattern.as_deref(), Some("git diff*"));
+        assert!(p.allow.iter().all(PermissionRule::is_valid));
+        assert_eq!(p.deny[0].match_pattern.as_deref(), Some("rm -rf *"));
+        assert_eq!(p.ask[0].match_pattern.as_deref(), Some("git push*"));
+    }
+
+    #[test]
+    fn permissions_default_mode_parses_upstream_modes() {
+        let json = r#"{
+            "permissions": {
+                "defaultMode": "bypassPermissions",
+                "disableBypassPermissionsMode": "disable",
+                "additionalDirectories": ["/tmp/project"]
+            }
+        }"#;
+        let s: Settings = serde_json::from_str(json).unwrap();
+        let p = s.permissions.unwrap();
+        assert_eq!(p.default_mode, Some(PermissionMode::Yolo));
+        assert_eq!(
+            p.disable_bypass_permissions_mode.as_deref(),
+            Some("disable")
+        );
+        assert_eq!(p.additional_directories, vec!["/tmp/project"]);
+
+        let dont_ask: PermissionMode = serde_json::from_str(r#""dontAsk""#).unwrap();
+        assert_eq!(dont_ask, PermissionMode::DontAsk);
+
+        let encoded = serde_json::to_string(&PermissionMode::Yolo).unwrap();
+        assert_eq!(encoded, r#""bypassPermissions""#);
     }
 }

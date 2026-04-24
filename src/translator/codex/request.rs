@@ -37,7 +37,11 @@ pub const DEFAULT_INSTRUCTIONS: &str =
 
 fn claude_harness_instructions() -> String {
     let preamble = crate::harness::SYSTEM_AGENT_PREAMBLE.trim_end();
-    let main = crate::harness::SYSTEM_PROMPT.trim_end();
+    let main_src = match crate::state::dispatch::snapshot() {
+        Some(snap) => crate::harness::resolved_system_prompt(snap.settings.as_ref()),
+        None => crate::harness::SYSTEM_PROMPT.to_string(),
+    };
+    let main = main_src.trim_end();
     format!("{preamble}\n\n{main}")
 }
 

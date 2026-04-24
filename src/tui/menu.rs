@@ -221,7 +221,13 @@ impl OverlayMenu {
             MenuOption {
                 label: "yolo".into(),
                 action_id: "yolo".into(),
-                hint: Some("no prompts, every tool allowed (dangerous)".into()),
+                hint: Some("allow by default while still honoring deny and safety rules".into()),
+                ..Default::default()
+            },
+            MenuOption {
+                label: "dontAsk".into(),
+                action_id: "dontAsk".into(),
+                hint: Some("deny mutating tools instead of prompting".into()),
                 ..Default::default()
             },
         ];
@@ -230,6 +236,7 @@ impl OverlayMenu {
             crate::config::settings::PermissionMode::AcceptEdits => 1,
             crate::config::settings::PermissionMode::Plan => 2,
             crate::config::settings::PermissionMode::Yolo => 3,
+            crate::config::settings::PermissionMode::DontAsk => 4,
         };
         let active_id = options[cursor].action_id.clone();
         Self {
@@ -1338,6 +1345,7 @@ fn status_rows(state: &super::state::ConversationState) -> Vec<MenuOption> {
         crate::config::settings::PermissionMode::AcceptEdits => "Accept edits",
         crate::config::settings::PermissionMode::Plan => "Plan",
         crate::config::settings::PermissionMode::Yolo => "Yolo",
+        crate::config::settings::PermissionMode::DontAsk => "Don't ask",
     };
 
     let session_id_display = state
@@ -1456,6 +1464,7 @@ fn config_rows(state: &super::state::ConversationState) -> Vec<MenuOption> {
         crate::config::settings::PermissionMode::AcceptEdits => "acceptEdits",
         crate::config::settings::PermissionMode::Plan => "plan",
         crate::config::settings::PermissionMode::Yolo => "yolo",
+        crate::config::settings::PermissionMode::DontAsk => "dontAsk",
     };
 
     fn bool_row(label: &str, id: &'static str, value: Option<bool>, default: bool) -> MenuOption {

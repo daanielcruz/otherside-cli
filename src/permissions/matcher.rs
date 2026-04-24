@@ -1,5 +1,3 @@
-
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MatcherTool {
     Any,
@@ -30,7 +28,7 @@ pub fn parse(src: &str) -> Result<MatcherRule, MatcherParseError> {
             pattern: None,
         });
     }
-    let open = match src.find('(') {
+    let open = match find_first_unescaped(src, '(') {
         Some(i) => i,
         None => {
             if src.is_empty() {
@@ -42,25 +40,36 @@ pub fn parse(src: &str) -> Result<MatcherRule, MatcherParseError> {
             });
         }
     };
-    if !src.ends_with(')') {
-        return Err(MatcherParseError::UnclosedParen(src.to_string()));
-    }
+    let close = match find_last_unescaped(src, ')') {
+        Some(i) if i > open && i == src.len() - 1 => i,
+        _ => {
+            return Ok(MatcherRule {
+                tool: MatcherTool::Named(src.to_string()),
+                pattern: None,
+            });
+        }
+    };
     let tool = &src[..open];
-    let pattern = &src[open + 1..src.len() - 1];
+    let pattern = &src[open + 1..close];
     if tool.is_empty() {
-        return Err(MatcherParseError::EmptyTool(src.to_string()));
+        return Ok(MatcherRule {
+            tool: MatcherTool::Named(src.to_string()),
+            pattern: None,
+        });
     }
-    if pattern.is_empty() {
-        return Err(MatcherParseError::EmptyPattern(src.to_string()));
+    if pattern.is_empty() || pattern == "*" {
+        return Ok(MatcherRule {
+            tool: MatcherTool::Named(tool.to_string()),
+            pattern: None,
+        });
     }
     Ok(MatcherRule {
         tool: MatcherTool::Named(tool.to_string()),
-        pattern: Some(pattern.to_string()),
+        pattern: Some(unescape_rule_content(pattern)),
     })
 }
 
 impl MatcherRule {
-
     pub fn matches(&self, tool_name: &str, tool_input: &str) -> bool {
         let tool_ok = match &self.tool {
             MatcherTool::Any => true,
@@ -77,6 +86,11 @@ impl MatcherRule {
 }
 
 pub fn prefix_matches(pattern: &str, target: &str) -> bool {
+    let pattern = pattern.trim();
+    let target = target.trim();
+    if pattern == "*" {
+        return true;
+    }
     if let Some(prefix) = pattern.strip_suffix(":*") {
         let prefix = prefix.trim();
         if target == prefix {
@@ -89,9 +103,96 @@ pub fn prefix_matches(pattern: &str, target: &str) -> bool {
             None => true,
             Some(c) => !c.is_ascii_alphanumeric(),
         }
+    } else if pattern.contains('*') || pattern.contains('?') {
+        if let Some(rest) = pattern.strip_prefix("**/") {
+            if wildcard_matches(rest, target) {
+                return true;
+            }
+        }
+        if let Some(prefix) = pattern.strip_suffix(" *") {
+            if target == prefix {
+                return true;
+            }
+            let full = format!("{prefix} ");
+            if target.starts_with(&full) {
+                return true;
+            }
+        }
+        wildcard_matches(pattern, target)
     } else {
-        target.trim() == pattern.trim()
+        target == pattern
     }
+}
+
+fn find_first_unescaped(src: &str, needle: char) -> Option<usize> {
+    src.char_indices()
+        .find(|(idx, ch)| *ch == needle && !is_escaped(src.as_bytes(), *idx))
+        .map(|(idx, _)| idx)
+}
+
+fn find_last_unescaped(src: &str, needle: char) -> Option<usize> {
+    src.char_indices()
+        .rev()
+        .find(|(idx, ch)| *ch == needle && !is_escaped(src.as_bytes(), *idx))
+        .map(|(idx, _)| idx)
+}
+
+fn is_escaped(bytes: &[u8], idx: usize) -> bool {
+    let mut count = 0;
+    let mut i = idx;
+    while i > 0 && bytes[i - 1] == b'\\' {
+        count += 1;
+        i -= 1;
+    }
+    count % 2 == 1
+}
+
+fn unescape_rule_content(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            match chars.peek().copied() {
+                Some('(' | ')' | '\\') => {
+                    out.push(chars.next().expect("peeked char exists"));
+                }
+                _ => out.push(ch),
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+fn wildcard_matches(pattern: &str, target: &str) -> bool {
+    let pattern: Vec<char> = pattern.chars().collect();
+    let target: Vec<char> = target.chars().collect();
+    let (mut p, mut t) = (0usize, 0usize);
+    let mut star: Option<usize> = None;
+    let mut match_after_star = 0usize;
+
+    while t < target.len() {
+        if p < pattern.len() && (pattern[p] == '?' || pattern[p] == target[t]) {
+            p += 1;
+            t += 1;
+        } else if p < pattern.len() && pattern[p] == '*' {
+            star = Some(p);
+            p += 1;
+            match_after_star = t;
+        } else if let Some(star_idx) = star {
+            p = star_idx + 1;
+            match_after_star += 1;
+            t = match_after_star;
+        } else {
+            return false;
+        }
+    }
+
+    while p < pattern.len() && pattern[p] == '*' {
+        p += 1;
+    }
+    p == pattern.len()
 }
 
 #[cfg(test)]
@@ -120,21 +221,35 @@ mod tests {
     }
 
     #[test]
-    fn parse_unclosed_paren_errors() {
-        let err = parse("Bash(git").unwrap_err();
-        assert!(matches!(err, MatcherParseError::UnclosedParen(_)));
+    fn parse_malformed_rule_as_non_matching_tool_name() {
+        let r = parse("Bash(git").unwrap();
+        assert_eq!(r.tool, MatcherTool::Named("Bash(git".into()));
+        assert!(r.pattern.is_none());
     }
 
     #[test]
-    fn parse_empty_tool_errors() {
-        let err = parse("(foo)").unwrap_err();
-        assert!(matches!(err, MatcherParseError::EmptyTool(_)));
+    fn parse_empty_tool_as_non_matching_tool_name() {
+        let r = parse("(foo)").unwrap();
+        assert_eq!(r.tool, MatcherTool::Named("(foo)".into()));
+        assert!(r.pattern.is_none());
     }
 
     #[test]
-    fn parse_empty_pattern_errors() {
-        let err = parse("Bash()").unwrap_err();
-        assert!(matches!(err, MatcherParseError::EmptyPattern(_)));
+    fn parse_empty_or_star_pattern_as_tool_wide() {
+        let empty = parse("Bash()").unwrap();
+        assert_eq!(empty.tool, MatcherTool::Named("Bash".into()));
+        assert!(empty.pattern.is_none());
+
+        let star = parse("Bash(*)").unwrap();
+        assert_eq!(star.tool, MatcherTool::Named("Bash".into()));
+        assert!(star.pattern.is_none());
+    }
+
+    #[test]
+    fn parse_escaped_parentheses_in_pattern() {
+        let r = parse(r#"Bash(python -c "print\(1\)")"#).unwrap();
+        assert_eq!(r.tool, MatcherTool::Named("Bash".into()));
+        assert_eq!(r.pattern.as_deref(), Some(r#"python -c "print(1)""#));
     }
 
     #[test]
@@ -163,5 +278,39 @@ mod tests {
         let r = parse("Bash(ls)").unwrap();
         assert!(r.matches("Bash", "ls"));
         assert!(!r.matches("Bash", "ls -la"));
+    }
+
+    #[test]
+    fn wildcard_matches_any_position() {
+        let r = parse("Bash(git diff*)").unwrap();
+        assert!(r.matches("Bash", "git diff --stat"));
+        assert!(!r.matches("Bash", "git status"));
+    }
+
+    #[test]
+    fn wildcard_file_pattern_matches_paths() {
+        let r = parse("Write(**/credentials.json)").unwrap();
+        assert!(r.matches("Write", "/repo/app/credentials.json"));
+        assert!(!r.matches("Write", "/repo/app/config.json"));
+    }
+
+    #[test]
+    fn double_star_slash_prefix_matches_bare_basename() {
+        let r = parse("Write(**/credentials.json)").unwrap();
+        assert!(r.matches("Write", "credentials.json"));
+        assert!(r.matches("Write", "./credentials.json"));
+        assert!(r.matches("Write", "/credentials.json"));
+        assert!(r.matches("Write", "a/b/credentials.json"));
+        assert!(!r.matches("Write", "credentials.txt"));
+    }
+
+    #[test]
+    fn trailing_space_star_is_optional_like_upstream() {
+        let r = parse("Bash(git *)").unwrap();
+        assert!(r.matches("Bash", "git"));
+        assert!(r.matches("Bash", "git status"));
+        assert!(r.matches("Bash", "git push origin main"));
+        assert!(!r.matches("Bash", "gitx"));
+        assert!(!r.matches("Bash", "gitx status"));
     }
 }

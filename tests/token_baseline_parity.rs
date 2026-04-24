@@ -166,17 +166,18 @@ fn codex_first_turn_instructions_carry_preamble_plus_main() {
     );
 
     let input = body["input"].as_array().expect("input array");
-    let first = input.first().expect("first user message");
-    let first_content = first["content"].as_array().expect("first content array");
-    assert_eq!(
-        first_content.len(),
-        4,
-        "codex first user = 3 reminders + 1 user text"
+    assert!(
+        input.len() >= 4,
+        "codex input = 3 developer reminders + 1 user message (at minimum): got {}",
+        input.len()
     );
-    let reminder_bytes: usize = first_content
+    let reminder_bytes: usize = input
         .iter()
         .take(3)
-        .map(|b| b["text"].as_str().map(str::len).unwrap_or(0))
+        .filter_map(|m| m["content"].as_array())
+        .flat_map(|arr| arr.iter())
+        .filter_map(|b| b["text"].as_str())
+        .map(str::len)
         .sum();
     assert!(
         reminder_bytes > MIN_REMINDER_BYTES,

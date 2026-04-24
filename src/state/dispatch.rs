@@ -13,6 +13,7 @@ pub struct DispatchSnapshot {
     pub fast_mode: bool,
     pub settings: Arc<Settings>,
     pub permission_mode: PermissionMode,
+    pub session_allowlist: Option<crate::permissions::RuntimePermissionGrants>,
 }
 
 static SNAPSHOT: OnceLock<Arc<RwLock<DispatchSnapshot>>> = OnceLock::new();
@@ -105,6 +106,14 @@ pub fn sync_settings_and_mode(settings: Settings, mode: PermissionMode) {
     }
 }
 
+pub fn install_session_allowlist(grants: crate::permissions::RuntimePermissionGrants) {
+    if let Some(lock) = SNAPSHOT.get() {
+        lock.write()
+            .expect("dispatch snapshot lock poisoned")
+            .session_allowlist = Some(grants);
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn install_for_test(snapshot: DispatchSnapshot) {
     
@@ -154,6 +163,7 @@ mod tests {
             fast_mode: false,
             settings: Arc::new(Settings::default()),
             permission_mode: PermissionMode::Default,
+            session_allowlist: None,
         });
         let snap = snapshot().expect("snapshot present after install");
         assert_eq!(snap.provider.id(), "stub-a");
@@ -170,6 +180,7 @@ mod tests {
             fast_mode: false,
             settings: Arc::new(Settings::default()),
             permission_mode: PermissionMode::Default,
+            session_allowlist: None,
         });
 
         set_provider(Arc::new(FakeProvider("after")) as Arc<dyn Provider>);

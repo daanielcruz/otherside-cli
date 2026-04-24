@@ -148,10 +148,11 @@ fn wire_catalog_stays_at_nine_after_deferred_dispatch() {
             "CronList",
             "ScheduleWakeup",
             "AskUserQuestion",
+            "SendMessage",
         ]
     );
 
-    assert_eq!(schemas::all_schemas().len(), 27);
+    assert_eq!(schemas::all_schemas().len(), 28);
 }
 
 #[test]

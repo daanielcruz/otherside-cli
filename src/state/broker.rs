@@ -135,6 +135,9 @@ pub fn set_bool_setting(
         "rtk_enabled" => {
             st.persistence.settings.rtk_enabled = Some(value);
         }
+        "agent_verification_enabled" => {
+            st.persistence.settings.agent_verification_enabled = Some(value);
+        }
         other => {
             return Err(crate::error::Error::Other(format!(
                 "set_bool_setting: unknown key `{other}`"
@@ -391,6 +394,7 @@ mod tests {
             fast_mode: false,
             settings: Arc::new(crate::config::settings::Settings::default()),
             permission_mode: PermissionMode::Default,
+            session_allowlist: None,
         });
 
         let mut st = ConversationState::default();
@@ -464,6 +468,7 @@ mod tests {
             fast_mode: false,
             settings: Arc::new(crate::config::settings::Settings::default()),
             permission_mode: PermissionMode::Default,
+            session_allowlist: None,
         });
 
         let mut st = ConversationState::default();

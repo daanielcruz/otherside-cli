@@ -445,12 +445,14 @@ mod tests {
         let (s, warnings) = resolve(&[SettingsSource::UserGlobal(json!({
             "permissions":{"allow":[
                 {"toolName":"Read","matchPattern":"*"},
-                {"toolName":"Bash"}
+                {"toolName":"Bash"},
+                {"matchPattern":"cargo test*"}
             ]}
         }))]);
         let p = s.permissions.unwrap();
-        assert_eq!(p.allow.len(), 1);
+        assert_eq!(p.allow.len(), 2);
         assert_eq!(p.allow[0].tool_name.as_deref(), Some("Read"));
+        assert_eq!(p.allow[1].tool_name.as_deref(), Some("Bash"));
         assert!(warnings
             .iter()
             .any(|w| matches!(w.kind, WarningKind::InvalidPermissionRule)));

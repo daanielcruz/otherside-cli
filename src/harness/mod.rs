@@ -16,6 +16,92 @@ pub const SYSTEM_AGENT_PREAMBLE: &str =
 pub const SYSTEM_PROMPT: &str =
     include_str!("../../harness_corpus/system/03-main-prompt.md");
 
+pub fn resolved_system_prompt(settings: &crate::config::settings::Settings) -> String {
+    let enabled = settings.agent_verification_enabled.unwrap_or(true);
+    if enabled {
+        return SYSTEM_PROMPT.to_string();
+    }
+    strip_verification_sections(SYSTEM_PROMPT)
+}
+
+fn strip_verification_sections(src: &str) -> String {
+    let mut out = String::with_capacity(src.len());
+    let mut lines = src.lines().peekable();
+    while let Some(line) = lines.next() {
+        if line.trim_start().starts_with("## Verification") {
+            for follow in lines.by_ref() {
+                let t = follow.trim_start();
+                if t.starts_with("## ") {
+                    out.push_str(follow);
+                    out.push('\n');
+                    break;
+                }
+            }
+            continue;
+        }
+        if line.contains("spawn the Agent tool with subagent_type=\"verification\"")
+            || line.contains("independent adversarial verification must happen before you report completion")
+        {
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    if !src.ends_with('\n') {
+        out.pop();
+    }
+    out
+}
+
+#[cfg(test)]
+mod verification_gate_tests {
+    use super::*;
+    use crate::config::settings::Settings;
+
+    #[test]
+    fn enabled_returns_full_prompt_verbatim() {
+        let mut s = Settings::default();
+        s.agent_verification_enabled = Some(true);
+        assert_eq!(resolved_system_prompt(&s), SYSTEM_PROMPT);
+    }
+
+    #[test]
+    fn default_setting_keeps_verification_block_visible() {
+        let s = Settings::default();
+        let out = resolved_system_prompt(&s);
+        assert!(
+            out.contains("## Verification"),
+            "default (None) must keep verification section — was: {}",
+            out.len()
+        );
+    }
+
+    #[test]
+    fn disabled_strips_verification_header_and_body() {
+        let mut s = Settings::default();
+        s.agent_verification_enabled = Some(false);
+        let out = resolved_system_prompt(&s);
+        assert!(
+            !out.contains("## Verification"),
+            "disabled prompt still contains `## Verification`"
+        );
+        assert!(
+            !out.contains("subagent_type=\"verification\""),
+            "disabled prompt still mentions verification subagent_type"
+        );
+    }
+
+    #[test]
+    fn disabled_preserves_other_sections() {
+        let mut s = Settings::default();
+        s.agent_verification_enabled = Some(false);
+        let out = resolved_system_prompt(&s);
+        assert!(out.contains("## Persistence over premature closure"));
+        assert!(out.contains("## Code comments"));
+        assert!(out.contains("## Truthfulness"));
+    }
+}
+
 pub const REMINDER_DEFERRED_TOOLS: &str =
     include_str!("../../harness_corpus/system-reminders/deferred-tools.md");
 

@@ -280,19 +280,58 @@ impl ToolDispatcher for GatedDispatcher {
 
             crate::tools::with_current_provider(self.provider_id, || {
                 match crate::state::dispatch::snapshot() {
-                    Some(snap) => tools::dispatch_gated(
-                        name,
-                        args,
-                        snap.settings.as_ref(),
-                        snap.permission_mode,
-                    )
-                    .map_err(|e| Error::Other(format!("tool `{name}`: {e}"))),
+                    Some(snap) => {
+                        let composed = compose_settings_with_session_grants(
+                            snap.settings.as_ref(),
+                            snap.session_allowlist.as_ref(),
+                        );
+                        tools::dispatch_gated(name, args, &composed, snap.permission_mode)
+                            .map_err(|e| Error::Other(format!("tool `{name}`: {e}")))
+                    }
                     None => tools::dispatch(name, args)
                         .map_err(|e| Error::Other(format!("tool `{name}`: {e}"))),
                 }
             })
         }
     }
+}
+
+fn compose_settings_with_session_grants(
+    base: &crate::config::settings::Settings,
+    grants: Option<&crate::permissions::RuntimePermissionGrants>,
+) -> crate::config::settings::Settings {
+    use crate::config::settings::{PermissionRule, PermissionsConfig};
+    use crate::permissions::{matcher, MatcherTool};
+    let grants = match grants {
+        Some(g) => g,
+        None => return base.clone(),
+    };
+    let rules = grants.snapshot();
+    if rules.is_empty() {
+        return base.clone();
+    }
+    let mut composed = base.clone();
+    let mut existing = composed
+        .permissions
+        .take()
+        .unwrap_or_else(PermissionsConfig::default);
+    for raw in rules {
+        let parsed = match matcher::parse(&raw) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        let tool_name = match parsed.tool {
+            MatcherTool::Any => "*".to_string(),
+            MatcherTool::Named(n) => n,
+        };
+        existing.allow.push(PermissionRule {
+            tool_name: Some(tool_name),
+            match_pattern: parsed.pattern.clone(),
+            extra: Default::default(),
+        });
+    }
+    composed.permissions = Some(existing);
+    composed
 }
 
 pub fn tool_result_message(call_id: &str, result: &Value) -> OpenAiChatMessage {
@@ -1296,6 +1335,7 @@ mod tests {
             fast_mode: false,
             settings: std::sync::Arc::new(Settings::default()),
             permission_mode: PermissionMode::Plan,
+            session_allowlist: None,
         });
 
         let g = GatedDispatcher::from_tools_field(ToolsField::Wildcard);

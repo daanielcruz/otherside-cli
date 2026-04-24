@@ -1095,6 +1095,11 @@ impl ConversationState {
                 text: "yolo on".to_string(),
                 color: ChipColor::Error,
             }),
+            P::DontAsk => Some(PermissionChip {
+                symbol: "⏸",
+                text: "dont ask on".to_string(),
+                color: ChipColor::Error,
+            }),
         }
     }
 
@@ -1880,7 +1885,7 @@ mod tests {
     }
 
     #[test]
-    fn cycle_permission_mode_three_visible_stops() {
+    fn cycle_permission_mode_matches_upstream_order() {
 
         use crate::config::PermissionMode as P;
         let mut st = ConversationState::new();
@@ -1889,6 +1894,8 @@ mod tests {
         assert_eq!(st.session.permission_mode, P::Plan);
         st.cycle_permission_mode();
         assert_eq!(st.session.permission_mode, P::Yolo);
+        st.cycle_permission_mode();
+        assert_eq!(st.session.permission_mode, P::Default);
         st.cycle_permission_mode();
         assert_eq!(st.session.permission_mode, P::AcceptEdits);
     }
@@ -1921,12 +1928,21 @@ mod tests {
     }
 
     #[test]
-    fn cycle_permission_mode_from_yolo_returns_to_accept_edits() {
+    fn cycle_permission_mode_from_yolo_returns_to_default() {
         use crate::config::PermissionMode as P;
         let mut st = ConversationState::new();
         st.session.permission_mode = P::Yolo;
         st.cycle_permission_mode();
-        assert_eq!(st.session.permission_mode, P::AcceptEdits);
+        assert_eq!(st.session.permission_mode, P::Default);
+    }
+
+    #[test]
+    fn cycle_permission_mode_from_dont_ask_returns_to_default() {
+        use crate::config::PermissionMode as P;
+        let mut st = ConversationState::new();
+        st.session.permission_mode = P::DontAsk;
+        st.cycle_permission_mode();
+        assert_eq!(st.session.permission_mode, P::Default);
     }
 
     #[test]
@@ -1968,6 +1984,16 @@ mod tests {
         assert_eq!(chip.symbol, "⏵⏵");
 
         assert_eq!(chip.text, "yolo on");
+        assert_eq!(chip.color, ChipColor::Error);
+    }
+
+    #[test]
+    fn permission_mode_label_dont_ask_returns_error_chip() {
+        use crate::config::PermissionMode as P;
+        let mut st = ConversationState::new();
+        st.session.permission_mode = P::DontAsk;
+        let chip = st.permission_mode_label().expect("dontAsk chip");
+        assert_eq!(chip.text, "dont ask on");
         assert_eq!(chip.color, ChipColor::Error);
     }
 

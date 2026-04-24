@@ -133,10 +133,57 @@ pub fn dispatch_gated(
 }
 
 pub fn matcher_input_for(tool_name: &str, args: &Value) -> String {
-    if tool_name == "Bash" {
-        if let Some(cmd) = args.get("command").and_then(Value::as_str) {
-            return cmd.to_string();
+    let field = |name: &str| {
+        args.get(name)
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    match tool_name {
+        "Bash" => {
+            if let Some(cmd) = field("command") {
+                return cmd;
+            }
         }
+        "Edit" | "Write" | "Read" => {
+            if let Some(path) = field("file_path") {
+                return path;
+            }
+        }
+        "NotebookEdit" => {
+            if let Some(path) = field("notebook_path") {
+                return path;
+            }
+        }
+        "Glob" | "Grep" => {
+            if let Some(pattern) = field("pattern") {
+                return pattern;
+            }
+            if let Some(path) = field("path") {
+                return path;
+            }
+        }
+        "WebFetch" => {
+            if let Some(url) = field("url") {
+                return url;
+            }
+        }
+        "WebSearch" | "ToolSearch" => {
+            if let Some(query) = field("query") {
+                return query;
+            }
+        }
+        "Agent" => {
+            if let Some(subagent_type) = field("subagent_type") {
+                return subagent_type;
+            }
+        }
+        "Skill" => {
+            if let Some(name) = field("name") {
+                return name;
+            }
+        }
+        _ => {}
     }
     serde_json::to_string(args).unwrap_or_default()
 }
@@ -271,7 +318,7 @@ mod tests {
         use crate::config::settings::{PermissionMode, Settings};
 
         #[test]
-        fn yolo_short_circuits_deny_rules() {
+        fn yolo_respects_deny_rules() {
 
             let mut s = Settings::default();
             s.permissions = Some(crate::config::settings::PermissionsConfig {
@@ -290,7 +337,35 @@ mod tests {
                 PermissionMode::Yolo,
             );
 
-            assert!(res.is_ok(), "Yolo should bypass deny rule, got {res:?}");
+            assert!(
+                matches!(res, Err(ToolError::PermissionDenied(_))),
+                "Yolo must honor explicit deny rules, got {res:?}"
+            );
+        }
+
+        #[test]
+        fn file_permission_rules_match_paths_not_json() {
+            let mut s = Settings::default();
+            s.permissions = Some(crate::config::settings::PermissionsConfig {
+                deny: vec![crate::config::settings::PermissionRule {
+                    tool_name: Some("Write".into()),
+                    match_pattern: Some("**/credentials.json".into()),
+                    extra: Default::default(),
+                }],
+                ..Default::default()
+            });
+
+            let res = dispatch_gated(
+                "Write",
+                &json!({"file_path": "/repo/app/credentials.json", "content": "{}"}),
+                &s,
+                PermissionMode::Yolo,
+            );
+
+            assert!(
+                matches!(res, Err(ToolError::PermissionDenied(_))),
+                "file deny pattern must apply to file_path, got {res:?}"
+            );
         }
 
         #[test]

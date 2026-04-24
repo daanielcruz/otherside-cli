@@ -2,6 +2,7 @@
 use serde_json::{json, Value};
 
 use crate::harness::{SYSTEM_AGENT_PREAMBLE, SYSTEM_BILLING_HEADER, SYSTEM_OPENER, SYSTEM_PROMPT};
+use crate::harness::resolved_system_prompt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemFlavor {
@@ -30,16 +31,20 @@ pub fn build_system_blocks() -> Vec<Value> {
 }
 
 pub fn build_system_blocks_for(flavor: SystemFlavor) -> Vec<Value> {
+    let main = match crate::state::dispatch::snapshot() {
+        Some(snap) => resolved_system_prompt(snap.settings.as_ref()),
+        None => SYSTEM_PROMPT.to_string(),
+    };
     match flavor {
         SystemFlavor::ClaudeCode => vec![
             text_block(SYSTEM_BILLING_HEADER),
             text_block(SYSTEM_OPENER),
             text_block_cached(SYSTEM_AGENT_PREAMBLE),
-            text_block(SYSTEM_PROMPT),
+            text_block(&main),
         ],
         SystemFlavor::ThirdParty => vec![
             text_block_cached(SYSTEM_AGENT_PREAMBLE),
-            text_block(SYSTEM_PROMPT),
+            text_block(&main),
         ],
     }
 }

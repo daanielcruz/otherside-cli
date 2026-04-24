@@ -52,7 +52,8 @@ impl Session {
         self.permission_mode = match self.permission_mode {
             PermissionMode::AcceptEdits => PermissionMode::Plan,
             PermissionMode::Plan => PermissionMode::Yolo,
-            PermissionMode::Yolo | PermissionMode::Default => PermissionMode::AcceptEdits,
+            PermissionMode::Yolo | PermissionMode::DontAsk => PermissionMode::Default,
+            PermissionMode::Default => PermissionMode::AcceptEdits,
         };
     }
 
@@ -122,12 +123,14 @@ mod tests {
     }
 
     #[test]
-    fn cycle_permission_mode_skips_default() {
+    fn cycle_permission_mode_matches_upstream_order() {
         let mut s = Session::new("", PermissionMode::AcceptEdits);
         s.cycle_permission_mode();
         assert_eq!(s.permission_mode, PermissionMode::Plan);
         s.cycle_permission_mode();
         assert_eq!(s.permission_mode, PermissionMode::Yolo);
+        s.cycle_permission_mode();
+        assert_eq!(s.permission_mode, PermissionMode::Default);
         s.cycle_permission_mode();
         assert_eq!(s.permission_mode, PermissionMode::AcceptEdits);
     }

@@ -98,6 +98,36 @@ fn openai_custom_from_settings(
     OpenAiCustomProvider::arc()
 }
 
+fn initial_permission_mode(
+    settings: &otherside::config::settings::Settings,
+    cli_yolo: bool,
+) -> otherside::config::settings::PermissionMode {
+    use otherside::config::settings::PermissionMode;
+
+    let requested = if cli_yolo {
+        PermissionMode::Yolo
+    } else {
+        settings
+            .permissions
+            .as_ref()
+            .and_then(|perms| perms.default_mode)
+            .unwrap_or(PermissionMode::Default)
+    };
+
+    let bypass_disabled = settings
+        .permissions
+        .as_ref()
+        .and_then(|perms| perms.disable_bypass_permissions_mode.as_deref())
+        .map(|value| value.eq_ignore_ascii_case("disable"))
+        .unwrap_or(false);
+
+    if requested == PermissionMode::Yolo && bypass_disabled {
+        PermissionMode::Default
+    } else {
+        requested
+    }
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -431,11 +461,7 @@ async fn cmd_tui(cli: &Cli) -> Result<()> {
 
     let registry = Arc::new(registry);
 
-    let permission_mode = if cli.yolo {
-        otherside::config::settings::PermissionMode::Yolo
-    } else {
-        otherside::config::settings::PermissionMode::AcceptEdits
-    };
+    let permission_mode = initial_permission_mode(&settings, cli.yolo);
 
     if let Some(provider) = registry.get(&provider_id) {
         let (dispatch_model, dispatch_thinking) =
@@ -448,6 +474,7 @@ async fn cmd_tui(cli: &Cli) -> Result<()> {
                 fast_mode: settings.fast_mode.unwrap_or(false),
                 settings: Arc::new(settings.clone()),
                 permission_mode,
+                session_allowlist: None,
             },
         );
         let _ = otherside::state::dispatch::install_registry(registry.clone());
@@ -519,4 +546,54 @@ async fn cmd_tui(cli: &Cli) -> Result<()> {
         resume_intent,
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use otherside::config::settings::{PermissionMode, PermissionsConfig, Settings};
+
+    #[test]
+    fn initial_permission_mode_defaults_to_safe_default() {
+        let settings = Settings::default();
+        assert_eq!(
+            initial_permission_mode(&settings, false),
+            PermissionMode::Default
+        );
+    }
+
+    #[test]
+    fn initial_permission_mode_uses_permissions_default_mode() {
+        let settings = Settings {
+            permissions: Some(PermissionsConfig {
+                default_mode: Some(PermissionMode::AcceptEdits),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            initial_permission_mode(&settings, false),
+            PermissionMode::AcceptEdits
+        );
+    }
+
+    #[test]
+    fn initial_permission_mode_honors_bypass_killswitch() {
+        let settings = Settings {
+            permissions: Some(PermissionsConfig {
+                default_mode: Some(PermissionMode::Yolo),
+                disable_bypass_permissions_mode: Some("disable".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            initial_permission_mode(&settings, true),
+            PermissionMode::Default
+        );
+        assert_eq!(
+            initial_permission_mode(&settings, false),
+            PermissionMode::Default
+        );
+    }
 }

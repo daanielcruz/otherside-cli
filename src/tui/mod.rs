@@ -1126,6 +1126,7 @@ async fn event_loop(
     
     crate::state::dispatch::set_model(st.session.model.clone());
     crate::state::dispatch::set_thinking(thinking);
+    crate::state::dispatch::install_session_allowlist(st.session_allowlist.clone());
     let mut key_stream = EventStream::new();
 
     let mut ticker = tokio::time::interval(Duration::from_millis(50));
@@ -2086,6 +2087,7 @@ fn edit_settings_row(st: &mut ConversationState, direction: i32) {
                 PermissionMode::AcceptEdits,
                 PermissionMode::Plan,
                 PermissionMode::Yolo,
+                PermissionMode::DontAsk,
             ];
             let idx = order
                 .iter()
@@ -2421,6 +2423,7 @@ fn apply_permission_outcome(st: &mut ConversationState, action_id: &str) {
         "acceptEdits" => PermissionMode::AcceptEdits,
         "plan" => PermissionMode::Plan,
         "yolo" => PermissionMode::Yolo,
+        "dontAsk" => PermissionMode::DontAsk,
         _ => {
             st.push_system_note(format!("unknown permission mode: {action_id}"));
             return;
@@ -3412,7 +3415,7 @@ mod settings_edit_tests {
     }
 
     #[test]
-    fn permission_mode_row_cycles_through_four_modes() {
+    fn permission_mode_row_cycles_through_five_modes() {
         let mut st = ConversationState::default();
         st.session.permission_mode = PermissionMode::Default;
         st.active_menu = Some(OverlayMenu::new_settings(SettingsTab::Config, &st));
@@ -3426,6 +3429,8 @@ mod settings_edit_tests {
         assert_eq!(st.session.permission_mode, PermissionMode::Plan);
         edit_settings_row(&mut st, 1);
         assert_eq!(st.session.permission_mode, PermissionMode::Yolo);
+        edit_settings_row(&mut st, 1);
+        assert_eq!(st.session.permission_mode, PermissionMode::DontAsk);
         edit_settings_row(&mut st, 1);
         assert_eq!(st.session.permission_mode, PermissionMode::Default);
     }

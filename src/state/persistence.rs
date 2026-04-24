@@ -27,6 +27,10 @@ impl PersistenceState {
             .effort_label
             .map(|s| s.to_string())
             .or(Some("auto".to_string()));
+        self.settings
+            .permissions
+            .get_or_insert_with(Default::default)
+            .default_mode = Some(session.permission_mode);
         self.flush()
     }
 
