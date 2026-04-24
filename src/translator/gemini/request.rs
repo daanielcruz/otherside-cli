@@ -154,24 +154,58 @@ pub fn openai_tools_to_gemini_tools(tools: &[OpenAiToolDef]) -> Vec<Value> {
 }
 
 fn sanitize_parameters_schema(schema: &Value) -> Value {
-    match schema {
-        Value::Object(map) => {
-            let mut out = Map::new();
-            for (k, v) in map {
-                if k == "additionalProperties" || k == "$schema" || k == "$id" {
-                    continue;
-                }
-                out.insert(k.clone(), sanitize_parameters_schema(v));
-            }
-            if !out.contains_key("type") {
-                out.insert("type".into(), Value::String("object".into()));
-            }
-            Value::Object(out)
-        }
-        Value::Array(arr) => Value::Array(arr.iter().map(sanitize_parameters_schema).collect()),
-        other => other.clone(),
-    }
+    sanitize_schema_node(schema)
 }
+
+fn sanitize_schema_node(schema: &Value) -> Value {
+    let Value::Object(map) = schema else {
+        return schema.clone();
+    };
+    let mut out = Map::new();
+    for (k, v) in map {
+        if SCHEMA_KEYS_DROP.contains(&k.as_str()) {
+            continue;
+        }
+        let converted = match k.as_str() {
+            "properties" => match v {
+                Value::Object(inner) => Value::Object(
+                    inner
+                        .iter()
+                        .map(|(ik, iv)| (ik.clone(), sanitize_schema_node(iv)))
+                        .collect(),
+                ),
+                other => other.clone(),
+            },
+            "items" => sanitize_schema_node(v),
+            "allOf" | "anyOf" | "oneOf" => match v {
+                Value::Array(arr) => {
+                    Value::Array(arr.iter().map(sanitize_schema_node).collect())
+                }
+                other => other.clone(),
+            },
+            "required" | "enum" | "default" => v.clone(),
+            _ => v.clone(),
+        };
+        out.insert(k.clone(), converted);
+    }
+    if !out.contains_key("type") && out.contains_key("properties") {
+        out.insert("type".into(), Value::String("object".into()));
+    }
+    Value::Object(out)
+}
+
+const SCHEMA_KEYS_DROP: &[&str] = &[
+    "additionalProperties",
+    "$schema",
+    "$id",
+    "$ref",
+    "$comment",
+    "exclusiveMinimum",
+    "exclusiveMaximum",
+    "patternProperties",
+    "const",
+    "examples",
+];
 
 fn build_tool_config(tool_choice: &Option<Value>) -> Option<Value> {
     let choice = tool_choice.as_ref()?;
@@ -374,6 +408,54 @@ mod tests {
         );
         assert_eq!(params["type"], "object");
         assert!(params["properties"]["x"].is_object());
+    }
+
+    #[test]
+    fn sanitizer_does_not_inject_type_into_properties_dict() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "a": {"type": "string"},
+                "b": {"type": "integer"}
+            }
+        });
+        let clean = sanitize_parameters_schema(&schema);
+        let props = &clean["properties"];
+        assert!(props.get("type").is_none(),
+            "properties map is a dict of schemas, not a schema itself — must not gain a type:object row");
+        assert_eq!(props["a"]["type"], "string");
+    }
+
+    #[test]
+    fn sanitizer_strips_exclusive_minimum_and_maximum() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "exclusiveMinimum": 0, "exclusiveMaximum": 100}
+            }
+        });
+        let clean = sanitize_parameters_schema(&schema);
+        let limit = &clean["properties"]["limit"];
+        assert!(limit.get("exclusiveMinimum").is_none());
+        assert!(limit.get("exclusiveMaximum").is_none());
+        assert_eq!(limit["type"], "integer");
+    }
+
+    #[test]
+    fn sanitizer_recurses_into_array_items() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "ids": {
+                    "type": "array",
+                    "items": {"type": "string", "$schema": "https://json-schema.org/draft/2020-12/schema"}
+                }
+            }
+        });
+        let clean = sanitize_parameters_schema(&schema);
+        let items = &clean["properties"]["ids"]["items"];
+        assert_eq!(items["type"], "string");
+        assert!(items.get("$schema").is_none());
     }
 
     #[test]
