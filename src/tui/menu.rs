@@ -1034,50 +1034,67 @@ fn draw_model_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
                 )));
                 body.push(Line::raw(""));
                 let cta_focused = !menu.model_tabs_focused;
-                let border_style = if cta_focused {
-                    Style::default()
-                        .fg(theme::PRIMARY)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(theme::SUBTLE)
-                };
-                let label_style = if cta_focused {
-                    Style::default()
+                let cta_label = format!("Login to {label}");
+                let pad = 3;
+                let inner_cols = pad * 2 + cta_label.chars().count();
+
+                if cta_focused {
+                    let fill_style = Style::default()
                         .fg(Color::White)
                         .bg(theme::PRIMARY)
-                        .add_modifier(Modifier::BOLD)
+                        .add_modifier(Modifier::BOLD);
+                    let filler = " ".repeat(inner_cols);
+                    body.push(Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(filler.clone(), fill_style),
+                    ]));
+                    body.push(Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(
+                            format!(
+                                "{}{}{}",
+                                " ".repeat(pad),
+                                cta_label,
+                                " ".repeat(pad)
+                            ),
+                            fill_style,
+                        ),
+                    ]));
+                    body.push(Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(filler, fill_style),
+                    ]));
                 } else {
-                    Style::default()
-                        .fg(theme::TEXT)
-                        .add_modifier(Modifier::BOLD)
-                };
-                let marker = if cta_focused {
-                    format!("{CHEVRON} ")
-                } else {
-                    "  ".to_string()
-                };
-                let cta_label = format!("Login to {label}");
-                let pad = 2;
-                let inner_cols = pad * 2 + cta_label.chars().count();
-                let top = format!("\u{256D}{}\u{256E}", "\u{2500}".repeat(inner_cols));
-                let bot = format!("\u{2570}{}\u{256F}", "\u{2500}".repeat(inner_cols));
-                body.push(Line::from(vec![
-                    Span::raw(marker.clone()),
-                    Span::styled(top, border_style),
-                ]));
-                body.push(Line::from(vec![
-                    Span::raw(marker.clone()),
-                    Span::styled("\u{2502}".to_string(), border_style),
-                    Span::styled(
-                        format!("{}{}{}", " ".repeat(pad), cta_label, " ".repeat(pad)),
-                        label_style,
-                    ),
-                    Span::styled("\u{2502}".to_string(), border_style),
-                ]));
-                body.push(Line::from(vec![
-                    Span::raw(marker),
-                    Span::styled(bot, border_style),
-                ]));
+                    let border_style = Style::default().fg(theme::SUBTLE);
+                    let label_style =
+                        Style::default().fg(theme::TEXT).add_modifier(Modifier::BOLD);
+                    let top =
+                        format!("\u{256D}{}\u{256E}", "\u{2500}".repeat(inner_cols));
+                    let bot =
+                        format!("\u{2570}{}\u{256F}", "\u{2500}".repeat(inner_cols));
+                    body.push(Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(top, border_style),
+                    ]));
+                    body.push(Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled("\u{2502}".to_string(), border_style),
+                        Span::styled(
+                            format!(
+                                "{}{}{}",
+                                " ".repeat(pad),
+                                cta_label,
+                                " ".repeat(pad)
+                            ),
+                            label_style,
+                        ),
+                        Span::styled("\u{2502}".to_string(), border_style),
+                    ]));
+                    body.push(Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(bot, border_style),
+                    ]));
+                }
             }
             _ => {}
         }
