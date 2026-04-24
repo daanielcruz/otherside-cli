@@ -89,9 +89,9 @@ fn status_text(state: TaskState) -> &'static str {
     match state {
         TaskState::Completed => "completed",
         TaskState::Failed => "failed",
-        TaskState::Stopped => "stopped",
+        TaskState::Stopped => "killed",
 
-        _ => "stopped",
+        _ => "killed",
     }
 }
 
@@ -179,6 +179,18 @@ mod tests {
         r.state = TaskState::Stopped;
         let out = render(&r, "/tmp/out.log", NotificationExtras::default());
         assert!(out.contains(r#"<summary>Agent "Sleep 60 seconds" was stopped</summary>"#));
+    }
+
+    #[test]
+    fn stopped_status_tag_renders_killed_for_upstream_parity() {
+        let mut r = rec_completed();
+        r.state = TaskState::Stopped;
+        let out = render(&r, "/tmp/out.log", NotificationExtras::default());
+        assert!(
+            out.contains("<status>killed</status>"),
+            "upstream LocalAgentTask.tsx:211 union is 'completed' | 'failed' | 'killed'; \
+             cancelled agents must surface as killed, not stopped. got: {out}",
+        );
     }
 
     #[test]
