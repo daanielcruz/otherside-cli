@@ -60,6 +60,12 @@ pub struct Settings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fast_mode: Option<bool>,
 
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caveman_enabled: Option<bool>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rtk_enabled: Option<bool>,
+
     pub strict_plugin_only_customization: Option<bool>,
 
     pub allow_managed_hooks_only: Option<bool>,
@@ -329,6 +335,34 @@ mod tests {
         let reemitted = serde_json::to_vec(&first).unwrap();
         let second: Settings = serde_json::from_slice(&reemitted).unwrap();
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn caveman_and_rtk_defaults_are_none_when_key_missing() {
+        let s: Settings = serde_json::from_str("{}").unwrap();
+        assert!(s.caveman_enabled.is_none());
+        assert!(s.rtk_enabled.is_none());
+    }
+
+    #[test]
+    fn caveman_and_rtk_round_trip_through_serde() {
+        let s = Settings {
+            caveman_enabled: Some(false),
+            rtk_enabled: Some(true),
+            ..Default::default()
+        };
+        let bytes = serde_json::to_vec(&s).unwrap();
+        let back: Settings = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(back.caveman_enabled, Some(false));
+        assert_eq!(back.rtk_enabled, Some(true));
+    }
+
+    #[test]
+    fn caveman_and_rtk_deserialize_from_camelcase_keys() {
+        let json = r#"{"cavemanEnabled":false,"rtkEnabled":false}"#;
+        let s: Settings = serde_json::from_str(json).unwrap();
+        assert_eq!(s.caveman_enabled, Some(false));
+        assert_eq!(s.rtk_enabled, Some(false));
     }
 
     #[test]

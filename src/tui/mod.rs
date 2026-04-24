@@ -2127,6 +2127,12 @@ fn edit_settings_row(st: &mut ConversationState, direction: i32) {
                 "auto_connect_ide" => {
                     st.persistence.settings.auto_connect_ide.unwrap_or(false)
                 }
+                "caveman_enabled" => {
+                    st.persistence.settings.caveman_enabled.unwrap_or(true)
+                }
+                "rtk_enabled" => {
+                    st.persistence.settings.rtk_enabled.unwrap_or(true)
+                }
                 _ => return,
             };
             let next = !current;
@@ -3479,6 +3485,51 @@ mod settings_edit_tests {
     }
 
     #[test]
+    fn enter_on_caveman_row_toggles_and_persists() {
+        let mut st = ConversationState::default();
+        st.active_menu = Some(OverlayMenu::new_settings(SettingsTab::Config, &st));
+        if let Some(m) = st.active_menu.as_mut() {
+            focus_row(m, "Caveman");
+        }
+        let before = st.persistence.settings.caveman_enabled.unwrap_or(true);
+        commit_settings_row_enter(&mut st);
+        let after = st
+            .persistence
+            .settings
+            .caveman_enabled
+            .expect("caveman_enabled must persist after toggle");
+        assert_eq!(after, !before, "Enter on Caveman row must flip the flag");
+
+        let rebuilt = st
+            .active_menu
+            .as_ref()
+            .and_then(|m| m.options.iter().find(|o| o.label == "Caveman"))
+            .expect("Caveman row survives rebuild");
+        assert_eq!(
+            rebuilt.value_display.as_deref(),
+            Some(if after { "true" } else { "false" }),
+            "live overlay must reflect the new value without restart",
+        );
+    }
+
+    #[test]
+    fn enter_on_rtk_row_toggles_and_persists() {
+        let mut st = ConversationState::default();
+        st.active_menu = Some(OverlayMenu::new_settings(SettingsTab::Config, &st));
+        if let Some(m) = st.active_menu.as_mut() {
+            focus_row(m, "RTK");
+        }
+        let before = st.persistence.settings.rtk_enabled.unwrap_or(true);
+        commit_settings_row_enter(&mut st);
+        let after = st
+            .persistence
+            .settings
+            .rtk_enabled
+            .expect("rtk_enabled must persist after toggle");
+        assert_eq!(after, !before, "Enter on RTK row must flip the flag");
+    }
+
+    #[test]
     fn every_bool_row_toggles_its_settings_field() {
         let mut st = ConversationState::default();
         st.active_menu = Some(OverlayMenu::new_settings(SettingsTab::Config, &st));
@@ -3487,6 +3538,8 @@ mod settings_edit_tests {
         let rows: &[(&str, Getter)] = &[
             ("Auto-compact", |s| s.persistence.settings.auto_compact),
             ("Show tips", |s| s.persistence.settings.show_tips),
+            ("Caveman", |s| s.persistence.settings.caveman_enabled),
+            ("RTK", |s| s.persistence.settings.rtk_enabled),
         ];
         for (label, getter) in rows {
             if let Some(m) = st.active_menu.as_mut() {

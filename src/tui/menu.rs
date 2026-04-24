@@ -43,7 +43,19 @@ pub struct MenuOption {
 
     pub value_display: Option<String>,
 
+    pub details_display: Option<DetailsCell>,
+
     pub settings_kind: Option<SettingsRowKind>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DetailsCell {
+    pub label: String,
+    pub url: Option<String>,
+}
+
+pub fn osc8_hyperlink(url: &str, label: &str) -> String {
+    format!("\x1b]8;;{url}\x1b\\{label}\x1b]8;;\x1b\\")
 }
 
 #[derive(Debug, Clone)]
@@ -1562,6 +1574,31 @@ fn config_rows(state: &super::state::ConversationState) -> Vec<MenuOption> {
             false,
         ));
     }
+
+    let mut caveman = bool_row(
+        "Caveman",
+        "caveman_enabled",
+        state.persistence.settings.caveman_enabled,
+        true,
+    );
+    caveman.details_display = Some(DetailsCell {
+        label: "details".into(),
+        url: Some("https://github.com/juliusbrussee/caveman".into()),
+    });
+    rows.push(caveman);
+
+    let mut rtk = bool_row(
+        "RTK",
+        "rtk_enabled",
+        state.persistence.settings.rtk_enabled,
+        true,
+    );
+    rtk.details_display = Some(DetailsCell {
+        label: "details".into(),
+        url: Some("https://github.com/rtk-ai/rtk".into()),
+    });
+    rows.push(rtk);
+
     rows
 }
 
@@ -1813,6 +1850,30 @@ fn draw_settings_overlay(f: &mut Frame<'_>, area: Rect, menu: &OverlayMenu) {
                 let pad = LABEL_PAD.saturating_sub(label_len);
                 spans.push(Span::raw(" ".repeat(pad)));
                 spans.push(Span::styled(value.clone(), value_style));
+            }
+            if let Some(details) = opt.details_display.as_ref() {
+                const VALUE_PAD: usize = 12;
+                let value_len = opt
+                    .value_display
+                    .as_deref()
+                    .map(|v| v.chars().count())
+                    .unwrap_or(0);
+                let pad = VALUE_PAD.saturating_sub(value_len);
+                spans.push(Span::raw(" ".repeat(pad.max(2))));
+                let rendered = match details.url.as_deref() {
+                    Some(url) => osc8_hyperlink(url, &details.label),
+                    None => details.label.clone(),
+                };
+                let details_style = if is_cursor {
+                    Style::default()
+                        .fg(theme::PERMISSION)
+                        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+                } else {
+                    Style::default()
+                        .fg(theme::MUTED)
+                        .add_modifier(Modifier::UNDERLINED)
+                };
+                spans.push(Span::styled(rendered, details_style));
             }
             body.push(Line::from(spans));
         }
@@ -2264,6 +2325,88 @@ mod tests {
         m.settings_body_focused = true;
         assert_eq!(m.settings_header_focused, Some(false));
         assert!(m.settings_body_focused, "second ↓ from search must land in body region");
+    }
+
+    #[test]
+    fn config_rows_include_caveman_and_rtk_with_default_on() {
+        let st = crate::tui::state::ConversationState::default();
+        let m = OverlayMenu::new_settings(SettingsTab::Config, &st);
+        let caveman = m
+            .options
+            .iter()
+            .find(|o| o.label == "Caveman")
+            .expect("Caveman row present in /config");
+        let rtk = m
+            .options
+            .iter()
+            .find(|o| o.label == "RTK")
+            .expect("RTK row present in /config");
+        assert_eq!(caveman.value_display.as_deref(), Some("true"));
+        assert_eq!(rtk.value_display.as_deref(), Some("true"));
+        assert!(matches!(caveman.settings_kind, Some(SettingsRowKind::Bool("caveman_enabled"))));
+        assert!(matches!(rtk.settings_kind, Some(SettingsRowKind::Bool("rtk_enabled"))));
+        assert_eq!(
+            caveman
+                .details_display
+                .as_ref()
+                .and_then(|d| d.url.as_deref()),
+            Some("https://github.com/juliusbrussee/caveman"),
+        );
+        assert_eq!(
+            rtk.details_display
+                .as_ref()
+                .and_then(|d| d.url.as_deref()),
+            Some("https://github.com/rtk-ai/rtk"),
+        );
+        assert_eq!(
+            caveman
+                .details_display
+                .as_ref()
+                .map(|d| d.label.as_str()),
+            Some("details"),
+        );
+        assert_eq!(
+            rtk.details_display.as_ref().map(|d| d.label.as_str()),
+            Some("details"),
+        );
+    }
+
+    #[test]
+    fn caveman_and_rtk_rows_respect_stored_false() {
+        let mut st = crate::tui::state::ConversationState::default();
+        st.persistence.settings.caveman_enabled = Some(false);
+        st.persistence.settings.rtk_enabled = Some(false);
+        let m = OverlayMenu::new_settings(SettingsTab::Config, &st);
+        let caveman = m
+            .options
+            .iter()
+            .find(|o| o.label == "Caveman")
+            .expect("Caveman row present");
+        let rtk = m
+            .options
+            .iter()
+            .find(|o| o.label == "RTK")
+            .expect("RTK row present");
+        assert_eq!(caveman.value_display.as_deref(), Some("false"));
+        assert_eq!(rtk.value_display.as_deref(), Some("false"));
+    }
+
+    #[test]
+    fn osc8_hyperlink_wraps_label_with_escape_sequence() {
+        let rendered = osc8_hyperlink("https://example.test/x", "details");
+        assert_eq!(rendered, "\x1b]8;;https://example.test/x\x1b\\details\x1b]8;;\x1b\\");
+    }
+
+    #[test]
+    fn settings_render_emits_osc8_hyperlink_for_details_cell() {
+        let st = crate::tui::state::ConversationState::default();
+        let mut m = OverlayMenu::new_settings(SettingsTab::Config, &st);
+        m.settings_search_query = "caveman".into();
+        let (joined, _) = render_settings(&m, 200, 30);
+        assert!(
+            joined.contains("details"),
+            "Caveman row must render trailing `details` link label, got:\n{joined}"
+        );
     }
 
     #[test]

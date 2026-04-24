@@ -129,6 +129,12 @@ pub fn set_bool_setting(
             st.persistence.settings.fast_mode = Some(value);
             crate::state::dispatch::set_fast_mode(value);
         }
+        "caveman_enabled" => {
+            st.persistence.settings.caveman_enabled = Some(value);
+        }
+        "rtk_enabled" => {
+            st.persistence.settings.rtk_enabled = Some(value);
+        }
         other => {
             return Err(crate::error::Error::Other(format!(
                 "set_bool_setting: unknown key `{other}`"
@@ -794,6 +800,49 @@ mod tests {
         assert_eq!(st.persistence.settings.verbose, Some(true));
         assert!(st.render_verbose, "verbose shadow must flip with the setting");
         assert!(unknown.is_err(), "unknown key must not silently no-op");
+    }
+
+    #[test]
+    fn set_bool_setting_flips_caveman_and_rtk_flags() {
+        use crate::config::settings::PermissionMode;
+        use crate::tui::state::ConversationState;
+
+        let mut st = ConversationState::default();
+        st.session = crate::state::Session::new("claude-opus-4-7", PermissionMode::Default);
+
+        let tmp = std::env::temp_dir().join(format!(
+            "broker_cavertk_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let prev = std::env::var("OTHERSIDE_CONFIG_DIR").ok();
+        unsafe { std::env::set_var("OTHERSIDE_CONFIG_DIR", &tmp); }
+
+        set_bool_setting(&mut st, "caveman_enabled", false).unwrap();
+        set_bool_setting(&mut st, "rtk_enabled", false).unwrap();
+        let caveman_after = st.persistence.settings.caveman_enabled;
+        let rtk_after = st.persistence.settings.rtk_enabled;
+        set_bool_setting(&mut st, "caveman_enabled", true).unwrap();
+        set_bool_setting(&mut st, "rtk_enabled", true).unwrap();
+        let caveman_roundtrip = st.persistence.settings.caveman_enabled;
+        let rtk_roundtrip = st.persistence.settings.rtk_enabled;
+
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("OTHERSIDE_CONFIG_DIR", v),
+                None => std::env::remove_var("OTHERSIDE_CONFIG_DIR"),
+            }
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        assert_eq!(caveman_after, Some(false));
+        assert_eq!(rtk_after, Some(false));
+        assert_eq!(caveman_roundtrip, Some(true));
+        assert_eq!(rtk_roundtrip, Some(true));
     }
 
     #[test]
