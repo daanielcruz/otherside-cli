@@ -1,43 +1,55 @@
 ---
 name: dream
-description: Reflective memory consolidation — review recent activity, synthesize learnings into typed memory files, prune stale entries.
+description: Reflective memory consolidation — orient, gather, consolidate, prune.
 ---
 
-You are about to run memory consolidation. The goal is to promote
-durable knowledge from the recent session into the file-based memory
-system and drop entries that are no longer useful.
+# Dream: Memory Consolidation
 
-## Steps
+You are performing a dream — a reflective pass over your memory files. Synthesize what you've learned recently into durable, well-organized memories so that future sessions can orient quickly.
 
-1. Read the memory index `~/.otherside/projects/<project>/memory/MEMORY.md`
-   (or the per-project path the host passes in via args).
-2. Read the current project's `CLAUDE.md` and any `AGENTS.md`, or any `OTHERSIDE.md` so you
-   don't duplicate what's already authoritative.
-3. Scan the most recent conversation turns visible in the harness
-   (the last ~20 messages). Identify:
-   - User preferences stated explicitly ("always X", "never Y").
-   - Stable project facts (paths, versions, deadlines, deliverables).
-   - Corrections the user gave you.
-   - Non-obvious context that would be useful in a fresh session.
-4. For each useful signal, classify as `user`, `feedback`, `project`,
-   or `reference` per the memory-type rules in the project's
-   `OTHERSIDE.md`. Skip anything that is already captured.
-5. Write each new entry to its own markdown file under the memory
-   dir with the required frontmatter, then add a one-line pointer to
-   `MEMORY.md`.
-6. Walk existing memories. If any contradicts what the user just
-   said, delete it (memory decays — trust fresh signals).
-7. Report a short summary: N entries added, N updated, N deleted.
+Memory directory: `{{MEMORY_ROOT}}`
+This directory already exists — write to it directly with the Write tool (do not run mkdir or check for its existence).
 
-## Constraints
+Session transcripts: `{{TRANSCRIPT_DIR}}` (large JSONL files — grep narrowly, don't read whole files)
+{{TEAM_GUIDANCE}}
+---
 
-- Do not store credentials, tokens, or PII inside memories.
-- Keep entries short and retrievable by topic; avoid paragraph-long
-  essays — future sessions have limited context.
-- If the user invoked `/dream nightly` or `/dream schedule`, schedule
-  a recurring consolidation rather than running one now.
+## Phase 1 — Orient
 
-## Arguments
+- `ls` the memory directory to see what already exists
+- Read `MEMORY.md` to understand the current index
+- Skim existing topic files so you improve them rather than creating duplicates
+- If `logs/` or `sessions/` subdirectories exist (assistant-mode layout), review recent entries there
 
-Free-form. Common forms: `nightly`, `schedule`, `consolidate`, plain
-empty (run immediately).
+## Phase 2 — Gather recent signal
+
+Look for new information worth persisting. Sources in rough priority order:
+
+1. **Daily logs** (`logs/YYYY/MM/YYYY-MM-DD.md`) if present — these are the append-only stream
+2. **Existing memories that drifted** — facts that contradict something you see in the codebase now
+3. **Transcript search** — if you need specific context (e.g., "what was the error message from yesterday's build failure?"), grep the JSONL transcripts for narrow terms:
+   `grep -rn "<narrow term>" {{TRANSCRIPT_DIR}}/ --include="*.jsonl" | tail -50`
+
+Don't exhaustively read transcripts. Look only for things you already suspect matter.
+
+## Phase 3 — Consolidate
+
+For each thing worth remembering, write or update a memory file at the top level of the memory directory. Use the memory file format and type conventions from your system prompt's auto-memory section — it's the source of truth for what to save, how to structure it, and what NOT to save.
+
+Focus on:
+- Merging new signal into existing topic files rather than creating near-duplicates
+- Converting relative dates ("yesterday", "last week") to absolute dates so they remain interpretable after time passes
+- Deleting contradicted facts — if today's investigation disproves an old memory, fix it at the source
+
+## Phase 4 — Prune and index
+
+Update `MEMORY.md` so it stays under 200 lines AND under ~25KB. It's an **index**, not a dump — each entry should be one line under ~150 characters: `- [Title](file.md) — one-line hook`. Never write memory content directly into it.
+
+- Remove pointers to memories that are now stale, wrong, or superseded
+- Demote verbose entries: if an index line is over ~200 chars, it's carrying content that belongs in the topic file — shorten the line, move the detail
+- Add pointers to newly important memories
+- Resolve contradictions — if two files disagree, fix the wrong one
+
+---
+
+Return a brief summary of what you consolidated, updated, or pruned. If nothing changed (memories are already tight), say so.

@@ -30,8 +30,12 @@ pub fn bundled_names() -> Vec<&'static str> {
 
 pub fn handle(name: &str, args: &str, _state: &mut ConversationState) -> SlashOutcome {
     let body = lookup_body(name).map(substitute_host_paths);
+    let is_dream = name.eq_ignore_ascii_case("dream");
     let user_turn = match (body, args.is_empty()) {
         (Some(body), true) => body,
+        (Some(body), false) if is_dream => {
+            format!("{body}\n\n## Additional context\n\n{args}")
+        }
         (Some(body), false) => format!("{body}\n\n{args}"),
         (None, true) => format!("/{name}"),
         (None, false) => format!("/{name} {args}"),
@@ -43,9 +47,36 @@ fn substitute_host_paths(body: &str) -> String {
     let Some(base) = directories::BaseDirs::new() else {
         return body.to_string();
     };
-    let home = base.home_dir().to_string_lossy();
-    body.replace("~/.otherside", &format!("{home}/.otherside"))
+    let home = base.home_dir().to_string_lossy().into_owned();
+    let mut result = body.replace("~/.otherside", &format!("{home}/.otherside"));
+    if result.contains("{{MEMORY_ROOT}}")
+        || result.contains("{{TRANSCRIPT_DIR}}")
+        || result.contains("{{TEAM_GUIDANCE}}")
+    {
+        let cwd = std::env::current_dir()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| home.clone());
+        let memory_root_slash = crate::harness::session_env::resolve_memory_dir(&cwd);
+        let memory_root = memory_root_slash.trim_end_matches('/').to_string();
+        let transcript_dir = memory_root
+            .strip_suffix("/memory")
+            .unwrap_or(&memory_root)
+            .to_string();
+        let team_dir = format!("{memory_root}/team");
+        let team_block = if std::path::Path::new(&team_dir).is_dir() {
+            format!("\n{TEAM_MEMORY_GUIDANCE}\n")
+        } else {
+            String::new()
+        };
+        result = result
+            .replace("{{MEMORY_ROOT}}", &memory_root)
+            .replace("{{TRANSCRIPT_DIR}}", &transcript_dir)
+            .replace("{{TEAM_GUIDANCE}}", &team_block);
+    }
+    result
 }
+
+const TEAM_MEMORY_GUIDANCE: &str = "## Team memory (`team/` subdirectory)\n\nThe `team/` subdirectory holds memories shared across everyone working in this repo. Other teammates' Claude sessions write here too — treat it differently from your personal files:\n\n- **Phase 1:** `ls team/` and skim it alongside your personal files. A teammate may have already captured something you'd otherwise duplicate.\n- **Phase 3:** Merge near-duplicates *within* `team/` the same way you would personal memories. If a personal memory restates a team memory, delete the personal one.\n- **Phase 4 — be conservative pruning `team/`:**\n  - DO delete or fix a team memory that is clearly contradicted by the current code, or that a newer team memory marks as superseded.\n  - DO NOT delete a team memory just because you don't recognize it or it isn't relevant to *your* recent sessions — a teammate may rely on it.\n  - When unsure, leave it. A stale team memory costs little; deleting a teammate's load-bearing note costs a lot.\n\nDo not promote personal memories into `team/` during a dream — that's a deliberate choice the user makes via `/remember`, not something to do reflexively.";
 
 #[cfg(test)]
 mod tests {
@@ -124,6 +155,38 @@ mod tests {
             SlashOutcome::SendTurn(body) => {
                 assert!(body.contains("---"));
                 assert!(body.trim_end().ends_with("#42"));
+            }
+            other => panic!("expected SendTurn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dream_args_wrap_in_additional_context_section() {
+        let mut st = ConversationState::default();
+        let outcome = handle("dream", "nightly", &mut st);
+        match outcome {
+            SlashOutcome::SendTurn(body) => {
+                assert!(body.contains("## Additional context\n\nnightly"));
+            }
+            other => panic!("expected SendTurn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dream_body_resolves_memory_and_transcript_placeholders() {
+        let mut st = ConversationState::default();
+        let outcome = handle("dream", "", &mut st);
+        match outcome {
+            SlashOutcome::SendTurn(body) => {
+                assert!(!body.contains("{{MEMORY_ROOT}}"));
+                assert!(!body.contains("{{TRANSCRIPT_DIR}}"));
+                assert!(!body.contains("{{TEAM_GUIDANCE}}"));
+                assert!(body.contains("Phase 1 — Orient"));
+                assert!(body.contains("Phase 4 — Prune"));
+                assert!(body.contains("`MEMORY.md`"));
+                assert!(body.contains(
+                    "This directory already exists — write to it directly with the Write tool"
+                ));
             }
             other => panic!("expected SendTurn, got {other:?}"),
         }
