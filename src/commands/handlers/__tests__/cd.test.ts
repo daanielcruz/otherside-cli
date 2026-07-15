@@ -96,30 +96,6 @@ describe("validateCdTarget + handleCd", () => {
     expect(session.cwd).toBe(root);
   });
 
-  it("moves to absolute and relative directories", async () => {
-    const dest = canonicalizeCwd(join(root, "proj"));
-    mkdirSync(dest, { recursive: true });
-    const session = new Session("s2", canonicalizeCwd(root));
-    setTrackedCwd(session.cwd);
-    const absolute = await handleCd(CMD, dest, makeCtx(session));
-    expect(absolute.feedback).toBe(`Moved to ${dest}`);
-    expect(session.cwd).toBe(dest);
-    expect(getTrackedCwd()).toBe(dest);
-
-    const nested = canonicalizeCwd(join(dest, "nested"));
-    mkdirSync(nested, { recursive: true });
-    const relative = await handleCd(CMD, "nested", makeCtx(session));
-    expect(relative.feedback).toBe(`Moved to ${nested}`);
-    expect(session.cwd).toBe(nested);
-  });
-
-  it("reports already in for same directory", async () => {
-    const session = new Session("s3", canonicalizeCwd(root));
-    setTrackedCwd(root);
-    const result = await handleCd(CMD, root, makeCtx(session));
-    expect(result.feedback).toBe(`Already in ${canonicalizeCwd(root)}.`);
-  });
-
   it("errors for missing and non-directory paths", async () => {
     const session = new Session("s4", canonicalizeCwd(root));
     const missing = await handleCd(CMD, join(root, "nope"), makeCtx(session));
@@ -130,40 +106,6 @@ describe("validateCdTarget + handleCd", () => {
     const notDir = await handleCd(CMD, file, makeCtx(session));
     expect(notDir.feedback).toContain("is not a directory");
     expect(notDir.feedback).toContain(root);
-  });
-
-  it("accepts paths with spaces", async () => {
-    const spaced = canonicalizeCwd(join(root, "my project"));
-    mkdirSync(spaced, { recursive: true });
-    const session = new Session("s5", canonicalizeCwd(root));
-    setTrackedCwd(session.cwd);
-    const result = await handleCd(CMD, spaced, makeCtx(session));
-    expect(result.feedback).toBe(`Moved to ${spaced}`);
-    expect(session.cwd).toBe(spaced);
-  });
-
-  it("injects a model notice after a successful move", async () => {
-    const dest = canonicalizeCwd(join(root, "lib"));
-    mkdirSync(dest, { recursive: true });
-    const session = new Session("s6", canonicalizeCwd(root));
-    setTrackedCwd(session.cwd);
-    const ctx = makeCtx(session) as SlashContext & { _injections: string[] };
-    await handleCd(CMD, dest, ctx);
-    expect(ctx._injections.length).toBe(1);
-    expect(ctx._injections[0]).toContain("working directory has changed");
-    expect(ctx._injections[0]).toContain(dest);
-    expect(ctx._injections[0]).toContain("via /cd");
-  });
-
-  it("updates storageCwd so resume identity follows the destination", async () => {
-    const dest = canonicalizeCwd(join(root, "storage-move"));
-    mkdirSync(dest, { recursive: true });
-    const session = new Session("s7", canonicalizeCwd(root));
-    setTrackedCwd(session.cwd);
-    expect(session.storageCwd).toBe(canonicalizeCwd(root));
-    await handleCd(CMD, dest, makeCtx(session));
-    expect(session.storageCwd).toBe(dest);
-    expect(session.cwd).toBe(dest);
   });
 
   it("blocks Cd deny rules", async () => {

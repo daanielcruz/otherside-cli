@@ -176,7 +176,7 @@ export function recordCodexRawFrame(
         sequence: recordSerial,
         capturedAt: new Date(now).toISOString(),
         elapsedMs: now - startedAt,
-        sincePreviousFrameMs: previousAt === undefined ? 0 : now - previousAt,
+        sincePreviousFrameMs: previousAt === undefined ? 0 : Math.max(0, now - previousAt),
         ...context,
         byteLength: bytes.length,
       }),
@@ -219,7 +219,7 @@ export function recordCodexRawLifecycle(
       sequence: recordSerial,
       capturedAt: new Date(now).toISOString(),
       elapsedMs: now - startedAt,
-      sincePreviousLifecycleMs: previousAt === undefined ? 0 : now - previousAt,
+      sincePreviousLifecycleMs: previousAt === undefined ? 0 : Math.max(0, now - previousAt),
       event,
       ...context,
     };
