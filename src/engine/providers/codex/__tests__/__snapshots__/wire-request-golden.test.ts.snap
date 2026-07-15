@@ -1,0 +1,280 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`codex wire-request-golden main 1`] = `
+{
+  "body": {
+    "client_metadata": {
+      "session_id": "session-fixture",
+      "x-codex-installation-id": "installation-fixture",
+      "x-codex-turn-metadata": "{"installation_id":"installation-fixture","session_id":"session-fixture","thread_id":"thread-fixture","thread_source":"user","turn_id":"turn-fixture","window_id":"thread-fixture:0","sandbox":"seatbelt","request_kind":"turn","turn_started_at_unix_ms":"<turn-started-at>"}",
+      "x-codex-window-id": "thread-fixture:0",
+    },
+    "include": [
+      "reasoning.encrypted_content",
+    ],
+    "input": [
+      {
+        "role": "developer",
+        "tools": [
+          {
+            "description": "Run a shell command.",
+            "name": "Bash",
+            "parameters": {
+              "properties": {
+                "command": {
+                  "type": "string",
+                },
+              },
+              "required": [
+                "command",
+              ],
+              "type": "object",
+            },
+            "strict": false,
+            "type": "function",
+          },
+        ],
+        "type": "additional_tools",
+      },
+      {
+        "content": [
+          {
+            "text": 
+"You are Otherside, a coding agent. You and the user share one workspace, and your job is to drive each task to a real, verified outcome within the current turn.
+
+# Engineering tactics
+
+- The git worktree may be dirty. Treat unrelated changes as the user's work. Do not revert, stash, or \`git reset --hard\` anything you did not author unless explicitly asked.
+- Empty stdout with exit code 0 from a test runner is NOT proof the test ran. Confirm execution by counts/names in output (e.g. \`pytest -v\` shows test ids; plain \`python file.py\` only imports a \`test_*\` function file without invoking it). When \`pytest\` is unavailable, invoke the test function directly via \`python -c "from mod import t; t()"\` or write a small runner.
+- Never chain shell commands purely for grouping (\`echo "===";\`, \`&&\` between unrelated calls). It clutters tool output and makes review harder. Issue separate \`Bash\` calls instead — they parallelize for free.
+- The user does not see raw command output. When a result matters (test counts, error lines, version strings), summarize or quote the relevant lines back to them in your reply.
+- Prefer the repo's existing patterns and helper APIs over inventing a new abstraction. Keep edits scoped to the modules and behavior implied by the request.
+- Never run destructive git commands (\`git reset --hard\`, \`git checkout --\`, \`git clean -f\`) unless the user explicitly asks. If ambiguous, ask first.
+- Avoid \`git\` interactive subcommands (\`rebase -i\`, \`add -i\`); prefer non-interactive flags.
+
+# Conflicts and resumes
+
+- If new user input arrives mid-turn or after context compaction, the newest message takes priority.
+- Do not continue from a stale plan. Before answering, verify that the response still matches the latest request.
+- If you delegate a task to an agent or start a workflow, do not perform the same task yourself in parallel. Use the main thread to coordinate, unblock, verify, work on clearly independent parts, or wait for the delegated work to finish.
+
+
+
+fixed-system-instruction"
+,
+            "type": "input_text",
+          },
+        ],
+        "role": "developer",
+        "type": "message",
+      },
+      {
+        "content": [
+          {
+            "text": "explain the build",
+            "type": "input_text",
+          },
+        ],
+        "role": "user",
+        "type": "message",
+      },
+      {
+        "arguments": "{"command":"make build-install"}",
+        "call_id": "toolu_fixture",
+        "name": "Bash",
+        "status": "completed",
+        "type": "function_call",
+      },
+      {
+        "call_id": "toolu_fixture",
+        "output": "ok",
+        "type": "function_call_output",
+      },
+      {
+        "content": [
+          {
+            "text": "now ship it",
+            "type": "input_text",
+          },
+        ],
+        "role": "user",
+        "type": "message",
+      },
+    ],
+    "model": "gpt-5.6-sol",
+    "parallel_tool_calls": false,
+    "prompt_cache_key": "session-fixture",
+    "reasoning": {
+      "context": "all_turns",
+      "effort": "high",
+      "summary": "auto",
+    },
+    "store": false,
+    "stream": true,
+    "text": {
+      "verbosity": "low",
+    },
+    "type": "response.create",
+  },
+  "bodyHash": "87ec2dfa585b60eee1d029bd5739c5682f4562d340226cb9f01ddf0321357e53",
+  "headers": {
+    "Authorization": "<redacted>",
+    "Connection": "Upgrade",
+    "Sec-WebSocket-Key": "<redacted>",
+    "Sec-WebSocket-Version": "13",
+    "Upgrade": "websocket",
+    "chatgpt-account-id": "account-fixture",
+    "openai-beta": "responses_websockets=2026-02-06",
+    "originator": "codex-tui",
+    "session_id": "session-fixture",
+    "version": "0.144.0",
+    "x-client-request-id": "session-fixture",
+    "x-codex-beta-features": "js_repl,memories",
+    "x-codex-installation-id": "installation-fixture",
+    "x-codex-turn-metadata": "{"installation_id":"installation-fixture","session_id":"session-fixture","thread_id":"thread-fixture","thread_source":"user","turn_id":"turn-fixture","window_id":"thread-fixture:0","sandbox":"seatbelt","request_kind":"turn","turn_started_at_unix_ms":"<turn-started-at>"}",
+    "x-codex-window-id": "thread-fixture:0",
+  },
+  "url": "wss://chatgpt.com/backend-api/codex/responses",
+}
+`;
+
+exports[`codex wire-request-golden fork 1`] = `
+{
+  "body": {
+    "client_metadata": {
+      "session_id": "fd535af9-b1d6-51e2-8a5f-27b0389e6272",
+      "x-codex-installation-id": "installation-fixture",
+      "x-codex-parent-thread-id": "session-fixture",
+      "x-codex-turn-metadata": "{"installation_id":"installation-fixture","session_id":"fd535af9-b1d6-51e2-8a5f-27b0389e6272","thread_id":"7e580101-ad4c-59cb-bdba-4a36bb4bd720","thread_source":"subagent","turn_id":"","window_id":"7e580101-ad4c-59cb-bdba-4a36bb4bd720:0","sandbox":"seatbelt","request_kind":"turn","turn_started_at_unix_ms":"<turn-started-at>"}",
+      "x-codex-window-id": "7e580101-ad4c-59cb-bdba-4a36bb4bd720:0",
+      "x-openai-subagent": "collab_spawn",
+    },
+    "include": [
+      "reasoning.encrypted_content",
+    ],
+    "input": [
+      {
+        "role": "developer",
+        "tools": [
+          {
+            "description": "Run a shell command.",
+            "name": "Bash",
+            "parameters": {
+              "properties": {
+                "command": {
+                  "type": "string",
+                },
+              },
+              "required": [
+                "command",
+              ],
+              "type": "object",
+            },
+            "strict": false,
+            "type": "function",
+          },
+        ],
+        "type": "additional_tools",
+      },
+      {
+        "content": [
+          {
+            "text": 
+"You are Otherside, a coding agent. You and the user share one workspace, and your job is to drive each task to a real, verified outcome within the current turn.
+
+# Engineering tactics
+
+- The git worktree may be dirty. Treat unrelated changes as the user's work. Do not revert, stash, or \`git reset --hard\` anything you did not author unless explicitly asked.
+- Empty stdout with exit code 0 from a test runner is NOT proof the test ran. Confirm execution by counts/names in output (e.g. \`pytest -v\` shows test ids; plain \`python file.py\` only imports a \`test_*\` function file without invoking it). When \`pytest\` is unavailable, invoke the test function directly via \`python -c "from mod import t; t()"\` or write a small runner.
+- Never chain shell commands purely for grouping (\`echo "===";\`, \`&&\` between unrelated calls). It clutters tool output and makes review harder. Issue separate \`Bash\` calls instead — they parallelize for free.
+- The user does not see raw command output. When a result matters (test counts, error lines, version strings), summarize or quote the relevant lines back to them in your reply.
+- Prefer the repo's existing patterns and helper APIs over inventing a new abstraction. Keep edits scoped to the modules and behavior implied by the request.
+- Never run destructive git commands (\`git reset --hard\`, \`git checkout --\`, \`git clean -f\`) unless the user explicitly asks. If ambiguous, ask first.
+- Avoid \`git\` interactive subcommands (\`rebase -i\`, \`add -i\`); prefer non-interactive flags.
+
+# Conflicts and resumes
+
+- If new user input arrives mid-turn or after context compaction, the newest message takes priority.
+- Do not continue from a stale plan. Before answering, verify that the response still matches the latest request.
+- If you delegate a task to an agent or start a workflow, do not perform the same task yourself in parallel. Use the main thread to coordinate, unblock, verify, work on clearly independent parts, or wait for the delegated work to finish.
+
+
+
+fixed-system-instruction"
+,
+            "type": "input_text",
+          },
+        ],
+        "role": "developer",
+        "type": "message",
+      },
+      {
+        "content": [
+          {
+            "text": "explain the build",
+            "type": "input_text",
+          },
+        ],
+        "role": "user",
+        "type": "message",
+      },
+      {
+        "arguments": "{"command":"make build-install"}",
+        "call_id": "toolu_fixture",
+        "name": "Bash",
+        "status": "completed",
+        "type": "function_call",
+      },
+      {
+        "call_id": "toolu_fixture",
+        "output": "ok",
+        "type": "function_call_output",
+      },
+      {
+        "content": [
+          {
+            "text": "now ship it",
+            "type": "input_text",
+          },
+        ],
+        "role": "user",
+        "type": "message",
+      },
+    ],
+    "model": "gpt-5.6-sol",
+    "parallel_tool_calls": false,
+    "prompt_cache_key": "session-fixture:fork:fork-fixture",
+    "reasoning": {
+      "context": "all_turns",
+      "effort": "high",
+    },
+    "store": false,
+    "stream": true,
+    "text": {
+      "verbosity": "low",
+    },
+    "type": "response.create",
+  },
+  "bodyHash": "c7ffc2894d1f8060e640cef205751ad6331baaddcc9bde254f4902bd3c2927ae",
+  "headers": {
+    "Authorization": "<redacted>",
+    "Connection": "Upgrade",
+    "Sec-WebSocket-Key": "<redacted>",
+    "Sec-WebSocket-Version": "13",
+    "Upgrade": "websocket",
+    "chatgpt-account-id": "account-fixture",
+    "openai-beta": "responses_websockets=2026-02-06",
+    "originator": "codex-tui",
+    "session_id": "fd535af9-b1d6-51e2-8a5f-27b0389e6272",
+    "version": "0.144.0",
+    "x-client-request-id": "fd535af9-b1d6-51e2-8a5f-27b0389e6272",
+    "x-codex-beta-features": "js_repl,memories",
+    "x-codex-installation-id": "installation-fixture",
+    "x-codex-parent-thread-id": "session-fixture",
+    "x-codex-turn-metadata": "{"installation_id":"installation-fixture","session_id":"fd535af9-b1d6-51e2-8a5f-27b0389e6272","thread_id":"7e580101-ad4c-59cb-bdba-4a36bb4bd720","thread_source":"subagent","turn_id":"","window_id":"7e580101-ad4c-59cb-bdba-4a36bb4bd720:0","sandbox":"seatbelt","request_kind":"turn","turn_started_at_unix_ms":"<turn-started-at>"}",
+    "x-codex-window-id": "7e580101-ad4c-59cb-bdba-4a36bb4bd720:0",
+    "x-openai-subagent": "collab_spawn",
+  },
+  "url": "wss://chatgpt.com/backend-api/codex/responses",
+}
+`;

@@ -1,0 +1,15 @@
+{
+  "name": "ListMcpResourcesTool",
+  "description": "List available resources from configured MCP servers. Each resource includes a `server` field. Pass `server` to scope to one server.",
+  "inputSchema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "server": {
+        "type": "string",
+        "description": "Optional MCP server name. Omit for resources across all servers."
+      }
+    },
+    "additionalProperties": false
+  }
+}

@@ -1,0 +1,21 @@
+#!/usr/bin/env sh
+# Run typecheck + lint + tests before allowing commit.
+# Skip with: git commit --no-verify (rare; only for emergency hotfixes)
+
+set -e
+
+if ! command -v bun >/dev/null 2>&1; then
+  echo "pre-commit: bun not found in PATH; skipping hooks"
+  exit 0
+fi
+
+echo "pre-commit: typecheck"
+bun run typecheck
+
+echo "pre-commit: lint"
+bun run lint
+
+echo "pre-commit: tests"
+bun test
+
+echo "pre-commit: ok"

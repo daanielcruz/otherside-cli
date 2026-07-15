@@ -1,0 +1,26 @@
+{
+  "name": "AssetNotify",
+  "description": "- Ships a completed design artifact (logo, mockup, or spec file) from the Otherside Design canvas surface back into the main otherside conversation\n- Use this when the design surface has produced a file the user should see, edit, or commit\n- Path must be absolute or resolvable from the current working directory; Otherside Design will canonicalize it\n- A short `note` (one sentence) helps the main agent understand what was produced and why\n\nUsage:\n- `kind`: one of `logo`, `mockup`, or `spec`\n- `path`: filesystem path to the produced artifact\n- `note`: optional one-line description of what was produced\n\nBehavior:\n- Emits a transcript hint to the main otherside agent via the notification pipeline\n- Does NOT modify the file in any way — it only notifies\n- Never echoes raw user input; only the canonical path and your `kind`/`note` flow through\n\nAfter calling, the main agent will see the artifact path and can decide whether to Read it, Edit it, or take other action.\n",
+  "inputSchema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "kind": {
+        "description": "Artifact category produced by the design surface.",
+        "type": "string",
+        "enum": ["logo", "mockup", "spec"]
+      },
+      "path": {
+        "description": "Filesystem path to the produced artifact. Absolute or resolvable from cwd.",
+        "type": "string",
+        "minLength": 1
+      },
+      "note": {
+        "description": "Optional one-line description of what was produced.",
+        "type": "string"
+      }
+    },
+    "required": ["kind", "path"],
+    "additionalProperties": false
+  }
+}

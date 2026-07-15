@@ -1,0 +1,43 @@
+{
+  "name": "LSP",
+  "description": "Interact with Language Server Protocol (LSP) servers to get code intelligence features.\n\nSupported operations:\n- goToDefinition: Find where a symbol is defined\n- findReferences: Find all references to a symbol\n- hover: Get hover information (documentation, type info) for a symbol\n- documentSymbol: Get all symbols (functions, classes, variables) in a document\n- workspaceSymbol: Search for symbols across the entire workspace\n- goToImplementation: Find implementations of an interface or abstract method\n- prepareCallHierarchy: Get call hierarchy item at a position (functions/methods)\n- incomingCalls: Find all functions/methods that call the function at a position\n- outgoingCalls: Find all functions/methods called by the function at a position\n\nAll operations require:\n- filePath: The file to operate on\n- line: The line number (1-based, as shown in editors)\n- character: The character offset (1-based, as shown in editors)\n\nNote: LSP servers must be configured for the file type. If no server is available, an error will be returned.",
+  "inputSchema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "operation": {
+        "type": "string",
+        "enum": [
+          "goToDefinition",
+          "findReferences",
+          "hover",
+          "documentSymbol",
+          "workspaceSymbol",
+          "goToImplementation",
+          "prepareCallHierarchy",
+          "incomingCalls",
+          "outgoingCalls"
+        ],
+        "description": "The LSP operation to perform"
+      },
+      "filePath": {
+        "type": "string",
+        "description": "The absolute or relative path to the file"
+      },
+      "line": {
+        "type": "integer",
+        "exclusiveMinimum": 0,
+        "maximum": 9007199254740991,
+        "description": "The line number (1-based, as shown in editors)"
+      },
+      "character": {
+        "type": "integer",
+        "exclusiveMinimum": 0,
+        "maximum": 9007199254740991,
+        "description": "The character offset (1-based, as shown in editors)"
+      }
+    },
+    "required": ["operation", "filePath", "line", "character"],
+    "additionalProperties": false
+  }
+}

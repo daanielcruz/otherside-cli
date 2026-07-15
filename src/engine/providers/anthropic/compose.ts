@@ -1,0 +1,178 @@
+import { CACHE_CONTROL_1H, CACHE_CONTROL_1H_GLOBAL } from "@/engine/transport/cache/index.ts";
+import type { ComposedHarness, SystemTextBlock } from "@/harness/composer/injections.ts";
+import {
+  type ContentBlock,
+  lastAssistantRequestId,
+  type Message,
+} from "@/kernel/std/types/message.ts";
+import { SYSTEM_OPENER, systemBillingHeader } from "./preamble.ts";
+
+// User-context envelope wrapping structure.
+// Wraps the WHOLE bundle ONCE; per-entry separator is a single '\n'.
+// The 6-space indent on the IMPORTANT line is part of the wire format.
+const BUNDLE_OPEN = "<system-reminder>\n";
+const BUNDLE_PREAMBLE = "As you answer the user's questions, you can use the following context:\n";
+const BUNDLE_IMPORTANT_LINE =
+  "\n      IMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.\n";
+const BUNDLE_CLOSE = "</system-reminder>\n";
+
+// User-context content contains top-level headings (# claudeMd, # currentDate, # gitStatus, etc). Inject it raw to avoid a redundant `# user-context` taxonomy header.
+const USER_CONTEXT_BUNDLE_KEY = "user-context";
+
+function bundleEntryText(block: SystemTextBlock): string {
+  const inner = stripSystemReminderWrapper(block.text);
+  const key = block.bundleKey ?? "context";
+  if (key === USER_CONTEXT_BUNDLE_KEY) return inner;
+  return `# ${key}\n${inner}`;
+}
+
+function bundleUserPrependBlocks(blocks: SystemTextBlock[]): string | null {
+  if (blocks.length === 0) return null;
+  const body = blocks.map(bundleEntryText).join("\n");
+  return BUNDLE_OPEN + BUNDLE_PREAMBLE + body + BUNDLE_IMPORTANT_LINE + BUNDLE_CLOSE;
+}
+
+function firstUserText(messages: Message[]): string {
+  const firstUser = messages.find((m) => m.role === "user");
+  const block = firstUser?.content.find((b) => b.type === "text");
+  return block?.type === "text" ? block.text : "";
+}
+
+// Phase-split: static layers fold into one global-scope cache block; dynamic layers (env-info, scratchpad, bg-session, memory-guidance, injections) fold into a separate org-scope block. Empty buckets emit zero blocks, and order is preserved within each bucket.
+function consolidateHarnessBlocks(blocks: SystemTextBlock[]): ContentBlock[] {
+  if (blocks.length === 0) return [];
+  const staticParts: string[] = [];
+  const dynamicParts: string[] = [];
+  for (const b of blocks) {
+    if (b.phase === "dynamic") dynamicParts.push(b.text);
+    else staticParts.push(b.text);
+  }
+  const out: ContentBlock[] = [];
+  const staticJoined = staticParts.join("\n\n");
+  if (staticJoined) {
+    out.push({ type: "text", text: staticJoined, cache_control: CACHE_CONTROL_1H_GLOBAL });
+  }
+  const dynamicJoined = dynamicParts.join("\n\n");
+  if (dynamicJoined) {
+    out.push({ type: "text", text: dynamicJoined, cache_control: CACHE_CONTROL_1H });
+  }
+  return out;
+}
+
+export function composeAnthropicMessages(harness: ComposedHarness, messages: Message[]): Message[] {
+  const out: Message[] = [];
+  const preambleBlocks: ContentBlock[] = [
+    {
+      type: "text",
+      text: systemBillingHeader(firstUserText(messages), lastAssistantRequestId(messages)),
+    },
+    { type: "text", text: SYSTEM_OPENER.trim() },
+  ];
+  const harnessBlocks = consolidateHarnessBlocks(harness.systemBlocks);
+  out.push({ role: "system", content: [...preambleBlocks, ...harnessBlocks] });
+  // Short-circuit on ORIGINAL userPrepend length so an all-stripped-to-empty
+  // bundle still skips prepend logic correctly (per design risk: empty-bundle
+  // short-circuit must track input, not output).
+  let prependedFirstUser = harness.userPrepend.length === 0;
+  const standaloneBlocks = harness.userPrepend.filter((b) => b.standalone);
+  const bundledBlocks = harness.userPrepend.filter((b) => !b.standalone);
+  const userPrependBundle = bundleUserPrependBlocks(bundledBlocks);
+  for (const msg of messages) {
+    const stripped = stripUserCacheControl(msg);
+    if (!prependedFirstUser && msg.role === "user") {
+      const prependBlocks: ContentBlock[] = [];
+      for (const block of standaloneBlocks) {
+        prependBlocks.push({
+          type: "text",
+          text:
+            "<system-reminder>\n" + stripSystemReminderWrapper(block.text) + "\n</system-reminder>",
+        });
+      }
+      if (userPrependBundle) {
+        prependBlocks.push({
+          type: "text",
+          text: userPrependBundle,
+        });
+      }
+      let insertAt = 0;
+      while (
+        insertAt < stripped.content.length &&
+        stripped.content[insertAt]?.type === "tool_result"
+      ) {
+        insertAt++;
+      }
+      const head = stripped.content.slice(0, insertAt);
+      const tail = stripped.content.slice(insertAt);
+      out.push({ ...stripped, content: [...head, ...prependBlocks, ...tail] });
+      prependedFirstUser = true;
+    } else {
+      out.push(stripped);
+    }
+  }
+  applyLastUserCacheControl(out, "1h");
+  const midSystemBlocks = harness.midSystemBlocks ?? [];
+  if (midSystemBlocks.length > 0) {
+    const midJoined = midSystemBlocks.map((b) => stripSystemReminderWrapper(b.text)).join("\n\n");
+    if (midJoined) {
+      const firstUserIndex = out.findIndex((m) => m.role === "user");
+      const midSystemMessage: Message = {
+        role: "system",
+        content: [{ type: "text", text: midJoined }],
+      };
+      if (firstUserIndex >= 0) out.splice(firstUserIndex + 1, 0, midSystemMessage);
+      else out.push(midSystemMessage);
+    }
+  }
+  return out;
+}
+
+function stripSystemReminderWrapper(text: string): string {
+  return text.replace(/^<system-reminder>\n?/, "").replace(/\n?<\/system-reminder>$/, "");
+}
+
+function dropCacheControl(b: ContentBlock): ContentBlock {
+  if (b.type === "text") return { type: "text", text: b.text };
+  if (b.type === "tool_result")
+    return {
+      type: "tool_result",
+      tool_use_id: b.tool_use_id,
+      content: b.content,
+      ...(b.is_error !== undefined ? { is_error: b.is_error } : {}),
+    };
+  return b;
+}
+
+function stripUserCacheControl(msg: Message): Message {
+  if (msg.role !== "user") return msg;
+  return { ...msg, content: msg.content.map(dropCacheControl) };
+}
+
+function withCacheControl(block: ContentBlock, ttl: "1h" | "5m"): ContentBlock {
+  const cc = { type: "ephemeral" as const, ttl };
+  if (block.type === "text") return { ...block, cache_control: cc };
+  if (block.type === "tool_result") return { ...block, cache_control: cc };
+  return block;
+}
+
+function applyLastUserCacheControl(messages: Message[], ttl: "1h" | "5m" = "1h"): void {
+  const last = messages[messages.length - 1];
+  if (!last || last.role !== "user") return;
+  const idx = last.content.length - 1;
+  const block = last.content[idx];
+  if (!block) return;
+  last.content[idx] = withCacheControl(block, ttl);
+}
+
+export function applyTrailingCacheControl(messages: Message[]): Message[] {
+  if (messages.length === 0) return messages;
+  const last = messages[messages.length - 1];
+  if (!last || last.role !== "user") return messages;
+  const idx = last.content.length - 1;
+  const block = last.content[idx];
+  if (!block) return messages;
+  const out = [...messages];
+  const lastContent = [...last.content];
+  lastContent[idx] = withCacheControl(block, "1h");
+  out[out.length - 1] = { ...last, content: lastContent };
+  return out;
+}

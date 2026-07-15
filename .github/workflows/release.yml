@@ -1,0 +1,128 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish (must already exist)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-arm64
+            runs-on: macos-14
+            bun-target: bun-darwin-arm64
+          - target: darwin-x64
+            runs-on: macos-14
+            bun-target: bun-darwin-x64
+          - target: linux-x64
+            runs-on: ubuntu-latest
+            bun-target: bun-linux-x64
+          - target: linux-arm64
+            runs-on: ubuntu-24.04-arm
+            bun-target: bun-linux-arm64
+          - target: windows-x64
+            runs-on: windows-latest
+            bun-target: bun-windows-x64
+            ext: .exe
+    runs-on: ${{ matrix.runs-on }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-${{ runner.arch }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-bun-
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build binary
+        shell: bash
+        run: |
+          mkdir -p dist
+          bun build \
+            --compile \
+            --target=${{ matrix.bun-target }} \
+            --outfile=dist/otherside-${{ matrix.target }}${{ matrix.ext }} \
+            src/main.ts
+
+      - name: Compute checksum
+        shell: bash
+        run: |
+          cd dist
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum otherside-${{ matrix.target }}${{ matrix.ext }} > otherside-${{ matrix.target }}${{ matrix.ext }}.sha256
+          else
+            shasum -a 256 otherside-${{ matrix.target }}${{ matrix.ext }} > otherside-${{ matrix.target }}${{ matrix.ext }}.sha256
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: otherside-${{ matrix.target }}
+          path: |
+            dist/otherside-${{ matrix.target }}${{ matrix.ext }}
+            dist/otherside-${{ matrix.target }}${{ matrix.ext }}.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Stage release assets
+        run: |
+          mkdir -p release
+          find artifacts -type f \( -name 'otherside-*' \) -exec cp {} release/ \;
+          ls -la release/
+
+      - name: Resolve tag
+        id: tag
+        run: |
+          TAG="${{ inputs.tag }}"
+          if [ -z "$TAG" ]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" release/* --clobber
+          else
+            gh release create "$TAG" \
+              --title "$TAG" \
+              --generate-notes \
+              release/*
+          fi

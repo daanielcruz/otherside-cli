@@ -1,0 +1,103 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.4.13/schema.json",
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  },
+  "files": {
+    "ignoreUnknown": false,
+    "includes": [
+      "src/**",
+      "tests/**",
+      "*.ts",
+      "*.tsx",
+      "*.json",
+      "!src/design/bridge/web",
+      "!src/design/bridge/web-assets.generated.ts"
+    ]
+  },
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 100,
+    "lineEnding": "lf"
+  },
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "double",
+      "semicolons": "always",
+      "trailingCommas": "all",
+      "arrowParentheses": "always"
+    }
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true,
+      "style": {
+        "useImportType": "off",
+        "useNodejsImportProtocol": "error",
+        "noNonNullAssertion": "off",
+        "useTemplate": "off"
+      },
+      "suspicious": {
+        "noExplicitAny": "warn",
+        "noTemplateCurlyInString": "off",
+        "noControlCharactersInRegex": "off",
+        "noAssignInExpressions": "off",
+        "noSelfCompare": "off",
+        "noImplicitAnyLet": "off",
+        "noConfusingVoidType": "off"
+      },
+      "complexity": {
+        "noBannedTypes": "off"
+      },
+      "correctness": {
+        "noUnusedImports": "error",
+        "useExhaustiveDependencies": "off",
+        "useJsxKeyInIterable": "off",
+        "noUnusedVariables": "off",
+        "noUnusedFunctionParameters": "off"
+      },
+      "a11y": {
+        "noStaticElementInteractions": "off"
+      }
+    }
+  },
+  "overrides": [
+    {
+      "includes": ["src/design/**/*.ts"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "paths": {
+                  "@/ink": "src/design is browser-side; do not consume ink.",
+                  "@/ui": "src/design must not depend on ui; lifecycle goes via SlashContext."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["src/ink/**", "src/terminal-runtime/**"],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noExplicitAny": "off",
+            "noArrayIndexKey": "off"
+          },
+          "correctness": {
+            "useHookAtTopLevel": "off"
+          }
+        }
+      }
+    }
+  ]
+}
