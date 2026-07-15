@@ -1,0 +1,143 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`tool catalog golden (gates #3 deterministic catalog) base tools — names, order, schema 1`] = `
+[
+  {
+    "name": "Agent",
+    "schema": "05edb7c978f96308",
+  },
+  {
+    "name": "AskUserQuestion",
+    "schema": "2e4845645a6b7dba",
+  },
+  {
+    "name": "Bash",
+    "schema": "94ffad4822334fdf",
+  },
+  {
+    "name": "Edit",
+    "schema": "817017bfbd1919c8",
+  },
+  {
+    "name": "Read",
+    "schema": "b9874f37b6aade6a",
+  },
+  {
+    "name": "ReportFindings",
+    "schema": "a18f240e95f8a631",
+  },
+  {
+    "name": "Skill",
+    "schema": "cd6341f59f86ac3b",
+  },
+  {
+    "name": "ToolSearch",
+    "schema": "e0269ce0b5147fef",
+  },
+  {
+    "name": "Workflow",
+    "schema": "95fd83d6c59fd546",
+  },
+  {
+    "name": "Write",
+    "schema": "afb946a50519ce68",
+  },
+]
+`;
+
+exports[`tool catalog golden (gates #3 deterministic catalog) deferred tools — names, order, schema 1`] = `
+[
+  {
+    "name": "CronCreate",
+    "schema": "47d7b5b53c6e5c76",
+  },
+  {
+    "name": "CronDelete",
+    "schema": "5ff2afe7fa3bfa9c",
+  },
+  {
+    "name": "CronList",
+    "schema": "3f4edfbdd90fcb23",
+  },
+  {
+    "name": "EnterPlanMode",
+    "schema": "3f4edfbdd90fcb23",
+  },
+  {
+    "name": "EnterWorktree",
+    "schema": "b1eec893032bf0ca",
+  },
+  {
+    "name": "ExitPlanMode",
+    "schema": "16b495d639035082",
+  },
+  {
+    "name": "ExitWorktree",
+    "schema": "2cc3f9ef86ce5709",
+  },
+  {
+    "name": "GenerateImage",
+    "schema": "74038e298da6ad3d",
+  },
+  {
+    "name": "ListMcpResourcesTool",
+    "schema": "7034a197246841ca",
+  },
+  {
+    "name": "NotebookEdit",
+    "schema": "7d4f656adc601204",
+  },
+  {
+    "name": "ReadMcpResourceDirTool",
+    "schema": "c174b4f5c261158c",
+  },
+  {
+    "name": "ReadMcpResourceTool",
+    "schema": "3f1286b5118924aa",
+  },
+  {
+    "name": "ScheduleWakeup",
+    "schema": "6eb28434a438651f",
+  },
+  {
+    "name": "SendMessage",
+    "schema": "e97d9fa527608310",
+  },
+  {
+    "name": "TaskCreate",
+    "schema": "db2dd81af4bea8b0",
+  },
+  {
+    "name": "TaskGet",
+    "schema": "a690b21c5df99a35",
+  },
+  {
+    "name": "TaskList",
+    "schema": "3f4edfbdd90fcb23",
+  },
+  {
+    "name": "TaskOutput",
+    "schema": "d39977cf88488bc9",
+  },
+  {
+    "name": "TaskStop",
+    "schema": "c69fd2f1383ca346",
+  },
+  {
+    "name": "TaskUpdate",
+    "schema": "bbf842a554b443ea",
+  },
+  {
+    "name": "WebFetch",
+    "schema": "93123f162507c189",
+  },
+  {
+    "name": "WebSearch",
+    "schema": "1b4c390d14906161",
+  },
+  {
+    "name": "ReadDesign",
+    "schema": "d663d43fbe2590ca",
+  },
+]
+`;

@@ -1,0 +1,48 @@
+{
+  "name": "CanvasOp",
+  "description": "Performs a primitive operation on the Otherside Design canvas surface.\n\nSupported operations:\n- `draw_rect`: add a rectangle node. Required: `x`, `y`, `w`, `h`, `fill`.\n- `set_props`: update properties on an existing node. Required: `nodeId`, `props`.\n\nRules:\n- `op` selects the operation and is always required.\n- `w` and `h` must be greater than 0 when drawing a rectangle.\n- `fill` must be a non-empty string when drawing a rectangle.\n- The canvas surface is browser-side; this tool only enqueues the operation.\n- Unsupported `op` values return a structured error with `op NOT_IMPLEMENTED`.\n",
+  "inputSchema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "op": {
+        "type": "string",
+        "minLength": 1,
+        "description": "The operation to perform. Supported: `draw_rect`, `set_props`."
+      },
+      "x": {
+        "type": "number",
+        "description": "X coordinate for `draw_rect`."
+      },
+      "y": {
+        "type": "number",
+        "description": "Y coordinate for `draw_rect`."
+      },
+      "w": {
+        "type": "number",
+        "description": "Width for `draw_rect`; must be greater than 0."
+      },
+      "h": {
+        "type": "number",
+        "description": "Height for `draw_rect`; must be greater than 0."
+      },
+      "fill": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Fill color for `draw_rect`; must be non-empty."
+      },
+      "nodeId": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Target node id for `set_props`."
+      },
+      "props": {
+        "type": "object",
+        "additionalProperties": true,
+        "description": "Properties to merge for `set_props`."
+      }
+    },
+    "required": ["op"],
+    "additionalProperties": false
+  }
+}

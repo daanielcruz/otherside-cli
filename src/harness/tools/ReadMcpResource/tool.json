@@ -1,0 +1,20 @@
+{
+  "name": "ReadMcpResourceTool",
+  "description": "Read a specific MCP resource by URI from a named MCP server.\n",
+  "inputSchema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "server": {
+        "type": "string",
+        "description": "The MCP server name."
+      },
+      "uri": {
+        "type": "string",
+        "description": "The resource URI to read."
+      }
+    },
+    "required": ["server", "uri"],
+    "additionalProperties": false
+  }
+}

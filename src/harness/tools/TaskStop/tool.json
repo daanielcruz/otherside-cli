@@ -1,0 +1,19 @@
+{
+  "name": "TaskStop",
+  "description": "Stop a running background task in the execution registry — a backgrounded sub-agent (Agent tool dispatch), shell, or workflow. Pass the task id returned from the Agent tool result. Aborts the in-flight controller and marks the task as killed, returning a success or failure status. An id that is not a running registry task is reported as a failure (not found).",
+  "inputSchema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "task_id": {
+        "description": "The id of the task to cancel.",
+        "type": "string"
+      },
+      "shell_id": {
+        "description": "Deprecated: use task_id instead.",
+        "type": "string"
+      }
+    },
+    "additionalProperties": false
+  }
+}

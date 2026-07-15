@@ -1,0 +1,2527 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`anthropic wire-request golden (gates #1/#2/#5 final assembly) opus / agentic / default-effort / flagship 1`] = `
+{
+  "body": {
+    "context_management": {
+      "edits": [
+        {
+          "keep": "all",
+          "type": "clear_thinking_20251015",
+        },
+      ],
+    },
+    "max_tokens": 64000,
+    "messages": [
+      {
+        "content": [
+          {
+            "text": 
+"<system-reminder>
+As you answer the user's questions, you can use the following context:
+memory body line
+# directoryStructure
+- foo/
+- bar/
+      IMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.
+</system-reminder>
+"
+,
+            "type": "text",
+          },
+          {
+            "text": "explain the build",
+            "type": "text",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "content": "mid-conversation note",
+        "role": "system",
+      },
+      {
+        "content": [
+          {
+            "caller": {
+              "type": "direct",
+            },
+            "id": "toolu_fixture",
+            "input": {
+              "command": "make build-install",
+            },
+            "name": "Bash",
+            "type": "tool_use",
+          },
+        ],
+        "role": "assistant",
+      },
+      {
+        "content": [
+          {
+            "content": "ok",
+            "tool_use_id": "toolu_fixture",
+            "type": "tool_result",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "content": [
+          {
+            "cache_control": {
+              "ttl": "1h",
+              "type": "ephemeral",
+            },
+            "text": "now ship it",
+            "type": "text",
+          },
+        ],
+        "role": "user",
+      },
+    ],
+    "metadata": {
+      "user_id": "{"device_id":"0000000000000000000000000000000000000000000000000000000000000000","account_uuid":"acct-fixture","session_id":"sess-fixture-00000000-0000-0000-0000-000000000000"}",
+    },
+    "model": "claude-opus-4-8",
+    "output_config": {
+      "effort": "xhigh",
+    },
+    "stream": true,
+    "system": [
+      {
+        "text": "x-anthropic-billing-header: cc_version=2.1.209.533; cc_entrypoint=cli; cch=da8db;",
+        "type": "text",
+      },
+      {
+        "text": "You are Claude Code, Anthropic's official CLI for Claude.",
+        "type": "text",
+      },
+      {
+        "cache_control": {
+          "scope": "global",
+          "ttl": "1h",
+          "type": "ephemeral",
+        },
+        "text": 
+"FIXED-STATIC-A
+
+FIXED-STATIC-B"
+,
+        "type": "text",
+      },
+      {
+        "cache_control": {
+          "ttl": "1h",
+          "type": "ephemeral",
+        },
+        "text": "FIXED-DYNAMIC-ENV",
+        "type": "text",
+      },
+    ],
+    "thinking": {
+      "display": "summarized",
+      "type": "adaptive",
+    },
+    "tools": [
+      {
+        "description": "Run a shell command.",
+        "input_schema": {
+          "properties": {
+            "command": {
+              "type": "string",
+            },
+          },
+          "required": [
+            "command",
+          ],
+          "type": "object",
+        },
+        "name": "Bash",
+      },
+      {
+        "description": "Read a file.",
+        "input_schema": {
+          "properties": {
+            "file_path": {
+              "type": "string",
+            },
+          },
+          "required": [
+            "file_path",
+          ],
+          "type": "object",
+        },
+        "name": "Read",
+      },
+    ],
+  },
+  "bodyHash": "1482e3a62ba24ba0320811479d30fde957658df289641c902bca68c201f2f11a",
+  "headers": {
+    "Accept": "application/json",
+    "Authorization": "<authorization>",
+    "Content-Type": "application/json",
+    "User-Agent": "claude-cli/2.1.209 (external, cli)",
+    "X-Claude-Code-Session-Id": "sess-fixture-00000000-0000-0000-0000-000000000000",
+    "X-Stainless-Arch": "<x-stainless-arch>",
+    "X-Stainless-Lang": "js",
+    "X-Stainless-OS": "<x-stainless-os>",
+    "X-Stainless-Package-Version": "0.94.0",
+    "X-Stainless-Retry-Count": "0",
+    "X-Stainless-Runtime": "node",
+    "X-Stainless-Runtime-Version": "v26.3.0",
+    "X-Stainless-Timeout": "600",
+    "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,advanced-tool-use-2025-11-20,effort-2025-11-24,extended-cache-ttl-2025-04-11",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "anthropic-version": "2023-06-01",
+    "x-app": "cli",
+    "x-client-request-id": "<x-client-request-id>",
+  },
+  "url": "https://api.anthropic.com/v1/messages?beta=true",
+}
+`;
+
+exports[`anthropic wire-request golden (gates #1/#2/#5 final assembly) opus / agentic / high 1`] = `
+{
+  "body": {
+    "context_management": {
+      "edits": [
+        {
+          "keep": "all",
+          "type": "clear_thinking_20251015",
+        },
+      ],
+    },
+    "max_tokens": 64000,
+    "messages": [
+      {
+        "content": [
+          {
+            "text": 
+"<system-reminder>
+As you answer the user's questions, you can use the following context:
+memory body line
+# directoryStructure
+- foo/
+- bar/
+      IMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.
+</system-reminder>
+"
+,
+            "type": "text",
+          },
+          {
+            "text": "explain the build",
+            "type": "text",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "content": "mid-conversation note",
+        "role": "system",
+      },
+      {
+        "content": [
+          {
+            "caller": {
+              "type": "direct",
+            },
+            "id": "toolu_fixture",
+            "input": {
+              "command": "make build-install",
+            },
+            "name": "Bash",
+            "type": "tool_use",
+          },
+        ],
+        "role": "assistant",
+      },
+      {
+        "content": [
+          {
+            "content": "ok",
+            "tool_use_id": "toolu_fixture",
+            "type": "tool_result",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "content": [
+          {
+            "cache_control": {
+              "ttl": "1h",
+              "type": "ephemeral",
+            },
+            "text": "now ship it",
+            "type": "text",
+          },
+        ],
+        "role": "user",
+      },
+    ],
+    "metadata": {
+      "user_id": "{"device_id":"0000000000000000000000000000000000000000000000000000000000000000","account_uuid":"acct-fixture","session_id":"sess-fixture-00000000-0000-0000-0000-000000000000"}",
+    },
+    "model": "claude-opus-4-8",
+    "output_config": {
+      "effort": "high",
+    },
+    "stream": true,
+    "system": [
+      {
+        "text": "x-anthropic-billing-header: cc_version=2.1.209.533; cc_entrypoint=cli; cch=31be2;",
+        "type": "text",
+      },
+      {
+        "text": "You are Claude Code, Anthropic's official CLI for Claude.",
+        "type": "text",
+      },
+      {
+        "cache_control": {
+          "scope": "global",
+          "ttl": "1h",
+          "type": "ephemeral",
+        },
+        "text": 
+"FIXED-STATIC-A
+
+FIXED-STATIC-B"
+,
+        "type": "text",
+      },
+      {
+        "cache_control": {
+          "ttl": "1h",
+          "type": "ephemeral",
+        },
+        "text": "FIXED-DYNAMIC-ENV",
+        "type": "text",
+      },
+    ],
+    "thinking": {
+      "display": "summarized",
+      "type": "adaptive",
+    },
+    "tools": [
+      {
+        "description": "Run a shell command.",
+        "input_schema": {
+          "properties": {
+            "command": {
+              "type": "string",
+            },
+          },
+          "required": [
+            "command",
+          ],
+          "type": "object",
+        },
+        "name": "Bash",
+      },
+      {
+        "description": "Read a file.",
+        "input_schema": {
+          "properties": {
+            "file_path": {
+              "type": "string",
+            },
+          },
+          "required": [
+            "file_path",
+          ],
+          "type": "object",
+        },
+        "name": "Read",
+      },
+    ],
+  },
+  "bodyHash": "2090de3d5d8b71442edf1c7e3200356dc5795188f1f9a8cea509780d78dc5dc9",
+  "headers": {
+    "Accept": "application/json",
+    "Authorization": "<authorization>",
+    "Content-Type": "application/json",
+    "User-Agent": "claude-cli/2.1.209 (external, cli)",
+    "X-Claude-Code-Session-Id": "sess-fixture-00000000-0000-0000-0000-000000000000",
+    "X-Stainless-Arch": "<x-stainless-arch>",
+    "X-Stainless-Lang": "js",
+    "X-Stainless-OS": "<x-stainless-os>",
+    "X-Stainless-Package-Version": "0.94.0",
+    "X-Stainless-Retry-Count": "0",
+    "X-Stainless-Runtime": "node",
+    "X-Stainless-Runtime-Version": "v26.3.0",
+    "X-Stainless-Timeout": "600",
+    "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,advanced-tool-use-2025-11-20,effort-2025-11-24,extended-cache-ttl-2025-04-11",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "anthropic-version": "2023-06-01",
+    "x-app": "cli",
+    "x-client-request-id": "<x-client-request-id>",
+  },
+  "url": "https://api.anthropic.com/v1/messages?beta=true",
+}
+`;
+
+exports[`anthropic wire-request golden (gates #1/#2/#5 final assembly) opus[1m] / agentic 1`] = `
+{
+  "body": {
+    "context_management": {
+      "edits": [
+        {
+          "keep": "all",
+          "type": "clear_thinking_20251015",
+        },
+      ],
+    },
+    "max_tokens": 64000,
+    "messages": [
+      {
+        "content": [
+          {
+            "text": 
+"<system-reminder>
+As you answer the user's questions, you can use the following context:
+memory body line
+# directoryStructure
+- foo/
+- bar/
+      IMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.
+</system-reminder>
+"
+,
+            "type": "text",
+          },
+          {
+            "text": "explain the build",
+            "type": "text",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "content": "mid-conversation note",
+        "role": "system",
+      },
+      {
+        "content": [
+          {
+            "caller": {
+              "type": "direct",
+            },
+            "id": "toolu_fixture",
+            "input": {
+              "command": "make build-install",
+            },
+            "name": "Bash",
+            "type": "tool_use",
+          },
+        ],
+        "role": "assistant",
+      },
+      {
+        "content": [
+          {
+            "content": "ok",
+            "tool_use_id": "toolu_fixture",
+            "type": "tool_result",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "content": [
+          {
+            "cache_control": {
+              "ttl": "1h",
+              "type": "ephemeral",
+            },
+            "text": "now ship it",
+            "type": "text",
+          },
+        ],
+        "role": "user",
+      },
+    ],
+    "metadata": {
+      "user_id": "{"device_id":"0000000000000000000000000000000000000000000000000000000000000000","account_uuid":"acct-fixture","session_id":"sess-fixture-00000000-0000-0000-0000-000000000000"}",
+    },
+    "model": "claude-opus-4-8",
+    "output_config": {
+      "effort": "xhigh",
+    },
+    "stream": true,
+    "system": [
+      {
+        "text": "x-anthropic-billing-header: cc_version=2.1.209.533; cc_entrypoint=cli; cch=da8db;",
+        "type": "text",
+      },
+      {
+        "text": "You are Claude Code, Anthropic's official CLI for Claude.",
+        "type": "text",
+      },
+      {
+        "cache_control": {
+          "scope": "global",
+          "ttl": "1h",
+          "type": "ephemeral",
+        },
+        "text": 
+"FIXED-STATIC-A
+
+FIXED-STATIC-B"
+,
+        "type": "text",
+      },
+      {
+        "cache_control": {
+          "ttl": "1h",
+          "type": "ephemeral",
+        },
+        "text": "FIXED-DYNAMIC-ENV",
+        "type": "text",
+      },
+    ],
+    "thinking": {
+      "display": "summarized",
+      "type": "adaptive",
+    },
+    "tools": [
+      {
+        "description": "Run a shell command.",
+        "input_schema": {
+          "properties": {
+            "command": {
+              "type": "string",
+            },
+          },
+          "required": [
+            "command",
+          ],
+          "type": "object",
+        },
+        "name": "Bash",
+      },
+      {
+        "description": "Read a file.",
+        "input_schema": {
+          "properties": {
+            "file_path": {
+              "type": "string",
+            },
+          },
+          "required": [
+            "file_path",
+          ],
+          "type": "object",
+        },
+        "name": "Read",
+      },
+    ],
+  },
+  "bodyHash": "1482e3a62ba24ba0320811479d30fde957658df289641c902bca68c201f2f11a",
+  "headers": {
+    "Accept": "application/json",
+    "Authorization": "<authorization>",
+    "Content-Type": "application/json",
+    "User-Agent": "claude-cli/2.1.209 (external, cli)",
+    "X-Claude-Code-Session-Id": "sess-fixture-00000000-0000-0000-0000-000000000000",
+    "X-Stainless-Arch": "<x-stainless-arch>",
+    "X-Stainless-Lang": "js",
+    "X-Stainless-OS": "<x-stainless-os>",
+    "X-Stainless-Package-Version": "0.94.0",
+    "X-Stainless-Retry-Count": "0",
+    "X-Stainless-Runtime": "node",
+    "X-Stainless-Runtime-Version": "v26.3.0",
+    "X-Stainless-Timeout": "600",
+    "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,context-1m-2025-08-07,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,advanced-tool-use-2025-11-20,effort-2025-11-24,extended-cache-ttl-2025-04-11",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "anthropic-version": "2023-06-01",
+    "x-app": "cli",
+    "x-client-request-id": "<x-client-request-id>",
+  },
+  "url": "https://api.anthropic.com/v1/messages?beta=true",
+}
+`;
+
+exports[`anthropic wire-request golden (gates #1/#2/#5 final assembly) sonnet / agentic / plain 1`] = `
+{
+  "body": {
+    "context_management": {
+      "edits": [
+        {
+          "keep": "all",
+          "type": "clear_thinking_20251015",
+        },
+      ],
+    },
+    "max_tokens": 64000,
+    "messages": [
+      {
+        "content": [
+          {
+            "text": 
+"<system-reminder>
+As you answer the user's questions, you can use the following context:
+memory body line
+# directoryStructure
+- foo/
+- bar/
+      IMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.
+</system-reminder>
+"
+,
+            "type": "text",
+          },
+          {
+            "text": "explain the build",
+            "type": "text",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "content": [
+          {
+            "caller": {
+              "type": "direct",
+            },
+            "id": "toolu_fixture",
+            "input": {
+              "command": "make build-install",
+            },
+            "name": "Bash",
+            "type": "tool_use",
+          },
+        ],
+        "role": "assistant",
+      },
+      {
+        "content": [
+          {
+            "content": "ok",
+            "tool_use_id": "toolu_fixture",
+            "type": "tool_result",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "content": [
+          {
+            "cache_control": {
+              "ttl": "1h",
+              "type": "ephemeral",
+            },
+            "text": "now ship it",
+            "type": "text",
+          },
+        ],
+        "role": "user",
+      },
+    ],
+    "metadata": {
+      "user_id": "{"device_id":"0000000000000000000000000000000000000000000000000000000000000000","account_uuid":"acct-fixture","session_id":"sess-fixture-00000000-0000-0000-0000-000000000000"}",
+    },
+    "model": "claude-sonnet-5",
+    "output_config": {
+      "effort": "high",
+    },
+    "stream": true,
+    "system": [
+      {
+        "text": "x-anthropic-billing-header: cc_version=2.1.209.533; cc_entrypoint=cli; cch=8b9b7;",
+        "type": "text",
+      },
+      {
+        "text": "You are Claude Code, Anthropic's official CLI for Claude.",
+        "type": "text",
+      },
+      {
+        "cache_control": {
+          "scope": "global",
+          "ttl": "1h",
+          "type": "ephemeral",
+        },
+        "text": 
+"FIXED-STATIC-A
+
+FIXED-STATIC-B"
+,
+        "type": "text",
+      },
+      {
+        "cache_control": {
+          "ttl": "1h",
+          "type": "ephemeral",
+        },
+        "text": "FIXED-DYNAMIC-ENV",
+        "type": "text",
+      },
+    ],
+    "thinking": {
+      "display": "summarized",
+      "type": "adaptive",
+    },
+    "tools": [
+      {
+        "description": "Run a shell command.",
+        "input_schema": {
+          "properties": {
+            "command": {
+              "type": "string",
+            },
+          },
+          "required": [
+            "command",
+          ],
+          "type": "object",
+        },
+        "name": "Bash",
+      },
+      {
+        "description": "Read a file.",
+        "input_schema": {
+          "properties": {
+            "file_path": {
+              "type": "string",
+            },
+          },
+          "required": [
+            "file_path",
+          ],
+          "type": "object",
+        },
+        "name": "Read",
+      },
+    ],
+  },
+  "bodyHash": "3b882b3a193f13fbe704383b76629e5fb18a97bbff79673d6e8b287e4bdb62cd",
+  "headers": {
+    "Accept": "application/json",
+    "Authorization": "<authorization>",
+    "Content-Type": "application/json",
+    "User-Agent": "claude-cli/2.1.209 (external, cli)",
+    "X-Claude-Code-Session-Id": "sess-fixture-00000000-0000-0000-0000-000000000000",
+    "X-Stainless-Arch": "<x-stainless-arch>",
+    "X-Stainless-Lang": "js",
+    "X-Stainless-OS": "<x-stainless-os>",
+    "X-Stainless-Package-Version": "0.94.0",
+    "X-Stainless-Retry-Count": "0",
+    "X-Stainless-Runtime": "node",
+    "X-Stainless-Runtime-Version": "v26.3.0",
+    "X-Stainless-Timeout": "600",
+    "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,advanced-tool-use-2025-11-20,effort-2025-11-24,extended-cache-ttl-2025-04-11",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "anthropic-version": "2023-06-01",
+    "x-app": "cli",
+    "x-client-request-id": "<x-client-request-id>",
+  },
+  "url": "https://api.anthropic.com/v1/messages?beta=true",
+}
+`;
+
+exports[`anthropic wire-request golden (gates #1/#2/#5 final assembly) haiku / agentic / plain 1`] = `
+{
+  "body": {
+    "context_management": {
+      "edits": [
+        {
+          "keep": "all",
+          "type": "clear_thinking_20251015",
+        },
+      ],
+    },
+    "max_tokens": 32000,
+    "messages": [
+      {
+        "content": [
+          {
+            "text": 
+"<system-reminder>
+As you answer the user's questions, you can use the following context:
+memory body line
+# directoryStructure
+- foo/
+- bar/
+      IMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.
+</system-reminder>
+"
+,
+            "type": "text",
+          },
+          {
+            "text": "explain the build",
+            "type": "text",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "content": [
+          {
+            "caller": {
+              "type": "direct",
+            },
+            "id": "toolu_fixture",
+            "input": {
+              "command": "make build-install",
+            },
+            "name": "Bash",
+            "type": "tool_use",
+          },
+        ],
+        "role": "assistant",
+      },
+      {
+        "content": [
+          {
+            "content": "ok",
+            "tool_use_id": "toolu_fixture",
+            "type": "tool_result",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "content": [
+          {
+            "cache_control": {
+              "ttl": "1h",
+              "type": "ephemeral",
+            },
+            "text": "now ship it",
+            "type": "text",
+          },
+        ],
+        "role": "user",
+      },
+    ],
+    "metadata": {
+      "user_id": "{"device_id":"0000000000000000000000000000000000000000000000000000000000000000","account_uuid":"acct-fixture","session_id":"sess-fixture-00000000-0000-0000-0000-000000000000"}",
+    },
+    "model": "claude-haiku-4-5-20251001",
+    "stream": true,
+    "system": [
+      {
+        "text": "x-anthropic-billing-header: cc_version=2.1.209.533; cc_entrypoint=cli; cch=fe7d9;",
+        "type": "text",
+      },
+      {
+        "text": "You are Claude Code, Anthropic's official CLI for Claude.",
+        "type": "text",
+      },
+      {
+        "cache_control": {
+          "scope": "global",
+          "ttl": "1h",
+          "type": "ephemeral",
+        },
+        "text": 
+"FIXED-STATIC-A
+
+FIXED-STATIC-B"
+,
+        "type": "text",
+      },
+      {
+        "cache_control": {
+          "ttl": "1h",
+          "type": "ephemeral",
+        },
+        "text": "FIXED-DYNAMIC-ENV",
+        "type": "text",
+      },
+    ],
+    "thinking": {
+      "budget_tokens": 31999,
+      "display": "summarized",
+      "type": "enabled",
+    },
+    "tools": [
+      {
+        "description": "Run a shell command.",
+        "input_schema": {
+          "properties": {
+            "command": {
+              "type": "string",
+            },
+          },
+          "required": [
+            "command",
+          ],
+          "type": "object",
+        },
+        "name": "Bash",
+      },
+      {
+        "description": "Read a file.",
+        "input_schema": {
+          "properties": {
+            "file_path": {
+              "type": "string",
+            },
+          },
+          "required": [
+            "file_path",
+          ],
+          "type": "object",
+        },
+        "name": "Read",
+      },
+    ],
+  },
+  "bodyHash": "2a317ce8251a256b055ca7493710ab689537b2187597f1d2a679536206091396",
+  "headers": {
+    "Accept": "application/json",
+    "Authorization": "<authorization>",
+    "Content-Type": "application/json",
+    "User-Agent": "claude-cli/2.1.209 (external, cli)",
+    "X-Claude-Code-Session-Id": "sess-fixture-00000000-0000-0000-0000-000000000000",
+    "X-Stainless-Arch": "<x-stainless-arch>",
+    "X-Stainless-Lang": "js",
+    "X-Stainless-OS": "<x-stainless-os>",
+    "X-Stainless-Package-Version": "0.94.0",
+    "X-Stainless-Retry-Count": "0",
+    "X-Stainless-Runtime": "node",
+    "X-Stainless-Runtime-Version": "v26.3.0",
+    "X-Stainless-Timeout": "600",
+    "anthropic-beta": "oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,claude-code-20250219,advanced-tool-use-2025-11-20,extended-cache-ttl-2025-04-11",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "anthropic-version": "2023-06-01",
+    "x-app": "cli",
+    "x-client-request-id": "<x-client-request-id>",
+  },
+  "url": "https://api.anthropic.com/v1/messages?beta=true",
+}
+`;
+
+exports[`anthropic wire-request golden (gates #1/#2/#5 final assembly) haiku / subagent (agentic, sidechain → dated id) 1`] = `
+{
+  "body": {
+    "context_management": {
+      "edits": [
+        {
+          "keep": "all",
+          "type": "clear_thinking_20251015",
+        },
+      ],
+    },
+    "max_tokens": 32000,
+    "messages": [
+      {
+        "content": [
+          {
+            "text": 
+"<system-reminder>
+As you answer the user's questions, you can use the following context:
+memory body line
+# directoryStructure
+- foo/
+- bar/
+      IMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.
+</system-reminder>
+"
+,
+            "type": "text",
+          },
+          {
+            "text": "explain the build",
+            "type": "text",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "content": [
+          {
+            "caller": {
+              "type": "direct",
+            },
+            "id": "toolu_fixture",
+            "input": {
+              "command": "make build-install",
+            },
+            "name": "Bash",
+            "type": "tool_use",
+          },
+        ],
+        "role": "assistant",
+      },
+      {
+        "content": [
+          {
+            "content": "ok",
+            "tool_use_id": "toolu_fixture",
+            "type": "tool_result",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "content": [
+          {
+            "cache_control": {
+              "ttl": "1h",
+              "type": "ephemeral",
+            },
+            "text": "now ship it",
+            "type": "text",
+          },
+        ],
+        "role": "user",
+      },
+    ],
+    "metadata": {
+      "user_id": "{"device_id":"0000000000000000000000000000000000000000000000000000000000000000","account_uuid":"acct-fixture","session_id":"sess-fixture-00000000-0000-0000-0000-000000000000"}",
+    },
+    "model": "claude-haiku-4-5-20251001",
+    "stream": true,
+    "system": [
+      {
+        "text": "x-anthropic-billing-header: cc_version=2.1.209.533; cc_entrypoint=cli; cch=fe7d9;",
+        "type": "text",
+      },
+      {
+        "text": "You are Claude Code, Anthropic's official CLI for Claude.",
+        "type": "text",
+      },
+      {
+        "cache_control": {
+          "scope": "global",
+          "ttl": "1h",
+          "type": "ephemeral",
+        },
+        "text": 
+"FIXED-STATIC-A
+
+FIXED-STATIC-B"
+,
+        "type": "text",
+      },
+      {
+        "cache_control": {
+          "ttl": "1h",
+          "type": "ephemeral",
+        },
+        "text": "FIXED-DYNAMIC-ENV",
+        "type": "text",
+      },
+    ],
+    "thinking": {
+      "budget_tokens": 31999,
+      "display": "summarized",
+      "type": "enabled",
+    },
+    "tools": [
+      {
+        "description": "Run a shell command.",
+        "input_schema": {
+          "properties": {
+            "command": {
+              "type": "string",
+            },
+          },
+          "required": [
+            "command",
+          ],
+          "type": "object",
+        },
+        "name": "Bash",
+      },
+      {
+        "description": "Read a file.",
+        "input_schema": {
+          "properties": {
+            "file_path": {
+              "type": "string",
+            },
+          },
+          "required": [
+            "file_path",
+          ],
+          "type": "object",
+        },
+        "name": "Read",
+      },
+    ],
+  },
+  "bodyHash": "2a317ce8251a256b055ca7493710ab689537b2187597f1d2a679536206091396",
+  "headers": {
+    "Accept": "application/json",
+    "Authorization": "<authorization>",
+    "Content-Type": "application/json",
+    "User-Agent": "claude-cli/2.1.209 (external, cli)",
+    "X-Claude-Code-Session-Id": "sess-fixture-00000000-0000-0000-0000-000000000000",
+    "X-Stainless-Arch": "<x-stainless-arch>",
+    "X-Stainless-Lang": "js",
+    "X-Stainless-OS": "<x-stainless-os>",
+    "X-Stainless-Package-Version": "0.94.0",
+    "X-Stainless-Retry-Count": "0",
+    "X-Stainless-Runtime": "node",
+    "X-Stainless-Runtime-Version": "v26.3.0",
+    "X-Stainless-Timeout": "600",
+    "anthropic-beta": "oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,claude-code-20250219,advanced-tool-use-2025-11-20,extended-cache-ttl-2025-04-11",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "anthropic-version": "2023-06-01",
+    "x-app": "cli",
+    "x-client-request-id": "<x-client-request-id>",
+  },
+  "url": "https://api.anthropic.com/v1/messages?beta=true",
+}
+`;
+
+exports[`anthropic wire-request golden (gates #1/#2/#5 final assembly) haiku / title (non-agentic, structured) 1`] = `
+{
+  "body": {
+    "max_tokens": 32000,
+    "messages": [
+      {
+        "content": [
+          {
+            "text": 
+"<system-reminder>
+As you answer the user's questions, you can use the following context:
+memory body line
+# directoryStructure
+- foo/
+- bar/
+      IMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.
+</system-reminder>
+"
+,
+            "type": "text",
+          },
+          {
+            "text": "explain the build",
+            "type": "text",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "content": [
+          {
+            "caller": {
+              "type": "direct",
+            },
+            "id": "toolu_fixture",
+            "input": {
+              "command": "make build-install",
+            },
+            "name": "Bash",
+            "type": "tool_use",
+          },
+        ],
+        "role": "assistant",
+      },
+      {
+        "content": [
+          {
+            "content": "ok",
+            "tool_use_id": "toolu_fixture",
+            "type": "tool_result",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "content": [
+          {
+            "text": "now ship it",
+            "type": "text",
+          },
+        ],
+        "role": "user",
+      },
+    ],
+    "metadata": {
+      "user_id": "{"device_id":"0000000000000000000000000000000000000000000000000000000000000000","account_uuid":"acct-fixture","session_id":"sess-fixture-00000000-0000-0000-0000-000000000000"}",
+    },
+    "model": "claude-haiku-4-5-20251001",
+    "output_config": {},
+    "stream": true,
+    "system": [
+      {
+        "text": "x-anthropic-billing-header: cc_version=2.1.209.533; cc_entrypoint=cli; cch=12672;",
+        "type": "text",
+      },
+      {
+        "text": "You are Claude Code, Anthropic's official CLI for Claude.",
+        "type": "text",
+      },
+      {
+        "text": 
+"FIXED-STATIC-A
+
+FIXED-STATIC-B"
+,
+        "type": "text",
+      },
+      {
+        "text": "FIXED-DYNAMIC-ENV",
+        "type": "text",
+      },
+    ],
+    "tools": [
+      {
+        "description": "Run a shell command.",
+        "input_schema": {
+          "properties": {
+            "command": {
+              "type": "string",
+            },
+          },
+          "required": [
+            "command",
+          ],
+          "type": "object",
+        },
+        "name": "Bash",
+      },
+      {
+        "description": "Read a file.",
+        "input_schema": {
+          "properties": {
+            "file_path": {
+              "type": "string",
+            },
+          },
+          "required": [
+            "file_path",
+          ],
+          "type": "object",
+        },
+        "name": "Read",
+      },
+    ],
+  },
+  "bodyHash": "37ae730ac16f3829a6d3e8b6abf2f4e3fb28db2e62b812865ced943e5a59f363",
+  "headers": {
+    "Accept": "application/json",
+    "Authorization": "<authorization>",
+    "Content-Type": "application/json",
+    "User-Agent": "claude-cli/2.1.209 (external, cli)",
+    "X-Claude-Code-Session-Id": "sess-fixture-00000000-0000-0000-0000-000000000000",
+    "X-Stainless-Arch": "<x-stainless-arch>",
+    "X-Stainless-Lang": "js",
+    "X-Stainless-OS": "<x-stainless-os>",
+    "X-Stainless-Package-Version": "0.94.0",
+    "X-Stainless-Retry-Count": "0",
+    "X-Stainless-Runtime": "node",
+    "X-Stainless-Runtime-Version": "v26.3.0",
+    "X-Stainless-Timeout": "600",
+    "anthropic-beta": "oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,structured-outputs-2025-12-15",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "anthropic-version": "2023-06-01",
+    "x-app": "cli",
+    "x-client-request-id": "<x-client-request-id>",
+  },
+  "url": "https://api.anthropic.com/v1/messages?beta=true",
+}
+`;
+
+exports[`anthropic wire-request golden (gates #1/#2/#5 final assembly) fable / agentic 1`] = `
+{
+  "body": {
+    "context_management": {
+      "edits": [
+        {
+          "keep": "all",
+          "type": "clear_thinking_20251015",
+        },
+      ],
+    },
+    "max_tokens": 64000,
+    "messages": [
+      {
+        "content": [
+          {
+            "text": 
+"<system-reminder>
+As you answer the user's questions, you can use the following context:
+memory body line
+# directoryStructure
+- foo/
+- bar/
+      IMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.
+</system-reminder>
+"
+,
+            "type": "text",
+          },
+          {
+            "text": "explain the build",
+            "type": "text",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "content": "mid-conversation note",
+        "role": "system",
+      },
+      {
+        "content": [
+          {
+            "caller": {
+              "type": "direct",
+            },
+            "id": "toolu_fixture",
+            "input": {
+              "command": "make build-install",
+            },
+            "name": "Bash",
+            "type": "tool_use",
+          },
+        ],
+        "role": "assistant",
+      },
+      {
+        "content": [
+          {
+            "content": "ok",
+            "tool_use_id": "toolu_fixture",
+            "type": "tool_result",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "content": [
+          {
+            "cache_control": {
+              "ttl": "1h",
+              "type": "ephemeral",
+            },
+            "text": "now ship it",
+            "type": "text",
+          },
+        ],
+        "role": "user",
+      },
+    ],
+    "metadata": {
+      "user_id": "{"device_id":"0000000000000000000000000000000000000000000000000000000000000000","account_uuid":"acct-fixture","session_id":"sess-fixture-00000000-0000-0000-0000-000000000000"}",
+    },
+    "model": "claude-fable-5",
+    "output_config": {
+      "effort": "high",
+    },
+    "stream": true,
+    "system": [
+      {
+        "text": "x-anthropic-billing-header: cc_version=2.1.209.533; cc_entrypoint=cli; cch=31be2;",
+        "type": "text",
+      },
+      {
+        "text": "You are Claude Code, Anthropic's official CLI for Claude.",
+        "type": "text",
+      },
+      {
+        "cache_control": {
+          "scope": "global",
+          "ttl": "1h",
+          "type": "ephemeral",
+        },
+        "text": 
+"FIXED-STATIC-A
+
+FIXED-STATIC-B"
+,
+        "type": "text",
+      },
+      {
+        "cache_control": {
+          "ttl": "1h",
+          "type": "ephemeral",
+        },
+        "text": "FIXED-DYNAMIC-ENV",
+        "type": "text",
+      },
+    ],
+    "thinking": {
+      "display": "summarized",
+      "type": "adaptive",
+    },
+    "tools": [
+      {
+        "description": "Run a shell command.",
+        "input_schema": {
+          "properties": {
+            "command": {
+              "type": "string",
+            },
+          },
+          "required": [
+            "command",
+          ],
+          "type": "object",
+        },
+        "name": "Bash",
+      },
+      {
+        "description": "Read a file.",
+        "input_schema": {
+          "properties": {
+            "file_path": {
+              "type": "string",
+            },
+          },
+          "required": [
+            "file_path",
+          ],
+          "type": "object",
+        },
+        "name": "Read",
+      },
+    ],
+  },
+  "bodyHash": "ac725d2cd33bdc55054dc285d6d66363cb89d573db1b07bef3c62572b6907810",
+  "headers": {
+    "Accept": "application/json",
+    "Authorization": "<authorization>",
+    "Content-Type": "application/json",
+    "User-Agent": "claude-cli/2.1.209 (external, cli)",
+    "X-Claude-Code-Session-Id": "sess-fixture-00000000-0000-0000-0000-000000000000",
+    "X-Stainless-Arch": "<x-stainless-arch>",
+    "X-Stainless-Lang": "js",
+    "X-Stainless-OS": "<x-stainless-os>",
+    "X-Stainless-Package-Version": "0.94.0",
+    "X-Stainless-Retry-Count": "0",
+    "X-Stainless-Runtime": "node",
+    "X-Stainless-Runtime-Version": "v26.3.0",
+    "X-Stainless-Timeout": "600",
+    "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,advanced-tool-use-2025-11-20,effort-2025-11-24,extended-cache-ttl-2025-04-11",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "anthropic-version": "2023-06-01",
+    "x-app": "cli",
+    "x-client-request-id": "<x-client-request-id>",
+  },
+  "url": "https://api.anthropic.com/v1/messages?beta=true",
+}
+`;
+
+exports[`anthropic wire-request golden (gates #1/#2/#5 final assembly) opus / agentic / disableThinking 1`] = `
+{
+  "body": {
+    "max_tokens": 64000,
+    "messages": [
+      {
+        "content": [
+          {
+            "text": 
+"<system-reminder>
+As you answer the user's questions, you can use the following context:
+memory body line
+# directoryStructure
+- foo/
+- bar/
+      IMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.
+</system-reminder>
+"
+,
+            "type": "text",
+          },
+          {
+            "text": "explain the build",
+            "type": "text",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "content": "mid-conversation note",
+        "role": "system",
+      },
+      {
+        "content": [
+          {
+            "caller": {
+              "type": "direct",
+            },
+            "id": "toolu_fixture",
+            "input": {
+              "command": "make build-install",
+            },
+            "name": "Bash",
+            "type": "tool_use",
+          },
+        ],
+        "role": "assistant",
+      },
+      {
+        "content": [
+          {
+            "content": "ok",
+            "tool_use_id": "toolu_fixture",
+            "type": "tool_result",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "content": [
+          {
+            "cache_control": {
+              "ttl": "1h",
+              "type": "ephemeral",
+            },
+            "text": "now ship it",
+            "type": "text",
+          },
+        ],
+        "role": "user",
+      },
+    ],
+    "metadata": {
+      "user_id": "{"device_id":"0000000000000000000000000000000000000000000000000000000000000000","account_uuid":"acct-fixture","session_id":"sess-fixture-00000000-0000-0000-0000-000000000000"}",
+    },
+    "model": "claude-opus-4-8",
+    "output_config": {},
+    "stream": true,
+    "system": [
+      {
+        "text": "x-anthropic-billing-header: cc_version=2.1.209.533; cc_entrypoint=cli; cch=26dde;",
+        "type": "text",
+      },
+      {
+        "text": "You are Claude Code, Anthropic's official CLI for Claude.",
+        "type": "text",
+      },
+      {
+        "cache_control": {
+          "scope": "global",
+          "ttl": "1h",
+          "type": "ephemeral",
+        },
+        "text": 
+"FIXED-STATIC-A
+
+FIXED-STATIC-B"
+,
+        "type": "text",
+      },
+      {
+        "cache_control": {
+          "ttl": "1h",
+          "type": "ephemeral",
+        },
+        "text": "FIXED-DYNAMIC-ENV",
+        "type": "text",
+      },
+    ],
+    "tools": [
+      {
+        "description": "Run a shell command.",
+        "input_schema": {
+          "properties": {
+            "command": {
+              "type": "string",
+            },
+          },
+          "required": [
+            "command",
+          ],
+          "type": "object",
+        },
+        "name": "Bash",
+      },
+      {
+        "description": "Read a file.",
+        "input_schema": {
+          "properties": {
+            "file_path": {
+              "type": "string",
+            },
+          },
+          "required": [
+            "file_path",
+          ],
+          "type": "object",
+        },
+        "name": "Read",
+      },
+    ],
+  },
+  "bodyHash": "3cd556b1a5f5a7a997b8240cec4712e589ef7c06fa8b53d3c44c1dcd7b74e396",
+  "headers": {
+    "Accept": "application/json",
+    "Authorization": "<authorization>",
+    "Content-Type": "application/json",
+    "User-Agent": "claude-cli/2.1.209 (external, cli)",
+    "X-Claude-Code-Session-Id": "sess-fixture-00000000-0000-0000-0000-000000000000",
+    "X-Stainless-Arch": "<x-stainless-arch>",
+    "X-Stainless-Lang": "js",
+    "X-Stainless-OS": "<x-stainless-os>",
+    "X-Stainless-Package-Version": "0.94.0",
+    "X-Stainless-Retry-Count": "0",
+    "X-Stainless-Runtime": "node",
+    "X-Stainless-Runtime-Version": "v26.3.0",
+    "X-Stainless-Timeout": "600",
+    "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,advanced-tool-use-2025-11-20,effort-2025-11-24,extended-cache-ttl-2025-04-11",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "anthropic-version": "2023-06-01",
+    "x-app": "cli",
+    "x-client-request-id": "<x-client-request-id>",
+  },
+  "url": "https://api.anthropic.com/v1/messages?beta=true",
+}
+`;
+
+exports[`anthropic-compat wire-request golden kimi / kimi-for-coding 1`] = `
+{
+  "body": {
+    "max_tokens": 32000,
+    "messages": [
+      {
+        "content": [
+          {
+            "text": "explain the build",
+            "type": "text",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "content": [
+          {
+            "id": "toolu_fixture",
+            "input": {
+              "command": "make build-install",
+            },
+            "name": "Bash",
+            "type": "tool_use",
+          },
+        ],
+        "role": "assistant",
+      },
+      {
+        "content": [
+          {
+            "content": "ok",
+            "tool_use_id": "toolu_fixture",
+            "type": "tool_result",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "content": [
+          {
+            "text": "now ship it",
+            "type": "text",
+          },
+        ],
+        "role": "user",
+      },
+    ],
+    "metadata": {
+      "user_id": "{"device_id":"","account_uuid":"","session_id":"sess-fixture-00000000-0000-0000-0000-000000000000"}",
+    },
+    "model": "kimi-for-coding",
+    "stream": true,
+    "system": [
+      {
+        "text": "FIXED-SYSTEM-PROMPT",
+        "type": "text",
+      },
+    ],
+    "thinking": {
+      "type": "enabled",
+    },
+    "tools": [
+      {
+        "description": "Run a shell command.",
+        "input_schema": {
+          "properties": {
+            "command": {
+              "type": "string",
+            },
+          },
+          "required": [
+            "command",
+          ],
+          "type": "object",
+        },
+        "name": "Bash",
+      },
+      {
+        "cache_control": {
+          "ttl": "5m",
+          "type": "ephemeral",
+        },
+        "description": "Read a file.",
+        "input_schema": {
+          "properties": {
+            "file_path": {
+              "type": "string",
+            },
+          },
+          "required": [
+            "file_path",
+          ],
+          "type": "object",
+        },
+        "name": "Read",
+      },
+    ],
+  },
+  "bodyHash": "b0569ab4c6ffdabb386aef61bae0446ab7a91aa55265e598295633370fcefefb",
+  "headers": {
+    "Accept": "application/json",
+    "Content-Type": "application/json",
+    "User-Agent": "claude-cli/2.1.209 (external, sdk-cli)",
+    "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20,effort-2025-11-24",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "anthropic-version": "2023-06-01",
+    "x-api-key": "<x-api-key>",
+    "x-app": "cli",
+    "x-claude-code-session-id": "sess-fixture-00000000-0000-0000-0000-000000000000",
+    "x-client-request-id": "<x-client-request-id>",
+    "x-stainless-arch": "<x-stainless-arch>",
+    "x-stainless-lang": "js",
+    "x-stainless-os": "<x-stainless-os>",
+    "x-stainless-package-version": "0.94.0",
+    "x-stainless-retry-count": "0",
+    "x-stainless-runtime": "node",
+    "x-stainless-runtime-version": "v26.3.0",
+    "x-stainless-timeout": "600",
+  },
+  "url": "https://api.kimi.com/coding/v1/messages",
+}
+`;
+
+exports[`anthropic-compat wire-request golden glm / glm-5.2 1`] = `
+{
+  "body": {
+    "max_tokens": 64000,
+    "messages": [
+      {
+        "content": [
+          {
+            "text": "explain the build",
+            "type": "text",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "content": [
+          {
+            "id": "toolu_fixture",
+            "input": {
+              "command": "make build-install",
+            },
+            "name": "Bash",
+            "type": "tool_use",
+          },
+        ],
+        "role": "assistant",
+      },
+      {
+        "content": [
+          {
+            "content": "ok",
+            "tool_use_id": "toolu_fixture",
+            "type": "tool_result",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "content": [
+          {
+            "text": "now ship it",
+            "type": "text",
+          },
+        ],
+        "role": "user",
+      },
+    ],
+    "model": "GLM-5.2",
+    "output_config": {
+      "effort": "high",
+    },
+    "stream": true,
+    "system": [
+      {
+        "text": "FIXED-SYSTEM-PROMPT",
+        "type": "text",
+      },
+    ],
+    "thinking": {
+      "budget_tokens": 32000,
+      "type": "enabled",
+    },
+    "tool_choice": {
+      "type": "auto",
+    },
+    "tools": [
+      {
+        "description": "Run a shell command.",
+        "input_schema": {
+          "properties": {
+            "command": {
+              "type": "string",
+            },
+          },
+          "required": [
+            "command",
+          ],
+          "type": "object",
+        },
+        "name": "Bash",
+      },
+      {
+        "description": "Read a file.",
+        "input_schema": {
+          "properties": {
+            "file_path": {
+              "type": "string",
+            },
+          },
+          "required": [
+            "file_path",
+          ],
+          "type": "object",
+        },
+        "name": "Read",
+      },
+    ],
+  },
+  "bodyHash": "0dde90c611a69328582a7c4baf68151e046d8ccfe591ca6868eceb1a2e2b85b7",
+  "headers": {
+    "Connection": "close",
+    "anthropic-beta": "mid-conversation-system-2026-04-07",
+    "anthropic-version": "2023-06-01",
+    "authorization": "<authorization>",
+    "content-type": "application/json",
+    "http-referer": "https://zcode.z.ai",
+    "user-agent": "ZCode/3.2.5 ai-sdk/provider-utils/4.0.27 runtime/node.js/24",
+    "x-api-key": "<x-api-key>",
+    "x-os-category": "<x-os-category>",
+    "x-os-version": "<x-os-version>",
+    "x-platform": "<x-platform>",
+    "x-query-id": "<x-query-id>",
+    "x-request-id": "<x-request-id>",
+    "x-session-id": "sess-fixture-00000000-0000-0000-0000-000000000000",
+    "x-title": "Z Code@electron",
+    "x-zcode-agent": "glm",
+    "x-zcode-app-version": "3.2.5",
+    "x-zcode-trace-id": "<x-zcode-trace-id>",
+  },
+  "url": "https://api.z.ai/api/anthropic/v1/messages",
+}
+`;
+
+exports[`anthropic-compat wire-request golden minimax / minimax-m2.7 1`] = `
+{
+  "body": {
+    "max_tokens": 131072,
+    "messages": [
+      {
+        "content": [
+          {
+            "text": "explain the build",
+            "type": "text",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "content": [
+          {
+            "id": "toolu_fixture",
+            "input": {
+              "command": "make build-install",
+            },
+            "name": "Bash",
+            "type": "tool_use",
+          },
+        ],
+        "role": "assistant",
+      },
+      {
+        "content": [
+          {
+            "content": "ok",
+            "tool_use_id": "toolu_fixture",
+            "type": "tool_result",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "content": [
+          {
+            "text": "now ship it",
+            "type": "text",
+          },
+        ],
+        "role": "user",
+      },
+    ],
+    "metadata": {
+      "user_id": "{"device_id":"","account_uuid":"","session_id":"sess-fixture-00000000-0000-0000-0000-000000000000"}",
+    },
+    "model": "minimax-m2.7",
+    "stream": true,
+    "system": [
+      {
+        "text": "FIXED-SYSTEM-PROMPT",
+        "type": "text",
+      },
+    ],
+    "tools": [
+      {
+        "description": "Run a shell command.",
+        "input_schema": {
+          "properties": {
+            "command": {
+              "type": "string",
+            },
+          },
+          "required": [
+            "command",
+          ],
+          "type": "object",
+        },
+        "name": "Bash",
+      },
+      {
+        "cache_control": {
+          "ttl": "5m",
+          "type": "ephemeral",
+        },
+        "description": "Read a file.",
+        "input_schema": {
+          "properties": {
+            "file_path": {
+              "type": "string",
+            },
+          },
+          "required": [
+            "file_path",
+          ],
+          "type": "object",
+        },
+        "name": "Read",
+      },
+    ],
+  },
+  "bodyHash": "6db6e74b28a99d63ec65a684ed9592dc89a31f7837230cc140a1f87e8b0bb0a2",
+  "headers": {
+    "Accept": "application/json",
+    "Authorization": "<authorization>",
+    "Content-Type": "application/json",
+    "User-Agent": "claude-cli/2.1.209 (external, cli)",
+    "anthropic-version": "2023-06-01",
+    "x-client-request-id": "<x-client-request-id>",
+  },
+  "url": "https://api.minimax.io/anthropic/v1/messages",
+}
+`;
+
+exports[`anthropic-compat wire-request golden deepseek / deepseek-v4-pro 1`] = `
+{
+  "body": {
+    "max_tokens": 32000,
+    "messages": [
+      {
+        "content": [
+          {
+            "text": "explain the build",
+            "type": "text",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "content": [
+          {
+            "caller": {
+              "type": "direct",
+            },
+            "id": "toolu_fixture",
+            "input": {
+              "command": "make build-install",
+            },
+            "name": "Bash",
+            "type": "tool_use",
+          },
+        ],
+        "role": "assistant",
+      },
+      {
+        "content": [
+          {
+            "content": "ok",
+            "tool_use_id": "toolu_fixture",
+            "type": "tool_result",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "content": [
+          {
+            "text": "now ship it",
+            "type": "text",
+          },
+        ],
+        "role": "user",
+      },
+    ],
+    "metadata": {
+      "user_id": "{"device_id":"0000000000000000000000000000000000000000000000000000000000000000","account_uuid":"acct-fixture","session_id":"sess-fixture-00000000-0000-0000-0000-000000000000"}",
+    },
+    "model": "deepseek-v4-pro",
+    "output_config": {
+      "effort": "high",
+    },
+    "stream": true,
+    "system": [
+      {
+        "text": "FIXED-SYSTEM-PROMPT",
+        "type": "text",
+      },
+    ],
+    "thinking": {
+      "display": "summarized",
+      "type": "adaptive",
+    },
+    "tools": [
+      {
+        "description": "Run a shell command.",
+        "input_schema": {
+          "properties": {
+            "command": {
+              "type": "string",
+            },
+          },
+          "required": [
+            "command",
+          ],
+          "type": "object",
+        },
+        "name": "Bash",
+      },
+      {
+        "description": "Read a file.",
+        "input_schema": {
+          "properties": {
+            "file_path": {
+              "type": "string",
+            },
+          },
+          "required": [
+            "file_path",
+          ],
+          "type": "object",
+        },
+        "name": "Read",
+      },
+    ],
+  },
+  "bodyHash": "ad7adf5f829c368854b6a9a7429883917b25fed0d04fa8b20518da2deee5f501",
+  "headers": {
+    "Accept": "application/json",
+    "Authorization": "<authorization>",
+    "Content-Type": "application/json",
+    "User-Agent": "claude-cli/2.1.209 (external, cli)",
+    "anthropic-version": "2023-06-01",
+    "x-client-request-id": "<x-client-request-id>",
+  },
+  "url": "https://api.deepseek.com/anthropic/v1/messages",
+}
+`;
+
+exports[`anthropic-compat wire-request golden deepseek / deepseek-v4-pro / disableThinking 1`] = `
+{
+  "body": {
+    "max_tokens": 32000,
+    "messages": [
+      {
+        "content": [
+          {
+            "text": "explain the build",
+            "type": "text",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "content": [
+          {
+            "caller": {
+              "type": "direct",
+            },
+            "id": "toolu_fixture",
+            "input": {
+              "command": "make build-install",
+            },
+            "name": "Bash",
+            "type": "tool_use",
+          },
+        ],
+        "role": "assistant",
+      },
+      {
+        "content": [
+          {
+            "content": "ok",
+            "tool_use_id": "toolu_fixture",
+            "type": "tool_result",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "content": [
+          {
+            "text": "now ship it",
+            "type": "text",
+          },
+        ],
+        "role": "user",
+      },
+    ],
+    "metadata": {
+      "user_id": "{"device_id":"0000000000000000000000000000000000000000000000000000000000000000","account_uuid":"acct-fixture","session_id":"sess-fixture-00000000-0000-0000-0000-000000000000"}",
+    },
+    "model": "deepseek-v4-pro",
+    "output_config": {},
+    "stream": true,
+    "system": [
+      {
+        "text": "FIXED-SYSTEM-PROMPT",
+        "type": "text",
+      },
+    ],
+    "thinking": {
+      "type": "disabled",
+    },
+    "tools": [
+      {
+        "description": "Run a shell command.",
+        "input_schema": {
+          "properties": {
+            "command": {
+              "type": "string",
+            },
+          },
+          "required": [
+            "command",
+          ],
+          "type": "object",
+        },
+        "name": "Bash",
+      },
+      {
+        "description": "Read a file.",
+        "input_schema": {
+          "properties": {
+            "file_path": {
+              "type": "string",
+            },
+          },
+          "required": [
+            "file_path",
+          ],
+          "type": "object",
+        },
+        "name": "Read",
+      },
+    ],
+  },
+  "bodyHash": "49fe4067280b679210b82607f90c9d42701e9aea394468d4c02b6d2dcec2cc5c",
+  "headers": {
+    "Accept": "application/json",
+    "Authorization": "<authorization>",
+    "Content-Type": "application/json",
+    "User-Agent": "claude-cli/2.1.209 (external, cli)",
+    "anthropic-version": "2023-06-01",
+    "x-client-request-id": "<x-client-request-id>",
+  },
+  "url": "https://api.deepseek.com/anthropic/v1/messages",
+}
+`;
+
+exports[`OpenAI Custom wire-request golden uses a fixed non-default base URL without host configuration 1`] = `
+{
+  "body": {
+    "messages": [
+      {
+        "content": "FIXED-SYSTEM-PROMPT",
+        "role": "system",
+      },
+      {
+        "content": "explain the build",
+        "role": "user",
+      },
+      {
+        "content": "",
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "function": {
+              "arguments": "{"command":"make build-install"}",
+              "name": "Bash",
+            },
+            "id": "toolu_fixture",
+            "type": "function",
+          },
+        ],
+      },
+      {
+        "content": "ok",
+        "role": "tool",
+        "tool_call_id": "toolu_fixture",
+      },
+      {
+        "content": "now ship it",
+        "role": "user",
+      },
+    ],
+    "model": "fixture-model",
+    "parallel_tool_calls": true,
+    "stream": true,
+    "stream_options": {
+      "include_usage": true,
+    },
+    "tool_choice": "auto",
+    "tools": [
+      {
+        "function": {
+          "description": "Run a shell command.",
+          "name": "Bash",
+          "parameters": {
+            "properties": {
+              "command": {
+                "type": "string",
+              },
+            },
+            "required": [
+              "command",
+            ],
+            "type": "object",
+          },
+        },
+        "type": "function",
+      },
+      {
+        "function": {
+          "description": "Read a file.",
+          "name": "Read",
+          "parameters": {
+            "properties": {
+              "file_path": {
+                "type": "string",
+              },
+            },
+            "required": [
+              "file_path",
+            ],
+            "type": "object",
+          },
+        },
+        "type": "function",
+      },
+    ],
+  },
+  "bodyHash": "5f7a5c7cfa44d847e46c98bd4f56f55ac01170efa97217bc6ba622c3f58ef5f0",
+  "headers": {
+    "Accept": "text/event-stream",
+    "Authorization": "<authorization>",
+    "Content-Type": "application/json",
+    "User-Agent": "otherside-cli/0.1 (openai-compatible)",
+  },
+  "url": "https://openai-custom.test/v1/chat/completions",
+}
+`;
+
+exports[`Antigravity wire-request golden captures the Gemini-family Cloud Code envelope 1`] = `
+{
+  "body": {
+    "enabledCreditTypes": [
+      "GOOGLE_ONE_AI",
+    ],
+    "model": "gemini-3.5-flash-low",
+    "project": "project-fixture",
+    "request": {
+      "contents": [
+        {
+          "parts": [
+            {
+              "text": "explain the build",
+            },
+          ],
+          "role": "user",
+        },
+        {
+          "parts": [
+            {
+              "functionCall": {
+                "args": {
+                  "command": "make build-install",
+                },
+                "id": "toolu_fixture",
+                "name": "Bash",
+              },
+              "thoughtSignature": "skip_thought_signature_validator",
+            },
+          ],
+          "role": "model",
+        },
+        {
+          "parts": [
+            {
+              "functionResponse": {
+                "id": "toolu_fixture",
+                "name": "Bash",
+                "response": {
+                  "output": "ok",
+                },
+              },
+            },
+          ],
+          "role": "user",
+        },
+        {
+          "parts": [
+            {
+              "text": "now ship it",
+            },
+          ],
+          "role": "user",
+        },
+      ],
+      "generationConfig": {
+        "maxOutputTokens": 65536,
+        "thinkingConfig": {
+          "includeThoughts": true,
+          "thinkingBudget": 4000,
+        },
+      },
+      "labels": {
+        "last_execution_id": "98a82813-fdd3-54b6-bb16-13521d3f9680",
+        "last_step_index": "2",
+        "model_enum": "MODEL_PLACEHOLDER_M20",
+        "trajectory_id": "3dc3323c-b36b-54b9-b7c6-9879603a57a6",
+        "used_claude": "false",
+        "used_claude_conservative": "false",
+        "used_non_gemini_model": "false",
+      },
+      "sessionId": "6361632629695228385",
+      "systemInstruction": {
+        "parts": [
+          {
+            "text": "FIXED-SYSTEM-PROMPT",
+          },
+        ],
+        "role": "user",
+      },
+      "toolConfig": {
+        "functionCallingConfig": {
+          "mode": "VALIDATED",
+        },
+      },
+      "tools": [
+        {
+          "functionDeclarations": [
+            {
+              "description": "Run a shell command.",
+              "name": "Bash",
+              "parameters": {
+                "properties": {
+                  "command": {
+                    "type": "string",
+                  },
+                },
+                "required": [
+                  "command",
+                ],
+                "type": "object",
+              },
+            },
+          ],
+        },
+        {
+          "functionDeclarations": [
+            {
+              "description": "Read a file.",
+              "name": "Read",
+              "parameters": {
+                "properties": {
+                  "file_path": {
+                    "type": "string",
+                  },
+                },
+                "required": [
+                  "file_path",
+                ],
+                "type": "object",
+              },
+            },
+          ],
+        },
+      ],
+    },
+    "requestId": "agent/conversation-fixture/1700000000000/trajectory-fixture/1",
+    "requestType": "agent",
+    "userAgent": "antigravity",
+  },
+  "bodyHash": "020692146063f861de43bebbca2b8f02c97984c9978c6e78e58941e268d6f744",
+  "headers": {
+    "Accept-Encoding": "gzip",
+    "Authorization": "<authorization>",
+    "Content-Type": "application/json",
+    "Transfer-Encoding": "chunked",
+    "User-Agent": "antigravity/cli/1.1.0 (aidev_client; os_type=<os>; arch=<arch>; auth_method=consumer)",
+  },
+  "url": "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse",
+}
+`;
+
+exports[`Antigravity wire-request golden suppresses thinking summaries for a fork 1`] = `
+{
+  "body": {
+    "enabledCreditTypes": [
+      "GOOGLE_ONE_AI",
+    ],
+    "model": "gemini-3.5-flash-low",
+    "project": "project-fixture",
+    "request": {
+      "contents": [
+        {
+          "parts": [
+            {
+              "text": "explain the build",
+            },
+          ],
+          "role": "user",
+        },
+        {
+          "parts": [
+            {
+              "functionCall": {
+                "args": {
+                  "command": "make build-install",
+                },
+                "id": "toolu_fixture",
+                "name": "Bash",
+              },
+              "thoughtSignature": "skip_thought_signature_validator",
+            },
+          ],
+          "role": "model",
+        },
+        {
+          "parts": [
+            {
+              "functionResponse": {
+                "id": "toolu_fixture",
+                "name": "Bash",
+                "response": {
+                  "output": "ok",
+                },
+              },
+            },
+          ],
+          "role": "user",
+        },
+        {
+          "parts": [
+            {
+              "text": "now ship it",
+            },
+          ],
+          "role": "user",
+        },
+      ],
+      "generationConfig": {
+        "maxOutputTokens": 65536,
+        "thinkingConfig": {
+          "includeThoughts": false,
+          "thinkingBudget": 4000,
+        },
+      },
+      "labels": {
+        "last_execution_id": "3b8316a7-d243-5930-9872-17c82173af16",
+        "last_step_index": "2",
+        "model_enum": "MODEL_PLACEHOLDER_M20",
+        "trajectory_id": "7fd259ab-a884-52a2-8d24-16c77b9e34ca",
+        "used_claude": "false",
+        "used_claude_conservative": "false",
+        "used_non_gemini_model": "false",
+      },
+      "sessionId": "6361632629695228385",
+      "systemInstruction": {
+        "parts": [
+          {
+            "text": "FIXED-SYSTEM-PROMPT",
+          },
+        ],
+        "role": "user",
+      },
+      "toolConfig": {
+        "functionCallingConfig": {
+          "mode": "VALIDATED",
+        },
+      },
+      "tools": [
+        {
+          "functionDeclarations": [
+            {
+              "description": "Run a shell command.",
+              "name": "Bash",
+              "parameters": {
+                "properties": {
+                  "command": {
+                    "type": "string",
+                  },
+                },
+                "required": [
+                  "command",
+                ],
+                "type": "object",
+              },
+            },
+          ],
+        },
+        {
+          "functionDeclarations": [
+            {
+              "description": "Read a file.",
+              "name": "Read",
+              "parameters": {
+                "properties": {
+                  "file_path": {
+                    "type": "string",
+                  },
+                },
+                "required": [
+                  "file_path",
+                ],
+                "type": "object",
+              },
+            },
+          ],
+        },
+      ],
+    },
+    "requestId": "agent/conversation-fixture/1700000000000/trajectory-fixture/1",
+    "requestType": "agent",
+    "userAgent": "antigravity",
+  },
+  "bodyHash": "6a44cd0d2d025ed48c8be511986ef20fc342bfe44aa8a4ed89a31decdc3d8f1d",
+  "headers": {
+    "Accept-Encoding": "gzip",
+    "Authorization": "<authorization>",
+    "Content-Type": "application/json",
+    "Transfer-Encoding": "chunked",
+    "User-Agent": "antigravity/cli/1.1.0 (aidev_client; os_type=<os>; arch=<arch>; auth_method=consumer)",
+  },
+  "url": "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse",
+}
+`;

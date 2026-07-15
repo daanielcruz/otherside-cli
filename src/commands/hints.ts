@@ -1,0 +1,61 @@
+const COMMAND_HINTS: Readonly<Record<string, string>> = {
+  exit: "exit the TUI",
+  clear: "clear conversation history",
+  plan: "enter plan mode",
+  fast: "toggle faster inference",
+  parallel: "toggle parallel agent tasks",
+  multiprovider: "toggle multi-provider routing",
+  copy: "copy an assistant response",
+  export: "export this conversation",
+  "toggle-memory": "toggle session memory",
+  dream: "consolidate saved memories",
+  "pr-review": "review a pull request",
+  init: "initialize project instructions",
+  loop: "schedule a recurring prompt",
+  btw: "ask without changing the thread",
+  "pr-security-review": "review branch security",
+  "deep-security-review": "audit repository security",
+  "grill-me": "stress-test a plan",
+  ultraplan: "create a multi-agent plan",
+  goal: "work until a condition is met",
+  branch: "fork from this conversation",
+  fork: "spawn an inherited background agent",
+  compact: "summarize and trim history",
+  context: "show context usage",
+  help: "show slash commands",
+  resume: "continue a past session",
+  rewind: "restore an earlier point",
+  config: "manage settings",
+  model: "switch the active model",
+  theme: "switch the interface theme",
+  effort: "set reasoning effort",
+  permissions: "manage tool permissions",
+  hooks: "manage event hooks",
+  diff: "show code changes",
+  skills: "list available skills",
+  agents: "manage agent configurations",
+  status: "show session status",
+  usage: "show provider usage",
+  stats: "show provider statistics",
+  mcp: "manage MCP servers",
+  plugins: "manage plugins",
+  marketplace: "manage plugin marketplaces",
+  reload: "reload runtime extensions",
+  tasks: "manage background tasks",
+  bashes: "manage background shells",
+  workflows: "manage background workflows",
+  remote: "manage remote sessions",
+  login: "sign in to a provider",
+  logout: "sign out from a provider",
+  design: "manage Design sessions",
+  "code-review": "review code changes",
+};
+
+export function commandHint(name: string, description: string): string {
+  const mapped = COMMAND_HINTS[name.toLowerCase()];
+  if (mapped) return mapped;
+  const firstSentence = description.split(/[.!?](?:\s|$)/, 1)[0]?.trim();
+  if (!firstSentence) return "run command";
+  const words = firstSentence.split(/\s+/).slice(0, 7);
+  return words.join(" ");
+}

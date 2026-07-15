@@ -1,0 +1,24 @@
+{
+  "name": "ParseImage",
+  "description": "Reads an image that the user attached. The active model cannot see images directly; this tool dispatches to a vision-capable model and returns a textual description that you can use as ground truth.\n\nUsage:\n- The user's pasted images appear in the conversation as `[Image #N]` placeholders. Pass that integer as `image_id`.\n- For images on disk, pass an absolute `path` instead. Exactly one of `image_id` or `path` is required.\n- Use the optional `question` to focus the description (e.g. \"extract every line of code\", \"describe the chart\", \"what does the error message say?\"). Without a question, the parser returns a full description.\n- The returned text IS the source of truth. Do not guess about image contents — if the description is missing something you need, call ParseImage again with a more specific question.",
+  "inputSchema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "image_id": {
+        "description": "The N from a `[Image #N]` placeholder in the conversation.",
+        "type": "integer",
+        "minimum": 1
+      },
+      "path": {
+        "description": "Absolute path to an image on disk (png, jpg, gif, webp).",
+        "type": "string"
+      },
+      "question": {
+        "description": "Optional focus for the description.",
+        "type": "string"
+      }
+    },
+    "additionalProperties": false
+  }
+}
