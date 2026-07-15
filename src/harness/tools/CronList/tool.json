@@ -1,0 +1,11 @@
+{
+  "name": "CronList",
+  "description": "List all cron jobs scheduled via CronCreate, both durable (~/.otherside/scheduled_tasks.json) and session-only.",
+  "inputSchema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {},
+    "required": [],
+    "additionalProperties": false
+  }
+}

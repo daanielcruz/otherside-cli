@@ -1,0 +1,34 @@
+{
+  "name": "NotebookEdit",
+  "description": "Edit a Jupyter `.ipynb` notebook cell. Three edit modes: `replace` (default) swaps the `source` of the cell identified by `cell_id` (code cells reset `execution_count` to null and `outputs` to []); `insert` adds a new cell after `cell_id` (or at the start of the notebook when `cell_id` is omitted) with the given `cell_type` (default `code`) and `new_source`; `delete` removes the cell identified by `cell_id`. The notebook is rewritten in place; /rewind captures the pre-edit snapshot.",
+  "inputSchema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "notebook_path": {
+        "description": "Absolute path to the .ipynb file to edit",
+        "type": "string"
+      },
+      "cell_id": {
+        "description": "Id of the cell to target. Required for `replace` and `delete`; optional for `insert` (omit to prepend a new cell at the start of the notebook).",
+        "type": "string"
+      },
+      "new_source": {
+        "description": "New source content for the cell (required for replace and insert)",
+        "type": "string"
+      },
+      "cell_type": {
+        "description": "Cell type (`code` or `markdown`). For `replace`, must match the current cell type — type conversion is not supported. For `insert`, defaults to `code` when omitted.",
+        "type": "string",
+        "enum": ["code", "markdown"]
+      },
+      "edit_mode": {
+        "description": "Edit mode: `replace` (default), `insert`, or `delete`.",
+        "type": "string",
+        "enum": ["replace", "insert", "delete"]
+      }
+    },
+    "required": ["notebook_path"],
+    "additionalProperties": false
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "name": "ExitPlanMode",
+  "description": "Use this tool when you are in plan mode and have finished outlining your implementation approach. Calling this tool exits plan mode and resumes normal tool permissions (Edit, Write, Bash become available again).\n\n## When to Use This Tool\n\nIMPORTANT: Only use this tool when the task requires planning the implementation steps of a task that requires writing code. For research tasks where you're gathering information, searching files, reading files or in general trying to understand the codebase — do NOT use this tool.\n\n## Before Using This Tool\n\nEnsure your plan is complete and unambiguous:\n- If you have unresolved questions about requirements or approach, use AskUserQuestion first (in earlier phases)\n- Once your plan is finalized, use THIS tool to request approval\n\n**Important:** Do NOT use AskUserQuestion to ask \"Is this plan okay?\" or \"Should I proceed?\" — that's exactly what THIS tool does. ExitPlanMode inherently requests user approval of your plan.\n\n## Required input\n\nYou MUST include the finalized plan in the `plan` field as markdown — bullets, numbered steps, code blocks where helpful. This text is rendered verbatim in the approval panel; if you omit it, the user sees an empty plan.\n\n## Examples\n\n1. Initial task: \"Search for and understand the implementation of vim mode in the codebase\" — Do not use ExitPlanMode because you are not planning the implementation steps of a task.\n2. Initial task: \"Help me implement yank mode for vim\" — Use ExitPlanMode after you have finished planning the implementation steps of the task.\n3. Initial task: \"Add a new feature to handle user authentication\" — If unsure about auth method (OAuth, JWT, etc.), use AskUserQuestion first, then use ExitPlanMode after clarifying the approach.",
+  "inputSchema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "plan": {
+        "description": "The finalized plan in markdown. Shown to the user verbatim inside the approval panel. Use bullets or numbered steps.",
+        "type": "string"
+      },
+      "allowedPrompts": {
+        "description": "Prompt-based permissions needed to implement the plan. These describe categories of actions rather than specific commands.",
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "tool": {
+              "type": "string",
+              "enum": ["Bash"],
+              "description": "The tool this prompt applies to"
+            },
+            "prompt": {
+              "type": "string",
+              "description": "Semantic description of the action, e.g. \"run tests\", \"install dependencies\""
+            }
+          },
+          "required": ["tool", "prompt"]
+        }
+      }
+    },
+    "required": ["plan"],
+    "additionalProperties": false
+  }
+}

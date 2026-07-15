@@ -1,0 +1,24 @@
+{
+  "name": "SendMessage",
+  "description": "Continue a previously spawned agent by sending it a follow-up message. Pass the agent's ID or name as the `to` field. The agent resumes with full context preserved.\n\n## When to use\n- Follow up on a worker whose previous turn is complete and you want to refine direction.\n- Take advantage of a loaded context rather than spawning a fresh agent.\n\n## Arguments\n- `to` (required) — Agent ID or addressable name returned by the Agent tool.\n- `message` (required) — Self-contained prompt for the agent. Include everything the worker needs; it cannot see your conversation.\n- `reply_to` (optional) — Message ID from the agent's transcript if this message is a direct reply to a prior agent message.\n",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "to": {
+        "type": "string",
+        "description": "Agent ID or name to route the message to."
+      },
+      "message": {
+        "type": "string",
+        "description": "Self-contained follow-up prompt for the agent."
+      },
+      "reply_to": {
+        "type": "string",
+        "description": "Optional message ID to quote-reply to."
+      }
+    },
+    "required": ["to", "message"],
+    "additionalProperties": false,
+    "$schema": "https://json-schema.org/draft/2020-12/schema"
+  }
+}

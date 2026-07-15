@@ -1,0 +1,9 @@
+{
+  "name": "StructuredOutput",
+  "description": "Return the final response in the requested structured (JSON) format. Call exactly once at the end of the turn. Validates the input against the registered JSON schema.",
+  "inputSchema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "additionalProperties": true
+  }
+}

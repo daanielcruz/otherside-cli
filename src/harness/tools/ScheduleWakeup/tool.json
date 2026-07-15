@@ -1,0 +1,24 @@
+{
+  "name": "ScheduleWakeup",
+  "description": "Schedule when to resume work in /loop dynamic mode (always pass the `prompt` arg). Call before ending the turn to keep the loop alive; omit the call to end it.",
+  "inputSchema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "delaySeconds": {
+        "type": "number",
+        "description": "Seconds from now to wake up. Clamped to [60, 3600] by the runtime."
+      },
+      "reason": {
+        "type": "string",
+        "description": "One short sentence explaining the chosen delay. Goes to telemetry and is shown to the user. Be specific."
+      },
+      "prompt": {
+        "type": "string",
+        "description": "The /loop input to fire on wake-up. Pass the same /loop input verbatim each turn so the next firing re-enters the skill and continues the loop. For autonomous /loop (no user prompt), pass the literal sentinel `<<autonomous-loop-dynamic>>` instead (the dynamic-pacing variant, not the CronCreate-mode `<<autonomous-loop>>`)."
+      }
+    },
+    "required": ["delaySeconds", "reason", "prompt"],
+    "additionalProperties": false
+  }
+}

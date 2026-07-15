@@ -1,0 +1,1 @@
+export const RENDER_CYCLE_INTERVAL_MS = 16;
