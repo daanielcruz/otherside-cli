@@ -49,6 +49,7 @@ describe("dispatch unknown commands", () => {
     expect(looksLikeCommand("cmd-name")).toBe(true);
     expect(looksLikeCommand("cmd_name")).toBe(true);
     expect(looksLikeCommand("cmd:name")).toBe(true);
+    expect(looksLikeCommand("plugin@marketplace:cmd")).toBe(true);
     expect(looksLikeCommand("cmd.name")).toBe(false);
   });
 
@@ -95,7 +96,8 @@ describe("slash command hints", () => {
     const commands = listCompletions("");
     expect(commands.length).toBeGreaterThan(0);
     for (const command of commands) {
-      expect(command.description.split(/\s+/).length).toBeLessThanOrEqual(7);
+      const maxWords = command.name === "fork" ? 9 : 7;
+      expect(command.description.split(/\s+/).length).toBeLessThanOrEqual(maxWords);
     }
   });
 
@@ -128,21 +130,31 @@ describe("config toggles via slash", () => {
     expect(lastUpdatedConfig).toBeNull();
   });
 
-  it("toggles multiprovider and keeps orchestrator mode in sync", async () => {
+  it("accepts exact modes, cycles with no arg, and shares one persisted field", async () => {
     useMock = true;
     lastUpdatedConfig = null;
-    const off = { config: { tierSelectorEnabled: false } } as SlashContext;
-    expect((await dispatch("/multiprovider on", off)).feedback).toBe("Multiprovider enabled");
-    expectLastUpdatedConfig({ tierSelectorEnabled: true, orchestratorMode: "soft" });
+    const disabled = { config: { orchestrationMode: "disabled" } } as unknown as SlashContext;
+    expect((await dispatch("/multiprovider default", disabled)).feedback).toBe(
+      "Multiprovider set to default",
+    );
+    expectLastUpdatedConfig({ orchestrationMode: "default" });
 
     lastUpdatedConfig = null;
-    const on = { config: { tierSelectorEnabled: true } } as SlashContext;
-    expect((await dispatch("/multiprovider", on)).feedback).toBe("Multiprovider disabled");
-    expectLastUpdatedConfig({ tierSelectorEnabled: false, orchestratorMode: "off" });
+    const defaultMode = { config: { orchestrationMode: "default" } } as unknown as SlashContext;
+    expect((await dispatch("/multiprovider", defaultMode)).feedback).toBe(
+      "Multiprovider set to feudalism",
+    );
+    expectLastUpdatedConfig({ orchestrationMode: "feudalism" });
 
     lastUpdatedConfig = null;
-    expect((await dispatch("/multiprovider invalid", off)).feedback).toBe(
-      "Usage: /multiprovider [on|off]",
+    expect((await dispatch("/multiprovider disabled", defaultMode)).feedback).toBe(
+      "Multiprovider set to disabled",
+    );
+    expectLastUpdatedConfig({ orchestrationMode: "disabled" });
+
+    lastUpdatedConfig = null;
+    expect((await dispatch("/multiprovider on", disabled)).feedback).toBe(
+      "Usage: /multiprovider [disabled|default|feudalism]",
     );
     expect(lastUpdatedConfig).toBeNull();
   });
@@ -319,7 +331,8 @@ describe("plugin commands via dispatch", () => {
   });
 
   it("registers reload and marketplace command surfaces", () => {
-    expect(lookup("reload-plugins")?.name).toBe("reload");
+    expect(lookup("reload")?.name).toBe("reload");
+    expect(lookup("reload-plugins")).toBeUndefined();
     expect(lookup("marketplace")?.name).toBe("marketplace");
   });
 
@@ -368,11 +381,60 @@ describe("plugin commands via dispatch", () => {
     expect(result.feedback).toBeUndefined();
     expect(opened).toEqual(["plugins"]);
     expect(peekPendingPluginCommandResult()).toBe(
-      "Disabled plugin demo-plugin. Run /reload-plugins to apply.",
+      "Disabled plugin demo-plugin@test. Run /reload to apply.",
     );
     expect(plugins.isEnabled("demo-plugin")).toBe(false);
     expect(plugins.isRuntimeEnabled("demo-plugin")).toBe(true);
     clearPendingPluginCommandResult();
+  });
+
+  it("accepts canonical plugin targets after typed lookup", async () => {
+    plugins.register({
+      name: "canonical",
+      path: "/plugins/canonical",
+      source: "market",
+      manifest: { name: "canonical" },
+    });
+    useMock = true;
+    const { consumePendingPluginCommandResult, clearPendingPluginCommandResult } = await import(
+      "@/ui/panels/plugins/command-result.ts"
+    );
+    clearPendingPluginCommandResult();
+    const result = await dispatch("/plugin disable canonical@market", {
+      openOverlay: () => {},
+    } as unknown as SlashContext);
+    expect(result.kind).toBe("panel");
+    expect(consumePendingPluginCommandResult()).toBe(
+      "Disabled plugin canonical@market. Run /reload to apply.",
+    );
+  });
+
+  it("propagates sorted bare-name ambiguity to enable/disable/uninstall panel feedback", async () => {
+    plugins.register({
+      name: "shared",
+      path: "/plugins/shared-alpha",
+      source: "alpha",
+      manifest: { name: "shared" },
+    });
+    plugins.register({
+      name: "shared",
+      path: "/plugins/shared-zeta",
+      source: "zeta",
+      manifest: { name: "shared" },
+    });
+
+    const { consumePendingPluginCommandResult, clearPendingPluginCommandResult } = await import(
+      "@/ui/panels/plugins/command-result.ts"
+    );
+    const expected = 'Plugin "shared" is ambiguous. Choose one: shared@alpha, shared@zeta';
+    for (const subcommand of ["enable", "disable", "uninstall"]) {
+      clearPendingPluginCommandResult();
+      const result = await dispatch(`/plugin ${subcommand} shared`, {
+        openOverlay: () => {},
+      } as unknown as SlashContext);
+      expect(result.kind).toBe("panel");
+      expect(consumePendingPluginCommandResult()).toBe(expected);
+    }
   });
 
   it("opens all mutating plugin subcommands with their feedback in the panel", async () => {

@@ -45,7 +45,11 @@ export function projectAgentTranscript(
     lastActivity?.type !== "assistant_message" &&
     lastActivity?.type !== "turn_completion";
   return {
-    entries: sessionRecordsToTranscript(records, isRunning, true),
+    entries: sessionRecordsToTranscript(records, {
+      isRunning,
+      includeProducerMetadata: true,
+      includeThinking: true,
+    }),
     llmActive,
   };
 }

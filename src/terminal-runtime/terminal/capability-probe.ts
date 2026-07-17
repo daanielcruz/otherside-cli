@@ -48,6 +48,7 @@ type Pending =
       kind: "query";
       match: (r: TerminalControlResponse) => boolean;
       resolve: (r: TerminalControlResponse | undefined) => void;
+      timeout: ReturnType<typeof setTimeout> | undefined;
     }
   | { kind: "sentinel"; resolve: () => void };
 
@@ -56,15 +57,33 @@ export class TerminalProbe {
 
   constructor(private stdout: NodeJS.WriteStream) {}
 
-  send<T extends TerminalControlResponse>(query: TerminalQuery<T>): Promise<T | undefined> {
+  send<T extends TerminalControlResponse>(
+    query: TerminalQuery<T>,
+    timeoutMs?: number,
+  ): Promise<T | undefined> {
     return new Promise((resolve) => {
-      this.queue.push({
+      const pending: Extract<Pending, { kind: "query" }> = {
         kind: "query",
         match: query.match,
         resolve: (r) => resolve(r as T | undefined),
-      });
+        timeout: undefined,
+      };
+      this.queue.push(pending);
       this.stdout.write(query.request);
+      if (timeoutMs !== undefined) {
+        pending.timeout = setTimeout(() => {
+          const index = this.queue.indexOf(pending);
+          if (index !== -1) {
+            this.queue.splice(index, 1);
+            pending.resolve(undefined);
+          }
+        }, timeoutMs);
+      }
     });
+  }
+
+  async requestCursorPosition(timeoutMs: number): Promise<number | undefined> {
+    return (await this.send(cursorPosition(), timeoutMs))?.row;
   }
 
   flush(): Promise<void> {
@@ -78,7 +97,10 @@ export class TerminalProbe {
     const idx = this.queue.findIndex((p) => p.kind === "query" && p.match(r));
     if (idx !== -1) {
       const [q] = this.queue.splice(idx, 1);
-      if (q?.kind === "query") q.resolve(r);
+      if (q?.kind === "query") {
+        if (q.timeout !== undefined) clearTimeout(q.timeout);
+        q.resolve(r);
+      }
       return;
     }
 
@@ -86,8 +108,10 @@ export class TerminalProbe {
       const s = this.queue.findIndex((p) => p.kind === "sentinel");
       if (s === -1) return;
       for (const p of this.queue.splice(0, s + 1)) {
-        if (p.kind === "query") p.resolve(undefined);
-        else p.resolve();
+        if (p.kind === "query") {
+          if (p.timeout !== undefined) clearTimeout(p.timeout);
+          p.resolve(undefined);
+        } else p.resolve();
       }
     }
   }

@@ -4,6 +4,10 @@ import {
 } from "@/engine/providers/_shared/account-identity.ts";
 import { streamErrorToHttpError } from "@/engine/providers/_shared/retry.ts";
 import {
+  type ThinkingProvenance,
+  thinkingProvenance,
+} from "@/engine/providers/_shared/thinking-provenance.ts";
+import {
   ensureNonEmptyErrorContent,
   sanitizeToolResultContent,
 } from "@/engine/providers/_shared/tool-result.ts";
@@ -24,8 +28,9 @@ interface KimiMessage {
 }
 
 interface KimiReplayOpts {
-  sameProvider: boolean;
-  sameAccount: boolean;
+  currentProvider: ProviderId | undefined;
+  currentAccount: string;
+  messageProvenance: ThinkingProvenance;
 }
 
 function blockToKimi(block: ContentBlock, replay: KimiReplayOpts): KimiBlock | null {
@@ -53,10 +58,21 @@ function blockToKimi(block: ContentBlock, replay: KimiReplayOpts): KimiBlock | n
       };
     }
     case "thinking": {
-      // A signed block only replays to the provider+credential that signed
-      // it; anything else is rejected server-side as a modified signature.
-      // Unsigned thinking carries no credential binding and replays as-is.
-      if (block.signature && !(replay.sameProvider && replay.sameAccount)) return null;
+      // Thinking only replays to the provider that produced it — a foreign
+      // block never ships, signed or not. A signed block additionally requires
+      // the credential that signed it; anything else is rejected server-side
+      // as a modified signature. Same-provider unsigned thinking carries no
+      // credential binding and replays as-is. Provenance is judged per block
+      // (a rebuilt message can carry blocks from several producers), with the
+      // message stamp as legacy fallback.
+      const produced = thinkingProvenance(block, replay.messageProvenance);
+      if (!replay.currentProvider || produced.producedBy !== replay.currentProvider) return null;
+      if (
+        block.signature &&
+        !sameAccountFingerprint(produced.producedAccount, replay.currentAccount)
+      ) {
+        return null;
+      }
       return {
         type: "thinking",
         thinking: block.text,
@@ -103,8 +119,9 @@ export function buildKimiMessages(
     }
     const role: "user" | "assistant" = msg.role === "assistant" ? "assistant" : "user";
     const replay: KimiReplayOpts = {
-      sameProvider: !!currentProvider && msg.producedBy === currentProvider,
-      sameAccount: sameAccountFingerprint(msg.producedAccount, currentAccount),
+      currentProvider,
+      currentAccount,
+      messageProvenance: msg,
     };
     const blocks: KimiBlock[] = [];
     for (const block of msg.content) {

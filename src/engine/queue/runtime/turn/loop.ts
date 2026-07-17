@@ -3,6 +3,7 @@ import { recordCodexRawReplayDiagnostic } from "@/devtools/codex-raw-stream.ts";
 import { dequeue } from "@/engine/agents/inbox.ts";
 import { listRunning as bgListRunning } from "@/engine/background/tasks/background.ts";
 import { isWorkflowEnabled } from "@/engine/background/workflows/runtime/gate.ts";
+import { listWorkflowTasks } from "@/engine/background/workflows/runtime/store/store.ts";
 import { recordTurnCacheUsage } from "@/engine/providers/_shared/cache.ts";
 import { emitQueue } from "@/engine/queue/emit.ts";
 import { hasUltracodeKeyword } from "@/engine/queue/runtime/keyword.ts";
@@ -36,6 +37,7 @@ import { evaluateGoal, goalContinuePrompt } from "../goal-evaluation.ts";
 import { flushOrphanToolUses } from "../orphan-synth.ts";
 import { makeRequestContext } from "../request-context.ts";
 import { stopHookBlockCap } from "../stop-hook-classifier.ts";
+import { setStopHookActiveTurn } from "../stop-hook-rewake.ts";
 import { queuedInputBlocks } from "../turn-prompts.ts";
 import { commitAssistantMessage } from "./assistant-commit.ts";
 import {
@@ -66,6 +68,14 @@ When your plan is ready for approval, call ExitPlanMode.`;
 const EXITED_PLAN_MODE_REMINDER =
   "## Exited Plan Mode\n\nYou have exited plan mode. You can now make edits, run tools, and take actions.";
 const PER_TURN_CHAR_CAP = 200_000;
+
+function runningSessionWorkCount(sessionId: string): number {
+  const backgroundTasks = bgListRunning().filter((task) => task.sessionId === sessionId).length;
+  const workflows = listWorkflowTasks().filter(
+    (task) => task.sessionId === sessionId && task.status === "running",
+  ).length;
+  return backgroundTasks + workflows;
+}
 
 // Per-host turn epoch: a dispatch can be cancelled from the UI (turnGuard.abort())
 // while this generator is still parked inside a slow tool whose own abort handling
@@ -116,6 +126,9 @@ export async function* runTurn(
     host.deps.session.messages.push({ role: "user", content: turnStartDrain.llmBlocks });
     appendNotificationRecords(host, turnStartDrain.notificationTexts);
   }
+  // A turn started by a stop-hook rewake runs its own Stop hooks with
+  // STOP_HOOK_ACTIVE so a hook script can break the rewake loop.
+  setStopHookActiveTurn(turnStartDrain?.stopHookActive === true);
   let memoryRecall: MemoryRecallPrefetch | undefined;
 
   try {
@@ -210,6 +223,7 @@ export async function* runTurn(
     yield* maybeCompact(compactDepsFor(host));
 
     let turn = 0;
+    let goalContinueCount = 0;
     let stopHookBlockCount = 0;
     let lastSeenPermissionMode = turnState.permissionMode;
     let consecutiveSilentTurns = 0;
@@ -513,7 +527,7 @@ export async function* runTurn(
       if (stopReason !== "tool_calls" || toolCalls.length === 0) {
         if (text.trim().length > 0 || toolCalls.length > 0) consecutiveSilentTurns = 0;
         const preEvalGoal = getActiveGoal(host.deps.session.id);
-        const runningBg = preEvalGoal ? bgListRunning().length : 0;
+        const runningBg = preEvalGoal ? runningSessionWorkCount(host.deps.session.id) : 0;
         if (preEvalGoal && runningBg > 0) {
           yield {
             kind: "goal_paused_bg",
@@ -535,6 +549,18 @@ export async function* runTurn(
         const stopHookBlocked = yield* fireStopPromptHooks(turnStreamDeps(host), controller.signal);
         const goal = getActiveGoal(host.deps.session.id);
         if (goal && !errorEmittedThisTurn && !isCancelled() && !controller.signal.aborted) {
+          goalContinueCount += 1;
+          if (goalContinueCount > stopHookBlockCap()) {
+            const goalMsg = `goal remained unmet for ${goalContinueCount} continuations; halting to avoid a loop (cap ${stopHookBlockCap()}, set OTHERSIDE_STOP_HOOK_BLOCK_CAP to change)`;
+            const goalMeta = loopErrorMeta({
+              message: goalMsg,
+              provider: turnState.provider,
+              model: turnState.model,
+              attempt: goalContinueCount,
+            });
+            yield { kind: "error", error: goalMsg, meta: goalMeta };
+            return;
+          }
           const reason =
             goalResult?.met === false
               ? (goalResult.reason ?? "condition not satisfied")
@@ -578,7 +604,8 @@ export async function* runTurn(
         if (isCancelled() || controller.signal.aborted) return;
         const midTurnDrain = emitQueue.drainForBoundary("mid_turn");
         const queuedMessages = host.pendingUserInputDrainer?.() ?? [];
-        if (midTurnDrain.llmBlocks.length > 0) {
+        const hasMidTurnLlmInput = midTurnDrain.llmBlocks.length > 0;
+        if (hasMidTurnLlmInput) {
           host.deps.session.messages.push({
             role: "user",
             content: midTurnDrain.llmBlocks,
@@ -601,6 +628,11 @@ export async function* runTurn(
             content: queuedBlocks,
           });
           yield { kind: "queued_input_drained", messages: queuedMessages };
+        }
+        // A completion that arrived while the response streamed is now model
+        // input. Continue immediately rather than returning idle and leaving
+        // that input after the assistant message that caused the drain.
+        if (hasMidTurnLlmInput || queuedMessages.length > 0) {
           continue;
         }
         if (
@@ -665,7 +697,10 @@ export async function* runTurn(
     memoryRecall?.abort();
     // A superseded (zombie) invocation must not flip turn-active state back off
     // out from under the turn that superseded it — see the epoch comment above.
-    if (!isSuperseded(host, turnEpoch)) emitQueue.setTurnActive(false);
+    if (!isSuperseded(host, turnEpoch)) {
+      emitQueue.setTurnActive(false);
+      setStopHookActiveTurn(false);
+    }
     if (host.activeAbortController === controller) host.activeAbortController = null;
   }
 }
@@ -674,6 +709,7 @@ function compactDepsFor(host: TurnLoopHost): CompactOrchestrationDeps {
   return {
     agentDeps: host.deps,
     state: host.compactState,
+    turnId: host.currentTurnId,
     activeAbortController: () => host.activeAbortController,
     setActiveAbortController: (ctrl) => {
       host.activeAbortController = ctrl;

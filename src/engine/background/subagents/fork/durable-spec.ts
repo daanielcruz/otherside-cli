@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 import { forkSpecPathForCwd, forkStopPathForCwd } from "@/engine/session/paths.ts";
 import { atomicWriteFileSync, mkdirSecure } from "@/kernel/std/fs/secure-fs.ts";
 import { EFFORT_LEVEL_VALUES, type EffortLevel } from "@/kernel/std/types/effort.ts";
+import type { Message } from "@/kernel/std/types/message.ts";
 import { PERMISSION_MODES, type PermissionMode } from "@/kernel/std/types/permission-mode.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 import { isRecord } from "@/kernel/std/value-guards.ts";
@@ -16,6 +17,7 @@ export interface DurableForkSpecV1 {
   agentId: string;
   name: string;
   prompt: string;
+  body?: string;
   description?: string;
   // The spawn-time value is retained for diagnostics and definition-pinned
   // children. Inherited children must instead resolve the caller's live mode
@@ -33,6 +35,7 @@ export interface DurableForkSpecV1 {
   parentToolCallId?: string;
   allowSet: string[] | null;
   deferredAllow?: string[];
+  initialMessages?: Message[];
 }
 
 export interface DurableForkSpecRef {
@@ -71,6 +74,7 @@ export function serializeDurableForkSpec(
     agentId: spec.agentId ?? spec.name,
     name: spec.name,
     prompt: spec.prompt,
+    ...(spec.body.length > 0 ? { body: spec.body } : {}),
     ...(spec.description !== undefined ? { description: spec.description } : {}),
     permissionMode: spec.permissionMode ?? ctx.permissionMode,
     permissionModeIsDefinitionPinned: spec.permissionModeIsDefinitionPinned === true,
@@ -87,6 +91,7 @@ export function serializeDurableForkSpec(
     ...(spec.parentToolCallId !== undefined ? { parentToolCallId: spec.parentToolCallId } : {}),
     allowSet: spec.allowSet === null ? null : [...spec.allowSet].sort(),
     ...(spec.deferredAllow !== undefined ? { deferredAllow: [...spec.deferredAllow].sort() } : {}),
+    ...(spec.initialMessages !== undefined ? { initialMessages: spec.initialMessages } : {}),
   };
 }
 
@@ -156,12 +161,14 @@ function parseDurableForkSpec(value: unknown): DurableForkSpecV1 | null {
       typeof value.permissionModeIsDefinitionPinned === "boolean"
     ) ||
     !isEffort(value.effort) ||
+    !isOptionalString(value.body) ||
     !isOptionalString(value.description) ||
     !isOptionalString(value.originalCwd) ||
     !isOptionalString(value.worktreeRoot) ||
     !(value.isolation === undefined || value.isolation === "worktree") ||
     !isOptionalString(value.parentToolCallId) ||
-    !(value.deferredAllow === undefined || isStringArray(value.deferredAllow))
+    !(value.deferredAllow === undefined || isStringArray(value.deferredAllow)) ||
+    !(value.initialMessages === undefined || isMessageArray(value.initialMessages))
   ) {
     return null;
   }
@@ -170,6 +177,21 @@ function parseDurableForkSpec(value: unknown): DurableForkSpecV1 | null {
 
 function isOptionalString(value: unknown): boolean {
   return value === undefined || typeof value === "string";
+}
+
+function isMessageArray(value: unknown): value is Message[] {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (message) =>
+        isRecord(message) &&
+        (message.role === "system" ||
+          message.role === "user" ||
+          message.role === "assistant" ||
+          message.role === "tool") &&
+        Array.isArray(message.content),
+    )
+  );
 }
 
 function isStringArray(value: unknown): value is string[] {

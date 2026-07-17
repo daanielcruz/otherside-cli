@@ -1,6 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import type { ProviderEvent } from "@/kernel/std/types/events.ts";
-import { translateResponseAnthropic } from "../translate.ts";
+import type { Message } from "@/kernel/std/types/message.ts";
+import type { RequestContext } from "@/kernel/std/types/request.ts";
+import { buildAnthropicMessages, translateResponseAnthropic } from "../translate.ts";
 
 async function* sse(chunks: string[]): AsyncIterable<Uint8Array> {
   const enc = new TextEncoder();
@@ -90,5 +92,43 @@ describe("translateResponseAnthropic stop reasons", () => {
       name: "Bash",
       input: { command: "printf ok" },
     });
+  });
+});
+
+describe("buildAnthropicMessages PDF blocks", () => {
+  it("encodes a PDF tool result as a document block", () => {
+    const messages: Message[] = [
+      {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "pdf",
+            content: [
+              {
+                type: "pdf",
+                source: { type: "base64", media_type: "application/pdf", data: "cGRm" },
+                filename: "document.pdf",
+                pageCount: 1,
+                bytes: 3,
+              },
+            ],
+          },
+        ],
+      },
+    ];
+    const ctx = { provider: "anthropic", model: "claude-opus-4-8" } as RequestContext;
+    expect(buildAnthropicMessages(messages, ctx).out[0]?.content).toEqual([
+      {
+        type: "tool_result",
+        tool_use_id: "pdf",
+        content: [
+          {
+            type: "document",
+            source: { type: "base64", media_type: "application/pdf", data: "cGRm" },
+          },
+        ],
+      },
+    ]);
   });
 });

@@ -1,11 +1,14 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { runWithPermissionResolver } from "@/engine/agents/agent-context.ts";
 import { runForkLoopExternal } from "@/engine/background/subagents/dispatcher.ts";
+import { createWorktree } from "@/engine/background/subagents/worktree.ts";
 import type { Provider } from "@/engine/contract/types.ts";
 import * as providers from "@/engine/providers/registry.ts";
 import { agentTranscriptPathForCwd } from "@/engine/session/paths.ts";
+import { Bash } from "@/engine/tools/builtins/bash.ts";
 import type { ProviderEvent } from "@/kernel/std/types/events.ts";
 import type { Message } from "@/kernel/std/types/message.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
@@ -33,7 +36,11 @@ function makeCtx(cwd: string, originalCwd?: string): RequestContext {
   };
 }
 
-function registerProvider(events: ProviderEvent[]): void {
+function registerProvider(events: ProviderEvent[] | ProviderEvent[][], failure?: Error): void {
+  const turns = Array.isArray(events[0])
+    ? (events as ProviderEvent[][])
+    : [events as ProviderEvent[]];
+  let turn = 0;
   const provider = {
     id: providerId,
     deferredOverrides: () => ({
@@ -50,7 +57,10 @@ function registerProvider(events: ProviderEvent[]): void {
     },
     stream: async function* () {},
     translateResponse: async function* () {
-      for (const event of events) yield event;
+      if (failure !== undefined) throw failure;
+      const current = turns[Math.min(turn, turns.length - 1)] ?? [];
+      turn++;
+      for (const event of current) yield event;
     },
     recoverableError: () => ({ kind: "fail", reason: "test" }),
   } as unknown as Provider;
@@ -137,6 +147,54 @@ describe("worktree isolation originalCwd persistence key", () => {
     expect(existsSync(badPath)).toBe(false);
   });
 
+  test("runs a real Bash child inside the Agent worktree", async () => {
+    const forkId = "fork_bash_effects";
+    registerProvider([
+      [
+        { kind: "message_start" },
+        {
+          kind: "tool_call_complete",
+          id: "worktree-bash-call",
+          name: "Bash",
+          input: {
+            command: "printf isolated > agent-child-write.txt",
+            dangerouslyDisableSandbox: true,
+          },
+        },
+        { kind: "message_stop", stop_reason: "tool_calls" },
+      ],
+      [
+        { kind: "message_start" },
+        { kind: "text_delta", text: "The isolated write completed." },
+        { kind: "message_stop", stop_reason: "stop" },
+      ],
+    ]);
+
+    const result = await runWithPermissionResolver(
+      () => Promise.resolve("allow"),
+      () =>
+        runForkLoopExternal({
+          ctx: { ...makeCtx(tempDir), permissionMode: "yolo" },
+          name: "Worktree Bash Agent",
+          body: "Run the Bash tool once.",
+          allowSet: new Set(["Bash"]),
+          scopedTools: [Bash],
+          prompt: "Create the isolated probe files.",
+          agentId: "worktree-bash-agent",
+          forkId,
+          isolation: "worktree",
+        }),
+    );
+
+    expect(result.isError).toBe(false);
+    expect(result.worktreeDeleted).toBe(false);
+    if (result.worktreePath === undefined) throw new Error("missing worktree result path");
+    expect(readFileSync(join(result.worktreePath, "agent-child-write.txt"), "utf8")).toBe(
+      "isolated",
+    );
+    expect(existsSync(join(tempDir, "agent-child-write.txt"))).toBe(false);
+  });
+
   test("fails closed when requested isolation cannot create a worktree", async () => {
     const nonRepo = mkdtempSync(join(tmpdir(), "otherside-worktree-no-git-"));
     registerProvider([{ kind: "message_stop", stop_reason: "stop" }]);
@@ -156,6 +214,54 @@ describe("worktree isolation originalCwd persistence key", () => {
     } finally {
       rmSync(nonRepo, { recursive: true, force: true });
     }
+  });
+
+  test("releases worktree ownership after a provider failure", async () => {
+    const forkId = "fork_cleanup_failure";
+    registerProvider([], new Error("injected provider failure"));
+
+    const result = await runForkLoopExternal({
+      ctx: makeCtx(tempDir),
+      name: "Failing Worktree Agent",
+      body: "Fail.",
+      allowSet: null,
+      prompt: "Fail.",
+      agentId: "worktree-failure-agent",
+      forkId,
+      isolation: "worktree",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.worktreeDeleted).toBe(true);
+    expect(existsSync(join(tempDir, ".otherside", "worktrees", forkId))).toBe(false);
+    const recreated = await createWorktree(tempDir, forkId);
+    expect(recreated).not.toBeNull();
+    expect(await recreated?.cleanup()).toEqual({ deleted: true });
+  });
+
+  test("releases worktree ownership after cancellation", async () => {
+    const forkId = "fork_cleanup_cancel";
+    const abortController = new AbortController();
+    abortController.abort("test cancellation");
+    registerProvider([{ kind: "message_stop", stop_reason: "stop" }]);
+
+    await expect(
+      runForkLoopExternal({
+        ctx: { ...makeCtx(tempDir), abortSignal: abortController.signal },
+        name: "Cancelled Worktree Agent",
+        body: "Cancel.",
+        allowSet: null,
+        prompt: "Cancel.",
+        agentId: "worktree-cancel-agent",
+        forkId,
+        isolation: "worktree",
+      }),
+    ).rejects.toMatchObject({ name: "AbortError" });
+
+    expect(existsSync(join(tempDir, ".otherside", "worktrees", forkId))).toBe(false);
+    const recreated = await createWorktree(tempDir, forkId);
+    expect(recreated).not.toBeNull();
+    expect(await recreated?.cleanup()).toEqual({ deleted: true });
   });
 
   test("keeps an already-set originalCwd across nested worktree rewrites", async () => {

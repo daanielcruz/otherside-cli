@@ -19,7 +19,7 @@ function candidate(input: {
 }): TierCandidateDetail {
   const blockedReasons = input.blockedReasons ?? [];
   return {
-    tier: "general",
+    tier: "emperor",
     rank: input.rank,
     provider: input.provider,
     model: input.model,
@@ -61,7 +61,7 @@ function deviation(untilEpochMs = Date.now() + 60_000): ModelFallbackDeviation {
     usable: true,
     cooldownUntilEpochMs: null,
   });
-  const found = rankOneCooldownDeviation("general", [rankOne, substitute], substitute);
+  const found = rankOneCooldownDeviation("emperor", [rankOne, substitute], substitute);
   if (found === null) throw new Error("expected fallback deviation");
   return found;
 }

@@ -1,11 +1,13 @@
 import { resolveTierRosterData } from "@/engine/model/tier/roster-data.ts";
 import type { ToolSchema } from "@/engine/tools/contract.ts";
+import { orchestrationModeForAgentFields } from "@/engine/tools/dynamic/agent-options.ts";
 import {
   buildAgentDescription,
   buildTierAwareAgentDescription as buildTierAwareAgentDescriptionFromRoster,
 } from "@/harness/tools/Agent/description.ts";
 import tool from "@/harness/tools/Agent/tool.json" with { type: "json" };
 import { isAgentAutoBackgroundEnabled } from "@/kernel/config/agent-auto-background.ts";
+import type { OrchestrationMode } from "@/kernel/config/orchestration-mode.ts";
 import type { ProviderId } from "@/kernel/config/provider-ids.ts";
 
 export { buildAgentDescription };
@@ -34,10 +36,24 @@ export function buildTierAwareAgentDescription(
 
 const WORKTREE_ISOLATION_DESCRIPTION =
   'Isolation mode. "worktree" creates a temporary git worktree so the agent works on an isolated copy of the repo.';
+const DISABLED_MODEL_DESCRIPTION =
+  "Concrete model override on the current provider. Takes precedence over the agent definition's model frontmatter. If omitted, uses the agent definition's model or inherits from the parent model. Ignored for subagent_type: \"fork\" — forks always inherit the parent model.";
 
-export function buildAgentInputSchema(provider?: ProviderId): Record<string, unknown> {
+export function buildAgentInputSchema(
+  provider?: ProviderId,
+  orchestrationMode: OrchestrationMode = "disabled",
+): Record<string, unknown> {
   const schema = structuredClone(tool.inputSchema) as Record<string, unknown>;
-  const properties = { ...((schema.properties ?? {}) as Record<string, unknown>) };
+  const properties = {
+    ...((schema.properties ?? {}) as Record<string, unknown>),
+  };
+  for (const field of orchestrationModeForAgentFields(orchestrationMode)) delete properties[field];
+  if (orchestrationMode === "disabled" && properties.model !== undefined) {
+    properties.model = {
+      ...(properties.model as Record<string, unknown>),
+      description: DISABLED_MODEL_DESCRIPTION,
+    };
+  }
   if (isAgentAutoBackgroundEnabled()) delete properties.run_in_background;
   if (provider !== "anthropic") {
     properties.isolation = {

@@ -323,13 +323,14 @@ export function createCancellationStage(deps: CancellationStageDeps): Cancellati
       armExitHint: () => armExitPending(exitKeyName),
       exit: () => {
         clearExitPending();
-        // Parity: worktree keep/remove prompt + tmux lifecycle before TUI exit.
+        // Worktree keep/remove prompt + tmux lifecycle before TUI exit.
         void (async () => {
           try {
             const { resolveWorktreeOnSessionExit } = await import(
               "@/engine/tools/builtins/worktree-exit.ts"
             );
-            await resolveWorktreeOnSessionExit(session);
+            const result = await resolveWorktreeOnSessionExit(session);
+            if (result.action === "cancel") return;
           } catch {
             // Best-effort — never block process exit on worktree cleanup failure.
           }

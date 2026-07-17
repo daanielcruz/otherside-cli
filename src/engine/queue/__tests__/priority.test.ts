@@ -14,6 +14,7 @@ describe("PRIORITY_ORDER owner lock", () => {
       "user_message",
       "urgent_output",
       "deferred_output",
+      "idle_prompt",
     ]);
   });
 });

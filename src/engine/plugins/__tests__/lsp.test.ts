@@ -50,7 +50,7 @@ describe("plugin LSP server contributions", () => {
         path === join(pluginDir, "bin/demo-lsp") || path === join(pluginDir, "config.json"),
     });
     expect(specs).toHaveLength(1);
-    expect(specForFile("/workspace/file.demo", specs)).toEqual({
+    expect(specForFile("/workspace/file.demo", specs)).toMatchObject({
       command: join(pluginDir, "bin/demo-lsp"),
       args: ["--stdio", join(pluginDir, "config.json")],
       languages: ["demoLang"],
@@ -58,6 +58,8 @@ describe("plugin LSP server contributions", () => {
       extensionToLanguage: { ".demo": "demoLang" },
       env: { DEMO_ROOT: "data" },
       cwd: join(pluginDir, "workspace"),
+      pluginId: "demo@demo",
+      serverName: "demo",
     });
     expect(specForFile("/workspace/app.ts", specs)?.command).toBe("typescript-language-server");
   });

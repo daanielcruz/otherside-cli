@@ -1,7 +1,6 @@
 import { useSyncExternalStore } from "react";
 import { makeStore, type Store } from "@/kernel/std/state/make-store.ts";
 import type { ContentBlock } from "@/kernel/std/types/message.ts";
-import type { PendingChange } from "@/store/app-store/actions.ts";
 
 export interface QueuedPastedImage {
   id: number;
@@ -17,9 +16,6 @@ export interface QueuedMessage {
   blocks?: ContentBlock[];
   pastedImages?: QueuedPastedImage[];
   remotePayload?: unknown;
-  pendingChange?: PendingChange;
-  recallText?: string;
-  changeFeedback?: string;
 }
 
 export interface QueueState {
@@ -86,7 +82,7 @@ export const queueActions = {
 export function selectQueuedText(): string {
   return queueStore
     .getState()
-    .messages.map((m) => m.recallText ?? m.expanded ?? m.text)
+    .messages.map((m) => m.expanded || m.text)
     .filter((s) => s.length > 0)
     .join("\n");
 }

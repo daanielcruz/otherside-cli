@@ -8,6 +8,8 @@ import type {
   ForeignAttachment,
   GoalStatusAttachment,
   OsSidecar,
+  PreservedMessages,
+  PreservedSegment,
   QueuedCommandAttachment,
   RecordType,
   SessionMetaRecord,
@@ -105,6 +107,7 @@ function recordsFromFlatLine(env: Record<string, unknown>, sidecar: OsSidecar): 
     const rec: AttachmentRecord = {
       type: "attachment",
       ts,
+      ...(typeof env.uuid === "string" ? { uuid: env.uuid } : {}),
       attachment: attachment as GoalStatusAttachment | QueuedCommandAttachment | ForeignAttachment,
     };
     if (env.isSidechain === true) rec.isSidechain = true;
@@ -168,6 +171,7 @@ function flatUserRecords(
       out.push({
         type: "tool_result",
         ts,
+        ...(typeof env.uuid === "string" ? { uuid: env.uuid } : {}),
         call_id: block.tool_use_id,
         result: block.content ?? "",
         is_error: block.is_error === true,
@@ -233,6 +237,7 @@ function flatAssistantRecords(
       out.push({
         type: "tool_call",
         ts,
+        ...(typeof env.uuid === "string" ? { uuid: env.uuid } : {}),
         tool_name: block.name,
         args: block.input ?? {},
         call_id: block.id,
@@ -301,13 +306,22 @@ function flatCompactionRecord(
     type: "compaction_mark",
     ts,
     summary_ref: compactionSummaryRefFromUnknown(
-      compaction?.summaryRef ?? (typeof env.content === "string" ? env.content : ""),
+      compaction?.summaryRef ?? compactionSummaryFromEnvelope(env),
     ),
   };
+  if (typeof env.uuid === "string") rec.uuid = env.uuid;
   if (sidecar.provider) rec.provider = sidecar.provider;
   if (sidecar.model) rec.model = sidecar.model;
   if (compaction?.version !== undefined) rec.version = compaction.version;
   if (typeof env.logicalParentUuid === "string") rec.leafUuid = env.logicalParentUuid;
+  const preservedSegment = preservedSegmentFromUnknown(
+    compaction?.preservedSegment ?? objectRecord(env.compactMetadata)?.preservedSegment,
+  );
+  if (preservedSegment) rec.preservedSegment = preservedSegment;
+  const preservedMessages = preservedMessagesFromUnknown(
+    compaction?.preservedMessages ?? objectRecord(env.compactMetadata)?.preservedMessages,
+  );
+  if (preservedMessages) rec.preservedMessages = preservedMessages;
   if (compaction?.preTokens !== undefined) rec.preTokens = compaction.preTokens;
   if (compaction?.trigger !== undefined) rec.trigger = compaction.trigger;
   if (compaction?.preservedImages !== undefined) rec.preservedImages = compaction.preservedImages;
@@ -317,6 +331,37 @@ function flatCompactionRecord(
   if (compaction?.consecutiveFailures !== undefined)
     rec.consecutiveFailures = compaction.consecutiveFailures;
   return rec;
+}
+
+function compactionSummaryFromEnvelope(env: Record<string, unknown>): unknown {
+  if ("summary_ref" in env) return env.summary_ref;
+  if ("summary" in env) return env.summary;
+  const content = env.content;
+  return typeof content === "string" && content !== "Conversation compacted" ? content : "";
+}
+
+function objectRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null;
+}
+
+function preservedSegmentFromUnknown(value: unknown): PreservedSegment | null {
+  const raw = objectRecord(value);
+  if (
+    raw === null ||
+    typeof raw.headUuid !== "string" ||
+    typeof raw.tailUuid !== "string" ||
+    typeof raw.anchorUuid !== "string"
+  )
+    return null;
+  return { headUuid: raw.headUuid, tailUuid: raw.tailUuid, anchorUuid: raw.anchorUuid };
+}
+
+function preservedMessagesFromUnknown(value: unknown): PreservedMessages | null {
+  const raw = objectRecord(value);
+  if (raw === null || typeof raw.anchorUuid !== "string" || !Array.isArray(raw.uuids)) return null;
+  const uuids = raw.uuids.filter((uuid): uuid is string => typeof uuid === "string");
+  if (uuids.length === 0 || uuids.length !== raw.uuids.length) return null;
+  return { uuids, anchorUuid: raw.anchorUuid };
 }
 
 function nonNegativeInt(value: unknown): number {
@@ -333,6 +378,7 @@ function mapUpstreamRecord(obj: Record<string, unknown>): SessionRecord[] {
     const rec: AttachmentRecord = {
       type: "attachment",
       ts,
+      ...(typeof env.uuid === "string" ? { uuid: env.uuid } : {}),
       attachment: attachment as GoalStatusAttachment | QueuedCommandAttachment | ForeignAttachment,
     };
     if (env.isSidechain === true) rec.isSidechain = true;
@@ -347,14 +393,19 @@ function mapUpstreamRecord(obj: Record<string, unknown>): SessionRecord[] {
     ];
   }
   if (env.type === "system" && obj.subtype === "compact_boundary") {
-    const meta = obj.compactMetadata as { trigger?: unknown; preTokens?: unknown } | undefined;
+    const meta = objectRecord(obj.compactMetadata);
     const rec: CompactionMarkRecord = {
       type: "compaction_mark",
       ts,
-      summary_ref: compactionSummaryRefFromUnknown(obj.content),
+      summary_ref: compactionSummaryRefFromUnknown(compactionSummaryFromEnvelope(obj)),
     };
+    if (typeof obj.uuid === "string") rec.uuid = obj.uuid;
     if (meta?.trigger === "manual" || meta?.trigger === "auto") rec.trigger = meta.trigger;
     if (typeof meta?.preTokens === "number") rec.preTokens = meta.preTokens;
+    const preservedSegment = preservedSegmentFromUnknown(meta?.preservedSegment);
+    if (preservedSegment) rec.preservedSegment = preservedSegment;
+    const preservedMessages = preservedMessagesFromUnknown(meta?.preservedMessages);
+    if (preservedMessages) rec.preservedMessages = preservedMessages;
     if (typeof obj.logicalParentUuid === "string") rec.leafUuid = obj.logicalParentUuid;
     return [rec];
   }
@@ -413,6 +464,13 @@ function mapUpstreamUserBlocks(blocks: Record<string, unknown>[], ts: Timestamp)
 function flattenToolResultContent(content: unknown): unknown {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return content;
+  if (
+    content.some(
+      (block) => block && typeof block === "object" && (block as { type?: unknown }).type === "pdf",
+    )
+  ) {
+    return content;
+  }
   const parts: string[] = [];
   for (const block of content) {
     if (!block || typeof block !== "object") continue;

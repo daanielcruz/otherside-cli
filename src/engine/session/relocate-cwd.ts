@@ -1,12 +1,13 @@
 import { existsSync } from "node:fs";
-import { copyFile, mkdir, rename, rm, stat } from "node:fs/promises";
+import { copyFile, cp, mkdir, rename, rm, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { setTaskOutputSession } from "@/engine/background/tasks/output-files.ts";
+import { resetSandboxState } from "@/engine/sandbox/manager.ts";
 import { currentGitBranch, sessionPathForCwd } from "@/engine/session/paths.ts";
 import type { Session } from "@/engine/session/record/state.ts";
 import { registerSession, touchSession } from "@/engine/session/registry.ts";
 import { renderMemorySection } from "@/harness/core/memory-section.ts";
-import { refreshMcpTools } from "@/kernel/mcp/index.ts";
+import { isEnvTruthy } from "@/kernel/std/proc/env.ts";
 import { setTrackedCwd } from "@/kernel/std/state/cwd-state.ts";
 import { collectMemoryFiles } from "@/kernel/storage/memory/loader.ts";
 
@@ -26,8 +27,13 @@ async function renameWithFallback(from: string, to: string): Promise<void> {
         ? String((err as { code: unknown }).code)
         : "";
     if (code === "EXDEV") {
-      await copyFile(from, to);
-      await rm(from, { force: true });
+      if ((await stat(from)).isDirectory()) {
+        await cp(from, to, { recursive: true });
+        await rm(from, { recursive: true, force: true });
+      } else {
+        await copyFile(from, to);
+        await rm(from, { force: true });
+      }
       return;
     }
     throw err;
@@ -84,6 +90,7 @@ export async function relocateSessionTranscript(
 }
 
 function formatMemoryForMove(dir: string): string {
+  if (isEnvTruthy(process.env.OTHERSIDE_DISABLE_PROJECT_MEMORY)) return "";
   try {
     const files = collectMemoryFiles(dir).filter(
       (f) => f.scope === "project" || f.scope === "nested",
@@ -98,7 +105,7 @@ function formatMemoryForMove(dir: string): string {
 /**
  * Apply a session working-directory change without process.chdir().
  * Updates active cwd, tracked shell cwd, optional transcript storage home,
- * git branch, task output root, registry, and MCP tools for the destination.
+ * git branch, task output root, registry, and sandbox state for the destination.
  */
 export async function relocateSession(
   session: Session,
@@ -126,6 +133,7 @@ export async function relocateSession(
 
   session.cwd = dir;
   setTrackedCwd(dir);
+  resetSandboxState();
 
   const branch = currentGitBranch(dir);
   if (branch) session.gitBranch = branch;
@@ -134,13 +142,6 @@ export async function relocateSession(
   setTaskOutputSession({ sessionId: session.id, cwd: dir });
   registerSession(session.id, dir);
   touchSession(session.id, dir);
-
-  // Project MCP servers may differ at the destination — best-effort refresh.
-  try {
-    await refreshMcpTools(dir);
-  } catch {
-    // Continuing without a full MCP reload is acceptable; tools still use new cwd.
-  }
 
   const moveSource = source === "cd_command" ? "via /cd" : "by the user";
   const modelMessageCore =
@@ -166,11 +167,7 @@ export async function pathIsDirectory(
       return { ok: false, reason: "not_a_directory", path, parent: dirname(path) };
     }
   } catch (err) {
-    const code =
-      err && typeof err === "object" && "code" in err
-        ? String((err as { code: unknown }).code)
-        : "";
-    if (code === "ENOENT" || code === "ENOTDIR" || code === "EACCES" || code === "EPERM") {
+    if (err && typeof err === "object" && "code" in err) {
       return { ok: false, reason: "not_found", path };
     }
     throw err;

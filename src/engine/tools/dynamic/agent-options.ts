@@ -1,3 +1,4 @@
+import type { OrchestrationMode } from "@/kernel/config/orchestration-mode.ts";
 import { trimmedStringOrUndefined } from "@/kernel/std/value-guards.ts";
 
 const AGENT_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
@@ -13,7 +14,6 @@ export interface ParsedAgentInput {
   model?: string;
   provider?: string;
   name?: string;
-  cwd?: string;
   isolation?: "worktree" | "remote";
   validationError?: string;
 }
@@ -21,8 +21,8 @@ export interface ParsedAgentInput {
 interface AgentOptionDescriptor {
   /** Wire property name in the Agent tool inputSchema (Agent/tool.json). */
   name: string;
-  /** Stripped from the wire schema when multiprovider orchestration is off. */
-  multiproviderOnly?: boolean;
+  /** Modes in which this option is exposed on the provider wire schema. */
+  modes?: readonly OrchestrationMode[];
   parse: (raw: Record<string, unknown>, out: ParsedAgentInput) => void;
 }
 
@@ -34,11 +34,10 @@ function firstNonEmptyString(...values: unknown[]): string | null {
 }
 
 // Single source of truth for the Agent tool's option set. Drives the handler
-// parser (parseAgentInput) and the multiprovider strip set
-// (AGENT_MULTIPROVIDER_ONLY_FIELDS) the translator applies when orchestration is
-// off. The wire schema itself stays in Agent/tool.json — the names here are
-// pinned to its properties by agent.test.ts so the two cannot drift. Adding an
-// option is one entry here plus its schema property, not a parser/strip-set hunt.
+// parser (parseAgentInput) and the mode-specific fields the translator exposes.
+// The wire schema itself stays in Agent/tool.json — the names here are pinned to
+// its properties by agent.test.ts so the two cannot drift. Adding an option is
+// one entry here plus its schema property, not a parser/schema hunt.
 export const AGENT_OPTIONS: readonly AgentOptionDescriptor[] = [
   {
     name: "description",
@@ -66,7 +65,7 @@ export const AGENT_OPTIONS: readonly AgentOptionDescriptor[] = [
   },
   {
     name: "tier",
-    multiproviderOnly: true,
+    modes: ["feudalism"],
     parse: (raw, out) => {
       const tier = trimmedStringOrUndefined(raw.tier);
       if (tier !== undefined) out.tier = tier;
@@ -74,6 +73,7 @@ export const AGENT_OPTIONS: readonly AgentOptionDescriptor[] = [
   },
   {
     name: "model",
+    modes: ["disabled", "default"],
     parse: (raw, out) => {
       const model = trimmedStringOrUndefined(raw.model);
       if (model !== undefined) out.model = model;
@@ -81,7 +81,7 @@ export const AGENT_OPTIONS: readonly AgentOptionDescriptor[] = [
   },
   {
     name: "provider",
-    multiproviderOnly: true,
+    modes: ["default"],
     parse: (raw, out) => {
       const provider = trimmedStringOrUndefined(raw.provider);
       if (provider !== undefined) out.provider = provider;
@@ -105,13 +105,6 @@ export const AGENT_OPTIONS: readonly AgentOptionDescriptor[] = [
     },
   },
   {
-    name: "cwd",
-    parse: (raw, out) => {
-      const cwd = trimmedStringOrUndefined(raw.cwd);
-      if (cwd !== undefined) out.cwd = cwd;
-    },
-  },
-  {
     name: "isolation",
     parse: (raw, out) => {
       if (raw.isolation === "worktree" || raw.isolation === "remote") {
@@ -121,9 +114,11 @@ export const AGENT_OPTIONS: readonly AgentOptionDescriptor[] = [
   },
 ];
 
-export const AGENT_MULTIPROVIDER_ONLY_FIELDS: readonly string[] = AGENT_OPTIONS.filter(
-  (option) => option.multiproviderOnly,
-).map((option) => option.name);
+export function orchestrationModeForAgentFields(mode: OrchestrationMode): readonly string[] {
+  return AGENT_OPTIONS.filter(
+    (option) => option.modes !== undefined && !option.modes.includes(mode),
+  ).map((option) => option.name);
+}
 
 export function parseAgentInput(raw: unknown): ParsedAgentInput {
   const out: ParsedAgentInput = { subagentType: null, prompt: null, runInBackground: false };

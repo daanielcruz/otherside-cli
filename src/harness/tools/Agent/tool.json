@@ -30,9 +30,9 @@
         "type": "boolean"
       },
       "tier": {
-        "description": "Delegate by capability tier: `general` (highest reasoning — owns thinking: analysis, planning, synthesis, verification), `warrior` (fast executor — runs a path already laid for it; hand it the exact steps, files, and checks, never raw data to analyze or decisions to make), `scout` (cheapest, fastest — massive purely-mechanical fan-out over a pre-traced path, or deliberately quick surface reads; zero judgment expected). A warrior/scout dispatch must carry a how-to brief and a compact output contract in the prompt — the tier picks the muscle, your brief supplies the brain. Use scout/warrior fan-outs to enrich your own context before planning. The runtime resolves a usable provider for the tier across all configured providers. Not valid with `subagent_type: \"fork\"` (a fork inherits the parent model).",
+        "description": "Delegate by capability tier: `emperor` (highest reasoning — owns thinking: analysis, planning, synthesis, verification), `shogun` (complex execution with judgment — tactical planning, multi-step implementation, review passes inside a decided direction), `daimyo` (fast executor — runs a path already laid for it; hand it the exact steps, files, and checks, never raw data to analyze or decisions to make), `samurai` (cheapest, fastest — explicit choice only, for massive purely-mechanical fan-out over a pre-traced path or deliberately quick surface reads; zero judgment expected). A daimyo/samurai dispatch must carry a how-to brief and a compact output contract in the prompt — the tier picks the muscle, your brief supplies the brain. Use daimyo fan-outs to enrich your own context before planning. The runtime resolves a usable provider for the tier across all configured providers. Not valid with `subagent_type: \"fork\"` (a fork inherits the parent model).",
         "type": "string",
-        "enum": ["general", "warrior", "scout"]
+        "enum": ["emperor", "shogun", "daimyo", "samurai"]
       },
       "model": {
         "description": "Optional model override for this agent. Takes precedence over the agent definition's model frontmatter. If omitted, uses the agent definition's model, or inherits from the parent. To use a model from ANOTHER provider, pass provider together with model — a bare model id never routes cross-provider. Ignored for subagent_type: \"fork\" — forks always inherit the parent model.",
@@ -46,10 +46,6 @@
         "description": "Name for the spawned agent. Must start with a letter or digit, contain only letters, digits, underscores, or hyphens, and be at most 64 characters. The name \"main\" is reserved.",
         "type": "string",
         "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
-      },
-      "cwd": {
-        "description": "Absolute path to run the agent in. Overrides the working directory for filesystem and shell operations. Mutually exclusive with isolation: \"worktree\".",
-        "type": "string"
       },
       "isolation": {
         "description": "Isolation mode. \"worktree\" creates a temporary git worktree so the agent works on an isolated copy of the repo. \"remote\" launches the agent in a remote cloud environment (always runs in background; availability is gated).",

@@ -1,10 +1,15 @@
 import type { ContentBlock, Message } from "@/kernel/std/types/message.ts";
 
-export function sanitizeMessages(messages: Message[]): Message[] {
+export function sanitizeMessages(
+  messages: Message[],
+  options?: { preserveToolReferences?: boolean },
+): Message[] {
   const declared = collectDeclaredToolUseIds(messages);
   const filtered = filterUnknownToolResults(messages, declared);
-  const stripped = stripToolReferenceContent(filtered);
-  const repaired = injectOrphanInterrupts(stripped);
+  const providerSafe = options?.preserveToolReferences
+    ? filtered
+    : stripToolReferenceContent(filtered);
+  const repaired = injectOrphanInterrupts(providerSafe);
   const grouped = coalesceConsecutiveSameRole(repaired);
   const withoutOrphanThinking = dropThinkingOnlyAssistants(grouped);
   const withoutTrailingThinking = dropTrailingThinkingFromLastAssistant(withoutOrphanThinking);

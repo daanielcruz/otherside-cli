@@ -65,7 +65,7 @@ describe("SpillBuffer.boundedSnapshot", () => {
     buffer.dispose();
   });
 
-  it("matches the reference shape for in-memory content", () => {
+  it("reports head, tail, discardedBytes, and truncated for in-memory content", () => {
     const buffer = makeBuffer();
     const full = "line-".repeat(200); // 1000 chars, no spill (default tail limit)
     fillInChunks(buffer, full, 37);
@@ -73,7 +73,7 @@ describe("SpillBuffer.boundedSnapshot", () => {
     buffer.dispose();
   });
 
-  it("matches the reference shape when the head lives on disk", () => {
+  it("reports head, tail, discardedBytes, and truncated when the head lives on disk", () => {
     const buffer = makeBuffer(64);
     const pieces: string[] = [];
     for (let i = 0; i < 500; i++) pieces.push(`chunk ${i} payload\n`);
@@ -85,7 +85,7 @@ describe("SpillBuffer.boundedSnapshot", () => {
     buffer.dispose();
   });
 
-  it("matches the reference shape when the tail spans disk and memory", () => {
+  it("reports head, tail, discardedBytes, and truncated when the tail spans disk and memory", () => {
     const buffer = makeBuffer(16);
     const full = Array.from({ length: 300 }, (_, i) => `x${i}`).join("|");
     fillInChunks(buffer, full, 7);

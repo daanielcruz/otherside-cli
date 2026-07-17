@@ -10,7 +10,7 @@ describe("bashOutputCap (BASH_MAX_OUTPUT_LENGTH)", () => {
     expect(bashOutputCap()).toBe(OUTPUT_CAP);
   });
 
-  it("honors a valid env override up to the upstream upper limit", () => {
+  it("honors a valid env override up to the upper limit", () => {
     process.env.BASH_MAX_OUTPUT_LENGTH = "150000";
     expect(bashOutputCap()).toBe(OUTPUT_CAP_UPPER_LIMIT);
     process.env.BASH_MAX_OUTPUT_LENGTH = "150001";
@@ -31,7 +31,7 @@ describe("bashOutputCap (BASH_MAX_OUTPUT_LENGTH)", () => {
     expect(capHeadCombined(big, "").stdoutTruncated).toBe(false);
   });
 
-  it("preserves the upstream head-only truncation marker", () => {
+  it("preserves the head-only truncation marker", () => {
     process.env.BASH_MAX_OUTPUT_LENGTH = "4";
     const result = capHeadCombined("head\n\n... [4 lines truncated] ...", "");
     expect(result.stdout).toBe("head\n\n... [4 lines truncated] ...");

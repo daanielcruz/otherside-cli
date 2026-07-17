@@ -18,6 +18,7 @@ const USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo";
 
 const SCOPES = [
   "https://www.googleapis.com/auth/cloud-platform",
+  "https://www.googleapis.com/auth/aicode",
   "https://www.googleapis.com/auth/userinfo.email",
   "https://www.googleapis.com/auth/userinfo.profile",
 ];

@@ -26,7 +26,7 @@ function firstUserText(messages: Message[]): string {
 const PREAMBLE_LINE = "As you answer the user's questions, you can use the following context:";
 const IMPORTANT_LINE = "IMPORTANT: this context may or may not be relevant to your tasks.";
 
-describe("composeAnthropicMessages — userPrepend bundle envelope (Lock §20 wire parity)", () => {
+describe("composeAnthropicMessages — userPrepend bundle envelope", () => {
   test("emits ONE preamble and ONE IMPORTANT line per bundle (no duplication)", () => {
     const result = composeAnthropicMessages(
       harness({

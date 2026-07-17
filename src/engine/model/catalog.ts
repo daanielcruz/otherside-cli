@@ -12,6 +12,7 @@ export type CatalogModel<A = unknown> = {
   contextWindow: number;
   provider: ProviderId;
   supports1m?: boolean;
+  supportsPdf?: boolean;
   efforts: EffortLevel[];
   defaultEffort: EffortLevel | null;
   autoCompactTokenLimit?: number;

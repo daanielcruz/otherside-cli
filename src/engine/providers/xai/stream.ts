@@ -44,6 +44,7 @@ export const xaiStream: StreamFn = async function* xaiStreamFn(
     const text = await resp.text().catch(() => "");
     const retryAfterHeader = resp.headers.get("retry-after");
     const quota = detectQuotaExhaustion({
+      provider: "xai",
       status: resp.status,
       headers: resp.headers,
       body: text,

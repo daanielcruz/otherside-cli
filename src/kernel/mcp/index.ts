@@ -38,8 +38,10 @@ export {
 export {
   hasDirectoryReadCapability,
   hasResourcesCapability,
+  isMcpSkillsEnabled,
   sanitizeMcpText,
   sanitizeMcpUri,
+  setMcpSkillsEnabledForTests,
 } from "./protocol/parse.ts";
 export type {
   HttpServerConfig,

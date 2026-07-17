@@ -36,11 +36,11 @@ describe("background dispatch placeholders", () => {
         config: {} as never,
       },
       compactState: {
-        circuitOpen: false,
         rapidRefillBreakerOpen: false,
         rapidRefillCount: 0,
+        consecutiveCompactFailures: 0,
         turnsSinceLast: Number.POSITIVE_INFINITY,
-        consecutiveFailures: 0,
+        lastAutoCompactAttemptTurnId: null,
       },
       sessionAllowedToolPatterns: new Set<string>(),
       loadedNestedMemoryPaths: new Set<string>(),
@@ -54,7 +54,7 @@ describe("background dispatch placeholders", () => {
 
     expect(outcome.kind).toBe("backgrounded");
     if (outcome.kind === "backgrounded") {
-      expect(outcome.placeholder).toContain("Continue independent, non-overlapping work");
+      expect(outcome.placeholder).toContain("do not report, assume, or predict them");
       expect(outcome.placeholder).not.toContain("Do not generate any other text");
     }
 
@@ -91,11 +91,11 @@ describe("background dispatch placeholders", () => {
         config: {} as never,
       },
       compactState: {
-        circuitOpen: false,
         rapidRefillBreakerOpen: false,
         rapidRefillCount: 0,
+        consecutiveCompactFailures: 0,
         turnsSinceLast: Number.POSITIVE_INFINITY,
-        consecutiveFailures: 0,
+        lastAutoCompactAttemptTurnId: null,
       },
       sessionAllowedToolPatterns: new Set<string>(),
       loadedNestedMemoryPaths: new Set<string>(),

@@ -12,27 +12,11 @@ import {
   worstProviderWarning,
 } from "@/kernel/channels/usage-limits.ts";
 import type { ProviderId } from "@/kernel/config/provider-ids.ts";
-import { createAutoClearDispatch } from "@/kernel/std/state/auto-clear-dispatch.ts";
 import { dispatch } from "@/store/app-store/index.ts";
-
-const WARNING_DISPLAY_MS = 8000;
-const WARNING_RESHOW_COOLDOWN_MS = 120_000;
-
-const warningDispatch = createAutoClearDispatch<string>({ holdMs: WARNING_DISPLAY_MS });
-const lastShownAt = new Map<string, number>();
+import { submitQuotaWarning } from "@/store/app-store/right-region-notices.ts";
 
 function showWarning(warning: UsageWarning): void {
-  const key = `${warning.severity}:${warning.message}`;
-  if (warningDispatch.isArmed(key)) return;
-  const now = Date.now();
-  const last = lastShownAt.get(key);
-  if (last !== undefined && now - last < WARNING_RESHOW_COOLDOWN_MS) return;
-  lastShownAt.set(key, now);
-  dispatch({ type: "view/setUsageWarning", warning });
-  warningDispatch.arm({
-    key,
-    onTimeout: () => dispatch({ type: "view/clearUsageWarningIfKey", key }),
-  });
+  submitQuotaWarning(warning.message, warning.severity);
 }
 
 function publishSnapshot(): void {
@@ -64,6 +48,8 @@ interface UsageLimitsBroker {
  * delegated agents/workflow stages, so quota state observed for an idle
  * provider (a /usage tab open, the companion's full-roster poll) never
  * resurfaces on its own.
+ *
+ * Display is owned by the right-region notice controller (ephemeralSolo lane).
  */
 export function startUsageLimitsSubscriber(broker?: UsageLimitsBroker): () => void {
   if (broker !== undefined) {
@@ -95,8 +81,6 @@ export function startUsageLimitsSubscriber(broker?: UsageLimitsBroker): () => vo
     unsub();
     unsubWorkflows?.();
     if (broker !== undefined) setAllocatedProvidersSource(null);
-    warningDispatch.clear();
-    lastShownAt.clear();
   };
 }
 

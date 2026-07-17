@@ -64,7 +64,7 @@ export function activityRows(usage: ProviderUsageTotals): UsageRow[] {
 export function providerRows(current: UsageByProvider, allTime: UsageByProvider): UsageRow[] {
   const ids = listProviderConfigs()
     .map((c) => c.provider.id)
-    .filter((id) => id !== "openai-custom");
+    .filter((id) => id !== "openai");
   return ids.map((provider) => {
     const currentUsage = current[provider] ?? emptyProviderUsage();
     const allTimeUsage = allTime[provider] ?? emptyProviderUsage();

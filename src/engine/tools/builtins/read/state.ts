@@ -17,7 +17,11 @@ const READ_STATE = new Map<string, Map<string, ReadStateEntry>>();
 
 export function readScopeKey(ctx: RequestContext): string {
   if (typeof ctx.parentThreadId === "string" && ctx.parentThreadId.length > 0) {
-    return ctx.sessionId;
+    // Each agent owns its read state so a completed agent's bucket can be
+    // released at its lifecycle boundary and concurrent agents never evict
+    // each other's entries. A child ctx without an owner id keeps the shared
+    // per-session bucket, which session finalize clears.
+    return ctx.agentOwnerId ?? ctx.sessionId;
   }
   return MAIN_SCOPE;
 }

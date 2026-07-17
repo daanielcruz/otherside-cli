@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { create, get } from "@/engine/background/tasks/index.ts";
 import { readSetContains, readSetInsert } from "@/engine/tools/builtins/read/state.ts";
 import { getAssembledTurn, setAssembledTurn } from "@/engine/translator/assembled.ts";
@@ -12,7 +12,7 @@ import {
   setMcpClientSpawnerForTests,
 } from "@/kernel/mcp/client/registry.ts";
 import type { McpClient, McpResourceInfo, McpToolInfo } from "@/kernel/mcp/protocol/types.ts";
-import { finalizeSession } from "../finalize.ts";
+import { finalizeSession, hasSessionTranscript } from "../finalize.ts";
 import { sessionPathForCwd } from "../paths.ts";
 import { Session } from "../record/index.ts";
 
@@ -84,6 +84,16 @@ afterEach(async () => {
 });
 
 describe("finalizeSession", () => {
+  it("recognizes a recorded transcript without in-memory messages", () => {
+    const s = new Session("recorded-session", base);
+    const path = sessionPathForCwd(s.storageCwd, s.id);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, '{"type":"session_meta"}\n', "utf8");
+
+    expect(s.records).toEqual([]);
+    expect(hasSessionTranscript(s)).toBe(true);
+  });
+
   it("flushes pendingMeta if session is non-empty and has message records", async () => {
     const s = new Session("session-1", base);
     s.pushRecord({
@@ -202,19 +212,14 @@ describe("finalizeSession", () => {
     expect(readSetContains("session-5", "test-file.txt")).toBe(true);
     expect(getAssembledTurn("session-5")).toBeDefined();
     expect(get("1", "session-5")).toBeDefined();
+    const taskDir = join(base, "config", "tasks", "session-5");
+    expect(existsSync(taskDir)).toBe(true);
 
     await finalizeSession(s);
 
     expect(readSetContains("session-5", "test-file.txt")).toBe(false);
     expect(getAssembledTurn("session-5")).toBeUndefined();
-    if (process.env.OTHERSIDE_CONFIG_DIR) {
-      try {
-        rmSync(join(process.env.OTHERSIDE_CONFIG_DIR, "tasks", "session-5"), {
-          recursive: true,
-          force: true,
-        });
-      } catch {}
-    }
+    expect(existsSync(taskDir)).toBe(false);
     expect(get("1", "session-5")).toBeUndefined();
   });
 
@@ -228,19 +233,14 @@ describe("finalizeSession", () => {
     expect(readSetContains("session-6", "test-file.txt")).toBe(true);
     expect(getAssembledTurn("session-6")).toBeDefined();
     expect(get("1", "session-6")).toBeDefined();
+    const taskDir = join(base, "config", "tasks", "session-6");
+    expect(existsSync(taskDir)).toBe(true);
 
     await finalizeSession(s);
 
     expect(readSetContains("session-6", "test-file.txt")).toBe(false);
     expect(getAssembledTurn("session-6")).toBeUndefined();
-    if (process.env.OTHERSIDE_CONFIG_DIR) {
-      try {
-        rmSync(join(process.env.OTHERSIDE_CONFIG_DIR, "tasks", "session-6"), {
-          recursive: true,
-          force: true,
-        });
-      } catch {}
-    }
+    expect(existsSync(taskDir)).toBe(false);
     expect(get("1", "session-6")).toBeUndefined();
   });
 

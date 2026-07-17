@@ -1,15 +1,5 @@
-import { buildRpcContext } from "@/design/bridge/context.ts";
-import { buildMethodTable, type MethodTable } from "@/design/bridge/dispatch.ts";
-import { encode, fail, notify, RPC_INTERNAL_ERROR } from "@/design/bridge/envelope.ts";
-import { scrub } from "@/design/bridge/scrubber.ts";
-import { providers } from "@/design/capabilities/meta-list.ts";
-import { DESIGN_CAPABILITIES } from "@/design/capabilities.ts";
-import { setDesignPushHook } from "@/design/push-hook.ts";
-import { shareKeyWithWeb } from "@/design/relay/attach.ts";
-import { startDurablePoll } from "@/design/relay/durable-poll.ts";
-import { createInboundState, handleRelayRow } from "@/design/relay/inbound.ts";
-import { createOutbound } from "@/design/relay/outbound.ts";
-import { createTokenRefresher } from "@/design/relay/token-refresh.ts";
+import { shareKeyWithWeb } from "@/backend/design/attach.ts";
+import { mintDesignOpenToken } from "@/backend/design/open-token.ts";
 import {
   designSessionAlive,
   designWebUrl,
@@ -19,7 +9,26 @@ import {
   registerDesignSession,
   setDesignSessionStatus,
   touchDesignSession,
-} from "@/design/relay/wire.ts";
+} from "@/backend/design/wire.ts";
+import { listSessionEvents, registerEnvironment } from "@/backend/shared/api.ts";
+import { currentUserEmail, currentUserId, loadFreshAuth } from "@/backend/shared/auth.ts";
+import { deviceFingerprint, ensureDevice } from "@/backend/shared/device.ts";
+import { b64uEncode } from "@/backend/shared/e2ee.ts";
+import { oauthLogin } from "@/backend/shared/oauth.ts";
+import { appPermissionMode } from "@/backend/shared/permission-mode.ts";
+import { type RealtimeChannel, subscribeChannel } from "@/backend/shared/realtime.ts";
+import { ensureSessionKey, type RatchetCacheEntry } from "@/backend/shared/session-crypto.ts";
+import { buildRpcContext } from "@/design/bridge/context.ts";
+import { buildMethodTable, type MethodTable } from "@/design/bridge/dispatch.ts";
+import { encode, fail, notify, RPC_INTERNAL_ERROR } from "@/design/bridge/envelope.ts";
+import { scrub } from "@/design/bridge/scrubber.ts";
+import { providers } from "@/design/capabilities/meta-list.ts";
+import { DESIGN_CAPABILITIES } from "@/design/capabilities.ts";
+import { setDesignPushHook } from "@/design/push-hook.ts";
+import { startDurablePoll } from "@/design/relay/durable-poll.ts";
+import { createInboundState, handleRelayRow } from "@/design/relay/inbound.ts";
+import { createOutbound } from "@/design/relay/outbound.ts";
+import { createTokenRefresher } from "@/design/relay/token-refresh.ts";
 import { createDesignSnapshot } from "@/design/snapshot.ts";
 import { markAttached, markLinkExpired, setSpawnLink } from "@/design/spawn-registry.ts";
 import { loadDesignSnapshot, saveDesignSnapshot } from "@/design/storage.ts";
@@ -31,18 +40,6 @@ import type {
 } from "@/design/types.ts";
 import type { Agent } from "@/engine/queue/index.ts";
 import type { Session } from "@/engine/session/index.ts";
-import { type RealtimeChannel, subscribeChannel } from "@/remote/_infra/realtime.ts";
-import {
-  listSessionEvents,
-  mintDesignOpenToken,
-  registerEnvironment,
-} from "@/remote/backend/api.ts";
-import { currentUserEmail, currentUserId, loadFreshAuth } from "@/remote/backend/auth.ts";
-import { oauthLogin } from "@/remote/backend/oauth.ts";
-import { b64uEncode } from "@/remote/crypto/e2ee.ts";
-import { deviceFingerprint, ensureDevice } from "@/remote/devices/device.ts";
-import { ensureSessionKey, type RatchetCacheEntry } from "@/remote/session/sync/crypto.ts";
-import { appPermissionMode } from "@/remote/session/sync/snapshot.ts";
 import type { Broker } from "@/store/app-store/broker.ts";
 
 const DESIGN_HEARTBEAT_INTERVAL_MS = 20_000;

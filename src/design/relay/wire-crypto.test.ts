@@ -6,8 +6,8 @@ import {
   generateDeviceKeyPair,
   generateSessionKey,
   verifyDesignConfirmToken,
-} from "@/remote/crypto/e2ee.ts";
-import { type RatchetCacheEntry, ratchetKeyFor } from "@/remote/session/sync/crypto.ts";
+} from "@/backend/shared/e2ee.ts";
+import { type RatchetCacheEntry, ratchetKeyFor } from "@/backend/shared/session-crypto.ts";
 
 const ENC = new TextEncoder();
 const DEC = new TextDecoder();

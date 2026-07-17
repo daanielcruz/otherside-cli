@@ -39,6 +39,8 @@ describe("resolveStartupBroker fresh-session default", () => {
     resumeLatest: false,
     provider: null,
     model: null,
+    worktree: null,
+    tmux: false,
   };
 
   const printMode: Extract<CliMode, { kind: "print" }> = {
@@ -54,6 +56,8 @@ describe("resolveStartupBroker fresh-session default", () => {
     resumeSessionId: null,
     resumeLatest: false,
     maxTurns: null,
+    worktree: null,
+    tmux: false,
   };
 
   it("defaults headless (print) to the 'default' permission mode", () => {
@@ -195,7 +199,7 @@ describe("resolveStartupBroker fresh-session default", () => {
     expect(forced.broker.read().provider).toBe("codex");
   });
 
-  it("yolo wins over an explicit --permission-mode (bypass-first, matches upstream)", () => {
+  it("yolo wins over an explicit --permission-mode (bypass-first)", () => {
     // Reproduces: otherside -p 'write a file' --permission-mode plan --dangerously-skip-permissions
     const result = resolveStartupBroker({
       mode: { ...printMode, yolo: true, permissionMode: "plan" },

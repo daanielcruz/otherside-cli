@@ -23,7 +23,6 @@ export interface SubagentInvocation {
   tierOverride?: string | undefined;
   tierRankOverride?: number | undefined;
   permissionMode?: PermissionMode | undefined;
-  cwd?: string | undefined;
   isolation?: "worktree" | undefined;
 }
 
@@ -130,6 +129,5 @@ export interface ForkInvocation {
   forkId?: string | undefined;
   name?: string | undefined;
   permissionMode?: PermissionMode | undefined;
-  cwd?: string | undefined;
   isolation?: "worktree" | undefined;
 }

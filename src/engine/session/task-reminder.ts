@@ -17,7 +17,6 @@ type TaskReminderBlock = Extract<ContentBlock, { type: "text" }> & {
 
 interface TaskReminderArgs {
   messages: Message[];
-  scope: string | undefined;
   effectiveTools: readonly { name: string }[];
 }
 
@@ -79,8 +78,11 @@ function taskUpdateAvailable(effectiveTools: readonly { name: string }[]): boole
   return effectiveTools.some((tool) => tool.name === TASK_UPDATE_TOOL_NAME);
 }
 
-function buildBody(scope: string | undefined): string {
-  const records = tasks.list(scope);
+// Planning tasks are session-shared: every authorized context (main, forks,
+// workflow workers) reads and writes the same list, so the reminder always
+// renders that list — there is no per-agent task scope.
+function buildBody(): string {
+  const records = tasks.list();
   const taskItems = records
     .map((task) => `#${task.id}. [${task.status}] ${task.subject}`)
     .join("\n");
@@ -89,7 +91,7 @@ function buildBody(scope: string | undefined): string {
 }
 
 export function buildTaskReminderInjection(args: TaskReminderArgs): string | null {
-  const { messages, scope, effectiveTools } = args;
+  const { messages, effectiveTools } = args;
   if (!taskUpdateAvailable(effectiveTools)) return null;
   if (messages.length === 0) return null;
 
@@ -97,7 +99,7 @@ export function buildTaskReminderInjection(args: TaskReminderArgs): string | nul
   if (turnsSinceLastTaskManagement < TURNS_SINCE_WRITE) return null;
   if (turnsSinceLastReminder < TURNS_BETWEEN_REMINDERS) return null;
 
-  return `<system-reminder>\n${buildBody(scope)}\n</system-reminder>`;
+  return `<system-reminder>\n${buildBody()}\n</system-reminder>`;
 }
 
 // Persist the reminder into live conversation history so it survives to the next turn. Appending to the trailing user message keeps history free of consecutive user turns and places the reminder as that user turn's final block.

@@ -6,15 +6,15 @@
     "type": "object",
     "properties": {
       "subject": {
-        "description": "A brief, actionable title for the task (imperative form, e.g. \"Port deferred tools wave 1\")",
+        "description": "A brief title for the task",
         "type": "string"
       },
       "description": {
-        "description": "What needs to be done — enough detail for another agent to pick up the task",
+        "description": "What needs to be done",
         "type": "string"
       },
       "activeForm": {
-        "description": "Present continuous form shown in the spinner when the task is in_progress (e.g., \"Porting deferred tools\"). Optional — defaults to the subject.",
+        "description": "Present continuous form shown in spinner when in_progress (e.g., \"Running tests\")",
         "type": "string"
       },
       "metadata": {

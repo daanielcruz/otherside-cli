@@ -17,6 +17,7 @@ import {
   list as listTaskRecords,
   reset as resetTaskList,
   subscribe as subscribeTasks,
+  taskListIdForScope,
 } from "@/engine/background/tasks/index.ts";
 import { buildPanelTree } from "@/engine/background/tasks/panel-tree.ts";
 import { listWorkflowTasks } from "@/engine/background/workflows/runtime/store/store.ts";
@@ -231,28 +232,36 @@ export function useAppTaskState(deps: AppTaskStateDeps) {
   // Whole-list cleanup: 5s after every task is completed the entire list
   // resets (records deleted, highwatermark preserved). Owned by this
   // always-mounted hook — widgets mount/unmount per turn and cannot carry the
-  // timer. The fire-time re-read guards against tasks reopened in the window.
+  // timer. The fire-time re-read guards against tasks reopened in the window;
+  // the captured list id prevents an old session's timer from resetting a new one.
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | null = null;
+    let scheduledForTaskListId: string | null = null;
     const cancel = (): void => {
       if (timer !== null) {
         clearTimeout(timer);
         timer = null;
       }
+      scheduledForTaskListId = null;
     };
     const allCompleted = (): boolean => {
       const records = listTaskRecords().filter((t) => t.metadata._internal !== true);
       return records.length > 0 && records.every((t) => t.status === "completed");
     };
     const syncResetTimer = (): void => {
+      const currentTaskListId = taskListIdForScope();
       if (!allCompleted()) {
         cancel();
         return;
       }
-      if (timer !== null) return;
+      if (timer !== null && scheduledForTaskListId === currentTaskListId) return;
+      cancel();
+      scheduledForTaskListId = currentTaskListId;
       timer = setTimeout(() => {
+        const expectedTaskListId = scheduledForTaskListId;
         timer = null;
-        if (allCompleted()) resetTaskList();
+        scheduledForTaskListId = null;
+        if (taskListIdForScope() === expectedTaskListId && allCompleted()) resetTaskList();
       }, ALL_COMPLETED_RESET_DELAY_MS);
       timer.unref?.();
     };

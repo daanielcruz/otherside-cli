@@ -10,6 +10,10 @@ import { onExit } from "signal-exit";
 import { flushEventTimestamp } from "@/bootstrap/state.js";
 import { bumpRender, bumpRendererMs } from "@/devtools/render/counters.ts";
 import { getLayoutCounters } from "@/native-ts/yoga-layout/index.js";
+import {
+  ExternalClearWatcher,
+  shouldWatchExternalClears,
+} from "@/terminal-runtime/host/external-clear-watcher.js";
 import instances from "@/terminal-runtime/host/runtime-registry.js";
 import { RENDER_CYCLE_INTERVAL_MS } from "@/terminal-runtime/host/timing.js";
 import {
@@ -41,6 +45,7 @@ import { TerminalSizeContext } from "@/terminal-runtime/react/dimensions-context
 import App from "@/terminal-runtime/react/runtime-root.js";
 import StaticFlushContext from "@/terminal-runtime/react/scrollback-context.js";
 import { TerminalOutputProvider } from "@/terminal-runtime/react/use-terminal-alert.js";
+import { TerminalProbe } from "@/terminal-runtime/terminal/capability-probe.js";
 import {
   cursorMove,
   cursorTo,
@@ -97,6 +102,8 @@ export type Options = {
 export default class Ink {
   private readonly log: TerminalRenderBuffer;
   private readonly terminal: Terminal;
+  private readonly terminalProbe: TerminalProbe;
+  private externalClearWatcher: ExternalClearWatcher | null = null;
   private scheduleRender: (() => void) & { cancel?: () => void };
 
   private isUnmounted = false;
@@ -169,6 +176,7 @@ export default class Ink {
       stdout: options.stdout,
       stderr: options.stderr,
     };
+    this.terminalProbe = new TerminalProbe(options.stdout);
 
     if (options.stdout === process.stdout) {
       if (options.stdout.isTTY) {
@@ -269,11 +277,7 @@ export default class Ink {
     );
   }
 
-  private handleResume = () => {
-    if (!this.options.stdout.isTTY) {
-      return;
-    }
-
+  private forceRedraw(): void {
     this.frontFrame = emptyFrame(
       this.frontFrame.viewport.height,
       this.frontFrame.viewport.width,
@@ -294,6 +298,49 @@ export default class Ink {
     this.displayCursor = null;
     this.nativeCursorVisible = this.accessibilityMode;
     this.resetScreenReaderDiffState();
+
+    if (this.currentNode !== null) {
+      this.render(this.currentNode);
+      this.scheduleRender();
+    }
+  }
+
+  private getExternalClearExpectedCursorRow = (): number | null => {
+    const parked = this.displayCursor;
+    // displayCursor is the final zero-based physical cursor park position after the frame write.
+    return parked === null ? null : parked.y + 1;
+  };
+
+  private startExternalClearWatcher(): void {
+    if (
+      !shouldWatchExternalClears({
+        stdoutIsTTY: this.options.stdout.isTTY,
+        termProgram: process.env.TERM_PROGRAM,
+        disabled: process.env.OTHERSIDE_DISABLE_EXTERNAL_CLEAR_WATCHER,
+      }) ||
+      this.isScreenReaderEnabled
+    ) {
+      return;
+    }
+    this.externalClearWatcher ??= new ExternalClearWatcher({
+      querier: this.terminalProbe,
+      getExpectedCursorRow: this.getExternalClearExpectedCursorRow,
+      onScreenClear: this.forceRedraw,
+    });
+    this.externalClearWatcher.start();
+  }
+
+  private stopExternalClearWatcher = (): void => {
+    this.externalClearWatcher?.stop();
+  };
+
+  private handleResume = () => {
+    if (!this.options.stdout.isTTY) {
+      return;
+    }
+
+    this.forceRedraw();
+    this.startExternalClearWatcher();
   };
 
   private hasStaleTerminalSize(): boolean {
@@ -340,7 +387,9 @@ export default class Ink {
     }
     this.options.stdout.on("resize", this.handleResize);
     process.on("SIGCONT", this.handleResume);
+    this.startExternalClearWatcher();
     this.unsubscribeTTYHandlers = () => {
+      this.stopExternalClearWatcher();
       this.options.stdout.off("resize", this.handleResize);
       process.off("SIGCONT", this.handleResume);
     };
@@ -366,12 +415,12 @@ export default class Ink {
     this.scheduleRender();
   }
 
-  private drainStaticFlushQueue(width: number): string {
-    let output = "";
+  private drainStaticFlushQueue(width: number): string[] {
+    const output: string[] = [];
     while (this.staticFlushQueue.length > 0) {
       const nodes = this.staticFlushQueue.splice(0);
       for (const node of nodes) {
-        output += this.renderStaticFlushNode(node, width);
+        output.push(this.renderStaticFlushNode(node, width));
       }
     }
     return output;
@@ -384,7 +433,11 @@ export default class Ink {
     const staticFlushText = this.drainStaticFlushQueue(this.options.stdout.columns || 80);
     const diff = this.log.rebaseAfterStaticFlush(this.frontFrame);
     if (staticFlushText.length > 0) {
-      diff.splice(1, 0, { type: "stdout", content: staticFlushText });
+      diff.splice(
+        1,
+        0,
+        ...staticFlushText.map((content) => ({ type: "stdout" as const, content })),
+      );
     }
     flushDiffBuffer(
       this.terminal,
@@ -490,7 +543,7 @@ export default class Ink {
     const tDiff = performance.now();
 
     const staticFlushQueued = this.staticFlushQueue.length > 0;
-    const staticFlushText = staticFlushQueued ? this.drainStaticFlushQueue(terminalWidth) : "";
+    const staticFlushText = staticFlushQueued ? this.drainStaticFlushQueue(terminalWidth) : [];
     // Absolute row of the prompt caret in the next frame, when one is declared.
     // The renderer uses it to keep the prompt anchored on a trailing shrink
     // (footer/menu below it collapsing) instead of re-entering scrollback.
@@ -505,7 +558,11 @@ export default class Ink {
       ? this.log.rebaseAfterStaticFlush(frame)
       : this.log.render(prevFrame, frame, promptRowY);
     if (staticFlushQueued && staticFlushText.length > 0) {
-      diff.splice(1, 0, { type: "stdout", content: staticFlushText });
+      diff.splice(
+        1,
+        0,
+        ...staticFlushText.map((content) => ({ type: "stdout" as const, content })),
+      );
     }
     const diffMs = performance.now() - tDiff;
 
@@ -829,6 +886,9 @@ export default class Ink {
         terminalColumns={this.terminalColumns}
         terminalRows={this.terminalRows}
         onStdinResume={this.reassertTerminalModes}
+        onStdinSuspend={this.stopExternalClearWatcher}
+        onTerminalResume={() => this.startExternalClearWatcher()}
+        terminalProbe={this.terminalProbe}
         onCursorDeclaration={this.setCursorDeclaration}
         onStaticFlush={this.enqueueStaticFlush}
       >
@@ -848,6 +908,7 @@ export default class Ink {
       return;
     }
     this.isExiting = true;
+    this.stopExternalClearWatcher();
 
     this.onRender();
     this.flushStaticQueueBeforeFinalErase();

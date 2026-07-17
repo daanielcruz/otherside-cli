@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { cleanupCwdFile, newCwdFilePath } from "../cwd.ts";
-import { prepareExecCommand } from "../exec.ts";
+import { prepareExecCommand, shellSpawnEnvironment } from "../exec.ts";
 import { runForeground } from "../foreground.ts";
 
 async function run(command: string): Promise<{ exitCode: number; stdout: string; stderr: string }> {
@@ -10,10 +10,34 @@ async function run(command: string): Promise<{ exitCode: number; stdout: string;
     dangerouslyDisableSandbox: true,
     cwdFilePath: cwdFile,
   });
-  const res = await runForeground(execCommand, 10_000, undefined, undefined, login);
+  const res = await runForeground(execCommand, 10_000, process.cwd(), undefined, undefined, login);
   cleanupCwdFile(cwdFile);
   return { exitCode: res.exitCode, stdout: res.stdout, stderr: res.stderr };
 }
+
+describe("shell subprocess environment", () => {
+  it("prepends the small-heap option for every accepted remote value", () => {
+    for (const value of ["1", "true", "yes", "on", " TRUE "]) {
+      const parentEnv = { OTHERSIDE_REMOTE: value, BUN_OPTIONS: "--inspect" };
+      const childEnv = shellSpawnEnvironment(parentEnv);
+
+      expect(childEnv.BUN_OPTIONS).toBe("--smol --inspect");
+      expect(parentEnv.BUN_OPTIONS).toBe("--inspect");
+    }
+  });
+
+  it("sets only the small-heap option when no child option exists", () => {
+    expect(shellSpawnEnvironment({ OTHERSIDE_REMOTE: "on" }).BUN_OPTIONS).toBe("--smol");
+  });
+
+  it("leaves child options unchanged outside remote mode", () => {
+    for (const value of [undefined, "0", "false", "no", "off", "anything-else"]) {
+      expect(
+        shellSpawnEnvironment({ OTHERSIDE_REMOTE: value, BUN_OPTIONS: "--inspect" }).BUN_OPTIONS,
+      ).toBe("--inspect");
+    }
+  });
+});
 
 describe("prepareExecCommand wrapping", () => {
   it("preserves a non-`exit` failure's code (the trailing cwd probe must not mask $?)", async () => {

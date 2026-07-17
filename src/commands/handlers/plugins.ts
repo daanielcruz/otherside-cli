@@ -1,6 +1,16 @@
 import type { SlashResult } from "@/commands/types.ts";
+import {
+  changeEnabledWithDependencies,
+  registryDependencyPlugins,
+  requiredByWarning,
+  reverseDependents,
+} from "@/engine/plugins/dependencies.ts";
 import { installPlugin, removePlugin } from "@/engine/plugins/install.ts";
-import { findPluginInstallation } from "@/engine/plugins/installations.ts";
+import {
+  findPluginInstallation,
+  formatPluginLookupFailure,
+  lookupPluginInstallation,
+} from "@/engine/plugins/installations.ts";
 import {
   addMarketplace,
   findMarketplacePlugin,
@@ -14,10 +24,69 @@ import {
 } from "@/engine/plugins/marketplaces-store.ts";
 import * as plugins from "@/engine/plugins/registry.ts";
 
+const INSTALL_SCOPES = ["user", "project", "local"] as const;
+type InstallScope = (typeof INSTALL_SCOPES)[number];
+
+function requestedScope(parts: readonly string[]): {
+  scope?: InstallScope;
+  args: string[];
+  error?: string;
+} {
+  const remaining: string[] = [];
+  let scope: InstallScope | undefined;
+  for (let index = 0; index < parts.length; index += 1) {
+    const part = parts[index]!;
+    const inline = part.startsWith("--scope=") ? part.slice("--scope=".length) : undefined;
+    if (part === "--scope" || inline !== undefined) {
+      const raw = inline ?? parts[++index];
+      if (!raw || !INSTALL_SCOPES.includes(raw as InstallScope)) {
+        return {
+          args: [],
+          error: `Invalid scope "${raw ?? ""}". Valid scopes: ${INSTALL_SCOPES.join(", ")}`,
+        };
+      }
+      scope = raw as InstallScope;
+      continue;
+    }
+    remaining.push(part);
+  }
+  return { ...(scope === undefined ? {} : { scope }), args: remaining };
+}
+
 function marketplaceUpdateFeedback(result: ReturnType<typeof addMarketplace>): string {
   if (!result.ok) return `Marketplace update failed: ${result.error ?? "unknown error"}`;
   const bumped = result.bumped ?? 0;
   return `Updated marketplace ${result.name}: ${result.count ?? 0} plugins, ${bumped} plugin${bumped === 1 ? "" : "s"} bumped.`;
+}
+
+type PluginCommandLookup =
+  | { ok: true; pluginId: string }
+  | {
+      ok: false;
+      code: "PLUGIN_NOT_FOUND" | "PLUGIN_AMBIGUOUS";
+      target: string;
+      candidates: readonly string[];
+    };
+
+function resolvePluginCommandTarget(target: string): PluginCommandLookup {
+  const active = plugins.resolvePlugin(target);
+  if (active.ok) return { ok: true, pluginId: active.pluginId };
+  if (active.code === "PLUGIN_AMBIGUOUS") return active;
+  const installed = lookupPluginInstallation(target);
+  if (installed.ok) return { ok: true, pluginId: installed.pluginId };
+  return installed;
+}
+
+function resolveUninstallTarget(target: string): PluginCommandLookup {
+  const installed = lookupPluginInstallation(target);
+  if (installed.ok) return { ok: true, pluginId: installed.pluginId };
+  if (installed.code === "PLUGIN_AMBIGUOUS") return installed;
+  const active = plugins.resolvePlugin(target);
+  return !active.ok && active.code === "PLUGIN_AMBIGUOUS" ? active : installed;
+}
+
+function lookupFeedback(result: Extract<PluginCommandLookup, { ok: false }>): string {
+  return formatPluginLookupFailure(result);
 }
 
 export async function handleMarketplace(args: string): Promise<SlashResult> {
@@ -93,60 +162,80 @@ export async function handlePlugins(args: string): Promise<SlashResult> {
       if (all.length === 0) {
         return { kind: "instant", feedback: "No plugins installed." };
       }
-      const lines = all.map((p) => {
-        const installation = findPluginInstallation(p.name);
-        const identity = installation?.identity ?? p.name;
-        const status = plugins.isEnabled(identity) ? "enabled" : "disabled";
+      const lines = all.map(({ pluginId, plugin }) => {
+        const installation = findPluginInstallation(pluginId);
+        const status = plugins.isEnabled(pluginId) ? "enabled" : "disabled";
         const origin = installation ? ` · ${installation.marketplace} · ${installation.scope}` : "";
-        return `• ${identity} Plugin${origin} · v${p.manifest.version || "0.0.0"} · ${status}`;
+        return `• ${pluginId} Plugin${origin} · v${plugin.manifest.version || "0.0.0"} · ${status}`;
       });
       return { kind: "instant", feedback: ["Installed plugins:", ...lines].join("\n") };
     }
     case "enable": {
       if (!target)
         return { kind: "instant", feedback: "Usage: /plugin enable <plugin@marketplace>" };
-      if (!plugins.get(target)) {
-        return { kind: "instant", feedback: `Plugin not found: ${target}` };
-      }
-      await plugins.setEnabled(target, true);
-      return {
-        kind: "instant",
-        feedback: target.includes("@")
-          ? `Enabled plugin ${target}.`
-          : `Enabled plugin ${target}. Run /reload-plugins to apply.`,
-      };
+      const resolved = resolvePluginCommandTarget(target);
+      if (!resolved.ok) return { kind: "instant", feedback: lookupFeedback(resolved) };
+      const result = await changeEnabledWithDependencies(resolved.pluginId, true);
+      return { kind: "instant", feedback: result.message };
     }
     case "disable": {
       if (!target)
         return { kind: "instant", feedback: "Usage: /plugin disable <plugin@marketplace>" };
-      if (!plugins.get(target)) {
-        return { kind: "instant", feedback: `Plugin not found: ${target}` };
-      }
-      await plugins.setEnabled(target, false);
-      return {
-        kind: "instant",
-        feedback: target.includes("@")
-          ? `Disabled plugin ${target}.`
-          : `Disabled plugin ${target}. Run /reload-plugins to apply.`,
-      };
+      const resolved = resolvePluginCommandTarget(target);
+      if (!resolved.ok) return { kind: "instant", feedback: lookupFeedback(resolved) };
+      const result = await changeEnabledWithDependencies(resolved.pluginId, false);
+      return { kind: "instant", feedback: result.message };
     }
     case "install": {
-      if (!target)
-        return { kind: "instant", feedback: "Usage: /plugin install <plugin@marketplace>" };
-      const separator = target.lastIndexOf("@");
-      const marketplaceMatch = separator < 1 ? findMarketplacePlugin(target) : null;
+      const parsed = requestedScope(parts.slice(1));
+      if (parsed.error) return { kind: "instant", feedback: parsed.error };
+      const installTarget = parsed.args[0];
+      if (!installTarget) {
+        return {
+          kind: "instant",
+          feedback: "Usage: /plugin install <plugin@marketplace> [--scope scope]",
+        };
+      }
+      const separator = installTarget.lastIndexOf("@");
+      const marketplaceMatch = separator < 1 ? findMarketplacePlugin(installTarget) : null;
       const res =
         separator > 0
-          ? installMarketplacePlugin(target.slice(separator + 1), target.slice(0, separator))
+          ? installMarketplacePlugin(
+              installTarget.slice(separator + 1),
+              installTarget.slice(0, separator),
+              parsed.scope,
+            )
           : marketplaceMatch
-            ? installMarketplacePlugin(marketplaceMatch.marketplace, marketplaceMatch.entry.name)
-            : installPlugin(parts.slice(1).join(" "));
+            ? installMarketplacePlugin(
+                marketplaceMatch.marketplace,
+                marketplaceMatch.entry.name,
+                parsed.scope,
+              )
+            : installPlugin(
+                parsed.args.join(" "),
+                parsed.scope === undefined ? {} : { scope: parsed.scope },
+              );
       return { kind: "instant", feedback: res.message };
     }
     case "update": {
-      if (!target)
-        return { kind: "instant", feedback: "Usage: /plugin update <plugin@marketplace>" };
-      const res = updateMarketplacePlugin(target);
+      const parsed = requestedScope(parts.slice(1));
+      if (parsed.error) return { kind: "instant", feedback: parsed.error };
+      const updateTarget = parsed.args[0];
+      if (!updateTarget) {
+        return {
+          kind: "instant",
+          feedback: "Usage: /plugin update <installation-id> [--scope scope]",
+        };
+      }
+      const resolved = lookupPluginInstallation(updateTarget, {
+        ...(parsed.scope === undefined ? {} : { scope: parsed.scope }),
+      });
+      if (!resolved.ok) return { kind: "instant", feedback: lookupFeedback(resolved) };
+      const res = updateMarketplacePlugin(
+        resolved.pluginId,
+        parsed.scope,
+        resolved.installation.installationId,
+      );
       return { kind: "instant", feedback: res.message };
     }
     case "remove":
@@ -154,8 +243,14 @@ export async function handlePlugins(args: string): Promise<SlashResult> {
       if (!target) {
         return { kind: "instant", feedback: "Usage: /plugin uninstall <plugin@marketplace>" };
       }
-      const res = await removePlugin(target);
-      return { kind: "instant", feedback: res.message };
+      const resolved = resolveUninstallTarget(target);
+      if (!resolved.ok) return { kind: "instant", feedback: lookupFeedback(resolved) };
+      const dependents = reverseDependents(resolved.pluginId, registryDependencyPlugins());
+      const res = await removePlugin(resolved.pluginId);
+      return {
+        kind: "instant",
+        feedback: `${res.message}${res.success ? requiredByWarning(dependents) : ""}`,
+      };
     }
     default:
       return { kind: "instant", feedback: `Unknown command: /plugins ${sub}` };

@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Session } from "@/engine/session/record/state.ts";
 import type { SessionWorktreeState } from "@/engine/session/worktree.ts";
+import { getTrackedCwd, setTrackedCwd } from "@/kernel/std/state/cwd-state.ts";
 import type { ToolCall } from "@/kernel/std/types/message.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 
@@ -19,6 +23,7 @@ const exitSessionWorktreeMock = mock(
     return {
       action: opts.action,
       originalCwd,
+      restoredCwd: originalCwd,
       worktreePath,
       ...(worktreeBranch !== undefined ? { worktreeBranch } : {}),
       ...(opts.discardChanges === true ? { discardedFiles: 2, discardedCommits: 1 } : {}),
@@ -43,11 +48,24 @@ const countChangesMock = mock(
   }),
 );
 
+// Spread the real module first: a partial mock surface poisons the module
+// registry for every later test file in the same run (imports of unlisted
+// exports fail to load), so only the members under test are overridden.
+const realWorktreeModule = await import("@/engine/session/worktree.ts");
 mock.module("@/engine/session/worktree.ts", () => ({
+  ...realWorktreeModule,
   attachSessionWorktreeHost: mock(() => {}),
   enterSessionWorktree: mock(() => Promise.resolve({})),
   exitSessionWorktree: exitSessionWorktreeMock,
   getActiveWorktree: getActiveWorktreeMock,
+  isPinnedCwdContext: mock(() => false),
+}));
+
+const realTitleModule = await import("@/engine/session/title/store.ts");
+const sessionTitleMock = mock(async (_id: string): Promise<string | null> => null);
+mock.module("@/engine/session/title/store.ts", () => ({
+  ...realTitleModule,
+  loadCustomSessionTitle: sessionTitleMock,
 }));
 
 // Inject count/kill via module under test after mocks — re-import pattern like enter test.
@@ -82,6 +100,16 @@ const ctx = {
 function call(input: Record<string, unknown>, id = "xw-1"): ToolCall {
   return { id, name: "ExitWorktree", input };
 }
+
+let previousTrackedCwd: string;
+
+beforeEach(() => {
+  previousTrackedCwd = getTrackedCwd();
+});
+
+afterEach(() => {
+  setTrackedCwd(previousTrackedCwd);
+});
 
 function createdState(overrides: Partial<SessionWorktreeState> = {}): SessionWorktreeState {
   return {
@@ -119,12 +147,11 @@ describe("ExitWorktree tool", () => {
     expect(ExitWorktree.schema.inputSchema.additionalProperties).toBe(false);
   });
 
-  it("is a no-op with the reference explanation when no active worktree", async () => {
+  it("is a no-op when no active worktree", async () => {
     activeState.current = null;
     const result = await ExitWorktree.run(call({ action: "keep" }), ctx);
-    expect(result.is_error).toBeUndefined();
+    expect(result.is_error).toBe(true);
     expect(String(result.content)).toContain("No-op: there is no active EnterWorktree session");
-    expect(String(result.content)).toContain("No filesystem changes were made");
     expect(exitSessionWorktreeMock).not.toHaveBeenCalled();
   });
 
@@ -132,7 +159,7 @@ describe("ExitWorktree tool", () => {
     activeState.current = createdState({ ownership: "enteredExisting" });
     const result = await ExitWorktree.run(call({ action: "remove" }), ctx);
     expect(result.is_error).toBe(true);
-    expect(String(result.content)).toContain("entered an existing worktree");
+    expect(String(result.content)).toContain("not the owner of the worktree");
     expect(String(result.content)).toContain('action: "keep"');
     expect(exitSessionWorktreeMock).not.toHaveBeenCalled();
   });
@@ -142,21 +169,13 @@ describe("ExitWorktree tool", () => {
     const result = await ExitWorktree.run(call({ action: "keep" }), ctx);
     expect(result.is_error).toBeUndefined();
     expect(exitSessionWorktreeMock).toHaveBeenCalledWith(ctx, { action: "keep" });
-    const payload = JSON.parse(String(result.content)) as {
-      action: string;
-      originalCwd: string;
-      worktreePath: string;
-      worktreeBranch?: string;
-      tmuxSessionName?: string;
-      message: string;
-    };
-    expect(payload.action).toBe("keep");
-    expect(payload.originalCwd).toBe("/repo");
-    expect(payload.worktreePath).toBe("/repo/.otherside/worktrees/feat");
-    expect(payload.worktreeBranch).toBe("worktree-feat");
-    expect(payload.tmuxSessionName).toBe("os-wt-feat");
-    expect(payload.message).toContain("tmux attach -t os-wt-feat");
-    expect(payload.message).toContain("Session is now back in /repo");
+    expect(String(result.content)).toContain("Exited worktree");
+    expect(String(result.content)).toContain(
+      "Your work is preserved at /repo/.otherside/worktrees/feat on branch worktree-feat",
+    );
+    expect(String(result.content)).toContain("tmux attach -t os-wt-feat");
+    expect(String(result.content)).toContain("Session is now back in /repo");
+    expect(getTrackedCwd()).toBe("/repo");
   });
 
   it("removes a clean created worktree without discard_changes", async () => {
@@ -179,16 +198,9 @@ describe("ExitWorktree tool", () => {
       action: "remove",
       discardChanges: true,
     });
-    const payload = JSON.parse(String(result.content)) as {
-      action: string;
-      originalCwd: string;
-      discardedFiles?: number;
-      discardedCommits?: number;
-      message: string;
-    };
-    expect(payload.action).toBe("remove");
-    expect(payload.originalCwd).toBe("/repo");
-    expect(payload.message).toContain("removed worktree");
+    expect(String(result.content)).toContain("Exited and removed worktree");
+    expect(String(result.content)).toContain("Session is now back in /repo");
+    expect(getTrackedCwd()).toBe("/repo");
   });
 
   it("refuses remove without discard_changes when probe fails (fail-closed)", async () => {
@@ -227,6 +239,8 @@ describe("ExitWorktree tool", () => {
 describe("resolveWorktreeOnSessionExit", () => {
   beforeEach(() => {
     exitSessionWorktreeMock.mockClear();
+    sessionTitleMock.mockClear();
+    sessionTitleMock.mockImplementation(async () => null);
     activeState.current = null;
   });
 
@@ -248,7 +262,7 @@ describe("resolveWorktreeOnSessionExit", () => {
     expect(exitSessionWorktreeMock).not.toHaveBeenCalled();
   });
 
-  it("auto-keeps enteredExisting without offering remove", async () => {
+  it("auto-keeps enteredExisting silently and reports the return-in-place message", async () => {
     const session = sessionWith(
       createdState({ ownership: "enteredExisting", tmuxSession: "os-existing" }),
     );
@@ -258,25 +272,36 @@ describe("resolveWorktreeOnSessionExit", () => {
     expect(ask).not.toHaveBeenCalled();
     expect(result.action).toBe("keep");
     expect(result.tmuxSessionName).toBe("os-existing");
-    expect(result.message).toContain("tmux attach -t os-existing");
+    expect(result.message).toBe(
+      "Returned to /repo (worktree at /repo/.otherside/worktrees/feat left in place)",
+    );
     expect(exitSessionWorktreeMock).toHaveBeenCalledWith(
       expect.objectContaining({ sessionId: "sess-exit-lifecycle" }),
-      { action: "keep" },
+      { action: "keep", restoreStrategy: "parent-chain" },
     );
   });
 
   it("prompts when dirty created worktree and honors remove", async () => {
-    // Force dirty via path that fails probe → fallback dirty
-    const session = sessionWith(
-      createdState({
-        activePath: "/nonexistent/dirty-wt",
-        tmuxSession: "os-dirty",
-      }),
-    );
+    // A live checkout with an uncommitted file and no baseline: the probe
+    // fails closed (null) while git status itself succeeds → dirty fallback.
+    const dirtyWt = mkdtempSync(join(tmpdir(), "wt-exit-dirty-"));
+    Bun.spawnSync(["git", "-C", dirtyWt, "init", "-q"]);
+    writeFileSync(join(dirtyWt, "pending.txt"), "dirty\n");
+    const dirtyState = createdState({ activePath: dirtyWt, tmuxSession: "os-dirty" });
+    delete dirtyState.baseSha;
+    const session = sessionWith(dirtyState);
     const ask = mock(
-      async (prompt: { options: Array<{ value: string }>; tmuxSessionName?: string }) => {
+      async (prompt: {
+        options: Array<{ value: string; label: string }>;
+        tmuxSessionName?: string;
+        subtitle: string;
+      }) => {
         expect(prompt.options.some((o) => o.value === "remove")).toBe(true);
+        expect(prompt.options.some((o) => o.label === "Keep worktree, end tmux session")).toBe(
+          true,
+        );
         expect(prompt.tmuxSessionName).toBe("os-dirty");
+        expect(prompt.subtitle).toContain("uncommitted");
         return "remove" as const;
       },
     );
@@ -285,18 +310,82 @@ describe("resolveWorktreeOnSessionExit", () => {
     expect(result.action).toBe("remove");
     expect(exitSessionWorktreeMock).toHaveBeenCalledWith(
       expect.objectContaining({ sessionId: "sess-exit-lifecycle" }),
-      { action: "remove", discardChanges: true },
+      { action: "remove", discardChanges: true, restoreStrategy: "parent-chain" },
     );
   });
 
+  /** Real pristine repo so the change probe reports 0 files / 0 commits. */
+  async function pristineRepo(): Promise<{ path: string; head: string }> {
+    const { mkdtempSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const path = mkdtempSync(join(tmpdir(), "wt-exit-pristine-"));
+    const run = (args: string[]) =>
+      Bun.spawnSync(["git", "-C", path, ...args], { stdout: "pipe", stderr: "pipe" });
+    run(["init", "-q"]);
+    run(["config", "user.email", "test@example.invalid"]);
+    run(["config", "user.name", "Test"]);
+    run(["commit", "-q", "--allow-empty", "-m", "fixture"]);
+    const head = run(["rev-parse", "HEAD"]).stdout.toString().trim();
+    return { path, head };
+  }
+
+  it("prompts instead of auto-removing when a clean worktree belongs to a titled session", async () => {
+    sessionTitleMock.mockImplementation(async () => "harvest pass");
+    const repo = await pristineRepo();
+    const session = sessionWith(createdState({ activePath: repo.path, baseSha: repo.head }));
+    const ask = mock(async (prompt: { subtitle: string; sessionTitle?: string }) => {
+      expect(prompt.sessionTitle).toBe("harvest pass");
+      expect(prompt.subtitle).toBe(
+        'This session was named "harvest pass". Keep the worktree to resume it later, or remove it to clean up.',
+      );
+      return "keep" as const;
+    });
+    const result = await resolveWorktreeOnSessionExit(session, { ask });
+    expect(ask).toHaveBeenCalled();
+    expect(result.action).toBe("keep");
+    expect(result.message).toBe(
+      `Worktree kept. Your work is saved at ${repo.path} on branch worktree-feat`,
+    );
+  });
+
+  it("auto-removes a clean untitled worktree with the no-changes message", async () => {
+    const repo = await pristineRepo();
+    const session = sessionWith(createdState({ activePath: repo.path, baseSha: repo.head }));
+    const ask = mock(async () => "keep" as const);
+    const result = await resolveWorktreeOnSessionExit(session, { ask });
+    expect(ask).not.toHaveBeenCalled();
+    expect(result.action).toBe("remove");
+    expect(result.message).toBe("Worktree removed (no changes)");
+  });
+
   it("keeps on cancel from prompt", async () => {
-    const session = sessionWith(createdState({ activePath: "/nonexistent/cancel-wt" }));
+    const cancelWt = mkdtempSync(join(tmpdir(), "wt-exit-cancel-"));
+    Bun.spawnSync(["git", "-C", cancelWt, "init", "-q"]);
+    writeFileSync(join(cancelWt, "pending.txt"), "dirty\n");
+    const cancelState = createdState({ activePath: cancelWt });
+    delete cancelState.baseSha;
+    const session = sessionWith(cancelState);
     const ask = mock(async () => "cancel" as const);
     const result = await resolveWorktreeOnSessionExit(session, { ask });
+    expect(result.action).toBe("cancel");
+    expect(exitSessionWorktreeMock).not.toHaveBeenCalled();
+  });
+
+  it("leaves silently when the worktree is no longer accessible", async () => {
+    const session = sessionWith(
+      createdState({ activePath: "/nonexistent/gone-wt", tmuxSession: "os-gone" }),
+    );
+    const ask = mock(async () => "remove" as const);
+    const result = await resolveWorktreeOnSessionExit(session, { ask });
+    expect(ask).not.toHaveBeenCalled();
     expect(result.action).toBe("keep");
+    expect(result.message).toBe(
+      "Worktree at /nonexistent/gone-wt is no longer accessible — exiting. Detached tmux session os-gone may still be running — end it with: tmux kill-session -t os-gone",
+    );
     expect(exitSessionWorktreeMock).toHaveBeenCalledWith(
       expect.objectContaining({ sessionId: "sess-exit-lifecycle" }),
-      { action: "keep" },
+      { action: "keep", restoreStrategy: "parent-chain" },
     );
   });
 });

@@ -38,6 +38,22 @@ export function displayTitleFrom(titles: SessionTitles): string | undefined {
 }
 
 export async function loadSessionTitle(id: string): Promise<string | null> {
+  const titles = await loadSessionTitles(id);
+  if (titles === null) return null;
+  return displayTitleFrom(titles) ?? null;
+}
+
+/**
+ * The user-assigned title only (via /rename) — never the auto-generated
+ * aiTitle. Gates that treat a titled session as deliberately marked (e.g.
+ * keep-worktree-on-exit) key on this, or every auto-titled session trips them.
+ */
+export async function loadCustomSessionTitle(id: string): Promise<string | null> {
+  const titles = await loadSessionTitles(id);
+  return titles?.customTitle ?? null;
+}
+
+async function loadSessionTitles(id: string): Promise<SessionTitles | null> {
   const path = findSessionPath(id);
   if (path === null) return null;
   let sizeBytes: number;
@@ -48,7 +64,7 @@ export async function loadSessionTitle(id: string): Promise<string | null> {
   }
   const lite = await readSessionLite({ path, sizeBytes, buffer: Buffer.alloc(LITE_READ_BYTES) });
   if (lite === null) return null;
-  return displayTitleFrom(titlesFromHeadTail(lite)) ?? null;
+  return titlesFromHeadTail(lite);
 }
 
 export function titlesFromText(raw: string): SessionTitles {

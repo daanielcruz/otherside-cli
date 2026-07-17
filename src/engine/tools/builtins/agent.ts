@@ -18,6 +18,14 @@ import type { RequestContext } from "@/kernel/std/types/request.ts";
 const FORK_OVERRIDE_REJECTION =
   "InputValidationError: `tier` and `provider` are not allowed with a fork. A fork inherits the parent model and provider — drop the override, or name a non-fork `subagent_type`.";
 
+function stripUnsupportedAgentCwd(input: unknown): unknown {
+  if (input === null || typeof input !== "object" || Array.isArray(input) || !("cwd" in input)) {
+    return input;
+  }
+  const { cwd: _cwd, ...rest } = input as Record<string, unknown>;
+  return rest;
+}
+
 function formatAgentResultContent(result: SubagentResult): string {
   let content = result.output;
   if (result.worktreePath) {
@@ -43,6 +51,7 @@ export const Agent: ToolHandler = {
     description: AgentSchema.description,
     inputSchema: AgentSchema.inputSchema,
   },
+  coerceInput: stripUnsupportedAgentCwd,
   isConcurrencySafe: true,
   async run(call: ToolCall, ctx: RequestContext): Promise<ToolResult> {
     recordCodexRawReplayDiagnostic({
@@ -60,7 +69,6 @@ export const Agent: ToolHandler = {
       model,
       provider,
       name,
-      cwd,
       isolation,
       validationError,
     } = parseAgentInput(call.input ?? {});
@@ -74,16 +82,21 @@ export const Agent: ToolHandler = {
     if (!prompt) {
       return { tool_use_id: call.id, content: "missing `prompt`", is_error: true };
     }
-    // "remote" is exposed on the wire for parity; this build has no cloud
+    const orchestrationMode = ctx.orchestrationMode ?? "disabled";
+    const orchestrationError =
+      orchestrationMode === "disabled" && (provider !== undefined || tier !== undefined)
+        ? "InputValidationError: `provider` and `tier` are unavailable when orchestration is disabled. Use `model` with the active provider."
+        : orchestrationMode === "default" && tier !== undefined
+          ? "InputValidationError: `tier` is unavailable in Default mode. Use concrete `provider` + `model` pins or omit overrides."
+          : orchestrationMode === "feudalism" && (provider !== undefined || model !== undefined)
+            ? "InputValidationError: concrete `provider`/`model` pins are unavailable in feudalism mode. Use `tier` routing instead."
+            : undefined;
+    if (orchestrationError !== undefined) {
+      return { tool_use_id: call.id, content: orchestrationError, is_error: true };
+    }
+    // "remote" is accepted on the wire; this build has no cloud
     // runner, so it resolves to local worktree isolation.
     const effectiveIsolation = isolation === "remote" ? "worktree" : isolation;
-    if (cwd !== undefined && effectiveIsolation === "worktree") {
-      return {
-        tool_use_id: call.id,
-        content: 'InputValidationError: `cwd` and isolation: "worktree" are mutually exclusive.',
-        is_error: true,
-      };
-    }
 
     const effectiveBackground = runInBackground || isAgentAutoBackgroundEnabled();
     const forkId = ctx.childTaskIdMap?.get(call.id) ?? ctx.bgTaskId;
@@ -104,7 +117,6 @@ export const Agent: ToolHandler = {
           parentToolCallId: call.id,
           ...(forkId !== undefined ? { forkId } : {}),
           ...(name !== undefined ? { name } : {}),
-          ...(cwd !== undefined ? { cwd } : {}),
           ...(effectiveIsolation !== undefined ? { isolation: effectiveIsolation } : {}),
         },
         ctx,
@@ -137,7 +149,6 @@ export const Agent: ToolHandler = {
         ...(tier !== undefined ? { tierOverride: tier } : {}),
         ...(model !== undefined ? { modelOverride: model } : {}),
         ...(provider !== undefined ? { providerOverride: provider } : {}),
-        ...(cwd !== undefined ? { cwd } : {}),
         ...(effectiveIsolation !== undefined ? { isolation: effectiveIsolation } : {}),
       },
       ctx,

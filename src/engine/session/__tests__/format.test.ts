@@ -85,10 +85,10 @@ describe("formatQuotaWarningMessage (central per-scope template)", () => {
   });
 
   it("normalizes Kimi weekly and duration labels", () => {
-    expect(formatQuotaWarningMessage("kimi-code", 71, "Weekly limit", null)).toBe(
+    expect(formatQuotaWarningMessage("kimi", 71, "Weekly limit", null)).toBe(
       "[Kimi] 71% Weekly · resets unknown",
     );
-    expect(formatQuotaWarningMessage("kimi-code", 40, "Kimi 5h limit", null)).toBe(
+    expect(formatQuotaWarningMessage("kimi", 40, "Kimi 5h limit", null)).toBe(
       "[Kimi] 40% Session · resets unknown",
     );
   });

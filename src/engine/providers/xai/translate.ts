@@ -4,6 +4,7 @@ import {
 } from "@/engine/providers/_shared/account-identity.ts";
 import { parseJsonWithPartialRecovery } from "@/engine/providers/_shared/partial-json.ts";
 import { streamErrorToHttpError } from "@/engine/providers/_shared/retry.ts";
+import { thinkingProvenance } from "@/engine/providers/_shared/thinking-provenance.ts";
 import { usageFromOpenAi } from "@/engine/providers/_shared/usage.ts";
 import { lowestReasoningEffort, modelSupportsReasoning } from "@/engine/providers/xai/models.ts";
 import { isEncryptedReasoningRejected } from "@/engine/providers/xai/reasoning-state.ts";
@@ -48,6 +49,11 @@ interface HarnessToolDecl {
 const EMPTY_SCHEMA = { type: "object", properties: {} };
 const REASONING_SUMMARY = "concise";
 const WEB_SEARCH_TOOL_NAME = "WebSearch";
+const WEB_SEARCH_TOOL_ALIASES = new Set([WEB_SEARCH_TOOL_NAME, "web_search"]);
+
+function isWebSearchToolName(name: string): boolean {
+  return WEB_SEARCH_TOOL_ALIASES.has(name);
+}
 
 // Web search rides as the server-executed hosted tool (mirrors the grok-cli
 // wire and the codex web_search path) rather than a client function, so the
@@ -58,7 +64,7 @@ function toolsToGrok(tools: unknown[]): GrokTool[] {
     if (!t || typeof t !== "object") continue;
     const decl = t as HarnessToolDecl;
     if (typeof decl.name !== "string" || decl.name.length === 0) continue;
-    if (decl.name === WEB_SEARCH_TOOL_NAME) continue;
+    if (isWebSearchToolName(decl.name)) continue;
     const def: GrokFunctionTool = {
       type: "function",
       name: decl.name,
@@ -78,7 +84,7 @@ function collectWebSearchCallIds(messages: Message[]): Set<string> {
   for (const m of messages) {
     if (m.role !== "assistant") continue;
     for (const b of m.content) {
-      if (b.type === "tool_use" && b.name === WEB_SEARCH_TOOL_NAME) ids.add(b.id);
+      if (b.type === "tool_use" && isWebSearchToolName(b.name)) ids.add(b.id);
     }
   }
   return ids;
@@ -148,19 +154,23 @@ function messagesToGrokInput(
       continue;
     }
     if (m.role === "assistant") {
-      const reasoning = m.content.find(
-        (b): b is Extract<ContentBlock, { type: "thinking" }> =>
-          b.type === "thinking" && typeof b.signature === "string" && b.signature.length > 0,
-      );
-      // Encrypted reasoning is bound to the credential + model that produced it;
-      // replaying it under another account/model is rejected by the proxy.
-      const sameAccount = sameAccountFingerprint(m.producedAccount, currentAccount);
-      if (
-        reasoning?.signature &&
-        m.producedModel === currentModel &&
-        sameAccount &&
-        !suppressEncryptedReasoning
-      ) {
+      // Encrypted reasoning is bound to the provider, credential, and model
+      // that produced it; replaying a blob from another provider, account, or
+      // model is rejected by the proxy. Provenance is judged per block — a
+      // rebuilt message can carry blocks from several producers — and
+      // unstamped (legacy) blocks drop because same-provider provenance
+      // cannot be proven.
+      const reasoning = m.content.find((b): b is Extract<ContentBlock, { type: "thinking" }> => {
+        if (b.type !== "thinking") return false;
+        if (typeof b.signature !== "string" || b.signature.length === 0) return false;
+        const produced = thinkingProvenance(b, m);
+        return (
+          produced.producedBy === "xai" &&
+          produced.producedModel === currentModel &&
+          sameAccountFingerprint(produced.producedAccount, currentAccount)
+        );
+      });
+      if (reasoning?.signature && !suppressEncryptedReasoning) {
         const summary =
           reasoning.text.length > 0 ? [{ type: "summary_text", text: reasoning.text }] : [];
         out.push({ type: "reasoning", summary, encrypted_content: reasoning.signature });
@@ -171,7 +181,7 @@ function messagesToGrokInput(
         (b): b is Extract<ContentBlock, { type: "tool_use" }> => b.type === "tool_use",
       );
       for (const tu of toolUses) {
-        if (tu.name === WEB_SEARCH_TOOL_NAME) continue;
+        if (isWebSearchToolName(tu.name)) continue;
         out.push({
           type: "function_call",
           call_id: tu.id,

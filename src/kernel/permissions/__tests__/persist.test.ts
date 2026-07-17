@@ -71,7 +71,7 @@ describe("loadRulesSync managed-only policy", () => {
 
     const store = new RuleStore();
     store.addAll(rules);
-    // Upstream parity: echo is not allow-listed by policy, so it is not
+    // echo is not allow-listed by policy, so it is not
     // silently permitted merely because the (now-ignored) user settings
     // would have allowed it.
     expect(store.match("Bash", "echo hi")).toBe(null);

@@ -2,6 +2,7 @@ import type { ApiProvider, ForkSystemInput, ProviderConfig } from "@/engine/cont
 import type { CatalogModel } from "@/engine/model/catalog.ts";
 import { parseModelId } from "@/engine/model/catalog.ts";
 import { PERMISSIVE_DEFERRED } from "@/engine/providers/_shared/effort-defaults.ts";
+import { ProviderHttpError } from "@/engine/providers/_shared/retry.ts";
 import { fingerprint } from "@/engine/providers/anthropic/_infra/fingerprint.ts";
 import { checkOpus1mAccess, checkSonnet1mAccess } from "@/engine/providers/anthropic/access.ts";
 import { Auth, beginLogin as anthropicBeginLogin } from "@/engine/providers/anthropic/auth.ts";
@@ -11,6 +12,7 @@ import {
 } from "@/engine/providers/anthropic/compose.ts";
 import { SUBAGENT_OPENER, subagentBillingHeader } from "@/engine/providers/anthropic/preamble.ts";
 import { anthropicPromptAdapter } from "@/engine/providers/anthropic/prompt-adapter.ts";
+import { markThinkingReplayRejected } from "@/engine/providers/anthropic/reasoning-state.ts";
 import { anthropicStream } from "@/engine/providers/anthropic/stream.ts";
 import {
   translateRequestAnthropic as translateRequest,
@@ -38,6 +40,7 @@ export const MODELS: readonly CatalogModel<AnthropicModelAugment>[] = [
     contextWindow: 1_000_000,
     autoCompactTokenLimit: 967_000,
     provider: "anthropic",
+    supportsPdf: true,
     efforts: ["low", "medium", "high", "xhigh", "max"],
     defaultEffort: "high",
   },
@@ -47,6 +50,7 @@ export const MODELS: readonly CatalogModel<AnthropicModelAugment>[] = [
     contextWindow: 1_000_000,
     autoCompactTokenLimit: 967_000,
     provider: "anthropic",
+    supportsPdf: true,
     supports1m: true,
     efforts: ["low", "medium", "high", "xhigh", "max"],
     defaultEffort: "xhigh",
@@ -57,6 +61,7 @@ export const MODELS: readonly CatalogModel<AnthropicModelAugment>[] = [
     contextWindow: 1_000_000,
     autoCompactTokenLimit: 967_000,
     provider: "anthropic",
+    supportsPdf: true,
     efforts: ["low", "medium", "high", "xhigh", "max"],
     defaultEffort: "xhigh",
   },
@@ -66,6 +71,7 @@ export const MODELS: readonly CatalogModel<AnthropicModelAugment>[] = [
     contextWindow: 1_000_000,
     autoCompactTokenLimit: 967_000,
     provider: "anthropic",
+    supportsPdf: true,
     efforts: ["low", "medium", "high", "xhigh", "max"],
     defaultEffort: "high",
   },
@@ -75,6 +81,7 @@ export const MODELS: readonly CatalogModel<AnthropicModelAugment>[] = [
     contextWindow: 200_000,
     autoCompactTokenLimit: 167_000,
     provider: "anthropic",
+    supportsPdf: true,
     onDemand: true,
     efforts: [],
     defaultEffort: null,
@@ -87,6 +94,17 @@ function modelAvailable(modelId: string): boolean {
   if (parsed.base.includes("claude-opus")) return checkOpus1mAccess();
   if (parsed.base.includes("claude-sonnet")) return checkSonnet1mAccess();
   return true;
+}
+
+// A replayed thinking block whose signature the API can no longer verify
+// (history that crossed a provider or credential switch) is rejected as a 400.
+// Both rejection shapes name the thinking-block constraint directly, so a
+// plain validation error on some other field never suppresses the session.
+function carriesThinkingReplayRejection(err: unknown, body: string): boolean {
+  if (!(err instanceof ProviderHttpError) || err.status !== 400) return false;
+  const message = err instanceof Error ? err.message : "";
+  const haystack = `${body}\n${message}`;
+  return /thinking blocks cannot be modified|must start with a thinking block/i.test(haystack);
 }
 
 function composeForkSystem(input: ForkSystemInput): ContentBlock[] {
@@ -121,7 +139,20 @@ export const config: ProviderConfig<"anthropic-messages"> = {
   },
   deferredOverrides: PERMISSIVE_DEFERRED,
   promptAdapter: anthropicPromptAdapter,
-  recoverableError: (err, _ctx, attempt) => classifyProviderError(err, { attempt: attempt ?? 1 }),
+  recoverableError: (err, ctx, attempt) => {
+    const body = err instanceof ProviderHttpError ? err.body : "";
+    // A replayed thinking block was rejected. Drop thinking replay for the rest
+    // of the session and retry once — the rebuilt body omits it. Only the first
+    // hit retries; a still-failing turn falls through to a normal failure.
+    if (carriesThinkingReplayRejection(err, body) && markThinkingReplayRejected(ctx.sessionId)) {
+      return { kind: "retry", delayMs: 0, reason: "dropped stale thinking replay" };
+    }
+    return classifyProviderError(err, {
+      attempt: attempt ?? 1,
+      provider: ctx.provider,
+      model: ctx.model,
+    });
+  },
   webSearch: searchAnthropic,
   usageDetails: { sourceLabel: "Anthropic OAuth", hasPlanPanel: true },
   beginLogin: { kind: "oauth_pkce", begin: anthropicBeginLogin },

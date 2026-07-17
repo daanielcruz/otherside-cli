@@ -4,6 +4,7 @@ import {
 } from "@/engine/providers/_shared/account-identity.ts";
 import { isGeminiFamily } from "@/engine/providers/_shared/families.ts";
 import { streamErrorToHttpError } from "@/engine/providers/_shared/retry.ts";
+import { thinkingProvenance } from "@/engine/providers/_shared/thinking-provenance.ts";
 import { readRawToolDecl } from "@/engine/providers/_shared/tool-decl.ts";
 import { usageFromGemini } from "@/engine/providers/_shared/usage.ts";
 import { parseSse } from "@/kernel/std/stream/sse.ts";
@@ -138,8 +139,12 @@ function geminiToolResponsePart(
   r: Extract<ContentBlock, { type: "tool_result" }>,
   toolNames: Map<string, string>,
   wrapOutput: boolean,
+  supportsPdf: boolean,
 ): GeminiPart {
-  const text = toolResultText(r.content);
+  const text =
+    supportsPdf && Array.isArray(r.content)
+      ? toolResultText(r.content.filter((part) => part.type !== "pdf"))
+      : toolResultText(r.content);
   let response: unknown;
   if (wrapOutput) {
     response = { output: text };
@@ -159,6 +164,20 @@ function geminiToolResponsePart(
       response,
     },
   };
+}
+
+function appendPdfParts(
+  contents: GeminiContent[],
+  result: Extract<ContentBlock, { type: "tool_result" }>,
+  supportsPdf: boolean,
+): void {
+  if (!supportsPdf || !Array.isArray(result.content)) return;
+  const parts = result.content
+    .filter((part): part is Extract<typeof part, { type: "pdf" }> => part.type === "pdf")
+    .map((part) => ({
+      inlineData: { mimeType: "application/pdf", data: part.source.data },
+    }));
+  if (parts.length > 0) contents.push({ role: "user", parts });
 }
 
 function appendToolResponse(contents: GeminiContent[], fr: GeminiPart): void {
@@ -189,6 +208,7 @@ export function geminiBuildContents(
   let systemText = "";
   const toolNames = geminiCollectToolUseNames(messages);
   const wrapOutput = framing?.wrapToolOutput ?? false;
+  const supportsPdf = framing?.supportsPdf ?? false;
 
   if (sessionContext && sessionContext.length > 0) {
     contents.push({ role: "user", parts: [{ text: sessionContext }] });
@@ -217,7 +237,8 @@ export function geminiBuildContents(
         (b): b is Extract<ContentBlock, { type: "tool_result" }> => b.type === "tool_result",
       );
       for (const r of toolResults) {
-        appendToolResponse(contents, geminiToolResponsePart(r, toolNames, wrapOutput));
+        appendToolResponse(contents, geminiToolResponsePart(r, toolNames, wrapOutput, supportsPdf));
+        appendPdfParts(contents, r, supportsPdf);
       }
       if (parts.length > 0) {
         contents.push({ role: "user", parts });
@@ -226,18 +247,25 @@ export function geminiBuildContents(
     }
     if (msg.role === "assistant") {
       const parts: GeminiPart[] = [];
-      const sameFamily = isGeminiFamily(msg.producedBy);
+      // Thinking replay is judged by the block's own provenance — a rebuilt
+      // message can carry blocks from several producers, so a foreign block
+      // never replays even inside a gemini-stamped message. Messages without
+      // a same-family block fall back to the message stamp (synthetic
+      // signature attach for tool-only turns keeps working).
+      const thinkingBlock = msg.content.find(
+        (b): b is Extract<ContentBlock, { type: "thinking" }> =>
+          b.type === "thinking" && isGeminiFamily(thinkingProvenance(b, msg).producedBy),
+      );
+      const produced = thinkingBlock ? thinkingProvenance(thinkingBlock, msg) : msg;
+      const sameFamily = isGeminiFamily(produced.producedBy);
       const activeModel = framing?.currentModel;
       const sameModel =
         typeof activeModel === "string" &&
         activeModel.length > 0 &&
-        msg.producedModel === activeModel;
-      const thinkingBlock = msg.content.find(
-        (b): b is Extract<ContentBlock, { type: "thinking" }> => b.type === "thinking",
-      );
+        produced.producedModel === activeModel;
       // A stored thought signature only replays when produced by the same
       // credential that signs this request; cross-account replay is invalid.
-      const sameAccount = sameAccountFingerprint(msg.producedAccount, framing?.currentAccount);
+      const sameAccount = sameAccountFingerprint(produced.producedAccount, framing?.currentAccount);
       const thinkingSignature =
         sameFamily &&
         sameModel &&
@@ -293,7 +321,8 @@ export function geminiBuildContents(
         (b): b is Extract<ContentBlock, { type: "tool_result" }> => b.type === "tool_result",
       );
       for (const r of toolResults) {
-        appendToolResponse(contents, geminiToolResponsePart(r, toolNames, wrapOutput));
+        appendToolResponse(contents, geminiToolResponsePart(r, toolNames, wrapOutput, supportsPdf));
+        appendPdfParts(contents, r, supportsPdf);
       }
     }
   }
@@ -308,6 +337,7 @@ export interface GeminiFraming {
   currentModel?: string;
   currentAccount?: string;
   targetUsedClaude?: boolean;
+  supportsPdf?: boolean;
 }
 
 export interface GeminiRequestInput {

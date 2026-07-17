@@ -1,9 +1,7 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import { registerAllProviders } from "@/engine/providers/bootstrap.ts";
 import { Edit } from "@/engine/tools/builtins/edit/edit.ts";
-import { cellAtIndex, type Screen } from "@/terminal-runtime/paint/cell-grid.ts";
-import { paintToTerminal } from "@/terminal-runtime/paint/screen-diff.ts";
-import { TerminalSizeContext } from "@/terminal-runtime/react/dimensions-context.tsx";
+import { cellAtIndex, paintToTerminal, type Screen, TerminalSizeContext } from "@/ink";
 import { Glyph } from "@/ui/theme/theme.ts";
 import {
   type ToolPayload,

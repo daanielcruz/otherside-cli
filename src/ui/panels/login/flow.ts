@@ -29,12 +29,12 @@ export interface ProviderRow {
     | "anthropic"
     | "codex"
     | "xai"
-    | "kimi-code"
+    | "kimi"
     | "deepseek"
     | "minimax"
     | "glm"
     | "antigravity"
-    | "openai-custom";
+    | "openai";
   label: string;
   hint: string;
   signedIn: boolean;
@@ -47,9 +47,9 @@ const PICKER_LABELS: Record<string, string> = {
   deepseek: "DeepSeek - API Key",
   glm: "Z.AI - OAuth",
   xai: "xAI - OAuth",
-  "kimi-code": "Kimi Code - API Key",
+  kimi: "Kimi Code - API Key",
   minimax: "MiniMax - API Key",
-  "openai-custom": "OpenAI Custom - API Key",
+  openai: "OpenAI Custom - API Key",
 };
 
 export function buildProviderRows(bundle: CredentialsBundle | null): ProviderRow[] {
@@ -63,12 +63,12 @@ export function buildProviderRows(bundle: CredentialsBundle | null): ProviderRow
     }));
 }
 
-export type ApiKeyLoginProvider = "kimi-code" | "deepseek" | "minimax";
+export type ApiKeyLoginProvider = "kimi" | "deepseek" | "minimax";
 
 export function apiKeyProviderFor(id: ProviderRow["id"]): ApiKeyLoginProvider | null {
   if (id === "deepseek") return "deepseek";
   if (id === "minimax") return "minimax";
-  if (id === "kimi-code") return "kimi-code";
+  if (id === "kimi") return "kimi";
   return null;
 }
 
@@ -180,7 +180,7 @@ export function persistApiKeyCredential(
 ): Promise<unknown> {
   if (provider === "deepseek") return saveFor("deepseek", { apiKey });
   if (provider === "minimax") return saveFor("minimax", { apiKey });
-  return saveFor("kimi-code", { apiKey });
+  return saveFor("kimi", { apiKey });
 }
 
 export function loginFooterHints(phase: Phase): [string, string][] {
@@ -222,7 +222,7 @@ export function oauthStatusColor(status: OAuthStatus): ColorValue {
 export const API_KEY_HOST_LABELS: Record<ApiKeyLoginProvider, string> = {
   deepseek: "DeepSeek (API Key)",
   minimax: "MiniMax (API Key)",
-  "kimi-code": "Kimi Code (API Key)",
+  kimi: "Kimi Code (API Key)",
 };
 
 export function customFooterHints(phase: Extract<Phase, { kind: "custom" }>): [string, string][] {
@@ -316,12 +316,12 @@ export function outputTokenLimitText(value: string, contextWindow: string): stri
   return String(Math.max(1024, Math.min(8192, Math.floor(context / 4))));
 }
 
-export function formatContextWindow(value: number | undefined): string | undefined {
+export const formatContextWindow = (value: number | undefined): string | undefined => {
   if (!value || !Number.isFinite(value)) return undefined;
   if (value >= 1_000_000) return `${Math.round(value / 1_000_000)}M context`;
   if (value >= 1_000) return `${Math.round(value / 1_000)}K context`;
   return `${value} context`;
-}
+};
 
 export function formatOutputTokenLimit(value: number | undefined): string | undefined {
   if (!value || !Number.isFinite(value)) return undefined;
@@ -339,7 +339,7 @@ export function registerOpenAiCustomModel(model: string, contextWindow: number):
     id: model,
     displayName: model,
     contextWindow,
-    provider: "openai-custom",
+    provider: "openai",
     efforts: [],
     defaultEffort: null,
   });

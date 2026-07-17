@@ -1,19 +1,22 @@
 import { describe, expect, test } from "bun:test";
 import type { LoadedPlugin } from "@/engine/plugins/loader.ts";
 import type { KnownMarketplace } from "@/engine/plugins/marketplaces-store.ts";
-import Ink from "@/terminal-runtime/host/runtime-session.tsx";
+import { Ink } from "@/ink";
+import { stringWidth } from "@/kernel/std/text/string-width.ts";
+import { DISCOVER_INPUT_GUIDE, footerHintsFor } from "@/ui/panels/plugins/chrome.ts";
 import {
-  clampPluginsIndex,
+  DISCOVER_MAX_VISIBLE,
+  discoverPageWindow,
   type PluginsPageRow,
-  pagePluginsIndex,
-  pluginsPageRows,
   pluginsPageWindow,
   selectedInstalledPlugin,
 } from "@/ui/panels/plugins/pagination.ts";
-import { InstalledView } from "@/ui/panels/plugins/views.tsx";
+import { DiscoverView, InstalledView } from "@/ui/panels/plugins/views.tsx";
 import { TerminalEmulator } from "@/ui/transcript/__tests__/terminal-emulator.ts";
 
-function discoverRows(count: number): PluginsPageRow[] {
+type DiscoverRow = Extract<PluginsPageRow, { kind: "discover" }>;
+
+function discoverRows(count: number): DiscoverRow[] {
   return Array.from({ length: count }, (_, itemIndex) => ({
     kind: "discover" as const,
     id: `market:${pluginName(itemIndex)}`,
@@ -32,6 +35,10 @@ function pluginName(index: number): string {
   return `Plugin ${String(index + 1).padStart(2, "0")}`;
 }
 
+function discoverRowsIn(window: { rows: readonly PluginsPageRow[] }): DiscoverRow[] {
+  return window.rows.filter((row): row is DiscoverRow => row.kind === "discover");
+}
+
 function marketplaceRows(count: number): PluginsPageRow[] {
   const date = "2026-01-01T00:00:00.000Z";
   const marketplaces: KnownMarketplace[] = Array.from({ length: count }, (_, index) => ({
@@ -42,12 +49,6 @@ function marketplaceRows(count: number): PluginsPageRow[] {
     lastUpdated: date,
   }));
   return [
-    {
-      kind: "marketplace-heading",
-      id: "marketplace-heading",
-      label: "Manage marketplaces",
-      height: 1,
-    },
     { kind: "add-marketplace", id: "add-marketplace", itemIndex: 0, height: 2 },
     ...marketplaces.map(
       (marketplace, index): PluginsPageRow => ({
@@ -56,7 +57,7 @@ function marketplaceRows(count: number): PluginsPageRow[] {
         itemIndex: index + 1,
         marketplace,
         pluginCount: index + 1,
-        height: 3,
+        height: 4,
       }),
     ),
   ];
@@ -117,67 +118,138 @@ function createStdin(): NodeJS.ReadStream {
 }
 
 describe("plugins pagination", () => {
-  test("pages many discover rows across first, middle, and last pages", () => {
-    const rows = discoverRows(30);
-    const visible = pluginsPageRows(24, {
-      searchVisible: true,
-      commandResult: false,
-      busy: false,
-    });
-    expect(visible).toBe(8);
-
-    const first = pluginsPageWindow(rows, 0, visible);
-    expect(first.rows.map((row) => row.id)).toEqual([
+  test("continuous window shows the first five items", () => {
+    const window = discoverPageWindow(discoverRows(10), 0, 0);
+    expect(window.rows.map((row) => row.id)).toEqual([
       "market:Plugin 01",
       "market:Plugin 02",
       "market:Plugin 03",
       "market:Plugin 04",
+      "market:Plugin 05",
     ]);
-    expect(first.aboveItems).toBe(0);
-    expect(first.belowItems).toBe(26);
-
-    const middle = pluginsPageWindow(rows, 15, visible);
-    expect(middle.firstItem).toBe(12);
-    expect(middle.lastItem).toBe(15);
-    expect(middle.aboveItems).toBe(12);
-    expect(middle.belowItems).toBe(14);
-
-    const last = pluginsPageWindow(rows, 29, visible);
-    expect(last.firstItem).toBe(28);
-    expect(last.lastItem).toBe(29);
-    expect(last.belowItems).toBe(0);
+    expect(window.firstItem).toBe(0);
+    expect(window.lastItem).toBe(4);
+    expect(window.aboveItems).toBe(0);
+    expect(window.belowItems).toBe(5);
+    expect(window.itemCapacity).toBe(DISCOVER_MAX_VISIBLE);
   });
 
-  test("recomputes capacity and clamps page movement after resize", () => {
-    const rows = discoverRows(30);
-    const tall = pluginsPageRows(40, {
-      searchVisible: true,
-      commandResult: false,
-      busy: false,
-    });
-    const short = pluginsPageRows(20, {
-      searchVisible: true,
-      commandResult: false,
-      busy: false,
-    });
-    expect(tall).toBeGreaterThan(short);
-
-    const selected = clampPluginsIndex(29, rows.length);
-    const resized = pluginsPageWindow(rows, selected, short);
-    expect(resized.lastItem).toBe(29);
-    expect(resized.belowItems).toBe(0);
-    expect(pagePluginsIndex(selected, rows.length, 1, resized.itemCapacity)).toBe(29);
-    expect(clampPluginsIndex(selected, 4)).toBe(3);
+  test("continuous window advances one step when selection exits below", () => {
+    const first = discoverPageWindow(discoverRows(10), 0, 0);
+    const next = discoverPageWindow(discoverRows(10), 5, first.firstItem);
+    expect(next.rows.map((row) => row.id)).toEqual([
+      "market:Plugin 02",
+      "market:Plugin 03",
+      "market:Plugin 04",
+      "market:Plugin 05",
+      "market:Plugin 06",
+    ]);
+    expect(next.firstItem).toBe(1);
+    expect(next.lastItem).toBe(5);
   });
 
-  test("keeps marketplace heading with add row and pages all grouped entries", () => {
+  test("continuous window retains its offset when selection moves up within it", () => {
+    const window = discoverPageWindow(discoverRows(10), 4, 1);
+    expect(window.firstItem).toBe(1);
+    expect(window.lastItem).toBe(5);
+    expect(discoverRowsIn(window).map((row) => row.itemIndex)).toEqual([1, 2, 3, 4, 5]);
+  });
+
+  test("continuous window snaps back to the start for the first selection", () => {
+    const window = discoverPageWindow(discoverRows(10), 0, 1);
+    expect(window.firstItem).toBe(0);
+    expect(window.lastItem).toBe(4);
+    expect(discoverRowsIn(window).map((row) => row.itemIndex)).toEqual([0, 1, 2, 3, 4]);
+  });
+
+  test("continuous window shows the final five items", () => {
+    const window = discoverPageWindow(discoverRows(12), 11, 0);
+    expect(window.firstItem).toBe(7);
+    expect(window.lastItem).toBe(11);
+    expect(discoverRowsIn(window).map((row) => row.itemIndex)).toEqual([7, 8, 9, 10, 11]);
+    expect(window.belowItems).toBe(0);
+  });
+
+  test("continuous window clamps its offset when filtering shrinks the list", () => {
+    const full = discoverRows(12);
+    const final = discoverPageWindow(full, 11, 7);
+    const filtered = discoverPageWindow(full.slice(0, 3), 2, final.firstItem);
+    expect(filtered.firstItem).toBe(0);
+    expect(filtered.lastItem).toBe(2);
+    expect(discoverRowsIn(filtered).map((row) => row.itemIndex)).toEqual([0, 1, 2]);
+    expect(filtered.aboveItems).toBe(0);
+    expect(filtered.belowItems).toBe(0);
+  });
+
+  test("tall terminal height still limits Discover to five rendered items", () => {
+    const rows = discoverRows(8);
+    const longDescription = `${"a".repeat(57)}🚀${"b".repeat(10)}`;
+    rows[0]!.entry.description = longDescription;
+    const window = discoverPageWindow(rows, 0, 0);
+    const discover = rows.map((row) => ({ marketplace: row.marketplace, entry: row.entry }));
+    const term = new TerminalEmulator(120, 40);
+    const stdout = createStdout(term);
+    const ink = new Ink({
+      stdout,
+      stdin: createStdin(),
+      stderr: createStdout(new TerminalEmulator(120, 40)),
+      exitOnCtrlC: true,
+      patchConsole: false,
+    });
+    try {
+      ink.render(
+        <DiscoverView
+          discover={discover}
+          selected={0}
+          marked={new Set()}
+          window={window}
+          filtered={false}
+        />,
+      );
+      ink.onRender();
+
+      expect(term.visibleText().match(/Plugin \d{2}/g)).toHaveLength(5);
+      const itemRows = Array.from({ length: DISCOVER_MAX_VISIBLE }, (_, index) =>
+        term.visibleRowOf(pluginName(index)),
+      );
+      expect(itemRows.every((row) => row >= 0)).toBe(true);
+      expect(itemRows.slice(1).map((row, index) => row - itemRows[index]!)).toEqual([3, 3, 3, 3]);
+      const lines = term.visibleLines();
+      const blankRows = itemRows
+        .slice(0, -1)
+        .reduce(
+          (count, row, index) =>
+            count + lines.slice(row + 2, itemRows[index + 1]!).filter((line) => line === "").length,
+          0,
+        );
+      expect(blankRows).toBe(4);
+      expect(term.visibleText()).toContain("↓ more below");
+      expect(term.visibleText()).not.toContain("↑ more above");
+      expect(term.visibleText()).not.toContain("↓ 3 more below");
+      expect(term.visibleRowOf("↓ more below")).toBe(itemRows.at(-1)! + 2);
+      const truncatedDescription = `${"a".repeat(57)}🚀…`;
+      expect(stringWidth(truncatedDescription)).toBe(60);
+      expect(term.visibleText()).toContain(truncatedDescription);
+      expect(term.visibleText()).not.toContain(`${"a".repeat(57)}🚀b`);
+    } finally {
+      (stdout as unknown as { isTTY: boolean }).isTTY = false;
+      ink.unmount(null);
+    }
+  });
+
+  test("Discover footer exposes the input guide without page or tab hints", () => {
+    expect(footerHintsFor("discover", "list")).toEqual([]);
+    expect(DISCOVER_INPUT_GUIDE).toBe(
+      "Type to search · Space to toggle · Enter to view · Esc to go back",
+    );
+    expect(DISCOVER_INPUT_GUIDE).not.toContain("PgUp");
+    expect(DISCOVER_INPUT_GUIDE).not.toContain("←/→");
+  });
+
+  test("keeps the add row with the first marketplace entry", () => {
     const rows = marketplaceRows(12);
     const first = pluginsPageWindow(rows, 0, 6);
-    expect(first.rows.map((row) => row.kind)).toEqual([
-      "marketplace-heading",
-      "add-marketplace",
-      "marketplace",
-    ]);
+    expect(first.rows.map((row) => row.kind)).toEqual(["add-marketplace", "marketplace"]);
     const middle = pluginsPageWindow(rows, 6, 6);
     expect(middle.rows.every((row) => row.kind === "marketplace")).toBe(true);
     const last = pluginsPageWindow(rows, 12, 6);
@@ -227,7 +299,13 @@ describe("plugins pagination", () => {
     });
     try {
       ink.render(
-        <InstalledView installed={installed} selected={10} favorites={new Set()} window={window} />,
+        <InstalledView
+          installed={installed}
+          selected={10}
+          favorites={new Set()}
+          runtimeEnabled={new Set(installed.map((plugin) => plugin.name))}
+          window={window}
+        />,
       );
       ink.onRender();
       const selectedLine = term.visibleLines().find((line) => line.includes("Plugin 11"));

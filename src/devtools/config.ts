@@ -12,7 +12,7 @@ export type ProviderDevtoolId =
   | "glm"
   | "kimi"
   | "minimax"
-  | "openai-custom"
+  | "openai"
   | "xai";
 
 export type ProviderEndpointName =
@@ -29,6 +29,8 @@ export type ProviderEndpointName =
   | "search"
   | "token"
   | "usage"
+  | "voice"
+  | "voiceCalls"
   | "userinfo";
 
 interface DevtoolsConfig {
@@ -145,7 +147,7 @@ function isProvider(value: string): value is ProviderDevtoolId {
     "glm",
     "kimi",
     "minimax",
-    "openai-custom",
+    "openai",
     "xai",
   ].includes(value);
 }
@@ -165,6 +167,8 @@ function isEndpoint(value: string): value is ProviderEndpointName {
     "search",
     "token",
     "usage",
+    "voice",
+    "voiceCalls",
     "userinfo",
   ].includes(value);
 }

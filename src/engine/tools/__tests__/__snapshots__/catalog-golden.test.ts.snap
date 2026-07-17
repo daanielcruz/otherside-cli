@@ -4,7 +4,7 @@ exports[`tool catalog golden (gates #3 deterministic catalog) base tools — nam
 [
   {
     "name": "Agent",
-    "schema": "05edb7c978f96308",
+    "schema": "0fd82c5d48514fd7",
   },
   {
     "name": "AskUserQuestion",
@@ -77,7 +77,7 @@ exports[`tool catalog golden (gates #3 deterministic catalog) deferred tools —
   },
   {
     "name": "GenerateImage",
-    "schema": "74038e298da6ad3d",
+    "schema": "98d698f35428b2bd",
   },
   {
     "name": "ListMcpResourcesTool",
@@ -97,7 +97,7 @@ exports[`tool catalog golden (gates #3 deterministic catalog) deferred tools —
   },
   {
     "name": "ScheduleWakeup",
-    "schema": "6eb28434a438651f",
+    "schema": "3f1eadc06aa87ff7",
   },
   {
     "name": "SendMessage",
@@ -105,7 +105,7 @@ exports[`tool catalog golden (gates #3 deterministic catalog) deferred tools —
   },
   {
     "name": "TaskCreate",
-    "schema": "db2dd81af4bea8b0",
+    "schema": "8f9ac8fbfa891676",
   },
   {
     "name": "TaskGet",
@@ -125,7 +125,7 @@ exports[`tool catalog golden (gates #3 deterministic catalog) deferred tools —
   },
   {
     "name": "TaskUpdate",
-    "schema": "bbf842a554b443ea",
+    "schema": "3df12bd8f2b76742",
   },
   {
     "name": "WebFetch",

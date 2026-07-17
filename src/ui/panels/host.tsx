@@ -43,7 +43,7 @@ export function OverlayHost({
 }
 
 export function overlayOwnsDismiss(name: OverlayName): boolean {
-  return name === "plugins" || name === "resume" || name === "rewind";
+  return name === "plugins" || name === "resume" || name === "rewind" || name === "orchestration";
 }
 
 function OverlayKeybindings({ name }: { name: OverlayName }): null {

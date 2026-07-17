@@ -41,7 +41,14 @@ export class CompactStreamError extends Error {
   }
 }
 
-// Match the main agent envelope (reference /compact uses max_tokens=32000).
+export class CompactRefusalError extends Error {
+  constructor(reason?: string) {
+    super(reason ? `compaction refused: ${reason}` : "compaction refused");
+    this.name = "CompactRefusalError";
+  }
+}
+
+// Match the main agent envelope (the compact request uses max_tokens=32000).
 const COMPACT_MAX_OUTPUT_TOKENS = 32_000;
 const COMPACT_SUMMARY_RETRY_DELAY_MS = 2_000;
 
@@ -171,7 +178,12 @@ export async function summarizeConversation(
       harness,
     );
   } catch (err) {
-    if (isCancellationError(err, ctx.abortSignal)) throw err;
+    if (
+      isCancellationError(err, ctx.abortSignal) ||
+      err instanceof QuotaExhaustedError ||
+      err instanceof CompactRefusalError
+    )
+      throw err;
     await waitForSummaryRetry(ctx.abortSignal);
     return summarizeConversationAttempt(ctx, messages, tools, customInstructions, onEvent, harness);
   }
@@ -187,8 +199,8 @@ async function summarizeConversationAttempt(
 ): Promise<SummarizeResult> {
   const provider = providers.get(ctx.provider);
   // Keep the conversation envelope (thinking/effort/agentic) so the summary
-  // request reuses the same cached prefix as a normal turn. Reference /compact
-  // sends thinking enabled+summarized — never disableThinking.
+  // request reuses the same cached prefix as a normal turn. The compact
+  // request sends thinking enabled+summarized — never disableThinking.
   const compactPrompt = getCompactPrompt(customInstructions);
   const harness = resolveSummaryHarness(ctx, messages, harnessOverride);
 
@@ -227,7 +239,15 @@ async function summarizeConversationAttempt(
             message: ev.message,
           });
         }
-        if (ev.kind === "message_stop") break;
+        if (ev.kind === "message_stop") {
+          if (ev.stop_reason === "refusal") throw new CompactRefusalError(ev.refusal);
+          if (ev.stop_reason === "cancelled") {
+            const cancellation = new Error("compaction cancelled");
+            cancellation.name = "AbortError";
+            throw cancellation;
+          }
+          break;
+        }
       }
       if (text.trim().length === 0) {
         if (streamError !== null) throw new CompactStreamError(streamError);

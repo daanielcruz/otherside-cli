@@ -20,7 +20,7 @@ describe("isSensitiveFilePath resolves against the session cwd", () => {
 });
 
 describe("isSensitiveFilePath protects sensitive configuration paths", () => {
-  it("detects upstream dangerous files and nested paths", () => {
+  it("detects dangerous files and nested paths", () => {
     expect(isSensitiveFilePath(".pre-commit-config.yaml", "/tmp/project")).toBe(true);
     expect(isSensitiveFilePath(".config/git/config", "/tmp/project")).toBe(true);
   });

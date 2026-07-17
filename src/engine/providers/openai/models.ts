@@ -38,7 +38,7 @@ export async function fetchModelsForConfig(
 ): Promise<OpenAiCustomModelsResult> {
   const urls = modelUrlCandidates(baseUrl);
   const fp = fingerprint({
-    provider: "openai-custom",
+    provider: "openai",
     model: "",
     effort: null,
     permissionMode: "default",
@@ -156,7 +156,7 @@ export async function testConfig(
   outputTokenLimit?: number,
 ): Promise<OpenAiCustomTestResult> {
   const fp = fingerprint({
-    provider: "openai-custom",
+    provider: "openai",
     model,
     effort: null,
     permissionMode: "default",

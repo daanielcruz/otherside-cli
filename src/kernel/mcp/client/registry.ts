@@ -18,20 +18,18 @@ export interface McpServerStatusEntry {
 
 const clients = new Map<string, Promise<McpClient>>();
 const serverStatuses = new Map<string, McpServerStatusEntry>();
+/** Status names owned by the main session, including plugin MCP names containing `:`. */
+const sessionStatusNames = new Set<string>();
 /** Session-scoped names of connected servers that advertised `capabilities.resources`. */
 const resourceCapableSessionServers = new Set<string>();
 let clientSpawnerOverride: ClientSpawner | null = null;
-
-function isSessionStatusName(statusName: string): boolean {
-  return !statusName.includes(":");
-}
 
 function clearResourceCapable(statusName: string): void {
   resourceCapableSessionServers.delete(statusName);
 }
 
 function markResourceCapable(statusName: string, client: McpClient): void {
-  if (!isSessionStatusName(statusName)) return;
+  if (!sessionStatusNames.has(statusName)) return;
   if (hasResourcesCapability(client.serverCapabilities())) {
     resourceCapableSessionServers.add(statusName);
   } else {
@@ -69,7 +67,9 @@ function trackClient(
   config: McpServerConfig,
   key: string,
   statusName = name,
+  sessionOwned = false,
 ): Promise<McpClient> {
+  if (sessionOwned) sessionStatusNames.add(statusName);
   serverStatuses.set(statusName, { name: statusName, status: "pending" });
   const spawned = spawnClient(name, config);
   const tracked = spawned.then(
@@ -138,7 +138,7 @@ async function clientForKey(
       if (client) return client;
       continue;
     }
-    const tracked = trackClient(name, config, key, statusName);
+    const tracked = trackClient(name, config, key, statusName, namespace === "session");
     clients.set(key, tracked);
     const client = await resolveCachedClient(key, tracked, statusName);
     if (client) return client;
@@ -163,6 +163,7 @@ export async function dropClient(name: string, config: McpServerConfig): Promise
   if (!existing) return;
   clients.delete(key);
   serverStatuses.delete(name);
+  sessionStatusNames.delete(name);
   clearResourceCapable(name);
   await closeClient(existing);
 }
@@ -189,10 +190,7 @@ export function mcpServerStatuses(names: string[]): McpServerStatusEntry[] {
 }
 
 export function hasPendingMcpServers(): boolean {
-  // Namespaced clients belong to isolated subagents, not the main runtime catalog.
-  return [...serverStatuses.values()].some(
-    ({ name, status }) => !name.includes(":") && status === "pending",
-  );
+  return [...sessionStatusNames].some((name) => serverStatuses.get(name)?.status === "pending");
 }
 
 export async function keepOnlyClients(
@@ -201,9 +199,10 @@ export async function keepOnlyClients(
   const activeKeys = new Set(active.map((a) => clientKey(a.name, a.config)));
   const toClose: Promise<McpClient>[] = [];
   const activeNames = new Set(active.map((a) => a.name));
-  for (const [name] of serverStatuses.entries()) {
-    if (!name.includes(":") && !activeNames.has(name)) {
+  for (const name of sessionStatusNames) {
+    if (!activeNames.has(name)) {
       serverStatuses.delete(name);
+      sessionStatusNames.delete(name);
       clearResourceCapable(name);
     }
   }
@@ -221,6 +220,7 @@ export async function closeAllClients(): Promise<void> {
   const existing = [...clients.values()];
   clients.clear();
   serverStatuses.clear();
+  sessionStatusNames.clear();
   resourceCapableSessionServers.clear();
   await Promise.all(existing.map(closeClient));
 }

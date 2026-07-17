@@ -256,7 +256,12 @@ function anthropicSnapshot(ctx: RequestContext, harness: ComposedHarness): WireS
   const body = translateRequestAnthropic(ctx, composed, TOOLS) as Record<string, unknown>;
   pinMetadata(body, ctx.sessionId);
   const wire = applyCchAttestation(JSON.stringify(body));
-  return fromWire(ANTHROPIC_URL, anthropicFingerprint(ctx), { Authorization: "<redacted>" }, wire);
+  return fromWire(
+    ANTHROPIC_URL,
+    anthropicFingerprint(ctx, body),
+    { Authorization: "<redacted>" },
+    wire,
+  );
 }
 
 type Translate = (ctx: RequestContext, messages: Message[], tools: unknown[]) => unknown;
@@ -359,7 +364,7 @@ describe("anthropic wire-request golden (gates #1/#2/#5 final assembly)", () => 
 });
 
 function openaiCustomSnapshot(): WireSnapshot {
-  const ctx = context({ provider: "openai-custom", model: "fixture-model" });
+  const ctx = context({ provider: "openai", model: "fixture-model" });
   const translated = translateRequestOpenAi(ctx, COMPAT_MESSAGES, TOOLS) as OpenAiTranslated;
   const target = openaiEndpointFor("https://openai-custom.test/v1");
   const wire = JSON.stringify({
@@ -403,13 +408,24 @@ const COMPAT_MATRIX: ReadonlyArray<{
   spec: Parameters<typeof compatSnapshot>[0];
 }> = [
   {
+    label: "kimi / k3 / max",
+    spec: {
+      translate: translateRequestKimi,
+      fp: kimiFingerprint,
+      auth: kimiAuth,
+      url: KIMI_URL,
+      ctx: context({ provider: "kimi", model: "k3", effort: "max" }),
+      pin: false,
+    },
+  },
+  {
     label: "kimi / kimi-for-coding",
     spec: {
       translate: translateRequestKimi,
       fp: kimiFingerprint,
       auth: kimiAuth,
       url: KIMI_URL,
-      ctx: context({ provider: "kimi-code", model: "kimi-for-coding" }),
+      ctx: context({ provider: "kimi", model: "kimi-for-coding" }),
       pin: false,
     },
   },
@@ -483,7 +499,7 @@ describe("OpenAI Custom wire-request golden", () => {
 });
 
 describe("Antigravity wire-request golden", () => {
-  it("captures the Gemini-family Cloud Code envelope", () => {
+  it("captures the Gemini-family wire envelope", () => {
     expect(
       antigravitySnapshot(context({ provider: "antigravity", model: "gemini-3-flash-medium" })),
     ).toMatchSnapshot();

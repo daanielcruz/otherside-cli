@@ -18,7 +18,9 @@ import {
   resolveCompactWindow,
 } from "./support.ts";
 
-export function* maybeMicroCompact(deps: CompactOrchestrationDeps): Iterable<AgentEvent> {
+export async function* maybeMicroCompact(
+  deps: CompactOrchestrationDeps,
+): AsyncIterable<AgentEvent> {
   if (deps.agentDeps.config.autoCompact === false) return;
   if (process.env.DISABLE_COMPACT || process.env.DISABLE_AUTO_COMPACT) return;
   const state = deps.agentDeps.broker.read();
@@ -59,14 +61,14 @@ export function* maybeMicroCompact(deps: CompactOrchestrationDeps): Iterable<Age
   if (!outcome) return;
   if (outcome.clearedToolUseIds && outcome.clearedToolUseIds.length > 0) {
     for (const toolUseId of outcome.clearedToolUseIds) {
-      shrinkToolResultRecord(deps.agentDeps.session, toolUseId, MICRO_COMPACT_CLEARED_MESSAGE);
-      appendRecord(deps.agentDeps.session, {
+      await appendRecord(deps.agentDeps.session, {
         type: "content_replacement",
         ts: nowIso(),
         kind: "tool-result",
         toolUseId,
         replacement: MICRO_COMPACT_CLEARED_MESSAGE,
-      }).catch(() => {});
+      });
+      shrinkToolResultRecord(deps.agentDeps.session, toolUseId, MICRO_COMPACT_CLEARED_MESSAGE);
     }
   }
   yield {

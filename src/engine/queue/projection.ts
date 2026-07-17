@@ -1,4 +1,7 @@
-import { wrapNotificationForModel } from "@/engine/background/tasks/notification.ts";
+import {
+  prefixNotificationForModel,
+  wrapNotificationForModel,
+} from "@/engine/background/tasks/notification.ts";
 import {
   type BoundaryPolicy,
   type DrainResult,
@@ -70,12 +73,19 @@ function projectToolResultInterrupt(
   return { llm, transcript };
 }
 
-function projectTaskNotification(item: EmitItem & { payload: { kind: "task_notification_xml" } }): {
+function projectTaskNotification(
+  item: EmitItem & { payload: { kind: "task_notification_xml" } },
+  boundary: EmitBoundary,
+): {
   llm: ContentBlock[];
   transcript: TranscriptEntry[];
 } {
+  // Fresh-turn delivery rides a plain prefixed user message; a notification
+  // folded into a running turn carries the reminder envelope so it reads as
+  // out-of-band next to tool results.
+  const wrap = boundary === "turn_start" ? prefixNotificationForModel : wrapNotificationForModel;
   const llm: ContentBlock[] = wantsLlm(item)
-    ? [{ type: "text", text: wrapNotificationForModel(item.payload.text) }]
+    ? [{ type: "text", text: wrap(item.payload.text) }]
     : [];
   const summary = item.payload.summary ?? item.payload.text;
   const transcript: TranscriptEntry[] = wantsTranscript(item)
@@ -145,35 +155,6 @@ function projectUserInterruptMessage(
   return { llm, transcript };
 }
 
-function projectKilledByUser(item: EmitItem & { payload: { kind: "killed_by_user" } }): {
-  llm: ContentBlock[];
-  transcript: TranscriptEntry[];
-} {
-  const llm: ContentBlock[] = wantsLlm(item) ? [{ type: "text", text: item.payload.content }] : [];
-  const transcript: TranscriptEntry[] = wantsTranscript(item)
-    ? [
-        {
-          id: transcriptIdFor(item),
-          kind: "task_notice",
-          text: item.payload.content,
-        },
-      ]
-    : [];
-  return { llm, transcript };
-}
-
-function projectKilledWorkflow(item: EmitItem & { payload: { kind: "killed_workflow" } }): {
-  llm: ContentBlock[];
-  transcript: TranscriptEntry[];
-} {
-  const text = `Workflow ${item.payload.taskId} stopped by user.`;
-  const llm: ContentBlock[] = wantsLlm(item) ? [{ type: "text", text }] : [];
-  const transcript: TranscriptEntry[] = wantsTranscript(item)
-    ? [{ id: transcriptIdFor(item), kind: "task_notice", text }]
-    : [];
-  return { llm, transcript };
-}
-
 function projectForkEvent(item: EmitItem & { payload: { kind: "fork_event" } }): {
   llm: ContentBlock[];
   transcript: TranscriptEntry[];
@@ -185,6 +166,7 @@ function projectForkEvent(item: EmitItem & { payload: { kind: "fork_event" } }):
 function projectItem(
   item: EmitItem,
   lookup: QueuedMessageLookup,
+  boundary: EmitBoundary,
 ): {
   llm: ContentBlock[];
   transcript: TranscriptEntry[];
@@ -200,6 +182,7 @@ function projectItem(
     case "task_notification_xml":
       return projectTaskNotification(
         item as EmitItem & { payload: { kind: "task_notification_xml" } },
+        boundary,
       );
     case "queued_message":
       return projectQueuedMessage(
@@ -210,10 +193,6 @@ function projectItem(
       return projectUserInterruptMessage(
         item as EmitItem & { payload: { kind: "user_interrupt_message" } },
       );
-    case "killed_by_user":
-      return projectKilledByUser(item as EmitItem & { payload: { kind: "killed_by_user" } });
-    case "killed_workflow":
-      return projectKilledWorkflow(item as EmitItem & { payload: { kind: "killed_workflow" } });
     case "fork_event":
       return projectForkEvent(item as EmitItem & { payload: { kind: "fork_event" } });
     default:
@@ -246,7 +225,7 @@ export function projectDrain(
   const notificationTexts: string[] = [];
   let needsSystemReminder = false;
   for (const item of items) {
-    const projected = projectItem(item, lookup);
+    const projected = projectItem(item, lookup, boundary);
     if (policy.wrapSystemReminder === true && projected.llm.length > 0) {
       // task_notification_xml carries its own system-reminder envelope.
       if (item.payload.kind === "queued_message") {
@@ -266,7 +245,6 @@ export function projectDrain(
   if (needsSystemReminder && llmBlocks.length > 0) {
     llmBlocks.unshift({ type: "text", text: SYSTEM_REMINDER_HEADER });
   }
-  void boundary;
   return {
     llmBlocks,
     transcriptEntries,

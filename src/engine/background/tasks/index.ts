@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, unlinkSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { withFileLockSync } from "@/kernel/std/fs/file-lock.ts";
 import { configRoot } from "@/kernel/std/fs/paths.ts";
@@ -49,6 +49,10 @@ function resolveTaskListId(scope: Scope): string {
     return getActiveSessionId() ?? MAIN_TASK_SCOPE;
   }
   return scope;
+}
+
+export function taskListIdForScope(scope: Scope = MAIN_TASK_SCOPE): string {
+  return resolveTaskListId(scope);
 }
 
 function taskDirectoryFor(taskListId: string): string {
@@ -402,6 +406,12 @@ export function clearAll(): void {
   subscribersByScope.clear();
   hydratedListIdByScope.clear();
   resetTaskOutputPathPins();
+}
+
+export function removeTaskListFromDisk(taskListId: string): void {
+  try {
+    rmSync(taskDirectoryFor(taskListId), { recursive: true, force: true });
+  } catch {}
 }
 
 // Heap-state cleanup on session transitions (/clear, fork teardown). Drops

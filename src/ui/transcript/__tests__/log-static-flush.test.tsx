@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { Ink, StaticFlushContext } from "@/ink";
 import { transcriptActions } from "@/store/index.ts";
-import Ink from "@/terminal-runtime/host/runtime-session.tsx";
-import StaticFlushContext from "@/terminal-runtime/react/scrollback-context.js";
 import { Log } from "../blocks/log.tsx";
 import type { TranscriptEntry } from "../types";
 
@@ -132,6 +131,27 @@ afterEach(() => {
 });
 
 describe("Log settled-row retention", () => {
+  it("paints resumed history as regular settled rows before the live tail", async () => {
+    const { ink, stdout, cleanup } = createInkHarness();
+    const history: TranscriptEntry[] = Array.from({ length: 60 }, (_, index) => ({
+      id: `history-${index}`,
+      kind: "system",
+      text: `history ${index}`,
+    }));
+    try {
+      renderLog(ink, [...history, { id: "tail", kind: "system", text: "live tail" }]);
+      await drainScheduledRender();
+
+      expect(countOccurrences(stdout.output, "history 0")).toBe(1);
+      expect(countOccurrences(stdout.output, "history 59")).toBe(1);
+      expect(countOccurrences(stdout.output, "live tail")).toBe(1);
+      const terminalText = stripAnsi(stdout.output);
+      expect(terminalText.indexOf("history 0")).toBeLessThan(terminalText.indexOf("live tail"));
+    } finally {
+      cleanup();
+    }
+  });
+
   it("paints committed rows once and never rewrites them for pending updates or remounts", async () => {
     const { ink, stdout, cleanup } = createInkHarness();
     const committed: TranscriptEntry[] = [

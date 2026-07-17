@@ -7,25 +7,26 @@ function entry(id: number): TranscriptEntry {
   return { id: `e${id}`, kind: "assistant", text: `t${id}` };
 }
 
-describe("transcript store retention cap", () => {
+describe("transcript store history retention", () => {
   beforeEach(() => transcriptActions.clear());
 
-  it("retains only the most recent entries past the cap (drops the head)", () => {
-    const all = Array.from({ length: 1001 }, (_, i) => entry(i));
+  it("retains every resumed entry", () => {
+    const all = Array.from({ length: 1500 }, (_, i) => entry(i));
     transcriptActions.replace(all);
     const kept = getTranscriptEntries();
-    expect(kept.length).toBe(1000);
-    expect(kept[0]?.id).toBe("e1"); // e0 dropped
-    expect(kept[kept.length - 1]?.id).toBe("e1000"); // newest retained
+    expect(kept).toHaveLength(1500);
+    expect(kept[0]?.id).toBe("e0");
+    expect(kept.at(-1)?.id).toBe("e1499");
   });
 
-  it("bounds append-style growth instead of growing unbounded", () => {
+  it("retains earlier entries during append-style growth", () => {
     for (let i = 0; i < 1500; i++) {
       transcriptActions.update((prev) => [...prev, entry(i)]);
     }
     const kept = getTranscriptEntries();
-    expect(kept.length).toBe(1000);
-    expect(kept[kept.length - 1]?.id).toBe("e1499");
+    expect(kept).toHaveLength(1500);
+    expect(kept[0]?.id).toBe("e0");
+    expect(kept.at(-1)?.id).toBe("e1499");
   });
 
   it("preserves the array reference on a no-op update (no spurious re-render)", () => {
@@ -66,13 +67,13 @@ describe("transcript store static flush cursor", () => {
     expect(getTranscriptFlushCursor()).toBeNull();
   });
 
-  it("resets the cursor if the retained cap drops the cursor entry", () => {
+  it("keeps the cursor when appending after a flushed prefix", () => {
     transcriptActions.replace(Array.from({ length: 1000 }, (_, i) => entry(i)));
     transcriptActions.markFlushedUpTo("e0");
     transcriptActions.update((prev) => [...prev, entry(1000)]);
 
-    expect(getTranscriptEntries()[0]?.id).toBe("e1");
-    expect(getTranscriptFlushCursor()).toBeNull();
+    expect(getTranscriptEntries()[0]?.id).toBe("e0");
+    expect(getTranscriptFlushCursor()).toBe("e0");
   });
 
   it("invalidates the render surface if an already-flushed entry changes", () => {

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { Provider } from "@/engine/contract/types.ts";
 import { registerRuntimeModel, resetRuntimeModelsForTests } from "@/engine/model/catalog.ts";
 import { registerAllProviders } from "@/engine/providers/bootstrap.ts";
@@ -10,7 +10,24 @@ import type { ContentBlock } from "@/kernel/std/types/message.ts";
 
 registerAllProviders();
 
-afterEach(() => resetRuntimeModelsForTests());
+const savedDisableCompact = process.env.OTHERSIDE_DISABLE_COMPACT;
+const savedDisableAutoCompact = process.env.OTHERSIDE_DISABLE_AUTO_COMPACT;
+
+beforeEach(() => {
+  delete process.env.OTHERSIDE_DISABLE_COMPACT;
+  delete process.env.OTHERSIDE_DISABLE_AUTO_COMPACT;
+});
+
+afterEach(() => {
+  resetRuntimeModelsForTests();
+  restoreEnv("OTHERSIDE_DISABLE_COMPACT", savedDisableCompact);
+  restoreEnv("OTHERSIDE_DISABLE_AUTO_COMPACT", savedDisableAutoCompact);
+});
+
+function restoreEnv(key: string, value: string | undefined): void {
+  if (value === undefined) delete process.env[key];
+  else process.env[key] = value;
+}
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -84,11 +101,11 @@ function makeHost(
       config: { defaultProvider: "xai", defaultModel: model } as never,
     },
     compactState: {
-      circuitOpen: false,
       rapidRefillBreakerOpen: false,
       rapidRefillCount: 0,
+      consecutiveCompactFailures: 0,
       turnsSinceLast: Number.POSITIVE_INFINITY,
-      consecutiveFailures: 0,
+      lastAutoCompactAttemptTurnId: null,
     },
     sessionAllowedToolPatterns: new Set(),
     loadedNestedMemoryPaths: new Set(),
@@ -115,7 +132,32 @@ describe("runTurn post-response compaction", () => {
     expect(events.indexOf("compact_start")).toBeGreaterThan(events.indexOf("turn_end"));
   });
 
-  test("uses the provider-scoped model boundary for the trigger", async () => {
+  test("honors both automatic compaction disable knobs", async () => {
+    for (const key of ["OTHERSIDE_DISABLE_COMPACT", "OTHERSIDE_DISABLE_AUTO_COMPACT"] as const) {
+      process.env[key] = "1";
+      providers.register(makeProvider());
+      const events = [];
+
+      for await (const event of runTurn(makeHost(), "hello")) events.push(event.kind);
+
+      expect(events).toContain("turn_end");
+      expect(events).not.toContain("compact_start");
+      delete process.env[key];
+    }
+  });
+
+  test("honors the automatic compaction setting", async () => {
+    providers.register(makeProvider());
+    const disabledHost = makeHost();
+    (disabledHost.deps.config as { autoCompact?: boolean }).autoCompact = false;
+    const disabledEvents = [];
+
+    for await (const event of runTurn(disabledHost, "hello")) disabledEvents.push(event.kind);
+
+    expect(disabledEvents).not.toContain("compact_start");
+  });
+
+  test("uses the provider-scoped model autoCompactTokenLimit", async () => {
     const model = "shared-compact-boundary";
     registerRuntimeModel({
       id: model,
@@ -135,6 +177,7 @@ describe("runTurn post-response compaction", () => {
       efforts: ["high"],
       defaultEffort: "high",
     });
+    // xAI host + 140k used: model limit 120k trips compact; codex's 180k limit must not win.
     providers.register(makeProvider({ inputTokens: 140_000, outputTokens: 0 }));
     const host = makeHost([], model);
     const events = [];

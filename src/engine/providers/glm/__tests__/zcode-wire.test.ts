@@ -100,6 +100,61 @@ describe("glm ZCode wire bodies", () => {
     });
   });
 
+  it("replays PDF tool results as an unavailable-content placeholder", () => {
+    const messages: Message[] = [
+      {
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: "pdf", name: "Read", input: { file_path: "/tmp/a.pdf" } },
+        ],
+      },
+      {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "pdf",
+            content: [
+              {
+                type: "pdf",
+                source: { type: "base64", media_type: "application/pdf", data: "cGRm" },
+                filename: "a.pdf",
+                pageCount: 1,
+                bytes: 3,
+              },
+            ],
+          },
+        ],
+      },
+    ];
+    const body = translateRequestGlm(ctx, messages, []) as { messages: unknown };
+
+    expect(body.messages).toEqual([
+      {
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: "pdf", name: "Read", input: { file_path: "/tmp/a.pdf" } },
+        ],
+      },
+      {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "pdf",
+            content: [
+              {
+                type: "text",
+                text: "[PDF content is unavailable on this provider. Re-read the file to provide page images.]",
+              },
+            ],
+          },
+        ],
+      },
+    ]);
+    expect(JSON.stringify(body)).not.toContain("cGRm");
+  });
+
   it("exposes the ZCode GLM model roster", () => {
     expect(MODELS.map((model) => model.id)).toEqual(["glm-5.2", "glm-5-turbo"]);
     expect(Object.fromEntries(MODELS.map((model) => [model.id, model.contextWindow]))).toEqual({

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,7 +7,12 @@ import {
   hasConnectedResourcesCapableMcpServer,
   setMcpClientSpawnerForTests,
 } from "@/kernel/mcp/client/registry.ts";
-import { boundMcpResourceOutput, readMcpDirectory } from "@/kernel/mcp/client/resources.ts";
+import {
+  boundMcpResourceOutput,
+  normalizeMcpServerName,
+  readMcpDirectory,
+} from "@/kernel/mcp/client/resources.ts";
+import { setMcpSkillsEnabledForTests } from "@/kernel/mcp/protocol/parse.ts";
 import type {
   McpClient,
   McpDirectoryListPage,
@@ -91,9 +96,12 @@ describe("readMcpDirectory + resource-capable gate", () => {
   let cwd: string | undefined;
   let prevConfigDir: string | undefined;
 
+  beforeEach(() => setMcpSkillsEnabledForTests(true));
+
   afterEach(async () => {
     await closeAllClients();
     setMcpClientSpawnerForTests(null);
+    setMcpSkillsEnabledForTests(null);
     if (cwd) rmSync(cwd, { recursive: true, force: true });
     cwd = undefined;
     if (prevConfigDir === undefined) delete process.env.OTHERSIDE_CONFIG_DIR;
@@ -124,13 +132,35 @@ describe("readMcpDirectory + resource-capable gate", () => {
     expect(hasConnectedResourcesCapableMcpServer()).toBe(false);
   });
 
-  it("returns no-directory-read when directoryRead is absent", async () => {
+  it("returns a controlled error when the feature gate is disabled", async () => {
+    isolateHome();
+    cwd = mkdtempSync(join(tmpdir(), "os-mcp-dir-"));
+    writeTrustedProject(cwd);
+    setMcpSkillsEnabledForTests(false);
+    setMcpClientSpawnerForTests(
+      async () =>
+        new DirFakeClient({
+          caps: {
+            resources: {},
+            extensions: { [MCP_SKILLS_EXTENSION_URI]: { directoryRead: true } },
+          },
+        }),
+    );
+    expect(await readMcpDirectory({ cwd, server: "res", uri: "file:///root" })).toEqual({
+      kind: "controlled-error",
+      message: "Directory listing is not enabled in this build.",
+    });
+  });
+
+  it("returns a controlled error when directoryRead is absent", async () => {
     isolateHome();
     cwd = mkdtempSync(join(tmpdir(), "os-mcp-dir-"));
     writeTrustedProject(cwd);
     setMcpClientSpawnerForTests(async () => new DirFakeClient({ caps: { resources: {} } }));
-    const result = await readMcpDirectory({ cwd, server: "res", uri: "file:///root" });
-    expect(result.kind).toBe("no-directory-read");
+    expect(await readMcpDirectory({ cwd, server: "res", uri: "file:///root" })).toEqual({
+      kind: "controlled-error",
+      message: 'Server "res" does not support directory listing.',
+    });
   });
 
   it("paginates and sanitizes entries when directoryRead is true", async () => {
@@ -147,7 +177,11 @@ describe("readMcpDirectory + resource-capable gate", () => {
           pages: [
             {
               resources: [
-                { uri: "file:///a", name: "a\u200B", mimeType: "text/plain" },
+                {
+                  uri: "file:///root/%2e%2e/outside",
+                  name: "a\u200B",
+                  mimeType: "text/plain",
+                },
                 { uri: "file:///d", name: "d", mimeType: "inode/directory" },
               ],
               nextCursor: "1",
@@ -162,7 +196,7 @@ describe("readMcpDirectory + resource-capable gate", () => {
     expect(result).toEqual({
       kind: "ok",
       resources: [
-        { uri: "file:///a", name: "a", mimeType: "text/plain" },
+        { uri: "file:///root/%2e%2e/outside", name: "a", mimeType: "text/plain" },
         { uri: "file:///d", name: "d", mimeType: "inode/directory" },
         { uri: "file:///b", name: "b" },
       ],
@@ -188,8 +222,11 @@ describe("readMcpDirectory + resource-capable gate", () => {
           },
         }),
     );
-    const result = await readMcpDirectory({ cwd, server: "res", uri: "file:///leaf" });
-    expect(result).toEqual({ kind: "not-directory", uri: "file:///leaf" });
+    expect(await readMcpDirectory({ cwd, server: "res", uri: "file:///leaf" })).toEqual({
+      kind: "controlled-error",
+      message:
+        "Not a directory resource: file:///leaf. If it is a file resource, use ReadMcpResourceTool instead.",
+    });
   });
 
   it("InvalidParams after page 1 returns accumulated entries", async () => {
@@ -225,6 +262,51 @@ describe("readMcpDirectory + resource-capable gate", () => {
       kind: "ok",
       resources: [{ uri: "file:///a", name: "a" }],
     });
+  });
+
+  it("normalizes server names exactly like MCP wire names", () => {
+    expect(normalizeMcpServerName("road map.v1")).toBe("road_map_v1");
+    expect(normalizeMcpServerName("claude.ai  road map")).toBe("claude_ai_road_map");
+  });
+
+  it("throws for a missing server instead of returning a controlled result", async () => {
+    isolateHome();
+    cwd = mkdtempSync(join(tmpdir(), "os-mcp-dir-"));
+    writeTrustedProject(cwd);
+    await expect(readMcpDirectory({ cwd, server: "missing", uri: "file:///root" })).rejects.toThrow(
+      'Server "missing" not found. Available servers: res',
+    );
+  });
+
+  it("stops pagination after 20 pages while preserving page order", async () => {
+    isolateHome();
+    cwd = mkdtempSync(join(tmpdir(), "os-mcp-dir-"));
+    writeTrustedProject(cwd);
+    let calls = 0;
+    setMcpClientSpawnerForTests(
+      async () =>
+        new DirFakeClient({
+          caps: {
+            resources: {},
+            extensions: { [MCP_SKILLS_EXTENSION_URI]: { directoryRead: true } },
+          },
+          onList: () => {
+            calls++;
+            return {
+              resources: [{ uri: `file:///${calls}`, name: String(calls) }],
+              nextCursor: String(calls),
+            };
+          },
+        }),
+    );
+    const result = await readMcpDirectory({ cwd, server: "res", uri: "file:///root" });
+    expect(calls).toBe(20);
+    expect(result.kind).toBe("ok");
+    if (result.kind === "ok") {
+      expect(result.resources).toHaveLength(20);
+      expect(result.resources[0]?.name).toBe("1");
+      expect(result.resources[19]?.name).toBe("20");
+    }
   });
 
   it("boundMcpResourceOutput truncates past 100k chars", () => {

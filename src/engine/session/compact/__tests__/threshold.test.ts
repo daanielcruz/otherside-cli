@@ -33,15 +33,15 @@ describe("auto-compact threshold", () => {
     ).toBe(950_000);
   });
 
-  it("uses the 90% safeguard for an unmapped model", () => {
-    expect(getAutoCompactThreshold(1_000_000, 20_000, "anthropic")).toBe(900_000);
+  it("uses the buffer formula when a model has no stored limit", () => {
+    expect(getAutoCompactThreshold(1_000_000, 20_000, "anthropic")).toBe(967_000);
     expect(
       getModelAutoCompactThreshold({
         model: { contextWindow: 1_000_000 },
         maxOutputTokens: 20_000,
         provider: "anthropic",
       }),
-    ).toBe(900_000);
+    ).toBe(967_000);
   });
 
   it("lets an explicit smaller window reduce a mapped limit", () => {
@@ -52,7 +52,7 @@ describe("auto-compact threshold", () => {
         maxOutputTokens: 20_000,
         provider: "codex",
       }),
-    ).toBe(180_000);
+    ).toBe(167_000);
   });
 
   it("lets an explicit percentage override reduce a mapped limit", () => {

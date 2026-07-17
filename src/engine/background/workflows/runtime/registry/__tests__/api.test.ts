@@ -190,8 +190,8 @@ describe("createWorkflowApi plugin workflow resolution", () => {
       restoreCurrentPhase: () => {},
     });
 
-    await expect(api("api-plugin:child")).resolves.toBe("plugin-child-success");
-    expect(runNames).toEqual(["api-plugin:child"]);
-    expect(recordedPhases).toEqual(["▸ api-plugin:child"]);
+    await expect(api("api-plugin@test-plugin-source:child")).resolves.toBe("plugin-child-success");
+    expect(runNames).toEqual(["api-plugin@test-plugin-source:child"]);
+    expect(recordedPhases).toEqual(["▸ api-plugin@test-plugin-source:child"]);
   });
 });

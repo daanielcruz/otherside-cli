@@ -10,20 +10,21 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import officialCatalogSeed from "@/engine/plugins/assets/official-plugin-catalog.json" with {
-  type: "json",
-};
 import { configRoot } from "@/kernel/std/fs/paths.ts";
 import { atomicWriteFileSync } from "@/kernel/std/fs/secure-fs.ts";
 import { cloneRepo } from "@/kernel/std/proc/git.ts";
+import { getTrackedCwd } from "@/kernel/std/state/cwd-state.ts";
+import { createPluginId, type InstallationId, normalizeProjectPath } from "./identity.ts";
 import type { InstallResult } from "./install.ts";
 import {
   activeInstallPath,
   cachePathForPlugin,
-  findPluginInstallation,
+  formatPluginLookupFailure,
   listPluginInstallations,
+  lookupPluginInstallation,
   type PluginInstallScope,
   recordPluginInstallation,
+  restorePluginInstallation,
 } from "./installations.ts";
 import { loadPluginFromDirectory } from "./loader.ts";
 import {
@@ -35,7 +36,15 @@ import {
   OFFICIAL_MARKETPLACE_NAME,
   OFFICIAL_MARKETPLACE_SOURCE,
 } from "./marketplaces-store.ts";
-import { register } from "./registry.ts";
+import { get as getRegisteredPlugin } from "./registry.ts";
+import {
+  beginInstallation,
+  finishInstallation,
+  getSnapshot,
+  replaceDiskState,
+  replaceSnapshot,
+  updateInstallation,
+} from "./state.ts";
 
 export { OFFICIAL_MARKETPLACE_NAME, OFFICIAL_MARKETPLACE_SOURCE };
 
@@ -317,30 +326,21 @@ export function getCachedManifest(name: string): MarketplaceManifest | null {
 }
 
 /**
- * List plugins for a marketplace.
+ * List plugins from a marketplace checkout manifest.
  *
- * Discover entry source (parity):
- * 1. Official marketplace CHECKOUT manifest (git clone via marketplace manager)
- * 2. Offline bundled seed — ONLY when there is no checkout and clone cannot run
- *
- * Install counts are a separate overlay from the plugin-stats catalog and never
- * supply Discover entries. The live catalog's `marketplace_entry` is opaque.
+ * The official checkout is cloned on demand. Install counts are a separate
+ * overlay from the plugin-stats catalog and never supply Discover entries.
+ * The catalog's `marketplace_entry` remains opaque.
  */
 export function listMarketplacePlugins(name: string): MarketplacePluginEntry[] {
-  const officialCheckoutAvailable =
-    name === OFFICIAL_MARKETPLACE_NAME ? ensureOfficialMarketplaceCheckout() : false;
+  if (name === OFFICIAL_MARKETPLACE_NAME) ensureOfficialMarketplaceCheckout();
   const cached = getCachedManifest(name)?.plugins ?? [];
-  if (cached.length > 0) return enrichWithInstallCounts(name, cached);
-  // Narrow offline gate: no checkout on disk AND this process's clone attempt failed.
-  if (name === OFFICIAL_MARKETPLACE_NAME && !officialCheckoutAvailable) {
-    return listOfflineOfficialSeedPlugins();
-  }
-  return [];
+  return cached.length > 0 ? enrichWithInstallCounts(name, cached) : [];
 }
 
 // ── Official marketplace checkout bootstrap ─────────────────────────────────
 //
-// Parity: fixed-pointer clone of anthropics/claude-plugins-official. Discover
+// Fixed-pointer clone of the official plugins marketplace repo. Discover
 // reads entries from this checkout. The plugin-stats catalog is counts-only.
 
 let officialCheckoutCloneFailed = false;
@@ -348,8 +348,8 @@ let officialCheckoutCloneFailed = false;
 /**
  * Ensure the official marketplace is cloned into the managed cache.
  * Idempotent: no-ops when a checkout manifest already exists. Attempts at most
- * once per process when the checkout is missing (clone failures are sticky so
- * Discover can fall back to the offline seed without re-cloning every render).
+ * once per process when the checkout is missing (clone failures are sticky to
+ * avoid retrying on every Discover render).
  *
  * @returns true when a checkout manifest is available after the call
  */
@@ -390,67 +390,58 @@ export function hasOfficialMarketplaceCheckout(): boolean {
 
 // ── Official plugin catalog (install counts ONLY) ───────────────────────────
 //
-// Reference mechanism (claude-code pluginCatalogCache / installCounts):
+// Install-count catalog mechanism:
 // fetch-with-cache of plugin-details.json (24h TTL). Counts overlay ONLY on
-// entries where marketplaceName === official. The catalog is NEVER the Discover
-// entry source when a checkout exists or can be produced.
-//
-// Bundled seed (assets/official-plugin-catalog.json): first-run OFFLINE FALLBACK
-// for Discover entries only when there is no checkout AND clone cannot run.
-// It is not an install-count source for checkout-backed Discover entries.
+// entries where marketplaceName === official. The catalog is never a Discover
+// entry source; its `marketplace_entry` data is opaque.
 
 export const PLUGIN_CATALOG_VERSION = 1;
 export const PLUGIN_CATALOG_CACHE_FILE = "plugin-catalog-cache.json";
-/** Same public stats URL the reference uses for unique_installs. */
+/** Public stats URL for unique_installs. */
 export const PLUGIN_CATALOG_URL =
   "https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/plugin-stats/plugin-details.json";
 export const PLUGIN_CATALOG_TTL_MS = 24 * 60 * 60 * 1000;
 
-interface SeedCatalogPlugin {
+interface OfficialCatalogPlugin {
   unique_installs?: number | null;
-  /** Opaque upstream field — unused for Discover entry sourcing. */
+  /** Opaque catalog field — unused for Discover entry sourcing. */
   marketplace_entry?: Record<string, unknown>;
 }
 
-interface SeedCatalogFile {
+interface OfficialCatalogFile {
   version: number;
   generated_at?: string | undefined;
   marketplace_sha?: string | undefined;
   marketplace?: string | undefined;
-  plugins: Record<string, SeedCatalogPlugin>;
+  plugins: Record<string, OfficialCatalogPlugin>;
 }
 
 interface CachedCatalogFile {
   version: number;
   fetchedAt: string;
-  catalog: SeedCatalogFile;
+  catalog: OfficialCatalogFile;
 }
 
-let memoryCatalog: SeedCatalogFile | null = null;
-let catalogFetchPromise: Promise<SeedCatalogFile | null> | undefined;
+let memoryCatalog: OfficialCatalogFile | null = null;
+let catalogFetchPromise: Promise<OfficialCatalogFile | null> | undefined;
 
 function pluginCatalogCachePath(): string {
   return join(configRoot(), "plugins", PLUGIN_CATALOG_CACHE_FILE);
 }
 
-function isSeedCatalog(value: unknown): value is SeedCatalogFile {
+function isOfficialCatalog(value: unknown): value is OfficialCatalogFile {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const obj = value as Record<string, unknown>;
   return typeof obj.plugins === "object" && obj.plugins !== null && !Array.isArray(obj.plugins);
 }
 
-function loadBundledOfficialCatalog(): SeedCatalogFile {
-  const seed = officialCatalogSeed as unknown;
-  if (isSeedCatalog(seed)) return seed;
-  return { version: PLUGIN_CATALOG_VERSION, plugins: {} };
-}
-
-function loadDiskCatalogCache(): SeedCatalogFile | null {
+function loadDiskCatalogCache(): OfficialCatalogFile | null {
   const path = pluginCatalogCachePath();
   if (!existsSync(path)) return null;
   try {
     const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<CachedCatalogFile>;
-    if (parsed.version !== PLUGIN_CATALOG_VERSION || !isSeedCatalog(parsed.catalog)) return null;
+    if (parsed.version !== PLUGIN_CATALOG_VERSION || !isOfficialCatalog(parsed.catalog))
+      return null;
     const fetchedAt = new Date(parsed.fetchedAt ?? "").getTime();
     if (Number.isNaN(fetchedAt) || Date.now() - fetchedAt > PLUGIN_CATALOG_TTL_MS) return null;
     return parsed.catalog;
@@ -459,7 +450,7 @@ function loadDiskCatalogCache(): SeedCatalogFile | null {
   }
 }
 
-function saveDiskCatalogCache(catalog: SeedCatalogFile): void {
+function saveDiskCatalogCache(catalog: OfficialCatalogFile): void {
   try {
     const path = pluginCatalogCachePath();
     mkdirSync(dirname(path), { recursive: true });
@@ -474,11 +465,8 @@ function saveDiskCatalogCache(catalog: SeedCatalogFile): void {
   }
 }
 
-/**
- * Resolve the live install-counts catalog synchronously: in-memory → fresh disk
- * cache → empty. The bundled offline seed is deliberately not a counts source.
- */
-export function getOfficialCatalogSync(): SeedCatalogFile {
+/** Resolve the live install-counts catalog synchronously: in-memory → fresh disk → empty. */
+export function getOfficialCatalogSync(): OfficialCatalogFile {
   if (memoryCatalog) return memoryCatalog;
   const disk = loadDiskCatalogCache();
   if (disk) {
@@ -488,7 +476,7 @@ export function getOfficialCatalogSync(): SeedCatalogFile {
   return { version: PLUGIN_CATALOG_VERSION, plugins: {} };
 }
 
-/** Install-count map keyed by `plugin@marketplace` (reference shape). */
+/** Install-count map keyed by `plugin@marketplace`. */
 export function getInstallCountsSync(): Map<string, number> {
   const catalog = getOfficialCatalogSync();
   const counts = new Map<string, number>();
@@ -499,50 +487,8 @@ export function getInstallCountsSync(): Map<string, number> {
 }
 
 /**
- * Build a Discover entry from a seed catalog record.
- * Used ONLY by the offline fallback path (bundled seed) — not by the live
- * plugin-stats catalog (whose marketplace_entry is opaque / unused for Discover).
- */
-function entryFromSeedRecord(
-  pluginId: string,
-  record: SeedCatalogPlugin,
-): MarketplacePluginEntry | null {
-  const raw = record.marketplace_entry;
-  if (!raw || typeof raw !== "object") return null;
-  const name = typeof raw.name === "string" ? raw.name : pluginId.split("@")[0];
-  if (!name || !isSafeName(name)) return null;
-  const source = parsePluginSource(raw.source);
-  if (!source) return null;
-  const item: MarketplacePluginEntry = { name, source };
-  if (typeof raw.description === "string") item.description = raw.description;
-  if (typeof raw.category === "string") item.category = raw.category;
-  if (typeof raw.communityManaged === "boolean") item.communityManaged = raw.communityManaged;
-  if (Array.isArray(raw.tags)) {
-    item.tags = raw.tags.filter((t): t is string => typeof t === "string");
-  }
-  return item;
-}
-
-/**
- * Offline-only Discover entries from the BUNDLED seed (never disk/network
- * catalog). Callers must gate this behind "no checkout AND clone failed".
- */
-function listOfflineOfficialSeedPlugins(): MarketplacePluginEntry[] {
-  const seed = loadBundledOfficialCatalog();
-  const out: MarketplacePluginEntry[] = [];
-  for (const [pluginId, record] of Object.entries(seed.plugins)) {
-    if (!pluginId.endsWith(`@${OFFICIAL_MARKETPLACE_NAME}`)) continue;
-    const entry = entryFromSeedRecord(pluginId, record);
-    if (entry) out.push(entry);
-  }
-  out.sort((a, b) => a.name.localeCompare(b.name));
-  // Counts still come only from a fresh live catalog cache, when available.
-  return enrichWithInstallCounts(OFFICIAL_MARKETPLACE_NAME, out);
-}
-
-/**
- * Overlay install counts onto official-marketplace entries only (parity:
- * installCounts && plugin.marketplaceName === OFFICIAL_MARKETPLACE_NAME).
+ * Overlay install counts onto official-marketplace entries only
+ * (marketplaceName === OFFICIAL_MARKETPLACE_NAME).
  * Fresher catalog counts win over any value already on the entry.
  */
 function enrichWithInstallCounts(
@@ -561,12 +507,12 @@ function enrichWithInstallCounts(
 
 /**
  * Best-effort network refresh of the install-counts catalog. Concurrent callers
- * share one promise. Failures leave the seed/cache untouched. Does NOT supply
- * Discover entries — counts/metadata only.
+ * share one promise. Failures preserve the current cache. Does not supply
+ * Discover entries — counts only.
  */
 export async function refreshOfficialCatalog(options?: {
   fetchImpl?: typeof fetch;
-}): Promise<SeedCatalogFile | null> {
+}): Promise<OfficialCatalogFile | null> {
   if (catalogFetchPromise) return catalogFetchPromise;
   const disk = loadDiskCatalogCache();
   if (disk) {
@@ -588,7 +534,7 @@ export async function refreshOfficialCatalog(options?: {
       if (!body.plugins || typeof body.plugins !== "object") {
         throw new Error("Invalid plugin catalog response");
       }
-      const plugins: Record<string, SeedCatalogPlugin> = {};
+      const plugins: Record<string, OfficialCatalogPlugin> = {};
       for (const [pluginId, value] of Object.entries(body.plugins)) {
         if (!pluginId.endsWith(`@${OFFICIAL_MARKETPLACE_NAME}`)) continue;
         const unique =
@@ -603,7 +549,7 @@ export async function refreshOfficialCatalog(options?: {
           ...(marketplaceEntry ? { marketplace_entry: marketplaceEntry } : {}),
         };
       }
-      const catalog: SeedCatalogFile = {
+      const catalog: OfficialCatalogFile = {
         version: PLUGIN_CATALOG_VERSION,
         generated_at: typeof body.generated_at === "string" ? body.generated_at : undefined,
         marketplace_sha:
@@ -629,8 +575,8 @@ export function _resetOfficialCatalogForTesting(): void {
   officialCheckoutCloneFailed = false;
 }
 
-/** Test helper: skip git bootstrap so offline-seed path can be exercised. */
-export function _forceOfficialCheckoutFailedForTesting(): void {
+/** Test helper: prevent a checkout bootstrap attempt. */
+export function _markOfficialCheckoutUnavailableForTesting(): void {
   officialCheckoutCloneFailed = true;
 }
 
@@ -754,10 +700,35 @@ function validateInstalledPlugin(
   return { success: false, message: `plugin ${entry.name} could not be loaded` };
 }
 
-export function updateMarketplacePlugin(target: string): InstallResult {
-  const installation = findPluginInstallation(target);
-  if (!installation) return { success: false, message: `Plugin ${target} is not installed.` };
-  return installMarketplacePlugin(installation.marketplace, installation.pluginName);
+function installationForTarget(
+  target: string,
+  requestedScope: PluginInstallScope | undefined,
+): ReturnType<typeof lookupPluginInstallation> {
+  return lookupPluginInstallation(target, {
+    cwd: getTrackedCwd(),
+    ...(requestedScope === undefined ? {} : { scope: requestedScope }),
+  });
+}
+
+export function updateMarketplacePlugin(
+  target: string,
+  requestedScope?: PluginInstallScope,
+  exactInstallationId?: InstallationId,
+): InstallResult {
+  const result = exactInstallationId
+    ? lookupPluginInstallation(exactInstallationId, {
+        cwd: getTrackedCwd(),
+        ...(requestedScope === undefined ? {} : { scope: requestedScope }),
+      })
+    : installationForTarget(target, requestedScope);
+  if (!result.ok) return { success: false, message: formatPluginLookupFailure(result) };
+  const installation = result.installation;
+  return installMarketplacePlugin(
+    installation.marketplace,
+    installation.pluginName,
+    installation.scope,
+    installation.installationId,
+  );
 }
 
 export function findMarketplacePlugin(pluginName: string): {
@@ -778,11 +749,10 @@ export function installMarketplacePlugin(
   marketplaceName: string,
   pluginName: string,
   scope: PluginInstallScope = "user",
+  exactInstallationId?: InstallationId,
 ): InstallResult {
   const known = getKnownMarketplace(marketplaceName);
-  if (!known) {
-    return { success: false, message: `marketplace not found: ${marketplaceName}` };
-  }
+  if (!known) return { success: false, message: `marketplace not found: ${marketplaceName}` };
   let manifest = getCachedManifest(marketplaceName);
   if (!manifest && marketplaceName === OFFICIAL_MARKETPLACE_NAME) {
     manifest = fetchMarketplace(known).manifest;
@@ -790,69 +760,156 @@ export function installMarketplacePlugin(
   if (!manifest) {
     return { success: false, message: `marketplace manifest not available: ${marketplaceName}` };
   }
-  const entry = manifest.plugins.find((p) => p.name === pluginName);
+  const entry = manifest.plugins.find((plugin) => plugin.name === pluginName);
   if (!entry) {
     return {
       success: false,
       message: `plugin ${pluginName} not in marketplace ${marketplaceName}`,
     };
   }
+
+  const pluginId = createPluginId(pluginName, marketplaceName);
+  const currentProjectPath = scope === "user" ? undefined : normalizeProjectPath(getTrackedCwd());
+  const previous = exactInstallationId
+    ? listPluginInstallations().find((item) => item.installationId === exactInstallationId)
+    : listPluginInstallations().find(
+        (item) =>
+          item.identity === pluginId &&
+          item.scope === scope &&
+          (scope === "user" || item.projectPath === currentProjectPath),
+      );
+  if (
+    exactInstallationId &&
+    (!previous || previous.identity !== pluginId || previous.scope !== scope)
+  ) {
+    return {
+      success: false,
+      message: `Plugin installation ${exactInstallationId} was not found.`,
+    };
+  }
+  const existingInstallation = listPluginInstallations().find((item) => item.identity === pluginId);
+  if (!exactInstallationId && existingInstallation) {
+    return {
+      success: false,
+      message: `Plugin '${pluginId}' is already installed. Use '/plugins' to manage existing plugins.`,
+    };
+  }
+  const installationTarget = { type: "plugin" as const, id: pluginId, name: pluginName };
+  const stateBefore = getSnapshot();
+  beginInstallation(installationTarget);
+  updateInstallation({ ...installationTarget, status: "installing" });
+  const complete = (result: InstallResult): InstallResult => {
+    if (!result.success) {
+      replaceSnapshot(stateBefore);
+      return result;
+    }
+    finishInstallation({ ...installationTarget, status: "installed" });
+    replaceDiskState({ installations: listPluginInstallations() });
+    return result;
+  };
   const marketplaceDir =
     known.sourceType === "file" ? known.installLocation : cacheDirFor(marketplaceName);
-  const previous = findPluginInstallation(`${pluginName}@${marketplaceName}`);
-  const effectiveScope = previous?.scope ?? scope;
-  const dest = activeInstallPath(pluginName, effectiveScope);
-  mkdirSync(dirname(dest), { recursive: true });
-  const stagingRoot = mkdtempSync(join(dirname(dest), `.install-${pluginName}-`));
-  const staged = join(stagingRoot, "next");
-  const backup = join(stagingRoot, "previous");
+  let stagingRoot = "";
+  let staged = "";
+  let backup = "";
+  let destination = "";
+  let swapped = false;
+  let cacheCreated = false;
+  let createdCachePath = "";
+  let installation: ReturnType<typeof recordPluginInstallation> | undefined;
   try {
-    const res = materializePluginSource(entry.source, staged, marketplaceDir, manifest);
-    if (!res.ok) return { success: false, message: res.error ?? "install failed" };
+    const sourceVersion = "0.0.0";
+    mkdirSync(join(configRoot(), "plugins"), { recursive: true });
+    const sourceStagingRoot = mkdtempSync(join(configRoot(), "plugins", ".plugin-install-"));
+    stagingRoot = sourceStagingRoot;
+    staged = join(stagingRoot, "payload");
+    const materialized = materializePluginSource(entry.source, staged, marketplaceDir, manifest);
+    if (!materialized.ok) {
+      return complete({ success: false, message: materialized.error ?? "install failed" });
+    }
     const validationError = validateInstalledPlugin(staged, entry, marketplaceName);
-    if (validationError) return validationError;
+    if (validationError) return complete(validationError);
     const stagedPlugin = loadPluginFromDirectory(staged, marketplaceName, {
       requireManifest: true,
     });
-    if (!stagedPlugin)
-      return { success: false, message: `plugin ${pluginName} could not be loaded` };
-    const version = stagedPlugin.manifest.version || "0.0.0";
+    if (!stagedPlugin) {
+      return complete({ success: false, message: `plugin ${pluginName} could not be loaded` });
+    }
+    const version = stagedPlugin.manifest.version || sourceVersion;
+    destination = activeInstallPath(
+      pluginName,
+      scope,
+      marketplaceName,
+      version,
+      currentProjectPath,
+    );
+    mkdirSync(dirname(destination), { recursive: true });
+    backup = join(stagingRoot, "previous");
     const cachePath = cachePathForPlugin(marketplaceName, pluginName, version);
     if (!existsSync(cachePath)) {
       mkdirSync(dirname(cachePath), { recursive: true });
       cpSync(staged, cachePath, { recursive: true });
+      cacheCreated = true;
+      createdCachePath = cachePath;
     }
-
-    if (existsSync(dest)) renameSync(dest, backup);
-    try {
-      renameSync(staged, dest);
-    } catch (error) {
-      if (!existsSync(dest) && existsSync(backup)) renameSync(backup, dest);
-      throw error;
+    if (previous && resolve(previous.installPath) === destination) {
+      if (!existsSync(destination))
+        throw new Error(`previous plugin payload is missing: ${previous.installPath}`);
+      if (getRegisteredPlugin(pluginId))
+        throw new Error("plugin version is already active; reload before replacing it");
+      renameSync(destination, backup);
+    } else if (previous) {
+      if (existsSync(destination)) {
+        if (getRegisteredPlugin(pluginId))
+          throw new Error(`installation destination is occupied: ${destination}`);
+        renameSync(destination, backup);
+      }
+      if (!existsSync(previous.installPath))
+        throw new Error(`previous plugin payload is missing: ${previous.installPath}`);
+    } else if (existsSync(destination)) {
+      renameSync(destination, backup);
     }
-    const installation = recordPluginInstallation({
-      pluginName,
-      marketplace: marketplaceName,
-      scope: effectiveScope,
+    renameSync(staged, destination);
+    swapped = true;
+    const loaded = loadPluginFromDirectory(destination, pluginId, {
+      requireManifest: true,
+      reportErrors: true,
+    });
+    if (!loaded) throw new Error(`plugin ${pluginName} could not be loaded after swap`);
+    installation = recordPluginInstallation({
+      pluginId,
+      scope,
+      ...(currentProjectPath === undefined ? {} : { projectPath: currentProjectPath }),
       version,
-      installPath: dest,
+      installPath: destination,
       cachePath,
     });
-    const loaded = loadPluginFromDirectory(dest, marketplaceName, { requireManifest: true });
-    if (loaded) register(loaded);
-    return {
+    const result = complete({
       success: true,
-      message: `${previous ? "Updated" : "Installed"} ${installation.identity} to v${version} in ${installation.scope} scope.`,
+      message: previous
+        ? `Updated ${installation.identity}. Run /reload to apply.`
+        : `Installed ${installation.identity}. Run /reload to apply.`,
       pluginName,
       identity: installation.identity,
       version,
-    };
+    });
+    if (backup && existsSync(backup)) rmSync(backup, { recursive: true, force: true });
+    return result;
   } catch (error) {
-    return {
+    if (installation) restorePluginInstallation(installation.installationId, previous);
+    if (swapped && existsSync(destination)) rmSync(destination, { recursive: true, force: true });
+    if (backup && existsSync(backup)) {
+      const restorePath = previous?.installPath ?? destination;
+      mkdirSync(dirname(restorePath), { recursive: true });
+      renameSync(backup, restorePath);
+    }
+    if (cacheCreated && createdCachePath)
+      rmSync(createdCachePath, { recursive: true, force: true });
+    return complete({
       success: false,
       message: `install failed: ${error instanceof Error ? error.message : String(error)}`,
-    };
+    });
   } finally {
-    rmSync(stagingRoot, { recursive: true, force: true });
+    if (stagingRoot) rmSync(stagingRoot, { recursive: true, force: true });
   }
 }

@@ -17,7 +17,8 @@ export type RecordType =
   | "injection_queued"
   | "attachment"
   | "turn_completion"
-  | "content_replacement";
+  | "content_replacement"
+  | "worktree_state";
 
 export interface SessionMetaRecord {
   type: "session_meta";
@@ -92,6 +93,7 @@ export interface AssistantMessageRecord {
 export interface ToolCallRecord {
   type: "tool_call";
   ts: Timestamp;
+  uuid?: string;
   tool_name: string;
   args: unknown;
   call_id: string;
@@ -107,6 +109,7 @@ export interface ToolCallRecord {
 export interface ToolResultRecord {
   type: "tool_result";
   ts: Timestamp;
+  uuid?: string;
   call_id: string;
   result: unknown;
   is_error: boolean;
@@ -152,14 +155,28 @@ export interface UsageRecord {
   agentId?: string | undefined;
 }
 
+export interface PreservedSegment {
+  headUuid: string;
+  tailUuid: string;
+  anchorUuid: string;
+}
+
+export interface PreservedMessages {
+  uuids: string[];
+  anchorUuid: string;
+}
+
 export interface CompactionMarkRecord {
   type: "compaction_mark";
   ts: Timestamp;
+  uuid?: string;
   summary_ref: CompactionSummaryRef;
   provider?: string;
   model?: string;
   version?: number;
   leafUuid?: string;
+  preservedSegment?: PreservedSegment;
+  preservedMessages?: PreservedMessages;
   preTokens?: number;
   trigger?: "auto" | "manual" | "rapid_refill_trip" | "circuit_breaker_trip" | "auto_failure";
   preservedImages?: ContentBlock[];
@@ -203,6 +220,7 @@ export interface ForeignAttachment {
 export interface AttachmentRecord {
   type: "attachment";
   ts: Timestamp;
+  uuid?: string;
   attachment: GoalStatusAttachment | QueuedCommandAttachment | ForeignAttachment;
   isSidechain?: boolean;
 }
@@ -211,6 +229,20 @@ export interface TurnCompletionRecord {
   type: "turn_completion";
   ts: Timestamp;
   durationMs: number;
+}
+
+/**
+ * Worktree-state stamp: appended whenever the session's active worktree
+ * changes (enter, exit, restore, failed restore). The latest stamp is the
+ * resume-time source of truth for worktree restoration; `state: null` records
+ * an explicit exit. The project-config slot is a secondary index of the same
+ * state, kept for cross-session discovery (stranded-transcript match set).
+ */
+export interface WorktreeStateRecord {
+  type: "worktree_state";
+  ts: Timestamp;
+  sessionId: string;
+  state: Record<string, unknown> | null;
 }
 
 export interface ContentReplacementSessionRecord {
@@ -238,7 +270,8 @@ export type SessionRecord =
   | InjectionQueuedRecord
   | AttachmentRecord
   | TurnCompletionRecord
-  | ContentReplacementSessionRecord;
+  | ContentReplacementSessionRecord
+  | WorktreeStateRecord;
 
 export const KNOWN_TYPES: ReadonlySet<RecordType> = new Set([
   "session_meta",
@@ -253,16 +286,8 @@ export const KNOWN_TYPES: ReadonlySet<RecordType> = new Set([
   "attachment",
   "turn_completion",
   "content_replacement",
+  "worktree_state",
 ]);
-
-export interface SessionWorktreeStampFields {
-  originalCwd: string;
-  activePath: string;
-  managedBranch?: string;
-  baseSha?: string;
-  ownership: "created" | "enteredExisting";
-  tmuxSession?: string;
-}
 
 export interface SessionStamp {
   sessionId: string;
@@ -270,14 +295,14 @@ export interface SessionStamp {
   cwd: string;
   version?: string;
   gitBranch?: string;
-  /** Active session worktree controller, persisted on each transcript line sidecar. */
-  worktree?: SessionWorktreeStampFields;
 }
 
 export interface OsCompactionSidecar {
   summaryRef: unknown;
   version?: number;
   trigger?: CompactionMarkRecord["trigger"];
+  preservedSegment?: PreservedSegment;
+  preservedMessages?: PreservedMessages;
   preTokens?: number;
   preservedImages?: ContentBlock[];
   error?: string;
@@ -309,6 +334,7 @@ export interface OsSidecar {
 
 export interface UpstreamMessageEnvelope {
   type?: string;
+  uuid?: string;
   timestamp?: string;
   cwd?: string;
   message?: {

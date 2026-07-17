@@ -15,9 +15,9 @@ export interface KnownMarketplace {
   builtIn?: boolean;
 }
 
-/** Fixed-pointer official marketplace name (parity with claude-code). */
+/** Fixed-pointer official marketplace name. */
 export const OFFICIAL_MARKETPLACE_NAME = "claude-plugins-official";
-/** Fixed-pointer github source for the official marketplace (parity). */
+/** Fixed-pointer github source for the official marketplace. */
 export const OFFICIAL_MARKETPLACE_SOURCE = "anthropics/claude-plugins-official";
 
 function officialMarketplace(lastUpdated = "1970-01-01T00:00:00.000Z"): KnownMarketplace {

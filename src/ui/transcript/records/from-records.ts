@@ -1,4 +1,5 @@
 import { TOOL_INTERRUPT_MESSAGE } from "@/engine/queue/runtime/interruption-text.ts";
+import { parseBashTurnText } from "@/engine/queue/turn/bash-input.ts";
 import { isCompactionBoundary, type SessionRecord } from "@/engine/session/index.ts";
 import {
   formatElapsed,
@@ -12,6 +13,7 @@ import {
   formatToolInput,
   resultToText,
   stripControlPlaneMarkup,
+  taskNoticeReplayTextFromNotification,
   taskNoticeTextFromNotification,
   taskNotificationFromAttachment,
   transcriptImagesFromRecord,
@@ -29,11 +31,17 @@ export const SILENT_TOOL_NAMES = new Set([
   "ToolSearch",
 ]);
 
+export interface TranscriptProjectionOptions {
+  isRunning?: boolean;
+  includeProducerMetadata?: boolean;
+  includeThinking?: boolean;
+}
+
 export function sessionRecordsToTranscript(
   records: SessionRecord[],
-  isRunning = false,
-  includeProducerMetadata = false,
+  options: TranscriptProjectionOptions = {},
 ): TranscriptEntry[] {
+  const { isRunning = false, includeProducerMetadata = false, includeThinking = false } = options;
   const replacements = new Map<string, string>();
   for (const record of records) {
     if (record.type === "content_replacement") {
@@ -49,6 +57,17 @@ export function sessionRecordsToTranscript(
     string,
     { name: string; args: unknown; provider?: string; model?: string }
   >();
+  // A background agent's tool result is only the launch receipt; its real
+  // outcome arrives later as a task-notification record. Index those by task
+  // id so a replayed receipt can show the completion the live view showed.
+  const notificationByTaskId = new Map<string, string>();
+  for (const record of filtered) {
+    if (record.type !== "attachment") continue;
+    const notification = taskNotificationFromAttachment(record.attachment);
+    if (notification === null) continue;
+    const taskId = notification.match(/<task-id>([^<]+)<\/task-id>/)?.[1]?.trim();
+    if (taskId) notificationByTaskId.set(taskId, notification);
+  }
   const silentCallIds = new Set<string>();
   for (const record of filtered) {
     if (record.type === "tool_call") {
@@ -69,8 +88,26 @@ export function sessionRecordsToTranscript(
         entries.push({
           id,
           kind: "task_notice",
-          text: taskNoticeTextFromNotification(record.content),
+          text: taskNoticeReplayTextFromNotification(record.content),
           isError: /<status>(?:error|failed)<\/status>/.test(record.content),
+        });
+        return;
+      }
+      const bashTurn = parseBashTurnText(record.content);
+      if (bashTurn !== null) {
+        entries.push({
+          id,
+          kind: "bash_input",
+          text: bashTurn.command,
+          resultMeta: {
+            kind: "bash",
+            status: "completed",
+            // The persisted turn text carries no exit code; stderr-only output
+            // still renders through the gutter either way.
+            exit_code: 0,
+            stdout: bashTurn.stdout,
+            stderr: bashTurn.stderr,
+          },
         });
         return;
       }
@@ -97,7 +134,7 @@ export function sessionRecordsToTranscript(
             ...(record.model ? { producedModel: record.model } : {}),
           }
         : {};
-      if (hasThinking) {
+      if (hasThinking && includeThinking) {
         entries.push({ id: `${id}_th`, kind: "thinking", text: thinking, ...producer });
       }
       if (hasContent) {
@@ -144,10 +181,18 @@ export function sessionRecordsToTranscript(
       const toolName = call?.name ?? "Tool";
       const inputText = call ? formatToolInput(call.args) : "";
       let resultText: string;
+      let noticeError: boolean | undefined;
       if (replacement !== undefined) {
         resultText = replacement;
       } else if (toolName === "Agent" && call) {
         resultText = augmentAgentResult(resultToText(record.result), call.args);
+        const receiptAgentId = launchReceiptAgentId(resultText);
+        const notification =
+          receiptAgentId === null ? undefined : notificationByTaskId.get(receiptAgentId);
+        if (notification !== undefined) {
+          resultText = taskNoticeTextFromNotification(notification);
+          noticeError = /<status>(?:error|failed)<\/status>/.test(notification);
+        }
       } else {
         resultText = resultToText(record.result);
       }
@@ -156,7 +201,7 @@ export function sessionRecordsToTranscript(
         kind: "tool",
         title: toolName,
         text: resultText,
-        isError: record.is_error,
+        isError: noticeError ?? record.is_error,
         ...(inputText.length > 0 ? { input: inputText } : {}),
         ...(record.meta ? { resultMeta: record.meta } : {}),
         ...(record.agentModel ? { agentModel: record.agentModel } : {}),
@@ -171,7 +216,7 @@ export function sessionRecordsToTranscript(
         entries.push({
           id,
           kind: "task_notice",
-          text: taskNoticeTextFromNotification(notification),
+          text: taskNoticeReplayTextFromNotification(notification),
           isError: /<status>(?:error|failed)<\/status>/.test(notification),
         });
       }
@@ -215,4 +260,11 @@ export function sessionRecordsToTranscript(
     }
   });
   return entries;
+}
+
+// The receipt a background launch returns as its tool result; the agent id it
+// names is the task id its completion notification will carry.
+function launchReceiptAgentId(resultText: string): string | null {
+  if (!resultText.startsWith("Async agent launched successfully")) return null;
+  return resultText.match(/^agentId:\s*(\S+)/m)?.[1] ?? null;
 }

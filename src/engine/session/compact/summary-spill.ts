@@ -10,7 +10,7 @@ export interface SpilledCompactionSummaryRef {
 export type CompactionSummaryRef = string | SpilledCompactionSummaryRef;
 
 export function compactionSummaryRefFromUnknown(value: unknown): CompactionSummaryRef {
-  if (typeof value === "string") return value;
+  if (typeof value === "string") return value.trim().length > 0 ? value : "";
   if (!value || typeof value !== "object") return "";
   const raw = value as Record<string, unknown>;
   if (raw.kind !== "spilled_compaction_summary") return "";
@@ -20,7 +20,7 @@ export function compactionSummaryRefFromUnknown(value: unknown): CompactionSumma
 }
 
 export function isTruthyCompactionSummaryRef(ref: CompactionSummaryRef): boolean {
-  if (typeof ref === "string") return ref.length > 0;
+  if (typeof ref === "string") return ref.trim().length > 0;
   return ref.filepath.length > 0;
 }
 

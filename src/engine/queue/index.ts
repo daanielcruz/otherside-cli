@@ -33,11 +33,11 @@ export class Agent {
   readonly nestedMemoryByPath = new Map<string, string>();
   pendingUserInputDrainer: (() => DrainedQueuedMessage[]) | null = null;
   compactState: CompactState = {
-    circuitOpen: false,
     rapidRefillBreakerOpen: false,
     rapidRefillCount: 0,
+    consecutiveCompactFailures: 0,
     turnsSinceLast: Number.POSITIVE_INFINITY,
-    consecutiveFailures: 0,
+    lastAutoCompactAttemptTurnId: null,
   };
 
   constructor(readonly deps: AgentDeps) {
@@ -75,11 +75,11 @@ export class Agent {
 
   resetMicrocompactState(): void {
     this.compactState = {
-      circuitOpen: false,
       rapidRefillBreakerOpen: false,
       rapidRefillCount: 0,
+      consecutiveCompactFailures: 0,
       turnsSinceLast: Number.POSITIVE_INFINITY,
-      consecutiveFailures: 0,
+      lastAutoCompactAttemptTurnId: null,
     };
     clearLastUsage();
   }
@@ -115,6 +115,7 @@ export class Agent {
     return {
       agentDeps: this.deps,
       state: this.compactState,
+      turnId: this.currentTurnId,
       activeAbortController: () => this.activeAbortController,
       setActiveAbortController: (ctrl) => {
         this.activeAbortController = ctrl;

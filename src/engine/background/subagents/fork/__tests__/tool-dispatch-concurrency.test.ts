@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import * as toolRegistry from "@/engine/tools/registry.ts";
 import type { ToolCall } from "@/kernel/std/types/message.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
@@ -32,15 +32,35 @@ function tick(): Promise<void> {
 type PipelineResult = { content: string; is_error?: boolean };
 const deferredByCallId = new Map<string, Deferred<PipelineResult>>();
 
-const mockDispatch = mock((call: ToolCall) => {
+// The module registry keeps this mock for the rest of the run, so it spreads
+// the real module (a partial surface fails later imports) and delegates back
+// to the real dispatch once this file finishes — a leaked always-fake dispatch
+// would swallow real tool executions in unrelated suites.
+const realPipelineModule = await import("@/engine/tools/pipeline.ts");
+// Captured by value: after mock.module the namespace's live binding IS the mock.
+const realDispatch = realPipelineModule.dispatch;
+let pipelineMockActive = true;
+const mockDispatch = mock((call: ToolCall, ctx?: unknown, deps?: unknown) => {
+  if (!pipelineMockActive) {
+    return realDispatch(
+      call,
+      ctx as Parameters<typeof realDispatch>[1],
+      deps as Parameters<typeof realDispatch>[2],
+    );
+  }
   const entry = deferredByCallId.get(call.id);
   if (!entry) throw new Error(`test bug: no deferred registered for call ${call.id}`);
   return entry.promise;
 });
 
 mock.module("@/engine/tools/pipeline.ts", () => ({
+  ...realPipelineModule,
   dispatch: mockDispatch,
 }));
+
+afterAll(() => {
+  pipelineMockActive = false;
+});
 
 function makeArgs(toolCalls: ToolCall[]) {
   const childTaskIdMap = new Map<string, string>();
@@ -94,7 +114,7 @@ function agentCall(id: string): ToolCall {
   return {
     id,
     name: "Agent",
-    input: { subagent_type: "scout", prompt: `prompt for ${id}`, description: `desc ${id}` },
+    input: { subagent_type: "samurai", prompt: `prompt for ${id}`, description: `desc ${id}` },
   };
 }
 

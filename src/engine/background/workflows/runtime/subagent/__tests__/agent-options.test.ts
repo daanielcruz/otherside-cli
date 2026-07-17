@@ -24,7 +24,7 @@ import {
   markProviderCooldown,
 } from "@/engine/session/usage/provider-health.ts";
 import workflowTool from "@/harness/tools/Workflow/tool.json" with { type: "json" };
-import { isMultiproviderOrchestrationEnabled } from "@/kernel/config/config.ts";
+import type { OrchestrationMode } from "@/kernel/config/orchestration-mode.ts";
 import type { ProviderId } from "@/kernel/config/provider-ids.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 import type { CredentialsBundle } from "@/kernel/storage/credentials.ts";
@@ -44,14 +44,14 @@ import {
 
 registerAllProviders();
 
-function ctx(multiproviderEnabled: boolean): RequestContext {
-  return ctxWith("codex", "gpt-5.5", multiproviderEnabled);
+function ctx(orchestrationMode: OrchestrationMode = "feudalism"): RequestContext {
+  return ctxWith("codex", "gpt-5.5", orchestrationMode);
 }
 
 function ctxWith(
   provider: string,
   model: string,
-  multiproviderEnabled = true,
+  orchestrationMode: OrchestrationMode = "feudalism",
   cwd = "/tmp",
 ): RequestContext {
   return {
@@ -59,7 +59,7 @@ function ctxWith(
     model,
     effort: null,
     permissionMode: "default",
-    multiproviderEnabled,
+    orchestrationMode,
     sessionId: "test-session",
     cwd,
   };
@@ -89,7 +89,10 @@ async function makeTempGitRepo(): Promise<string> {
 }
 
 function observeProvider(provider: Parameters<typeof setRoutingUsage>[0]): void {
-  setRoutingUsage(provider, { trackingStatus: "untracked", balanceStatus: "unknown" });
+  setRoutingUsage(provider, {
+    trackingStatus: "untracked",
+    balanceStatus: "unknown",
+  });
 }
 
 function memoryJournal(seed: WorkflowJournalEntry[] = []): {
@@ -122,12 +125,14 @@ async function waitUntil(predicate: () => boolean): Promise<void> {
 
 describe("readAgentOptions", () => {
   it("parses tier", () => {
-    expect(readAgentOptions({ tier: "warrior" })).toMatchObject({ tier: "warrior" });
+    expect(readAgentOptions({ tier: "daimyo" })).toMatchObject({
+      tier: "daimyo",
+    });
   });
 
   it("parses the diversify boolean and ignores non-boolean values", () => {
-    expect(readAgentOptions({ tier: "warrior", diversify: true })).toMatchObject({
-      tier: "warrior",
+    expect(readAgentOptions({ tier: "daimyo", diversify: true })).toMatchObject({
+      tier: "daimyo",
       diversify: true,
     });
     expect(readAgentOptions({ diversify: "yes" })).not.toHaveProperty("diversify");
@@ -135,12 +140,16 @@ describe("readAgentOptions", () => {
 
   it("parses model and effort while ignoring tierRank and unknown options", () => {
     const opts = readAgentOptions({
-      tier: "warrior",
+      tier: "daimyo",
       model: "gpt-5.6-luna",
       effort: "high",
       tierRank: 2,
     });
-    expect(opts).toMatchObject({ tier: "warrior", model: "gpt-5.6-luna", effort: "high" });
+    expect(opts).toMatchObject({
+      tier: "daimyo",
+      model: "gpt-5.6-luna",
+      effort: "high",
+    });
     expect(opts).not.toHaveProperty("tierRank");
   });
 
@@ -154,22 +163,26 @@ describe("WORKFLOW_AGENT_OPTIONS single source of truth", () => {
     // The one remaining coupling: the SoT renderer must agree with the static
     // asset the model sees when multiprovider is off. This guard fails loudly
     // if either drifts.
-    expect(workflowTool.description).toContain(renderWorkflowAgentSignature(false));
+    expect(workflowTool.description).toContain(renderWorkflowAgentSignature("disabled"));
   });
 
-  it("keeps base options on both paths and adds provider/tier only for multiprovider", () => {
-    const base = renderWorkflowAgentSignature(false);
-    const multi = renderWorkflowAgentSignature(true);
-    expect(base).toContain("model?: string");
-    expect(base).toContain("effort?: string");
-    expect(base).not.toContain("tier?:");
-    expect(base).not.toContain("diversify?:");
-    expect(base).not.toContain("provider?:");
-    expect(multi).toContain("tier?: 'general' | 'warrior' | 'scout'");
-    expect(multi).toContain("diversify?: boolean");
-    expect(multi).toContain("model?: string");
-    expect(multi).toContain("effort?: string");
-    expect(multi).toContain("provider?: string");
+  it("exposes the exact agent() fields for each orchestration mode", () => {
+    const disabled = renderWorkflowAgentSignature("disabled");
+    const defaultMode = renderWorkflowAgentSignature("default");
+    const experimental = renderWorkflowAgentSignature("feudalism");
+    expect(disabled).toContain("model?: string");
+    expect(disabled).toContain("effort?: string");
+    expect(disabled).not.toContain("tier?:");
+    expect(disabled).not.toContain("diversify?:");
+    expect(disabled).not.toContain("provider?:");
+    expect(defaultMode).toContain("provider?: string");
+    expect(defaultMode).toContain("model?: string");
+    expect(defaultMode).not.toContain("tier?:");
+    expect(defaultMode).not.toContain("diversify?:");
+    expect(experimental).toContain("tier?: 'emperor' | 'shogun' | 'daimyo' | 'samurai'");
+    expect(experimental).toContain("diversify?: boolean");
+    expect(experimental).not.toContain("model?: string");
+    expect(experimental).not.toContain("provider?: string");
   });
 
   it("cache keys cover the routing/output options and exclude cosmetic fields", () => {
@@ -190,14 +203,12 @@ describe("WORKFLOW_AGENT_OPTIONS single source of truth", () => {
 
 describe("normalizeAgentCacheOptions", () => {
   it("includes tier in workflow agent cache keys", () => {
-    expect(normalizeAgentCacheOptions({ tier: "warrior" })).toBe(
-      JSON.stringify({ tier: "warrior" }),
-    );
+    expect(normalizeAgentCacheOptions({ tier: "daimyo" })).toBe(JSON.stringify({ tier: "daimyo" }));
   });
 
   it("includes model in workflow agent cache keys while ignoring tierRank", () => {
-    expect(normalizeAgentCacheOptions({ tier: "warrior", model: "x", tierRank: 2 })).toBe(
-      normalizeAgentCacheOptions({ tier: "warrior", model: "x" }),
+    expect(normalizeAgentCacheOptions({ tier: "daimyo", model: "x", tierRank: 2 })).toBe(
+      normalizeAgentCacheOptions({ tier: "daimyo", model: "x" }),
     );
   });
 });
@@ -214,17 +225,51 @@ describe("workflow agent runtime overrides", () => {
 
     try {
       const bridge = await createWorkflowSubagentBridge({
-        ctx: ctx(true),
+        ctx: ctx("default"),
         parentToolCallId: "parent-tool-call",
         runId: "wf-test-run",
         signal,
       });
 
-      await bridge.agent("test prompt", { model: "custom-model", effort: "high" });
+      await bridge.agent("test prompt", {
+        model: "gpt-5.6-luna",
+        effort: "high",
+      });
 
-      expect(captured).toEqual({ model: "custom-model", effort: "high" });
+      expect(captured).toEqual({ model: "gpt-5.6-luna", effort: "high" });
     } finally {
       setWorkflowForkRunnerForTests(null);
+    }
+  });
+
+  it("treats Default provider/model pins literally and rejects tier", async () => {
+    setCredentialsLoaderForTests(
+      () => ({ codex: { accessToken: "test" } }) as unknown as CredentialsBundle,
+    );
+    const captured: { provider?: string; model?: string } = {};
+    setWorkflowForkRunnerForTests(async (request) => {
+      captured.provider = request.ctx.provider;
+      captured.model = request.ctx.model;
+      return { output: "ok", isError: false };
+    });
+    try {
+      const bridge = await createWorkflowSubagentBridge({
+        ctx: ctx("default"),
+        parentToolCallId: "parent-tool-call",
+        runId: "wf-default-pin",
+        signal: new AbortController().signal,
+      });
+      await bridge.agent("literal pin", {
+        provider: "codex",
+        model: "gpt-5.6-luna",
+      });
+      expect(captured).toEqual({ provider: "codex", model: "gpt-5.6-luna" });
+      await expect(bridge.agent("no tier", { tier: "daimyo" })).rejects.toThrow(
+        "`tier` is unavailable in Default mode",
+      );
+    } finally {
+      setWorkflowForkRunnerForTests(null);
+      setCredentialsLoaderForTests(null);
     }
   });
 
@@ -237,7 +282,7 @@ describe("workflow agent runtime overrides", () => {
 
     try {
       const initial = await createWorkflowSubagentBridge({
-        ctx: ctx(true),
+        ctx: ctx("feudalism"),
         parentToolCallId: "parent-tool-call",
         runId: "wf-sequential-seed",
         signal: new AbortController().signal,
@@ -257,7 +302,7 @@ describe("workflow agent runtime overrides", () => {
         return { output: `live ${request.prompt}`, isError: false };
       });
       const resumed = await createWorkflowSubagentBridge({
-        ctx: ctx(true),
+        ctx: ctx("feudalism"),
         parentToolCallId: "parent-tool-call",
         runId: "wf-sequential-resume",
         signal: new AbortController().signal,
@@ -291,7 +336,7 @@ describe("workflow agent runtime overrides", () => {
 
     try {
       const bridge = await createWorkflowSubagentBridge({
-        ctx: ctxWith("codex", "gpt-5.5", true, repoDir),
+        ctx: ctxWith("codex", "gpt-5.5", "feudalism", repoDir),
         parentToolCallId: "parent-tool-call",
         runId: "wf-test-run",
         signal,
@@ -332,16 +377,19 @@ describe("workflow journal started records", () => {
 
   it("logs a respawn notice on cache miss when the key was previously started", async () => {
     const logs: string[] = [];
-    const keyA = computeAgentCacheKey("A", undefined, "root/agent:0", "");
+    const keyA = computeAgentCacheKey("A", undefined, "root/agent:0", "", "feudalism");
     const prior: WorkflowJournalStartedEntry = {
       type: "started",
       key: keyA,
       agentId: "workflow-old-run-1",
     };
-    setWorkflowForkRunnerForTests(async () => ({ output: "live A", isError: false }));
+    setWorkflowForkRunnerForTests(async () => ({
+      output: "live A",
+      isError: false,
+    }));
     try {
       const bridge = await createWorkflowSubagentBridge({
-        ctx: ctx(true),
+        ctx: ctx("feudalism"),
         parentToolCallId: "parent-tool-call",
         runId: "wf-respawn-run",
         signal: new AbortController().signal,
@@ -363,10 +411,13 @@ describe("workflow journal started records", () => {
 
   it("does not log a respawn notice when the key was never started", async () => {
     const logs: string[] = [];
-    setWorkflowForkRunnerForTests(async () => ({ output: "live", isError: false }));
+    setWorkflowForkRunnerForTests(async () => ({
+      output: "live",
+      isError: false,
+    }));
     try {
       const bridge = await createWorkflowSubagentBridge({
-        ctx: ctx(true),
+        ctx: ctx("feudalism"),
         parentToolCallId: "parent-tool-call",
         runId: "wf-fresh-run",
         signal: new AbortController().signal,
@@ -394,7 +445,7 @@ describe("workflow resume structural replay", () => {
     }));
     try {
       const initial = await createWorkflowSubagentBridge({
-        ctx: ctx(true),
+        ctx: ctx("feudalism"),
         parentToolCallId: "parent",
         runId: "wf-parallel-seed",
         signal: new AbortController().signal,
@@ -412,7 +463,7 @@ describe("workflow resume structural replay", () => {
         return { output: `live ${request.prompt}`, isError: false };
       });
       const resumed = await createWorkflowSubagentBridge({
-        ctx: ctx(true),
+        ctx: ctx("feudalism"),
         parentToolCallId: "parent",
         runId: "wf-parallel-resume",
         signal: new AbortController().signal,
@@ -436,7 +487,7 @@ describe("workflow resume structural replay", () => {
         return { output: request.prompt, isError: false };
       });
       const bridge = await createWorkflowSubagentBridge({
-        ctx: ctx(true),
+        ctx: ctx("feudalism"),
         parentToolCallId: "parent",
         runId: "wf-order",
         signal: new AbortController().signal,
@@ -468,10 +519,13 @@ describe("workflow resume structural replay", () => {
         (value: unknown) => bridge.agent(`${value}:s2`),
       );
     const first = memoryJournal();
-    setWorkflowForkRunnerForTests(async (request) => ({ output: request.prompt, isError: false }));
+    setWorkflowForkRunnerForTests(async (request) => ({
+      output: request.prompt,
+      isError: false,
+    }));
     try {
       const initial = await createWorkflowSubagentBridge({
-        ctx: ctx(true),
+        ctx: ctx("feudalism"),
         parentToolCallId: "parent",
         runId: "wf-pipeline-seed",
         signal: new AbortController().signal,
@@ -489,7 +543,7 @@ describe("workflow resume structural replay", () => {
         return { output: request.prompt, isError: false };
       });
       const resumed = await createWorkflowSubagentBridge({
-        ctx: ctx(true),
+        ctx: ctx("feudalism"),
         parentToolCallId: "parent",
         runId: "wf-pipeline-resume",
         signal: new AbortController().signal,
@@ -516,10 +570,13 @@ describe("workflow resume structural replay", () => {
         ),
       );
     const first = memoryJournal();
-    setWorkflowForkRunnerForTests(async (request) => ({ output: request.prompt, isError: false }));
+    setWorkflowForkRunnerForTests(async (request) => ({
+      output: request.prompt,
+      isError: false,
+    }));
     try {
       const initial = await createWorkflowSubagentBridge({
-        ctx: ctx(true),
+        ctx: ctx("feudalism"),
         parentToolCallId: "parent",
         runId: "wf-nest-pp-seed",
         signal: new AbortController().signal,
@@ -536,7 +593,7 @@ describe("workflow resume structural replay", () => {
         return { output: request.prompt, isError: false };
       });
       const resumed = await createWorkflowSubagentBridge({
-        ctx: ctx(true),
+        ctx: ctx("feudalism"),
         parentToolCallId: "parent",
         runId: "wf-nest-pp-resume",
         signal: new AbortController().signal,
@@ -559,10 +616,13 @@ describe("workflow resume structural replay", () => {
         (value: unknown, item: unknown) => bridge.agent(`${item}:judge:${JSON.stringify(value)}`),
       );
     const first = memoryJournal();
-    setWorkflowForkRunnerForTests(async (request) => ({ output: request.prompt, isError: false }));
+    setWorkflowForkRunnerForTests(async (request) => ({
+      output: request.prompt,
+      isError: false,
+    }));
     try {
       const initial = await createWorkflowSubagentBridge({
-        ctx: ctx(true),
+        ctx: ctx("feudalism"),
         parentToolCallId: "parent",
         runId: "wf-nest-ppl-seed",
         signal: new AbortController().signal,
@@ -579,7 +639,7 @@ describe("workflow resume structural replay", () => {
         return { output: request.prompt, isError: false };
       });
       const resumed = await createWorkflowSubagentBridge({
-        ctx: ctx(true),
+        ctx: ctx("feudalism"),
         parentToolCallId: "parent",
         runId: "wf-nest-ppl-resume",
         signal: new AbortController().signal,
@@ -602,7 +662,7 @@ describe("workflow resume structural replay", () => {
     });
     try {
       const initial = await createWorkflowSubagentBridge({
-        ctx: ctx(true),
+        ctx: ctx("feudalism"),
         parentToolCallId: "parent",
         runId: "wf-abort-partial",
         signal: controller.signal,
@@ -623,7 +683,7 @@ describe("workflow resume structural replay", () => {
         return { output: `resumed ${request.prompt}`, isError: false };
       });
       const resumed = await createWorkflowSubagentBridge({
-        ctx: ctx(true),
+        ctx: ctx("feudalism"),
         parentToolCallId: "parent",
         runId: "wf-abort-resume",
         signal: new AbortController().signal,
@@ -647,10 +707,13 @@ describe("workflow resume structural replay", () => {
     });
     const events: string[] = [];
     const snapshot = buildJournalSnapshot([]);
-    setWorkflowForkRunnerForTests(async () => ({ output: "durable", isError: false }));
+    setWorkflowForkRunnerForTests(async () => ({
+      output: "durable",
+      isError: false,
+    }));
     try {
       const bridge = await createWorkflowSubagentBridge({
-        ctx: ctx(true),
+        ctx: ctx("feudalism"),
         parentToolCallId: "parent",
         runId: "wf-durable-done",
         signal: new AbortController().signal,
@@ -681,13 +744,16 @@ describe("workflow resume structural replay", () => {
     setWorkflowForkRunnerForTests(async (request) => {
       if (request.prompt === "null") return { output: "provider failed", isError: true };
       if (request.prompt === "error") {
-        return { output: "StructuredOutputMismatchError: invalid", isError: true };
+        return {
+          output: "StructuredOutputMismatchError: invalid",
+          isError: true,
+        };
       }
       return { output: "skipped output", isError: false };
     });
     try {
       const bridge = await createWorkflowSubagentBridge({
-        ctx: ctx(true),
+        ctx: ctx("feudalism"),
         parentToolCallId: "parent",
         runId: "wf-no-null-cache",
         signal: new AbortController().signal,
@@ -711,96 +777,111 @@ describe("workflow resume structural replay", () => {
 });
 
 describe("defaultTierForAgentType map", () => {
-  it("routes recon/search to scout", () => {
-    expect(defaultTierForAgentType("recon")).toBe("scout");
-    expect(defaultTierForAgentType("search")).toBe("scout");
+  it("routes recon/search to daimyo", () => {
+    expect(defaultTierForAgentType("recon")).toBe("daimyo");
+    expect(defaultTierForAgentType("search")).toBe("daimyo");
   });
 
-  it("routes broad exploration to warrior (tier 2)", () => {
-    expect(defaultTierForAgentType("explore")).toBe("warrior");
-    expect(defaultTierForAgentType("code-explorer")).toBe("warrior");
+  it("routes broad exploration to daimyo", () => {
+    expect(defaultTierForAgentType("explore")).toBe("daimyo");
+    expect(defaultTierForAgentType("code-explorer")).toBe("daimyo");
   });
 
-  it("routes plan/architect to general", () => {
-    expect(defaultTierForAgentType("plan")).toBe("general");
-    expect(defaultTierForAgentType("ui-architect")).toBe("general");
+  it("routes plan/architect to emperor", () => {
+    expect(defaultTierForAgentType("plan")).toBe("emperor");
+    expect(defaultTierForAgentType("ui-architect")).toBe("emperor");
   });
 
-  it("routes review/verify/audit to warrior", () => {
-    expect(defaultTierForAgentType("security-reviewer")).toBe("warrior");
-    expect(defaultTierForAgentType("verifier")).toBe("warrior");
+  it("routes review/verify/audit to shogun", () => {
+    expect(defaultTierForAgentType("security-reviewer")).toBe("shogun");
+    expect(defaultTierForAgentType("verifier")).toBe("shogun");
   });
 
-  it("falls back to warrior for unknown or missing types (case-insensitive)", () => {
-    expect(defaultTierForAgentType("general-purpose")).toBe("warrior");
-    expect(defaultTierForAgentType("EXPLORER")).toBe("warrior");
-    expect(defaultTierForAgentType(undefined)).toBe("warrior");
+  it("falls back to daimyo for unknown or missing types (case-insensitive)", () => {
+    expect(defaultTierForAgentType("general-purpose")).toBe("daimyo");
+    expect(defaultTierForAgentType("EXPLORER")).toBe("daimyo");
+    expect(defaultTierForAgentType(undefined)).toBe("daimyo");
   });
 });
 
 describe("resolveEffectiveTier", () => {
   it("returns an explicit tier verbatim", () => {
-    expect(resolveEffectiveTier(ctx(true), { tier: "general", agentType: "explore" })).toBe(
-      "general",
-    );
+    expect(
+      resolveEffectiveTier(ctx("feudalism"), {
+        tier: "emperor",
+        agentType: "explore",
+      }),
+    ).toBe("emperor");
   });
 
   it("infers tier from agentType when multiprovider is on and tier is omitted", () => {
-    expect(resolveEffectiveTier(ctx(true), { agentType: "explore" })).toBe("warrior");
+    expect(
+      resolveEffectiveTier(ctx("feudalism"), {
+        agentType: "explore",
+      }),
+    ).toBe("daimyo");
   });
 
   it("does not infer a tier when multiprovider is off (agent inherits parent)", () => {
-    expect(resolveEffectiveTier(ctx(false), { agentType: "explore" })).toBeUndefined();
+    expect(resolveEffectiveTier(ctx("disabled"), { agentType: "explore" })).toBeUndefined();
   });
 
   it("returns undefined with neither tier nor agentType", () => {
-    expect(resolveEffectiveTier(ctx(true), {})).toBeUndefined();
+    expect(resolveEffectiveTier(ctx("feudalism"), {})).toBeUndefined();
   });
 });
 
 describe("resolveWorkflowAgentModelContext gating", () => {
-  it("rejects tier when multi-provider orchestration is disabled", () => {
-    const resolved = resolveWorkflowAgentModelContext(ctx(false), { tier: "warrior" });
+  it("rejects tier when orchestration is disabled", () => {
+    const resolved = resolveWorkflowAgentModelContext(ctx("disabled"), {
+      tier: "daimyo",
+    });
     expect(resolved.ok).toBe(false);
     if (resolved.ok) throw new Error("expected rejection");
-    expect(resolved.error).toContain("requires multi-provider orchestration");
+    expect(resolved.error).toContain("`tier` is unavailable when orchestration is disabled");
   });
 
-  it("rejects an unknown tier name with general/warrior/scout", () => {
-    const resolved = resolveWorkflowAgentModelContext(ctx(true), { tier: "best" });
+  it("rejects an unknown tier name with the tier roster", () => {
+    const resolved = resolveWorkflowAgentModelContext(ctx("feudalism"), {
+      tier: "best",
+    });
     expect(resolved.ok).toBe(false);
     if (resolved.ok) throw new Error("expected rejection");
     expect(resolved.error).toBe(
-      "InputValidationError: tier must be one of: general, warrior, scout.",
+      "InputValidationError: tier must be one of: emperor, shogun, daimyo, samurai.",
     );
   });
 
   it("inherits the parent model when no tier is set", () => {
-    const resolved = resolveWorkflowAgentModelContext(ctx(true), {});
+    const resolved = resolveWorkflowAgentModelContext(ctx("feudalism"), {});
     expect(resolved.ok).toBe(true);
     if (!resolved.ok) throw new Error(resolved.error);
     expect(resolved.ctx.model).toBe("gpt-5.5");
   });
 });
 
-describe("isMultiproviderOrchestrationEnabled", () => {
-  it("is off when orchestratorMode is off even if tierSelectorEnabled is true", () => {
+describe("orchestration mode runtime boundary", () => {
+  it("infers no tier or concrete route in Disabled mode", () => {
+    expect(resolveEffectiveTier(ctx("disabled"), { agentType: "explore" })).toBeUndefined();
+    const resolved = resolveWorkflowAgentModelContext(ctx("disabled"), {});
+    expect(resolved.ok).toBe(true);
+    if (!resolved.ok) throw new Error(resolved.error);
+    expect(resolved.ctx.provider).toBe("codex");
+    expect(resolved.ctx.model).toBe("gpt-5.5");
+  });
+
+  it("uses tier inference only in feudalism mode", () => {
     expect(
-      isMultiproviderOrchestrationEnabled({ tierSelectorEnabled: true, orchestratorMode: "off" }),
-    ).toBe(false);
-  });
-
-  it("is on for orchestratorMode soft even without tierSelectorEnabled", () => {
-    expect(isMultiproviderOrchestrationEnabled({ orchestratorMode: "soft" })).toBe(true);
-  });
-
-  it("defaults to off when config is undefined", () => {
-    expect(isMultiproviderOrchestrationEnabled(undefined)).toBe(false);
+      resolveEffectiveTier(ctx("feudalism"), {
+        agentType: "explore",
+      }),
+    ).toBe("daimyo");
+    expect(resolveEffectiveTier(ctx("default"), { agentType: "explore" })).toBeUndefined();
   });
 });
 
 describe("deep-security-review bundled script static analysis", () => {
-  it("does not hardcode warrior rank 2/3 for auditors", () => {
+  it("does not hardcode fixed rank allocation for auditors", () => {
     const script = DEEP_SECURITY_REVIEW_WORKFLOW.script;
     expect(script).not.toContain("tierRank: currentRank");
     expect(script).not.toContain("rankCounter");
@@ -863,7 +944,9 @@ describe("resolveWorkflowAgentModelContextDetailed", () => {
     // genuine cross-tier resolution (no self-inherit). Only codex is
     // credentialed, so the general pool is degraded (1 usable of many).
     const context = ctxWith("codex", "gpt-5.6-luna");
-    const resolved = resolveWorkflowAgentModelContextDetailed(context, { tier: "general" });
+    const resolved = resolveWorkflowAgentModelContextDetailed(context, {
+      tier: "emperor",
+    });
     expect(resolved.ok).toBe(true);
     expect(resolved.ctx.model).toBe("gpt-5.6-sol");
     expect(resolved.degradedReasons).toBeDefined();
@@ -873,7 +956,9 @@ describe("resolveWorkflowAgentModelContextDetailed", () => {
   it("inherits the caller's own model only when it already belongs to the tier and is usable", () => {
     setCredentialsLoaderForTests(codexAndAnthropicCreds);
     const context = ctxWith("anthropic", "claude-opus-4-8");
-    const resolved = resolveWorkflowAgentModelContextDetailed(context, { tier: "general" });
+    const resolved = resolveWorkflowAgentModelContextDetailed(context, {
+      tier: "emperor",
+    });
     expect(resolved.ok).toBe(true);
     expect(resolved.ctx.provider).toBe("anthropic");
     expect(resolved.ctx.model).toBe("claude-opus-4-8");
@@ -882,7 +967,9 @@ describe("resolveWorkflowAgentModelContextDetailed", () => {
 
   it("falls back when the caller's in-tier provider is not usable", () => {
     const context = ctxWith("anthropic", "claude-opus-4-8");
-    const resolved = resolveWorkflowAgentModelContextDetailed(context, { tier: "general" });
+    const resolved = resolveWorkflowAgentModelContextDetailed(context, {
+      tier: "emperor",
+    });
     expect(resolved.ok).toBe(true);
     expect(resolved.ctx.provider).toBe("codex");
     expect(resolved.ctx.model).toBe("gpt-5.6-sol");
@@ -896,7 +983,7 @@ describe("resolveWorkflowAgentModelContextDetailed", () => {
     observeProvider("codex");
     const context = ctxWith("anthropic", "claude-opus-4-8");
     const resolved = resolveWorkflowAgentModelContextDetailed(context, {
-      tier: "general",
+      tier: "emperor",
       diversify: true,
     });
     expect(resolved.ok).toBe(true);
@@ -906,22 +993,29 @@ describe("resolveWorkflowAgentModelContextDetailed", () => {
 
   it("skips an exhausted-balance active parent and selects the next usable rank", () => {
     setCredentialsLoaderForTests(scoutCreds);
-    setRoutingUsage("anthropic", { trackingStatus: "untracked", balanceStatus: "exhausted" });
+    setRoutingUsage("anthropic", {
+      trackingStatus: "untracked",
+      balanceStatus: "exhausted",
+    });
     const context = ctxWith("anthropic", "claude-haiku-4-5");
-    const resolved = resolveWorkflowAgentModelContextDetailed(context, { tier: "scout" });
+    const resolved = resolveWorkflowAgentModelContextDetailed(context, {
+      tier: "samurai",
+    });
     expect(resolved.ok).toBe(true);
     expect(resolved.ctx.provider).toBe("antigravity");
-    expect(resolved.ctx.model).toBe("gemini-3-flash-medium");
+    expect(resolved.ctx.model).toBe("gemini-3-flash-low");
   });
 
-  it("skips a cooled-down scout rank-1 parent and selects the next usable rank", () => {
+  it("skips a cooled-down samurai rank-1 parent and selects the next usable rank", () => {
     setCredentialsLoaderForTests(scoutCreds);
     markProviderCooldown("antigravity", Date.now() + 60_000, "rate_limited");
     const context = ctxWith("antigravity", "gemini-3-flash-medium");
-    const resolved = resolveWorkflowAgentModelContextDetailed(context, { tier: "scout" });
+    const resolved = resolveWorkflowAgentModelContextDetailed(context, {
+      tier: "samurai",
+    });
     expect(resolved.ok).toBe(true);
-    expect(resolved.ctx.provider).toBe("anthropic");
-    expect(resolved.ctx.model).toBe("claude-haiku-4-5");
+    expect(resolved.ctx.provider).toBe("glm");
+    expect(resolved.ctx.model).toBe("glm-5-turbo");
   });
 
   it("diversify excludes a cooled-down rank-1 provider from round-robin", () => {
@@ -932,14 +1026,14 @@ describe("resolveWorkflowAgentModelContextDetailed", () => {
     const context = ctxWith("anthropic", "claude-haiku-4-5");
     const first = resolveWorkflowAgentModelContextDetailed(
       context,
-      { tier: "scout", diversify: true },
+      { tier: "samurai", diversify: true },
       {
         allocationCount: 0,
       },
     );
     const second = resolveWorkflowAgentModelContextDetailed(
       context,
-      { tier: "scout", diversify: true },
+      { tier: "samurai", diversify: true },
       {
         allocationCount: 1,
       },
@@ -952,16 +1046,19 @@ describe("resolveWorkflowAgentModelContextDetailed", () => {
     setCredentialsLoaderForTests(scoutCreds);
     // Exhausted balance drops the active provider like any other member — the
     // round-robin spreads across the remaining usable roster only.
-    setRoutingUsage("anthropic", { trackingStatus: "untracked", balanceStatus: "exhausted" });
+    setRoutingUsage("anthropic", {
+      trackingStatus: "untracked",
+      balanceStatus: "exhausted",
+    });
     const context = ctxWith("anthropic", "claude-haiku-4-5");
     const first = resolveWorkflowAgentModelContextDetailed(
       context,
-      { tier: "scout", diversify: true },
+      { tier: "samurai", diversify: true },
       { allocationCount: 0 },
     );
     const second = resolveWorkflowAgentModelContextDetailed(
       context,
-      { tier: "scout", diversify: true },
+      { tier: "samurai", diversify: true },
       { allocationCount: 1 },
     );
     expect(first.ctx.provider).toBe("antigravity");
@@ -970,26 +1067,30 @@ describe("resolveWorkflowAgentModelContextDetailed", () => {
 
   it("pins the run's tier pool so it does not flap when a higher-rank provider recovers", () => {
     setCredentialsLoaderForTests(scoutCreds);
-    // Caller is on a general model, so scout is a cross-tier resolve (top-N pool).
+    // Caller is on an emperor model, so samurai is a cross-tier resolve (top-N pool).
     const context = ctxWith("anthropic", "claude-opus-4-8");
-    // Scout rank-1 (antigravity) is cooled down, so the run's first agent
-    // resolves to the next usable rank.
+    // Samurai ranks 1 and 2 (antigravity) are cooled down, so the run's first
+    // agent resolves to rank 3.
     markProviderCooldown("antigravity", Date.now() + 60_000, "rate_limited");
-    const first = resolveWorkflowAgentModelContextDetailed(context, { tier: "scout" });
-    expect(first.ctx.provider).toBe("anthropic");
-    expect(first.selectedPool?.[0]?.provider).toBe("anthropic");
-    // Rank-1 recovers. A fresh (non-pinned) resolve would flap back to antigravity;
-    // the pinned run stays on the lower rank because the pinned entry is still usable.
+    const first = resolveWorkflowAgentModelContextDetailed(context, {
+      tier: "samurai",
+    });
+    expect(first.ctx.provider).toBe("glm");
+    expect(first.selectedPool?.[0]?.provider).toBe("glm");
+    // Higher-priority ranks recover. A fresh (non-pinned) resolve would flap
+    // back to antigravity; the pinned run stays on the lower rank while it is usable.
     clearProviderCooldowns();
-    const fresh = resolveWorkflowAgentModelContextDetailed(context, { tier: "scout" });
+    const fresh = resolveWorkflowAgentModelContextDetailed(context, {
+      tier: "samurai",
+    });
     expect(fresh.ctx.provider).toBe("antigravity");
     const pinned = resolveWorkflowAgentModelContextDetailed(
       context,
-      { tier: "scout" },
+      { tier: "samurai" },
       { allocationCount: 1 },
       first.selectedPool,
     );
-    expect(pinned.ctx.provider).toBe("anthropic");
+    expect(pinned.ctx.provider).toBe("glm");
   });
 
   it("drops a newly blocked member from a pinned diversify pool", () => {
@@ -997,7 +1098,7 @@ describe("resolveWorkflowAgentModelContextDetailed", () => {
     const context = ctxWith("anthropic", "claude-opus-4-8");
     const first = resolveWorkflowAgentModelContextDetailed(
       context,
-      { tier: "scout", diversify: true },
+      { tier: "samurai", diversify: true },
       { allocationCount: 0 },
     );
     expect(first.ok).toBe(true);
@@ -1006,7 +1107,7 @@ describe("resolveWorkflowAgentModelContextDetailed", () => {
     markProviderCooldown("antigravity", null, "rate_limited");
     const next = resolveWorkflowAgentModelContextDetailed(
       context,
-      { tier: "scout", diversify: true },
+      { tier: "samurai", diversify: true },
       { allocationCount: 0 },
       first.selectedPool,
     );
@@ -1017,12 +1118,15 @@ describe("resolveWorkflowAgentModelContextDetailed", () => {
 
   it("direct Agent bare tier skips an exhausted-balance in-tier parent", () => {
     setCredentialsLoaderForTests(scoutCreds);
-    setRoutingUsage("anthropic", { trackingStatus: "untracked", balanceStatus: "exhausted" });
-    const resolved = resolveToolTierOverride(ctxWith("anthropic", "claude-haiku-4-5"), "scout");
+    setRoutingUsage("anthropic", {
+      trackingStatus: "untracked",
+      balanceStatus: "exhausted",
+    });
+    const resolved = resolveToolTierOverride(ctxWith("anthropic", "claude-haiku-4-5"), "samurai");
     expect(resolved.ok).toBe(true);
     if (!resolved.ok) throw new Error(resolved.error);
     expect(resolved.ctx.provider).toBe("antigravity");
-    expect(resolved.ctx.model).toBe("gemini-3-flash-medium");
+    expect(resolved.ctx.model).toBe("gemini-3-flash-low");
   });
 
   it("direct Agent bare tier skips a cooled-down in-tier parent", () => {
@@ -1030,12 +1134,12 @@ describe("resolveWorkflowAgentModelContextDetailed", () => {
     markProviderCooldown("antigravity", Date.now() + 60_000, "rate_limited");
     const resolved = resolveToolTierOverride(
       ctxWith("antigravity", "gemini-3-flash-medium"),
-      "scout",
+      "samurai",
     );
     expect(resolved.ok).toBe(true);
     if (!resolved.ok) throw new Error(resolved.error);
-    expect(resolved.ctx.provider).toBe("anthropic");
-    expect(resolved.ctx.model).toBe("claude-haiku-4-5");
+    expect(resolved.ctx.provider).toBe("glm");
+    expect(resolved.ctx.model).toBe("glm-5-turbo");
   });
 
   it("direct Agent strict rank remains strict when the rank provider is cooled down", () => {
@@ -1045,7 +1149,7 @@ describe("resolveWorkflowAgentModelContextDetailed", () => {
     markProviderCooldown("antigravity", Date.now() + 60_000, "rate_limited");
     const resolved = resolveToolTierOverride(
       ctxWith("antigravity", "gemini-3-flash-medium"),
-      "scout",
+      "samurai",
       1,
     );
     expect(resolved.ok).toBe(false);
@@ -1064,7 +1168,9 @@ describe("resolveWorkflowAgentModelContextDetailed", () => {
       utilizationPct: 100,
     });
 
-    const first = resolveWorkflowAgentModelContextDetailed(context, { tier: "scout" });
+    const first = resolveWorkflowAgentModelContextDetailed(context, {
+      tier: "samurai",
+    });
     expect(first.ok).toBe(true);
     expect(first.ctx.provider).not.toBe("antigravity");
 
@@ -1074,7 +1180,9 @@ describe("resolveWorkflowAgentModelContextDetailed", () => {
       utilizationPct: 10,
     });
 
-    const second = resolveWorkflowAgentModelContextDetailed(context, { tier: "scout" });
+    const second = resolveWorkflowAgentModelContextDetailed(context, {
+      tier: "samurai",
+    });
     expect(second.ok).toBe(true);
     expect(second.ctx.provider).toBe("antigravity");
   });
@@ -1089,7 +1197,7 @@ describe("resolveWorkflowAgentModelContextDetailed", () => {
       utilizationPct: 100,
     });
 
-    const first = resolveToolTierOverride(context, "scout");
+    const first = resolveToolTierOverride(context, "samurai");
     expect(first.ok).toBe(true);
     if (!first.ok) throw new Error(first.error);
     expect(first.ctx.provider).not.toBe("antigravity");
@@ -1100,7 +1208,7 @@ describe("resolveWorkflowAgentModelContextDetailed", () => {
       utilizationPct: 10,
     });
 
-    const second = resolveToolTierOverride(context, "scout");
+    const second = resolveToolTierOverride(context, "samurai");
     expect(second.ok).toBe(true);
     if (!second.ok) throw new Error(second.error);
     expect(second.ctx.provider).toBe("antigravity");
@@ -1114,7 +1222,7 @@ describe("resolveWorkflowAgentModelContextDetailed", () => {
           codex: { accessToken: "test" },
           glm: { zcodeJwtToken: "test" },
           antigravity: { accessToken: "test" },
-          "kimi-code": { apiKey: "test" },
+          kimi: { apiKey: "test" },
           deepseek: { apiKey: "test" },
           minimax: { apiKey: "test" },
         }) as unknown as CredentialsBundle,
@@ -1124,16 +1232,19 @@ describe("resolveWorkflowAgentModelContextDetailed", () => {
     markProviderCooldown("anthropic", Date.now() + 60_000, "rate_limited");
     markProviderCooldown("glm", Date.now() + 60_000, "rate_limited");
     markProviderCooldown("antigravity", Date.now() + 60_000, "rate_limited");
+    markProviderCooldown("kimi", Date.now() + 60_000, "rate_limited");
 
     observeProvider("antigravity");
     observeProvider("codex");
 
     const context = ctxWith("codex", "gpt-5.5");
 
-    const wfRes = resolveWorkflowAgentModelContextDetailed(context, { tier: "general" });
+    const wfRes = resolveWorkflowAgentModelContextDetailed(context, {
+      tier: "emperor",
+    });
     expect(wfRes.ok).toBe(true);
 
-    const agentRes = resolveToolTierOverride(context, "general");
+    const agentRes = resolveToolTierOverride(context, "emperor");
     expect(agentRes.ok).toBe(true);
     if (!agentRes.ok) throw new Error("Agent resolution failed");
 
@@ -1150,7 +1261,7 @@ describe("resolveWorkflowAgentModelContextDetailed", () => {
           codex: { accessToken: "test" },
           glm: { zcodeJwtToken: "test" },
           antigravity: { accessToken: "test" },
-          "kimi-code": { apiKey: "test" },
+          kimi: { apiKey: "test" },
           deepseek: { apiKey: "test" },
           minimax: { apiKey: "test" },
         }) as unknown as CredentialsBundle,
@@ -1160,13 +1271,14 @@ describe("resolveWorkflowAgentModelContextDetailed", () => {
     markProviderCooldown("anthropic", Date.now() + 60_000, "rate_limited");
     markProviderCooldown("glm", Date.now() + 60_000, "rate_limited");
     markProviderCooldown("antigravity", Date.now() + 60_000, "rate_limited");
+    markProviderCooldown("kimi", Date.now() + 60_000, "rate_limited");
 
     observeProvider("antigravity");
     observeProvider("codex");
 
     const context = ctxWith("codex", "gpt-5.5");
     const wfRes = resolveWorkflowAgentModelContextDetailed(context, {
-      tier: "general",
+      tier: "emperor",
       diversify: true,
     });
     expect(wfRes.ok).toBe(true);
@@ -1174,17 +1286,14 @@ describe("resolveWorkflowAgentModelContextDetailed", () => {
 
     for (const resolution of wfRes.selectedPool!) {
       expect(resolution.provider).not.toBe("anthropic");
-      const isWarrior = [
+      const isDaimyo = [
+        "gpt-5.6-luna",
         "gemini-3-flash",
-        "gpt-5.6-terra",
-        "claude-sonnet-5",
+        "gemini-3.1-pro-high",
         "grok-composer-2.5-fast",
-        "glm-5-turbo",
-        "deepseek-v4-flash",
-        "kimi-for-coding",
-        "minimax-m3",
+        "deepseek-v4-pro",
       ].includes(resolution.model);
-      expect(isWarrior).toBe(true);
+      expect(isDaimyo).toBe(true);
     }
   });
 
@@ -1196,13 +1305,16 @@ describe("resolveWorkflowAgentModelContextDetailed", () => {
           codex: { accessToken: "test" },
           glm: { zcodeJwtToken: "test" },
           antigravity: { accessToken: "test" },
-          "kimi-code": { apiKey: "test" },
+          kimi: { apiKey: "test" },
           deepseek: { apiKey: "test" },
           minimax: { apiKey: "test" },
         }) as unknown as CredentialsBundle,
     );
 
-    setRoutingUsage("codex", { trackingStatus: "tracked", utilizationPct: 100 });
+    setRoutingUsage("codex", {
+      trackingStatus: "tracked",
+      utilizationPct: 100,
+    });
     markProviderCooldown("anthropic", Date.now() + 60_000, "rate_limited");
     markProviderCooldown("glm", Date.now() + 60_000, "rate_limited");
     markProviderCooldown("antigravity", Date.now() + 60_000, "rate_limited");
@@ -1213,7 +1325,7 @@ describe("resolveWorkflowAgentModelContextDetailed", () => {
     };
 
     const wfRes = resolveWorkflowAgentModelContextDetailed(context, {
-      tier: "general",
+      tier: "emperor",
       diversify: true,
     });
     expect(wfRes.ok).toBe(false);
@@ -1221,68 +1333,56 @@ describe("resolveWorkflowAgentModelContextDetailed", () => {
     expect(wfRes.error).toContain("Quota fallback is disabled");
   });
 
-  it("both use active route when all tier candidates are unavailable but openai-custom active is usable", () => {
-    for (const p of [
-      "codex",
-      "anthropic",
-      "glm",
-      "antigravity",
-      "deepseek",
-      "kimi-code",
-      "minimax",
-    ]) {
+  it("both use active route when all tier candidates are unavailable but openai active is usable", () => {
+    for (const p of ["codex", "anthropic", "glm", "antigravity", "deepseek", "kimi", "minimax"]) {
       markProviderCooldown(p as ProviderId, Date.now() + 60_000, "rate_limited");
     }
 
     setCredentialsLoaderForTests(
       () =>
         ({
-          "openai-custom": { apiKey: "test-key" },
+          openai: { apiKey: "test-key" },
         }) as unknown as CredentialsBundle,
     );
 
-    const context = ctxWith("openai-custom", "custom-model");
+    const context = ctxWith("openai", "custom-model");
 
-    const agentRes = resolveToolTierOverride(context, "general");
+    const agentRes = resolveToolTierOverride(context, "emperor");
     expect(agentRes.ok).toBe(true);
     if (!agentRes.ok) throw new Error("Agent resolution failed");
-    expect(agentRes.ctx.provider).toBe("openai-custom");
+    expect(agentRes.ctx.provider).toBe("openai");
     expect(agentRes.ctx.model).toBe("custom-model");
     expect(agentRes.routingNotice).toBe(
-      `No usable provider found in tier cascade "general"; using the active route openai-custom/custom-model.`,
+      `No usable provider found in tier cascade "emperor"; using the active route openai/custom-model.`,
     );
 
-    const wfRes = resolveWorkflowAgentModelContextDetailed(context, { tier: "general" });
+    const wfRes = resolveWorkflowAgentModelContextDetailed(context, {
+      tier: "emperor",
+    });
     expect(wfRes.ok).toBe(true);
-    expect(wfRes.ctx.provider).toBe("openai-custom");
+    expect(wfRes.ctx.provider).toBe("openai");
     expect(wfRes.ctx.model).toBe("custom-model");
     expect(wfRes.degradedReasons).toBeDefined();
     expect(wfRes.degradedReasons![0]).toContain(
-      `No usable provider found in tier cascade "general"; using the active route openai-custom/custom-model. Diagnostics:`,
+      `No usable provider found in tier cascade "emperor"; using the active route openai/custom-model. Diagnostics:`,
     );
   });
 
   it("active route unavailable fails when all tier candidates are also unavailable", () => {
-    for (const p of [
-      "codex",
-      "anthropic",
-      "glm",
-      "antigravity",
-      "deepseek",
-      "kimi-code",
-      "minimax",
-    ]) {
+    for (const p of ["codex", "anthropic", "glm", "antigravity", "deepseek", "kimi", "minimax"]) {
       markProviderCooldown(p as ProviderId, Date.now() + 60_000, "rate_limited");
     }
 
     setCredentialsLoaderForTests(() => ({}) as unknown as CredentialsBundle);
 
-    const context = ctxWith("openai-custom", "custom-model");
+    const context = ctxWith("openai", "custom-model");
 
-    const agentRes = resolveToolTierOverride(context, "general");
+    const agentRes = resolveToolTierOverride(context, "emperor");
     expect(agentRes.ok).toBe(false);
 
-    const wfRes = resolveWorkflowAgentModelContextDetailed(context, { tier: "general" });
+    const wfRes = resolveWorkflowAgentModelContextDetailed(context, {
+      tier: "emperor",
+    });
     expect(wfRes.ok).toBe(false);
   });
 });
@@ -1315,15 +1415,16 @@ describe("bridge inherited route quota refusal", () => {
       return { output: "unexpected dispatch", isError: false };
     });
     const bridge = await createWorkflowSubagentBridge({
-      ctx: ctx(true),
+      ctx: ctx("feudalism"),
       parentToolCallId: "parent-tool-call",
       runId: "wf-inherited-quota",
       signal: new AbortController().signal,
     });
 
-    await expect(bridge.agent("test prompt")).rejects.toThrow(
-      'QuotaExhaustedError: provider "codex"',
-    );
+    const rejection = bridge.agent("test prompt");
+    await expect(rejection).rejects.toThrow('QuotaExhaustedError: provider "codex"');
+    await expect(rejection).rejects.toThrow("Use `tier` routing");
+    await expect(rejection).rejects.not.toThrow("provider/model");
     expect(dispatchCount).toBe(0);
   });
 });
@@ -1339,7 +1440,7 @@ describe("bridge error throwing / no fallback on schema/tool errors", () => {
 
     const signal = new AbortController().signal;
     const bridge = await createWorkflowSubagentBridge({
-      ctx: ctx(true),
+      ctx: ctx("feudalism"),
       parentToolCallId: "parent-tool-call",
       runId: "wf-test-run",
       signal,
@@ -1368,7 +1469,7 @@ describe("bridge error throwing / no fallback on schema/tool errors", () => {
 
     const signal = new AbortController().signal;
     const bridge = await createWorkflowSubagentBridge({
-      ctx: ctx(true),
+      ctx: ctx("feudalism"),
       parentToolCallId: "parent-tool-call",
       runId: "wf-apierr-run",
       signal,
@@ -1379,7 +1480,10 @@ describe("bridge error throwing / no fallback on schema/tool errors", () => {
     const first = await bridge.agent("doomed prompt", { label: "p1" });
     expect(first).toBeNull();
 
-    setWorkflowForkRunnerForTests(async () => ({ output: "phase-2 ran", isError: false }));
+    setWorkflowForkRunnerForTests(async () => ({
+      output: "phase-2 ran",
+      isError: false,
+    }));
     const second = await bridge.agent("next phase", { label: "p2" });
     expect(second).toBe("phase-2 ran");
 
@@ -1388,12 +1492,16 @@ describe("bridge error throwing / no fallback on schema/tool errors", () => {
 
   it("still throws on stall abandonment", async () => {
     setWorkflowForkRunnerForTests(async () => {
-      return { output: "agent stalled on all attempts", isError: true, stalled: true };
+      return {
+        output: "agent stalled on all attempts",
+        isError: true,
+        stalled: true,
+      };
     });
 
     const signal = new AbortController().signal;
     const bridge = await createWorkflowSubagentBridge({
-      ctx: ctx(true),
+      ctx: ctx("feudalism"),
       parentToolCallId: "parent-tool-call",
       runId: "wf-stall-run",
       signal,
@@ -1421,7 +1529,7 @@ describe("bridge error throwing / no fallback on schema/tool errors", () => {
     });
 
     const bridge = await createWorkflowSubagentBridge({
-      ctx: ctx(true),
+      ctx: ctx("feudalism"),
       parentToolCallId: "parent-tool-call",
       runId: "wf-abort-run",
       signal: controller.signal,
@@ -1444,7 +1552,7 @@ describe("bridge.parallel", () => {
   it("throws immediately on a non-function slot instead of resolving it to null", async () => {
     const signal = new AbortController().signal;
     const bridge = await createWorkflowSubagentBridge({
-      ctx: ctx(true),
+      ctx: ctx("feudalism"),
       parentToolCallId: "parent-tool-call",
       runId: "wf-parallel-typeerror",
       signal,
@@ -1470,7 +1578,7 @@ describe("bridge.parallel", () => {
   it("names the offending slot and its typeof for primitives too", async () => {
     const signal = new AbortController().signal;
     const bridge = await createWorkflowSubagentBridge({
-      ctx: ctx(true),
+      ctx: ctx("feudalism"),
       parentToolCallId: "parent-tool-call",
       runId: "wf-parallel-typeerror-2",
       signal,
@@ -1484,7 +1592,7 @@ describe("bridge.parallel", () => {
   it("still resolves a thrown thunk to null (unaffected by the type-validation change)", async () => {
     const signal = new AbortController().signal;
     const bridge = await createWorkflowSubagentBridge({
-      ctx: ctx(true),
+      ctx: ctx("feudalism"),
       parentToolCallId: "parent-tool-call",
       runId: "wf-parallel-throw",
       signal,
@@ -1504,7 +1612,7 @@ describe("bridge.pipeline", () => {
   it("throws immediately on a non-function stage, before running any item", async () => {
     const signal = new AbortController().signal;
     const bridge = await createWorkflowSubagentBridge({
-      ctx: ctx(true),
+      ctx: ctx("feudalism"),
       parentToolCallId: "parent-tool-call",
       runId: "wf-pipeline-typeerror",
       signal,
@@ -1528,7 +1636,7 @@ describe("bridge.pipeline", () => {
   it("short-circuits remaining stages for an item whose stage resolves to null; other items unaffected", async () => {
     const signal = new AbortController().signal;
     const bridge = await createWorkflowSubagentBridge({
-      ctx: ctx(true),
+      ctx: ctx("feudalism"),
       parentToolCallId: "parent-tool-call",
       runId: "wf-pipeline-null-shortcircuit",
       signal,

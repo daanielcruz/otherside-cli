@@ -24,12 +24,15 @@ import {
 } from "@/engine/background/tasks/background.ts";
 import * as bgControllers from "@/engine/background/tasks/background-controllers.ts";
 import { publish } from "@/engine/background/tasks/bus.ts";
+import { emitQueue } from "@/engine/queue/emit.ts";
 import { previewArgs } from "@/engine/queue/runtime/args-preview.ts";
 import { appendAgentRecordRaw } from "@/engine/session/append.ts";
 import { nowIso } from "@/engine/session/record/index.ts";
 import { loadSubagentTranscript } from "@/engine/session/transcript/subagent-transcript.ts";
 import { sessionRecordsToMessages } from "@/engine/session/transcript/to-messages.ts";
+import { clearReadStateForScope } from "@/engine/tools/builtins/read/state.ts";
 import { sanitizeMessages } from "@/engine/translator/sanitize.ts";
+import { clearSessionHooks } from "@/kernel/hooks/session-registry.ts";
 import { isAbortError } from "@/kernel/std/stream/abort.ts";
 import type { ForkEvent } from "@/kernel/std/types/events.ts";
 import type { Message } from "@/kernel/std/types/message.ts";
@@ -42,7 +45,11 @@ import {
   readDurableForkSpec,
 } from "./fork/durable-spec.ts";
 import { runForkLoopExternal } from "./fork/loop.ts";
-import { computeAllowedAgentTypes } from "./fork/profile.ts";
+import {
+  computeAllowedAgentTypes,
+  resolveAllowSetForFork,
+  resolveDefaultAllowSetForFork,
+} from "./fork/profile.ts";
 import { skillMessagesForDef } from "./fork/skill-messages.ts";
 import { drainAgentSteers, queueAgentSteer } from "./fork/steering.ts";
 import type { ForkSpec } from "./fork/types.ts";
@@ -139,10 +146,20 @@ export function registerRunningFork(
   return () => {
     const current = profiles.get(forkId);
     if (current !== profile) return;
-    releaseInbox();
-    current.state = "finished";
-    const task = getBackgroundTask(forkId);
-    if (task !== undefined) current.task = task;
+    try {
+      releaseInbox();
+    } catch {}
+    if (spec.agentHooks) {
+      try {
+        clearSessionHooks(forkId);
+      } catch {}
+    }
+    try {
+      clearReadStateForScope(forkId);
+    } catch {}
+    try {
+      profiles.delete(forkId);
+    } catch {}
   };
 }
 
@@ -164,12 +181,20 @@ export async function resolveForkProfileForResume(
   requestCtx: RequestContext | undefined,
 ): Promise<ForkProfileResolution> {
   const resolved = resolveProfile(to);
-  if (resolved.ok || requestCtx === undefined) return resolved;
-  const ref = {
-    cwd: requestCtx.originalCwd ?? requestCtx.cwd,
-    sessionId: requestCtx.sessionId,
-    forkId: to,
-  };
+  if (resolved.ok) return resolved;
+  const forkId = idByName.get(to) ?? to;
+  const task = getBackgroundTask(forkId);
+  if (task?.stoppedByUser === true) {
+    return {
+      ok: false,
+      code: "stopped_by_user",
+      reason: `Agent ${forkId} was halted by the user, so it will not resume. Consider its work cancelled, and start a new agent only when the user explicitly requests one.`,
+    };
+  }
+  const cwd = requestCtx?.originalCwd ?? requestCtx?.cwd ?? task?.cwd;
+  const sessionId = requestCtx?.sessionId ?? task?.sessionId;
+  if (cwd === undefined || sessionId === undefined) return resolved;
+  const ref = { cwd, sessionId, forkId };
   if (isDurableForkStopped(ref)) {
     return {
       ok: false,
@@ -178,9 +203,22 @@ export async function resolveForkProfileForResume(
     };
   }
   const durable = await readDurableForkSpec(ref);
-  if (durable === null || durable.forkId !== to) return resolved;
+  if (durable === null || durable.forkId !== forkId) return resolved;
+  const resumeCtx: RequestContext =
+    requestCtx ??
+    ({
+      provider: durable.provider as RequestContext["provider"],
+      model: durable.model,
+      effort: durable.effort,
+      permissionMode: durable.permissionMode,
+      cwd: durable.cwd,
+      sessionId: durable.sessionId,
+      ...(durable.originalCwd !== undefined ? { originalCwd: durable.originalCwd } : {}),
+      ...(durable.worktreeRoot !== undefined ? { worktreeRoot: durable.worktreeRoot } : {}),
+      bgTaskId: durable.forkId,
+    } satisfies RequestContext);
 
-  const profile = profileFromDurableSpec(durable, requestCtx);
+  const profile = profileFromDurableSpec(durable, resumeCtx);
   if (profile === null) {
     return {
       ok: false,
@@ -197,12 +235,18 @@ function profileFromDurableSpec(
   durable: DurableForkSpecV1,
   requestCtx: RequestContext,
 ): ForkResumeProfile | null {
-  const allowSet = durable.allowSet === null ? null : new Set(durable.allowSet);
   const def = durable.kind === "subagent" ? getAgentDef(durable.agentId) : undefined;
-  if (durable.kind === "subagent" && def === undefined) return null;
+  const allowSet =
+    durable.allowSet !== null
+      ? new Set(durable.allowSet)
+      : durable.kind === "fork"
+        ? null
+        : def !== undefined
+          ? resolveAllowSetForFork(def, "subagent", requestCtx)
+          : resolveDefaultAllowSetForFork("subagent", requestCtx);
   let definitionFields: Partial<ForkSpec>;
   if (def === undefined) {
-    definitionFields = { inheritParentTurn: true };
+    definitionFields = { inheritParentTurn: durable.kind === "fork" };
   } else {
     definitionFields = {
       extraDeclarations: mcpDeclarationsForDef(def, allowSet),
@@ -218,8 +262,8 @@ function profileFromDurableSpec(
   // A durable sidecar records the spawn-time mode even when it was inherited.
   // Only an agent definition's explicit mode is a child override; inherited
   // modes must be refreshed from the caller's live broker on every rebuild.
-  // Sidecars from before the provenance field deliberately take this safer,
-  // upstream-compatible inherited path.
+  // Sidecars from before the provenance field deliberately take this safer
+  // inherited path.
   const permissionMode =
     durable.permissionModeIsDefinitionPinned === true
       ? durable.permissionMode
@@ -239,7 +283,7 @@ function profileFromDurableSpec(
   const spec: ForkSpec = {
     ctx,
     name: durable.name,
-    body: def?.body ?? "",
+    body: def?.body ?? durable.body ?? "",
     allowSet,
     prompt: durable.prompt,
     agentId: durable.agentId,
@@ -256,6 +300,9 @@ function profileFromDurableSpec(
     ...(durable.isolation !== undefined ? { isolation: durable.isolation } : {}),
     ...(durable.deferredAllow !== undefined
       ? { deferredAllow: new Set(durable.deferredAllow) }
+      : {}),
+    ...(durable.initialMessages !== undefined
+      ? { initialMessages: snapshotMessages(durable.initialMessages) }
       : {}),
     ...definitionFields,
   };
@@ -281,7 +328,6 @@ function profileFromDurableSpec(
     startedAt: now,
     endedAt: now,
     isBackgrounded: true,
-    isSidechain: true,
     forkId: durable.forkId,
     actions: [],
     assistantText: "",
@@ -297,6 +343,9 @@ function profileFromDurableSpec(
     ctx,
     state: "finished",
     task,
+    ...(durable.initialMessages !== undefined
+      ? { baseMessages: snapshotMessages(durable.initialMessages) ?? [] }
+      : {}),
   };
 }
 
@@ -505,7 +554,13 @@ export async function resumeForkWithMessage(
   }
   const resumedRun = taskRunRef(reopened);
   markBackgrounded(reopened.id);
-  setTaskOwnerForRun(resumedRun, undefined);
+  // A resumed child keeps notifying its parent while that owner is still a
+  // live registered scope; ownership resets to the main session only when the
+  // prior owner is gone (its undelivered inventory was already redirected).
+  const priorOwner = reopened.ownerId;
+  if (priorOwner === undefined || !emitQueue.isOwnerRegistered(priorOwner)) {
+    setTaskOwnerForRun(resumedRun, undefined);
+  }
   profile.task = getBackgroundTask(reopened.id) ?? reopened;
 
   const undrainedSteers = drainUndrainedSteers(profile.forkId);
@@ -604,6 +659,12 @@ export async function resumeForkWithMessage(
     } finally {
       if (resumeWorktreeLease) await resumeWorktreeLease.release();
       releaseController();
+      // A run that started registers its own profile (whose disposer deletes
+      // it); if the map still holds the pre-run profile object, the run never
+      // reached registration and the entry would linger with its messages.
+      if (profiles.get(profile.forkId) === profile && profile.state !== "running") {
+        profiles.delete(profile.forkId);
+      }
     }
   })();
 

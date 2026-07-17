@@ -76,4 +76,31 @@ describe("createPromptHistoryNav", () => {
       expect(historyRef.current).toEqual(["a"]);
     });
   });
+
+  describe("bash-mode filtering", () => {
+    it("narrows traversal to `!`-prefixed entries when the buffer is in bash mode", () => {
+      const { nav } = makeNav(["plain one", "!ls", "plain two", "!pwd"]);
+      expect(nav.restorePrev("!")).toEqual({ value: "!pwd", offset: 1, total: 2 });
+      expect(nav.restorePrev("!pwd")).toEqual({ value: "!ls", offset: 2, total: 2 });
+      expect(nav.restorePrev("!ls")).toEqual({ value: "!ls", offset: 2, total: 2 });
+    });
+
+    it("starts from the full history in prompt mode", () => {
+      const { nav } = makeNav(["plain", "!ls"]);
+      expect(nav.restorePrev("")).toEqual({ value: "!ls", offset: 1, total: 2 });
+    });
+
+    it("restarts the run over the bash view after recalling a bash entry", () => {
+      const { nav } = makeNav(["plain", "!ls"]);
+      // Recalling "!ls" from prompt mode puts the prompt in bash mode; the
+      // next Up traverses the bash view only (exit the mode to reach "plain").
+      expect(nav.restorePrev("")).toEqual({ value: "!ls", offset: 1, total: 2 });
+      expect(nav.restorePrev("!ls")).toEqual({ value: "!ls", offset: 1, total: 1 });
+    });
+
+    it("returns null in bash mode when no bash entries exist", () => {
+      const { nav } = makeNav(["plain one", "plain two"]);
+      expect(nav.restorePrev("!")).toBeNull();
+    });
+  });
 });

@@ -2,7 +2,10 @@ import {
   type ComponentProps,
   type Dispatch,
   type SetStateAction,
+  useCallback,
+  useEffect,
   useMemo,
+  useState,
   useSyncExternalStore,
 } from "react";
 import {
@@ -10,18 +13,21 @@ import {
   subscribeAgentSteers,
 } from "@/engine/background/subagents/fork/steering.ts";
 import type { BackgroundTask } from "@/engine/background/tasks/background.ts";
+import { aggregateSubtreeProgress } from "@/engine/background/tasks/progress.ts";
 import { getProviderConfig } from "@/engine/contract/registry.ts";
 import { defaultEffortForModel, effortLevelsForModel, findModel } from "@/engine/model/catalog.ts";
 import { autoRoutesNonVision, canSendNatively } from "@/engine/model/facts/capabilities-runtime.ts";
 import type { ContextUsageSnapshot } from "@/engine/session/usage/snapshot.ts";
 import type { ErrorActionId } from "@/engine/transport/error-meta.ts";
+import { resolveVoiceProvider } from "@/engine/voice/index.ts";
 import { Box } from "@/ink";
-import type { UserConfig } from "@/kernel/config/config.ts";
+import { effectiveOrchestrationMode, type UserConfig } from "@/kernel/config/config.ts";
 import type { ProviderId } from "@/kernel/config/provider-ids.ts";
+import { createAutoClearDispatch } from "@/kernel/std/state/auto-clear-dispatch.ts";
 import type { PasteStore } from "@/kernel/std/types/paste.ts";
-import type { RemoteSyncStatus } from "@/kernel/std/types/remote-sync-status.ts";
 import type { BrokerState } from "@/store/app-store/broker.ts";
 import { dispatch, overlayStack, type QueuedMessage } from "@/store/index.ts";
+import { usePromptSelector } from "@/store/prompt/index.ts";
 import { runningRef } from "@/store/turn-run/index.ts";
 import type { createPromptHistoryNav } from "@/ui/app/drain/prompt-history-nav.ts";
 import { bgPillLabelFor, effortBadge, thinkingSuffixFor } from "@/ui/app/status-text.ts";
@@ -34,7 +40,8 @@ import { RunningAgentsPanel } from "@/ui/chrome/running-agents-panel.tsx";
 import { StatusBar } from "@/ui/chrome/status/bar.tsx";
 import { Statusline } from "@/ui/chrome/status/line.tsx";
 import { TerminalTitle } from "@/ui/chrome/terminal-title.tsx";
-import { Prompt } from "@/ui/input/prompt.tsx";
+import { useQueuedEditHint } from "@/ui/hooks/use-queued-edit-hint.ts";
+import { Prompt, type VoiceChromeState } from "@/ui/input/prompt.tsx";
 import { KeybindingSetup } from "@/ui/keybindings/keybinding-setup.tsx";
 import type { Overlay } from "@/ui/panels/registry.tsx";
 import { BtwBlock } from "@/ui/transcript/blocks/btw.tsx";
@@ -47,7 +54,6 @@ import type { TranscriptEntry } from "@/ui/transcript/types";
 
 type LowerPanelProps = ComponentProps<typeof LowerPanelSlot>;
 type StatusBarProps = ComponentProps<typeof StatusBar>;
-type StatuslineProps = ComponentProps<typeof Statusline>;
 type RunningAgentsPanelProps = ComponentProps<typeof RunningAgentsPanel>;
 type TranscriptViewProps = ComponentProps<typeof TranscriptView>;
 type ProgressBlockProps = ComponentProps<typeof ProgressBlock>;
@@ -104,12 +110,7 @@ export interface AppViewProps {
   mainOutputTokens: number;
   mainLastContext: ContextUsageSnapshot;
   activeContextTotal: number;
-  tokensWarning: StatuslineProps["tokensWarning"];
-  autoCompactWarningPct: StatuslineProps["autoCompactRemainingPct"];
-  clipboardImageActive: boolean;
-  activeGoalLabel: string | undefined;
   exitPendingKey: string | null;
-  remoteSyncStatus: RemoteSyncStatus;
   panelStatusHint: StatusBarProps["panelHint"];
   panelAgents: RunningAgentsPanelProps["agents"];
   workflowTasks: RunningAgentsPanelProps["workflows"];
@@ -212,18 +213,16 @@ export function AppView(props: AppViewProps): React.JSX.Element {
     mainOutputTokens,
     mainLastContext,
     activeContextTotal,
-    tokensWarning,
-    autoCompactWarningPct,
-    clipboardImageActive,
-    activeGoalLabel,
     exitPendingKey,
-    remoteSyncStatus,
     panelStatusHint,
     panelAgents,
     workflowTasks,
     panelSelectionValue,
     viewingAgentId,
   } = props;
+
+  // Voice chrome still notifies the prompt; display lives in RightStatusRegion.
+  const onVoiceStateChange = useCallback((_next: VoiceChromeState) => {}, []);
 
   const showIntro = chrome.showWelcome;
   const viewingTask =
@@ -266,6 +265,7 @@ export function AppView(props: AppViewProps): React.JSX.Element {
     outputTokens: mainOutputTokens,
     contextTotal: activeContextTotal,
   });
+  const queuedEditHint = useQueuedEditHint(visibleBusy && visibleQueuedMessages.length > 0);
   // The view's divider pill always identifies WHAT is running — agent type,
   // model and effort ("Verifier - GPT-5.6 Sol Max"). The spawn description
   // already lives in the agents panel row and must not displace the identity.
@@ -280,6 +280,25 @@ export function AppView(props: AppViewProps): React.JSX.Element {
         .filter(Boolean)
         .join(" ")
     : undefined;
+  // While viewing an agent, an empty prompt shows who the message goes to.
+  const agentMessagePlaceholder = viewingTask
+    ? agentPlaceholderText(viewingTask.agentName)
+    : undefined;
+  const [editorHint, setEditorHint] = useState<string | null>(null);
+  const editorHintDispatch = useMemo(() => createAutoClearDispatch({ holdMs: 5000 }), []);
+  useEffect(() => {
+    return () => editorHintDispatch.clear();
+  }, [editorHintDispatch]);
+  const showEditorHint = (text: string): void => {
+    setEditorHint(text);
+    editorHintDispatch.arm({ key: text, onTimeout: () => setEditorHint(null) });
+  };
+  const promptSearch = usePromptSelector((s) => s.search);
+  // Exit confirmation outranks editor hints; the agent view shows neither.
+  const exitConfirmHint =
+    exitPendingKey !== null ? `Press ${exitPendingKey} again to exit` : undefined;
+  const statusHint =
+    viewingTask === undefined ? (exitConfirmHint ?? editorHint ?? undefined) : undefined;
   const openRewindFromEmptyPrompt = (): void => {
     if (overlay !== null || bgTasksOpen || runningRef.current) return;
     setConfigInitialTab(undefined);
@@ -292,18 +311,22 @@ export function AppView(props: AppViewProps): React.JSX.Element {
   // each update above the fold costs a full terminal reset.
   // A fullscreen overlay owns every row; the per-second progress repaints
   // underneath it tear the overlay frame apart — suppress while it is open.
+  // Agent view keeps the spinner for the whole running lifetime — tool_use-only
+  // turns still need a live token/elapsed signal (llmActive alone goes false
+  // while tools run). Tokens include the viewed agent's descendant subtree.
+  const viewingAgentRunning = viewingTask?.status === "running";
+  const viewingAgentTokenCount =
+    viewingTask === undefined ? 0 : aggregateSubtreeProgress(viewingTask.id, bgTasks).tokenCount;
   const progressNode = panelChrome.shell.overlayActive ? null : viewingTask !== undefined ? (
-    // The agent view runs the same spinner surface as the main loop, fed by
-    // the viewed task: its own elapsed clock and its token count.
-    viewingAgentLlmActive ? (
+    viewingAgentRunning ? (
       <OffscreenFreeze>
         <ThinkingBlock
           key={viewingTask.id}
           active={true}
           startedAt={viewingTask.startedAt}
           tipIndex={progressTipIndex}
-          verb="Running"
-          tokenCount={viewingTask.inputTokens + viewingTask.outputTokens}
+          verb={viewingAgentLlmActive ? "Running" : "Working"}
+          tokenCount={viewingAgentTokenCount}
           includeGlobalTokenCount={false}
           spinnerMode="responding"
           showTip={runtimeConfig.showTips ?? true}
@@ -368,7 +391,7 @@ export function AppView(props: AppViewProps): React.JSX.Element {
                 onSubmit={onSubmit}
                 value={promptText}
                 onChange={setPromptText}
-                queueHint={visibleBusy && visibleQueuedMessages.length > 0}
+                queueHint={queuedEditHint}
                 fastModeActive={
                   getProviderConfig(visibleState.provider)?.featureFlags?.fastMode === true &&
                   visibleState.fastMode
@@ -393,8 +416,17 @@ export function AppView(props: AppViewProps): React.JSX.Element {
                   Boolean(runtimeConfig.imageParserProvider)
                 }
                 onUnsupportedImagePaste={() => showUnsupportedImageInput(visibleState.provider)}
+                voiceProvider={resolveVoiceProvider(
+                  runtimeConfig.voiceProvider,
+                  visibleState.provider,
+                )}
+                language={runtimeConfig.language}
+                onVoiceStateChange={onVoiceStateChange}
                 emptyDoubleEscapeEnabled={viewingTask === undefined}
                 onEmptyDoubleEscape={openRewindFromEmptyPrompt}
+                placeholder={agentMessagePlaceholder}
+                onEditorHint={showEditorHint}
+                historyEntries={promptHistoryNav.entries}
               />
             </Box>
           ) : null
@@ -426,6 +458,7 @@ export function AppView(props: AppViewProps): React.JSX.Element {
                 sessionId={sessionId}
                 version={version}
                 config={runtimeConfig.statusline}
+                orchestrationMode={effectiveOrchestrationMode(runtimeConfig)}
                 cwd={viewingTask?.cwd ?? sessionCwd}
                 refreshKey={`${viewingTask?.id ?? "main"}:${sessionCwd}:${transcript.length}:${liveEntries.length}:${visibleQueuedMessages.length}:${visibleBusy}:${visibleInputTokens}:${visibleOutputTokens}`}
                 inputTokens={visibleInputTokens}
@@ -437,27 +470,14 @@ export function AppView(props: AppViewProps): React.JSX.Element {
                   viewingTask === undefined ? mainLastContext.cacheReadInputTokens : 0
                 }
                 totalTokens={visibleContextTotal}
-                tokensWarning={viewingTask === undefined ? tokensWarning : undefined}
-                autoCompactRemainingPct={
-                  viewingTask === undefined ? autoCompactWarningPct : undefined
-                }
-                goalLabel={
-                  viewingTask === undefined && !clipboardImageActive ? activeGoalLabel : undefined
-                }
               />
               <StatusBar
                 state={visibleState}
                 busy={visibleBusy}
-                exitHint={
-                  viewingTask === undefined && exitPendingKey !== null
-                    ? `Press ${exitPendingKey} again to exit`
-                    : undefined
-                }
+                historySearch={promptSearch ?? undefined}
+                exitHint={statusHint}
                 bgTaskLabel={bgPillLabelFor(bgTasks.filter((t) => t.kind === "shell"))}
                 bgTaskFocused={bgPillFocused}
-                remoteSyncStatus={remoteSyncStatus}
-                clipboardHint={clipboardImageActive}
-                goalLabel={clipboardImageActive ? activeGoalLabel : undefined}
                 panelHint={panelStatusHint}
               />
               <RunningAgentsPanel
@@ -482,4 +502,14 @@ function effortPillLabel(effort: string): string {
   if (effort === "xhigh") return "xHigh";
   if (effort.length === 0) return effort;
   return effort[0]!.toUpperCase() + effort.slice(1);
+}
+
+const AGENT_PLACEHOLDER_NAME_MAX = 20;
+
+function agentPlaceholderText(agentName: string): string {
+  const displayName =
+    agentName.length > AGENT_PLACEHOLDER_NAME_MAX
+      ? `${agentName.slice(0, AGENT_PLACEHOLDER_NAME_MAX - 3)}...`
+      : agentName;
+  return `Message @${displayName}…`;
 }

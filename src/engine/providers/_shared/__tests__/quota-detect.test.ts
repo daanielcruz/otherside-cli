@@ -197,4 +197,18 @@ describe("detectQuotaExhaustion — cross-provider", () => {
       expect(decision.reason).toBe("quota_exhausted");
     }
   });
+
+  it.each([
+    ["glm", 429, '{"error":{"code":"1308","message":"Request rejected"}}'],
+    ["minimax", 429, '{"base_resp":{"status_code":1008,"status_msg":"insufficient balance"}}'],
+    [
+      "kimi",
+      429,
+      '{"error":{"type":"exceeded_current_quota_error","message":"Current quota exceeded"}}',
+    ],
+    ["deepseek", 402, '{"error":{"type":"unknown_error","message":"Insufficient Balance"}}'],
+    ["xai", 429, "You hit your weekly limit. Upgrade to a higher tier for more usage"],
+  ] as const)("stamps %s terminal quota before transport classification", (provider, status, body) => {
+    expect(detectQuotaExhaustion({ provider, status, body }).quotaExhausted).toBe(true);
+  });
 });

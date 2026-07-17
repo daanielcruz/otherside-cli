@@ -41,6 +41,7 @@ describe("Codex Images API", () => {
     const result = await generateImage({ prompt: "paint a moonlit lake" });
 
     expect(result.base64).toBe("generated");
+    expect(result.mediaType).toBe("image/png");
     expect(capturedUrl).toBe("https://chatgpt.com/backend-api/codex/images/generations");
     expect(capturedInit?.method).toBe("POST");
     expect((capturedInit?.headers as Record<string, string>).Accept).toBe("application/json");
@@ -72,6 +73,7 @@ describe("Codex Images API", () => {
     });
 
     expect(result.base64).toBe("edited");
+    expect(result.mediaType).toBe("image/png");
     expect(capturedUrl).toBe("https://chatgpt.com/backend-api/codex/images/edits");
     expect(capturedBody).toEqual({
       prompt: "make the sky warmer",
@@ -115,7 +117,7 @@ describe("Codex Images API", () => {
     ).rejects.toThrow("image generation aborted");
   });
 
-  it("keeps GenerateImage and exposes upstream-compatible references", () => {
+  it("keeps GenerateImage and exposes standard input properties", () => {
     expect(GenerateImageSchema.name).toBe("GenerateImage");
     expect(GenerateImageSchema.inputSchema.properties.referenced_image_paths.maxItems).toBe(5);
     expect(GenerateImageSchema.inputSchema.properties.num_last_images_to_include.minimum).toBe(1);

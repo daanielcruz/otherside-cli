@@ -17,17 +17,24 @@ export function buildPanelTree(
 } {
   const liveIds = new Set(tasks.map((t) => t.id));
 
-  // Helper to get visible parent ID
-  const getVisibleParentId = (t: BackgroundTask): string | undefined => {
-    return t.parentTaskId && liveIds.has(t.parentTaskId) ? t.parentTaskId : undefined;
+  // A task with no historical parent is a root. A task whose parent was
+  // evicted is only a root when this exact run was explicitly reparented.
+  const getVisibleParentId = (t: BackgroundTask): string | undefined | null => {
+    if (t.parentTaskId === undefined) return undefined;
+    if (liveIds.has(t.parentTaskId)) return t.parentTaskId;
+    return t.reparentedGeneration !== undefined && t.reparentedGeneration === t.runGeneration
+      ? undefined
+      : null;
   };
 
-  // Build parent-children map
+  // Build parent-children map. Hidden orphan branches are intentionally not
+  // inserted: traversing only from roots hides the orphan and all descendants.
   const childrenMap = new Map<string, BackgroundTask[]>();
   const roots: BackgroundTask[] = [];
 
   for (const t of tasks) {
     const parentId = getVisibleParentId(t);
+    if (parentId === null) continue;
     if (parentId === undefined) {
       roots.push(t);
     } else {
@@ -53,7 +60,7 @@ export function buildPanelTree(
     const task = tasks.find((t) => t.id === taskId);
     if (!task) return 1;
     const parentId = getVisibleParentId(task);
-    if (parentId === undefined) {
+    if (parentId === undefined || parentId === null) {
       depths.set(taskId, 1);
       return 1;
     }
@@ -78,14 +85,16 @@ export function buildPanelTree(
       visibleIds.add(currId);
       ancestorChainIds.add(currId);
       const currTask = tasks.find((t) => t.id === currId);
-      currId = currTask ? getVisibleParentId(currTask) : undefined;
+      const parentId = currTask ? getVisibleParentId(currTask) : undefined;
+      currId = parentId === null ? undefined : parentId;
     }
 
     // 2. Siblings of the focused task (all roots when focused is a root)
     const focusedTask = tasks.find((t) => t.id === focusedTaskId);
     if (focusedTask) {
       const parentId = getVisibleParentId(focusedTask);
-      const siblings = parentId === undefined ? roots : childrenMap.get(parentId) || [];
+      const siblings =
+        parentId === undefined || parentId === null ? roots : childrenMap.get(parentId) || [];
       for (const sib of siblings) {
         visibleIds.add(sib.id);
       }
@@ -134,6 +143,7 @@ export function buildPanelTree(
 
   const traverse = (task: BackgroundTask, parentChildren: BackgroundTask[], index: number) => {
     const parentId = getVisibleParentId(task);
+    if (parentId === null) return;
     const depth = depths.get(task.id) ?? 1;
     const hasLaterSibling = index < parentChildren.length - 1;
     const transitiveHiddenCount = transitiveHiddenCounts.get(task.id) ?? 0;

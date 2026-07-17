@@ -230,7 +230,8 @@ function scopedStateFromRecord(record: SessionRecord): {
     record.type === "injection_queued" ||
     record.type === "attachment" ||
     record.type === "turn_completion" ||
-    record.type === "content_replacement"
+    record.type === "content_replacement" ||
+    record.type === "worktree_state"
   ) {
     return { provider: null, model: null, effort: null, fastMode: null, ultracode: null };
   }

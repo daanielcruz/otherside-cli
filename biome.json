@@ -86,7 +86,7 @@
       }
     },
     {
-      "includes": ["src/ink/**", "src/terminal-runtime/**"],
+      "includes": ["src/terminal-runtime/**"],
       "linter": {
         "rules": {
           "suspicious": {

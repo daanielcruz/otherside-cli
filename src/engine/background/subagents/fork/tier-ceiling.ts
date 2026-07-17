@@ -5,12 +5,13 @@ import type { RequestContext } from "@/kernel/std/types/request.ts";
 import { agentSpawnDepth } from "./spawn-depth.ts";
 
 const TIER_RANK: Record<TierName, number> = {
-  scout: 0,
-  warrior: 1,
-  general: 2,
+  samurai: 0,
+  daimyo: 1,
+  shogun: 2,
+  emperor: 3,
 };
 
-const TIER_LOOKUP_ORDER: readonly TierName[] = ["general", "warrior", "scout"];
+const TIER_LOOKUP_ORDER: readonly TierName[] = ["emperor", "shogun", "daimyo", "samurai"];
 
 export interface TierClamp {
   tier: TierName;
@@ -22,6 +23,7 @@ export function tierForModel(provider: ProviderId, model: string): TierName | un
 }
 
 export function nestedTierCeiling(ctx: RequestContext): TierName | undefined {
+  if (ctx.chainOfCommandEnabled === false) return undefined;
   if (agentSpawnDepth(ctx) === 0) return undefined;
   return tierForModel(ctx.provider, ctx.model);
 }

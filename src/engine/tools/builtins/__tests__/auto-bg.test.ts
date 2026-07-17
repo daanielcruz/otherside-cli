@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
-import { subscribeCompletion } from "@/engine/background/tasks/background.ts";
+import {
+  get as getBackgroundTask,
+  subscribeCompletion,
+} from "@/engine/background/tasks/background.ts";
 import { runForegroundWithAutoBg } from "../auto-bg.ts";
 import { killBackground, listBackground } from "../background.ts";
 import { isAutoBackgroundableCommand } from "../safety.ts";
@@ -11,7 +14,7 @@ afterEach(() => {
 });
 
 describe("isAutoBackgroundableCommand", () => {
-  it("excludes every upstream-recognized git invocation", () => {
+  it("excludes git invocations", () => {
     expect(isAutoBackgroundableCommand("git")).toBe(false);
     expect(isAutoBackgroundableCommand("git push origin main")).toBe(false);
     expect(isAutoBackgroundableCommand("/usr/local/bin/git push")).toBe(false);
@@ -60,6 +63,7 @@ describe("runForegroundWithAutoBg", () => {
         displayCommand: "promoted post-exit drain test",
         parentToolCallId: "call-promoted-post-exit-drain",
         timeoutMs: 10_000,
+        cwd: process.cwd(),
         userBgSignaled: Promise.resolve(),
       });
       expect(outcome.promoted).toBe(true);
@@ -94,11 +98,29 @@ describe("runForegroundWithAutoBg", () => {
       displayCommand: "long-running test command",
       parentToolCallId: "call_test",
       timeoutMs: 10_000,
+      cwd: process.cwd(),
       signal: controller.signal,
       userBgSignaled: Promise.resolve(),
     });
 
     expect(outcome.promoted).toBe(true);
     expect(removedAbortListener).toBe(true);
+  });
+
+  it("stamps sessionId on the promoted background shell task", async () => {
+    const sessionId = "session-promoted-shell";
+    const outcome = await runForegroundWithAutoBg({
+      command: 'bun -e "setTimeout(() => {}, 5000)"',
+      displayCommand: "promoted session stamp test",
+      parentToolCallId: "call-promoted-session-stamp",
+      timeoutMs: 10_000,
+      cwd: process.cwd(),
+      sessionId,
+      userBgSignaled: Promise.resolve(),
+    });
+
+    expect(outcome.promoted).toBe(true);
+    if (!outcome.promoted) return;
+    expect(getBackgroundTask(outcome.shellId)?.sessionId).toBe(sessionId);
   });
 });

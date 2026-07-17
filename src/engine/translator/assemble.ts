@@ -6,12 +6,6 @@ import {
   modelSupportsMidConversationSystem,
 } from "@/engine/model/facts/model-family.ts";
 import { availableModelListing } from "@/engine/model/tier/available-models.ts";
-import {
-  GENERAL_MODELS,
-  SCOUT_MODELS,
-  type TierModel,
-  WARRIOR_MODELS,
-} from "@/engine/model/tier/tiers.ts";
 import { isLeanPromptForModel } from "@/engine/providers/_shared/prompt-tier.ts";
 import { list as listSkills } from "@/engine/skills/registry.ts";
 import { agentRowsFromRegistry } from "@/engine/tools/dynamic/agent-roster.ts";
@@ -24,8 +18,7 @@ import { buildHarness } from "@/harness/builder.ts";
 import type { AgentRowData } from "@/harness/composer/injections.ts";
 import { nestedMemoryFiles, renderMemorySection } from "@/harness/core/memory-section.ts";
 import type { SkillListingEntry } from "@/harness/reminders/reminders.ts";
-import { isMultiproviderOrchestrationEnabled } from "@/kernel/config/config.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
+import { effectiveOrchestrationMode } from "@/kernel/config/config.ts";
 import { getMcpInstructionBlocks, isMcpToolName } from "@/kernel/mcp/index.ts";
 import { hasWholeToolDenyRule } from "@/kernel/permissions/index.ts";
 import { loadRulesSync } from "@/kernel/permissions/persist.ts";
@@ -42,27 +35,6 @@ function modelFamilyFor(model: string): "fable" | "sonnet" | "other" {
   if (isFableModel(base)) return "fable";
   if (isSonnetModel(base)) return "sonnet";
   return "other";
-}
-
-const MODEL_TIERS: ReadonlyArray<{ label: string; models: readonly TierModel[] }> = [
-  { label: "General", models: GENERAL_MODELS },
-  { label: "Warrior", models: WARRIOR_MODELS },
-  { label: "Scout", models: SCOUT_MODELS },
-];
-
-function tierNames(provider: ProviderId, models: readonly TierModel[]): string {
-  return models
-    .filter((m) => m.provider === provider)
-    .sort((a, b) => a.pos - b.pos)
-    .map((m) => findModel(m.name, provider)?.displayName ?? m.name)
-    .join(", ");
-}
-
-function modelTierLines(provider: ProviderId): string[] {
-  return MODEL_TIERS.map(({ label, models }) => {
-    const names = tierNames(provider, models);
-    return names ? `${label}: ${names}` : null;
-  }).filter((t): t is string => t !== null);
 }
 
 function activeMcpToolNames(permissionRules: readonly PermissionRule[]): string[] {
@@ -114,13 +86,12 @@ export function assembleProviderTurn(args: AssembleArgs): ProviderTurn {
   // Read the project memory files once; both the combined user-context section and
   // the project-only section derive from it (avoids a second per-turn disk read).
   const projectMemoryFiles = collectMemoryFiles(ctx.cwd);
-  const multiproviderEnabled = isMultiproviderOrchestrationEnabled(config);
+  const orchestrationMode = ctx.orchestrationMode ?? effectiveOrchestrationMode(config);
   const harness = buildHarness({
-    ctx,
+    ctx: { ...ctx, orchestrationMode },
     promptAdapter: provider.promptAdapter(),
     facts: {
       config,
-      multiproviderEnabled,
       deferredToolExclusions: new Set(overrides.excludeFromCatalog),
       emitDeferredReminder: overrides.emitDeferredReminder,
       emitAgentListing: agentInPool,
@@ -128,8 +99,10 @@ export function assembleProviderTurn(args: AssembleArgs): ProviderTurn {
       supportsMidSystem: supportsMidConversationSystem(ctx),
       lean: isLeanPromptForModel(provider.id, ctx.model),
       modelFamily: modelFamilyFor(ctx.model),
-      modelTierLines: modelTierLines(ctx.provider),
-      availableModels: multiproviderEnabled ? availableModelListing(ctx.provider) : [],
+      availableModels:
+        orchestrationMode === "feudalism"
+          ? []
+          : availableModelListing(orchestrationMode === "disabled" ? ctx.provider : undefined),
       knowledgeCutoff: knowledgeCutoffFor(ctx.model),
       agentRows: agentRows(),
       deferredToolNames: deferredToolNames(),
@@ -147,7 +120,10 @@ export function assembleProviderTurn(args: AssembleArgs): ProviderTurn {
 
   return {
     harness,
-    messages: provider.composeMessages(harness, sanitizeMessages(messages)),
+    messages: provider.composeMessages(
+      harness,
+      sanitizeMessages(messages, { preserveToolReferences: provider.id === "anthropic" }),
+    ),
     tools,
   };
 }

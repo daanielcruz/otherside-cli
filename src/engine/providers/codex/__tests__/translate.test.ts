@@ -545,6 +545,43 @@ describe("translateRequestCodex tool_result images", () => {
       image_url: "data:image/png;base64,aGVsbG8=",
     });
   });
+
+  it("encodes tool_result PDF blocks as input_file content items", () => {
+    const messages: Message[] = [
+      {
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: "call_pdf", name: "Read", input: { file_path: "/tmp/x.pdf" } },
+        ],
+      },
+      {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "call_pdf",
+            content: [
+              { type: "text", text: "Read PDF" },
+              {
+                type: "pdf",
+                source: { type: "base64", media_type: "application/pdf", data: "cGRm" },
+                filename: "x.pdf",
+                pageCount: 1,
+                bytes: 3,
+              },
+            ],
+          },
+        ],
+      },
+    ];
+    const body = translateRequestCodex(codexCtx({}), messages, []) as Record<string, unknown>;
+    const input = body.input as Array<Record<string, unknown>>;
+    const output = input.find((item) => item.type === "function_call_output");
+    expect(output?.output).toEqual([
+      { type: "input_text", text: "Read PDF" },
+      { type: "input_file", filename: "x.pdf", file_data: "data:application/pdf;base64,cGRm" },
+    ]);
+  });
 });
 
 describe("translateRequestCodex Lite model formatting & enhancements", () => {

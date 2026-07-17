@@ -1,21 +1,17 @@
 import type { PermissionResolver } from "@/engine/agents/agent-context.ts";
 import { runWithPermissionResolver } from "@/engine/agents/agent-context.ts";
 import {
-  addUsage,
-  appendAction,
-  appendAssistantText,
-  completeAction,
   completeTask,
-  discardAssistantText,
-  failAction,
   setForkId,
-  setModel,
-  setUsageSnapshot,
   startTask,
   taskRunRef,
 } from "@/engine/background/tasks/background.ts";
 import * as backgroundControllers from "@/engine/background/tasks/background-controllers.ts";
-import { previewArgs } from "@/engine/queue/runtime/args-preview.ts";
+import {
+  ensureChildTaskIdMap,
+  resolveTaskIdForForkEvent,
+  routeForkEventToTask,
+} from "@/engine/background/tasks/progress.ts";
 import type { BackgroundController, ForkEvent } from "@/kernel/std/types/events.ts";
 import type { Message } from "@/kernel/std/types/message.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
@@ -32,47 +28,6 @@ export const FORK_GLYPH = "⑂";
 
 export function hasConversationTurn(messages: readonly Message[]): boolean {
   return messages.some((message) => message.role === "user");
-}
-
-function routeTaskEvent(taskId: string, event: ForkEvent): void {
-  if (event.kind === "fork_tool_dispatch_start") {
-    appendAction(taskId, {
-      id: event.toolCallId,
-      toolName: event.toolName,
-      argsLabel: previewArgs(event.input),
-      running: true,
-      ts: Date.now(),
-    });
-    return;
-  }
-  if (event.kind === "fork_tool_dispatch_complete") {
-    if (event.isError) failAction(taskId, event.toolCallId);
-    else completeAction(taskId, event.toolCallId);
-    return;
-  }
-  if (event.kind === "fork_start") {
-    setForkId(taskId, event.forkId);
-    setModel(taskId, event.model, event.effort, event.provider);
-    return;
-  }
-  if (event.kind === "fork_usage") {
-    const usage = {
-      inputTokens: event.inputTokens,
-      outputTokens: event.outputTokens,
-      cacheCreationInputTokens: event.cacheCreationInputTokens,
-      cacheReadInputTokens: event.cacheReadInputTokens,
-    };
-    if (event.isSnapshot) setUsageSnapshot(taskId, usage);
-    else addUsage(taskId, usage);
-    return;
-  }
-  if (event.kind === "fork_text_delta") {
-    appendAssistantText(taskId, event.text);
-    return;
-  }
-  if (event.kind === "fork_stream_reset") {
-    discardAssistantText(taskId, event.discardedChars);
-  }
 }
 
 /**
@@ -115,9 +70,13 @@ export function spawnForkFromDirective(
     abort: () => abortController.abort(),
   };
   const releaseController = backgroundControllers.register(task.parentToolCallId, taskController);
+  // Nested Agent spawns under this fork register into the same map so their
+  // tool/token events land on the grandchild row instead of the depth-1 parent.
+  const childTaskIdMap = ensureChildTaskIdMap(ctx);
 
   const eventSink = (event: ForkEvent): void => {
-    routeTaskEvent(agentId, event);
+    const taskId = resolveTaskIdForForkEvent(event, agentId, childTaskIdMap);
+    routeForkEventToTask(taskId, event);
     ctx.eventSink?.(event);
   };
 
@@ -136,6 +95,7 @@ export function spawnForkFromDirective(
         ...ctx,
         parentMessages: parent,
         bgTaskId: agentId,
+        childTaskIdMap,
         abortSignal: abortController.signal,
         eventSink,
       },

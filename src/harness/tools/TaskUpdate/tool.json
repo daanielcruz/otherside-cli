@@ -6,11 +6,11 @@
     "type": "object",
     "properties": {
       "taskId": {
-        "description": "The id of the task to update",
+        "description": "The ID of the task to update",
         "type": "string"
       },
       "subject": {
-        "description": "New subject (title) for the task",
+        "description": "New subject for the task",
         "type": "string"
       },
       "description": {
@@ -18,7 +18,7 @@
         "type": "string"
       },
       "activeForm": {
-        "description": "New present-continuous spinner form",
+        "description": "Present continuous form shown in spinner when in_progress (e.g., \"Running tests\")",
         "type": "string"
       },
       "status": {
@@ -39,21 +39,21 @@
         "type": "string"
       },
       "addBlocks": {
-        "description": "Task ids that this task blocks",
+        "description": "Task IDs that this task blocks",
         "type": "array",
         "items": {
           "type": "string"
         }
       },
       "addBlockedBy": {
-        "description": "Task ids that block this task",
+        "description": "Task IDs that block this task",
         "type": "array",
         "items": {
           "type": "string"
         }
       },
       "metadata": {
-        "description": "Metadata keys to merge. Set a key to null to delete it.",
+        "description": "Metadata keys to merge into the task. Set a key to null to delete it.",
         "type": "object",
         "additionalProperties": true
       }

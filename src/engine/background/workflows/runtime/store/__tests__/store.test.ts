@@ -89,7 +89,7 @@ async function waitForSnapshotStatus(options: {
 }
 
 describe("truncateWorkflowResult", () => {
-  it("returns the result unchanged when within the upstream-sized cap", () => {
+  it("returns the result unchanged when within the 8000-character cap", () => {
     const small = "x".repeat(8000);
     expect(truncateWorkflowResult(small, "/tmp/out.json")).toBe(small);
   });
@@ -216,18 +216,16 @@ describe("killWorkflowTask autoTurn / stoppedByUser", () => {
     expect(emitQueue.hasPendingAutoTurn()).toBe(true);
   });
 
-  it("a user-initiated stop is attributed to the user in the summary, but still wakes an idle turn", () => {
+  it("a user-initiated stop is silent: no notification, no wake", () => {
     registerWorkflowTask(makeRunningWorkflowTask("wf-user-stop"));
 
     killWorkflowTask("wf-user-stop", true);
 
     expect(getWorkflowTask("wf-user-stop")?.status).toBe("killed");
     expect(getWorkflowTask("wf-user-stop")?.stoppedByUser).toBe(true);
-    const item = notificationFor("wf-user-stop");
-    expect(item).toBeDefined();
-    expect(item?.autoTurn).not.toBe(false);
-    expect(summaryOf(item)).toContain("by the user");
-    expect(emitQueue.hasPendingAutoTurn()).toBe(true);
+    // The user watched themselves stop it; the model must not react.
+    expect(notificationFor("wf-user-stop")).toBeUndefined();
+    expect(emitQueue.hasPendingAutoTurn()).toBe(false);
   });
 });
 
@@ -244,7 +242,7 @@ describe("workflow completion notification sections", () => {
         workflowRunId: "wf_abc123",
         args: { topic: "x" },
         failures: [
-          "scout: timed out",
+          "daimyo: timed out",
           "parallel[1]: schema agent did not return structured output",
         ],
         agentCount: 2,
@@ -258,8 +256,9 @@ describe("workflow completion notification sections", () => {
     const text = notificationTextFor("wf-fail");
     expect(text).toBeDefined();
     expect(text).toContain("<status>failed</status>");
+    expect(text).toContain("<error>agent abandoned after 3 attempts</error>");
     expect(text).toContain("<failures>");
-    expect(text).toContain("scout: timed out");
+    expect(text).toContain("daimyo: timed out");
     expect(text).toContain("parallel[1]: schema agent did not return structured output");
     expect(text).toContain("<recovery>");
     expect(text).toContain('resumeFromRunId: "wf_abc123"');
@@ -341,7 +340,9 @@ describe("workflow completion notification sections", () => {
     );
     updateWorkflowTask("wf-kill", { outputFile: "/tmp/out-kill" });
 
-    killWorkflowTask("wf-kill", true);
+    // Model/parent-initiated stop (not user): the notification still fires
+    // and carries recovery guidance.
+    killWorkflowTask("wf-kill");
 
     const text = notificationTextFor("wf-kill");
     expect(text).toBeDefined();

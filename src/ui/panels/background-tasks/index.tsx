@@ -1,10 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import {
   type BackgroundTask,
-  cancelTaskTree,
   completeTask,
   holdTaskEviction,
-  taskRunRef,
+  stopTaskForUser,
 } from "@/engine/background/tasks/background.ts";
 import { killBackground } from "@/engine/tools/builtins/bash.ts";
 import { Box, Text } from "@/ink";
@@ -28,10 +27,7 @@ function killTask(task: BackgroundTask): void {
     });
     return;
   }
-  cancelTaskTree(taskRunRef(task), {
-    reason: "Killed by user",
-    userInitiated: true,
-  });
+  stopTaskForUser(task);
 }
 
 function killAllRunning(tasks: BackgroundTask[]): number {

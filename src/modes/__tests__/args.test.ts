@@ -325,6 +325,75 @@ describe("permission-mode validation", () => {
   });
 });
 
+describe("--worktree flag", () => {
+  it("parses --worktree with a name in print mode", () => {
+    const mode = parseArgs(["bun", "cli", "-p", "hi", "--worktree", "my-feature"]);
+    if (mode.kind !== "print") throw new Error("expected print");
+    expect(mode.worktree).toEqual({ name: "my-feature" });
+    expect(mode.prompt).toBe("hi");
+  });
+
+  it("parses a bare --worktree (auto name) without eating the next flag", () => {
+    const mode = parseArgs(["bun", "cli", "-p", "hi", "--worktree", "--verbose"]);
+    if (mode.kind !== "print") throw new Error("expected print");
+    expect(mode.worktree).toEqual({ name: null });
+    expect(mode.verbose).toBe(true);
+    expect(mode.prompt).toBe("hi");
+  });
+
+  it("parses --worktree=name and the -w short form", () => {
+    const eq = parseArgs(["bun", "cli", "-p", "hi", "--worktree=fix-bug"]);
+    if (eq.kind !== "print") throw new Error("expected print");
+    expect(eq.worktree).toEqual({ name: "fix-bug" });
+
+    const short = parseArgs(["bun", "cli", "-p", "hi", "-w", "fix-bug"]);
+    if (short.kind !== "print") throw new Error("expected print");
+    expect(short.worktree).toEqual({ name: "fix-bug" });
+  });
+
+  it("keeps worktree null when the flag is absent", () => {
+    const mode = parseArgs(["bun", "cli", "-p", "hi"]);
+    if (mode.kind !== "print") throw new Error("expected print");
+    expect(mode.worktree).toBeNull();
+  });
+
+  it("carries the flag on interactive resume launches", () => {
+    const mode = parseArgs(["bun", "cli", "--resume", "abc", "--worktree", "my-feature"]);
+    if (mode.kind !== "interactive") throw new Error("expected interactive");
+    expect(mode.worktree).toEqual({ name: "my-feature" });
+  });
+
+  it("carries a PR-reference value verbatim for the launch layer to resolve", () => {
+    const mode = parseArgs(["bun", "cli", "-p", "hi", "--worktree", "#123"]);
+    if (mode.kind !== "print") throw new Error("expected print");
+    expect(mode.worktree).toEqual({ name: "#123" });
+  });
+});
+
+describe("--tmux flag", () => {
+  it("parses --tmux alongside --worktree in both modes", () => {
+    const print = parseArgs(["bun", "cli", "-p", "hi", "--worktree", "x", "--tmux"]);
+    if (print.kind !== "print") throw new Error("expected print");
+    expect(print.tmux).toBe(true);
+    expect(print.prompt).toBe("hi");
+
+    const interactive = parseArgs(["bun", "cli", "--resume", "abc", "--worktree", "--tmux"]);
+    if (interactive.kind !== "interactive") throw new Error("expected interactive");
+    expect(interactive.tmux).toBe(true);
+    expect(interactive.worktree).toEqual({ name: null });
+  });
+
+  it("accepts the --tmux=classic spelling and defaults to false", () => {
+    const classic = parseArgs(["bun", "cli", "-p", "hi", "--worktree", "x", "--tmux=classic"]);
+    if (classic.kind !== "print") throw new Error("expected print");
+    expect(classic.tmux).toBe(true);
+
+    const off = parseArgs(["bun", "cli", "-p", "hi", "--worktree", "x"]);
+    if (off.kind !== "print") throw new Error("expected print");
+    expect(off.tmux).toBe(false);
+  });
+});
+
 describe("permissionModeToWire", () => {
   it("maps internal modes to their camelCase wire values", () => {
     expect(permissionModeToWire("default")).toBe("default");

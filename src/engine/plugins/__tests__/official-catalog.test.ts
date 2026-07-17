@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  _forceOfficialCheckoutFailedForTesting,
+  _markOfficialCheckoutUnavailableForTesting,
   _resetOfficialCatalogForTesting,
   getInstallCountsSync,
   hasOfficialMarketplaceCheckout,
@@ -57,35 +57,22 @@ describe("official plugin catalog + checkout Discover sourcing", () => {
     });
   }
 
-  it("reaches the bundled seed only through the failed-checkout fallback", () => {
-    _forceOfficialCheckoutFailedForTesting();
-    const entries = listMarketplacePlugins(OFFICIAL_MARKETPLACE_NAME);
+  it("returns an empty list when the official checkout is unavailable", () => {
+    _markOfficialCheckoutUnavailableForTesting();
 
-    expect(entries).toHaveLength(255);
-    // The seed supplies offline entries, not install counts.
-    expect(entries.some((entry) => entry.installCount !== undefined)).toBe(false);
-    expect(getInstallCountsSync()).toEqual(new Map());
-  });
-
-  it("listMarketplacePlugins falls back to offline seed only when checkout is missing", () => {
-    // Force the bootstrap latch so we do not attempt a live git clone in tests.
-    _forceOfficialCheckoutFailedForTesting();
     expect(hasOfficialMarketplaceCheckout()).toBe(false);
-
-    const listed = listMarketplacePlugins(OFFICIAL_MARKETPLACE_NAME);
-    expect(listed).toHaveLength(255);
-    expect(listed.some((entry) => entry.installCount !== undefined)).toBe(false);
+    expect(listMarketplacePlugins(OFFICIAL_MARKETPLACE_NAME)).toEqual([]);
   });
 
-  it("does not use the seed when an empty checkout manifest is present", () => {
+  it("returns an empty list when an official checkout manifest has no plugins", () => {
     writeOfficialCheckout([]);
-    _forceOfficialCheckoutFailedForTesting();
+    _markOfficialCheckoutUnavailableForTesting();
 
     expect(hasOfficialMarketplaceCheckout()).toBe(true);
     expect(listMarketplacePlugins(OFFICIAL_MARKETPLACE_NAME)).toEqual([]);
   });
 
-  it("prefers the official marketplace CHECKOUT over the offline seed", () => {
+  it("uses entries from the official marketplace checkout", () => {
     writeOfficialCheckout([
       {
         name: "checkout-only-plugin",
@@ -102,8 +89,7 @@ describe("official plugin catalog + checkout Discover sourcing", () => {
     expect(listed[0]?.name).toBe("checkout-only-plugin");
     // Entry-local counts are ignored; only the live cache may supply them.
     expect(listed[0]?.installCount).toBeUndefined();
-    // Seed has hundreds of plugins — must not be mixed in when checkout exists.
-    expect(listed.length).toBeLessThan(10);
+    expect(listed).toHaveLength(1);
   });
 
   it("overlays install counts from the plugin-stats catalog onto checkout entries", () => {
@@ -161,7 +147,7 @@ describe("official plugin catalog + checkout Discover sourcing", () => {
     expect(quiet?.installCount).toBeUndefined();
   });
 
-  it("does not use live catalog marketplace_entry as Discover source when disk cache exists without checkout", () => {
+  it("does not use catalog marketplace_entry as a Discover source without a checkout", () => {
     const cacheDir = join(configDir, "plugins");
     mkdirSync(cacheDir, { recursive: true });
     writeFileSync(
@@ -186,12 +172,9 @@ describe("official plugin catalog + checkout Discover sourcing", () => {
       "utf8",
     );
     _resetOfficialCatalogForTesting();
-    _forceOfficialCheckoutFailedForTesting();
+    _markOfficialCheckoutUnavailableForTesting();
 
-    const listed = listMarketplacePlugins(OFFICIAL_MARKETPLACE_NAME);
-    // Offline seed entries, not the disk catalog's marketplace_entry list.
-    expect(listed.some((entry) => entry.name === "cache-only")).toBe(false);
-    expect(listed.length).toBeGreaterThan(10);
+    expect(listMarketplacePlugins(OFFICIAL_MARKETPLACE_NAME)).toEqual([]);
   });
 
   it("refreshOfficialCatalog reuses a fresh disk cache without fetching", async () => {
@@ -264,10 +247,8 @@ describe("official plugin catalog + checkout Discover sourcing", () => {
     expect(getInstallCountsSync().get(`fetched-plugin@${OFFICIAL_MARKETPLACE_NAME}`)).toBe(99);
     expect(getInstallCountsSync().has("ignored@other-market")).toBe(false);
 
-    // Live catalog marketplace_entry must not become the Discover entry source.
-    _forceOfficialCheckoutFailedForTesting();
-    const listed = listMarketplacePlugins(OFFICIAL_MARKETPLACE_NAME);
-    expect(listed.some((entry) => entry.name === "fetched-plugin")).toBe(false);
-    expect(listed.length).toBeGreaterThan(10);
+    // The catalog remains counts-only until a checkout is available.
+    _markOfficialCheckoutUnavailableForTesting();
+    expect(listMarketplacePlugins(OFFICIAL_MARKETPLACE_NAME)).toEqual([]);
   });
 });

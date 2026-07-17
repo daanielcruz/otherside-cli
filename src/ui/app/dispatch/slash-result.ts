@@ -10,6 +10,7 @@ import {
 } from "@/engine/session/index.ts";
 import type { MacrotaskBatch } from "@/kernel/std/perf/macrotask-batch.ts";
 import type { Broker } from "@/store/app-store/broker.ts";
+import { submitPluginNotice } from "@/store/app-store/right-region-notices.ts";
 import type { TranscriptEntry } from "@/ui/transcript/types";
 
 type RunSubmittedTurn = (
@@ -28,6 +29,7 @@ export interface ApplySlashResultDeps {
   transcriptBatch: MacrotaskBatch;
   session: Session;
   broker: Broker;
+  setPluginStatusNotice?: (notice: string | null) => void;
 }
 
 // A local command is recorded when it RAN and printed stdout-like feedback.
@@ -58,6 +60,7 @@ export function createApplySlashResult(deps: ApplySlashResultDeps) {
     transcriptBatch,
     session,
     broker,
+    setPluginStatusNotice,
   } = deps;
 
   return async (result: SlashResult, text: string): Promise<void> => {
@@ -96,9 +99,7 @@ export function createApplySlashResult(deps: ApplySlashResultDeps) {
       // Everything applies immediately, never queued. effort/model/fast/ultracode
       // land on the running turn's next request (every request re-reads broker
       // state); a goal's meta message is pushed onto the injection queue, drained
-      // at the next mid-turn boundary (or the next turn start when idle). Queuing
-      // a goal here would strand it as a [QUEUED] message that only applies at
-      // turn end — the exact "goal went to the queue" bug.
+      // at the next mid-turn boundary (or the next turn start when idle).
       applyPendingChange(change);
       await persistIfNeeded();
       const id = nextTranscriptId("slash_bullet");
@@ -167,6 +168,22 @@ export function createApplySlashResult(deps: ApplySlashResultDeps) {
           { id: userId, kind: "user", text: "/reload" },
           { id: outId, kind: "command_output", text: result.feedback ?? "" },
         ]);
+      } else if (result.command?.name === "plugins") {
+        const userId = nextTranscriptId("user");
+        const outputId = nextTranscriptId("cmd_out");
+        submitPluginNotice("Plugins changed. Run /reload to activate.");
+        setPluginStatusNotice?.(null);
+        setTranscript((t) => {
+          const last = t[t.length - 1];
+          const withCommand =
+            last?.kind === "user" && last.text === "/plugins"
+              ? [...t]
+              : [...t, { id: userId, kind: "user" as const, text: "/plugins" }];
+          return [
+            ...withCommand,
+            { id: outputId, kind: "command_output", text: result.feedback ?? "" },
+          ];
+        });
       } else {
         const id = nextTranscriptId("sys");
         setTranscript((t) => [...t, { id, kind: "system", text: result.feedback ?? "" }]);

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { emitQueue } from "@/engine/queue/emit.ts";
 import { AbortError } from "@/kernel/std/stream/abort.ts";
 import type { ToolCall } from "@/kernel/std/types/message.ts";
@@ -11,17 +11,37 @@ import {
 import * as bgControllers from "../../../tasks/background-controllers.ts";
 import { dispatchForkToolCalls } from "../tool-dispatch.ts";
 
-// Mock the pipeline tool dispatch
-const mockDispatch = mock((_call?: ToolCall, _ctx?: RequestContext) => {
-  return Promise.resolve({
-    content: "nested agent completed successfully",
-    is_error: false,
-  });
-});
+// The module registry keeps this mock for the rest of the run, so it spreads
+// the real module (a partial surface fails later imports) and delegates back
+// to the real dispatch once this file finishes — a leaked always-fake dispatch
+// would swallow real tool executions in unrelated suites.
+const realPipelineModule = await import("@/engine/tools/pipeline.ts");
+// Captured by value: after mock.module the namespace's live binding IS the mock.
+const realDispatch = realPipelineModule.dispatch;
+let pipelineMockActive = true;
+type DispatchResult = Awaited<ReturnType<typeof realDispatch>>;
+const mockDispatch = mock(
+  (
+    call: ToolCall,
+    ctx: RequestContext,
+    deps: Parameters<typeof realDispatch>[2],
+  ): Promise<DispatchResult | { content: string; is_error: boolean }> => {
+    if (!pipelineMockActive) return realDispatch(call, ctx, deps);
+    return Promise.resolve({
+      content: "nested agent completed successfully",
+      is_error: false,
+    });
+  },
+);
 
 mock.module("@/engine/tools/pipeline.ts", () => ({
+  ...realPipelineModule,
   dispatch: mockDispatch,
 }));
+
+afterAll(() => {
+  pipelineMockActive = false;
+});
 
 beforeEach(() => {
   clearBackgroundTasks();
@@ -57,7 +77,7 @@ describe("nested registration of Agent calls in fork tool dispatch", () => {
     const toolCall: ToolCall = {
       id: "call-async-agent",
       name: "Agent",
-      input: { subagent_type: "scout", prompt: "nested background test" },
+      input: { subagent_type: "samurai", prompt: "nested background test" },
     };
 
     const outcome = await dispatchForkToolCalls({
@@ -137,7 +157,7 @@ describe("nested registration of Agent calls in fork tool dispatch", () => {
     const toolCall: ToolCall = {
       id: "call-cancel-agent",
       name: "Agent",
-      input: { subagent_type: "scout", prompt: "wait" },
+      input: { subagent_type: "samurai", prompt: "wait" },
     };
     const pending = dispatchForkToolCalls({
       toolCalls: [toolCall],
@@ -183,7 +203,7 @@ describe("nested registration of Agent calls in fork tool dispatch", () => {
     const toolCall: ToolCall = {
       id: "call-sync-agent",
       name: "Agent",
-      input: { subagent_type: "scout", prompt: "nested inline test" },
+      input: { subagent_type: "samurai", prompt: "nested inline test" },
     };
 
     const outcome = await dispatchForkToolCalls({
@@ -245,7 +265,7 @@ describe("nested registration of Agent calls in fork tool dispatch", () => {
       id: "call-inner-agent",
       name: "Agent",
       input: {
-        subagent_type: "scout",
+        subagent_type: "samurai",
         prompt: "nested task test",
         description: "Verify nested registration",
       },
@@ -297,7 +317,7 @@ describe("nested registration of Agent calls in fork tool dispatch", () => {
     const childTask = tasks.find((t) => t.id === childTaskId);
     expect(childTask).toBeDefined();
     expect(childTask?.parentTaskId).toBe(parentTaskId);
-    expect(childTask?.agentName).toBe("scout");
+    expect(childTask?.agentName).toBe("samurai");
     // inline nested spawns must be panel-visible (rawAgents filters on isBackgrounded)
     expect(childTask?.isBackgrounded).toBe(true);
     expect(childTask?.status).toBe("completed"); // Completed because mockDispatch succeeded

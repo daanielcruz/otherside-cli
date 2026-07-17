@@ -64,6 +64,7 @@ import {
   type SubagentResult,
 } from "@/engine/background/subagents/dispatcher.ts";
 import { canSendNatively } from "@/engine/model/capabilities-runtime.ts";
+import { resolveImageGeneratorProvider } from "@/engine/providers/image-generation.ts";
 import * as providers from "@/engine/providers/registry.ts";
 import { previewArgs } from "@/engine/queue/runtime/args-preview.ts";
 import { isWorkspaceRead } from "@/engine/queue/runtime/permission-resolution.ts";
@@ -93,7 +94,7 @@ import type { DrainedQueuedMessage, ForkEvent } from "@/kernel/std/types/events.
 import type { ImageMediaType } from "@/kernel/std/types/image.ts";
 import type { Message, ToolCall } from "@/kernel/std/types/message.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
-import { hasCodexCredentialSync } from "@/kernel/storage/credentials.ts";
+import { hasCredentialSync } from "@/kernel/storage/credentials.ts";
 
 const DESIGN_WORKER_TOOLS: readonly ToolHandler[] = [
   CreateDesignTool,
@@ -157,10 +158,9 @@ interface DesignToolset {
 }
 
 async function generateImageAvailable(provider: string): Promise<boolean> {
-  if (!hasCodexCredentialSync()) return false;
-  if (provider === "codex") return true;
   const config = await loadConfig();
-  return config.imageGen === true;
+  const generator = resolveImageGeneratorProvider(config.imageGenProvider, provider);
+  return generator !== null && hasCredentialSync(generator);
 }
 
 async function resolveDesignToolset(
@@ -1164,6 +1164,7 @@ async function handle(params: unknown, ctx: RpcContext, id: number | string | nu
       });
     });
     if (result.isError) {
+      writeDebugError("design fork failed", result.output);
       ctx.emit(notify("$/stream", { id: streamId, event: "end" }));
       ctx.send(
         fail(id, RPC_INTERNAL_ERROR, designTurnFailureMessage(result, targetProvider, targetModel)),

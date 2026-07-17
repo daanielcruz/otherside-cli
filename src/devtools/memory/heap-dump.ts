@@ -1,7 +1,9 @@
-import { appendFileSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { join } from "node:path";
 import * as v8 from "node:v8";
 import { devtoolBoolean, devtoolNumber, devtoolPath } from "@/devtools/settings.ts";
+import { OTHERSIDE_VERSION } from "@/engine/session/record/state.ts";
 import { configRoot } from "@/kernel/std/fs/paths.ts";
 
 // Debug-only heap/memory instrument. Fully OFF unless OTHERSIDE_DEBUG_HEAPDUMP is
@@ -43,13 +45,27 @@ export interface HeapDiagnostics {
   external: number;
   arrayBuffers: number;
   nativeBytes: number;
-  heapSizeLimit: number;
-  detachedContexts: number;
+  heapSizeLimit: number | undefined;
+  mallocedMemory: number | undefined;
+  peakMallocedMemory: number | undefined;
+  detachedContexts: number | undefined;
+  nativeContexts: number | undefined;
   activeHandles: number;
   activeRequests: number;
   openFileDescriptors: number | undefined;
+  bytesPerSecond: number;
   approxMbPerHour: number;
   heapSpaces: Array<{ name: string; size: number; used: number; available: number }> | undefined;
+  resourceUsage: { maxRSS: number; userCPUTime: number; systemCPUTime: number } | undefined;
+  smapsRollup: string | undefined;
+  objectTypeCounts: Record<string, number> | undefined;
+  protectedObjectTypeCounts: Record<string, number> | undefined;
+  mimalloc: unknown;
+  potentialLeaks: string[];
+  recommendation: string;
+  platform: string;
+  nodeVersion: string;
+  othersideVersion: string;
   warnings: string[];
 }
 
@@ -58,10 +74,20 @@ function countInternal(method: string): number {
   return typeof fn === "function" ? fn.call(process).length : 0;
 }
 
+interface BunHeapStats {
+  objectTypeCounts?: Record<string, number>;
+  protectedObjectTypeCounts?: Record<string, number>;
+  mimalloc?: unknown;
+}
+
 export function captureHeapDiagnostics(trigger: HeapDumpTrigger): HeapDiagnostics {
   const mem = process.memoryUsage();
-  const heap = v8.getHeapStatistics();
   const uptimeSeconds = process.uptime();
+
+  let heap: ReturnType<typeof v8.getHeapStatistics> | undefined;
+  try {
+    heap = v8.getHeapStatistics();
+  } catch {}
 
   let heapSpaces: HeapDiagnostics["heapSpaces"];
   try {
@@ -73,19 +99,47 @@ export function captureHeapDiagnostics(trigger: HeapDumpTrigger): HeapDiagnostic
     }));
   } catch {}
 
+  let resourceUsage: HeapDiagnostics["resourceUsage"];
+  try {
+    const usage = process.resourceUsage();
+    resourceUsage = {
+      maxRSS: usage.maxRSS * (process.platform === "darwin" ? 1 : 1024),
+      userCPUTime: usage.userCPUTime,
+      systemCPUTime: usage.systemCPUTime,
+    };
+  } catch {}
+
+  let smapsRollup: string | undefined;
+  try {
+    smapsRollup = readFileSync("/proc/self/smaps_rollup", "utf8");
+  } catch {}
+
+  let objectTypeCounts: Record<string, number> | undefined;
+  let protectedObjectTypeCounts: Record<string, number> | undefined;
+  let mimalloc: unknown;
+  try {
+    const { heapStats } = createRequire(import.meta.url)("bun:jsc") as {
+      heapStats: (includeProtectedObjects: boolean) => BunHeapStats;
+    };
+    const stats = heapStats(true);
+    objectTypeCounts = stats.objectTypeCounts;
+    protectedObjectTypeCounts = stats.protectedObjectTypeCounts;
+    mimalloc = stats.mimalloc;
+  } catch {}
+
   const activeHandles = countInternal("_getActiveHandles");
   const activeRequests = countInternal("_getActiveRequests");
-
   let openFileDescriptors: number | undefined;
   try {
     openFileDescriptors = readdirSync("/proc/self/fd").length;
   } catch {}
 
   const nativeBytes = mem.rss - mem.heapUsed;
-  const approxMbPerHour = uptimeSeconds > 0 ? ((mem.rss / uptimeSeconds) * 3600) / BYTES_PER_MB : 0;
+  const bytesPerSecond = uptimeSeconds > 0 ? mem.rss / uptimeSeconds : 0;
+  const approxMbPerHour = (bytesPerSecond * 3600) / BYTES_PER_MB;
 
   const warnings: string[] = [];
-  if (heap.number_of_detached_contexts > 0) {
+  if (heap?.number_of_detached_contexts !== undefined && heap.number_of_detached_contexts > 0) {
     warnings.push(`${heap.number_of_detached_contexts} detached context(s)`);
   }
   if (activeHandles > HIGH_ACTIVE_HANDLES) {
@@ -101,6 +155,8 @@ export function captureHeapDiagnostics(trigger: HeapDumpTrigger): HeapDiagnostic
     warnings.push(`${openFileDescriptors} open file descriptors`);
   }
 
+  const potentialLeaks = [...warnings];
+
   return {
     timestamp: new Date().toISOString(),
     trigger,
@@ -111,13 +167,30 @@ export function captureHeapDiagnostics(trigger: HeapDumpTrigger): HeapDiagnostic
     external: mem.external,
     arrayBuffers: mem.arrayBuffers,
     nativeBytes,
-    heapSizeLimit: heap.heap_size_limit,
-    detachedContexts: heap.number_of_detached_contexts,
+    heapSizeLimit: heap?.heap_size_limit,
+    mallocedMemory: heap?.malloced_memory,
+    peakMallocedMemory: heap?.peak_malloced_memory,
+    detachedContexts: heap?.number_of_detached_contexts,
+    nativeContexts: heap?.number_of_native_contexts,
     activeHandles,
     activeRequests,
     openFileDescriptors,
+    bytesPerSecond,
     approxMbPerHour: Math.round(approxMbPerHour * 10) / 10,
     heapSpaces,
+    resourceUsage,
+    smapsRollup,
+    objectTypeCounts,
+    protectedObjectTypeCounts,
+    mimalloc,
+    potentialLeaks,
+    recommendation:
+      potentialLeaks.length > 0
+        ? `WARNING: ${potentialLeaks.length} potential leak indicator(s) found. See potentialLeaks array.`
+        : "No obvious leak indicators. Check heap snapshot for retained objects.",
+    platform: process.platform,
+    nodeVersion: process.version,
+    othersideVersion: OTHERSIDE_VERSION,
     warnings,
   };
 }

@@ -10,27 +10,59 @@ export function isDeferredToolName(name: string): boolean {
   return deferredSchemas().some((schema) => schema.name === name);
 }
 
-const announcedDeferredTools = new Set<string>();
+// Announcements are keyed by the announcing agent (main session = the
+// undefined scope). A ToolSearch load only widens the loader's OWN declared
+// set — another agent's announcement never grants schema knowledge (or
+// dispatch rights) to a context that never saw the search result.
+const MAIN_ANNOUNCE_SCOPE = "__main__";
+const announcedDeferredToolsByScope = new Map<string, Set<string>>();
 
-export function announceDeferredTool(name: string): void {
-  if (isDeferredToolName(name) || isMcpToolName(name)) announcedDeferredTools.add(name);
+export type AnnounceScope = string | undefined;
+
+function announceSetFor(scope: AnnounceScope): Set<string> {
+  const key = scope ?? MAIN_ANNOUNCE_SCOPE;
+  let set = announcedDeferredToolsByScope.get(key);
+  if (!set) {
+    set = new Set();
+    announcedDeferredToolsByScope.set(key, set);
+  }
+  return set;
 }
 
-export function forceAnnounceDeferredTool(name: string): void {
-  announcedDeferredTools.add(name);
+export function announceDeferredTool(name: string, scope?: AnnounceScope): void {
+  if (isDeferredToolName(name) || isMcpToolName(name)) announceSetFor(scope).add(name);
+}
+
+export function forceAnnounceDeferredTool(name: string, scope?: AnnounceScope): void {
+  announceSetFor(scope).add(name);
 }
 
 export function clearDeferredAnnouncements(): void {
-  announcedDeferredTools.clear();
+  announcedDeferredToolsByScope.clear();
 }
 
-export function activeDeferredToolNames(): string[] {
-  return [...announcedDeferredTools];
+/** Drop MCP tools that disappeared from the active runtime after a refresh. */
+export function pruneAnnouncedMcpTools(activeNames: ReadonlySet<string>): void {
+  for (const announced of announcedDeferredToolsByScope.values()) {
+    for (const name of announced) {
+      if (isMcpToolName(name) && !activeNames.has(name)) announced.delete(name);
+    }
+  }
 }
 
-export function schemaNotSentHint(name: string): string | null {
+// Agent teardown: drop the ephemeral per-agent set so finished fork ids do
+// not accumulate. The main scope lives for the process.
+export function clearDeferredAnnouncementsForScope(scope: string): void {
+  announcedDeferredToolsByScope.delete(scope);
+}
+
+export function activeDeferredToolNames(scope?: AnnounceScope): string[] {
+  return [...(announcedDeferredToolsByScope.get(scope ?? MAIN_ANNOUNCE_SCOPE) ?? [])];
+}
+
+export function schemaNotSentHint(name: string, scope?: AnnounceScope): string | null {
   if (!isDeferredToolName(name)) return null;
-  if (announcedDeferredTools.has(name)) return null;
+  if (announcedDeferredToolsByScope.get(scope ?? MAIN_ANNOUNCE_SCOPE)?.has(name)) return null;
   if (!registry.get(TOOL_SEARCH_TOOL_NAME)) return null;
   return (
     `\n\nThis tool's schema was not sent to the API — it was not in the discovered-tool set derived from message history. ` +
@@ -60,12 +92,16 @@ export function catalogSchemasForOverrides(
 export function declaredSchemasForOverrides(
   overrides: DeferredOverrides,
   implementedNames: ReadonlySet<string>,
+  scope?: AnnounceScope,
 ): ToolSchema[] {
   const out: ToolSchema[] = baseSchemas.filter(
     (schema) =>
       overridesAllowTool(overrides, schema.name) && isImplemented(schema, implementedNames),
   );
-  const extraNames = new Set([...overrides.alwaysDeclare, ...announcedDeferredTools]);
+  const extraNames = new Set([...overrides.alwaysDeclare, ...activeDeferredToolNames(scope)]);
+  // Background sessions eagerly declare EnterWorktree; ExitWorktree stays
+  // deferred.
+  if (process.env.CLAUDE_CODE_SESSION_KIND === "bg") extraNames.add("EnterWorktree");
   for (const name of extraNames) {
     const schema = schemaFor(name);
     if (!schema || !isDeferredToolName(name)) continue;

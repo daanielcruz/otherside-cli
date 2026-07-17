@@ -48,8 +48,12 @@ function tick(sink: InjectionSink): void {
     if (now < targetMs) continue;
     lastFireAt.set(job.id, now);
     if (job.kind === "loop") {
+      // idle_prompt: a scheduled wakeup never interrupts a running tool loop —
+      // it drains only at turn_start (reference parity: wakeups enqueue at
+      // priority "later"; the mid-turn fold is capped at "next"). autoTurn
+      // still wakes an idle session immediately.
       emitQueue.emit({
-        class: "urgent_output",
+        class: "idle_prompt",
         target: "both",
         payload: { kind: "user_interrupt_message", text: job.prompt },
         autoTurn: true,

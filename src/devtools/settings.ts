@@ -45,7 +45,6 @@ export const DEVTOOL_SETTINGS = {
     default: undefined,
   },
   gcCadence: { env: "OTHERSIDE_GC_CADENCE", kind: "boolean", default: false },
-  gcDecommit: { env: "OTHERSIDE_GC_DECOMMIT", kind: "boolean", default: false },
   gcDiagnostics: { env: "OTHERSIDE_GC_DIAG", kind: "path", default: undefined },
   heapDumpAutoMb: {
     env: "OTHERSIDE_HEAPDUMP_AUTO_MB",
@@ -76,6 +75,11 @@ export const DEVTOOL_SETTINGS = {
     env: "OTHERSIDE_PAYLOAD_DIAG",
     kind: "path",
     default: undefined,
+  },
+  promptCacheDiagnostics: {
+    env: "OTHERSIDE_PROMPT_CACHE_DIAG",
+    kind: "boolean",
+    default: false,
   },
   mcpPayloadDiagnostics: {
     env: "OTHERSIDE_MCP_PAYLOAD_DIAG",

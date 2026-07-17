@@ -7,7 +7,10 @@ import {
   sanitizeMessages,
 } from "@/engine/translator/index.ts";
 import type { ProviderToolDeclaration } from "@/engine/translator/types.ts";
-import { FORK_MAX_ATTEMPTS, streamWithRetry } from "@/engine/transport/_infra/classify/retry.ts";
+import {
+  SIDE_QUESTION_MAX_ATTEMPTS,
+  streamWithRetry,
+} from "@/engine/transport/_infra/classify/retry.ts";
 import { makeQueue } from "@/harness/composer/queue.ts";
 import type { UserConfig } from "@/kernel/config/config.ts";
 import type { ProviderId } from "@/kernel/config/provider-ids.ts";
@@ -156,7 +159,9 @@ export async function askSideQuestion(params: AskSideQuestionParams): Promise<Si
     : fallbackRequest();
 
   const reqBody = provider.translateRequest(childCtx, request.messages, request.tools);
-  const stream = streamWithRetry(childCtx, provider, reqBody, { maxAttempts: FORK_MAX_ATTEMPTS });
+  const stream = streamWithRetry(childCtx, provider, reqBody, {
+    maxAttempts: SIDE_QUESTION_MAX_ATTEMPTS,
+  });
 
   let text = "";
   let toolCallName: string | null = null;

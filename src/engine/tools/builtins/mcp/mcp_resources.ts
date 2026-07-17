@@ -9,6 +9,7 @@ import ReadMcpResourceDirSchema from "@/harness/tools/ReadMcpResourceDirTool/too
 import {
   boundMcpResourceOutput,
   listMcpResources,
+  MAX_MCP_RESOURCE_OUTPUT_CHARS,
   readMcpDirectory,
   readMcpResource,
 } from "@/kernel/mcp/index.ts";
@@ -30,6 +31,14 @@ function err(toolUseId: string, message: string): ToolResult {
 
 function ok(toolUseId: string, payload: unknown): ToolResult {
   return { tool_use_id: toolUseId, content: boundMcpResourceOutput(payload) };
+}
+
+function okText(toolUseId: string, content: string): ToolResult {
+  const bounded =
+    content.length <= MAX_MCP_RESOURCE_OUTPUT_CHARS
+      ? content
+      : `${content.slice(0, MAX_MCP_RESOURCE_OUTPUT_CHARS)}\n...[truncated]`;
+  return { tool_use_id: toolUseId, content: bounded };
 }
 
 export const ListMcpResourcesTool: ToolHandler = {
@@ -90,22 +99,15 @@ export const ReadMcpResourceDirTool: ToolHandler = {
     if (!uri) return err(call.id, "`uri` is required");
 
     const result = await readMcpDirectory({ cwd: ctx.cwd, server, uri });
-    if (result.kind === "unknown-server") {
-      return err(
-        call.id,
-        `server "${server}" not found. Available servers: ${result.available.join(", ")}`,
-      );
-    }
-    if (result.kind === "no-directory-read") {
-      return err(call.id, `Server "${result.server}" does not support directory listing.`);
-    }
-    if (result.kind === "not-directory") {
-      return err(
-        call.id,
-        `Not a directory resource: ${result.uri}. If it is a file resource, use ${ReadMcpResourceSchema.name} instead.`,
-      );
-    }
-    if (result.kind === "error") return err(call.id, result.message);
-    return ok(call.id, { resources: result.resources });
+    if (result.kind === "controlled-error") return okText(call.id, result.message);
+
+    const names = result.resources.map(
+      (resource) => `${resource.name}${resource.mimeType === "inode/directory" ? "/" : ""}`,
+    );
+    const summary =
+      names.length > 0
+        ? `Directory listing (${names.length} ${names.length === 1 ? "entry" : "entries"}):\n${names.join("\n")}`
+        : "Directory is empty.";
+    return okText(call.id, `${summary}\n\n${JSON.stringify({ resources: result.resources })}`);
   },
 };

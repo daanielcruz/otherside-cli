@@ -5,6 +5,7 @@ import {
   expandToContentBlocks,
   INPUT_TRUNCATION_THRESHOLD,
   maybeTruncateBuffer,
+  normalizePastedText,
 } from "../references.ts";
 
 function fakeStore(): {
@@ -74,5 +75,23 @@ describe("expandToContentBlocks — truncated refs", () => {
     const text = "head [...Truncated text #9 +4 lines...] tail";
     const { text: plain } = expandToContentBlocks(text, store);
     expect(plain).toBe(text);
+  });
+});
+
+describe("normalizePastedText", () => {
+  it("converts CRLF and lone CR to LF", () => {
+    expect(normalizePastedText("a\r\nb\rc")).toBe("a\nb\nc");
+  });
+
+  it("expands tabs to four spaces", () => {
+    expect(normalizePastedText("a\tb")).toBe("a    b");
+  });
+
+  it("strips escape sequences", () => {
+    expect(normalizePastedText("\u001b[31mred\u001b[0m plain")).toBe("red plain");
+  });
+
+  it("normalizes decomposed text to NFC", () => {
+    expect(normalizePastedText("cafe\u0301")).toBe("café");
   });
 });

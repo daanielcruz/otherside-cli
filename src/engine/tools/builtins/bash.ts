@@ -44,6 +44,7 @@ import {
   cleanupCwdFile,
   isWithinAllowedWorkingDir,
   newCwdFilePath,
+  recoverCwdIfMissing,
   resolveTrackedCwd,
   shouldMaintainProjectWorkingDir,
 } from "@/engine/tools/builtins/cwd.ts";
@@ -265,8 +266,10 @@ export const Bash: ToolHandler = {
         ? Boolean((args as { dangerouslyDisableSandbox: boolean }).dangerouslyDisableSandbox)
         : false;
 
-    const trackedCwd = getTrackedCwd();
-    const inplaceTargets = detectInplaceEditTargets(command, trackedCwd);
+    const isSidechain = !!ctx.subagentLabel;
+    if (!isSidechain) recoverCwdIfMissing();
+    const executionCwd = isSidechain ? ctx.cwd : getTrackedCwd();
+    const inplaceTargets = detectInplaceEditTargets(command, executionCwd);
     for (const target of inplaceTargets) {
       await snapshotBeforeFileMutation(ctx, target);
     }
@@ -275,12 +278,11 @@ export const Bash: ToolHandler = {
     const sedEditPath = sedEdit
       ? isAbsolute(sedEdit.filePath)
         ? sedEdit.filePath
-        : resolve(trackedCwd, sedEdit.filePath)
+        : resolve(executionCwd, sedEdit.filePath)
       : null;
     const sedEditBefore = sedEditPath !== null ? readTextFileOrNull(sedEditPath) : null;
 
     const cwdFilePath = runInBackground ? null : newCwdFilePath();
-    const isSidechain = !!ctx.subagentLabel;
     const {
       execCommand: wrappedCommand,
       sandboxed,
@@ -309,8 +311,10 @@ export const Bash: ToolHandler = {
         displayCommand,
         parentToolCallId: call.id,
         isSidechain,
+        cwd: executionCwd,
         login,
         ...(ctx.agentOwnerId !== undefined ? { ownerId: ctx.agentOwnerId } : {}),
+        ...(ctx.sessionId !== undefined ? { sessionId: ctx.sessionId } : {}),
       });
       if ("error" in r) {
         return { tool_use_id: call.id, content: r.error, is_error: true };
@@ -333,8 +337,10 @@ export const Bash: ToolHandler = {
       userBgSignaled: ctx.backgroundController?.signaled,
       isSidechain,
       ...(ctx.agentOwnerId !== undefined ? { ownerId: ctx.agentOwnerId } : {}),
+      ...(ctx.sessionId !== undefined ? { sessionId: ctx.sessionId } : {}),
       ...(onStdout ? { onStdout } : {}),
       originalCommand: command,
+      cwd: executionCwd,
       cwdFilePath,
       login,
     });

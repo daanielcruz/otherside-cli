@@ -33,10 +33,13 @@ export const sessionGuidanceLayer: CategorizedLayer = {
   },
 };
 
-const MULTIPROVIDER_SESSION_BULLETS: readonly string[] = [
-  "Multi-provider orchestration is ACTIVE. Match the tier to the task shape: `general` for strategy, synthesis, hard calls, final judgment, and auditing what delegates bring back; `warrior` for implementation, exploration/collection, and tool-driven iteration (debugging, browsers, emulators, tmux captures); `scout` for massive, purely mechanical fan-out.",
-  "Do not default to the strongest model for every delegated task. Fast scout/warrior models often beat general models on search, UI loops, flaky tests, and broad file sweeps because they can iterate faster.",
-  "The HOW is yours, the labor is theirs: make every decision (design, semantics, model-facing text) BEFORE dispatching a warrior/scout, and write the how-to into its prompt (steps, exact files, commands, checks, output shape) — a brief containing a decision verb is not ready. Delegated findings return as evidence (file:line + snippet), never verdicts — audit the load-bearing ones yourself before building on them.",
+const DEFAULT_ORCHESTRATION_GUIDANCE =
+  "Multi-provider orchestration is active in Default mode. Choose concrete provider/model pairs from # Available models for delegated Agent and Workflow calls; omit overrides to inherit the current route. Explicit pins are literal: if unavailable, report the failure instead of substituting another route.";
+
+const FEUDALISM_SESSION_BULLETS: readonly string[] = [
+  "Multi-provider orchestration is active in feudalism mode. Match the tier to the task shape: `emperor` for strategy, synthesis, hard calls, final judgment, and auditing what delegates bring back; `shogun` for complex execution with judgment (tactical planning, multi-step implementation, review passes); `daimyo` for implementation, exploration/collection, and tool-driven iteration (debugging, browsers, emulators, tmux captures); `samurai` ONLY on explicit choice for massive, purely mechanical fan-out.",
+  "Do not default to the strongest model for every delegated task. Fast daimyo models often beat emperor models on search, UI loops, flaky tests, and broad file sweeps because they can iterate faster.",
+  "The HOW is yours, the labor is theirs: make every decision (design, semantics, model-facing text) BEFORE dispatching a daimyo/samurai, and write the how-to into its prompt (steps, exact files, commands, checks, output shape) — a brief containing a decision verb is not ready. Delegated findings return as evidence (file:line + snippet), never verdicts — audit the load-bearing ones yourself before building on them.",
 ];
 
 export const multiproviderGuidanceLayer: CategorizedLayer = {
@@ -45,10 +48,13 @@ export const multiproviderGuidanceLayer: CategorizedLayer = {
   cache: "1h",
   phase: "dynamic",
   render(ctx: LayerContext) {
-    if (!ctx.multiproviderEnabled) return null;
+    if (ctx.orchestrationMode === "default") {
+      return ["# Multi-provider orchestration", ` - ${DEFAULT_ORCHESTRATION_GUIDANCE}`].join("\n");
+    }
+    if (ctx.orchestrationMode !== "feudalism") return null;
     return [
       "# Multi-provider orchestration",
-      ...MULTIPROVIDER_SESSION_BULLETS.map((b) => ` - ${b}`),
+      ...FEUDALISM_SESSION_BULLETS.map((b) => ` - ${b}`),
     ].join("\n");
   },
 };

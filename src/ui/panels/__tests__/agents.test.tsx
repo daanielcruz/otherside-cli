@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import type { SubagentDef } from "@/engine/agents/registry.ts";
-import Ink from "@/terminal-runtime/host/runtime-session.tsx";
+import { Ink } from "@/ink";
+import { computeListWindow } from "@/kernel/std/list-window.ts";
 import { pickerMaxHeight } from "@/ui/chrome/picker-geometry.ts";
 import {
   AgentLibraryPicker,
-  agentLibraryWindow,
   LibraryPane,
   orderedAgentLibrary,
   pageAgentLibraryIndex,
@@ -133,27 +133,31 @@ describe("agents library picker", () => {
       {
         terminalRows: 20,
         visible: 1,
-        centered: { firstVisible: 31, lastVisible: 32, aboveCount: 31, belowCount: 30 },
-        tail: { firstVisible: 61, lastVisible: 62, aboveCount: 61, belowCount: 0 },
+        centered: { from: 31, to: 32, size: 1, above: 31, below: 30 },
+        tail: { from: 61, to: 62, size: 1, above: 61, below: 0 },
       },
       {
         terminalRows: 30,
         visible: 7,
-        centered: { firstVisible: 28, lastVisible: 35, aboveCount: 28, belowCount: 27 },
-        tail: { firstVisible: 55, lastVisible: 62, aboveCount: 55, belowCount: 0 },
+        centered: { from: 28, to: 35, size: 7, above: 28, below: 27 },
+        tail: { from: 55, to: 62, size: 7, above: 55, below: 0 },
       },
       {
         terminalRows: 50,
         visible: 20,
-        centered: { firstVisible: 21, lastVisible: 41, aboveCount: 21, belowCount: 21 },
-        tail: { firstVisible: 42, lastVisible: 62, aboveCount: 42, belowCount: 0 },
+        centered: { from: 21, to: 41, size: 20, above: 21, below: 21 },
+        tail: { from: 42, to: 62, size: 20, above: 42, below: 0 },
       },
     ];
 
     for (const entry of cases) {
       expect(visibleAgentLibraryRows(entry.terminalRows)).toBe(entry.visible);
-      expect(agentLibraryWindow(31, 62, entry.visible)).toEqual(entry.centered);
-      expect(agentLibraryWindow(61, 62, entry.visible)).toEqual(entry.tail);
+      expect(
+        computeListWindow({ cursor: 31, total: 62, size: entry.visible, anchor: "center" }),
+      ).toEqual(entry.centered);
+      expect(
+        computeListWindow({ cursor: 61, total: 62, size: entry.visible, anchor: "center" }),
+      ).toEqual(entry.tail);
     }
     expect(pageAgentLibraryIndex(31, 62, 1, 7)).toBe(38);
     expect(pageAgentLibraryIndex(61, 62, 1, 20)).toBe(61);

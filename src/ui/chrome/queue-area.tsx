@@ -8,8 +8,15 @@ export interface QueueAreaProps {
   active: boolean;
 }
 
-const QueueAreaInner = (props: QueueAreaProps): React.JSX.Element => (
-  <QueuePreview messages={props.messages} active={props.active} />
-);
+// Queued-input preview under the promptbar. This surface shows ONLY messages
+// the user queued for the next boundary (typed mid-turn, pending slash-command
+// changes). Background-task completion notifications never render here: they
+// are delivered to the model at a queue boundary and surface in the transcript
+// as task notices at that moment — a queued completion (own scope or a
+// subagent owner's) has no promptbar row.
+const QueueAreaInner = (props: QueueAreaProps): React.JSX.Element => {
+  const visible = props.active ? props.messages : [];
+  return <QueuePreview messages={visible} active={visible.length > 0} />;
+};
 
 export const QueueArea = memo(QueueAreaInner);

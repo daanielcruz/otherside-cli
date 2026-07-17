@@ -39,9 +39,9 @@ describe("markProviderCooldown / isProviderHealthy", () => {
   });
 
   it("clears an expired cooldown and reports healthy again", () => {
-    markProviderCooldown("kimi-code", Date.now() - 1_000);
-    expect(isProviderHealthy("kimi-code")).toBe(true);
-    expect(getProviderCooldown("kimi-code")).toBeNull();
+    markProviderCooldown("kimi", Date.now() - 1_000);
+    expect(isProviderHealthy("kimi")).toBe(true);
+    expect(getProviderCooldown("kimi")).toBeNull();
   });
 
   it("treats untouched providers as healthy", () => {

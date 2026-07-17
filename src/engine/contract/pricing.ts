@@ -14,7 +14,7 @@ const TABLE: PricingTable = {
     modelId.includes("reasoner") || modelId.includes("pro")
       ? { inputPerM: 0.55, outputPerM: 2.19, cachedInputPerM: 0.14, currency: "USD" }
       : { inputPerM: 0.14, outputPerM: 0.28, cachedInputPerM: 0.01, currency: "USD" },
-  "kimi-code": (modelId) =>
+  kimi: (modelId) =>
     modelId.includes("kimi")
       ? { inputPerM: 0, outputPerM: 0, cachedInputPerM: 0, currency: "USD" }
       : null,
@@ -35,7 +35,7 @@ const TABLE: PricingTable = {
     }
     return { inputPerM: 0.6, outputPerM: 2.2, cachedInputPerM: 0.11, currency: "USD" };
   },
-  "openai-custom": () => ({
+  openai: () => ({
     inputPerM: 0,
     outputPerM: 0,
     cachedInputPerM: 0,

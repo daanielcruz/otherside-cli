@@ -17,13 +17,18 @@ export function commitAssistantMessage(
   },
   requestId?: string,
 ): void {
+  const brokerState = deps.broker.read();
+  const account = accountFingerprint(brokerState.provider);
   const blocks: ContentBlock[] = [];
   if (thinking.length > 0 || thinkingSignature.length > 0) {
-    const block: { type: "thinking"; text: string; signature?: string } = {
+    const block: Extract<ContentBlock, { type: "thinking" }> = {
       type: "thinking",
       text: thinking,
+      producedBy: brokerState.provider,
+      producedModel: brokerState.model,
     };
     if (thinkingSignature) block.signature = thinkingSignature;
+    if (account) block.producedAccount = account;
     blocks.push(block);
   }
   if (text.trim().length > 0) blocks.push({ type: "text", text });
@@ -32,7 +37,6 @@ export function commitAssistantMessage(
   }
   if (blocks.length === 0) return;
   const id = assistantId ?? `asst_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  const brokerState = deps.broker.read();
   const msg: Message = {
     role: "assistant",
     id,
@@ -41,7 +45,6 @@ export function commitAssistantMessage(
     producedModel: brokerState.model,
     ts: Date.now(),
   };
-  const account = accountFingerprint(brokerState.provider);
   if (account) msg.producedAccount = account;
   if (usage) msg.usage = usage;
   if (requestId) msg.requestId = requestId;

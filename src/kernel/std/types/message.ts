@@ -42,7 +42,17 @@ export type ToolResultContentBlock =
       source: { type: "base64"; media_type: ImageMediaType; data: string };
       dimensions?: ImageDimensions;
     }
+  | {
+      type: "pdf";
+      source: { type: "base64"; media_type: "application/pdf"; data: string };
+      filename: string;
+      pageCount: number;
+      bytes: number;
+    }
   | { type: "tool_reference"; tool_name: string };
+
+export const PDF_UNAVAILABLE_PLACEHOLDER =
+  "[PDF content is unavailable on this provider. Re-read the file to provide page images.]";
 
 export function toolResultText(content: string | ToolResultContentBlock[]): string {
   if (typeof content === "string") return content;
@@ -55,6 +65,8 @@ export function toolResultText(content: string | ToolResultContentBlock[]): stri
       const h = dims?.displayHeight ?? dims?.originalHeight;
       const dimStr = w !== undefined && h !== undefined ? ` ${w}x${h}` : "";
       parts.push(`[image: ${block.source.media_type}${dimStr}]`);
+    } else if (block.type === "pdf") {
+      parts.push(PDF_UNAVAILABLE_PLACEHOLDER);
     }
   }
   return parts.join("\n");
@@ -70,7 +82,19 @@ export type ContentBlock =
       is_error?: boolean;
       cache_control?: CacheControl;
     }
-  | { type: "thinking"; text: string; signature?: string }
+  // Thinking replay is bound to the provider, model, and credential that
+  // produced the block, and message-level stamps do not survive history
+  // rebuilds that merge assistant messages from different producers, so the
+  // block carries its own stamp. Builders gate replay on the block stamp and
+  // fall back to the message stamp only for legacy unstamped blocks.
+  | {
+      type: "thinking";
+      text: string;
+      signature?: string;
+      producedBy?: ProviderId;
+      producedModel?: string;
+      producedAccount?: string;
+    }
   | {
       type: "image";
       source: { type: "base64"; media_type: ImageMediaType; data: string };

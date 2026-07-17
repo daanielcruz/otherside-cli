@@ -54,10 +54,12 @@ export function AskQuestionOverlay({
   const state = tabStates[activeTab] ?? freshState();
 
   const optionCount = activeQuestion?.options.length ?? 0;
-  const freeformIndex = optionCount;
-  const chatIndex = optionCount + 1;
-  const rowCount = optionCount + 2;
-  const isTyping = !isSubmitTab && state.cursor === freeformIndex;
+  const allowFreeform = activeQuestion?.allowFreeform !== false;
+  const allowChat = activeQuestion?.allowChat !== false;
+  const freeformIndex = allowFreeform ? optionCount : -1;
+  const chatIndex = allowChat ? optionCount + (allowFreeform ? 1 : 0) : -1;
+  const rowCount = optionCount + (allowFreeform ? 1 : 0) + (allowChat ? 1 : 0);
+  const isTyping = !isSubmitTab && freeformIndex >= 0 && state.cursor === freeformIndex;
 
   function patchState(patch: Partial<TabState>): void {
     setTabStates((prev) => {
@@ -395,29 +397,35 @@ function QuestionView({
             </Box>
           );
         })}
-        <FreeformRow
-          index={freeformIndex}
-          focused={state.cursor === freeformIndex}
-          draft={state.draft}
-          draftCursor={state.draftCursor}
-          multiSelect={question.multiSelect}
-        />
-        <Box
-          marginTop={1}
-          width="100%"
-          borderStyle="single"
-          borderTop
-          borderBottom={false}
-          borderLeft={false}
-          borderRight={false}
-          borderTopColor={Color.muted}
-        />
-        <Box>
-          <Text color={state.cursor === chatIndex ? Color.primaryGlow : Color.muted}>
-            {state.cursor === chatIndex ? Glyph.chevron : "  "}
-            {chatIndex + 1}. Chat about this
-          </Text>
-        </Box>
+        {freeformIndex >= 0 && (
+          <FreeformRow
+            index={freeformIndex}
+            focused={state.cursor === freeformIndex}
+            draft={state.draft}
+            draftCursor={state.draftCursor}
+            multiSelect={question.multiSelect}
+          />
+        )}
+        {chatIndex >= 0 && (
+          <>
+            <Box
+              marginTop={1}
+              width="100%"
+              borderStyle="single"
+              borderTop
+              borderBottom={false}
+              borderLeft={false}
+              borderRight={false}
+              borderTopColor={Color.muted}
+            />
+            <Box>
+              <Text color={state.cursor === chatIndex ? Color.primaryGlow : Color.muted}>
+                {state.cursor === chatIndex ? Glyph.chevron : "  "}
+                {chatIndex + 1}. Chat about this
+              </Text>
+            </Box>
+          </>
+        )}
       </Box>
       {!!preview && (
         <Box flexDirection="column" marginTop={1} paddingLeft={2}>

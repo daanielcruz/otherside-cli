@@ -26,7 +26,15 @@ export interface PkceFlowSpec<TTokens> {
   callbackPath: string;
   portStart: number;
   portEnd: number;
+  /**
+   * Explicit callback ports to try in order. When set, overrides
+   * portStart/portEnd — required when the OAuth client only registers a fixed
+   * set of loopback redirect URIs (any other port is rejected by the IdP).
+   */
+  ports?: number[];
   redirectUriHost: "localhost" | "127.0.0.1";
+  /** Optional PKCE verifier entropy in bytes; defaults to the shared value. */
+  verifierBytes?: number;
   buildAuthorizeUrl(args: AuthorizeUrlArgs): string;
   exchange(args: ExchangeArgs): Promise<TTokens>;
 }
@@ -57,8 +65,7 @@ interface CallbackServer {
 async function awaitLoopbackCallback(opts: {
   providerLabel: string;
   callbackPath: string;
-  portStart: number;
-  portEnd: number;
+  ports: number[];
 }): Promise<CallbackServer> {
   let resolveResult!: (r: CallbackResult) => void;
   let rejectResult!: (e: Error) => void;
@@ -69,7 +76,7 @@ async function awaitLoopbackCallback(opts: {
 
   let chosenPort = 0;
   let server: ReturnType<typeof Bun.serve> | null = null;
-  for (let port = opts.portStart; port < opts.portEnd; port++) {
+  for (const port of opts.ports) {
     try {
       server = Bun.serve({
         port,
@@ -100,7 +107,7 @@ async function awaitLoopbackCallback(opts: {
   }
   if (!server) {
     throw new Error(
-      `could not bind any port in ${opts.portStart}..${opts.portEnd} for the ${opts.providerLabel} OAuth callback`,
+      `could not bind any of ports [${opts.ports.join(", ")}] for the ${opts.providerLabel} OAuth callback`,
     );
   }
   const finalServer = server;
@@ -145,13 +152,15 @@ export function parseSubmittedCallback(pasted: string, expectedState: string): P
 export async function runPkceFlow<TTokens>(
   spec: PkceFlowSpec<TTokens>,
 ): Promise<PkceFlowHandle<TTokens>> {
-  const pkce = await generatePkce();
+  const pkce = await generatePkce(spec.verifierBytes);
   const state = generateState();
+  const ports =
+    spec.ports ??
+    Array.from({ length: spec.portEnd - spec.portStart }, (_, i) => spec.portStart + i);
   const callback = await awaitLoopbackCallback({
     providerLabel: spec.providerLabel,
     callbackPath: spec.callbackPath,
-    portStart: spec.portStart,
-    portEnd: spec.portEnd,
+    ports,
   });
   const redirectUri = `http://${spec.redirectUriHost}:${callback.port}${spec.callbackPath}`;
   const url = spec.buildAuthorizeUrl({

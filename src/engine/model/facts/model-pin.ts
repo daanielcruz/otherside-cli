@@ -1,6 +1,7 @@
 import { CATALOG, findFamilyMatch, type ModelEntry, parseModelId } from "@/engine/model/catalog.ts";
 import { providerUsabilityNow } from "@/engine/model/tier/resolver.ts";
 import { formatResetTime } from "@/engine/session/usage/limits.ts";
+import type { OrchestrationMode } from "@/kernel/config/orchestration-mode.ts";
 import { isProviderId, type ProviderId } from "@/kernel/config/provider-ids.ts";
 
 export interface ModelPinResolution {
@@ -16,10 +17,17 @@ export function exhaustedProviderLaunchError(
   provider: ProviderId,
   activeProvider: ProviderId | undefined,
   model: string,
+  orchestrationMode: OrchestrationMode = "disabled",
 ): string | null {
   const usability = providerUsabilityNow(provider, activeProvider, model);
   if (!usability.quotaBlocked) return null;
-  return `QuotaExhaustedError: provider "${provider}" has exhausted its quota/balance and cannot take this launch${quotaResetSuffix(usability.quotaResetsAtEpochMs)}. Pin a different provider/model, use \`tier\` routing, or retry after the reset. Details: ${usability.blockedReasons.join("; ")}.`;
+  const routeHint =
+    orchestrationMode === "disabled"
+      ? " Choose another model from the current provider or retry after the reset."
+      : orchestrationMode === "default"
+        ? " Pin another provider/model or retry after the reset."
+        : " Use `tier` routing or retry after the reset.";
+  return `QuotaExhaustedError: provider "${provider}" has exhausted its quota/balance and cannot take this launch${quotaResetSuffix(usability.quotaResetsAtEpochMs)}.${routeHint} Details: ${usability.blockedReasons.join("; ")}.`;
 }
 
 function catalogMatch(pin: string, provider: ProviderId): ModelEntry | undefined {
@@ -66,6 +74,7 @@ export function resolveModelPin(
   rawProvider: string,
   pin: string,
   activeProvider?: ProviderId,
+  orchestrationMode: OrchestrationMode = "feudalism",
 ): ModelPinResult {
   if (!isProviderId(rawProvider)) {
     return {
@@ -94,7 +103,12 @@ export function resolveModelPin(
         error: `InputValidationError: provider "${provider}" has no configured credentials. Run \`otherside login --provider ${provider}\` or set its API-key env var.`,
       };
     }
-    const quotaError = exhaustedProviderLaunchError(provider, activeProvider, entry.id);
+    const quotaError = exhaustedProviderLaunchError(
+      provider,
+      activeProvider,
+      entry.id,
+      orchestrationMode,
+    );
     if (quotaError !== null) {
       return { ok: false, error: quotaError };
     }

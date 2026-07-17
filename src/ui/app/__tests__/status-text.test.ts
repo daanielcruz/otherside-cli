@@ -15,13 +15,13 @@ describe("computeAutoCompactRemainingPct", () => {
     resetRuntimeModelsForTests();
   });
 
-  it("shows 0% only at the model's autoCompactTokenLimit", () => {
+  it("shows 0% only at the model compact threshold", () => {
     expect(computeAutoCompactRemainingPct(107_999, "gpt-5.3-codex-spark", "codex")).toBe(1);
     expect(computeAutoCompactRemainingPct(108_000, "gpt-5.3-codex-spark", "codex")).toBe(0);
     expect(computeAutoCompactRemainingPct(108_001, "gpt-5.3-codex-spark", "codex")).toBe(0);
   });
 
-  it("uses the selected provider's boundary when model ids collide", () => {
+  it("uses provider-scoped compact limits when model ids collide", () => {
     const model = "shared-compact-boundary";
     registerRuntimeModel({
       id: model,
@@ -42,24 +42,42 @@ describe("computeAutoCompactRemainingPct", () => {
       defaultEffort: "high",
     });
 
-    expect(computeAutoCompactRemainingPct(140_000, model, "xai")).toBe(0);
-    expect(computeAutoCompactRemainingPct(140_000, model, "codex")).toBeGreaterThan(0);
+    expect(computeAutoCompactRemainingPct(119_999, model, "xai")).toBe(1);
+    expect(computeAutoCompactRemainingPct(120_000, model, "xai")).toBe(0);
+    expect(computeAutoCompactRemainingPct(179_999, model, "codex")).toBe(1);
+    expect(computeAutoCompactRemainingPct(180_000, model, "codex")).toBe(0);
   });
 
   it("reflects an OTHERSIDE_AUTO_COMPACT_WINDOW shrink in the threshold used for the percent", () => {
+    const model = "window-shrink-status-model";
+    registerRuntimeModel({
+      id: model,
+      displayName: model,
+      contextWindow: 1_000_000,
+      provider: "xai",
+      efforts: ["high"],
+      defaultEffort: "high",
+    });
     process.env[ENV_KEY] = "200000";
-    expect(computeAutoCompactRemainingPct(179_999, "claude-sonnet-5", "anthropic")).toBe(1);
-    expect(computeAutoCompactRemainingPct(180_000, "claude-sonnet-5", "anthropic")).toBe(0);
-    expect(computeAutoCompactRemainingPct(180_000, "claude-sonnet-5", "anthropic")).not.toBe(
-      Math.max(0, Math.round((1 - 180_000 / 967_000) * 100)),
+    expect(computeAutoCompactRemainingPct(166_999, model, "xai")).toBe(1);
+    expect(computeAutoCompactRemainingPct(167_000, model, "xai")).toBe(0);
+    expect(computeAutoCompactRemainingPct(167_000, model, "xai")).not.toBe(
+      Math.max(0, Math.round((1 - 167_000 / 967_000) * 100)),
     );
   });
 
-  it("hits 0% at 967_000 for a 1M-window anthropic model with no autoCompactTokenLimit override", () => {
-    expect(computeAutoCompactRemainingPct(967_000, "claude-sonnet-5", "anthropic")).toBe(0);
-    expect(computeAutoCompactRemainingPct(960_000, "claude-sonnet-5", "anthropic")).toBeGreaterThan(
-      0,
-    );
+  it("hits 0% at 967_000 for a 1M-window model", () => {
+    const model = "million-window-status-model";
+    registerRuntimeModel({
+      id: model,
+      displayName: model,
+      contextWindow: 1_000_000,
+      provider: "xai",
+      efforts: ["high"],
+      defaultEffort: "high",
+    });
+    expect(computeAutoCompactRemainingPct(967_000, model, "xai")).toBe(0);
+    expect(computeAutoCompactRemainingPct(960_000, model, "xai")).toBeGreaterThan(0);
   });
 });
 

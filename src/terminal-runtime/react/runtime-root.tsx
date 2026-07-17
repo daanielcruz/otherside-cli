@@ -71,6 +71,10 @@ type Props = {
   readonly terminalRows: number;
 
   readonly onStdinResume?: () => void;
+  readonly onStdinSuspend?: () => void;
+  readonly onTerminalResume?: () => void;
+
+  readonly terminalProbe?: TerminalProbe;
 
   readonly onCursorDeclaration?: PointerLocationUpdater;
 
@@ -255,7 +259,7 @@ export default class App extends PureComponent<Props, State> {
   readonly ESCAPE_SEQUENCE_TIMEOUT_MS = 50;
   readonly PASTE_DETECTION_TIMEOUT_MS = 500;
 
-  querier = new TerminalProbe(this.props.stdout);
+  querier = this.props.terminalProbe ?? new TerminalProbe(this.props.stdout);
 
   lastStdinTime = Date.now();
 
@@ -601,6 +605,7 @@ export default class App extends PureComponent<Props, State> {
     }
 
     const rawModeCountBeforeSuspend = this.rawModeEnabledCount;
+    this.props.onStdinSuspend?.();
 
     while (this.rawModeEnabledCount > 0) {
       this.handleSetRawMode(false);
@@ -628,6 +633,7 @@ export default class App extends PureComponent<Props, State> {
       }
 
       this.internal_eventEmitter.emit("resume");
+      this.props.onTerminalResume?.();
 
       process.removeListener("SIGCONT", resumeHandler);
     };

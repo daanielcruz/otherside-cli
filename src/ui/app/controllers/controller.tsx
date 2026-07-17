@@ -39,6 +39,7 @@ import { AppView } from "@/ui/app/mount.tsx";
 import { shellChromeState } from "@/ui/chrome/layout/shell.tsx";
 import { panelChromeState } from "@/ui/chrome/overlay.ts";
 import { usePendingInteractive } from "@/ui/hooks/use-pending-interactive.ts";
+import { useRightRegionSessionNotices } from "@/ui/hooks/use-right-region-sessions.ts";
 import { useThemeBootstrap } from "@/ui/hooks/use-theme-bootstrap.ts";
 import { useGlobalInput } from "@/ui/keybindings/useGlobalInput.ts";
 import type { OverlayName } from "@/ui/panels/registry.tsx";
@@ -162,21 +163,19 @@ export function AppController({
     setCodexUsage,
     setMainTokenTotals,
     setMainLastContext,
-    usageWarning,
     contextWarningSuppressed,
     setContextWarningSuppressed,
     recordProviderUsage,
-    clipboardImageActive,
-    activeGoalLabel,
-    contextBanner,
     activeContextTotal,
-    autoCompactWarningPct,
+    autoCompactWarningPct: _autoCompactWarningPct,
     fallbackInputTokens,
     mainOutputTokens,
-  } = useAppUsage({ session, broker, initialTranscript, state, runtimeConfig, busy });
+  } = useAppUsage({ session, broker, initialTranscript, state, runtimeConfig });
+  void _autoCompactWarningPct;
   const logEpoch = viewState.logEpoch;
   const btwMode = viewState.btwMode;
   useThemeBootstrap(runtimeConfig.theme);
+  useRightRegionSessionNotices(remoteSyncStatus);
 
   const { pasteStoreRef, requestBackgroundResumeRef, turnGuard } = useAppTurnRuntime({
     session,
@@ -252,7 +251,7 @@ export function AppController({
       }),
     [session, agent, broker],
   );
-  const { pushQueued, popAllQueued, applyPendingChange, enqueuePendingChange } = queueHelpers;
+  const { pushQueued, popAllQueued, applyPendingChange } = queueHelpers;
 
   const { abortAllForkControllers, handleQuotaExhausted, showErrorPanel, runCancellation } =
     createCancellationStage({
@@ -335,6 +334,7 @@ export function AppController({
     setTranscript,
     recordProviderUsage,
     handleQuotaExhausted,
+    setPluginStatusNotice: (notice) => dispatch({ type: "view/setPluginStatusNotice", notice }),
     runSkill,
     applyPendingChange,
     transcriptBatch,
@@ -456,7 +456,6 @@ export function AppController({
     displayTranscript,
     rewindToTranscriptId,
     resumeSession,
-    enqueuePendingChange,
     recordPanelCommit,
     workflowDetailTargetId,
     slashLifecycle,
@@ -512,12 +511,7 @@ export function AppController({
       mainOutputTokens={mainOutputTokens}
       mainLastContext={mainLastContext}
       activeContextTotal={activeContextTotal}
-      tokensWarning={usageWarning ?? contextBanner ?? undefined}
-      autoCompactWarningPct={autoCompactWarningPct}
-      clipboardImageActive={clipboardImageActive}
-      activeGoalLabel={activeGoalLabel}
       exitPendingKey={exitPendingKey}
-      remoteSyncStatus={remoteSyncStatus}
       panelStatusHint={panelStatusHint}
       panelAgents={panelAgents}
       workflowTasks={workflowTasks}

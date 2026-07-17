@@ -334,7 +334,9 @@ describe("Background task completion notifications (autoTurn / stoppedByUser)", 
     const item = notificationFor(task.id);
     expect(item).toBeDefined();
     expect(item?.autoTurn).not.toBe(false);
-    expect(summaryOf(item)).toContain("by the user");
+    // A stopped background command reads "was stopped" with no attribution
+    // suffix; only agent/workflow kills carry "by user".
+    expect(summaryOf(item)).toContain("was stopped");
     expect(emitQueue.hasPendingAutoTurn()).toBe(true);
   });
 
@@ -358,6 +360,9 @@ describe("Background task completion notifications (autoTurn / stoppedByUser)", 
     const owned = emitQueue.takeForOwner("fork_parent_1");
     expect(owned).toHaveLength(1);
     expect(owned[0]?.payload.kind).toBe("task_notification_xml");
+    if (owned[0]?.payload.kind === "task_notification_xml") {
+      expect(owned[0].payload.text).toContain("<error>child failed</error>");
+    }
     release();
   });
 

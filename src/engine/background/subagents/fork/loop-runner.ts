@@ -16,7 +16,12 @@ import {
 } from "@/engine/session/task-reminder.ts";
 import { killShellsForOwner } from "@/engine/tools/builtins/bash.ts";
 import type { ToolSchema } from "@/engine/tools/contract.ts";
-import { activeDeferredToolNames, declaredSchemasForOverrides } from "@/engine/tools/deferred.ts";
+import {
+  activeDeferredToolNames,
+  clearDeferredAnnouncementsForScope,
+  declaredSchemasForOverrides,
+} from "@/engine/tools/deferred.ts";
+import { buildAgentInputSchema } from "@/engine/tools/dynamic/Agent.ts";
 import * as toolRegistry from "@/engine/tools/registry.ts";
 import type { ProviderToolDeclaration } from "@/engine/translator/index.ts";
 import { getAssembledTurn, sanitizeMessages } from "@/engine/translator/index.ts";
@@ -57,7 +62,7 @@ import { withGuaranteedReport } from "./report.ts";
 import { isTooShortForReturn } from "./return-quality.ts";
 import { withSidechainMetadata } from "./sidechain.ts";
 import { agentSpawnDepthFromContext } from "./spawn-depth.ts";
-import { consumeForkStream, FORK_MAX_ATTEMPTS } from "./stream-consumer.ts";
+import { consumeForkStream } from "./stream-consumer.ts";
 import { maxStructuredOutputRetries } from "./structured-retries.ts";
 import {
   applyForkToolResultBudget,
@@ -116,18 +121,24 @@ const DEFERRED_TOOL_PLACEHOLDER: ProviderToolDeclaration = {
   defer_loading: true,
 };
 
+function inputSchemaForSubagent(schema: ToolSchema, ctx: RequestContext): Record<string, unknown> {
+  if (schema.name === "Agent") {
+    return buildAgentInputSchema(ctx.provider, ctx.orchestrationMode ?? "disabled");
+  }
+  return typeof schema.inputSchema.type === "string"
+    ? schema.inputSchema
+    : { type: "object", properties: {}, ...schema.inputSchema };
+}
+
 function toSubagentDeclaration(schema: ToolSchema, ctx: RequestContext): ProviderToolDeclaration {
   return {
     name: schema.name,
     description: forkToolDescription(schema.name, schema.description, {
       providerId: ctx.provider,
       model: ctx.model,
-      multiprovider: ctx.multiproviderEnabled === true,
+      orchestrationMode: ctx.orchestrationMode ?? "disabled",
     }),
-    input_schema:
-      typeof schema.inputSchema.type === "string"
-        ? schema.inputSchema
-        : { type: "object", properties: {}, ...schema.inputSchema },
+    input_schema: inputSchemaForSubagent(schema, ctx),
   };
 }
 
@@ -182,11 +193,23 @@ export function buildSubagentBaseDeclarations(
       }
     }
     const implemented = new Set(toolRegistry.list().map((handler) => handler.schema.name));
-    const activeDeferred = new Set(activeDeferredToolNames());
-    for (const schema of declaredSchemasForOverrides(provider.deferredOverrides(), implemented)) {
+    // A parent-turn fork inherits the spawning session's transcript, so the
+    // session's announced tools legitimately belong to its declared set; the
+    // fork's own later ToolSearch loads land in its own scope and union in.
+    const activeDeferred = new Set([
+      ...activeDeferredToolNames(),
+      ...activeDeferredToolNames(ctx.agentOwnerId),
+    ]);
+    const candidateSchemas = new Map(
+      [
+        ...declaredSchemasForOverrides(provider.deferredOverrides(), implemented),
+        ...declaredSchemasForOverrides(provider.deferredOverrides(), implemented, ctx.agentOwnerId),
+      ].map((schema) => [schema.name, schema]),
+    );
+    for (const schema of candidateSchemas.values()) {
       if (
         !activeDeferred.has(schema.name) ||
-        !isAllowedInForkDeclarations(schema.name, spec.allowSet, spec) ||
+        !isAllowedInForkDeclarations(schema.name, spec.allowSet, spec, ctx.agentOwnerId) ||
         declarations.some((declaration) => declaration.name === schema.name)
       ) {
         continue;
@@ -198,7 +221,7 @@ export function buildSubagentBaseDeclarations(
       if (
         !isMcpToolName(schema.name) ||
         !activeDeferred.has(schema.name) ||
-        !isAllowedInForkDeclarations(schema.name, spec.allowSet, spec) ||
+        !isAllowedInForkDeclarations(schema.name, spec.allowSet, spec, ctx.agentOwnerId) ||
         declarations.some((declaration) => declaration.name === schema.name)
       ) {
         continue;
@@ -209,12 +232,13 @@ export function buildSubagentBaseDeclarations(
   }
 
   const implemented = new Set(toolRegistry.list().map((handler) => handler.schema.name));
-  const activeDeferred = new Set(activeDeferredToolNames());
+  // Fresh-context agents never saw the parent transcript: only their OWN
+  // ToolSearch loads count toward declared deferred extras.
+  const activeDeferred = new Set(activeDeferredToolNames(ctx.agentOwnerId));
   const schemasByName = new Map(
-    declaredSchemasForOverrides(provider.deferredOverrides(), implemented).map((schema) => [
-      schema.name,
-      schema,
-    ]),
+    declaredSchemasForOverrides(provider.deferredOverrides(), implemented, ctx.agentOwnerId).map(
+      (schema) => [schema.name, schema],
+    ),
   );
   const declarations: ProviderToolDeclaration[] = [];
   for (const name of NAMED_SUBAGENT_TOOL_ORDER) {
@@ -223,18 +247,20 @@ export function buildSubagentBaseDeclarations(
       continue;
     }
     const schema = schemasByName.get(name);
-    if (schema === undefined || !isAllowedInForkDeclarations(name, spec.allowSet, spec)) continue;
+    if (
+      schema === undefined ||
+      !isAllowedInForkDeclarations(name, spec.allowSet, spec, ctx.agentOwnerId)
+    ) {
+      continue;
+    }
     declarations.push({
       name,
       description: forkToolDescription(name, schema.description, {
         providerId: provider.id,
         model: ctx.model,
-        multiprovider: ctx.multiproviderEnabled === true,
+        orchestrationMode: ctx.orchestrationMode ?? "disabled",
       }),
-      input_schema:
-        typeof schema.inputSchema.type === "string"
-          ? schema.inputSchema
-          : { type: "object", properties: {}, ...schema.inputSchema },
+      input_schema: inputSchemaForSubagent(schema, ctx),
     });
   }
 
@@ -242,7 +268,7 @@ export function buildSubagentBaseDeclarations(
     const { schema } = handler;
     if (
       !isSkillToolName(schema.name) ||
-      !isAllowedInForkDeclarations(schema.name, spec.allowSet, spec) ||
+      !isAllowedInForkDeclarations(schema.name, spec.allowSet, spec, ctx.agentOwnerId) ||
       declarations.some((declaration) => declaration.name === schema.name)
     ) {
       continue;
@@ -252,7 +278,7 @@ export function buildSubagentBaseDeclarations(
       description: forkToolDescription(schema.name, schema.description, {
         providerId: provider.id,
         model: ctx.model,
-        multiprovider: ctx.multiproviderEnabled === true,
+        orchestrationMode: ctx.orchestrationMode ?? "disabled",
       }),
       input_schema:
         typeof schema.inputSchema.type === "string"
@@ -260,10 +286,14 @@ export function buildSubagentBaseDeclarations(
           : { type: "object", properties: {}, ...schema.inputSchema },
     });
   }
-  for (const schema of declaredSchemasForOverrides(provider.deferredOverrides(), implemented)) {
+  for (const schema of declaredSchemasForOverrides(
+    provider.deferredOverrides(),
+    implemented,
+    ctx.agentOwnerId,
+  )) {
     if (
       !activeDeferred.has(schema.name) ||
-      !isAllowedInForkDeclarations(schema.name, spec.allowSet, spec) ||
+      !isAllowedInForkDeclarations(schema.name, spec.allowSet, spec, ctx.agentOwnerId) ||
       declarations.some((declaration) => declaration.name === schema.name)
     ) {
       continue;
@@ -275,7 +305,7 @@ export function buildSubagentBaseDeclarations(
     if (
       !isMcpToolName(schema.name) ||
       !activeDeferred.has(schema.name) ||
-      !isAllowedInForkDeclarations(schema.name, spec.allowSet, spec) ||
+      !isAllowedInForkDeclarations(schema.name, spec.allowSet, spec, ctx.agentOwnerId) ||
       declarations.some((declaration) => declaration.name === schema.name)
     ) {
       continue;
@@ -329,7 +359,11 @@ export async function runForkLoopInContext(
     sidechainWriteTail = sidechainWriteTail
       .then(() =>
         appendAgentRecordRaw(
-          { cwd: ctx.originalCwd ?? ctx.cwd, sessionId: ctx.sessionId, agentId: forkId },
+          {
+            cwd: ctx.originalCwd ?? ctx.cwd,
+            sessionId: ctx.sessionId,
+            agentId: forkId,
+          },
           nextRecord,
         ),
       )
@@ -615,9 +649,11 @@ export async function runForkLoopInContext(
       throwIfAborted(ctx.abortSignal);
       const budgetFork = await applyForkToolResultBudget(fork, ctx, appendSidechainRecord);
       fork.splice(0, fork.length, ...budgetFork);
+      // Planning tasks live in the session-shared list (the same one the
+      // Task tools read/write); the reminder must list that scope, never a
+      // per-agent directory that no tool ever writes.
       const taskReminder = buildTaskReminderInjection({
         messages: fork,
-        scope: ctx.agentOwnerId,
         effectiveTools: declarations,
       });
       if (taskReminder !== null) appendTaskReminderMessage(fork, taskReminder);
@@ -635,16 +671,21 @@ export async function runForkLoopInContext(
         };
       }
       const requestMessages = parentTurn
-        ? provider.composeMessages(parentTurn.harness, sanitizeMessages(fork))
+        ? provider.composeMessages(
+            parentTurn.harness,
+            sanitizeMessages(fork, { preserveToolReferences: provider.id === "anthropic" }),
+          )
         : provider.applyTrailingCacheControl
           ? provider.applyTrailingCacheControl(fork)
           : fork;
       const streamCtx: RequestContext = { ...ctx, abortSignal: streamSignal };
-      const reqBody = provider.translateRequest(streamCtx, requestMessages, declarations);
       armStallTimer("stream-start");
-      const stream = streamWithRetry(streamCtx, provider, reqBody, {
-        maxAttempts: FORK_MAX_ATTEMPTS,
-      });
+      // A builder, not a pre-built body: each retry re-translates the request,
+      // so a per-session recovery flagged by recoverableError (e.g. dropping a
+      // rejected reasoning replay) reaches the retried attempt.
+      const stream = streamWithRetry(streamCtx, provider, () =>
+        provider.translateRequest(streamCtx, requestMessages, declarations),
+      );
 
       const streamOutcome = await consumeForkStream({
         stream,
@@ -723,11 +764,15 @@ export async function runForkLoopInContext(
 
       const blocks: ContentBlock[] = [];
       if (thinking.length > 0 || thinkingSignature.length > 0) {
-        const block: { type: "thinking"; text: string; signature?: string } = {
+        const forkAccount = accountFingerprint(ctx.provider);
+        const block: Extract<ContentBlock, { type: "thinking" }> = {
           type: "thinking",
           text: thinking,
+          producedBy: ctx.provider,
+          producedModel: ctx.model,
         };
         if (thinkingSignature) block.signature = thinkingSignature;
+        if (forkAccount) block.producedAccount = forkAccount;
         blocks.push(block);
       }
       if (text.length > 0) blocks.push({ type: "text", text });
@@ -742,7 +787,12 @@ export async function runForkLoopInContext(
         });
       }
       for (const c of toolCalls) {
-        blocks.push({ type: "tool_use", id: c.id, name: c.name, input: c.input });
+        blocks.push({
+          type: "tool_use",
+          id: c.id,
+          name: c.name,
+          input: c.input,
+        });
         appendSidechainRecord({
           type: "tool_call",
           ts: nowIso(),
@@ -778,7 +828,13 @@ export async function runForkLoopInContext(
           model: ctx.model,
         });
         return await finish(
-          { kind: "fork_complete", forkId, output: refusalOut, isError: true, ...parentRef },
+          {
+            kind: "fork_complete",
+            forkId,
+            output: refusalOut,
+            isError: true,
+            ...parentRef,
+          },
           { output: refusalOut, isError: true },
         );
       }
@@ -806,7 +862,10 @@ export async function runForkLoopInContext(
           expandReprompts += 1;
           const reprompt =
             'Your previous message was too short to be useful to the calling agent. The caller ONLY sees your final assistant message — not your tool calls, intermediate reads, or working notes. Expand your response now into a complete, self-contained summary covering everything the caller asked for: findings, results, paths to any files you wrote, severity tallies if applicable. Do not respond with single words like "done". Write the full deliverable.';
-          fork.push({ role: "user", content: [{ type: "text", text: reprompt }] });
+          fork.push({
+            role: "user",
+            content: [{ type: "text", text: reprompt }],
+          });
           appendSidechainRecord({
             type: "user_message",
             ts: nowIso(),
@@ -891,13 +950,20 @@ export async function runForkLoopInContext(
         ? { ...baseResult, structured: dispatchState.structuredValue }
         : baseResult;
     return await finish(
-      { kind: "fork_complete", forkId, output: finalOutput, isError: false, ...parentRef },
+      {
+        kind: "fork_complete",
+        forkId,
+        output: finalOutput,
+        isError: false,
+        ...parentRef,
+      },
       finalResult,
     );
   } finally {
     clearStallTimer();
     stallController.abort();
     killShellsForOwner(forkId);
+    clearDeferredAnnouncementsForScope(forkId);
     await fireSubagentStopHooks(forkId, ctx.sessionId);
     releaseForkChain(ctx.sessionId, forkId, ctx.originalCwd ?? ctx.cwd);
   }

@@ -1,8 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { homedir } from "node:os";
 import { pathToFileURL } from "node:url";
-import { cellAtIndex, type Screen } from "@/terminal-runtime/paint/cell-grid.ts";
-import { paintToTerminal } from "@/terminal-runtime/paint/screen-diff.ts";
+import { cellAtIndex, paintToTerminal, type Screen } from "@/ink";
 import { StreamingMarkdown } from "../markdown/index.tsx";
 
 const WIDTH = 40;

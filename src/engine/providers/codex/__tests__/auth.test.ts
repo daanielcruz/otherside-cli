@@ -2,8 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Auth, beginLogin, currentTokens } from "@/engine/providers/codex/auth.ts";
+import { CLIENT_ID, ORIGINATOR_HTTP, SCOPE } from "@/engine/providers/codex/fingerprint.ts";
 import { type CodexTokens, loadFor, saveFor } from "@/kernel/storage/credentials.ts";
-import { Auth, currentTokens } from "../auth.ts";
 
 let configDir: string;
 const originalFetch = global.fetch;
@@ -14,6 +15,72 @@ function mockJwt(expSeconds: number): string {
     .replace(/=/g, "");
   return `header.${payload}.signature`;
 }
+
+describe("codex oauth authorize", () => {
+  beforeEach(() => {
+    configDir = mkdtempSync(join(tmpdir(), "codex-oauth-test-"));
+    process.env.OTHERSIDE_CONFIG_DIR = configDir;
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+    delete process.env.OTHERSIDE_CONFIG_DIR;
+    rmSync(configDir, { recursive: true, force: true });
+  });
+
+  it("emits live Desktop authorize query params and reuses installation id", async () => {
+    const installationId = "11111111-2222-3333-4444-555555555555";
+    await saveFor("codex", {
+      accessToken: "stale",
+      refreshToken: "stale",
+      expiresAt: Date.now() - 1,
+      installationId,
+      windowId: "window-1",
+    });
+
+    const flow = await beginLogin();
+    const url = new URL(flow.url);
+    expect(url.origin + url.pathname).toBe("https://auth.openai.com/oauth/authorize");
+    // Byte-identical key order to the live ChatGPT Desktop authorize wire.
+    expect([...url.searchParams.keys()]).toEqual([
+      "response_type",
+      "client_id",
+      "redirect_uri",
+      "scope",
+      "code_challenge",
+      "code_challenge_method",
+      "id_token_add_organizations",
+      "codex_cli_simplified_flow",
+      "state",
+      "originator",
+      "source_surface_stable_id",
+      "codex_origin_stable_id",
+      "codex_streamlined_login",
+    ]);
+    expect(url.searchParams.get("response_type")).toBe("code");
+    expect(url.searchParams.get("client_id")).toBe(CLIENT_ID);
+    expect(url.searchParams.get("scope")).toBe(SCOPE);
+    expect(url.searchParams.get("code_challenge_method")).toBe("S256");
+    expect(url.searchParams.get("id_token_add_organizations")).toBe("true");
+    expect(url.searchParams.get("codex_cli_simplified_flow")).toBe("true");
+    expect(url.searchParams.get("originator")).toBe(ORIGINATOR_HTTP);
+    expect(url.searchParams.get("originator")).toBe("Codex Desktop");
+    expect(url.searchParams.get("codex_streamlined_login")).toBe("true");
+    expect(url.searchParams.get("source_surface_stable_id")).toBe(installationId);
+    expect(url.searchParams.get("codex_origin_stable_id")).toBe(installationId);
+    // redirect_uri MUST use an IdP-registered loopback port (1455 or 1457).
+    expect(url.searchParams.get("redirect_uri")).toMatch(
+      /^http:\/\/localhost:14(55|57)\/auth\/callback$/,
+    );
+    // SHA-256 challenge is always 43 base64url chars; 64-byte verifier -> 86 chars.
+    expect(url.searchParams.get("code_challenge")?.length).toBe(43);
+    expect(url.searchParams.get("state")?.length).toBe(43);
+
+    // Reject without token exchange so the callback server stops cleanly.
+    flow.submitCode("code#wrong-state");
+    await expect(flow.result).rejects.toThrow(/state mismatch/);
+  });
+});
 
 describe("codex oauth refresh", () => {
   beforeEach(() => {

@@ -7,12 +7,12 @@ export const PROVIDER_VISION: Record<ProviderId, ProviderVisionKind> = {
   anthropic: "vision",
   antigravity: "vision",
   codex: "vision",
-  "kimi-code": "vision",
+  kimi: "vision",
   glm: "vision",
   xai: "vision",
   minimax: "hybrid",
   deepseek: "none",
-  "openai-custom": "none",
+  openai: "none",
 };
 
 const NATIVE_VISION_MODELS: Partial<Record<ProviderId, readonly string[]>> = {

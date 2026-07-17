@@ -22,12 +22,20 @@ function providerSection(row: { provider: string; models: readonly GuidanceModel
 
 function buildAvailableModelsGuidance(
   rows: readonly { provider: string; models: readonly GuidanceModelRow[] }[],
+  mode: "disabled" | "default",
 ): string {
-  const header = [
-    "# Available models",
-    "Models available for delegated agents (Agent/Workflow `provider` + `model`). Within each provider, models are listed strongest first — but strongest is not always the best fit: match the model to the task shape (fast iterators often beat heavier models on mechanical or iterative work). Providers or models without remaining quota are omitted.",
-    "Default models form the normal routing pool. On-demand models are used only when explicitly requested or when a task specifically calls for their capability.",
-  ].join("\n");
+  const header =
+    mode === "disabled"
+      ? [
+          "# Available models",
+          "Models available for delegated agents on the current provider. Use the Agent/Workflow `model` override to select one.",
+          "Providers or models without remaining quota are omitted.",
+        ].join("\n")
+      : [
+          "# Available models",
+          "Models available for delegated agents (Agent/Workflow `provider` + `model`). Within each provider, models are listed strongest first — but strongest is not always the best fit: match the model to the task shape (fast iterators often beat heavier models on mechanical or iterative work). Providers or models without remaining quota are omitted.",
+          "Default models form the normal routing pool. On-demand models are used only when explicitly requested or when a task specifically calls for their capability.",
+        ].join("\n");
 
   return [header, ...rows.map(providerSection)].join("\n\n");
 }
@@ -38,9 +46,10 @@ export const availableModelsLayer: CategorizedLayer = {
   cache: "1h",
   phase: "dynamic",
   render(ctx: LayerContext) {
-    if (!ctx.multiproviderEnabled) return null;
+    const mode = ctx.orchestrationMode ?? "disabled";
+    if (mode !== "disabled" && mode !== "default") return null;
     const rows = ctx.availableModels ?? [];
     if (rows.length === 0) return null;
-    return buildAvailableModelsGuidance(rows);
+    return buildAvailableModelsGuidance(rows, mode);
   },
 };

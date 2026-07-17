@@ -11,6 +11,7 @@ import {
   dropClient,
   hasPendingMcpServers,
   keepOnlyClients,
+  mcpServerStatuses,
   setMcpClientSpawnerForTests,
 } from "../registry.ts";
 
@@ -196,6 +197,19 @@ describe("MCP client registry", () => {
 
     expect(second).not.toBe(first);
     expect(spawnCount).toBe(2);
+  });
+
+  it("keeps a plugin MCP name in the session lifecycle despite its namespace separators", async () => {
+    setMcpClientSpawnerForTests(async () => new FakeMcpClient());
+    const pluginName = "plugin:demo@market:playwright";
+
+    const client = await clientFor(pluginName, config);
+
+    expect(mcpServerStatuses([pluginName])).toEqual([{ name: pluginName, status: "connected" }]);
+    await keepOnlyClients([]);
+    expect(client.isClosed()).toBe(true);
+    expect(hasPendingMcpServers()).toBe(false);
+    expect(mcpServerStatuses([pluginName])).toEqual([{ name: pluginName, status: "pending" }]);
   });
 
   it("keeps only active clients and closes others when keepOnlyClients is called", async () => {

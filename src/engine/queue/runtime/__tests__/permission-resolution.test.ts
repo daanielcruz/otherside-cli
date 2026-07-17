@@ -2379,8 +2379,7 @@ describe("mode and rule resolution", () => {
     await withPermissionFixture(async (cwd) => {
       // `rm -rf $UNSET/*` expands to `rm -rf /*` at runtime when $UNSET is
       // unset or empty. Yolo must still surface an explicit ask for this
-      // narrow pattern instead of auto-allowing it, mirroring upstream's
-      // bypass-immune "Dangerous rm operation" safety check.
+      // narrow pattern instead of auto-allowing it.
       const asked = resolvePermission(resolutionDeps(cwd, "yolo"), {
         id: "t-dangerous-rm-root-var-yolo",
         name: "Bash",
@@ -2465,8 +2464,7 @@ describe("mode and rule resolution", () => {
 
       // Filesystem root, home directory, a direct child of root, the cwd's
       // own ancestor, and the cwd itself: none of these may be silently
-      // allowed in yolo, matching upstream's bypass-immune "Dangerous rm/
-      // rmdir operation" ask (checkDangerousRemovalPaths).
+      // allowed in yolo.
       for (const command of [
         "rm -rf /",
         "rm -rf ~",
@@ -2716,10 +2714,7 @@ describe("plan-mode permission semantics", () => {
 
 // MCP-PLAN-001: plan mode must stay bypass-immune to an already-granted
 // always-allow rule for write-shaped calls (Write/Edit/NotebookEdit, a Bash
-// write command, or a non-read-only MCP tool) — mirroring upstream's
-// mode:'plan' passthrough rewrite for non-readonly MCP tools
-// (permissions.ts:1730-1745) and the filesystem write gate that runs before
-// matchingAllowRuleForAllPaths (filesystem.ts:2114). Only yolo — a distinct,
+// write command, or a non-read-only MCP tool). Only yolo — a distinct,
 // mutually exclusive mode — ever lets such a call through.
 describe("MCP-PLAN-001: plan mode blocks already-allowed writes", () => {
   it("still asks for a Write with a matching allow rule while in plan mode", async () => {
@@ -2851,8 +2846,7 @@ describe("MCP-PLAN-001: plan mode blocks already-allowed writes", () => {
 
   it("does not gate a read-only MCP tool's allow rule in plan mode", async () => {
     // Read-only MCP tools (readOnlyHint === true, surfaced on the registered
-    // ToolHandler as isConcurrencySafe) are never plan-mode-gated — matching
-    // upstream, which only rewrites non-readonly passthrough MCP results.
+    // ToolHandler as isConcurrencySafe) are never plan-mode-gated.
     const toolName = "mcp__inspector__read_file";
     toolRegistry.register({
       schema: { name: toolName, description: "test", inputSchema: { type: "object" } },
@@ -2882,7 +2876,7 @@ describe("MCP-PLAN-001: plan mode blocks already-allowed writes", () => {
   it("still lets yolo mode bypass a write allow rule despite the plan-mode gate", async () => {
     // yolo is a distinct, mutually exclusive mode from plan (see
     // currentPermissionMode) — it must remain the one mode that bypasses
-    // this gate entirely, matching upstream's shouldBypassPermissions.
+    // this gate entirely.
     await withPermissionFixture(async (cwd) => {
       const filePath = join(cwd, "yolo-notes.md");
       await saveRules(

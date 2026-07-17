@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { Box, Text } from "@/ink";
+import { Box, Ink, Text } from "@/ink";
 import { transcriptActions } from "@/store/index.ts";
-import Ink from "@/terminal-runtime/host/runtime-session.tsx";
 import { Log } from "../blocks/log.tsx";
 import type { TranscriptEntry } from "../types";
 import { TerminalEmulator } from "./terminal-emulator.ts";

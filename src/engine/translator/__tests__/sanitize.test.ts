@@ -52,6 +52,31 @@ describe("sanitizeMessages thinking normalization", () => {
     expect(first?.content.some((b) => b.type === "tool_use")).toBe(true);
   });
 
+  it("preserves Anthropic tool_reference results only when requested", () => {
+    const input: Message[] = [
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "search-1", name: "ToolSearch", input: {} }],
+      },
+      {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "search-1",
+            content: [{ type: "tool_reference", tool_name: "EnterWorktree" }],
+          },
+        ],
+      },
+    ];
+    const stripped = sanitizeMessages(input);
+    const preserved = sanitizeMessages(input, { preserveToolReferences: true });
+    expect((stripped[1]?.content[0] as { content?: unknown }).content).toBe("");
+    expect((preserved[1]?.content[0] as { content?: unknown }).content).toEqual([
+      { type: "tool_reference", tool_name: "EnterWorktree" },
+    ]);
+  });
+
   it("drops a whitespace-only assistant message", () => {
     const input: Message[] = [
       { role: "user", content: [text("hi")] },

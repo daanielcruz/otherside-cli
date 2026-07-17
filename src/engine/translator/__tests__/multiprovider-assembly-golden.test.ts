@@ -146,7 +146,7 @@ interface ComposedHarnessMini {
 }
 
 function makeSnapshotObject(
-  mode: "OFF" | "ON",
+  mode: "OFF" | "DEFAULT" | "ON",
   wire: string,
   tools: ProviderToolDeclaration[],
   harness: ComposedHarnessMini,
@@ -195,11 +195,10 @@ const gitStatus = "On branch main";
 describe("multiprovider assembly goldens", () => {
   const provider = providers.get("anthropic");
 
-  it("orchestratorMode: off, tierSelectorEnabled: false (OFF)", () => {
+  it("orchestrationMode: disabled", () => {
     const configOff = {
       ...DEFAULT_CONFIG,
-      orchestratorMode: "off" as const,
-      tierSelectorEnabled: false,
+      orchestrationMode: "disabled" as const,
     };
 
     runInTempCwd(scratchDir!, (tempCwd) => {
@@ -236,7 +235,7 @@ describe("multiprovider assembly goldens", () => {
       expect(agentProps?.tier).toBeUndefined();
 
       expect(agentTool!.description).not.toContain("Multi-provider orchestration");
-      expect(agentTool!.description).not.toContain("general — the strategist and commander");
+      expect(agentTool!.description).not.toContain("emperor — the highest reasoning rank");
 
       const bodyStr = JSON.stringify(body1);
       expect(bodyStr).not.toContain("Multi-provider orchestration");
@@ -253,11 +252,70 @@ describe("multiprovider assembly goldens", () => {
     });
   });
 
-  it("orchestratorMode: soft, tierSelectorEnabled: true (ON)", () => {
+  it("orchestrationMode: default", () => {
+    const configDefault = {
+      ...DEFAULT_CONFIG,
+      orchestrationMode: "default" as const,
+    };
+
+    runInTempCwd(scratchDir!, (tempCwd) => {
+      function runAssembly() {
+        _resetWireLatchesForTests();
+        const injections = makeQueue();
+        const turn = assembleProviderTurn({
+          ctx,
+          provider,
+          messages,
+          injections,
+          config: configDefault,
+          currentDate,
+          gitStatus,
+        });
+        const body = provider.translateRequest(ctx, turn.messages, turn.tools) as Record<
+          string,
+          unknown
+        >;
+        pinMetadata(body, ctx.sessionId);
+        const wire = applyCchAttestation(JSON.stringify(body));
+        return { turn, body, wire };
+      }
+
+      const { turn: turn1, wire: wire1 } = runAssembly();
+      const { wire: wire2 } = runAssembly();
+      expect(wire1).toBe(wire2);
+
+      const agentTool = turn1.tools.find((t) => t.name === "Agent");
+      expect(agentTool).toBeDefined();
+      const agentProps = (agentTool!.input_schema as { properties?: Record<string, unknown> })
+        .properties;
+      expect(agentProps?.provider).toBeDefined();
+      expect(agentProps?.model).toBeDefined();
+      expect(agentProps?.tier).toBeUndefined();
+
+      const harnessText = JSON.stringify(turn1.harness);
+      expect(harnessText).toContain("Multi-provider orchestration is active in Default mode.");
+      expect(harnessText).toContain("# Available models");
+      expect(harnessText).toContain("## anthropic");
+      expect(harnessText).toContain("claude-opus-4-8");
+      expect(harnessText).not.toContain("Match the tier to the task shape");
+      expect(harnessText).not.toContain("emperor — the highest reasoning rank");
+
+      const snapshotObj = makeSnapshotObject(
+        "DEFAULT",
+        wire1,
+        turn1.tools,
+        turn1.harness,
+        scratchDir!,
+        tempCwd,
+      );
+      expect(snapshotObj).toMatchSnapshot();
+    });
+  });
+
+  it("orchestrationMode: feudalism", () => {
     const configOn = {
       ...DEFAULT_CONFIG,
-      orchestratorMode: "soft" as const,
-      tierSelectorEnabled: true,
+      orchestrationMode: "feudalism" as const,
     };
 
     runInTempCwd(scratchDir!, (tempCwd) => {
@@ -290,12 +348,16 @@ describe("multiprovider assembly goldens", () => {
       expect(agentTool).toBeDefined();
       const agentProps = (agentTool!.input_schema as { properties?: Record<string, unknown> })
         .properties;
-      expect(agentProps?.provider).toBeDefined();
-      expect(agentProps?.tier).toBeDefined();
-      expect(agentProps?.model).toBeDefined();
+      const tierSchema = agentProps?.tier as { enum?: string[] } | undefined;
+      expect(agentProps?.provider).toBeUndefined();
+      expect(tierSchema?.enum).toEqual(["emperor", "shogun", "daimyo", "samurai"]);
+      expect(agentProps?.model).toBeUndefined();
 
-      expect(agentTool!.description).toContain("Multi-provider orchestration");
-      expect(agentTool!.description).toContain("general — the strategist and commander");
+      expect(agentTool!.description).toContain("Multi-provider orchestration (ACTIVE — feudalism)");
+      expect(agentTool!.description).toContain("emperor — the highest reasoning rank");
+      expect(agentTool!.description).toContain("shogun — complex execution with judgment");
+      expect(agentTool!.description).toContain("daimyo — the fast capable workhorse");
+      expect(agentTool!.description).toContain("samurai — cheapest, fastest, plentiful");
 
       const bodyStr = JSON.stringify(body1);
       expect(bodyStr).toContain("Multi-provider orchestration");

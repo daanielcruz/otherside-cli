@@ -152,6 +152,7 @@ export type Terminal = {
 
 let writeErrored = false;
 let isDaemonMode: boolean | undefined;
+const WRITE_CHUNK_BYTES = 64 * 1024;
 
 function isDaemon(): boolean {
   if (isDaemonMode === undefined) {
@@ -182,27 +183,54 @@ export function flushDiffBuffer(
 
   let buffer = useSync ? BSU : "";
 
+  const write = (chunk: string): boolean => {
+    try {
+      terminal.stdout.write(chunk);
+      return true;
+    } catch (err) {
+      if (isDaemon() && (getErrorCode(err) === "EIO" || getErrorCode(err) === "EPIPE")) {
+        writeErrored = true;
+        return false;
+      }
+      throw err;
+    }
+  };
+  const append = (content: string): boolean => {
+    if (content.length === 0) return true;
+    if (buffer.length > 0 && buffer.length + content.length > WRITE_CHUNK_BYTES) {
+      if (!write(buffer)) return false;
+      buffer = "";
+    }
+    if (content.length <= WRITE_CHUNK_BYTES) {
+      buffer += content;
+      return true;
+    }
+    for (let start = 0; start < content.length; start += WRITE_CHUNK_BYTES) {
+      if (!write(content.slice(start, start + WRITE_CHUNK_BYTES))) return false;
+    }
+    return true;
+  };
+
   const boundY =
     maxCursorMoveY !== undefined && maxCursorMoveY > 1 ? maxCursorMoveY - 1 : undefined;
 
   for (const patch of diff) {
+    let content = "";
     switch (patch.type) {
       case "stdout":
-        buffer += patch.content;
+        content = patch.content;
         break;
       case "clear":
-        if (patch.count > 0) {
-          buffer += eraseLines(patch.count);
-        }
+        if (patch.count > 0) content = eraseLines(patch.count);
         break;
       case "clearTerminal":
-        buffer += eraseViewportInPlace(patch.viewportRows);
+        content = eraseViewportInPlace(patch.viewportRows);
         break;
       case "cursorHide":
-        buffer += CURSOR_DISPLAY_OFF;
+        content = CURSOR_DISPLAY_OFF;
         break;
       case "cursorShow":
-        buffer += CURSOR_DISPLAY_ON;
+        content = CURSOR_DISPLAY_ON;
         break;
       case "cursorMove": {
         const clampedY =
@@ -210,33 +238,25 @@ export function flushDiffBuffer(
         if (clampedY !== patch.y) {
           emitDiagnosticOutput(`[CLAMP] cursorMove dy=${patch.y} clamped=${clampedY}`);
         }
-        buffer += cursorMove(patch.x, clampedY);
+        content = cursorMove(patch.x, clampedY);
         break;
       }
       case "cursorTo":
-        buffer += cursorTo(patch.col);
+        content = cursorTo(patch.col);
         break;
       case "carriageReturn":
-        buffer += "\r";
+        content = "\r";
         break;
       case "hyperlink":
-        buffer += link(patch.uri);
+        content = link(patch.uri);
         break;
       case "styleStr":
-        buffer += patch.str;
+        content = patch.str;
         break;
     }
+    if (!append(content)) return;
   }
 
-  if (useSync) buffer += ESU;
-
-  try {
-    terminal.stdout.write(buffer);
-  } catch (err) {
-    if (isDaemon() && (getErrorCode(err) === "EIO" || getErrorCode(err) === "EPIPE")) {
-      writeErrored = true;
-      return;
-    }
-    throw err;
-  }
+  if (useSync && !append(ESU)) return;
+  if (buffer.length > 0) write(buffer);
 }

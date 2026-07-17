@@ -17,8 +17,10 @@ describe("isVisionCapable", () => {
     expect(isVisionCapable("antigravity", "gemini-3-flash")).toBe(true);
     expect(isVisionCapable("codex")).toBe(true);
     expect(isVisionCapable("codex", "gpt-5.5")).toBe(true);
-    expect(isVisionCapable("kimi-code")).toBe(true);
-    expect(isVisionCapable("kimi-code", "kimi-for-coding")).toBe(true);
+    expect(isVisionCapable("kimi")).toBe(true);
+    expect(isVisionCapable("kimi", "k3")).toBe(true);
+    expect(isVisionCapable("kimi", "kimi-for-coding")).toBe(true);
+    expect(isVisionCapable("kimi", "kimi-for-coding-highspeed")).toBe(true);
     expect(isVisionCapable("glm")).toBe(true);
     expect(isVisionCapable("glm", "glm-5.2")).toBe(true);
   });
@@ -39,8 +41,8 @@ describe("isVisionCapable", () => {
   it("returns false for none-kind providers", () => {
     expect(isVisionCapable("deepseek")).toBe(false);
     expect(isVisionCapable("deepseek", "deepseek-v4-pro")).toBe(false);
-    expect(isVisionCapable("openai-custom")).toBe(false);
-    expect(isVisionCapable("openai-custom", "anything")).toBe(false);
+    expect(isVisionCapable("openai")).toBe(false);
+    expect(isVisionCapable("openai", "anything")).toBe(false);
   });
 });
 
@@ -53,7 +55,7 @@ describe("visionParserModel", () => {
     expect(visionParserModel("anthropic")).toBeUndefined();
     expect(visionParserModel("glm")).toBeUndefined();
     expect(visionParserModel("deepseek")).toBeUndefined();
-    expect(visionParserModel("openai-custom")).toBeUndefined();
+    expect(visionParserModel("openai")).toBeUndefined();
   });
 });
 
@@ -66,8 +68,8 @@ describe("canAutoRoute", () => {
     expect(canAutoRoute("anthropic")).toBe(false);
     expect(canAutoRoute("glm")).toBe(false);
     expect(canAutoRoute("deepseek")).toBe(false);
-    expect(canAutoRoute("openai-custom")).toBe(false);
-    expect(canAutoRoute("kimi-code")).toBe(false);
+    expect(canAutoRoute("openai")).toBe(false);
+    expect(canAutoRoute("kimi")).toBe(false);
   });
 });
 

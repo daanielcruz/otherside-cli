@@ -1,5 +1,6 @@
 import { cloneWorkflowBoundaryValue } from "@/engine/background/workflows/runtime/sandbox/clone.ts";
 import { TIER_NAMES } from "@/engine/model/tier/names.ts";
+import type { OrchestrationMode } from "@/kernel/config/orchestration-mode.ts";
 import { EFFORT_LEVEL_VALUES, type EffortLevel } from "@/kernel/std/types/effort.ts";
 import { trimmedStringOrUndefined } from "@/kernel/std/value-guards.ts";
 
@@ -30,8 +31,8 @@ interface WorkflowAgentOptionDescriptor {
   name: keyof WorkflowAgentOptions;
   /** TypeScript value rendered in the agent() signature shown to the model. */
   signatureType: string;
-  /** Only exposed in the agent() signature when multiprovider orchestration is on. */
-  multiproviderOnly?: boolean;
+  /** Modes in which this option is exposed in the agent() signature. */
+  modes?: readonly OrchestrationMode[];
   /** Participates in the workflow-resume agent cache key. */
   cacheKeyParticipating?: boolean;
   parse: (raw: Record<string, unknown>, out: WorkflowAgentOptions) => void;
@@ -68,6 +69,7 @@ export const WORKFLOW_AGENT_OPTIONS: readonly WorkflowAgentOptionDescriptor[] = 
   {
     name: "model",
     signatureType: "string",
+    modes: ["disabled", "default"],
     cacheKeyParticipating: true,
     parse: readNonEmptyString("model"),
   },
@@ -84,21 +86,21 @@ export const WORKFLOW_AGENT_OPTIONS: readonly WorkflowAgentOptionDescriptor[] = 
   {
     name: "provider",
     signatureType: "string",
-    multiproviderOnly: true,
+    modes: ["default"],
     cacheKeyParticipating: true,
     parse: readNonEmptyString("provider"),
   },
   {
     name: "tier",
     signatureType: TIER_SIGNATURE_TYPE,
-    multiproviderOnly: true,
+    modes: ["feudalism"],
     cacheKeyParticipating: true,
     parse: readNonEmptyString("tier"),
   },
   {
     name: "diversify",
     signatureType: "boolean",
-    multiproviderOnly: true,
+    modes: ["feudalism"],
     cacheKeyParticipating: true,
     parse: (raw, out) => {
       if (typeof raw.diversify === "boolean") out.diversify = raw.diversify;
@@ -125,9 +127,11 @@ export const WORKFLOW_AGENT_CACHE_KEYS: readonly (keyof WorkflowAgentOptions)[] 
     (option) => option.name,
   );
 
-export function renderWorkflowAgentSignature(multiproviderEnabled: boolean): string {
+export function renderWorkflowAgentSignature(
+  orchestrationMode: OrchestrationMode = "disabled",
+): string {
   const fields = WORKFLOW_AGENT_OPTIONS.filter(
-    (option) => multiproviderEnabled || !option.multiproviderOnly,
+    (option) => option.modes === undefined || option.modes.includes(orchestrationMode),
   )
     .map((option) => `${option.name}?: ${option.signatureType}`)
     .join(", ");

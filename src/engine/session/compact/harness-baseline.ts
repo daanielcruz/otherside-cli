@@ -10,11 +10,11 @@ const PROVIDER_BASELINE: Record<ProviderId, HarnessBaseline> = {
   antigravity: { systemTokens: 4_500, toolDefTokens: 7_500 },
   codex: { systemTokens: 11_500, toolDefTokens: 4_500 },
   xai: { systemTokens: 4_500, toolDefTokens: 8_500 },
-  "kimi-code": { systemTokens: 4_500, toolDefTokens: 8_500 },
+  kimi: { systemTokens: 4_500, toolDefTokens: 8_500 },
   minimax: { systemTokens: 4_500, toolDefTokens: 8_500 },
   glm: { systemTokens: 4_500, toolDefTokens: 8_500 },
   deepseek: { systemTokens: 4_500, toolDefTokens: 8_500 },
-  "openai-custom": { systemTokens: 1_500, toolDefTokens: 3_500 },
+  openai: { systemTokens: 1_500, toolDefTokens: 3_500 },
 };
 
 const MODEL_OVERRIDES: Record<string, Partial<HarnessBaseline>> = {

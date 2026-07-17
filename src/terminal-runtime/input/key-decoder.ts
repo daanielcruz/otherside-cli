@@ -36,7 +36,9 @@ const DA2_RE = /^\x1b\[>([\d;]*)c$/;
 
 const KITTY_FLAGS_RE = /^\x1b\[\?(\d+)u$/;
 
-const CURSOR_POSITION_RE = /^\x1b\[\?(\d+);(\d+)R$/;
+// DECXCPR reply is `CSI ? row ; col [; page] R` — iTerm2 includes the page
+// parameter, so it is tolerated and ignored.
+const CURSOR_POSITION_RE = /^\x1b\[\?(\d+);(\d+)(?:;\d+)?R$/;
 
 const OSC_RESPONSE_RE = /^\x1b\](\d+);(.*?)(?:\x07|\x1b\\)$/s;
 
@@ -183,6 +185,12 @@ function normalizeBufferInput(input: Buffer | string): string {
   }
 }
 
+// Control chars that form a meta chord with a directly preceding ESC. The
+// tokenizer forwards ESC + <control> as plain text (no valid sequence starts
+// with a control byte), so the pair must survive splitting for the decoder's
+// meta branches (meta+return, meta+backspace) to see it whole.
+const META_CHORD_CODES = new Set([0x08, 0x0d, 0x7f]);
+
 function splitControlRuns(value: string): string[] {
   if (value.length <= 1) return [value];
   let hasControl = false;
@@ -200,7 +208,12 @@ function splitControlRuns(value: string): string[] {
     const code = value.charCodeAt(i);
     if (code < 0x20 || code === 0x7f) {
       if (i > textStart) pieces.push(value.slice(textStart, i));
-      pieces.push(value[i] as string);
+      if (code === 0x1b && META_CHORD_CODES.has(value.charCodeAt(i + 1))) {
+        pieces.push(value.slice(i, i + 2));
+        i++;
+      } else {
+        pieces.push(value[i] as string);
+      }
       textStart = i + 1;
     }
   }
@@ -666,6 +679,9 @@ function parseKeyEvent(s: string = ""): KeyEventData {
   if (s === "\r") {
     key.raw = undefined;
     key.name = "return";
+  } else if (s === "\x1b\r") {
+    key.name = "return";
+    key.meta = true;
   } else if (s === "\n") {
     key.name = "enter";
   } else if (s === "\t") {

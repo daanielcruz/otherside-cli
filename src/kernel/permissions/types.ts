@@ -54,8 +54,7 @@ export const READ_ONLY_PERMISSION_SOURCES: ReadonlySet<PermissionRuleSource> = n
 function escapeRuleContent(content: string): string {
   // Escaping order matters: backslashes must be escaped first, then
   // parentheses, so a trailing literal backslash never masquerades as an
-  // escape for the closing paren delimiter (mirrors upstream
-  // permissionRuleParser.ts escapeRuleContent).
+  // escape for the closing paren delimiter.
   return content.replace(/\\/g, "\\\\").replace(/\(/g, "\\(").replace(/\)/g, "\\)");
 }
 
@@ -66,7 +65,7 @@ function unescapeRuleContent(content: string): string {
 }
 
 // A character is escaped only if preceded by an odd number of consecutive
-// backslashes (parity check), so a trailing single backslash does not
+// backslashes, so a trailing single backslash does not
 // falsely "escape" a following delimiter, and a trailing double backslash
 // (an escaped backslash) does not falsely escape it either.
 function isEscapedAt(s: string, i: number): boolean {
@@ -114,8 +113,7 @@ export function permissionRuleValueFromString(s: string): PermissionRuleValue | 
       // Trailing text after the closing parenthesis makes this an invalid
       // parenthesized rule (e.g. "Bash(echo *)junk"). Preserve the entire
       // string as the tool name rather than silently dropping the trailing
-      // content, matching upstream's requirement that the matching
-      // unescaped close be the final character.
+      // content: the matching unescaped close must be the final character.
       return { toolName: normalizeLegacyToolName(trimmed) };
     }
     const toolName = normalizeLegacyToolName(trimmed.slice(0, openIdx).trim());
@@ -123,7 +121,7 @@ export function permissionRuleValueFromString(s: string): PermissionRuleValue | 
     const raw = trimmed.slice(openIdx + 1, closeIdx);
     const ruleContent = unescapeRuleContent(raw.trim());
     // Empty content ("Bash()") and a bare "*" ("mcp__server(*)") both mean
-    // "match the whole tool", mirroring upstream permissionRuleParser.ts
+    // "match the whole tool"
     // (rawContent === '' || rawContent === '*'). Without this, a whole-server
     // MCP wildcard rule like mcp__untrusted(*) would keep a ruleContent of
     // "*" and get silently discarded by the MCP content guard in

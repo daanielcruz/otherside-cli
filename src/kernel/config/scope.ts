@@ -18,6 +18,7 @@ export const SCOPE_PRECEDENCE = ["user", "project", "local", "session", "policy"
 export type SettingScope = (typeof SCOPE_PRECEDENCE)[number];
 
 export interface ProjectSettingsFile {
+  enabledPlugins?: Record<string, boolean>;
   disabledMcpServers?: string[];
   disabledMcpjsonServers?: string[];
   enabledMcpjsonServers?: string[];
@@ -27,8 +28,7 @@ export interface ProjectSettingsFile {
   /**
    * MCP servers configured in the current project's local (untracked) scope —
    * i.e. personal to this checkout, not shared via .mcp.json. Raw/unvalidated;
-   * parsed by kernel/mcp/config.ts. Mirrors upstream's per-project "local" MCP
-   * scope (getCurrentProjectConfig().mcpServers), which is granted the highest
+   * parsed by kernel/mcp/config.ts. Granted the highest
    * manual-scope precedence and is exempt from project trust prompting.
    */
   mcpServers?: Record<string, unknown>;

@@ -1,5 +1,14 @@
+import { emitPushEvent } from "@/backend/index.ts";
 import { autoRoutesNonVision, canSendNatively } from "@/engine/model/facts/capabilities-runtime.ts";
 import { extractBodyMessage } from "@/engine/providers/_shared/retry.ts";
+import {
+  bashRunResultMeta,
+  bashTurnBlocks,
+  bashTurnText,
+  promptInputModeOf,
+  runBashInput,
+  stripBashPrefix,
+} from "@/engine/queue/turn/bash-input.ts";
 import { extractPastedImages, resolveNonVisionImageBlocks } from "@/engine/queue/turn/input.ts";
 import { runSessionTurn } from "@/engine/queue/turn/run-session.ts";
 import { makeTuiTurnObserver } from "@/engine/queue/turn/tui-observer.ts";
@@ -16,7 +25,6 @@ import { classifyError, classifyProviderError } from "@/engine/transport/errors.
 import type { ProviderId } from "@/kernel/config/provider-ids.ts";
 import type { ContentBlock } from "@/kernel/std/types/message.ts";
 import { setActiveRewindTurn } from "@/kernel/storage/file-history.ts";
-import { emitPushEvent } from "@/remote/index.ts";
 import {
   dispatch,
   getQueueMessages,
@@ -182,7 +190,7 @@ export function createRunSubmittedTurn(
       turnGuard.cancelReservation();
       throw err;
     });
-    void import("@/remote/index.ts").then((r) => r.setSessionStatus("streaming")).catch(() => {});
+    void import("@/backend/index.ts").then((r) => r.setSessionStatus("streaming")).catch(() => {});
     dispatch({ type: "view/setRetryStatus", status: null });
     const turnState = broker.read();
     const isResume = text.length === 0;
@@ -210,9 +218,21 @@ export function createRunSubmittedTurn(
       errorPanelActiveForTurnRef.current = false;
       compactTerminalRef.current = false;
     }
-    const expanded = opts?.blocks
-      ? { blocks: opts.blocks, text }
-      : expandToContentBlocks(text, pasteStoreRef.current);
+    // A `!` bash-mode submission runs the command locally first; the turn then
+    // proceeds as a normal model turn whose user message carries the wrapped
+    // command/stdout/stderr blocks (runBashInput never throws — spawn failures
+    // arrive as stderr, so the guard claimed above stays safe across the await).
+    const bashCommand =
+      !isResume && !opts?.blocks && promptInputModeOf(text) === "bash"
+        ? stripBashPrefix(text)
+        : null;
+    const bashRun = bashCommand !== null ? await runBashInput(bashCommand) : null;
+    const expanded =
+      bashCommand !== null && bashRun !== null
+        ? { blocks: bashTurnBlocks(bashCommand, bashRun), text: bashTurnText(bashCommand, bashRun) }
+        : opts?.blocks
+          ? { blocks: opts.blocks, text }
+          : expandToContentBlocks(text, pasteStoreRef.current);
     const inlineImageBlocks = expanded.blocks.filter((b: ContentBlock) => b.type === "image");
     const handlesImageInput =
       canSendNatively(turnState.provider, turnState.model) ||
@@ -255,24 +275,32 @@ export function createRunSubmittedTurn(
       if (currentTurnUserIdRef.current === userId && !opts?.suppressUserTranscript) {
         setTranscript((t) => [
           ...t,
-          {
-            id: userId,
-            kind: "user",
-            text: expandedText,
-            ...(typeof userRecord.uuid === "string" ? { anchor: userRecord.uuid } : {}),
-            ...(pastedImages.length > 0
-              ? {
-                  images: pastedImages.map((img) => ({
-                    id: img.id,
-                    mediaType: img.mediaType,
-                    ...(img.localPath ? { localPath: img.localPath } : {}),
-                  })),
-                }
-              : {}),
-          },
+          bashCommand !== null && bashRun !== null
+            ? {
+                id: userId,
+                kind: "bash_input" as const,
+                text: bashCommand,
+                resultMeta: bashRunResultMeta(bashRun),
+                ...(typeof userRecord.uuid === "string" ? { anchor: userRecord.uuid } : {}),
+              }
+            : {
+                id: userId,
+                kind: "user" as const,
+                text: expandedText,
+                ...(typeof userRecord.uuid === "string" ? { anchor: userRecord.uuid } : {}),
+                ...(pastedImages.length > 0
+                  ? {
+                      images: pastedImages.map((img) => ({
+                        id: img.id,
+                        mediaType: img.mediaType,
+                        ...(img.localPath ? { localPath: img.localPath } : {}),
+                      })),
+                    }
+                  : {}),
+              },
         ]);
       }
-      if (!opts?.suppressUserTranscript && !expandedText.startsWith("/")) {
+      if (!opts?.suppressUserTranscript && bashCommand === null && !expandedText.startsWith("/")) {
         maybeGenerateSessionTitle(expandedText);
       }
     }
@@ -490,7 +518,7 @@ export function createRunSubmittedTurn(
         turnHadVisibleOutputRef.current = false;
         quotaHandledForTurnRef.current = false;
         turnLifecycle.endTurn("turn");
-        void import("@/remote/index.ts").then((r) => r.setSessionStatus("idle")).catch(() => {});
+        void import("@/backend/index.ts").then((r) => r.setSessionStatus("idle")).catch(() => {});
         requestBackgroundResume();
       }
       // A forced promotion that reserved the guard but never dispatched a turn

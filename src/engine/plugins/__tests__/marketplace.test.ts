@@ -207,7 +207,7 @@ fsMock[`cp${S}`] = cpFn;
 
 mock.module("node:fs", () => fsMock);
 
-import { getPluginsDir } from "@/engine/plugins/install.ts";
+import { activeInstallPath, listPluginInstallations } from "@/engine/plugins/installations.ts";
 import {
   addMarketplace,
   detectSourceType,
@@ -289,6 +289,7 @@ describe("marketplace file-source end-to-end", () => {
 
   beforeEach(() => {
     process.env.OTHERSIDE_CONFIG_DIR = configDir;
+    rmFn(configDir, { recursive: true, force: true });
     mkdirFn(configDir, { recursive: true });
     mkdirFn(join(mpDir, ".claude-plugin"), { recursive: true });
     mkdirFn(join(mpDir, pluginName), { recursive: true });
@@ -331,7 +332,9 @@ describe("marketplace file-source end-to-end", () => {
     const res = installMarketplacePlugin(mpName, pluginName);
     expect(res.success).toBe(true);
     expect(res.pluginName).toBe(pluginName);
-    expect(existsFn(join(getPluginsDir(), pluginName, "plugin.json"))).toBe(true);
+    expect(
+      existsFn(join(activeInstallPath(pluginName, "user", mpName, "1.0.0"), "plugin.json")),
+    ).toBe(true);
   });
 
   it("installs a non-strict manifestless plugin with generated metadata", () => {
@@ -349,13 +352,40 @@ describe("marketplace file-source end-to-end", () => {
     const res = installMarketplacePlugin(mpName, pluginName);
 
     expect(res.success).toBe(true);
-    expect(existsFn(join(getPluginsDir(), pluginName, ".claude-plugin", "plugin.json"))).toBe(true);
+    expect(
+      existsFn(
+        join(
+          activeInstallPath(pluginName, "user", mpName, "0.0.0"),
+          ".claude-plugin",
+          "plugin.json",
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects another install when the plugin is already installed", () => {
+    addMarketplace(mpDir);
+    expect(installMarketplacePlugin(mpName, pluginName, "user").success).toBe(true);
+
+    const duplicate = installMarketplacePlugin(mpName, pluginName, "project");
+
+    expect(duplicate).toMatchObject({
+      success: false,
+      message: `Plugin '${pluginName}@${mpName}' is already installed. Use '/plugins' to manage existing plugins.`,
+    });
+    const installations = listPluginInstallations().filter(
+      (installation) => installation.identity === `${pluginName}@${mpName}`,
+    );
+    expect(installations.map((installation) => installation.scope)).toEqual(["user"]);
   });
 
   it("preserves an existing install when replacement validation fails", () => {
     addMarketplace(mpDir);
     expect(installMarketplacePlugin(mpName, pluginName).success).toBe(true);
-    const installedManifest = join(getPluginsDir(), pluginName, "plugin.json");
+    const installedManifest = join(
+      activeInstallPath(pluginName, "user", mpName, "1.0.0"),
+      "plugin.json",
+    );
     expect(existsFn(installedManifest)).toBe(true);
 
     writeFileFn(join(mpDir, pluginName, "plugin.json"), "{ invalid json");

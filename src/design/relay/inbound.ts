@@ -1,8 +1,8 @@
+import { decryptEvent } from "@/backend/shared/e2ee.ts";
+import { type RatchetCacheEntry, ratchetKeyFor } from "@/backend/shared/session-crypto.ts";
 import { invoke, type MethodTable } from "@/design/bridge/dispatch.ts";
 import { parseRequest } from "@/design/bridge/envelope.ts";
 import type { RpcContext } from "@/design/types.ts";
-import { decryptEvent } from "@/remote/crypto/e2ee.ts";
-import { type RatchetCacheEntry, ratchetKeyFor } from "@/remote/session/sync/crypto.ts";
 
 const DEC = new TextDecoder();
 const REORDER_WINDOW = 16;

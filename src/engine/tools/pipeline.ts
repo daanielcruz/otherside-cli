@@ -81,7 +81,9 @@ function inputValidationFailure(
   const issues = validateToolInput(handler.schema.inputSchema, call.input);
   if (issues.length === 0) return null;
   const steer = handler.steerValidationError?.(rawInput);
-  const hint = ctx.scopedToolHandlers?.has(call.name) ? "" : (schemaNotSentHint(call.name) ?? "");
+  const hint = ctx.scopedToolHandlers?.has(call.name)
+    ? ""
+    : (schemaNotSentHint(call.name, ctx.agentOwnerId) ?? "");
   const errorContent = steer ?? `${formatValidationError(handler.schema.name, issues)}${hint}`;
   return {
     tool_use_id: call.id,
@@ -100,7 +102,7 @@ function coerceCallInput(call: ToolCall, ctx: RequestContext): ToolCall {
 
 // Input-shape validation and worktree-escape checks are pre-hook preconditions,
 // not permission decisions: they gate whether the call is even eligible to run
-// through PreToolUse hooks, and (matching upstream) are only evaluated once,
+// through PreToolUse hooks, and are only evaluated once,
 // against the model-authored input.
 async function validatePreconditions(
   call: ToolCall,
@@ -136,7 +138,7 @@ async function validatePreconditions(
 }
 
 // Permission is resolved exactly once, after PreToolUse hooks have had a
-// chance to rewrite the call. Matches upstream: hooks run before the user is
+// chance to rewrite the call. Hooks run before the user is
 // ever asked for permission, and the permission/explicit deny-ask rules are
 // evaluated against the final, hook-updated input. `hookPermission` carries
 // any explicit permissionDecision the hook chain asserted ("allow" | "ask"),

@@ -72,9 +72,18 @@ import {
   buildKimiMessages,
   translateResponseKimi,
 } from "@/engine/providers/_shared/anthropic-compat-wire.ts";
+import { translateRequestKimi } from "@/engine/providers/kimi/translate.ts";
+import type { ProviderEvent } from "@/kernel/std/types/events.ts";
 import type { Message } from "@/kernel/std/types/message.ts";
+import type { RequestContext } from "@/kernel/std/types/request.ts";
 
-const ENV_KEYS = ["OTHERSIDE_CONFIG_DIR", "OTHERSIDE_GLM_API_KEY", "ZAI_API_KEY"] as const;
+const ENV_KEYS = [
+  "OTHERSIDE_CONFIG_DIR",
+  "OTHERSIDE_GLM_API_KEY",
+  "ZAI_API_KEY",
+  "OTHERSIDE_KIMI_API_KEY",
+  "KIMI_API_KEY",
+] as const;
 
 let scratchDir: string;
 const priorEnv = new Map<string, string | undefined>();
@@ -88,7 +97,10 @@ beforeAll(() => {
   process.env.OTHERSIDE_CONFIG_DIR = scratchDir;
   writeFileFn(
     join(scratchDir, "credentials.json"),
-    JSON.stringify({ glm: { zcodeJwtToken: "key-A", user: { user_id: "user-A" } } }),
+    JSON.stringify({
+      glm: { zcodeJwtToken: "key-A", user: { user_id: "user-A" } },
+      kimi: { apiKey: "key-K" },
+    }),
   );
 });
 
@@ -155,6 +167,88 @@ describe("compat-wire signed thinking replay gate", () => {
       ];
     const out = buildKimiMessages(messages, "glm").out.flatMap((m) => m.content);
     expect(out.filter((b) => b.type === "thinking").length).toBe(1);
+  });
+
+  it("drops unsigned thinking from another provider", () => {
+    const messages = assistantWith({ producedBy: "anthropic" });
+    const assistant = messages[1];
+    if (assistant)
+      assistant.content = [
+        { type: "thinking", text: "t" },
+        { type: "text", text: "ok" },
+      ];
+    const wireAssistant = buildKimiMessages(messages, "glm").out.find(
+      (m) => m.role === "assistant",
+    );
+    expect(wireAssistant?.content.some((b) => b.type === "thinking")).toBe(false);
+    expect(wireAssistant?.content.some((b) => b.type === "text")).toBe(true);
+  });
+
+  it("drops unstamped thinking because provenance cannot be proven", () => {
+    const messages = assistantWith({});
+    const assistant = messages[1] as Message & { producedBy?: string };
+    delete assistant.producedBy;
+    const out = buildKimiMessages(messages, "glm").out.flatMap((m) => m.content);
+    expect(out.filter((b) => b.type === "thinking").length).toBe(0);
+  });
+});
+
+describe("Kimi K3 signed thinking continuity", () => {
+  it("streams a signature and echoes it on the next request", async () => {
+    async function* source(): AsyncIterable<Uint8Array> {
+      yield new TextEncoder().encode(
+        [
+          'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"plan"}}\n\n',
+          'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig-k3"}}\n\n',
+          'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+        ].join(""),
+      );
+    }
+
+    const events: ProviderEvent[] = [];
+    for await (const event of translateResponseKimi(source())) events.push(event);
+    const thinking = events.find((event) => event.kind === "thinking_delta");
+    const signature = events.find((event) => event.kind === "thinking_signature");
+    expect(signature).toEqual({ kind: "thinking_signature", signature: "sig-k3" });
+    if (thinking?.kind !== "thinking_delta" || signature?.kind !== "thinking_signature") {
+      throw new Error("Kimi K3 stream did not produce signed thinking");
+    }
+
+    const producedAccount = accountFingerprint("kimi");
+    expect(producedAccount.length).toBeGreaterThan(0);
+    const messages: Message[] = [
+      { role: "user", content: [{ type: "text", text: "start" }] },
+      {
+        role: "assistant",
+        producedBy: "kimi",
+        producedAccount,
+        content: [
+          { type: "thinking", text: thinking.text, signature: signature.signature },
+          { type: "text", text: "done" },
+        ],
+      },
+      { role: "user", content: [{ type: "text", text: "continue" }] },
+    ];
+    const ctx: RequestContext = {
+      provider: "kimi",
+      model: "k3",
+      effort: "max",
+      permissionMode: "default",
+      sessionId: "session-k3",
+      cwd: "/workspace",
+      agentic: true,
+    };
+    const body = translateRequestKimi(ctx, messages, []) as {
+      messages: Array<{ role: string; content: Array<Record<string, unknown>> }>;
+      thinking: Record<string, unknown>;
+    };
+    expect(body.thinking).toEqual({ type: "enabled", effort: "max" });
+    const assistant = body.messages.find((message) => message.role === "assistant");
+    expect(assistant?.content).toContainEqual({
+      type: "thinking",
+      thinking: "plan",
+      signature: "sig-k3",
+    });
   });
 });
 

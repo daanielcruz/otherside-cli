@@ -12,7 +12,7 @@ export { isAbortMessage } from "@/commands/types.ts";
 
 export function looksLikeCommand(token: string): boolean {
   if (token === "") return false;
-  return !/[^a-zA-Z0-9:\-_]/.test(token);
+  return !/[^a-zA-Z0-9@:\-_]/.test(token);
 }
 
 function sortedCatalog(): readonly SlashCommand[] {
@@ -45,11 +45,11 @@ export function lookup(name: string): SlashCommand | undefined {
     };
   }
 
-  for (const plugin of pluginsRegistry.list()) {
-    if (!pluginsRegistry.isRuntimeEnabled(plugin.name)) continue;
+  for (const { pluginId, plugin } of pluginsRegistry.list()) {
+    if (!pluginsRegistry.isRuntimeEnabled(pluginId)) continue;
     const resolved = resolvePluginComponents(plugin);
     for (const cmd of resolved.commands) {
-      const fullCmdName = `${plugin.name}:${cmd.name}`;
+      const fullCmdName = `${pluginId}:${cmd.name}`;
       if (fullCmdName.toLowerCase() === name.toLowerCase()) {
         return {
           name: fullCmdName,
@@ -80,15 +80,15 @@ export function listCompletions(prefix: string): SlashCommand[] {
       });
     }
   }
-  for (const plugin of pluginsRegistry.list()) {
-    if (!pluginsRegistry.isRuntimeEnabled(plugin.name)) continue;
+  for (const { pluginId, plugin } of pluginsRegistry.list()) {
+    if (!pluginsRegistry.isRuntimeEnabled(pluginId)) continue;
     const resolved = resolvePluginComponents(plugin);
     for (const cmd of resolved.commands) {
       all.push({
-        name: `${plugin.name}:${cmd.name}`,
+        name: `${pluginId}:${cmd.name}`,
         kind: "skill",
         description: commandHint(
-          `${plugin.name}:${cmd.name}`,
+          `${pluginId}:${cmd.name}`,
           cmd.metadata?.description || "Plugin command",
         ),
         ...(cmd.metadata?.argumentHint ? { argumentHint: cmd.metadata.argumentHint } : {}),
@@ -138,11 +138,11 @@ export function findClosestCommand(name: string): string | null {
     allNames.add(skill.name);
     for (const alias of skill.aliases || []) allNames.add(alias);
   }
-  for (const plugin of pluginsRegistry.list()) {
-    if (!pluginsRegistry.isRuntimeEnabled(plugin.name)) continue;
+  for (const { pluginId, plugin } of pluginsRegistry.list()) {
+    if (!pluginsRegistry.isRuntimeEnabled(pluginId)) continue;
     const resolved = resolvePluginComponents(plugin);
     for (const cmd of resolved.commands) {
-      allNames.add(`${plugin.name}:${cmd.name}`);
+      allNames.add(`${pluginId}:${cmd.name}`);
     }
   }
 

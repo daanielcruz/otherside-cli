@@ -17,13 +17,14 @@ import type { RequestContext } from "@/kernel/std/types/request.ts";
 import type { CredentialsBundle } from "@/kernel/storage/credentials.ts";
 import {
   resolveSubagentRoutingForDispatch,
+  resolveToolModelOverride,
   resolveToolTierOverride,
   resolveToolTierQuotaReroute,
 } from "../routing.ts";
 
 registerAllProviders();
 
-// Hermetic bundle: codex (general rank 1) and anthropic (general rank 2) are
+// Hermetic bundle: anthropic (emperor rank 1) and codex (emperor rank 2) are
 // credentialed; every other provider is skipped for missing credentials, which
 // must never count as a quota fallback.
 const CODEX_AND_ANTHROPIC = (): CredentialsBundle =>
@@ -32,21 +33,21 @@ const CODEX_AND_ANTHROPIC = (): CredentialsBundle =>
     anthropic: { accessToken: "x" },
   }) as unknown as CredentialsBundle;
 
-// ctx.model is a scout-tier model so the "caller model already satisfies the
-// tier" early return never short-circuits the general-tier cascade under test.
+// ctx.model is a samurai-tier model so the "caller model already satisfies the
+// tier" early return never short-circuits the emperor-tier cascade under test.
 function ctxWith(quotaFallbackEnabled: boolean | undefined): RequestContext {
   return {
     provider: "anthropic",
     model: "claude-haiku-4-5",
     effort: null,
     permissionMode: "default",
-    multiproviderEnabled: true,
+    orchestrationMode: "feudalism",
     ...(quotaFallbackEnabled !== undefined ? { quotaFallbackEnabled } : {}),
   } as RequestContext;
 }
 
-function blockCodexQuota(): void {
-  setRoutingUsage("codex", {
+function blockAnthropicQuota(): void {
+  setRoutingUsage("anthropic", {
     trackingStatus: "tracked",
     utilizationPct: 100,
     resetsAtEpochMs: Date.now() + 3_600_000,
@@ -111,7 +112,10 @@ describe("quota refusal for inherited provider routes", () => {
       utilizationPct: 40,
       balanceStatus: "exhausted",
     });
-    const context = ctxWith(undefined);
+    const context = {
+      ...ctxWith(undefined),
+      orchestrationMode: "disabled" as const,
+    };
     const result = await resolveSubagentRoutingForDispatch(context, TEST_DEF, {
       ...BASE_INVOCATION,
       modelOverride: context.model,
@@ -120,6 +124,42 @@ describe("quota refusal for inherited provider routes", () => {
     if (!result.ok) {
       expect(result.error).toContain("QuotaExhaustedError");
       expect(result.error).toContain("anthropic");
+    }
+  });
+
+  it("quota remedies name only routes legal to each orchestration mode", () => {
+    setRoutingUsage("anthropic", {
+      trackingStatus: "tracked",
+      utilizationPct: 40,
+      balanceStatus: "exhausted",
+    });
+
+    const disabled = resolveToolModelOverride(
+      { ...ctxWith(undefined), orchestrationMode: "disabled" as const },
+      "claude-haiku-4-5",
+    );
+    expect(disabled.ok).toBe(false);
+    if (!disabled.ok) {
+      expect(disabled.error).toContain("current provider");
+      expect(disabled.error).not.toContain("provider/model");
+      expect(disabled.error).not.toContain("tier");
+    }
+
+    const defaultMode = resolveToolModelOverride(
+      { ...ctxWith(undefined), orchestrationMode: "default" as const },
+      "claude-haiku-4-5",
+    );
+    expect(defaultMode.ok).toBe(false);
+    if (!defaultMode.ok) {
+      expect(defaultMode.error).toContain("Pin another provider/model");
+      expect(defaultMode.error).not.toContain("tier");
+    }
+
+    const experimental = resolveToolModelOverride(ctxWith(undefined), "claude-haiku-4-5");
+    expect(experimental.ok).toBe(false);
+    if (!experimental.ok) {
+      expect(experimental.error).toContain("tier");
+      expect(experimental.error).not.toContain("current provider");
     }
   });
 
@@ -146,40 +186,66 @@ describe("quota refusal for inherited provider routes", () => {
 
 describe("quota fallback gate (bare tier dispatch)", () => {
   it("fallback disabled: fails the step when a quota-blocked viable candidate is skipped", () => {
-    blockCodexQuota();
-    const result = resolveToolTierOverride(ctxWith(false), "general");
+    blockAnthropicQuota();
+    const result = resolveToolTierOverride(ctxWith(false), "emperor");
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error).toContain("Quota fallback is disabled");
-      expect(result.error).toContain("codex/gpt-5.6-sol");
+      expect(result.error).toContain("anthropic/claude-fable-5");
+      expect(result.error).not.toContain("provider/model");
+    }
+  });
+
+  it("non-feudalism tier validation names only legal concrete routing", () => {
+    const disabled = resolveToolTierOverride(
+      { ...ctxWith(undefined), orchestrationMode: "disabled" as const },
+      "emperor",
+    );
+    expect(disabled.ok).toBe(false);
+    if (!disabled.ok) {
+      expect(disabled.error).toContain("active-provider model id");
+      expect(disabled.error).not.toContain("provider` + `model");
+    }
+
+    const defaultMode = resolveToolTierOverride(
+      { ...ctxWith(undefined), orchestrationMode: "default" as const },
+      "emperor",
+    );
+    expect(defaultMode.ok).toBe(false);
+    if (!defaultMode.ok) {
+      expect(defaultMode.error).toContain("provider` + `model` pins");
+      expect(defaultMode.error).not.toContain("active-provider model id");
     }
   });
 
   it("fallback enabled (default, flag absent): reroutes past the quota-blocked candidate", () => {
-    blockCodexQuota();
-    const result = resolveToolTierOverride(ctxWith(undefined), "general");
+    blockAnthropicQuota();
+    const result = resolveToolTierOverride(ctxWith(undefined), "emperor");
     expect(result.ok).toBe(true);
-    if (result.ok) expect(result.ctx.provider).toBe("anthropic");
+    if (result.ok) expect(result.ctx.provider).toBe("codex");
   });
 
   it("fallback disabled: missing-credential skips alone do not fail the step", () => {
-    // No quota state anywhere: rank 1 (codex) is credentialed and usable, so
-    // resolution lands on it; uncredentialed providers are not quota skips.
-    const result = resolveToolTierOverride(ctxWith(false), "general");
+    // No quota state anywhere: rank 1 (anthropic) is credentialed and usable,
+    // so resolution lands on it; uncredentialed providers are not quota skips.
+    const result = resolveToolTierOverride(ctxWith(false), "emperor");
     expect(result.ok).toBe(true);
-    if (result.ok) expect(result.ctx.provider).toBe("codex");
+    if (result.ok) expect(result.ctx.provider).toBe("anthropic");
   });
 });
 
 describe("quota fallback gate (mid-run reroute)", () => {
   it("fallback disabled: refuses the reroute", () => {
-    const result = resolveToolTierQuotaReroute(ctxWith(false), "general", "codex");
+    const result = resolveToolTierQuotaReroute(ctxWith(false), "emperor", "codex");
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.error).toContain("Quota fallback is disabled");
+    if (!result.ok) {
+      expect(result.error).toContain("Quota fallback is disabled");
+      expect(result.error).not.toContain("provider/model");
+    }
   });
 
   it("fallback enabled: reroutes to the next usable candidate", () => {
-    const result = resolveToolTierQuotaReroute(ctxWith(true), "general", "codex");
+    const result = resolveToolTierQuotaReroute(ctxWith(true), "emperor", "codex");
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.ctx.provider).toBe("anthropic");
   });
@@ -188,7 +254,7 @@ describe("quota fallback gate (mid-run reroute)", () => {
     setCredentialsLoaderForTests(
       () => ({ codex: { accessToken: "x" } }) as unknown as CredentialsBundle,
     );
-    const result = resolveToolTierQuotaReroute(ctxWith(true), "general", "codex");
+    const result = resolveToolTierQuotaReroute(ctxWith(true), "emperor", "codex");
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.gated).not.toBe(true);
   });
@@ -196,18 +262,27 @@ describe("quota fallback gate (mid-run reroute)", () => {
 
 describe("quota fallback gate (verify-panel regressions)", () => {
   it("caller's own tier model quota-blocked by a model-scoped window fails instead of silently rerouting", () => {
-    // Fable weekly spent: the caller (anthropic/claude-fable-5, general rank 2)
+    // Fable weekly spent: the caller (anthropic/claude-fable-5, emperor rank 1)
     // is quota-displaced like any other candidate — no active-provider exemption.
     setUsageLimits(
-      { seven_day_fable: { utilization: 1, resetsAt: Math.floor(Date.now() / 1000) + 3600 } },
-      { status: "allowed", unifiedRateLimitFallbackAvailable: false, isUsingOverage: false },
+      {
+        seven_day_fable: {
+          utilization: 1,
+          resetsAt: Math.floor(Date.now() / 1000) + 3600,
+        },
+      },
+      {
+        status: "allowed",
+        unifiedRateLimitFallbackAvailable: false,
+        isUsingOverage: false,
+      },
     );
     const ctx = {
       ...ctxWith(false),
       provider: "anthropic",
       model: "claude-fable-5",
     } as RequestContext;
-    const result = resolveToolTierOverride(ctx, "general");
+    const result = resolveToolTierOverride(ctx, "emperor");
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.gated).toBe(true);
@@ -216,41 +291,46 @@ describe("quota fallback gate (verify-panel regressions)", () => {
   });
 
   it("active provider under transient cooldown + high utilization is a cooldown skip, not a gate failure", () => {
-    setRoutingUsage("codex", {
+    setRoutingUsage("anthropic", {
       trackingStatus: "tracked",
       utilizationPct: 96,
       resetsAtEpochMs: Date.now() + 3_600_000,
       balanceStatus: "available",
     });
-    markProviderCooldown("codex", Date.now() + 60_000, "rate_limited", null);
-    const ctx = { ...ctxWith(false), provider: "codex", model: "gpt-5.6-sol" } as RequestContext;
-    const result = resolveToolTierOverride(ctx, "general");
+    markProviderCooldown("anthropic", Date.now() + 60_000, "rate_limited", null);
+    const ctx = {
+      ...ctxWith(false),
+      provider: "anthropic",
+      model: "claude-fable-5",
+    } as RequestContext;
+    const result = resolveToolTierOverride(ctx, "emperor");
     expect(result.ok).toBe(true);
-    if (result.ok) expect(result.ctx.provider).toBe("anthropic");
+    if (result.ok) expect(result.ctx.provider).toBe("codex");
   });
 });
 
 describe("quota fallback gate (workflow bridge)", () => {
-  const bridgeOpts = { tier: "general", diversify: false } as const;
+  const bridgeOpts = { tier: "emperor", diversify: false } as const;
 
   it("fallback disabled: workflow tier routing fails when rank 1 is quota-blocked", () => {
-    blockCodexQuota();
+    blockAnthropicQuota();
     const result = resolveWorkflowAgentModelContextDetailed(ctxWith(false), bridgeOpts);
     expect(result.ok).toBe(false);
     expect(result.error).toContain("Quota fallback is disabled");
-    expect(result.error).toContain("codex/gpt-5.6-sol");
+    expect(result.error).toContain("anthropic/claude-fable-5");
+    expect(result.error).not.toContain("provider/model");
   });
 
   it("fallback enabled (default): workflow tier routing reroutes past the blocked candidate", () => {
-    blockCodexQuota();
+    blockAnthropicQuota();
     const result = resolveWorkflowAgentModelContextDetailed(ctxWith(undefined), bridgeOpts);
     expect(result.ok).toBe(true);
-    expect(result.ctx.provider).toBe("anthropic");
+    expect(result.ctx.provider).toBe("codex");
   });
 
   it("fallback disabled: healthy roster still resolves normally", () => {
     const result = resolveWorkflowAgentModelContextDetailed(ctxWith(false), bridgeOpts);
     expect(result.ok).toBe(true);
-    expect(result.ctx.provider).toBe("codex");
+    expect(result.ctx.provider).toBe("anthropic");
   });
 });

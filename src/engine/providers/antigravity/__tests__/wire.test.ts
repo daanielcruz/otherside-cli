@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import "@/engine/providers/bootstrap.ts";
 import { userAgent } from "@/engine/providers/antigravity/fingerprint.ts";
 import {
   flattenChoiceCombinators,
@@ -7,10 +8,10 @@ import {
 import type { Message } from "@/kernel/std/types/message.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 
-function ctx(): RequestContext {
+function ctx(model = "claude-sonnet-4-6"): RequestContext {
   return {
     provider: "antigravity",
-    model: "claude-sonnet-4-6",
+    model,
     effort: null,
     permissionMode: "default",
     sessionId: "wire-test-session",
@@ -52,6 +53,81 @@ describe("antigravity wire (agy 1.1.0)", () => {
       "used_non_gemini_model",
     ]);
     expect(labels.last_execution_id).toBeUndefined();
+  });
+
+  it("encodes native PDF tool results as inlineData only for PDF-capable models", () => {
+    const messages: Message[] = [
+      {
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: "pdf", name: "Read", input: { file_path: "/tmp/a.pdf" } },
+        ],
+      },
+      {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "pdf",
+            content: [
+              {
+                type: "pdf",
+                source: { type: "base64", media_type: "application/pdf", data: "cGRm" },
+                filename: "a.pdf",
+                pageCount: 1,
+                bytes: 3,
+              },
+            ],
+          },
+        ],
+      },
+    ];
+
+    const native = translateRequestAntigravity(ctx("gemini-3-flash"), messages, []) as {
+      contents: unknown;
+    };
+    expect(native.contents).toEqual([
+      {
+        role: "model",
+        parts: [
+          {
+            functionCall: { id: "pdf", name: "Read", args: { file_path: "/tmp/a.pdf" } },
+            thoughtSignature: "skip_thought_signature_validator",
+          },
+        ],
+      },
+      {
+        role: "user",
+        parts: [{ functionResponse: { id: "pdf", name: "Read", response: { output: "" } } }],
+      },
+      {
+        role: "user",
+        parts: [{ inlineData: { mimeType: "application/pdf", data: "cGRm" } }],
+      },
+    ]);
+
+    const unsupported = translateRequestAntigravity(ctx(), messages, []) as { contents: unknown };
+    expect(unsupported.contents).toEqual([
+      {
+        role: "model",
+        parts: [{ functionCall: { id: "pdf", name: "Read", args: { file_path: "/tmp/a.pdf" } } }],
+      },
+      {
+        role: "user",
+        parts: [
+          {
+            functionResponse: {
+              id: "pdf",
+              name: "Read",
+              response: {
+                output:
+                  "[PDF content is unavailable on this provider. Re-read the file to provide page images.]",
+              },
+            },
+          },
+        ],
+      },
+    ]);
   });
 
   it("labels carry last_execution_id first when contents has a prior role:model turn (7 keys)", () => {

@@ -57,19 +57,16 @@ function htmlResponse(): Response {
 }
 
 describe("WebFetch gate model selection", () => {
-  it("uses the active provider's scout model for the gate", async () => {
+  it("uses the active provider's daimyo model for the gate", async () => {
     global.fetch = mock(async () => htmlResponse()) as unknown as typeof fetch;
     const res = await WebFetch.run(call(), ctx({ provider: "xai", model: "grok-4.5" }));
     expect(res.is_error).toBeFalsy();
     expect(capturedModel).toBe("grok-composer-2.5-fast");
   });
 
-  it("falls back to the session model when the provider has no scout/warrior tier", async () => {
+  it("falls back to the session model when the provider has no auxiliary tier", async () => {
     global.fetch = mock(async () => htmlResponse()) as unknown as typeof fetch;
-    const res = await WebFetch.run(
-      call(),
-      ctx({ provider: "openai-custom", model: "custom-model-x" }),
-    );
+    const res = await WebFetch.run(call(), ctx({ provider: "openai", model: "custom-model-x" }));
     expect(res.is_error).toBeFalsy();
     expect(capturedModel).toBe("custom-model-x");
   });

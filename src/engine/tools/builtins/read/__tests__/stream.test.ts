@@ -2,7 +2,13 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { formatNumberedLines, numberLinesFromStream } from "@/engine/tools/builtins/read/read.ts";
+import "@/engine/providers/bootstrap.ts";
+import {
+  formatNumberedLines,
+  numberLinesFromStream,
+  Read,
+} from "@/engine/tools/builtins/read/read.ts";
+import type { RequestContext } from "@/kernel/std/types/request.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "read-stream-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -10,6 +16,23 @@ afterAll(() => rmSync(dir, { recursive: true, force: true }));
 function writeLines(name: string, lines: string[]): string {
   const path = join(dir, name);
   writeFileSync(path, `${lines.join("\n")}\n`);
+  return path;
+}
+
+function readContext(model = "claude-opus-4-8"): RequestContext {
+  return {
+    provider: "anthropic",
+    model,
+    sessionId: "pdf-test",
+    cwd: dir,
+    permissionMode: "default",
+  } as RequestContext;
+}
+
+function writePdf(name: string, pages = 1): string {
+  const path = join(dir, name);
+  const pageObjects = Array.from({ length: pages }, () => "<< /Type /Page >>").join("\n");
+  writeFileSync(path, `%PDF-1.7\n${pageObjects}\n%%EOF`);
   return path;
 }
 
@@ -56,5 +79,50 @@ describe("numberLinesFromStream", () => {
     const result = await numberLinesFromStream(path, { offset: 0, limit: 10 });
     expect(result.totalLines).toBe(2);
     expect(result.output).toBe("1\tfirst\n2\tlast");
+  });
+});
+
+describe("Read PDF blocks", () => {
+  test("stores a native PDF block without rendering pages", async () => {
+    const filePath = writePdf("native.pdf");
+    const result = await Read.run(
+      { id: "pdf-native", name: "Read", input: { file_path: filePath } },
+      readContext(),
+    );
+    expect(result.is_error).toBeUndefined();
+    expect(Array.isArray(result.content)).toBe(true);
+    expect(result.content).toEqual([
+      { type: "text", text: `[PDF] ${filePath} — 1 page(s)` },
+      {
+        type: "pdf",
+        source: {
+          type: "base64",
+          media_type: "application/pdf",
+          data: Buffer.from("%PDF-1.7\n<< /Type /Page >>\n%%EOF").toString("base64"),
+        },
+        filename: "native.pdf",
+        pageCount: 1,
+        bytes: Buffer.byteLength("%PDF-1.7\n<< /Type /Page >>\n%%EOF"),
+      },
+    ]);
+  });
+
+  test("requires a page range when the PDF exceeds ten pages", async () => {
+    const result = await Read.run(
+      { id: "pdf-pages", name: "Read", input: { file_path: writePdf("many.pdf", 11) } },
+      readContext(),
+    );
+    expect(result.is_error).toBe(true);
+    expect(result.content).toContain("pages parameter");
+  });
+
+  test("validates the PDF header before capability checks", async () => {
+    const filePath = join(dir, "invalid.pdf");
+    writeFileSync(filePath, "not a PDF");
+    const result = await Read.run(
+      { id: "pdf-invalid", name: "Read", input: { file_path: filePath } },
+      readContext("unknown"),
+    );
+    expect(result.content).toBe("File is not a valid PDF (missing %PDF- header).");
   });
 });

@@ -40,7 +40,6 @@ export interface McpInstructionBlock {
 // = one edit here, one line at the resolve site (assemble.ts).
 export interface ResolvedHarnessFacts {
   config: HarnessConfig;
-  multiproviderEnabled: boolean;
   deferredToolExclusions: ReadonlySet<string>;
   emitDeferredReminder: boolean;
   emitAgentListing: boolean;
@@ -48,7 +47,6 @@ export interface ResolvedHarnessFacts {
   supportsMidSystem: boolean;
   lean: boolean;
   modelFamily: "fable" | "sonnet" | "other";
-  modelTierLines: readonly string[];
   availableModels: readonly AvailableModelsRow[];
   knowledgeCutoff: string | null;
   agentRows: readonly AgentRowData[];

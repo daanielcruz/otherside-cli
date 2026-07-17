@@ -1,6 +1,7 @@
 import { isWorkflowEnabled } from "@/engine/background/workflows/runtime/gate.ts";
 import { adapterExcludedBaseTools } from "@/engine/contract/prompt-adapter.ts";
 import { isLeanPromptForModel } from "@/engine/providers/_shared/prompt-tier.ts";
+import { resolveImageGeneratorProvider } from "@/engine/providers/image-generation.ts";
 import { getEditToolDescription } from "@/engine/tools/builtins/edit/edit.ts";
 import { getReadToolDescription } from "@/engine/tools/builtins/read/read.ts";
 import { getSkillToolDescription } from "@/engine/tools/builtins/skill.ts";
@@ -12,7 +13,6 @@ import {
   buildTierAwareAgentDescription,
 } from "@/engine/tools/dynamic/Agent.ts";
 import { getAskUserQuestionToolDescription } from "@/engine/tools/dynamic/AskUserQuestion.ts";
-import { AGENT_MULTIPROVIDER_ONLY_FIELDS } from "@/engine/tools/dynamic/agent-options.ts";
 import { getBashPrompt } from "@/engine/tools/dynamic/Bash.ts";
 import { getWebFetchDescription } from "@/engine/tools/dynamic/WebFetch.ts";
 import { buildWorkflowDescription } from "@/engine/tools/dynamic/Workflow.ts";
@@ -21,19 +21,21 @@ import * as toolsRegistry from "@/engine/tools/registry.ts";
 import type { ProviderToolDeclaration, TurnProvider } from "@/engine/translator/types.ts";
 import {
   DEFAULT_CONFIG,
-  isMultiproviderOrchestrationEnabled,
+  effectiveOrchestrationMode,
   type UserConfig,
 } from "@/kernel/config/config.ts";
+import type { OrchestrationMode } from "@/kernel/config/orchestration-mode.ts";
 import { isMcpToolName } from "@/kernel/mcp/index.ts";
 import { hasWholeToolDenyRule } from "@/kernel/permissions/index.ts";
 import type { PermissionRule } from "@/kernel/permissions/types.ts";
-import { hasCodexCredentialSync } from "@/kernel/storage/credentials.ts";
+import { hasCredentialSync } from "@/kernel/storage/credentials.ts";
 
 export interface ProviderToolDescriptionOptions {
   providerId: TurnProvider["id"];
   model?: string;
   mainAgent?: boolean;
-  multiprovider?: boolean;
+  orchestrationMode?: OrchestrationMode;
+  workflowSizeGuideline?: UserConfig["workflowSizeGuideline"];
 }
 
 export function providerToolDescription(
@@ -44,11 +46,15 @@ export function providerToolDescription(
   const mainAgent = opts.mainAgent ?? true;
   switch (schema.name) {
     case "Agent":
-      return opts.multiprovider === true
+      return opts.orchestrationMode === "feudalism"
         ? buildTierAwareAgentDescription(opts.providerId, mainAgent)
         : buildAgentDescription({ lean, mainAgent });
     case "Workflow":
-      return buildWorkflowDescription(opts.providerId, opts.multiprovider === true);
+      return buildWorkflowDescription(
+        opts.providerId,
+        opts.orchestrationMode ?? "disabled",
+        opts.workflowSizeGuideline,
+      );
     case "Read":
       return getReadToolDescription({ lean });
     case "Edit":
@@ -73,19 +79,23 @@ export function providerToolDeclarations(
   config?: UserConfig,
   opts: { model?: string; mainAgent?: boolean; permissionRules?: readonly PermissionRule[] } = {},
 ): ProviderToolDeclaration[] {
-  const multiprovider = isMultiproviderOrchestrationEnabled(config);
+  const orchestrationMode = effectiveOrchestrationMode(config);
   const descriptionOpts: ProviderToolDescriptionOptions = {
     providerId: provider.id,
     ...(opts.model !== undefined ? { model: opts.model } : {}),
     mainAgent: opts.mainAgent ?? true,
-    multiprovider,
+    orchestrationMode,
+    workflowSizeGuideline: config?.workflowSizeGuideline,
   };
   const excludedBase = adapterExcludedBaseTools(provider.promptAdapter());
   const generateImageActive = shouldExposeGenerateImage(provider, config);
   const workflowActive = isWorkflowEnabled(config ?? DEFAULT_CONFIG);
   const schemas = [
     ...declaredSchemasForOverrides(
-      { ...provider.deferredOverrides(), alwaysDeclare: [] },
+      {
+        ...provider.deferredOverrides(),
+        alwaysDeclare: generateImageActive ? ["GenerateImage"] : [],
+      },
       implementedToolNames(),
     ),
     ...declaredMcpSchemas(opts.permissionRules ?? []),
@@ -94,16 +104,21 @@ export function providerToolDeclarations(
     .filter((schema) => schema.name !== "GenerateImage" || generateImageActive)
     .filter((schema) => schema.name !== "Workflow" || workflowActive);
   if (provider.id === "anthropic") insertDeferredToolPlaceholder(schemas);
+  const activeDeferred = new Set(activeDeferredToolNames());
 
   return schemas.map((schema) => {
     const description = providerToolDescription(schema, descriptionOpts);
     if (schema.name === "Agent") {
-      let agentSchema = buildAgentInputSchema(provider.id);
-      if (!multiprovider)
-        agentSchema = withoutAgentFields(agentSchema, AGENT_MULTIPROVIDER_ONLY_FIELDS);
+      const agentSchema = buildAgentInputSchema(provider.id, orchestrationMode);
       return toProviderTool({ ...schema, description, inputSchema: agentSchema });
     }
-    const declaration = toProviderTool({ ...schema, description });
+    const declaration = toProviderTool({
+      ...schema,
+      description,
+      ...(provider.id === "anthropic" && activeDeferred.has(schema.name)
+        ? { defer_loading: true as const }
+        : {}),
+    });
     if (schema.name === "Bash" && provider.id === "anthropic") {
       declaration.eager_input_streaming = true;
     }
@@ -126,22 +141,12 @@ function insertDeferredToolPlaceholder(
   schemas.splice(writeIndex < 0 ? schemas.length : writeIndex, 0, DEFERRED_TOOL_PLACEHOLDER);
 }
 
-function withoutAgentFields(
-  inputSchema: Record<string, unknown>,
-  fields: readonly string[],
-): Record<string, unknown> {
-  const props = { ...((inputSchema.properties ?? {}) as Record<string, unknown>) };
-  for (const field of fields) delete props[field];
-  return { ...inputSchema, properties: props };
-}
-
 function shouldExposeGenerateImage(
   provider: TurnProvider,
   config: UserConfig | undefined,
 ): boolean {
-  if (provider.id === "codex") return hasCodexCredentialSync();
-  if (config?.imageGen !== true) return false;
-  return hasCodexCredentialSync();
+  const generator = resolveImageGeneratorProvider(config?.imageGenProvider, provider.id);
+  return generator !== null && hasCredentialSync(generator);
 }
 
 function implementedToolNames(): Set<string> {

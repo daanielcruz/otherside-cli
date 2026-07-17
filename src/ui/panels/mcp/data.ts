@@ -12,6 +12,7 @@ import {
   type McpServerConfig,
   type McpServerInspection,
 } from "@/kernel/mcp/index.ts";
+import { computeListWindow } from "@/kernel/std/list-window.ts";
 import { Color, Glyph } from "@/ui/theme/theme.ts";
 
 export interface McpServerRow {
@@ -163,10 +164,13 @@ export function toolMarker(index: number, selected: number, start: number, total
   return " ";
 }
 
-export function toolWindowStart(selected: number, total: number): number {
-  if (total <= TOOL_PAGE_SIZE) return 0;
-  return Math.min(Math.max(0, selected - TOOL_PAGE_SIZE + 1), total - TOOL_PAGE_SIZE);
-}
+export const toolWindowStart = (selected: number, total: number): number =>
+  computeListWindow({
+    cursor: selected,
+    total,
+    size: TOOL_PAGE_SIZE,
+    anchor: "bottom",
+  }).from;
 
 export function formatCount(count: number, singular: string): string {
   return `${count} ${singular}${count === 1 ? "" : "s"}`;

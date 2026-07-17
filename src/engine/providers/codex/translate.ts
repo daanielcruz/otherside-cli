@@ -4,6 +4,7 @@ import {
 } from "@/engine/providers/_shared/account-identity.ts";
 import { parseJsonWithPartialRecovery } from "@/engine/providers/_shared/partial-json.ts";
 import { streamErrorToHttpError } from "@/engine/providers/_shared/retry.ts";
+import { thinkingProvenance } from "@/engine/providers/_shared/thinking-provenance.ts";
 import { usageFromOpenAi } from "@/engine/providers/_shared/usage.ts";
 import { buildCodexEnvelope } from "@/engine/providers/codex/envelope.ts";
 import { MODELS } from "@/engine/providers/codex/models.ts";
@@ -172,22 +173,20 @@ function messagesToInput(
       const toolUses = m.content.filter(
         (b): b is Extract<ContentBlock, { type: "tool_use" }> => b.type === "tool_use",
       );
-      const reasoning = m.content.find(
-        (b): b is Extract<ContentBlock, { type: "thinking" }> =>
-          b.type === "thinking" && typeof b.signature === "string" && b.signature.length > 0,
-      );
-      const isCodexProvider =
-        m.producedBy === "codex" ||
-        (!!m.producedModel && MODELS.some((model) => model.id === m.producedModel));
       // Encrypted reasoning is bound to the credential that produced it;
       // replaying it under another account is rejected by the endpoint.
-      const reasoningSameAccount = sameAccountFingerprint(m.producedAccount, currentAccount);
-      if (
-        reasoning?.signature &&
-        isCodexProvider &&
-        reasoningSameAccount &&
-        !suppressEncryptedReasoning
-      ) {
+      // Provenance is judged per block — a rebuilt message can carry blocks
+      // from several producers.
+      const reasoning = m.content.find((b): b is Extract<ContentBlock, { type: "thinking" }> => {
+        if (b.type !== "thinking") return false;
+        if (typeof b.signature !== "string" || b.signature.length === 0) return false;
+        const produced = thinkingProvenance(b, m);
+        const producedByCodex =
+          produced.producedBy === "codex" ||
+          (!!produced.producedModel && MODELS.some((model) => model.id === produced.producedModel));
+        return producedByCodex && sameAccountFingerprint(produced.producedAccount, currentAccount);
+      });
+      if (reasoning?.signature && !suppressEncryptedReasoning) {
         const summary =
           reasoning.text.length > 0 ? [{ type: "summary_text", text: reasoning.text }] : [];
         out.push({ type: "reasoning", summary, encrypted_content: reasoning.signature });
@@ -264,9 +263,9 @@ function isCodexOutputContentArray(parsed: unknown): boolean {
 }
 
 function toolResultToCodex(r: Extract<ContentBlock, { type: "tool_result" }>): CodexInputItem {
-  // Image blocks must ride as content items — flattening to text would strip
-  // the bytes into an "[image: ...]" placeholder before they reach the wire.
-  if (Array.isArray(r.content) && r.content.some((b) => b.type === "image")) {
+  // Binary blocks must ride as content items — flattening to text would strip
+  // their bytes into a placeholder before they reach the wire.
+  if (Array.isArray(r.content) && r.content.some((b) => b.type === "image" || b.type === "pdf")) {
     const items: CodexInputItem[] = [];
     for (const b of r.content) {
       if (b.type === "text" && b.text.length > 0) {
@@ -275,6 +274,12 @@ function toolResultToCodex(r: Extract<ContentBlock, { type: "tool_result" }>): C
         items.push({
           type: "input_image",
           image_url: `data:${b.source.media_type};base64,${b.source.data}`,
+        });
+      } else if (b.type === "pdf") {
+        items.push({
+          type: "input_file",
+          filename: b.filename,
+          file_data: `data:application/pdf;base64,${b.source.data}`,
         });
       }
     }

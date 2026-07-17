@@ -22,6 +22,7 @@ function reasoningMessages(): Message[] {
     { role: "user", content: [{ type: "text", text: "hi" }] },
     {
       role: "assistant",
+      producedBy: "xai",
       producedModel: "grok-4.5",
       producedAccount: accountFingerprint("xai"),
       content: [

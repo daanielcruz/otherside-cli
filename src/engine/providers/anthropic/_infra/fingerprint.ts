@@ -82,8 +82,8 @@ export const EXTENDED_CACHE_TTL_BETA = "extended-cache-ttl-2025-04-11";
 export const STRUCTURED_OUTPUTS_BETA = "structured-outputs-2025-12-15";
 export const FAST_MODE_BETA = "fast-mode-2026-02-01";
 
-// First-party Haiku wire id is always the dated config string (reference
-// CLAUDE_HAIKU_4_5_CONFIG.firstParty). Catalog may still list the undated alias.
+// First-party Haiku wire id is always the dated config string.
+// Catalog may still list the undated alias.
 const WIRE_MODEL_OVERRIDES: Record<string, string> = {
   "claude-haiku-4-5": "claude-haiku-4-5-20251001",
 };
@@ -98,11 +98,14 @@ function buildModelBetas(
   agentic: boolean,
   fastModeLatched: boolean,
   structuredOutput: boolean,
+  deferredToolLoading: boolean,
+  extendedCacheTtl: boolean,
 ): string[] {
   const haiku = isHaikuModel(base);
   const supportsMidConvSystem = modelSupportsMidConversationSystemBeta(base);
-  // Haiku's non-agentic calls (probe/title/summary) use a minimal beta set: omit the CLI, advanced-tool-use, and extended-cache-ttl beta headers. Include structured-outputs only when the request body uses a structured output format; the quota probe omits it and the title request includes it.
-  const minimalSideQueryPath = haiku && !agentic;
+  // Non-agentic side queries omit request-feature betas. Structured output tracks
+  // the request body, while the quota probe omits it.
+  const sideQueryPath = !agentic;
   const out: string[] = [];
   if (!haiku) out.push(CLAUDE_CODE_BETA);
   out.push(OAUTH_BETA);
@@ -114,15 +117,16 @@ function buildModelBetas(
   if (supportsMidConvSystem) out.push(MID_CONVERSATION_SYSTEM_BETA);
   // Agentic haiku carries the CLI beta header after the cache headers rather than before them, unlike opus and sonnet.
   if (haiku && agentic) out.push(CLAUDE_CODE_BETA);
-  if (minimalSideQueryPath) {
+  if (sideQueryPath) {
     if (structuredOutput) out.push(STRUCTURED_OUTPUTS_BETA);
-    if (fastModeLatched) out.push(FAST_MODE_BETA);
+    if (extendedCacheTtl) out.push(EXTENDED_CACHE_TTL_BETA);
     return out;
   }
-  out.push(ADVANCED_TOOL_USE_BETA);
+  if (deferredToolLoading) out.push(ADVANCED_TOOL_USE_BETA);
   if (!haiku) out.push(EFFORT_BETA);
-  out.push(EXTENDED_CACHE_TTL_BETA);
+  if (structuredOutput) out.push(STRUCTURED_OUTPUTS_BETA);
   if (fastModeLatched) out.push(FAST_MODE_BETA);
+  if (extendedCacheTtl) out.push(EXTENDED_CACHE_TTL_BETA);
   return out;
 }
 
@@ -181,18 +185,50 @@ function subagentWireId(agentOwnerId: string): string {
   return `a${createHash("sha256").update(agentOwnerId).digest("hex").slice(0, 16)}`;
 }
 
-export function fingerprint(ctx: RequestContext): WireFingerprint {
+function requestTools(body: unknown): Array<Record<string, unknown>> {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) return [];
+  const tools = (body as Record<string, unknown>).tools;
+  if (!Array.isArray(tools)) return [];
+  return tools.filter(
+    (tool): tool is Record<string, unknown> =>
+      typeof tool === "object" && tool !== null && !Array.isArray(tool),
+  );
+}
+
+function requestUsesDeferredToolLoading(body: unknown): boolean {
+  const tools = requestTools(body);
+  return (
+    tools.some((tool) => tool.name === "ToolSearch") &&
+    tools.some((tool) => tool.defer_loading === true)
+  );
+}
+
+function requestUsesStructuredOutput(body: unknown): boolean {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) return false;
+  const outputConfig = (body as Record<string, unknown>).output_config;
+  return (
+    typeof outputConfig === "object" &&
+    outputConfig !== null &&
+    !Array.isArray(outputConfig) &&
+    "format" in outputConfig
+  );
+}
+
+export function fingerprint(ctx: RequestContext, body?: unknown): WireFingerprint {
   const parsed = parseModelId(ctx.model);
+  const agentic = ctx.agentic !== false;
   const fastModeLatched = latchFastModeIf(ctx.fastMode === true);
-  // Among the non-agentic side flows only the title request carries a
-  // structured output_config.format in its body — the beta tracks the body.
-  const structuredOutput = ctx.cacheRole === "title";
+  const extendedCacheTtl =
+    ctx.requestRole === "memory_recall" ||
+    (agentic && ctx.agentOwnerId === undefined && ctx.isForkChild !== true);
   const betas = buildModelBetas(
     parsed.base,
     parsed.is1m,
-    ctx.agentic !== false,
+    agentic,
     fastModeLatched,
-    structuredOutput,
+    ctx.cacheRole === "title" || requestUsesStructuredOutput(body),
+    requestUsesDeferredToolLoading(body),
+    extendedCacheTtl,
   );
   const userAgent = uaCli();
 

@@ -43,6 +43,8 @@ src/design/bridge/web-assets.generated.ts
 # bun-build temp artifacts
 .*.bun-build
 package-lock.json
+native/audio-capture/target/
+src/engine/voice/native/*.node
 
 # demo recording (vhs)
 demo.tape

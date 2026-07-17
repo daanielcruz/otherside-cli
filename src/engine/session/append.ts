@@ -7,6 +7,7 @@ import { agentTranscriptPathForCwd, sessionPathForCwd } from "./paths.ts";
 import {
   type HookEventRecord,
   type Session,
+  SessionChain,
   type SessionRecord,
   type SessionStamp,
   serializeRecord,
@@ -72,27 +73,108 @@ export async function appendRecord(s: Session, r: SessionRecord): Promise<void> 
     await appendSystemInjection(s, r);
     return;
   }
-  if ((r.type === "user_message" || r.type === "assistant_message") && typeof r.uuid !== "string") {
-    r.uuid = crypto.randomUUID();
+
+  // Serialization advances the transcript chain, so perform it against a private
+  // copy. Nothing observable on the live session may change until the write has
+  // completed successfully.
+  const generatedUuid = isUuidRecord(r) && typeof r.uuid !== "string" ? crypto.randomUUID() : null;
+  const recordForPersistence = withGeneratedUuid(r, generatedUuid);
+  const recordForMemory =
+    recordForPersistence.type === "compaction_mark"
+      ? {
+          ...recordForPersistence,
+          summary_ref: await spillCompactionSummaryForMemory(recordForPersistence.summary_ref),
+        }
+      : recordForPersistence;
+  await persistRecordAndCommit(s, {
+    record: r,
+    recordForPersistence,
+    recordForMemory,
+    generatedUuid,
+  });
+}
+
+interface PendingRecordWrite {
+  record: SessionRecord;
+  recordForPersistence: SessionRecord;
+  recordForMemory: SessionRecord;
+  generatedUuid: string | null;
+}
+
+async function persistRecordAndCommit(s: Session, pending: PendingRecordWrite): Promise<void> {
+  const path = sessionPathForCwd(s.storageCwd, s.id);
+  const dir = dirname(path);
+  mkdirSync(dir, { recursive: true });
+  await enqueueWrite(path, async () => {
+    const pendingMeta = pending.record.type === "session_meta" ? null : s.pendingMeta;
+    const pendingChain = new SessionChain();
+    pendingChain.headUuid = s.chain.headUuid;
+    const stamp = s.stamp();
+    const lines: { text: string; uuid: string | null }[] = [];
+
+    if (pendingMeta !== null) {
+      lines.push({ text: `${serializeRecord(pendingMeta, pendingChain, stamp)}\n`, uuid: null });
+    }
+    const recordUuid =
+      isUuidRecord(pending.recordForPersistence) &&
+      typeof pending.recordForPersistence.uuid === "string"
+        ? pending.recordForPersistence.uuid
+        : null;
+    lines.push({
+      text: `${serializeRecord(pending.recordForPersistence, pendingChain, stamp)}\n`,
+      uuid: recordUuid,
+    });
+
+    const payload = lines.map((line) => line.text).join("");
+    const index = await offsetIndexForAppend(path);
+    await appendFile(path, payload, "utf8");
+    for (const line of lines) {
+      recordAppendedLine(index, line.uuid, Buffer.byteLength(line.text, "utf8"));
+    }
+
+    if (pending.generatedUuid !== null && isUuidRecord(pending.record)) {
+      pending.record.uuid = pending.generatedUuid;
+    }
+    if (pendingMeta !== null) {
+      s.pushRecord(pendingMeta);
+      s.pendingMeta = null;
+    } else if (pending.record.type === "session_meta") {
+      s.pendingMeta = null;
+    }
+    s.pushRecord(
+      pending.recordForMemory.type === "compaction_mark" ? pending.recordForMemory : pending.record,
+    );
+    s.chain.headUuid = pendingChain.headUuid;
+  });
+}
+
+type UuidRecord = Extract<
+  SessionRecord,
+  {
+    type:
+      | "user_message"
+      | "assistant_message"
+      | "tool_call"
+      | "tool_result"
+      | "attachment"
+      | "compaction_mark";
   }
-  const lines: { text: string; uuid: string | null }[] = [];
-  const stamp = s.stamp();
-  if (r.type === "session_meta") {
-    s.pendingMeta = null;
-  } else {
-    lines.push(...drainPendingMetaLine(s, stamp));
-  }
-  if (r.type === "compaction_mark") {
-    s.pushRecord({ ...r, summary_ref: await spillCompactionSummaryForMemory(r.summary_ref) });
-  } else {
-    s.pushRecord(r);
-  }
-  const recordUuid =
-    (r.type === "user_message" || r.type === "assistant_message") && typeof r.uuid === "string"
-      ? r.uuid
-      : null;
-  lines.push({ text: `${serializeRecord(r, s.chain, stamp)}\n`, uuid: recordUuid });
-  await writeSessionLines(s, lines);
+>;
+
+function withGeneratedUuid(record: SessionRecord, uuid: string | null): SessionRecord {
+  if (uuid === null || !isUuidRecord(record)) return record;
+  return { ...record, uuid };
+}
+
+function isUuidRecord(record: SessionRecord): record is UuidRecord {
+  return (
+    record.type === "user_message" ||
+    record.type === "assistant_message" ||
+    record.type === "tool_call" ||
+    record.type === "tool_result" ||
+    record.type === "attachment" ||
+    record.type === "compaction_mark"
+  );
 }
 
 async function writeSessionLines(

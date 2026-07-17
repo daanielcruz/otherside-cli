@@ -50,6 +50,7 @@ export const kimiStream: StreamFn = async function* kimiStreamFn(
     const text = await resp.text().catch(() => "");
     const retryAfterHeader = resp.headers.get("retry-after");
     const quota = detectQuotaExhaustion({
+      provider: "kimi",
       status: resp.status,
       headers: resp.headers,
       body: text,

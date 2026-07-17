@@ -51,6 +51,13 @@ function elevateColorDepthForXterm(): boolean {
   return false;
 }
 
+export function terminalAdvertisesTruecolor(env: NodeJS.ProcessEnv = process.env): boolean {
+  const colorTerm = env.COLORTERM?.toLowerCase();
+  if (colorTerm === "truecolor" || colorTerm === "24bit") return true;
+  const term = env.TERM?.toLowerCase();
+  return term?.includes("truecolor") === true || term?.includes("direct") === true;
+}
+
 function elevateColorDepthForModernTerminals(): boolean {
   if (
     !process.stdout.isTTY ||
@@ -61,7 +68,10 @@ function elevateColorDepthForModernTerminals(): boolean {
     return false;
   }
   const term = process.env.TERM;
-  if (term && MODERN_TERMINALS.has(term) && chalk.level < 3) {
+  if (
+    (terminalAdvertisesTruecolor() || (term !== undefined && MODERN_TERMINALS.has(term))) &&
+    chalk.level < 3
+  ) {
     chalk.level = 3;
     return true;
   }
@@ -69,7 +79,7 @@ function elevateColorDepthForModernTerminals(): boolean {
 }
 
 function limitColorDepthForTmuxTerminal(): boolean {
-  if (process.env.OTHERSIDE_TMUX_TRUECOLOR) return false;
+  if (process.env.OTHERSIDE_TMUX_TRUECOLOR || terminalAdvertisesTruecolor()) return false;
   if (process.env.TMUX && chalk.level > 2) {
     chalk.level = 2;
     return true;

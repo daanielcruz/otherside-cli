@@ -158,7 +158,8 @@ export const ToolSearch: ToolHandler = {
         .slice(selectPrefix.length)
         .split(",")
         .map((s) => s.trim())
-        .filter(Boolean);
+        .filter(Boolean)
+        .map((name) => registry.get(name)?.schema.name ?? name);
       matches = all.filter((s) => wanted.includes(s.name));
     } else if (query.trim() === "") {
       matches = deferredOnly(all, scopedNames);
@@ -173,22 +174,23 @@ export const ToolSearch: ToolHandler = {
     }));
     for (const tool of tools) {
       // Scoped tools are already declared on the request — announcing them as
-      // deferred would double-declare on the next round.
+      // deferred would double-declare on the next round. Announcements land in
+      // the CALLER's scope: a subagent's load never widens the main session's
+      // declared set, and vice versa.
       if (scopedNames.has(tool.name)) continue;
       if (ctx.forkDeferredAllow?.has(tool.name)) {
-        forceAnnounceDeferredTool(tool.name);
+        forceAnnounceDeferredTool(tool.name, ctx.agentOwnerId);
       } else {
-        announceDeferredTool(tool.name);
+        announceDeferredTool(tool.name, ctx.agentOwnerId);
       }
     }
 
     return {
       tool_use_id: call.id,
-      content: JSON.stringify({
-        query,
-        max_results: maxResults,
-        tools,
-      }),
+      content:
+        tools.length === 0
+          ? "No matching deferred tools found"
+          : tools.map((tool) => ({ type: "tool_reference" as const, tool_name: tool.name })),
     };
   },
 };

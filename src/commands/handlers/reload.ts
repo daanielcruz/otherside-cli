@@ -1,7 +1,7 @@
 import type { SlashCommand } from "@/commands/catalog.ts";
 import type { SlashContext, SlashResult } from "@/commands/types.ts";
 import { clear as clearAgents } from "@/engine/agents/registry.ts";
-import { loadCorpus } from "@/engine/corpus.ts";
+import { loadCorpus, reloadPlugins } from "@/engine/corpus.ts";
 import { gatherPluginLspServerSpecs } from "@/engine/plugins/lsp.ts";
 import { gatherPluginMcpServers } from "@/engine/plugins/mcp.ts";
 import {
@@ -10,13 +10,14 @@ import {
   list as listPlugins,
 } from "@/engine/plugins/registry.ts";
 import { clear as clearSkills } from "@/engine/skills/registry.ts";
-import { refreshMcpTools } from "@/kernel/mcp/index.ts";
+import { resolveConfig } from "@/kernel/config/resolver.ts";
+
 import { pluralize } from "@/kernel/std/text/pluralize.ts";
 
 export function countPluginHooks(): number {
   let total = 0;
-  for (const plugin of listPlugins()) {
-    if (!isPluginRuntimeEnabled(plugin.name)) continue;
+  for (const { pluginId, plugin } of listPlugins()) {
+    if (!isPluginRuntimeEnabled(pluginId)) continue;
     const config = plugin.hooksConfig;
     if (!config) continue;
     for (const entries of Object.values(config)) {
@@ -34,7 +35,7 @@ export function formatReloadFeedback(counts: {
   mcpServers: number;
   lspServers: number;
 }): string {
-  // Match reference category set + order:
+  // Category set + order:
   // plugins · skills · agents · hooks · plugin MCP servers · plugin LSP servers
   const parts = [
     `${counts.plugins} ${pluralize(counts.plugins, "plugin")}`,
@@ -50,13 +51,25 @@ export function formatReloadFeedback(counts: {
 export async function handleReload(
   cmd: SlashCommand,
   _args: string,
-  _ctx: SlashContext,
+  ctx: SlashContext,
 ): Promise<SlashResult> {
+  const cwd = process.cwd();
+  const config = ctx.config ?? resolveConfig(cwd);
   clearSkills();
   clearAgents();
   clearPlugins();
-  const { agents, skills, plugins } = loadCorpus();
-  await refreshMcpTools(process.cwd());
+  const { agents, skills, plugins } = loadCorpus({ config, cwd });
+  // Plugin runtime state swaps transactionally: MCP clients and deferred tool
+  // announcements for removed servers are cleaned up, and a failed swap rolls
+  // back to the freshly loaded corpus with needsRefresh re-armed.
+  const result = await reloadPlugins();
+  if (!result.ok) {
+    return {
+      kind: "instant",
+      command: cmd,
+      feedback: `Plugin reload failed: ${result.error ?? "unknown error"}`,
+    };
+  }
   const hooks = countPluginHooks();
   const mcpServers = Object.keys(gatherPluginMcpServers()).length;
   const lspServers = gatherPluginLspServerSpecs().length;

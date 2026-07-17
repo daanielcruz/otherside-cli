@@ -34,7 +34,7 @@ const SCRIPT = `export const meta = {
 }
 
 // deep-research: Scope → pipeline(Search → URL-dedup → Fetch+Extract) → 3-vote Verify → Synthesize
-// Ported from bughunter architecture. WebSearch/WebFetch instead of git/grep.
+// Research-oriented variant: WebSearch/WebFetch instead of git/grep.
 // Question is passed via Workflow({name: 'deep-research', args: '<question>'}).
 
 const VOTES_PER_CLAIM = 3

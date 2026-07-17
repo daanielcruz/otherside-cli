@@ -7,6 +7,7 @@ import {
   wrapWithSandbox,
 } from "@/engine/sandbox/manager.ts";
 import type { OutputProgress, SpillBuffer } from "@/engine/tools/_infra/spill-buffer.ts";
+import { isEnvTruthy } from "@/kernel/std/proc/env.ts";
 import { isWindows } from "@/kernel/std/proc/platform.ts";
 import { findShell, getDisableExtglobCommand, shellCommand } from "@/kernel/std/proc/shell.ts";
 import { getShellSnapshotPath } from "@/kernel/storage/shell-snapshot.ts";
@@ -97,6 +98,16 @@ export async function prepareExecCommand(
   return { execCommand: wrap.wrapped, sandboxed: true, logTag: wrap.logTag, login };
 }
 
+export function shellSpawnEnvironment(
+  env: NodeJS.ProcessEnv = process.env,
+): Record<string, string | undefined> {
+  const childEnv = { ...env, ...NON_INTERACTIVE_ENV };
+  if (isEnvTruthy(env.OTHERSIDE_REMOTE)) {
+    childEnv.BUN_OPTIONS = env.BUN_OPTIONS ? `--smol ${env.BUN_OPTIONS}` : "--smol";
+  }
+  return childEnv;
+}
+
 export function spawnShell(
   execCommand: string,
   opts: { cwd: string; login?: boolean | undefined },
@@ -105,7 +116,7 @@ export function spawnShell(
     stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...process.env, ...NON_INTERACTIVE_ENV },
+    env: shellSpawnEnvironment(),
     cwd: opts.cwd,
     detached: !isWindows(),
     windowsHide: true,

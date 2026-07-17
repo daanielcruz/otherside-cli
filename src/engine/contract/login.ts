@@ -32,13 +32,13 @@ export function normalizeLoginProvider(input: string | null): ProviderId | null 
   if (!provider) return null;
   if (provider === "anthropic") return "anthropic";
   if (provider === "codex") return "codex";
-  if (provider === "grok" || provider === "xai") return "xai";
+  if (provider === "xai") return "xai";
   if (provider === "antigravity") return "antigravity";
-  if (provider === "kimi-code") return "kimi-code";
+  if (provider === "kimi") return "kimi";
   if (provider === "deepseek") return "deepseek";
   if (provider === "minimax") return "minimax";
   if (provider === "glm") return "glm";
-  if (provider === "openai-custom") return "openai-custom";
+  if (provider === "openai") return "openai";
   return null;
 }
 
@@ -46,7 +46,7 @@ export async function runLogout(providerInput: string | null): Promise<string[]>
   const provider = normalizeLoginProvider(providerInput);
   if (!provider) {
     throw new Error(
-      `unknown provider ${JSON.stringify(providerInput)} — use anthropic, codex, xai, kimi-code, minimax, glm, antigravity, deepseek, or openai-custom`,
+      `unknown provider ${JSON.stringify(providerInput)} — use anthropic, codex, xai, kimi, minimax, glm, antigravity, deepseek, or openai`,
     );
   }
   await deleteFor(provider);

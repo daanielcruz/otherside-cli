@@ -2,6 +2,7 @@ import type { LoadedPlugin } from "@/engine/plugins/loader.ts";
 import type { MarketplacePluginEntry } from "@/engine/plugins/marketplace.ts";
 import type { KnownMarketplace } from "@/engine/plugins/marketplaces-store.ts";
 import type { McpServerStatusEntry } from "@/kernel/mcp/client/registry.ts";
+import { computeListWindow } from "@/kernel/std/list-window.ts";
 import { stringWidth } from "@/kernel/std/text/string-width.ts";
 
 const PANEL_COMMAND_ROWS = 2;
@@ -14,6 +15,8 @@ const PANEL_FOOTER_ROWS = 2;
 const PANEL_BODY_MARGIN_ROWS = 1;
 const PANEL_OVERFLOW_ROWS = 2;
 const PANEL_MIN_BODY_ROWS = 1;
+
+export const DISCOVER_MAX_VISIBLE = 5;
 
 export type PluginsPageRow =
   | { kind: "heading"; id: string; label: string; height: 1 }
@@ -38,7 +41,7 @@ export type PluginsPageRow =
       itemIndex: number;
       marketplace: KnownMarketplace;
       pluginCount: number;
-      height: 3;
+      height: 4;
     }
   | {
       kind: "add-marketplace";
@@ -133,6 +136,7 @@ export function pagePluginsIndex(
   return clampPluginsIndex(index + direction * Math.max(1, itemCapacity), count);
 }
 
+// Intentional page-anchored exception: heterogeneous row heights require whole-page jumps.
 export function pluginsPageWindow(
   rows: readonly PluginsPageRow[],
   selected: number,
@@ -165,6 +169,50 @@ export function pluginsPageWindow(
 
   return {
     rows: currentPage,
+    aboveItems: firstItem,
+    belowItems: Math.max(0, selectable.length - lastItem - 1),
+    firstItem,
+    lastItem,
+    itemCapacity: Math.max(1, visibleItems.length),
+  };
+}
+
+export function discoverPageWindow(
+  rows: readonly PluginsPageRow[],
+  selected: number,
+  previousStart: number,
+  maxVisible: number = DISCOVER_MAX_VISIBLE,
+): PluginsPageWindow {
+  const selectable = rows.filter(isSelectableRow);
+  if (selectable.length === 0) {
+    return {
+      rows: [],
+      aboveItems: 0,
+      belowItems: 0,
+      firstItem: 0,
+      lastItem: -1,
+      itemCapacity: Math.max(1, Math.min(DISCOVER_MAX_VISIBLE, Math.floor(maxVisible))),
+    };
+  }
+
+  const capacity = Math.max(1, Math.min(DISCOVER_MAX_VISIBLE, Math.floor(maxVisible)));
+  const selectedItem = clampPluginsIndex(selected, selectable.length);
+  const window = computeListWindow({
+    cursor: selectedItem,
+    total: selectable.length,
+    size: capacity,
+    anchor: "edge",
+    previousStart: Number.isFinite(previousStart) ? Math.floor(previousStart) : 0,
+  });
+  const start = window.from;
+
+  const visibleItems = selectable.slice(window.from, window.to);
+  const firstItem = start;
+  const lastItem = start + visibleItems.length - 1;
+  const visibleIds = new Set(visibleItems.map((row) => row.id));
+
+  return {
+    rows: rows.filter((row) => visibleIds.has(row.id)),
     aboveItems: firstItem,
     belowItems: Math.max(0, selectable.length - lastItem - 1),
     firstItem,

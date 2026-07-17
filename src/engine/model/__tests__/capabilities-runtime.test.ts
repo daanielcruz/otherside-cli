@@ -17,7 +17,7 @@ describe("canSendNatively", () => {
     expect(canSendNatively("anthropic")).toBe(true);
     expect(canSendNatively("antigravity")).toBe(true);
     expect(canSendNatively("codex")).toBe(true);
-    expect(canSendNatively("kimi-code")).toBe(true);
+    expect(canSendNatively("kimi")).toBe(true);
     expect(canSendNatively("glm", "glm-5.2")).toBe(true);
     expect(canSendNatively("glm", "glm-5-turbo")).toBe(false);
   });
@@ -25,8 +25,8 @@ describe("canSendNatively", () => {
   it("returns false for none-kind providers regardless of model", () => {
     expect(canSendNatively("deepseek")).toBe(false);
     expect(canSendNatively("deepseek", "deepseek-v4-pro")).toBe(false);
-    expect(canSendNatively("openai-custom")).toBe(false);
-    expect(canSendNatively("openai-custom", "anything")).toBe(false);
+    expect(canSendNatively("openai")).toBe(false);
+    expect(canSendNatively("openai", "anything")).toBe(false);
   });
 
   it("returns false for hybrid parser providers because they do not receive image blocks directly", () => {
@@ -72,7 +72,7 @@ describe("visionCapableProviderIds", () => {
   it("does not contain providers that fail canSendNatively", () => {
     const ids = visionCapableProviderIds();
     expect(ids).not.toContain("deepseek");
-    expect(ids).not.toContain("openai-custom");
+    expect(ids).not.toContain("openai");
     expect(ids).toContain("glm");
     expect(ids).not.toContain("minimax");
   });

@@ -50,7 +50,7 @@ export async function* translateResponse(
     if (!d) continue;
     if (d === "[DONE]") break;
     if (ev.event === "error") {
-      throw streamErrorToHttpError({ provider: "openai-custom", rawBody: d });
+      throw streamErrorToHttpError({ provider: "openai", rawBody: d });
     }
     let chunk: ChatChunk;
     try {
@@ -59,7 +59,7 @@ export async function* translateResponse(
       continue;
     }
     if (chunk.error) {
-      throw streamErrorToHttpError({ provider: "openai-custom", rawBody: d });
+      throw streamErrorToHttpError({ provider: "openai", rawBody: d });
     }
     if (!started) {
       started = true;

@@ -1,4 +1,8 @@
-import { parseModelId } from "@/engine/model/catalog.ts";
+import {
+  defaultEffortForModel,
+  effortLevelsForModel,
+  parseModelId,
+} from "@/engine/model/catalog.ts";
 import {
   buildKimiMessages,
   tagLastToolCache,
@@ -27,7 +31,12 @@ export function translateRequestKimi(
   if (system && system.length > 0) body.system = system;
   if (tools && tools.length > 0) body.tools = tagLastToolCache(tools);
   if (ctx.disableThinking !== true) {
-    body.thinking = { type: "enabled" };
+    const supportedEfforts = effortLevelsForModel(parsed.base, ctx.provider);
+    const effort = ctx.effort ?? defaultEffortForModel(parsed.base, ctx.provider);
+    body.thinking = {
+      type: "enabled",
+      ...(effort !== null && supportedEfforts.includes(effort) ? { effort } : {}),
+    };
   }
   return body;
 }

@@ -1,9 +1,11 @@
 import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import type { PluginRegistryEntry } from "@/engine/plugins/registry.ts";
 import * as plugins from "@/engine/plugins/registry.ts";
 import type { McpServerConfig as RuntimeMcpServerConfig } from "@/kernel/mcp/protocol/types.ts";
 import { configRoot } from "@/kernel/std/fs/paths.ts";
 import { expandPluginRoot, PLUGIN_ROOT_ENV } from "@/kernel/std/fs/plugin-root.ts";
+import { encodePluginPathSegment } from "./installations.ts";
 import {
   type McpServerConfig as ManifestMcpServerConfig,
   McpServerConfigSchema,
@@ -20,9 +22,8 @@ function resolveMaybePath(
   return existsSyncFn(candidate) ? candidate : expanded;
 }
 
-function pluginDataDir(pluginSource: string): string {
-  const safeId = pluginSource.replace(/[^a-zA-Z0-9_-]/g, "-");
-  const dir = join(configRoot(), "plugins", "data", safeId);
+function pluginDataDir(pluginId: string): string {
+  const dir = join(configRoot(), "plugins", "data", encodePluginPathSegment(pluginId));
   mkdirSync(dir, { recursive: true });
   return dir;
 }
@@ -149,20 +150,17 @@ function adaptServer(
 
 export function gatherPluginMcpServers(options?: {
   existsSync?: (path: string) => boolean;
+  entries?: readonly PluginRegistryEntry[];
 }): Record<string, RuntimeMcpServerConfig> {
   const existsSyncFn = options?.existsSync ?? existsSync;
   const out: Record<string, RuntimeMcpServerConfig> = {};
-  for (const plugin of plugins.list()) {
-    if (!plugins.isRuntimeEnabled(plugin.name)) continue;
+  const entries = options?.entries ?? plugins.list();
+  for (const { pluginId, plugin } of entries) {
+    if (!options?.entries && !plugins.isRuntimeEnabled(pluginId)) continue;
     const records = pluginServerRecords(plugin.path, plugin.manifest.mcpServers);
     for (const [serverName, server] of Object.entries(records)) {
-      const adapted = adaptServer(
-        server,
-        plugin.path,
-        `${plugin.name}@${plugin.source}`,
-        existsSyncFn,
-      );
-      if (adapted) out[`plugin:${plugin.name}:${serverName}`] = adapted;
+      const adapted = adaptServer(server, plugin.path, pluginId, existsSyncFn);
+      if (adapted) out[`plugin:${pluginId}:${serverName}`] = adapted;
     }
   }
   return out;

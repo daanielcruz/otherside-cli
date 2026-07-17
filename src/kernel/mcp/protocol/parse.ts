@@ -1,3 +1,4 @@
+import { isEnvTruthy } from "@/kernel/std/proc/env.ts";
 import { DEFAULT_INPUT_SCHEMA } from "./constants.ts";
 import {
   MCP_SKILLS_EXTENSION_URI,
@@ -26,6 +27,25 @@ export function hasResourcesCapability(
   capabilities: McpServerCapabilities | null | undefined,
 ): boolean {
   return !!capabilities?.resources;
+}
+
+let mcpSkillsEnabledOverride: boolean | null = null;
+
+/**
+ * The MCP skills gate defaults off. Otherside has no remote
+ * feature service, so an explicit environment switch is the production bridge;
+ * the test override avoids process-global env races.
+ */
+export function isMcpSkillsEnabled(): boolean {
+  if (mcpSkillsEnabledOverride !== null) return mcpSkillsEnabledOverride;
+  return (
+    isEnvTruthy(process.env.OTHERSIDE_ENABLE_MCP_SKILLS) ||
+    isEnvTruthy(process.env.TENGU_MCP_SKILLS)
+  );
+}
+
+export function setMcpSkillsEnabledForTests(value: boolean | null): void {
+  mcpSkillsEnabledOverride = value;
 }
 
 /**
@@ -98,7 +118,6 @@ export function parseDirectoryEntry(value: unknown): McpDirectoryEntry | null {
   return {
     uri,
     name,
-    ...(typeof obj.description === "string" ? { description: obj.description } : {}),
     ...(typeof obj.mimeType === "string" ? { mimeType: obj.mimeType } : {}),
   };
 }
@@ -115,19 +134,13 @@ export function sanitizeMcpText(text: string): string {
   return res;
 }
 
-/** Decode + sanitize untrusted MCP URIs (iterate until stable, max 10 passes). */
+/** Sanitize untrusted MCP URIs without changing server-authored URI semantics. */
 export function sanitizeMcpUri(uri: string): string {
-  let decoded = uri;
-  try {
-    decoded = decodeURIComponent(uri);
-  } catch {
-    // keep as-is
-  }
-  let t = decoded;
+  let current = uri;
   for (let n = 0; n < 10; n++) {
-    const r = sanitizeMcpText(t);
-    if (r === t) return t;
-    t = r;
+    const sanitized = sanitizeMcpText(current);
+    if (sanitized === current) return current;
+    current = sanitized;
   }
-  return t;
+  return current;
 }

@@ -3,13 +3,20 @@ import {
   pendingAgentSteerCount,
   subscribeAgentSteers,
 } from "@/engine/background/subagents/fork/steering.ts";
-import type { BackgroundTask } from "@/engine/background/tasks/background.ts";
+import {
+  type BackgroundTask,
+  list as listBackgroundTasks,
+} from "@/engine/background/tasks/background.ts";
+import { aggregateSubtreeProgress } from "@/engine/background/tasks/progress.ts";
 import type { LocalWorkflowTaskState } from "@/engine/background/workflows/runtime/store/types.ts";
 import type { Color as InkColor } from "@/ink";
 import { Box, Text, useRepeatingClock, useTerminalDimensions } from "@/ink";
+import type { BackgroundTaskStatus } from "@/kernel/channels/background-tasks.ts";
+import { computeListWindow } from "@/kernel/std/list-window.ts";
 import { clamp } from "@/kernel/std/math.ts";
 import { formatDuration, formatTokens } from "@/kernel/std/text/format.ts";
 import { stringWidth } from "@/kernel/std/text/string-width.ts";
+import { ListOverflowIndicator } from "@/ui/chrome/panel.tsx";
 import {
   MAX_STATUS_LABEL_WIDTH,
   MIN_STATUS_LABEL_WIDTH,
@@ -19,7 +26,6 @@ import { BULLET_IDLE, BULLET_VIEWED } from "@/ui/chrome/progress/glyphs.ts";
 import {
   buildWorkflowRowParts,
   isTerminalWorkflowStatus,
-  type WorkflowRowParts,
 } from "@/ui/chrome/progress/workflow-row.ts";
 import { Color, Glyph } from "@/ui/theme/theme.ts";
 
@@ -114,27 +120,8 @@ export interface RunningAgentsPanelProps {
 }
 
 interface AgentStatusParts {
-  elapsed: string;
-  tokenText: string;
+  statusText: string;
   queuedText: string;
-  queuedCount: number;
-  renderedText: React.JSX.Element;
-}
-
-// Selection slides the window by its edges (top/bottom row), never recentering; counters move one step per keypress.
-export function panelWindowStart(
-  prev: number,
-  selectedIdx: number,
-  total: number,
-  visibleRows: number,
-): number {
-  const maxStart = Math.max(0, total - visibleRows);
-  let start = clamp(prev, 0, maxStart);
-  if (selectedIdx >= 0 && visibleRows > 0) {
-    if (selectedIdx < start) start = selectedIdx;
-    else if (selectedIdx >= start + visibleRows) start = selectedIdx - visibleRows + 1;
-  }
-  return clamp(start, 0, maxStart);
 }
 
 function RunningAgentsPanelImpl({
@@ -145,7 +132,7 @@ function RunningAgentsPanelImpl({
   viewingAgentId,
   mainLlmBusy,
 }: RunningAgentsPanelProps): React.JSX.Element | null {
-  useLiveTick(agents, workflows);
+  const now = useLiveNow(hasLiveRows(agents, workflows));
   const { rows: terminalRows } = useTerminalDimensions();
   useSyncExternalStore(
     subscribeAgentSteers,
@@ -161,8 +148,6 @@ function RunningAgentsPanelImpl({
 
   if (agents.length === 0 && workflows.length === 0) return null;
 
-  const now = Date.now();
-  const agentStatuses = agents.map((t) => buildAgentStatus(t, now));
   const workflowParts = workflows.map((t) => buildWorkflowRowParts(t, now));
 
   // Label column must fit connector + name + hidden-count badge, or the name
@@ -193,32 +178,32 @@ function RunningAgentsPanelImpl({
 
   const totalAgents = agents.length;
   const selectedAgentIdx = selection?.namespace === "agents" ? selection.index - 1 : -1;
-  const agentWindowStart = panelWindowStart(
-    agentWindowStartRef.current,
-    selectedAgentIdx,
-    totalAgents,
-    agentRows,
-  );
-  agentWindowStartRef.current = agentWindowStart;
-  const agentWindowEnd = Math.min(totalAgents, agentWindowStart + agentRows);
+  const agentWindow = computeListWindow({
+    cursor: selectedAgentIdx,
+    total: totalAgents,
+    size: agentRows,
+    anchor: "edge",
+    previousStart: agentWindowStartRef.current,
+  });
+  agentWindowStartRef.current = agentWindow.from;
 
-  const visibleAgents = agents.slice(agentWindowStart, agentWindowEnd);
-  const agentMoreUpCount = agentWindowStart;
-  const agentMoreDownCount = totalAgents - agentWindowEnd;
+  const visibleAgents = agents.slice(agentWindow.from, agentWindow.to);
+  const agentMoreUpCount = agentWindow.above;
+  const agentMoreDownCount = agentWindow.below;
 
   const totalWorkflows = workflows.length;
   const selectedWorkflowIdx = selection?.namespace === "workflows" ? selection.index : -1;
-  const workflowWindowStart = panelWindowStart(
-    workflowWindowStartRef.current,
-    selectedWorkflowIdx,
-    totalWorkflows,
-    workflowRows,
-  );
-  workflowWindowStartRef.current = workflowWindowStart;
-  const workflowWindowEnd = Math.min(totalWorkflows, workflowWindowStart + workflowRows);
-  const visibleWorkflowParts = workflowParts.slice(workflowWindowStart, workflowWindowEnd);
-  const workflowMoreUpCount = workflowWindowStart;
-  const workflowMoreDownCount = totalWorkflows - workflowWindowEnd;
+  const workflowWindow = computeListWindow({
+    cursor: selectedWorkflowIdx,
+    total: totalWorkflows,
+    size: workflowRows,
+    anchor: "edge",
+    previousStart: workflowWindowStartRef.current,
+  });
+  workflowWindowStartRef.current = workflowWindow.from;
+  const visibleWorkflowParts = workflowParts.slice(workflowWindow.from, workflowWindow.to);
+  const workflowMoreUpCount = workflowWindow.above;
+  const workflowMoreDownCount = workflowWindow.below;
 
   return (
     <Box flexDirection="column" marginTop={1} paddingRight={2}>
@@ -231,7 +216,7 @@ function RunningAgentsPanelImpl({
         />
       )}
       {visibleAgents.map((task, i) => {
-        const actualIndex = agentWindowStart + i;
+        const actualIndex = agentWindow.from + i;
         // Nested rows keep their gutter on every page; when the parent row
         // scrolled above the window the branch renders as a continuation (├,
         // never the closing └) so the tree reads as carried over the fold.
@@ -239,31 +224,42 @@ function RunningAgentsPanelImpl({
         if (task.depth && task.depth > 1) {
           for (let j = actualIndex - 1; j >= 0; j--) {
             if ((agents[j]?.depth ?? 1) < task.depth) {
-              connectorContinuation = j < agentWindowStart;
+              connectorContinuation = j < agentWindow.from;
               break;
             }
           }
         }
+        const connector = connectorContinuation
+          ? "  ".repeat(Math.max(0, (task.depth ?? 2) - 2)) + "├ "
+          : agentConnector(task);
+        const status = buildAgentStatus(task, now);
         return (
           <PanelAgentLine
             key={`agent-${task.id}`}
-            task={task}
+            agentName={task.agentName}
+            description={task.description ?? ""}
+            taskStatus={task.status}
+            connector={connector}
+            hiddenCountSuffix={hiddenSuffix(task)}
             labelWidth={labelWidth}
-            status={agentStatuses[actualIndex] ?? buildAgentStatus(task, now)}
+            statusText={status.statusText}
+            queuedText={status.queuedText}
             highlighted={focusInPanel && agentIdx === actualIndex + 1}
             viewed={viewingAgentId === task.id}
-            connectorContinuation={connectorContinuation}
           />
         );
       })}
       {agentMoreDownCount > 0 && <PanelMoreLine direction="down" count={agentMoreDownCount} />}
       {workflowMoreUpCount > 0 && <PanelMoreLine direction="up" count={workflowMoreUpCount} />}
       {visibleWorkflowParts.map((parts, i) => {
-        const actualIndex = workflowWindowStart + i;
+        const actualIndex = workflowWindow.from + i;
         return (
           <PanelWorkflowLine
             key={`workflow-${workflows[actualIndex]?.id ?? actualIndex}`}
-            parts={parts}
+            name={parts.name}
+            description={parts.description}
+            statusText={parts.statusText}
+            bulletColor={parts.bulletColor}
             labelWidth={labelWidth}
             selected={workflowIdx === actualIndex}
           />
@@ -312,7 +308,7 @@ function workflowStopAction(status: LocalWorkflowTaskState["status"]): string {
   return "clear";
 }
 
-function PanelMainLine({
+const PanelMainLine = memo(function PanelMainLine({
   highlighted,
   viewed,
   labelWidth,
@@ -338,7 +334,7 @@ function PanelMainLine({
       {moreUpCount > 0 && <Text color={Color.muted}>{`↑ ${moreUpCount} more`}</Text>}
     </Box>
   );
-}
+});
 
 function PanelMoreLine({
   direction,
@@ -349,47 +345,52 @@ function PanelMoreLine({
 }): React.JSX.Element {
   return (
     <Box justifyContent="flex-end">
-      <Text color={Color.muted}>{`${direction === "up" ? "↑" : "↓"} ${count} more`}</Text>
+      <ListOverflowIndicator direction={direction} count={count} />
     </Box>
   );
 }
 
-function PanelAgentLine({
-  task,
+// Rows receive only primitive props (strings, booleans, numbers, theme color
+// constants) so React.memo's shallow compare actually holds: the background
+// store clones every task on each emit, and passing the task object would give
+// every row a fresh identity four times per second.
+const PanelAgentLine = memo(function PanelAgentLine({
+  agentName,
+  description,
+  taskStatus,
+  connector,
+  hiddenCountSuffix,
   labelWidth,
-  status,
+  statusText,
+  queuedText,
   highlighted,
   viewed,
-  connectorContinuation = false,
 }: {
-  task: BackgroundTask;
+  agentName: string;
+  description: string;
+  taskStatus: BackgroundTaskStatus;
+  connector: string;
+  hiddenCountSuffix: string;
   labelWidth: number;
-  status: AgentStatusParts;
+  statusText: string;
+  queuedText: string;
   highlighted: boolean;
   viewed: boolean;
-  connectorContinuation?: boolean;
 }): React.JSX.Element {
   const dim = !highlighted && !viewed;
   const prefix = highlighted ? Glyph.chevron : "  ";
   const bullet = viewed ? BULLET_VIEWED : BULLET_IDLE;
 
   let bulletColor: InkColor | undefined;
-  if (task.status === "completed") {
+  if (taskStatus === "completed") {
     bulletColor = Color.success;
-  } else if (task.status === "error" || task.status === "killed") {
+  } else if (taskStatus === "error" || taskStatus === "killed") {
     bulletColor = Color.error;
   } else {
     bulletColor = dim ? Color.muted : Color.text;
   }
 
-  const connector = connectorContinuation
-    ? "  ".repeat(Math.max(0, (task.depth ?? 2) - 2)) + "├ "
-    : agentConnector(task);
-
   const adjustedLabelWidth = Math.max(1, labelWidth - stringWidth(connector));
-
-  const description = task.description ?? "";
-  const hiddenCountSuffix = hiddenSuffix(task);
   const suffixWidth = stringWidth(hiddenCountSuffix);
   const nameWidth = Math.max(1, adjustedLabelWidth - suffixWidth);
 
@@ -408,7 +409,7 @@ function PanelAgentLine({
       </Box>
       <Box width={nameWidth} flexShrink={0}>
         <Text color={dim ? Color.muted : Color.text} bold={viewed} wrap="truncate">
-          {task.agentName}
+          {agentName}
         </Text>
       </Box>
       {hiddenCountSuffix && (
@@ -422,18 +423,27 @@ function PanelAgentLine({
         </Text>
       </Box>
       <Box flexShrink={0} marginLeft={1} justifyContent="flex-end">
-        {status.renderedText}
+        <Text>
+          <Text color={Color.muted}>{statusText}</Text>
+          {queuedText.length > 0 && <Text color={Color.warning}>{` · ${queuedText}`}</Text>}
+        </Text>
       </Box>
     </Box>
   );
-}
+});
 
-function PanelWorkflowLine({
-  parts,
+const PanelWorkflowLine = memo(function PanelWorkflowLine({
+  name,
+  description,
+  statusText,
+  bulletColor,
   labelWidth,
   selected,
 }: {
-  parts: WorkflowRowParts;
+  name: string;
+  description: string;
+  statusText: string;
+  bulletColor: InkColor | undefined;
   labelWidth: number;
   selected: boolean;
 }): React.JSX.Element {
@@ -445,28 +455,28 @@ function PanelWorkflowLine({
         <Text color={selected ? Color.primaryGlow : Color.muted}>{prefix}</Text>
       </Box>
       <Box flexShrink={0}>
-        {parts.bulletColor !== undefined ? (
-          <Text color={parts.bulletColor}>{`${BULLET_IDLE} `}</Text>
+        {bulletColor !== undefined ? (
+          <Text color={bulletColor}>{`${BULLET_IDLE} `}</Text>
         ) : (
           <Text color={Color.muted}>{`${BULLET_IDLE} `}</Text>
         )}
       </Box>
       <Box width={labelWidth} flexShrink={0}>
         <Text color={dim ? Color.muted : Color.text} wrap="truncate">
-          {parts.name}
+          {name}
         </Text>
       </Box>
       <Box flexGrow={1} width={0} paddingLeft={2}>
         <Text color={Color.muted} wrap="truncate">
-          {parts.description}
+          {description}
         </Text>
       </Box>
       <Box flexShrink={0} marginLeft={1} justifyContent="flex-end">
-        <Text color={Color.muted}>{parts.statusText}</Text>
+        <Text color={Color.muted}>{statusText}</Text>
       </Box>
     </Box>
   );
-}
+});
 
 function agentConnector(task: BackgroundTask): string {
   return task.depth && task.depth > 1
@@ -482,64 +492,52 @@ function hiddenSuffix(task: BackgroundTask): string {
 
 function buildAgentStatus(task: BackgroundTask, now: number): AgentStatusParts {
   const isRunning = task.status === "running";
-  const elapsedMs = isRunning
-    ? now - task.startedAt
-    : (task.endedAt ?? task.startedAt) - task.startedAt;
-  const tokenCount = task.inputTokens + task.outputTokens;
+  const endRef = isRunning ? now : (task.endedAt ?? task.startedAt);
+  const elapsed = formatDuration(Math.max(0, endRef - task.startedAt));
 
-  let arrow = "↑";
-  if (isRunning) {
-    arrow = "↓";
+  // Panel counters cover the whole descendant subtree so a depth-1 row keeps
+  // moving while only grandchildren do tool work. Merge the row prop over the
+  // store so fixture-only tests (no live store entries) still show tokens.
+  const byId = new Map(listBackgroundTasks().map((entry) => [entry.id, entry]));
+  byId.set(task.id, task);
+  const progress = aggregateSubtreeProgress(task.id, [...byId.values()]);
+  const arrow = isRunning ? "↓" : "↑";
+  const parts: string[] = [elapsed];
+  if (progress.tokenCount > 0) {
+    parts.push(`${arrow} ${formatTokens(progress.tokenCount)} tokens`);
   }
-  const tokenText = tokenCount > 0 ? `${arrow} ${formatTokens(tokenCount)} tokens` : "";
-
-  const elapsed = formatDuration(elapsedMs);
-
-  const parts: React.ReactNode[] = [];
-  parts.push(<Text color={Color.muted}>{elapsed}</Text>);
-  if (tokenText) {
-    parts.push(<Text color={Color.muted}>{tokenText}</Text>);
+  if (progress.toolUses > 0) {
+    parts.push(`${progress.toolUses} tool${progress.toolUses === 1 ? "" : "s"}`);
   }
 
   const queuedCount =
     isRunning && task.forkId !== undefined ? pendingAgentSteerCount(task.forkId) : 0;
-  const queuedText = queuedCount > 0 ? `${queuedCount} queued` : "";
-
-  const renderedParts: React.ReactNode[] = [];
-  for (let i = 0; i < parts.length; i++) {
-    if (i > 0) {
-      renderedParts.push(
-        <Text key={`sep-${i}`} color={Color.muted}>
-          {" · "}
-        </Text>,
-      );
-    }
-    renderedParts.push(<React.Fragment key={`part-${i}`}>{parts[i]}</React.Fragment>);
-  }
-  if (queuedText) {
-    renderedParts.push(<Text key="queued" color={Color.warning}>{` · ${queuedText}`}</Text>);
-  }
 
   return {
-    elapsed,
-    tokenText,
-    queuedText,
-    queuedCount,
-    renderedText: <Text>{renderedParts}</Text>,
+    statusText: parts.join(" · "),
+    queuedText: queuedCount > 0 ? `${queuedCount} queued` : "",
   };
 }
 
-function useLiveTick(agents: BackgroundTask[], workflows: LocalWorkflowTaskState[]): void {
-  const [, setTick] = useState(0);
-  const hasRunning =
+function hasLiveRows(agents: BackgroundTask[], workflows: LocalWorkflowTaskState[]): boolean {
+  return (
     agents.some((t) => t.status === "running") ||
-    workflows.some((t) => !isTerminalWorkflowStatus(t.status));
-  useRepeatingClock(
-    () => {
-      setTick((n) => n + 1);
-    },
-    hasRunning ? 1000 : null,
+    workflows.some((t) => !isTerminalWorkflowStatus(t.status))
   );
+}
+
+const LIVE_TICK_INTERVAL_MS = 1000;
+
+// One shared clock for every row: `now` is held in state and only advances on
+// the once-per-second tick. Renders caused by token/store updates reuse the
+// held value, so a row's displayed seconds can never shift because another
+// row's data changed between ticks.
+function useLiveNow(active: boolean): number {
+  const [now, setNow] = useState(() => Date.now());
+  useRepeatingClock(() => setNow(Date.now()), active ? LIVE_TICK_INTERVAL_MS : null, {
+    immediate: true,
+  });
+  return now;
 }
 
 export const RunningAgentsPanel = memo(RunningAgentsPanelImpl);

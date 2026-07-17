@@ -14,6 +14,7 @@ import {
 import { isAnthropicFamily } from "@/engine/providers/_shared/families.ts";
 import { parseJsonWithPartialRecovery } from "@/engine/providers/_shared/partial-json.ts";
 import { streamErrorToHttpError } from "@/engine/providers/_shared/retry.ts";
+import { thinkingProvenance } from "@/engine/providers/_shared/thinking-provenance.ts";
 import {
   ensureNonEmptyErrorContent,
   sanitizeToolResultContent,
@@ -25,11 +26,16 @@ import {
   maxOutputTokensForModel as anthropicMaxOutputTokensForModel,
 } from "@/engine/providers/anthropic/envelope.ts";
 import { anthropicUserIdMetadata } from "@/engine/providers/anthropic/metadata.ts";
+import { isThinkingReplayRejected } from "@/engine/providers/anthropic/reasoning-state.ts";
 import type { ProviderId } from "@/kernel/config/provider-ids.ts";
 import { parseSse } from "@/kernel/std/stream/sse.ts";
 import type { EffortLevel } from "@/kernel/std/types/effort.ts";
 import type { ProviderEvent } from "@/kernel/std/types/events.ts";
-import type { ContentBlock, Message } from "@/kernel/std/types/message.ts";
+import {
+  type ContentBlock,
+  type Message,
+  PDF_UNAVAILABLE_PLACEHOLDER,
+} from "@/kernel/std/types/message.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 
 interface AnthropicBlock {
@@ -55,28 +61,71 @@ interface BlockTranslateOpts {
   currentModel: string;
   currentAccount: string | undefined;
   target: ProviderId;
+  suppressThinkingReplay: boolean;
 }
 
 function thinkingBlockToAnthropic(
   block: Extract<ContentBlock, { type: "thinking" }>,
   opts: BlockTranslateOpts,
 ): AnthropicBlock | null {
+  // The API already rejected a replayed thinking block this session; every
+  // rebuilt request drops thinking replay so the turn can proceed.
+  if (opts.suppressThinkingReplay) return null;
+  const produced = thinkingProvenance(block, opts);
   if (opts.target === "deepseek") {
-    if (opts.producedBy !== "deepseek") return null;
+    // Same rule as the anthropic branch below: a signed block replays only to
+    // the provider + credential that produced it, and a missing signature is
+    // never substituted with a fabricated empty one.
+    if (produced.producedBy !== "deepseek") return null;
+    if (!sameAccountFingerprint(produced.producedAccount, opts.currentAccount)) return null;
+    if (typeof block.signature !== "string" || block.signature.length === 0) return null;
     return {
       type: "thinking",
       thinking: block.text,
-      signature: block.signature ?? "",
+      signature: block.signature,
     };
   }
-  if (!isAnthropicFamily(opts.producedBy)) return null;
+  if (!isAnthropicFamily(produced.producedBy)) return null;
   // Signatures are bound to the credential that generated them, not the
   // model: replaying a block signed by another account is rejected with a
   // "thinking blocks cannot be modified" 400. Unstamped (legacy) blocks are
   // dropped because same-account provenance cannot be proven.
-  if (!sameAccountFingerprint(opts.producedAccount, opts.currentAccount)) return null;
+  if (!sameAccountFingerprint(produced.producedAccount, opts.currentAccount)) return null;
   if (!isAnthropicShapeThinkingSignature(block.signature)) return null;
   return { type: "thinking", thinking: block.text, signature: block.signature };
+}
+
+function anthropicToolResultContent(
+  content: Extract<ContentBlock, { type: "tool_result" }>["content"],
+  target: ProviderId,
+): ReturnType<typeof sanitizeToolResultContent> {
+  if (!Array.isArray(content)) return sanitizeToolResultContent(content);
+  return content.map((part) => {
+    if (part.type !== "pdf") {
+      if (part.type === "image") {
+        return {
+          type: "image",
+          source: {
+            type: part.source.type,
+            media_type: part.source.media_type,
+            data: part.source.data,
+          },
+        };
+      }
+      return part;
+    }
+    if (target !== "anthropic") {
+      return { type: "text", text: PDF_UNAVAILABLE_PLACEHOLDER };
+    }
+    return {
+      type: "document",
+      source: {
+        type: "base64",
+        media_type: "application/pdf",
+        data: part.source.data,
+      },
+    };
+  });
 }
 
 function blockToAnthropic(block: ContentBlock, opts: BlockTranslateOpts): AnthropicBlock | null {
@@ -96,7 +145,7 @@ function blockToAnthropic(block: ContentBlock, opts: BlockTranslateOpts): Anthro
         caller: { type: "direct" },
       };
     case "tool_result": {
-      const resultContent = sanitizeToolResultContent(block.content);
+      const resultContent = anthropicToolResultContent(block.content, opts.target);
       return {
         tool_use_id: block.tool_use_id,
         type: "tool_result",
@@ -133,6 +182,7 @@ export function buildAnthropicMessages(
   // switch — even one made mid-turn by another client — gates the very next
   // request, and tier-routed ctx clones can never carry a stale fingerprint.
   const currentAccount = accountFingerprint(target);
+  const suppressThinkingReplay = isThinkingReplayRejected(ctx.sessionId);
   const systemBlocks: AnthropicBlock[] = [];
   const out: AnthropicMessage[] = [];
   for (const msg of messages) {
@@ -158,6 +208,7 @@ export function buildAnthropicMessages(
       currentModel: ctx.model,
       currentAccount,
       target,
+      suppressThinkingReplay,
     };
     const blocks = msg.content
       .map((block) => blockToAnthropic(block, opts))

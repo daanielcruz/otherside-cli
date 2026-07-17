@@ -23,12 +23,17 @@ import {
 } from "@/engine/session/usage/store.ts";
 import type { UserConfig } from "@/kernel/config/config.ts";
 import type { Broker } from "@/store/app-store/broker.ts";
+import {
+  GOAL_REFRESH_MS,
+  RightNoticeKey,
+  removePersistent,
+  setTokenCounter,
+  upsertPersistent,
+} from "@/store/app-store/right-region-notices.ts";
 import { appStore, dispatch, selectQueuedText, useAppSelect } from "@/store/index.ts";
-import { readLiveOutputTokens } from "@/store/live-tokens/index.ts";
 import { computeAutoCompactRemainingPct } from "@/ui/app/status-text.ts";
 import { createUsageSetters } from "@/ui/app/usage-setters.ts";
 import { useClipboardImageHint } from "@/ui/hooks/use-clipboard-image-hint.ts";
-import { useGoalTicker } from "@/ui/hooks/use-goal-ticker.ts";
 import { estimateTokens } from "@/ui/transcript/stats.ts";
 import type { TranscriptEntry } from "@/ui/transcript/types";
 
@@ -38,11 +43,10 @@ export interface AppUsageDeps {
   initialTranscript?: TranscriptEntry[] | undefined;
   state: ReturnType<Broker["read"]>;
   runtimeConfig: UserConfig;
-  busy: boolean;
 }
 
 export function useAppUsage(deps: AppUsageDeps) {
-  const { session, broker, initialTranscript, state, runtimeConfig, busy } = deps;
+  const { session, broker, initialTranscript, state, runtimeConfig } = deps;
   const usageByProvider = useAppSelect((s) => s.usage.byProvider);
   const offlineUsageByProvider = useAppSelect((s) => s.usage.offlineByProvider);
   const codexUsage = useAppSelect((s) => s.usage.codex);
@@ -68,8 +72,8 @@ export function useAppUsage(deps: AppUsageDeps) {
       });
     }
   }
-  const usageWarning = useAppSelect((s) => s.view.usageWarning);
   const contextWarningSuppressed = useAppSelect((s) => s.view.contextWarningSuppressed);
+  const refreshGeneration = useAppSelect((s) => s.rightRegion.refreshGeneration);
   const setContextWarningSuppressed = useCallback<Dispatch<SetStateAction<boolean>>>(
     (next): void => {
       const suppressed =
@@ -193,18 +197,13 @@ export function useAppUsage(deps: AppUsageDeps) {
     [recordProviderUsage],
   );
 
-  const goalTick = useGoalTicker();
-  const clipboardImageHint = useClipboardImageHint();
-  const clipboardImageActive =
-    clipboardImageHint &&
-    (canSendNatively(state.provider, state.model) ||
-      autoRoutesNonVision(state.provider) ||
-      Boolean(runtimeConfig.imageParserProvider));
-  const activeGoalLabel = (() => {
-    void goalTick;
-    const goal = getActiveGoal(session.id);
-    return goal ? formatGoalStatusBar(goal) : undefined;
-  })();
+  // Focus-gain clipboard probe publishes into the right-region ephemeral lane.
+  const clipboardEnabled =
+    canSendNatively(state.provider, state.model) ||
+    autoRoutesNonVision(state.provider) ||
+    Boolean(runtimeConfig.imageParserProvider);
+  useClipboardImageHint(clipboardEnabled);
+
   const fallbackContextTokens = useMemo(
     () => roughTokenCountEstimationForMessages(session.messages),
     [session.messages.length],
@@ -222,12 +221,56 @@ export function useAppUsage(deps: AppUsageDeps) {
     model: state.model,
     contextWarningSuppressed,
     fallbackContextTokens,
-    busy,
-    liveOutputTokensValue: readLiveOutputTokens(),
     queuedText: selectQueuedText(),
     autoCompactRemainingPct: (used) =>
       computeAutoCompactRemainingPct(used, state.model, state.provider),
   });
+
+  // Publish persistent lane: context, auto-compact, goal, token counter.
+  // refreshGeneration re-runs goal text on the shared region deadline.
+  useEffect(() => {
+    void refreshGeneration;
+    if (contextBanner) {
+      upsertPersistent({
+        key: RightNoticeKey.context,
+        text: contextBanner.message,
+        tone: contextBanner.severity === "error" ? "error" : "warning",
+        priority: "high",
+      });
+    } else {
+      removePersistent(RightNoticeKey.context);
+    }
+
+    if (autoCompactWarningPct !== undefined) {
+      upsertPersistent({
+        key: RightNoticeKey.autoCompact,
+        text: `${autoCompactWarningPct}% until auto-compact`,
+        tone: "warning",
+        priority: "medium",
+      });
+    } else {
+      removePersistent(RightNoticeKey.autoCompact);
+    }
+
+    const goal = getActiveGoal(session.id);
+    if (goal) {
+      upsertPersistent({
+        key: RightNoticeKey.goal,
+        text: formatGoalStatusBar(goal),
+        tone: "primary",
+        priority: "low",
+        refreshEveryMs: GOAL_REFRESH_MS,
+      });
+    } else {
+      removePersistent(RightNoticeKey.goal);
+    }
+
+    if (activeContextTotal > 0) {
+      setTokenCounter(`${activeContextTotal} tokens`);
+    } else {
+      setTokenCounter(null);
+    }
+  }, [refreshGeneration, contextBanner, autoCompactWarningPct, activeContextTotal, session.id]);
 
   return {
     usageByProvider,
@@ -240,13 +283,9 @@ export function useAppUsage(deps: AppUsageDeps) {
     setCodexUsage,
     setMainTokenTotals,
     setMainLastContext,
-    usageWarning,
     contextWarningSuppressed,
     setContextWarningSuppressed,
     recordProviderUsage,
-    clipboardImageActive,
-    activeGoalLabel,
-    contextBanner,
     activeContextTotal,
     autoCompactWarningPct,
     fallbackInputTokens,

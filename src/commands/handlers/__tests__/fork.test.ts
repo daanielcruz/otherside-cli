@@ -30,7 +30,7 @@ function makeCtx(messages: Message[]): SlashContext {
     broker: {
       read: () => ({
         provider: "anthropic",
-        model: "claude-opus-4-6",
+        model: "test-model",
         effort: null,
         fastMode: false,
         permissionMode: "default",
@@ -58,13 +58,13 @@ function makeCtx(messages: Message[]): SlashContext {
         broker: {
           read: () => ({
             provider: "anthropic",
-            model: "claude-opus-4-6",
+            model: "test-model",
             effort: null,
             fastMode: false,
             permissionMode: "default",
           }),
         },
-        config: { orchestratorMode: "soft", quotaFallback: false },
+        config: { orchestrationMode: "feudalism", quotaFallback: false },
       },
       injections: { push: () => {} },
       sessionAllowedToolPatterns: new Set(),
@@ -113,7 +113,7 @@ describe("handleFork", () => {
     await Bun.sleep(20);
     expect(dispatchFork).toHaveBeenCalled();
     const parentCtx = dispatchFork.mock.calls.at(-1)?.[1];
-    expect(parentCtx?.multiproviderEnabled).toBe(true);
+    expect(parentCtx?.orchestrationMode).toBe("feudalism");
     expect(parentCtx?.quotaFallbackEnabled).toBe(false);
     expect(parentCtx?.additionalWorkingDirectories).toEqual(new Set(["/tmp/shared"]));
     expect(parentCtx?.parentMessages).toEqual([

@@ -34,7 +34,7 @@ exports[`anthropic wire-fact golden (gates model registry #1) claude-fable-5 / d
     "display": "summarized",
     "type": "adaptive",
   },
-  "userAgent": "claude-cli/2.1.209 (external, cli)",
+  "userAgent": "claude-cli/2.1.211 (external, cli)",
 }
 `;
 
@@ -72,7 +72,7 @@ exports[`anthropic wire-fact golden (gates model registry #1) claude-fable-5 / e
     "display": "summarized",
     "type": "adaptive",
   },
-  "userAgent": "claude-cli/2.1.209 (external, cli)",
+  "userAgent": "claude-cli/2.1.211 (external, cli)",
 }
 `;
 
@@ -110,7 +110,7 @@ exports[`anthropic wire-fact golden (gates model registry #1) claude-fable-5 / e
     "display": "summarized",
     "type": "adaptive",
   },
-  "userAgent": "claude-cli/2.1.209 (external, cli)",
+  "userAgent": "claude-cli/2.1.211 (external, cli)",
 }
 `;
 
@@ -148,7 +148,7 @@ exports[`anthropic wire-fact golden (gates model registry #1) claude-fable-5 / e
     "display": "summarized",
     "type": "adaptive",
   },
-  "userAgent": "claude-cli/2.1.209 (external, cli)",
+  "userAgent": "claude-cli/2.1.211 (external, cli)",
 }
 `;
 
@@ -186,7 +186,7 @@ exports[`anthropic wire-fact golden (gates model registry #1) claude-fable-5 / e
     "display": "summarized",
     "type": "adaptive",
   },
-  "userAgent": "claude-cli/2.1.209 (external, cli)",
+  "userAgent": "claude-cli/2.1.211 (external, cli)",
 }
 `;
 
@@ -224,7 +224,7 @@ exports[`anthropic wire-fact golden (gates model registry #1) claude-fable-5 / e
     "display": "summarized",
     "type": "adaptive",
   },
-  "userAgent": "claude-cli/2.1.209 (external, cli)",
+  "userAgent": "claude-cli/2.1.211 (external, cli)",
 }
 `;
 
@@ -262,7 +262,7 @@ exports[`anthropic wire-fact golden (gates model registry #1) claude-opus-4-8 / 
     "display": "summarized",
     "type": "adaptive",
   },
-  "userAgent": "claude-cli/2.1.209 (external, cli)",
+  "userAgent": "claude-cli/2.1.211 (external, cli)",
 }
 `;
 
@@ -300,7 +300,7 @@ exports[`anthropic wire-fact golden (gates model registry #1) claude-opus-4-8 / 
     "display": "summarized",
     "type": "adaptive",
   },
-  "userAgent": "claude-cli/2.1.209 (external, cli)",
+  "userAgent": "claude-cli/2.1.211 (external, cli)",
 }
 `;
 
@@ -338,7 +338,7 @@ exports[`anthropic wire-fact golden (gates model registry #1) claude-opus-4-8 / 
     "display": "summarized",
     "type": "adaptive",
   },
-  "userAgent": "claude-cli/2.1.209 (external, cli)",
+  "userAgent": "claude-cli/2.1.211 (external, cli)",
 }
 `;
 
@@ -376,7 +376,7 @@ exports[`anthropic wire-fact golden (gates model registry #1) claude-opus-4-8 / 
     "display": "summarized",
     "type": "adaptive",
   },
-  "userAgent": "claude-cli/2.1.209 (external, cli)",
+  "userAgent": "claude-cli/2.1.211 (external, cli)",
 }
 `;
 
@@ -414,7 +414,7 @@ exports[`anthropic wire-fact golden (gates model registry #1) claude-opus-4-8 / 
     "display": "summarized",
     "type": "adaptive",
   },
-  "userAgent": "claude-cli/2.1.209 (external, cli)",
+  "userAgent": "claude-cli/2.1.211 (external, cli)",
 }
 `;
 
@@ -452,7 +452,7 @@ exports[`anthropic wire-fact golden (gates model registry #1) claude-opus-4-8 / 
     "display": "summarized",
     "type": "adaptive",
   },
-  "userAgent": "claude-cli/2.1.209 (external, cli)",
+  "userAgent": "claude-cli/2.1.211 (external, cli)",
 }
 `;
 
@@ -491,7 +491,7 @@ exports[`anthropic wire-fact golden (gates model registry #1) claude-opus-4-8[1m
     "display": "summarized",
     "type": "adaptive",
   },
-  "userAgent": "claude-cli/2.1.209 (external, cli)",
+  "userAgent": "claude-cli/2.1.211 (external, cli)",
 }
 `;
 
@@ -528,7 +528,7 @@ exports[`anthropic wire-fact golden (gates model registry #1) claude-opus-4-7 / 
     "display": "summarized",
     "type": "adaptive",
   },
-  "userAgent": "claude-cli/2.1.209 (external, cli)",
+  "userAgent": "claude-cli/2.1.211 (external, cli)",
 }
 `;
 
@@ -565,7 +565,7 @@ exports[`anthropic wire-fact golden (gates model registry #1) claude-opus-4-7 / 
     "display": "summarized",
     "type": "adaptive",
   },
-  "userAgent": "claude-cli/2.1.209 (external, cli)",
+  "userAgent": "claude-cli/2.1.211 (external, cli)",
 }
 `;
 
@@ -602,7 +602,7 @@ exports[`anthropic wire-fact golden (gates model registry #1) claude-opus-4-7 / 
     "display": "summarized",
     "type": "adaptive",
   },
-  "userAgent": "claude-cli/2.1.209 (external, cli)",
+  "userAgent": "claude-cli/2.1.211 (external, cli)",
 }
 `;
 
@@ -639,7 +639,7 @@ exports[`anthropic wire-fact golden (gates model registry #1) claude-opus-4-7 / 
     "display": "summarized",
     "type": "adaptive",
   },
-  "userAgent": "claude-cli/2.1.209 (external, cli)",
+  "userAgent": "claude-cli/2.1.211 (external, cli)",
 }
 `;
 
@@ -676,7 +676,7 @@ exports[`anthropic wire-fact golden (gates model registry #1) claude-opus-4-7 / 
     "display": "summarized",
     "type": "adaptive",
   },
-  "userAgent": "claude-cli/2.1.209 (external, cli)",
+  "userAgent": "claude-cli/2.1.211 (external, cli)",
 }
 `;
 
@@ -713,7 +713,7 @@ exports[`anthropic wire-fact golden (gates model registry #1) claude-opus-4-7 / 
     "display": "summarized",
     "type": "adaptive",
   },
-  "userAgent": "claude-cli/2.1.209 (external, cli)",
+  "userAgent": "claude-cli/2.1.211 (external, cli)",
 }
 `;
 
@@ -751,7 +751,7 @@ exports[`anthropic wire-fact golden (gates model registry #1) claude-sonnet-5 / 
     "display": "summarized",
     "type": "adaptive",
   },
-  "userAgent": "claude-cli/2.1.209 (external, cli)",
+  "userAgent": "claude-cli/2.1.211 (external, cli)",
 }
 `;
 
@@ -789,7 +789,7 @@ exports[`anthropic wire-fact golden (gates model registry #1) claude-sonnet-5 / 
     "display": "summarized",
     "type": "adaptive",
   },
-  "userAgent": "claude-cli/2.1.209 (external, cli)",
+  "userAgent": "claude-cli/2.1.211 (external, cli)",
 }
 `;
 
@@ -827,7 +827,7 @@ exports[`anthropic wire-fact golden (gates model registry #1) claude-sonnet-5 / 
     "display": "summarized",
     "type": "adaptive",
   },
-  "userAgent": "claude-cli/2.1.209 (external, cli)",
+  "userAgent": "claude-cli/2.1.211 (external, cli)",
 }
 `;
 
@@ -865,7 +865,7 @@ exports[`anthropic wire-fact golden (gates model registry #1) claude-sonnet-5 / 
     "display": "summarized",
     "type": "adaptive",
   },
-  "userAgent": "claude-cli/2.1.209 (external, cli)",
+  "userAgent": "claude-cli/2.1.211 (external, cli)",
 }
 `;
 
@@ -903,7 +903,7 @@ exports[`anthropic wire-fact golden (gates model registry #1) claude-sonnet-5 / 
     "display": "summarized",
     "type": "adaptive",
   },
-  "userAgent": "claude-cli/2.1.209 (external, cli)",
+  "userAgent": "claude-cli/2.1.211 (external, cli)",
 }
 `;
 
@@ -941,7 +941,7 @@ exports[`anthropic wire-fact golden (gates model registry #1) claude-sonnet-5 / 
     "display": "summarized",
     "type": "adaptive",
   },
-  "userAgent": "claude-cli/2.1.209 (external, cli)",
+  "userAgent": "claude-cli/2.1.211 (external, cli)",
 }
 `;
 
@@ -976,7 +976,167 @@ exports[`anthropic wire-fact golden (gates model registry #1) claude-haiku-4-5 /
     "display": "summarized",
     "type": "enabled",
   },
-  "userAgent": "claude-cli/2.1.209 (external, cli)",
+  "userAgent": "claude-cli/2.1.211 (external, cli)",
+}
+`;
+
+exports[`anthropic wire-fact golden (gates model registry #1) claude-fable-5 / non-agentic side query 1`] = `
+{
+  "betas": [
+    "claude-code-20250219",
+    "oauth-2025-04-20",
+    "interleaved-thinking-2025-05-14",
+    "thinking-token-count-2026-05-13",
+    "context-management-2025-06-27",
+    "prompt-caching-scope-2026-01-05",
+    "mid-conversation-system-2026-04-07",
+  ],
+  "contextManagement": {
+    "edits": [
+      {
+        "keep": "all",
+        "type": "clear_thinking_20251015",
+      },
+    ],
+  },
+  "hasSystem": false,
+  "hasTools": true,
+  "maxTokens": 64000,
+  "model": "claude-fable-5",
+  "outputConfig": {
+    "effort": "high",
+  },
+  "runtimeVersion": "v26.3.0",
+  "thinking": {
+    "display": "summarized",
+    "type": "adaptive",
+  },
+  "userAgent": "claude-cli/2.1.211 (external, cli)",
+}
+`;
+
+exports[`anthropic wire-fact golden (gates model registry #1) claude-opus-4-8 / non-agentic side query 1`] = `
+{
+  "betas": [
+    "claude-code-20250219",
+    "oauth-2025-04-20",
+    "interleaved-thinking-2025-05-14",
+    "thinking-token-count-2026-05-13",
+    "context-management-2025-06-27",
+    "prompt-caching-scope-2026-01-05",
+    "mid-conversation-system-2026-04-07",
+  ],
+  "contextManagement": {
+    "edits": [
+      {
+        "keep": "all",
+        "type": "clear_thinking_20251015",
+      },
+    ],
+  },
+  "hasSystem": false,
+  "hasTools": true,
+  "maxTokens": 64000,
+  "model": "claude-opus-4-8",
+  "outputConfig": {
+    "effort": "xhigh",
+  },
+  "runtimeVersion": "v26.3.0",
+  "thinking": {
+    "display": "summarized",
+    "type": "adaptive",
+  },
+  "userAgent": "claude-cli/2.1.211 (external, cli)",
+}
+`;
+
+exports[`anthropic wire-fact golden (gates model registry #1) claude-opus-4-7 / non-agentic side query 1`] = `
+{
+  "betas": [
+    "claude-code-20250219",
+    "oauth-2025-04-20",
+    "interleaved-thinking-2025-05-14",
+    "thinking-token-count-2026-05-13",
+    "context-management-2025-06-27",
+    "prompt-caching-scope-2026-01-05",
+  ],
+  "contextManagement": {
+    "edits": [
+      {
+        "keep": "all",
+        "type": "clear_thinking_20251015",
+      },
+    ],
+  },
+  "hasSystem": false,
+  "hasTools": true,
+  "maxTokens": 64000,
+  "model": "claude-opus-4-7",
+  "outputConfig": {
+    "effort": "xhigh",
+  },
+  "runtimeVersion": "v26.3.0",
+  "thinking": {
+    "display": "summarized",
+    "type": "adaptive",
+  },
+  "userAgent": "claude-cli/2.1.211 (external, cli)",
+}
+`;
+
+exports[`anthropic wire-fact golden (gates model registry #1) claude-sonnet-5 / non-agentic side query 1`] = `
+{
+  "betas": [
+    "claude-code-20250219",
+    "oauth-2025-04-20",
+    "interleaved-thinking-2025-05-14",
+    "thinking-token-count-2026-05-13",
+    "context-management-2025-06-27",
+    "prompt-caching-scope-2026-01-05",
+    "mid-conversation-system-2026-04-07",
+  ],
+  "contextManagement": {
+    "edits": [
+      {
+        "keep": "all",
+        "type": "clear_thinking_20251015",
+      },
+    ],
+  },
+  "hasSystem": false,
+  "hasTools": true,
+  "maxTokens": 64000,
+  "model": "claude-sonnet-5",
+  "outputConfig": {
+    "effort": "high",
+  },
+  "runtimeVersion": "v26.3.0",
+  "thinking": {
+    "display": "summarized",
+    "type": "adaptive",
+  },
+  "userAgent": "claude-cli/2.1.211 (external, cli)",
+}
+`;
+
+exports[`anthropic wire-fact golden (gates model registry #1) claude-haiku-4-5 / non-agentic side query 1`] = `
+{
+  "betas": [
+    "oauth-2025-04-20",
+    "interleaved-thinking-2025-05-14",
+    "thinking-token-count-2026-05-13",
+    "context-management-2025-06-27",
+    "prompt-caching-scope-2026-01-05",
+  ],
+  "contextManagement": null,
+  "hasSystem": false,
+  "hasTools": true,
+  "maxTokens": 32000,
+  "model": "claude-haiku-4-5-20251001",
+  "outputConfig": {},
+  "runtimeVersion": "v26.3.0",
+  "thinking": null,
+  "userAgent": "claude-cli/2.1.211 (external, cli)",
 }
 `;
 
@@ -995,10 +1155,72 @@ exports[`anthropic wire-fact golden (gates model registry #1) haiku / title (non
   "hasTools": true,
   "maxTokens": 32000,
   "model": "claude-haiku-4-5-20251001",
-  "outputConfig": {},
+  "outputConfig": {
+    "format": {
+      "schema": {
+        "additionalProperties": false,
+        "properties": {
+          "title": {
+            "type": "string",
+          },
+        },
+        "required": [
+          "title",
+        ],
+        "type": "object",
+      },
+      "type": "json_schema",
+    },
+  },
   "runtimeVersion": "v26.3.0",
-  "thinking": null,
-  "userAgent": "claude-cli/2.1.209 (external, cli)",
+  "thinking": {
+    "type": "disabled",
+  },
+  "userAgent": "claude-cli/2.1.211 (external, cli)",
+}
+`;
+
+exports[`anthropic wire-fact golden (gates model registry #1) haiku / memory recall (non-agentic, extended cache) 1`] = `
+{
+  "betas": [
+    "oauth-2025-04-20",
+    "interleaved-thinking-2025-05-14",
+    "thinking-token-count-2026-05-13",
+    "context-management-2025-06-27",
+    "prompt-caching-scope-2026-01-05",
+    "structured-outputs-2025-12-15",
+    "extended-cache-ttl-2025-04-11",
+  ],
+  "contextManagement": null,
+  "hasSystem": false,
+  "hasTools": true,
+  "maxTokens": 256,
+  "model": "claude-haiku-4-5-20251001",
+  "outputConfig": {
+    "format": {
+      "schema": {
+        "additionalProperties": false,
+        "properties": {
+          "selected_memories": {
+            "items": {
+              "type": "string",
+            },
+            "type": "array",
+          },
+        },
+        "required": [
+          "selected_memories",
+        ],
+        "type": "object",
+      },
+      "type": "json_schema",
+    },
+  },
+  "runtimeVersion": "v26.3.0",
+  "thinking": {
+    "type": "disabled",
+  },
+  "userAgent": "claude-cli/2.1.211 (external, cli)",
 }
 `;
 
@@ -1014,7 +1236,6 @@ exports[`anthropic wire-fact golden (gates model registry #1) opus / sub-agent (
     "mid-conversation-system-2026-04-07",
     "advanced-tool-use-2025-11-20",
     "effort-2025-11-24",
-    "extended-cache-ttl-2025-04-11",
   ],
   "contextManagement": {
     "edits": [
@@ -1035,6 +1256,40 @@ exports[`anthropic wire-fact golden (gates model registry #1) opus / sub-agent (
   "thinking": {
     "type": "adaptive",
   },
-  "userAgent": "claude-cli/2.1.209 (external, cli)",
+  "userAgent": "claude-cli/2.1.211 (external, cli)",
+}
+`;
+
+exports[`anthropic wire-fact golden (gates model registry #1) haiku / nested agent 1`] = `
+{
+  "betas": [
+    "oauth-2025-04-20",
+    "interleaved-thinking-2025-05-14",
+    "thinking-token-count-2026-05-13",
+    "context-management-2025-06-27",
+    "prompt-caching-scope-2026-01-05",
+    "claude-code-20250219",
+    "advanced-tool-use-2025-11-20",
+  ],
+  "contextManagement": {
+    "edits": [
+      {
+        "keep": "all",
+        "type": "clear_thinking_20251015",
+      },
+    ],
+  },
+  "hasSystem": false,
+  "hasTools": true,
+  "maxTokens": 32000,
+  "model": "claude-haiku-4-5-20251001",
+  "outputConfig": null,
+  "runtimeVersion": "v26.3.0",
+  "thinking": {
+    "budget_tokens": 31999,
+    "display": "summarized",
+    "type": "enabled",
+  },
+  "userAgent": "claude-cli/2.1.211 (external, cli)",
 }
 `;

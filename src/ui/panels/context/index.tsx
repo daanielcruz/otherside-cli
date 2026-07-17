@@ -1,5 +1,4 @@
 import { createContext, type ReactNode, useContext, useMemo } from "react";
-import type { PendingChange } from "@/commands/index.ts";
 import type { BackgroundTask } from "@/engine/background/tasks/background.ts";
 import type { CodexUsage } from "@/engine/providers/codex/usage.ts";
 import type { Session } from "@/engine/session/index.ts";
@@ -28,7 +27,6 @@ export interface OverlayDispatchValue {
   onConfigChange?: (config: UserConfig) => void;
   onOpenLogin?: (provider?: ProviderId) => void;
   onCodexUsage?: (usage: CodexUsage | null) => void;
-  enqueueChange?: (change: PendingChange, label: string) => void;
   onRewind?: (id: string, mode?: unknown) => void;
   onResumeSession?: (id: string) => void | Promise<void>;
   isTurnRunning?: () => boolean;

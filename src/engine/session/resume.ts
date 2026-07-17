@@ -38,8 +38,9 @@ import {
 import {
   attachSessionWorktreeHost,
   detachSessionWorktreeHost,
-  readWorktreeStampFromSessionFile,
+  readProjectWorktreeSlot,
   restoreSessionWorktreeOnResume,
+  stampedWorktreeStateFrom,
 } from "@/engine/session/worktree.ts";
 import { reconstructContentReplacementState } from "@/engine/tool-result-storage/index.ts";
 import { sanitizeMessages } from "@/engine/translator/index.ts";
@@ -105,7 +106,8 @@ export function createResumeSession(deps: ResumeSessionDeps): ResumeSessionFn {
   } = deps;
 
   return async function resumeSession(id: string): Promise<void> {
-    const { records, usageRecords, chainHead, cwd } = await loadSessionForResume(id);
+    const { records, modelRecords, usageRecords, chainHead, cwd, tailRecords } =
+      await loadSessionForResume(id);
     const resumedCwd = cwd ?? session.storageCwd;
     const systemInjections = loadSystemInjectionsForSession(id, resumedCwd);
     if (records.length === 0) {
@@ -119,7 +121,9 @@ export function createResumeSession(deps: ResumeSessionDeps): ResumeSessionFn {
       ]);
       return;
     }
-    const entries = recordsToTranscript(records);
+    // Cap projection input at the tail (mounted window is 200/50); do not build
+    // transcript entries for the entire retained record set.
+    const entries = recordsToTranscript(tailRecords);
     // A goal set in a prior run lives only in-memory; re-derive it from the
     // transcript's goal hook_events so an unmet goal keeps blocking after resume.
     restoreGoalFromRecords(id, records);
@@ -133,6 +137,8 @@ export function createResumeSession(deps: ResumeSessionDeps): ResumeSessionFn {
       },
       usageRecords,
     );
+    // Shared messages derivation for context baseline + hydrate (single sanitize).
+    const resumedMessages = sanitizeMessages(sessionRecordsToMessages(modelRecords));
     applyResumedContextUsage({
       restoredContextUsage,
       target: restoredBrokerState,
@@ -141,9 +147,7 @@ export function createResumeSession(deps: ResumeSessionDeps): ResumeSessionFn {
       // pre-compaction history the record still holds. Resuming a just-compacted
       // session otherwise reads ~full context ("0% available"). Matches the fresh
       // startup path (`roughTokenCountEstimationForMessages(session.messages)`).
-      messagesBaseline: roughTokenCountEstimationForMessages(
-        sanitizeMessages(sessionRecordsToMessages(records)),
-      ),
+      messagesBaseline: roughTokenCountEstimationForMessages(resumedMessages),
       setMainLastContext,
     });
     const previousSessionId = session.id;
@@ -154,19 +158,25 @@ export function createResumeSession(deps: ResumeSessionDeps): ResumeSessionFn {
       session,
       id,
       records,
+      modelRecords,
       usageRecords,
       chainHead,
       systemInjections,
       pasteStoreRef,
       createPasteStore,
+      messages: resumedMessages,
     });
     session.storageCwd = resumedCwd;
     session.worktree = null;
     session.cwd = resumedCwd;
     setTrackedCwd(resumedCwd);
     attachSessionWorktreeHost(session);
-    const recordedWorktree = await readWorktreeStampFromSessionFile(session.storageCwd, id);
+    // The transcript stamp is the restore source of truth; the project slot
+    // only covers transcripts that predate stamps.
+    const stamped = stampedWorktreeStateFrom(records);
+    const recordedWorktree = stamped.stamped ? stamped.state : readProjectWorktreeSlot(id);
     const worktreeRestore = await restoreSessionWorktreeOnResume(session, recordedWorktree);
+    setTrackedCwd(session.cwd);
     setTaskOutputSession({ sessionId: id, cwd: session.cwd });
     restoreBrokerStateOnResume({
       broker,
@@ -300,21 +310,26 @@ export function hydrateSessionFromRecords(args: {
   session: Session;
   id: string;
   records: SessionRecord[];
+  modelRecords?: SessionRecord[];
   usageRecords: UsageRecord[];
   chainHead: string | null;
   systemInjections?: SystemInjectionEntry[];
   pasteStoreRef: MutableRefObject<PasteStore>;
   createPasteStore: (sessionId: string) => PasteStore;
+  /** Precomputed model messages; when omitted, derived from modelRecords once. */
+  messages?: ReturnType<typeof sanitizeMessages>;
 }): void {
   const {
     session,
     id,
     records,
+    modelRecords = records,
     usageRecords,
     chainHead,
     systemInjections = loadSystemInjectionsForSession(id, session.storageCwd),
     pasteStoreRef,
     createPasteStore,
+    messages,
   } = args;
   session.id = id;
   pasteStoreRef.current = createPasteStore(session.id);
@@ -324,11 +339,8 @@ export function hydrateSessionFromRecords(args: {
   session.usageRecords.splice(0, session.usageRecords.length, ...usageRecords);
   session.systemInjections.splice(0, session.systemInjections.length, ...systemInjections);
   session.hookEvents.splice(0, session.hookEvents.length);
-  session.messages.splice(
-    0,
-    session.messages.length,
-    ...sanitizeMessages(sessionRecordsToMessages(records)),
-  );
+  const hydratedMessages = messages ?? sanitizeMessages(sessionRecordsToMessages(modelRecords));
+  session.messages.splice(0, session.messages.length, ...hydratedMessages);
   const replacementRecords = records
     .filter((r): r is ContentReplacementSessionRecord => r.type === "content_replacement")
     .map((r) => ({
@@ -382,6 +394,11 @@ export function isMessageRecord(record: SessionRecord): boolean {
   return record.type === "user_message" || record.type === "assistant_message";
 }
 
-export function resumeExitText(sessionId: string, command = "otherside"): string {
-  return `\n${dim("Resume this session with:")}\n${dim(`${command} --resume ${sessionId}`)}\n`;
+export function resumeExitText(
+  sessionId: string,
+  command = "otherside",
+  worktreeName?: string | null,
+): string {
+  const worktreeFlag = worktreeName ? `--worktree ${worktreeName} ` : "";
+  return `\n${dim("Resume this session with:")}\n${dim(`${command} ${worktreeFlag}--resume ${sessionId}`)}\n`;
 }

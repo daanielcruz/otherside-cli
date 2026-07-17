@@ -1,5 +1,5 @@
 import { Fragment, useState } from "react";
-import { type PendingChange, setEffortFeedback } from "@/commands/index.ts";
+import { setEffortFeedback } from "@/commands/index.ts";
 import { isWorkflowEnabled } from "@/engine/background/workflows/runtime/gate.ts";
 import { effortLevelsForModel } from "@/engine/model/catalog.ts";
 import { Box, Text } from "@/ink";
@@ -23,7 +23,6 @@ export interface EffortOverlayProps {
   config?: UserConfig | undefined;
   onClose?: () => void;
   isTurnRunning?: (() => boolean) | undefined;
-  enqueueChange?: ((change: PendingChange, label: string) => void) | undefined;
 }
 
 export function EffortOverlay({
@@ -31,13 +30,11 @@ export function EffortOverlay({
   config,
   onClose,
   isTurnRunning,
-  enqueueChange,
 }: EffortOverlayProps = {}): React.JSX.Element {
   const overlayState = useOverlayState();
   const dispatch = useOverlayDispatch();
   const activeBroker = broker ?? overlayState.broker;
   const close = useOverlayClose(onClose);
-  const enqueue = enqueueChange ?? dispatch.enqueueChange;
   const state = activeBroker.read();
   const ultracodeAvailable = !!config && isWorkflowEnabled(config);
   const levels = buildLevels(state.model, state.provider, ultracodeAvailable);

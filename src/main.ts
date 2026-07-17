@@ -1,3 +1,6 @@
+// Must precede every other import: werift's dependency chain (tsyringe)
+// resolves Reflect metadata during compiled-bundle module init.
+import "reflect-metadata";
 import "@/devtools/bootstrap.ts";
 import { createElement } from "react";
 import { devtoolBoolean, devtoolString } from "@/devtools/settings.ts";
@@ -6,6 +9,7 @@ import "@/engine/background/workflows/runtime/store/store.ts";
 import "@/engine/providers/usage-quota-snapshot.ts";
 import "@/engine/queue/emit.ts";
 import "@/engine/session/usage/limits.ts";
+import { emitPushEvent } from "@/backend/index.ts";
 import { maybeReexecWithAllocLever } from "@/devtools/memory/allocator.ts";
 import { installGcCadence } from "@/devtools/memory/gc-cadence.ts";
 import { installHeapDumpTrigger } from "@/devtools/memory/heap-dump.ts";
@@ -27,10 +31,11 @@ import {
 } from "@/engine/model/catalog.ts";
 import { seedExtraUsageDisabledReason } from "@/engine/providers/anthropic/access.ts";
 import { Agent } from "@/engine/queue/index.ts";
+import { flushPendingAsyncRewakeHooks } from "@/engine/queue/runtime/stop-hook-rewake.ts";
 import { restoreGoalFromRecords } from "@/engine/queue/state.ts";
 import {
   finalizeSession,
-  hasMessageRecords,
+  hasSessionTranscript,
   loadSessionForResume,
   migrateLegacySessions,
   resolveSessionBrokerState,
@@ -53,8 +58,11 @@ import { registerBuiltinClassifiers } from "@/engine/transport/errors.ts";
 import { initScratchpadDir } from "@/harness/routines/scratchpad.ts";
 import {
   type FrameMetrics,
+  ITERM2_COMMANDS,
   inputLagTraceEnabled,
   OSC,
+  osc,
+  PROGRESS_STATES,
   recordInputLag,
   render,
   startEventLoopMonitor,
@@ -90,14 +98,9 @@ import {
 } from "@/kernel/storage/credentials.ts";
 import { type CliMode, parseArgs } from "@/modes/args.ts";
 import { runPrintMode } from "@/modes/print/index.ts";
-import { emitPushEvent } from "@/remote/index.ts";
 import { Broker } from "@/store/app-store/broker.ts";
 import { bootSubscribers } from "@/store/subscribers/index.ts";
-import {
-  ITERM2_COMMANDS,
-  osc,
-  PROGRESS_STATES,
-} from "@/terminal-runtime/terminal/operating-system-command.ts";
+
 import { App, sessionRecordsToMessages, sessionRecordsToTranscript } from "@/ui/index.ts";
 import { resolveThemeSetting } from "@/ui/theme/system-theme.ts";
 import { setActiveTheme } from "@/ui/theme/theme.ts";
@@ -161,7 +164,15 @@ async function maybeRunTerminalMode(mode: CliMode): Promise<boolean> {
         "  otherside --resume <id> resume a saved session",
         "  otherside -c | --continue resume the most recent session for the current cwd",
         "  otherside --provider antigravity --model gemini-3.1-pro-high",
+        "  otherside -w | --worktree [name]  Create a new git worktree for this session (name, #<pr>, or a PR URL)",
+        "  otherside --worktree [name] --tmux  also create a companion tmux session in the worktree",
         "  otherside logout --provider antigravity",
+        "  otherside -p | --print <prompt>                 run in non-interactive print mode (useful for scripts/pipes)",
+        "  otherside -p <prompt> --output-format <format>  output format: text (default), json, or stream-json",
+        "  otherside -p <prompt> --include-partial-messages include partial message chunks (requires stream-json format)",
+        "  otherside -p <prompt> --max-turns <number>      limit maximum execution turns",
+        "  otherside -p <prompt> --max-budget-usd <usd>    limit maximum USD budget for API calls",
+        "  otherside -p <prompt> --json-schema <schema>    validate structured output via JSON schema",
         "  otherside --version",
         "",
       ].join("\n"),
@@ -189,19 +200,19 @@ async function loadStartupConfig(cwd: string) {
   const cfg = resolveConfig(cwd);
   setActiveTheme(resolveThemeSetting(cfg.theme ?? "auto"));
   const allCreds = await loadAllCredentials();
-  const customCreds = await loadCredentialsFor("openai-custom");
+  const customCreds = await loadCredentialsFor("openai");
   if (customCreds?.contextWindow && (customCreds.model || cfg.defaultModel)) {
     const model = customCreds.model || cfg.defaultModel;
     registerRuntimeModel({
       id: model,
       displayName: model,
       contextWindow: customCreds.contextWindow,
-      provider: "openai-custom",
+      provider: "openai",
       efforts: [],
       defaultEffort: null,
     });
   }
-  loadCorpus();
+  loadCorpus({ config: cfg, cwd });
   seedExtraUsageDisabledReason(cfg.cachedExtraUsageDisabledReason);
   migrateLegacySessions();
   scheduleRetentionCleanup();
@@ -263,11 +274,11 @@ export function resolveStartupBroker(args: {
   const FALLBACK_ORDER: Array<typeof cfg.defaultProvider> = [
     "anthropic",
     "codex",
-    "kimi-code",
-    "openai-custom",
+    "kimi",
+    "openai",
   ];
   const credsForProvider = (p: typeof cfg.defaultProvider): boolean => {
-    if (p === "openai-custom") return Boolean(customCreds);
+    if (p === "openai") return Boolean(customCreds);
     return hasCredential(allCreds, p as ProviderSlug);
   };
   let defaultInitialProvider = (cliProvider ?? cfg.defaultProvider) as typeof cfg.defaultProvider;
@@ -310,8 +321,8 @@ export function resolveStartupBroker(args: {
   // Headless (`--print`) defaults to `default` (prompt-requiring tools are then
   // auto-denied — it must not silently mutate); interactive keeps accept-edits.
   const fallbackPermissionMode: PermissionMode = mode.kind === "print" ? "default" : "accept-edits";
-  // Bypass (yolo) wins over an explicit --permission-mode, mirroring upstream's
-  // bypass-first ordering (permissionSetup.ts): --yolo/--dangerously-skip-permissions
+  // Bypass (yolo) wins over an explicit --permission-mode with a bypass-first
+  // ordering: --yolo/--dangerously-skip-permissions
   // must fail open even when paired with e.g. `--permission-mode plan`.
   const initialPermissionMode: PermissionMode = mode.yolo
     ? "yolo"
@@ -372,7 +383,7 @@ async function runPrintEntrypoint(args: {
   trace("checking credentials");
   const activeProvider = initialProvider as ProviderSlug;
   const activeCreds =
-    activeProvider === "openai-custom" ? customCreds : await loadCredentialsFor(activeProvider);
+    activeProvider === "openai" ? customCreds : await loadCredentialsFor(activeProvider);
   if (!hasLoadedCredential(activeProvider, activeCreds)) {
     process.stderr.write(
       `otherside: no credentials for provider ${initialProvider}; launch \`otherside\` and sign in via /login first\n`,
@@ -400,7 +411,9 @@ async function runPrintEntrypoint(args: {
     mode.outputFormat,
     {
       sessionId: session.id,
-      cwd: process.cwd(),
+      // Session cwd, not process.cwd(): a launch-time worktree relocates the
+      // session's working directory without chdir.
+      cwd: session.cwd,
       model: initialModel,
       permissionMode: broker.read().permissionMode,
       verbose: mode.verbose,
@@ -417,6 +430,7 @@ async function runPrintEntrypoint(args: {
     trace,
   );
   trace(`print mode done exit=${exitCode}`);
+  await flushPendingAsyncRewakeHooks();
   await fireConfiguredHooks(loadConfigSync(), "sessionEnd", {
     kind: "sessionEnd",
     ctx: { sessionId: session.id, cwd: session.cwd, reason: "other" },
@@ -435,7 +449,7 @@ async function installInkDevtools(): Promise<void> {
     // self-registers — it only injects via injectIntoDevTools).
     (globalThis as { window?: unknown }).window ??= globalThis;
     const devtools = await import("react-devtools-core");
-    const reconciler = (await import("@/terminal-runtime/tree/react-adapter.ts")).default as {
+    const reconciler = (await import("@/ink")).reactAdapter as {
       injectIntoDevTools?: () => void;
     };
     devtools.initialize();
@@ -452,7 +466,8 @@ async function runInteractiveEntrypoint(args: {
   allCreds: Awaited<ReturnType<typeof loadAllCredentials>>;
   cliProviderMissingCreds: boolean;
   cliProviderRaw: string | null;
-  resumeRecords: Awaited<ReturnType<typeof loadSessionForResume>>["records"];
+  /** Fully-typed tail only — projection input is capped here (not full records). */
+  resumeTailRecords: Awaited<ReturnType<typeof loadSessionForResume>>["tailRecords"];
 }): Promise<void> {
   const {
     agent,
@@ -462,7 +477,7 @@ async function runInteractiveEntrypoint(args: {
     allCreds,
     cliProviderMissingCreds,
     cliProviderRaw,
-    resumeRecords,
+    resumeTailRecords,
   } = args;
   startCronScheduler(agent);
 
@@ -493,7 +508,7 @@ async function runInteractiveEntrypoint(args: {
       agent,
       config: cfg,
       version: VERSION,
-      initialTranscript: sessionRecordsToTranscript(resumeRecords),
+      initialTranscript: sessionRecordsToTranscript(resumeTailRecords),
       ...(overlayChain.length > 0
         ? {
             initialOverlayChain: overlayChain,
@@ -528,15 +543,22 @@ async function runInteractiveEntrypoint(args: {
     const { stopAllDesign } = await import("@/design/index.ts");
     await stopAllDesign();
   }
+  const showResumeHint = process.stdout.isTTY && hasSessionTranscript(session);
+  await flushPendingAsyncRewakeHooks();
   await fireConfiguredHooks(cfg, "sessionEnd", {
     kind: "sessionEnd",
     ctx: { sessionId: session.id, cwd: session.cwd, reason: "prompt_input_exit" },
   });
   await finalizeSession(session);
-  if (hasMessageRecords(session)) {
+  if (showResumeHint) {
+    // A kept worktree is part of the resume command: rejoining the session
+    // means re-entering its worktree.
+    const { latchedWorktreeName } = await import("@/engine/session/worktree.ts");
     // Clear below the cursor first: the inline renderer's teardown leaves the
     // final frame rows on screen, and the hint would overprint them.
-    process.stdout.write(`\u001b[0J${resumeExitText(session.id)}`);
+    process.stdout.write(
+      `\u001b[0J${resumeExitText(session.id, "otherside", latchedWorktreeName())}`,
+    );
   }
   process.exit(0);
 }
@@ -544,6 +566,7 @@ async function runInteractiveEntrypoint(args: {
 export async function buildResumedSession(args: {
   effectiveResumeId: string | null;
   resumeRecords: Awaited<ReturnType<typeof loadSessionForResume>>["records"];
+  resumeModelRecords?: Awaited<ReturnType<typeof loadSessionForResume>>["modelRecords"];
   resumeUsageRecords: Awaited<ReturnType<typeof loadSessionForResume>>["usageRecords"];
   chainHead: Awaited<ReturnType<typeof loadSessionForResume>>["chainHead"];
   resumeCwd?: Awaited<ReturnType<typeof loadSessionForResume>>["cwd"];
@@ -555,6 +578,7 @@ export async function buildResumedSession(args: {
   const {
     effectiveResumeId,
     resumeRecords,
+    resumeModelRecords = resumeRecords,
     resumeUsageRecords,
     chainHead,
     resumeCwd,
@@ -577,7 +601,7 @@ export async function buildResumedSession(args: {
   if (isResume && chainHead) {
     session.chain.seed(chainHead);
   }
-  session.messages.push(...sanitizeMessages(sessionRecordsToMessages(resumeRecords)));
+  session.messages.push(...sanitizeMessages(sessionRecordsToMessages(resumeModelRecords)));
   if (isResume) {
     const replacementRecords = resumeRecords
       .filter((r): r is ContentReplacementSessionRecord => r.type === "content_replacement")
@@ -610,10 +634,157 @@ export async function buildResumedSession(args: {
   return { session, agent };
 }
 
+/**
+ * Launch-time worktree wiring, mirroring the launch flag semantics:
+ * `--worktree [name]` creates/reenters a session worktree before anything
+ * renders (the flag wins over a resumed session's recorded worktree); a plain
+ * resume restores the worktree recorded in the transcript stamp (project-slot
+ * fallback for pre-stamp transcripts), when present.
+ */
+async function applyStartupWorktree(args: {
+  session: Session;
+  cfg: Awaited<ReturnType<typeof loadConfig>>;
+  worktree: { name: string | null } | null;
+  tmux: boolean;
+  isResume: boolean;
+  resumeRecords: Awaited<ReturnType<typeof loadSessionForResume>>["records"];
+}): Promise<void> {
+  const { session, cfg, worktree, tmux, isResume, resumeRecords } = args;
+  if (worktree === null && !isResume) return;
+  const {
+    attachSessionWorktreeHost,
+    enterSessionWorktree,
+    parsePRReference,
+    readProjectWorktreeSlot,
+    resolveWorktreeLaunchBase,
+    restoreSessionWorktreeOnResume,
+    stampedWorktreeStateFrom,
+    worktreeTmuxSessionName,
+  } = await import("@/engine/session/worktree.ts");
+  attachSessionWorktreeHost(session);
+
+  if (worktree === null) {
+    // The transcript stamp is the restore source of truth; the project slot
+    // only covers transcripts that predate stamps.
+    const stamped = stampedWorktreeStateFrom(resumeRecords);
+    const recorded = stamped.stamped ? stamped.state : readProjectWorktreeSlot(session.id);
+    if (recorded === null) return;
+    const restore = await restoreSessionWorktreeOnResume(session, recorded);
+    if (restore.warning !== undefined) process.stderr.write(`${restore.warning}\n`);
+    // A failed restore may have re-homed the session too (dead worktree).
+    await syncSessionCwdState(session);
+    return;
+  }
+
+  const { listEnabledHookEntries } = await import("@/engine/plugins/registry.ts");
+  const hasCreateHook =
+    (cfg.hooks?.WorktreeCreate?.length ?? 0) > 0 ||
+    listEnabledHookEntries("WorktreeCreate").length > 0;
+  const { baseCwd, gitRepo } = await resolveWorktreeLaunchBase(session.cwd);
+  if (!gitRepo && !hasCreateHook) {
+    process.stderr.write(
+      `Error: Can only use --worktree in a git repository, but ${session.cwd} is not a git repository. Configure a WorktreeCreate hook in settings.json to use --worktree with other VCS systems.\n`,
+    );
+    process.exit(1);
+  }
+  if (baseCwd !== session.cwd) {
+    // Launched inside a linked worktree: anchor the session on the main checkout.
+    session.cwd = baseCwd;
+    if (!isResume) session.storageCwd = baseCwd;
+  }
+  // `--worktree #123` / `--worktree <PR URL>` name the worktree pr-<N> and
+  // base it on the PR head instead of the default branch.
+  const prNumber = worktree.name !== null ? parsePRReference(worktree.name) : null;
+  const name = prNumber !== null ? `pr-${prNumber}` : worktree.name;
+  const ctx = {
+    provider: "anthropic",
+    model: "startup",
+    effort: null,
+    permissionMode: "default",
+    sessionId: session.id,
+    cwd: session.cwd,
+  } as unknown as Parameters<typeof enterSessionWorktree>[0];
+  try {
+    await enterSessionWorktree(ctx, {
+      ...(name !== null ? { name } : {}),
+      ...(prNumber !== null ? { prNumber } : {}),
+      ...(tmux && name !== null ? { tmuxSessionName: worktreeTmuxSessionName(baseCwd, name) } : {}),
+    });
+  } catch (error) {
+    process.stderr.write(
+      `Error creating worktree: ${error instanceof Error ? error.message : String(error)}\n`,
+    );
+    process.exit(1);
+  }
+  if (tmux) await applyCompanionTmux(session);
+  await syncSessionCwdState(session);
+}
+
+/**
+ * `--tmux` companion for a `--worktree` launch: a detached tmux session rooted
+ * in the worktree, recorded on the worktree state so the exit dialog offers
+ * the keep/kill-tmux choices and remove tears it down.
+ */
+async function applyCompanionTmux(session: Session): Promise<void> {
+  if (session.worktree === null) return;
+  const { persistProjectWorktreeSlot, worktreeTmuxSessionName } = await import(
+    "@/engine/session/worktree.ts"
+  );
+  // An auto-generated worktree name is only known after enter.
+  const name =
+    session.worktree.tmuxSession ??
+    (session.worktree.worktreeName !== undefined
+      ? worktreeTmuxSessionName(
+          session.worktree.ownerRepoRoot ?? session.worktree.originalCwd,
+          session.worktree.worktreeName,
+        )
+      : null);
+  if (name === null) return;
+  try {
+    const proc = Bun.spawn(["tmux", "new-session", "-d", "-s", name, "-c", session.cwd], {
+      stdout: "ignore",
+      stderr: "pipe",
+    });
+    const stderr = await new Response(proc.stderr).text();
+    const code = await proc.exited;
+    if (code !== 0) {
+      process.stderr.write(`Warning: Failed to create tmux session: ${stderr.trim()}\n`);
+      return;
+    }
+    session.worktree.tmuxSession = name;
+    await persistProjectWorktreeSlot(session.worktree, session.id);
+    process.stdout.write(`Created tmux session: ${name}\nTo attach: tmux attach -t ${name}\n`);
+  } catch (error) {
+    process.stderr.write(
+      `Warning: Failed to create tmux session: ${error instanceof Error ? error.message : String(error)}\n`,
+    );
+  }
+}
+
+/** Re-anchor cwd-derived session state after a launch-time worktree switch. */
+async function syncSessionCwdState(session: Session): Promise<void> {
+  setTrackedCwd(session.cwd);
+  initScratchpadDir(session.cwd, session.id);
+  setTaskOutputSession({ sessionId: session.id, cwd: session.cwd });
+  const { currentGitBranch } = await import("@/engine/session/paths.ts");
+  const gitBranch = currentGitBranch(session.cwd);
+  if (gitBranch) session.gitBranch = gitBranch;
+  else delete session.gitBranch;
+}
+
 async function main(): Promise<void> {
   bootstrapLlmApiRegistry();
   registerBuiltinClassifiers();
   const mode = parseArgs(Bun.argv);
+  if (mode.kind === "print") {
+    if (mode.prompt.trim().length === 0 && !process.stdin.isTTY) {
+      mode.prompt = (await Bun.stdin.text()).trim();
+    }
+    if (/^\/cd(?:\s|$)/.test(mode.prompt.trim())) {
+      process.stdout.write("/cd isn't available in this environment.\n");
+      return;
+    }
+  }
   const { setRuntimeKind } = await import("@/kernel/std/proc/runtime-mode.ts");
   setRuntimeKind(
     mode.kind === "print" || mode.kind === "interactive" || mode.kind === "piped"
@@ -655,13 +826,21 @@ async function main(): Promise<void> {
   try {
     resumeLoad = effectiveResumeId
       ? await loadSessionForResume(effectiveResumeId)
-      : { records: [], usageRecords: [], chainHead: null, cwd: null };
+      : {
+          records: [],
+          modelRecords: [],
+          usageRecords: [],
+          chainHead: null,
+          cwd: null,
+          tailRecords: [],
+        };
   } catch (error) {
     process.stderr.write(formatDirectResumeError(error));
     // Same as above: pre-mount failure must not wait for startup promises.
     process.exit(1);
   }
   const resumeRecords = resumeLoad.records;
+  const resumeTailRecords = resumeLoad.tailRecords;
   const isResume = effectiveResumeId !== null;
 
   const { broker, initialProvider, initialModel, cliProviderRaw, cliProviderMissingCreds } =
@@ -676,6 +855,7 @@ async function main(): Promise<void> {
   const { session, agent } = await buildResumedSession({
     effectiveResumeId,
     resumeRecords,
+    resumeModelRecords: resumeLoad.modelRecords,
     resumeUsageRecords: resumeLoad.usageRecords,
     chainHead: resumeLoad.chainHead,
     resumeCwd: resumeLoad.cwd,
@@ -683,6 +863,15 @@ async function main(): Promise<void> {
     broker,
     cfg,
     isPrint: mode.kind === "print",
+  });
+
+  await applyStartupWorktree({
+    session,
+    cfg,
+    worktree: mode.worktree,
+    tmux: mode.tmux,
+    isResume,
+    resumeRecords,
   });
 
   await fireConfiguredHooks(cfg, "sessionStart", {
@@ -695,10 +884,6 @@ async function main(): Promise<void> {
   });
 
   if (mode.kind === "print") {
-    // A piped prompt (`echo … | otherside -p`) fills an otherwise-empty prompt.
-    if (mode.prompt.trim().length === 0 && !process.stdin.isTTY) {
-      mode.prompt = (await Bun.stdin.text()).trim();
-    }
     await mcpBootLoad;
     await runPrintEntrypoint({
       mode,
@@ -720,7 +905,7 @@ async function main(): Promise<void> {
     allCreds,
     cliProviderMissingCreds,
     cliProviderRaw,
-    resumeRecords,
+    resumeTailRecords,
   });
 }
 

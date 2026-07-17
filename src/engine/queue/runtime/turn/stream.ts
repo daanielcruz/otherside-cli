@@ -15,11 +15,14 @@ import {
 import { providerToolDeclarations, runRound } from "@/engine/translator/index.ts";
 import type { InjectionQueue } from "@/harness/composer/injections.ts";
 import { loadRulesSync } from "@/kernel/permissions/persist.ts";
+import { getRuntimeKind } from "@/kernel/std/proc/runtime-mode.ts";
 import type { AgentEvent, ProviderEvent } from "@/kernel/std/types/events.ts";
 import { sessionGitStatus } from "../git-status.ts";
 import { runPromptClassifier } from "../goal-evaluation.ts";
 import { makeRequestContext } from "../request-context.ts";
 import type { StopConditionVerdict } from "../stop-hook-classifier.ts";
+import { isStopHookActiveTurn, launchAsyncStopHook } from "../stop-hook-rewake.ts";
+import { runSyncStopHook, type SyncStopHookVerdict } from "../stop-hook-sync.ts";
 import { currentLocalISODate } from "../turn-prompts.ts";
 import type { AgentDeps, TurnLoopHost } from "./types.ts";
 
@@ -84,7 +87,6 @@ export async function* openProviderStream(
   });
   const taskReminder = buildTaskReminderInjection({
     messages: deps.agentDeps.session.messages,
-    scope: undefined,
     effectiveTools,
   });
   if (taskReminder !== null) {
@@ -113,7 +115,50 @@ export async function* fireStopPromptHooks(
   const entries = [...(deps.agentDeps.config.hooks?.stop ?? []), ...listEnabledHookEntries("stop")];
   if (entries.length === 0) return false;
   let blocked = false;
+  const stopHookActive = isStopHookActiveTurn();
   for (const entry of entries) {
+    // Command-type Stop hooks flagged async/asyncRewake launch in the
+    // background at turn end — never blocking it. An asyncRewake hook that
+    // later exits 2 enqueues a rewake task-notification (stop-hook-rewake.ts).
+    // A plain command hook runs synchronously: exit 2 blocks the stop and
+    // feeds its stderr back to the model; other exits are silent.
+    if (entry.type === undefined || entry.type === "command") {
+      const takenAsync = launchAsyncStopHook({
+        entry,
+        interactive: getRuntimeKind() !== "print",
+        sessionId: deps.agentDeps.session.id,
+        stopHookActive,
+      });
+      if (takenAsync) continue;
+      if (deps.cancelled() || abortSignal?.aborted) return blocked;
+      let verdict: SyncStopHookVerdict;
+      try {
+        verdict = await runSyncStopHook(entry, deps.agentDeps.session.id, stopHookActive);
+      } catch (err) {
+        yield {
+          kind: "error",
+          error: `stop-hook command error: ${err instanceof Error ? err.message : String(err)}`,
+        };
+        continue;
+      }
+      if (verdict.kind === "failed") {
+        yield { kind: "error", error: `stop hook failed: ${verdict.message}` };
+        continue;
+      }
+      if (verdict.kind !== "block") continue;
+      blocked = true;
+      deps.agentDeps.session.messages.push({
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: `Stop hook feedback:\n${verdict.feedback}`,
+          },
+        ],
+      });
+      yield { kind: "error", error: `stop hook blocked: ${verdict.feedback}` };
+      continue;
+    }
     if (entry.type !== "prompt") continue;
     if (deps.cancelled() || abortSignal?.aborted) return blocked;
     let verdict: StopConditionVerdict;

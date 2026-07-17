@@ -192,8 +192,12 @@ export function makeTuiTurnObserver(deps: TuiTurnObserverDeps): TuiTurnHandle {
     // for the rest of this turn step and is overwritten by the next headline
     // or by the next turn's pickVerbForTurn roll (submitted-turn.ts).
     onThinkingHeadline: (headline) => dispatch({ type: "view/setTurnVerb", verb: headline }),
+    // Read the LIVE broker, not the turn-start snapshot: a mid-turn model switch
+    // updates the broker (drain/queue.ts) and the next request already goes out
+    // on the new provider, so presentation must follow the same source or codex
+    // reasoning renders as retained rows after an anthropic-started turn.
     reasoningHeadlinesEnabled: () =>
-      getProviderConfig(turnState.provider as ProviderId)?.featureFlags?.reasoningHeadlines ===
+      getProviderConfig(broker.read().provider as ProviderId)?.featureFlags?.reasoningHeadlines ===
       true,
   });
   const toolHandlers = createToolDispatchHandlers({

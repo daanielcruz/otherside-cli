@@ -3,9 +3,12 @@ import { list as listAgents, type SubagentDef } from "@/engine/agents/registry.t
 import {
   type BackgroundTask,
   type BackgroundTaskAction,
+  list as listBackgroundTasks,
 } from "@/engine/background/tasks/background.ts";
+import { aggregateSubtreeProgress } from "@/engine/background/tasks/progress.ts";
 import { Box, type Color as InkColor, Text, useTerminalDimensions } from "@/ink";
-import { FooterPanel, FooterPanelOutputBox } from "@/ui/chrome/panel.tsx";
+import { computeListWindow } from "@/kernel/std/list-window.ts";
+import { FooterPanel, FooterPanelOutputBox, ListOverflowIndicator } from "@/ui/chrome/panel.tsx";
 import { pickerMaxHeight } from "@/ui/chrome/picker-geometry.ts";
 import { agentPanelStatus, panelStatusColor } from "@/ui/chrome/progress/glyphs.ts";
 import { usePanelNavigation } from "@/ui/hooks/use-panel-navigation.ts";
@@ -21,33 +24,6 @@ export function visibleAgentLibraryRows(terminalRows: number): number {
 
 export function clampAgentLibraryIndex(index: number, count: number): number {
   return Math.max(0, Math.min(Math.max(0, count - 1), index));
-}
-
-export interface AgentLibraryWindow {
-  firstVisible: number;
-  lastVisible: number;
-  aboveCount: number;
-  belowCount: number;
-}
-
-export function agentLibraryWindow(
-  selected: number,
-  count: number,
-  visible: number,
-): AgentLibraryWindow {
-  const visibleRows = Math.max(1, Math.floor(visible));
-  const selectedIndex = clampAgentLibraryIndex(selected, count);
-  const firstVisible = Math.max(
-    0,
-    Math.min(selectedIndex - Math.floor(visibleRows / 2), count - visibleRows),
-  );
-  const lastVisible = Math.min(count, firstVisible + visibleRows);
-  return {
-    firstVisible,
-    lastVisible,
-    aboveCount: firstVisible,
-    belowCount: count - lastVisible,
-  };
 }
 
 export function pageAgentLibraryIndex(
@@ -174,7 +150,8 @@ export function TaskDetail({ task }: { task: BackgroundTask }): React.JSX.Elemen
   );
   const now = Date.now();
   if (task.kind === "shell") return <ShellTaskDetail task={task} />;
-  const actions = visibleTaskActions(task);
+  const allTasks = listBackgroundTasks();
+  const actions = visibleSubtreeActions(task, allTasks);
   const activeActionId = activeTaskActionId(task, actions);
   const displayPrompt =
     task.prompt && task.prompt.length > 300 ? `${task.prompt.substring(0, 297)}…` : task.prompt;
@@ -335,9 +312,39 @@ function TaskSummaryLine({ task, now }: { task: BackgroundTask; now: number }): 
 }
 
 export function visibleTaskActions(task: BackgroundTask, limit = 5): BackgroundTaskAction[] {
-  const recent = task.actions.slice(-limit);
+  return selectVisibleActions(task.actions, limit);
+}
+
+/** Recent + running actions across the task and every descendant. */
+export function visibleSubtreeActions(
+  task: BackgroundTask,
+  allTasks: readonly BackgroundTask[],
+  limit = 5,
+): BackgroundTaskAction[] {
+  const actions: BackgroundTaskAction[] = [];
+  const pending = [task.id];
+  const seenIds = new Set<string>();
+  while (pending.length > 0) {
+    const id = pending.pop();
+    if (id === undefined || seenIds.has(id)) continue;
+    seenIds.add(id);
+    const current = allTasks.find((candidate) => candidate.id === id);
+    if (!current) continue;
+    actions.push(...current.actions);
+    for (const child of allTasks) {
+      if (child.parentTaskId === id) pending.push(child.id);
+    }
+  }
+  return selectVisibleActions(actions, limit);
+}
+
+function selectVisibleActions(
+  actions: readonly BackgroundTaskAction[],
+  limit: number,
+): BackgroundTaskAction[] {
+  const recent = actions.slice(-limit);
   const seen = new Set(recent.map((action) => action.id));
-  const running = task.actions.filter((action) => action.running && !seen.has(action.id));
+  const running = actions.filter((action) => action.running && !seen.has(action.id));
   return [...recent, ...running].sort((a, b) => a.ts - b.ts);
 }
 
@@ -365,8 +372,13 @@ export function LibraryPane({
     return <Text color={Color.muted}>no subagents registered</Text>;
   }
 
-  const window = agentLibraryWindow(selected, agents.length, visibleRows);
-  const visibleAgents = agents.slice(window.firstVisible, window.lastVisible);
+  const window = computeListWindow({
+    cursor: clampAgentLibraryIndex(selected, agents.length),
+    total: agents.length,
+    size: Math.max(1, Math.floor(visibleRows)),
+    anchor: "center",
+  });
+  const visibleAgents = agents.slice(window.from, window.to);
   const sections = AGENT_LIBRARY_SECTIONS.map(({ scope, title }) => ({
     title,
     agents: visibleAgents.filter((agent) => agent.scope === scope),
@@ -374,10 +386,8 @@ export function LibraryPane({
 
   return (
     <Box flexDirection="column">
-      {window.aboveCount > 0 && (
-        <Box height={1} paddingLeft={2} overflow="hidden">
-          <Text color={Color.muted}>↑ {window.aboveCount} more above</Text>
-        </Box>
+      {window.above > 0 && (
+        <ListOverflowIndicator direction="up" count={window.above} suffix="above" paddingLeft={2} />
       )}
       {sections.map((section) => (
         <Box key={section.title} flexDirection="column">
@@ -412,10 +422,13 @@ export function LibraryPane({
           })}
         </Box>
       ))}
-      {window.belowCount > 0 && (
-        <Box height={1} paddingLeft={2} overflow="hidden">
-          <Text color={Color.muted}>↓ {window.belowCount} more below</Text>
-        </Box>
+      {window.below > 0 && (
+        <ListOverflowIndicator
+          direction="down"
+          count={window.below}
+          suffix="below"
+          paddingLeft={2}
+        />
       )}
     </Box>
   );
@@ -435,8 +448,11 @@ export function formatTaskSummary(task: BackgroundTask, now: number = Date.now()
   const ms = task.endedAt ? task.endedAt - task.startedAt : now - task.startedAt;
   const elapsed = formatTaskDuration(ms);
   if (task.kind === "shell") return `${elapsed} · shell ${task.id}`;
-  const tokens = formatTokenCount(task.inputTokens + task.outputTokens);
-  return `${elapsed} · ${tokens} tokens · ${formatToolCount(task.actions.length)}`;
+  const byId = new Map(listBackgroundTasks().map((entry) => [entry.id, entry]));
+  byId.set(task.id, task);
+  const progress = aggregateSubtreeProgress(task.id, [...byId.values()]);
+  const tokens = formatTokenCount(progress.tokenCount);
+  return `${elapsed} · ${tokens} tokens · ${formatToolCount(progress.toolUses)}`;
 }
 
 function formatTaskDuration(ms: number): string {

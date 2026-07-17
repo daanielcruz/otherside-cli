@@ -19,6 +19,8 @@ const registry = createRegistry<Skill>({
   aliasOf: (s) => s.aliases,
 });
 
+export type SkillRegistrySnapshot = readonly Skill[];
+
 export function register(skill: Skill): void {
   registry.register(skill);
 }
@@ -29,6 +31,15 @@ export function get(name: string): Skill | undefined {
 
 export function list(): Skill[] {
   return registry.list().sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export function snapshot(): SkillRegistrySnapshot {
+  return registry.list();
+}
+
+export function replaceSnapshot(next: SkillRegistrySnapshot): void {
+  registry.clear();
+  for (const skill of next) registry.register(skill);
 }
 
 export function clear(): void {

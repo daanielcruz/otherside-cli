@@ -10,7 +10,11 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfigSync } from "@/kernel/config/config.ts";
+import {
+  loadConfigSync,
+  normalizeConfig,
+  normalizeWorkflowSizeGuideline,
+} from "@/kernel/config/config.ts";
 import { resolveConfig } from "@/kernel/config/resolver.ts";
 import {
   projectSettingsPath,
@@ -40,6 +44,16 @@ afterEach(() => {
   delete process.env.OTHERSIDE_CONFIG_DIR;
   delete process.env.OTHERSIDE_POLICY_DIR;
   rmSync(TMP, { recursive: true, force: true });
+});
+
+describe("workflow size guideline normalization", () => {
+  test("keeps valid values and defaults absent or invalid values to unrestricted", () => {
+    for (const value of ["unrestricted", "small", "medium", "large"] as const) {
+      expect(normalizeConfig({ workflowSizeGuideline: value }).workflowSizeGuideline).toBe(value);
+    }
+    expect(normalizeConfig({}).workflowSizeGuideline).toBe("unrestricted");
+    expect(normalizeWorkflowSizeGuideline("invalid")).toBe("unrestricted");
+  });
 });
 
 describe("resolveConfig", () => {
@@ -116,5 +130,13 @@ describe("updateSetting", () => {
 
   test("effortLevel rejects an invalid value", async () => {
     await expect(updateSetting("effortLevel", "nope" as never)).rejects.toThrow();
+  });
+
+  test("workflowSizeGuideline persists every value and rejects invalid values", async () => {
+    for (const value of ["unrestricted", "small", "medium", "large"] as const) {
+      await updateSetting("workflowSizeGuideline", value);
+      expect(loadConfigSync().workflowSizeGuideline).toBe(value);
+    }
+    await expect(updateSetting("workflowSizeGuideline", "nope" as never)).rejects.toThrow();
   });
 });

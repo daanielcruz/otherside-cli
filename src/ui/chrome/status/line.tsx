@@ -1,14 +1,18 @@
-import { memo, useEffect, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import type { Color as InkColor } from "@/ink";
 import { Box, Text, useTerminalDimensions } from "@/ink";
 import type { StatuslineConfig } from "@/kernel/config/config.ts";
+import type { OrchestrationMode } from "@/kernel/config/orchestration-mode.ts";
 import type { BrokerState } from "@/store/app-store/broker.ts";
+import { submitOrchestrationNotice } from "@/store/app-store/right-region-notices.ts";
 import {
   buildStatuslineInput,
   fastModeStatuslineSuffix,
+  orchestrationNoticeText,
   renderNativeStatusline,
   runStatuslineCommand,
 } from "@/ui/chrome/status/line-input.ts";
+import { RightStatusRegion } from "@/ui/chrome/status/right-region.tsx";
 import { Color } from "@/ui/theme/theme.ts";
 
 export interface StatuslineProps {
@@ -16,6 +20,7 @@ export interface StatuslineProps {
   sessionId: string;
   version: string;
   config?: StatuslineConfig | undefined;
+  orchestrationMode?: OrchestrationMode | undefined;
   cwd: string;
   width: number;
   refreshKey: string;
@@ -25,44 +30,19 @@ export interface StatuslineProps {
   cacheReadInputTokens?: number | undefined;
   cost?: number | undefined;
   totalTokens?: number | undefined;
-  tokensWarning?: { message: string; severity: "warning" | "error" } | undefined;
-  goalLabel?: string | undefined;
-  autoCompactRemainingPct?: number | undefined;
 }
 
-interface StatusSegment {
-  key: string;
-  text: string;
-  color: InkColor;
-  dim?: boolean;
-}
-
-interface StatusChainProps {
-  segments: StatusSegment[];
-}
-
-function StatusChain({ segments }: StatusChainProps): React.JSX.Element {
-  return (
-    <Text>
-      {segments.map((segment, index) => (
-        <Text key={segment.key}>
-          {index > 0 && <Text color={Color.muted}> · </Text>}
-          <Text color={segment.color} dim={segment.dim === true}>
-            {segment.text}
-          </Text>
-        </Text>
-      ))}
-    </Text>
-  );
-}
-
-function rightStatusText(
-  tokensWarning: StatuslineProps["tokensWarning"],
-  totalTokens: number | undefined,
-): string | null {
-  if (tokensWarning) return tokensWarning.message;
-  if (totalTokens !== undefined && totalTokens > 0) return `${totalTokens} tokens`;
-  return null;
+// Publishes multiprovider start/switch notices into the shared right-region queue.
+function useOrchestrationNoticePublisher(mode: OrchestrationMode): void {
+  const previousMode = useRef<OrchestrationMode | null>(null);
+  useEffect(() => {
+    const kind = previousMode.current === null ? "startup" : "switch";
+    if (previousMode.current === mode) return;
+    previousMode.current = mode;
+    const text = orchestrationNoticeText(mode, kind);
+    if (text === null) return;
+    submitOrchestrationNotice(text);
+  }, [mode]);
 }
 
 function StatuslineImpl({
@@ -70,6 +50,7 @@ function StatuslineImpl({
   sessionId,
   version,
   config,
+  orchestrationMode,
   cwd,
   width,
   refreshKey,
@@ -78,10 +59,6 @@ function StatuslineImpl({
   cacheCreationInputTokens,
   cacheReadInputTokens,
   cost,
-  totalTokens,
-  tokensWarning,
-  goalLabel,
-  autoCompactRemainingPct,
 }: StatuslineProps): React.JSX.Element {
   const [commandText, setCommandText] = useState<string | null>(null);
   const input = useMemo(
@@ -109,10 +86,13 @@ function StatuslineImpl({
       version,
     ],
   );
+  useOrchestrationNoticePublisher(orchestrationMode ?? "disabled");
   const nativeText = renderNativeStatusline(input);
   const paddingX = config?.padding ?? 2;
   const command = config?.type === "command" ? config.command : null;
   const fastToken = fastModeStatuslineSuffix(state);
+  // Rough budget: full width minus padding, left content reserve, and gap.
+  const rightMaxWidth = Math.max(12, Math.floor(width * 0.45));
 
   useEffect(() => {
     void refreshKey;
@@ -129,23 +109,6 @@ function StatuslineImpl({
     };
   }, [command, input, refreshKey]);
 
-  const warningColor = tokensWarning?.severity === "error" ? Color.error : Color.warning;
-  const rightText = rightStatusText(tokensWarning, totalTokens);
-  const rightColor = tokensWarning ? warningColor : Color.muted;
-  const primaryRow: StatusSegment[] = [];
-  if (autoCompactRemainingPct !== undefined) {
-    primaryRow.push({
-      key: "compact",
-      text: `${autoCompactRemainingPct}% until auto-compact`,
-      color: Color.warning,
-    });
-  }
-  if (rightText !== null) {
-    primaryRow.push({ key: "tokens", text: rightText, color: rightColor });
-  }
-  if (goalLabel) {
-    primaryRow.push({ key: "goal", text: goalLabel, color: Color.primaryGlow });
-  }
   return (
     <Box paddingX={paddingX} width={width} justifyContent="space-between">
       <Box flexShrink={1}>
@@ -157,11 +120,9 @@ function StatuslineImpl({
           </Text>
         )}
       </Box>
-      {primaryRow.length > 0 && (
-        <Box marginLeft={2} flexShrink={0}>
-          <StatusChain segments={primaryRow} />
-        </Box>
-      )}
+      <Box marginLeft={2} flexShrink={0}>
+        <RightStatusRegion maxWidth={rightMaxWidth} />
+      </Box>
     </Box>
   );
 }
@@ -208,16 +169,12 @@ function HighlightedStatusline({ text, fastToken }: HighlightedStatuslineProps):
   return <Text wrap="truncate">{parts.length > 0 ? parts : text}</Text>;
 }
 
-const sameWarning = (
-  a: StatuslineProps["tokensWarning"],
-  b: StatuslineProps["tokensWarning"],
-): boolean => a?.message === b?.message && a?.severity === b?.severity;
-
 export const statuslinePropsEqual = (prev: StatuslineProps, next: StatuslineProps): boolean =>
   prev.state === next.state &&
   prev.sessionId === next.sessionId &&
   prev.version === next.version &&
   prev.config === next.config &&
+  prev.orchestrationMode === next.orchestrationMode &&
   prev.cwd === next.cwd &&
   prev.width === next.width &&
   prev.refreshKey === next.refreshKey &&
@@ -226,10 +183,7 @@ export const statuslinePropsEqual = (prev: StatuslineProps, next: StatuslineProp
   prev.cacheCreationInputTokens === next.cacheCreationInputTokens &&
   prev.cacheReadInputTokens === next.cacheReadInputTokens &&
   prev.cost === next.cost &&
-  prev.totalTokens === next.totalTokens &&
-  prev.goalLabel === next.goalLabel &&
-  prev.autoCompactRemainingPct === next.autoCompactRemainingPct &&
-  sameWarning(prev.tokensWarning, next.tokensWarning);
+  prev.totalTokens === next.totalTokens;
 
 const StatuslineInner = memo(StatuslineImpl, statuslinePropsEqual);
 

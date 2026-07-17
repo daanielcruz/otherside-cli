@@ -1,4 +1,9 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import {
+  type PromptCacheDiagnosticRecord,
+  resetPromptCacheDiagnosticsForTests,
+  setPromptCacheDiagnosticSinkForTests,
+} from "@/devtools/prompt-cache.ts";
 import { isTransientNetworkError } from "@/engine/providers/_shared/retry.ts";
 import {
   clearProviderCooldowns,
@@ -10,10 +15,30 @@ import { StreamIdleTimeoutError } from "@/kernel/std/stream/idle-timeout.ts";
 import { ProviderHttpError } from "@/kernel/std/types/error-meta.ts";
 import type { ProviderEvent } from "@/kernel/std/types/events.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
-import { isContentEvent, type RetryDecision, streamWithRetry } from "../retry.ts";
+import {
+  DEFAULT_MAX_ATTEMPTS,
+  DEFAULT_RETRY_BUDGET_MS,
+  isContentEvent,
+  type RetryDecision,
+  retryBudgetExhausted,
+  streamWithRetry,
+} from "../retry.ts";
+
+const originalPromptCacheDiagnostics = process.env.OTHERSIDE_PROMPT_CACHE_DIAG;
+
+beforeEach(() => {
+  delete process.env.OTHERSIDE_PROMPT_CACHE_DIAG;
+  resetPromptCacheDiagnosticsForTests();
+});
 
 afterEach(() => {
   clearProviderCooldowns();
+  resetPromptCacheDiagnosticsForTests();
+  if (originalPromptCacheDiagnostics === undefined) {
+    delete process.env.OTHERSIDE_PROMPT_CACHE_DIAG;
+  } else {
+    process.env.OTHERSIDE_PROMPT_CACHE_DIAG = originalPromptCacheDiagnostics;
+  }
 });
 
 const ctx = { provider: "test", model: "test-model" } as unknown as RequestContext;
@@ -154,6 +179,70 @@ describe("streamWithRetry resume policy", () => {
     expect(events.filter((e) => e.kind === "stream_reset").length).toBe(3);
     expect(events.filter((e) => e.kind === "retry_status").length).toBe(2);
     expect(events.some((e) => e.kind === "error")).toBe(false);
+  });
+
+  it("logs failed and resumed attempts without promoting either to the cache baseline", async () => {
+    process.env.OTHERSIDE_PROMPT_CACHE_DIAG = "1";
+    const diagnostics: PromptCacheDiagnosticRecord[] = [];
+    setPromptCacheDiagnosticSinkForTests((_sessionId, record) => diagnostics.push(record));
+    const diagnosticContext = {
+      provider: "anthropic",
+      model: "fixture-model",
+      effort: "high",
+      permissionMode: "default",
+      sessionId: "fixture-retry-session",
+      cwd: "/workspace/project",
+    } as RequestContext;
+    let calls = 0;
+    const provider = {
+      stream: () => emptyBytes(),
+      translateResponse: async function* (): AsyncIterable<ProviderEvent> {
+        calls += 1;
+        yield { kind: "message_start", id: `msg-${calls}`, requestId: `req-${calls}` };
+        yield {
+          kind: "usage",
+          inputTokens: 10,
+          outputTokens: 0,
+          cacheCreationInputTokens: 26_000,
+          cacheReadInputTokens: 0,
+        };
+        if (calls === 1) {
+          yield { kind: "text_delta", text: "partial" };
+          throw new Error("fixture mid-stream failure");
+        }
+        yield { kind: "message_stop", stop_reason: "stop" };
+      },
+      recoverableError: () => ({ kind: "retry" as const, delayMs: 0 }),
+      getResumeBody: () => ({ resumed: true }),
+    };
+
+    await collect(
+      streamWithRetry(
+        diagnosticContext,
+        provider,
+        {
+          model: "fixture-model",
+          messages: [{ role: "user", content: "fixture request" }],
+        },
+        { baseDelayMs: 0 },
+      ),
+    );
+
+    expect(diagnostics).toHaveLength(2);
+    expect(diagnostics[0]).toMatchObject({
+      attempt: 1,
+      outcome: "transport_error",
+      classification: "excluded",
+      reasonCodes: ["transport_error"],
+      resumed: false,
+    });
+    expect(diagnostics[1]).toMatchObject({
+      attempt: 2,
+      outcome: "completed",
+      classification: "excluded",
+      reasonCodes: ["resumed_stream"],
+      resumed: true,
+    });
   });
 });
 
@@ -398,5 +487,45 @@ describe("streamWithRetry fresh-connection marking", () => {
     };
     await collect(streamWithRetry(localCtx, provider, () => ({}), { baseDelayMs: 0 }));
     expect(localCtx.freshConnection).toBeUndefined();
+  });
+});
+
+describe("retry budget", () => {
+  it("shares ten attempts and a three-minute elapsed budget", () => {
+    expect(DEFAULT_MAX_ATTEMPTS).toBe(10);
+    expect(DEFAULT_RETRY_BUDGET_MS).toBe(180_000);
+  });
+
+  it("stops at the attempt limit", () => {
+    expect(
+      retryBudgetExhausted({
+        attempts: 10,
+        maxAttempts: 10,
+        elapsedMs: 10_000,
+        nextDelayMs: 0,
+        maxElapsedMs: 180_000,
+      }),
+    ).toBe(true);
+  });
+
+  it("stops before a delay would cross the elapsed budget", () => {
+    expect(
+      retryBudgetExhausted({
+        attempts: 4,
+        maxAttempts: 10,
+        elapsedMs: 175_000,
+        nextDelayMs: 6_000,
+        maxElapsedMs: 180_000,
+      }),
+    ).toBe(true);
+    expect(
+      retryBudgetExhausted({
+        attempts: 4,
+        maxAttempts: 10,
+        elapsedMs: 175_000,
+        nextDelayMs: 5_000,
+        maxElapsedMs: 180_000,
+      }),
+    ).toBe(false);
   });
 });

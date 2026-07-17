@@ -49,6 +49,7 @@ export const deepseekStream: StreamFn = async function* deepseekStreamFn(
     const text = await resp.text().catch(() => "");
     const retryAfterHeader = resp.headers.get("retry-after");
     const quota = detectQuotaExhaustion({
+      provider: "deepseek",
       status: resp.status,
       headers: resp.headers,
       body: text,

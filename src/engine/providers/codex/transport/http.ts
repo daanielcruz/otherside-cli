@@ -162,6 +162,7 @@ export async function* streamHttp(ctx: RequestContext, body: unknown): AsyncIter
       const text = await readBodySnippet(res);
       const retryAfterHeader = res.headers.get("retry-after");
       const quota = detectQuotaExhaustion({
+        provider: "codex",
         status: res.status,
         body: text,
         headers: res.headers,
@@ -172,6 +173,7 @@ export async function* streamHttp(ctx: RequestContext, body: unknown): AsyncIter
         status: res.status,
         body: text,
         retryAfterHeader,
+        headers: res.headers,
         quotaExhausted: quota.quotaExhausted,
         quotaResetEpochMs: quota.resetEpochMs,
       });

@@ -67,11 +67,11 @@ export function accountFingerprint(provider: ProviderId): string {
     case "anthropic": {
       // accountUuid only: this value is also emitted verbatim as the wire
       // metadata account_uuid, so no other field may substitute for it.
-      const tokens = bundle.anthropic ?? bundle["anthropic-oauth"];
+      const tokens = bundle.anthropic;
       return tokens?.accountUuid ?? "";
     }
     case "codex": {
-      const tokens = bundle.codex ?? bundle["codex-oauth"];
+      const tokens = bundle.codex;
       return tokens?.accountId ?? "";
     }
     case "xai": {
@@ -87,11 +87,8 @@ export function accountFingerprint(provider: ProviderId): string {
       return keyDigest(
         firstEnv("OTHERSIDE_DEEPSEEK_API_KEY", "DEEPSEEK_API_KEY") ?? bundle.deepseek?.apiKey,
       );
-    case "kimi-code":
-      return keyDigest(
-        firstEnv("OTHERSIDE_KIMI_API_KEY", "KIMI_API_KEY") ??
-          (bundle["kimi-code"] ?? bundle.kimi)?.apiKey,
-      );
+    case "kimi":
+      return keyDigest(firstEnv("OTHERSIDE_KIMI_API_KEY", "KIMI_API_KEY") ?? bundle.kimi?.apiKey);
     case "minimax":
       return keyDigest(
         firstEnv("OTHERSIDE_MINIMAX_API_KEY", "MINIMAX_API_KEY") ?? bundle.minimax?.apiKey,
@@ -100,9 +97,9 @@ export function accountFingerprint(provider: ProviderId): string {
       return (
         bundle.glm?.user?.user_id ?? bundle.glm?.user?.email ?? keyDigest(bundle.glm?.zcodeJwtToken)
       );
-    case "openai-custom":
+    case "openai":
       return keyDigest(
-        firstEnv("OTHERSIDE_OPENAI_API_KEY", "OPENAI_API_KEY") ?? bundle["openai-custom"]?.apiKey,
+        firstEnv("OTHERSIDE_OPENAI_API_KEY", "OPENAI_API_KEY") ?? bundle.openai?.apiKey,
       );
     default:
       return "";

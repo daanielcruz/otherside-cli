@@ -13,4 +13,5 @@ export function registerAllBuiltins(): void {
   tools.registerAlias("BashOutput", "TaskOutput");
   tools.registerAlias("KillShell", "TaskStop");
   tools.registerAlias("KillBash", "TaskStop");
+  tools.registerAlias("ReadMcpResourceDir", "ReadMcpResourceDirTool");
 }

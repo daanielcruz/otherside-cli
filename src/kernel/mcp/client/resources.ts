@@ -1,6 +1,8 @@
 import { loadEnabledMcpConfig } from "@/kernel/mcp/config.ts";
 import {
   hasDirectoryReadCapability,
+  hasResourcesCapability,
+  isMcpSkillsEnabled,
   sanitizeMcpText,
   sanitizeMcpUri,
 } from "@/kernel/mcp/protocol/parse.ts";
@@ -63,15 +65,31 @@ export async function readMcpResource(options: {
 
 export type ReadDirectoryResult =
   | { kind: "ok"; resources: McpDirectoryEntry[] }
-  | { kind: "unknown-server"; available: string[] }
-  | { kind: "not-directory"; uri: string }
-  | { kind: "no-directory-read"; server: string }
-  | { kind: "error"; message: string };
+  | { kind: "controlled-error"; message: string };
+
+/** Claude's MCP wire-name normalization: exact names win, then normalized names. */
+export function normalizeMcpServerName(name: string): string {
+  let normalized = name.replace(/[^a-zA-Z0-9_-]/g, "_");
+  if (name.startsWith("claude.ai ")) {
+    normalized = normalized.replace(/_+/g, "_").replace(/^_|_$/g, "");
+  }
+  return normalized;
+}
+
+function resolveConfiguredServerName(
+  requested: string,
+  available: readonly string[],
+): string | undefined {
+  const exact = available.find((name) => name === requested);
+  if (exact !== undefined) return exact;
+  const normalized = normalizeMcpServerName(requested);
+  return available.find((name) => normalizeMcpServerName(name) === normalized);
+}
 
 /**
  * List direct children of a directory resource via `resources/directory/read`.
  * Paginates up to MAX_DIRECTORY_PAGES. InvalidParams after page 1 returns
- * accumulated entries; InvalidParams on page 1 => not-directory.
+ * accumulated entries; InvalidParams on page 1 is a controlled tool result.
  */
 export async function readMcpDirectory(options: {
   cwd: string;
@@ -79,53 +97,67 @@ export async function readMcpDirectory(options: {
   uri: string;
 }): Promise<ReadDirectoryResult> {
   const cfg = await loadEnabledMcpConfig(options.cwd);
-  const serverCfg = cfg.mcpServers[options.server];
-  if (!serverCfg) {
-    return { kind: "unknown-server", available: Object.keys(cfg.mcpServers) };
+  const available = Object.keys(cfg.mcpServers);
+  const serverName = resolveConfiguredServerName(options.server, available);
+  if (serverName === undefined) {
+    throw new Error(
+      `Server "${options.server}" not found. Available servers: ${available.join(", ")}`,
+    );
+  }
+  const serverCfg = cfg.mcpServers[serverName];
+  if (serverCfg === undefined) {
+    throw new Error(`Server "${options.server}" not found`);
   }
 
-  try {
-    const client = await clientFor(options.server, serverCfg);
-    if (!hasDirectoryReadCapability(client.serverCapabilities())) {
-      return { kind: "no-directory-read", server: options.server };
+  const client = await clientFor(serverName, serverCfg);
+  const capabilities = client.serverCapabilities();
+  if (!hasResourcesCapability(capabilities)) {
+    throw new Error(`Server "${serverName}" does not support resources`);
+  }
+  if (!isMcpSkillsEnabled()) {
+    return {
+      kind: "controlled-error",
+      message: "Directory listing is not enabled in this build.",
+    };
+  }
+  if (!hasDirectoryReadCapability(capabilities)) {
+    return {
+      kind: "controlled-error",
+      message: `Server "${serverName}" does not support directory listing.`,
+    };
+  }
+
+  const entries: McpDirectoryEntry[] = [];
+  let cursor: string | undefined;
+  let page = 0;
+
+  do {
+    let pageResult: Awaited<ReturnType<typeof client.listDirectory>>;
+    try {
+      pageResult = await client.listDirectory(options.uri, cursor ? { cursor } : undefined);
+    } catch (error) {
+      if (!isInvalidParams(error)) throw error;
+      if (page === 0) {
+        return {
+          kind: "controlled-error",
+          message: `Not a directory resource: ${options.uri}. If it is a file resource, use ReadMcpResourceTool instead.`,
+        };
+      }
+      break;
     }
 
-    const entries: McpDirectoryEntry[] = [];
-    let cursor: string | undefined;
-    let page = 0;
+    for (const entry of pageResult.resources) {
+      entries.push({
+        uri: sanitizeMcpUri(entry.uri),
+        name: sanitizeMcpText(entry.name),
+        ...(entry.mimeType !== undefined ? { mimeType: sanitizeMcpText(entry.mimeType) } : {}),
+      });
+    }
+    cursor = pageResult.nextCursor;
+    page++;
+  } while (cursor && page < MAX_DIRECTORY_PAGES);
 
-    do {
-      let pageResult: Awaited<ReturnType<typeof client.listDirectory>>;
-      try {
-        pageResult = await client.listDirectory(options.uri, cursor ? { cursor } : undefined);
-      } catch (err) {
-        if (isInvalidParams(err)) {
-          if (page === 0) return { kind: "not-directory", uri: options.uri };
-          // Some servers reject cursor pagination after page 1 — keep prior pages.
-          break;
-        }
-        throw err;
-      }
-
-      for (const entry of pageResult.resources) {
-        entries.push({
-          uri: sanitizeMcpUri(entry.uri),
-          name: sanitizeMcpText(entry.name),
-          ...(entry.description !== undefined
-            ? { description: sanitizeMcpText(entry.description) }
-            : {}),
-          ...(entry.mimeType !== undefined ? { mimeType: sanitizeMcpText(entry.mimeType) } : {}),
-        });
-      }
-      cursor = pageResult.nextCursor;
-      page++;
-    } while (cursor && page < MAX_DIRECTORY_PAGES);
-
-    return { kind: "ok", resources: entries };
-  } catch (e) {
-    if (isInvalidParams(e)) return { kind: "not-directory", uri: options.uri };
-    return { kind: "error", message: e instanceof Error ? e.message : String(e) };
-  }
+  return { kind: "ok", resources: entries };
 }
 
 export function boundMcpResourceOutput(payload: unknown): string {

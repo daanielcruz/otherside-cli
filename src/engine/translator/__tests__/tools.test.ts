@@ -1,10 +1,15 @@
 import { beforeAll, describe, expect, it } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { resolveImageGeneratorProvider } from "@/engine/providers/image-generation.ts";
 import * as providers from "@/engine/providers/registry.ts";
 import {
   activeDeferredToolNames,
   announceDeferredTool,
   clearDeferredAnnouncements,
   forceAnnounceDeferredTool,
+  pruneAnnouncedMcpTools,
 } from "@/engine/tools/deferred.ts";
 import { registerAllBuiltins } from "@/engine/tools/register-builtins.ts";
 import * as toolRegistry from "@/engine/tools/registry.ts";
@@ -13,10 +18,25 @@ import { providerToolDeclarations } from "@/engine/translator/tools.ts";
 import { makeQueue } from "@/harness/composer/queue.ts";
 import { DEFAULT_CONFIG, type UserConfig } from "@/kernel/config/config.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
+import { hasCredentialSync } from "@/kernel/storage/credentials.ts";
 
 beforeAll(() => {
   registerAllBuiltins();
 });
+
+function withFakeCredentials<T>(credentials: Record<string, unknown>, fn: () => T): T {
+  const previousConfigDir = process.env.OTHERSIDE_CONFIG_DIR;
+  const configDir = mkdtempSync(join(tmpdir(), "otherside-tools-roster-"));
+  writeFileSync(join(configDir, "credentials.json"), JSON.stringify(credentials));
+  process.env.OTHERSIDE_CONFIG_DIR = configDir;
+  try {
+    return fn();
+  } finally {
+    if (previousConfigDir === undefined) delete process.env.OTHERSIDE_CONFIG_DIR;
+    else process.env.OTHERSIDE_CONFIG_DIR = previousConfigDir;
+    rmSync(configDir, { recursive: true, force: true });
+  }
+}
 
 function assembledAgentDescription(
   ctxOverrides: Partial<RequestContext>,
@@ -47,6 +67,52 @@ function assembledAgentDescription(
 }
 
 describe("provider tool declarations", () => {
+  it("declares GenerateImage for authenticated selected generators", () => {
+    const config = { ...DEFAULT_CONFIG, imageGenProvider: "codex" as const };
+
+    withFakeCredentials(
+      {
+        xai: {
+          accessToken: "fake-xai-access",
+          refreshToken: "fake-xai-refresh",
+          expiresAt: 1_800_000_000_000,
+        },
+        codex: {
+          accessToken: "fake-codex-access",
+          refreshToken: "fake-codex-refresh",
+          expiresAt: 1_800_000_000_000,
+        },
+        antigravity: {
+          accessToken: "fake-antigravity-access",
+          refreshToken: "fake-antigravity-refresh",
+          expiresAt: 1_800_000_000_000,
+        },
+      },
+      () => {
+        expect(hasCredentialSync("xai")).toBe(true);
+        for (const providerId of ["xai", "codex", "antigravity"] as const) {
+          const tools = providerToolDeclarations(providers.get(providerId), config);
+          expect(tools.map((tool) => tool.name)).toContain("GenerateImage");
+          expect(resolveImageGeneratorProvider(config.imageGenProvider, providerId)).toBe("codex");
+        }
+        expect(
+          providerToolDeclarations(providers.get("anthropic"), config).map((tool) => tool.name),
+        ).toContain("GenerateImage");
+      },
+    );
+
+    withFakeCredentials({}, () => {
+      expect(hasCredentialSync("xai")).toBe(false);
+      const tools = providerToolDeclarations(providers.get("xai"), config);
+      expect(tools.map((tool) => tool.name)).not.toContain("GenerateImage");
+    });
+  });
+
+  it("routes an explicit generator across native turns", () => {
+    expect(resolveImageGeneratorProvider("xai", "codex")).toBe("xai");
+    expect(resolveImageGeneratorProvider("codex", "antigravity")).toBe("codex");
+  });
+
   it("adds the Anthropic deferred-tool placeholder in reference order", () => {
     const tools = providerToolDeclarations(providers.get("anthropic"));
 
@@ -72,6 +138,75 @@ describe("provider tool declarations", () => {
     });
     const agent = tools.find((tool) => tool.name === "Agent");
     expect(agent?.input_schema.properties).not.toHaveProperty("mode");
+    const disabledProperties = agent?.input_schema.properties as
+      | Record<string, unknown>
+      | undefined;
+    const disabledModel = disabledProperties?.model as { description?: string } | undefined;
+    expect(disabledModel?.description).toContain("current provider");
+    expect(disabledModel?.description).toContain("Takes precedence");
+    expect(disabledModel?.description).toContain("fork");
+    expect(disabledModel?.description).not.toContain("ANOTHER provider");
+    expect(disabledModel?.description).not.toContain("provider together with model");
+
+    const defaultTools = providerToolDeclarations(providers.get("anthropic"), {
+      ...DEFAULT_CONFIG,
+      orchestrationMode: "default",
+    });
+    const defaultProperties = defaultTools.find((tool) => tool.name === "Agent")?.input_schema
+      .properties as Record<string, unknown> | undefined;
+    const defaultModel = defaultProperties?.model as { description?: string } | undefined;
+    expect(defaultModel?.description).toContain("ANOTHER provider");
+  });
+
+  it("adds workflow-size guidance only to Workflow declarations", () => {
+    const unrestricted = providerToolDeclarations(providers.get("anthropic"), {
+      ...DEFAULT_CONFIG,
+      workflowSizeGuideline: "unrestricted",
+    });
+    const small = providerToolDeclarations(providers.get("anthropic"), {
+      ...DEFAULT_CONFIG,
+      workflowSizeGuideline: "small",
+    });
+    const description = (tools: typeof small, name: string) =>
+      tools.find((tool) => tool.name === name)?.description;
+
+    expect(description(small, "Workflow")).toContain("small workflow size guideline");
+    expect(description(small, "Workflow")).toContain("warn the user before launching");
+    expect(description(unrestricted, "Workflow")).not.toContain("workflow size guideline");
+    expect(description(small, "Agent")).toBe(description(unrestricted, "Agent"));
+    expect(description(small, "Agent")).not.toContain("workflow size guideline");
+  });
+
+  it("marks ToolSearch-loaded worktree schemas as deferred on the Anthropic wire", () => {
+    clearDeferredAnnouncements();
+    try {
+      announceDeferredTool("EnterWorktree");
+      announceDeferredTool("ExitWorktree");
+      const tools = providerToolDeclarations(providers.get("anthropic"));
+      const enter = tools.find((tool) => tool.name === "EnterWorktree");
+      const exit = tools.find((tool) => tool.name === "ExitWorktree");
+      expect(enter?.defer_loading).toBe(true);
+      expect(exit?.defer_loading).toBe(true);
+      expect(enter?.input_schema).toHaveProperty("properties.name");
+      expect(exit?.input_schema).toHaveProperty("required", ["action"]);
+    } finally {
+      clearDeferredAnnouncements();
+    }
+  });
+
+  it("eagerly declares only EnterWorktree in a background session", () => {
+    const previous = process.env.CLAUDE_CODE_SESSION_KIND;
+    clearDeferredAnnouncements();
+    try {
+      process.env.CLAUDE_CODE_SESSION_KIND = "bg";
+      const tools = providerToolDeclarations(providers.get("anthropic"));
+      expect(tools.find((tool) => tool.name === "EnterWorktree")?.defer_loading).toBeUndefined();
+      expect(tools.map((tool) => tool.name)).not.toContain("ExitWorktree");
+    } finally {
+      if (previous === undefined) delete process.env.CLAUDE_CODE_SESSION_KIND;
+      else process.env.CLAUDE_CODE_SESSION_KIND = previous;
+      clearDeferredAnnouncements();
+    }
   });
 
   it("keeps the same roster without the placeholder for non-Anthropic declarations", () => {
@@ -185,8 +320,7 @@ describe("provider tool declarations", () => {
   it("applies the same main-vs-subagent behavior to tier-aware descriptions", () => {
     const config = {
       ...DEFAULT_CONFIG,
-      orchestratorMode: "soft" as const,
-      tierSelectorEnabled: true,
+      orchestrationMode: "feudalism" as const,
     };
     const mainDescription = assembledAgentDescription({}, config);
     const subagentDescription = assembledAgentDescription(
@@ -204,6 +338,19 @@ describe("provider tool declarations", () => {
     expect(subagentDescription).not.toContain("Writing a fork prompt");
     expect(subagentDescription).toContain("## Background execution");
     expect(subagentDescription).toContain("## Writing the prompt");
+  });
+
+  it("drops announced MCP tools removed during a runtime refresh", () => {
+    const retained = "mcp__playwright__navigate";
+    const removed = "mcp__playwright__screenshot";
+    clearDeferredAnnouncements();
+    forceAnnounceDeferredTool(retained);
+    forceAnnounceDeferredTool(removed, "fork-1");
+
+    pruneAnnouncedMcpTools(new Set([retained]));
+
+    expect(activeDeferredToolNames()).toEqual([retained]);
+    expect(activeDeferredToolNames("fork-1")).toEqual([]);
   });
 
   it("omits blanket-denied active MCP schemas while retaining ask-only schemas", () => {
@@ -224,15 +371,27 @@ describe("provider tool declarations", () => {
     try {
       const askAndDeny = providerToolDeclarations(providers.get("anthropic"), undefined, {
         permissionRules: [
-          { source: "userSettings", ruleBehavior: "ask", ruleValue: { toolName: name } },
-          { source: "userSettings", ruleBehavior: "deny", ruleValue: { toolName: name } },
+          {
+            source: "userSettings",
+            ruleBehavior: "ask",
+            ruleValue: { toolName: name },
+          },
+          {
+            source: "userSettings",
+            ruleBehavior: "deny",
+            ruleValue: { toolName: name },
+          },
         ],
       });
       expect(askAndDeny.map((tool) => tool.name)).not.toContain(name);
 
       const askOnly = providerToolDeclarations(providers.get("anthropic"), undefined, {
         permissionRules: [
-          { source: "userSettings", ruleBehavior: "ask", ruleValue: { toolName: name } },
+          {
+            source: "userSettings",
+            ruleBehavior: "ask",
+            ruleValue: { toolName: name },
+          },
         ],
       });
       expect(askOnly.map((tool) => tool.name)).toContain(name);

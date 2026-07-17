@@ -465,7 +465,7 @@ describe("permissionRuleValueToString/FromString — trailing backslash content 
     expect(permissionRuleValueFromString(serialized)).toEqual(original);
   });
 
-  test("content mixing backslashes and parens round-trips (upstream escapeRuleContent example)", () => {
+  test("content mixing backslashes and parens round-trips", () => {
     const original = { toolName: "Bash", ruleContent: 'python -c "print(1)"' };
     const serialized = permissionRuleValueToString(original);
     expect(serialized).toBe('Bash(python -c "print\\(1\\)")');

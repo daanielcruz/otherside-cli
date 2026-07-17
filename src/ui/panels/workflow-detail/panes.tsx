@@ -5,6 +5,7 @@ import { computeListWindow, formatScrollWindowLabel } from "@/kernel/std/list-wi
 import { clamp } from "@/kernel/std/math.ts";
 import { pluralize } from "@/kernel/std/text/pluralize.ts";
 import { stringWidth } from "@/kernel/std/text/string-width.ts";
+import { panelDividerText } from "@/ui/chrome/panel.tsx";
 import { Color, Glyph } from "@/ui/theme/theme.ts";
 import {
   agentDisplayStatus,
@@ -229,7 +230,7 @@ export function AgentDetailSinglePane(props: {
   viewport: number;
 }): React.JSX.Element {
   const { agentLabel, position, detailLines, cardScroll, contentWidth, viewport } = props;
-  const rule = Glyph.boxHLine.repeat(contentWidth + RULE_INSET);
+  const rule = panelDividerText(contentWidth + RULE_INSET);
   const maxScroll = Math.max(0, detailLines.length - viewport);
   const scrollTop = clamp(cardScroll, 0, maxScroll);
   const scrollBottom = Math.min(detailLines.length, scrollTop + viewport);
@@ -269,7 +270,7 @@ export function AgentDetailSinglePane(props: {
         <Text color={Color.text}>
           {" "}
           {Glyph.boxBottomLeft}
-          {Glyph.boxHLine.repeat(dashCount)}
+          {panelDividerText(dashCount)}
         </Text>
         <Text dim>{label}</Text>
         <Text color={Color.text}>{Glyph.boxBottomRight}</Text>
@@ -310,7 +311,7 @@ export function AgentListSinglePane(props: {
 }): React.JSX.Element {
   const { phase, selectedAgent, level, contentWidth, viewport, tight, workflowActive } = props;
   const agents = phase.agents;
-  const rule = Glyph.boxHLine.repeat(contentWidth + RULE_INSET);
+  const rule = panelDividerText(contentWidth + RULE_INSET);
   const headerLines = tight ? HEADER_LINES_TIGHT : HEADER_LINES_WIDE;
   const agentRows = Math.max(1, viewport - headerLines - AGENT_LIST_FOOTER_ROWS);
   const agentWin = computeListWindow({
@@ -419,7 +420,7 @@ export function AgentListSinglePane(props: {
         <Text color={Color.text}>
           {" "}
           {Glyph.boxBottomLeft}
-          {Glyph.boxHLine.repeat(dashCount)}
+          {panelDividerText(dashCount)}
         </Text>
         <Text dim>{label}</Text>
         <Text color={Color.text}>{Glyph.boxBottomRight}</Text>

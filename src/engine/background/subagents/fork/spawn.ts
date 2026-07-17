@@ -6,7 +6,11 @@ import { buildForkedMessages } from "./builder.ts";
 import { mcpDeclarationsForDef } from "./declarations.ts";
 import { withLiveBrokerEffort } from "./live-effort.ts";
 import { runForkLoopExternal } from "./loop.ts";
-import { computeAllowedAgentTypes, resolveAllowSetForFork } from "./profile.ts";
+import {
+  computeAllowedAgentTypes,
+  resolveAllowSetForFork,
+  resolveDefaultAllowSetForFork,
+} from "./profile.ts";
 import {
   quotaRerouteForInvocation,
   resolveSubagentRoutingForDispatch,
@@ -93,12 +97,6 @@ export async function dispatchSubagent(
     const subCtx: RequestContext = {
       ...nextCtx,
       suppressThinkingSummary: true,
-      ...(invocation.cwd !== undefined
-        ? {
-            cwd: invocation.cwd,
-            originalCwd: nextCtx.originalCwd ?? nextCtx.cwd,
-          }
-        : {}),
     };
     const allowSet = resolveAllowSetForFork(def, "subagent", subCtx);
     const extraDeclarations = mcpDeclarationsForDef(def, allowSet);
@@ -167,7 +165,7 @@ export async function dispatchSkillFork(args: SkillForkInvocation): Promise<Suba
       ctx: { ...args.ctx, suppressThinkingSummary: true },
       name: args.name,
       body: args.body,
-      allowSet: null,
+      allowSet: resolveDefaultAllowSetForFork("subagent", args.ctx),
       prompt: args.prompt,
       sink: args.ctx.eventSink,
       parentToolCallId: args.parentToolCallId,
@@ -213,12 +211,6 @@ export function buildForkSpec(
     ctx: {
       ...forkCtx,
       suppressThinkingSummary: true,
-      ...(invocation.cwd !== undefined
-        ? {
-            cwd: invocation.cwd,
-            originalCwd: forkCtx.originalCwd ?? forkCtx.cwd,
-          }
-        : {}),
     },
     name: forkName,
     body: "",
@@ -234,7 +226,7 @@ export function buildForkSpec(
     // Forks always keep a parent turn that can answer a prompt (see
     // fork/types.ts's `shouldAvoidPermissionPrompts` doc), so backgrounding a
     // fork only detaches its UI — it must still bubble asks rather than
-    // auto-deny at permission-resolution.ts, matching upstream's `bubble`
+    // auto-deny at permission-resolution.ts, using the `bubble`
     // FORK_AGENT permission mode.
     ...(invocation.permissionMode !== undefined
       ? { permissionMode: invocation.permissionMode }

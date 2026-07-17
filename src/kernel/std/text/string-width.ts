@@ -16,10 +16,24 @@ const emojiRegex = /^\p{RGI_Emoji}$/v;
 const keycapRegex = /^[\d#*]\u20e3$/;
 const pictographicRegex = /\p{Extended_Pictographic}/gu;
 
+// The native width is the same measurement the paint layer uses for terminal
+// cells, so buffer math (wrap points, cursor columns) stays in lockstep with
+// the painted rows — and it is orders of magnitude faster than the JS walk on
+// non-ASCII text (a hot path while typing). Resolved once at module scope; the
+// JS walk below remains the fallback and the only implementation of the
+// ambiguous-wide option, which the native call does not honor. The native
+// scanner does not know the 8-bit CSI introducer, so those strings take the
+// JS path where stripAnsi handles them.
+const nativeWidth =
+  typeof Bun !== "undefined" && typeof Bun.stringWidth === "function" ? Bun.stringWidth : null;
+
 export function stringWidth(input: string, options: StringWidthOptions = {}): number {
   if (typeof input !== "string" || input.length === 0) return 0;
 
   const { ambiguousIsNarrow = true, countAnsiEscapeCodes = false } = options;
+  if (nativeWidth && ambiguousIsNarrow && !input.includes("\u009b")) {
+    return nativeWidth(input, { countAnsiEscapeCodes });
+  }
   let text = input;
   if (!countAnsiEscapeCodes && (text.includes("\u001b") || text.includes("\u009b"))) {
     text = stripAnsi(text);

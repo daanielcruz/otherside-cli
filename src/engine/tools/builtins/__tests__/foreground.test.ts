@@ -1,4 +1,5 @@
 import { expect, it } from "bun:test";
+import { readdirSync, readFileSync } from "node:fs";
 import { runForeground } from "../foreground.ts";
 
 const isWindows = process.platform === "win32";
@@ -8,15 +9,31 @@ function uniqueMarker(): string {
 }
 
 function matchingPids(marker: string): number[] {
-  const result = Bun.spawnSync(["pgrep", "-f", marker], { stdout: "pipe", stderr: "ignore" });
+  if (process.platform === "linux") {
+    return readdirSync("/proc").flatMap((entry) => {
+      if (!/^\d+$/.test(entry)) return [];
+      try {
+        return readFileSync(`/proc/${entry}/cmdline`, "utf8").includes(marker)
+          ? [Number(entry)]
+          : [];
+      } catch {
+        return [];
+      }
+    });
+  }
+
+  const result = Bun.spawnSync(["ps", "ax", "-o", "pid=", "-o", "command="], {
+    stdout: "pipe",
+    stderr: "ignore",
+  });
   if (result.exitCode !== 0) return [];
   return result.stdout
     .toString()
-    .trim()
     .split("\n")
-    .flatMap((pid) => {
+    .flatMap((line) => {
+      const [pid, ...command] = line.trim().split(/\s+/);
       const parsed = Number(pid);
-      return Number.isSafeInteger(parsed) ? [parsed] : [];
+      return Number.isSafeInteger(parsed) && command.join(" ").includes(marker) ? [parsed] : [];
     });
 }
 
@@ -45,7 +62,12 @@ async function runTermIgnoringCommand(
   timeoutMs: number,
   signal?: AbortSignal,
 ): Promise<Awaited<ReturnType<typeof runForeground>>> {
-  const resultPromise = runForeground(termIgnoringCommand(marker), timeoutMs, signal);
+  const resultPromise = runForeground(
+    termIgnoringCommand(marker),
+    timeoutMs,
+    process.cwd(),
+    signal,
+  );
   const deadline = Date.now() + 1_000;
   while (matchingPids(marker).length === 0 && Date.now() < deadline) {
     await Bun.sleep(10);
@@ -108,6 +130,7 @@ it.skipIf(isWindows)(
       const resultPromise = runForeground(
         termIgnoringCommand(marker),
         10_000,
+        process.cwd(),
         controller.signal,
         () => {
           if (rejectedDrain) return;
@@ -128,7 +151,7 @@ it.skipIf(isWindows)(
 );
 
 it("returns normal fast command output without timing out", async () => {
-  const result = await runForeground("printf 'foreground fast output'", 1_000);
+  const result = await runForeground("printf 'foreground fast output'", 1_000, process.cwd());
 
   expect(result.exitCode).toBe(0);
   expect(result.stdout).toBe("foreground fast output");

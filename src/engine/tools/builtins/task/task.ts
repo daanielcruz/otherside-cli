@@ -172,17 +172,16 @@ export const TaskUpdate: ToolHandler = {
     const taskId = typeof args.taskId === "string" ? args.taskId : null;
     if (!taskId) return err(call.id, "taskId is required");
 
-    if (args.status === "deleted") {
-      const existed = tasks.remove(taskId);
-      return okText(
-        call.id,
-        existed ? `Updated task #${taskId} deleted` : `Task #${taskId} not found`,
-      );
-    }
-
+    // Parity: existence is checked before any status handling (including
+    // deletes), and the not-found text carries no task id.
     const cur = tasks.get(taskId);
     if (!cur) {
-      return okText(call.id, `Task #${taskId} not found`);
+      return okText(call.id, "Task not found");
+    }
+
+    if (args.status === "deleted") {
+      const removed = tasks.remove(taskId);
+      return okText(call.id, removed ? `Updated task #${taskId} deleted` : "Failed to delete task");
     }
 
     const owner = typeof args.owner === "string" ? args.owner : undefined;
@@ -205,6 +204,22 @@ export const TaskUpdate: ToolHandler = {
       patch.owner = owner;
       updated.push("owner");
     }
+    // Parity: a provided metadata object always merges and always counts as
+    // an updated field (even when the merge is a no-op), recorded before the
+    // status field in the result text.
+    if (
+      args.metadata !== null &&
+      typeof args.metadata === "object" &&
+      !Array.isArray(args.metadata)
+    ) {
+      const merged: Record<string, unknown> = { ...cur.metadata };
+      for (const [k, v] of Object.entries(args.metadata as Record<string, unknown>)) {
+        if (v === null) delete merged[k];
+        else merged[k] = v;
+      }
+      patch.metadata = merged;
+      updated.push("metadata");
+    }
     if (typeof args.status === "string") {
       if (!tasks.isValidStatus(args.status)) {
         return err(
@@ -226,29 +241,6 @@ export const TaskUpdate: ToolHandler = {
     if (Array.isArray(args.addBlockedBy)) {
       for (const v of args.addBlockedBy) {
         if (typeof v === "string" && v !== taskId) blockEdges.push([v, taskId]);
-      }
-    }
-    if (
-      args.metadata !== null &&
-      typeof args.metadata === "object" &&
-      !Array.isArray(args.metadata)
-    ) {
-      const merged: Record<string, unknown> = { ...cur.metadata };
-      let changed = false;
-      for (const [k, v] of Object.entries(args.metadata as Record<string, unknown>)) {
-        if (v === null) {
-          if (k in merged) {
-            delete merged[k];
-            changed = true;
-          }
-        } else if (merged[k] !== v) {
-          merged[k] = v;
-          changed = true;
-        }
-      }
-      if (changed) {
-        patch.metadata = merged;
-        updated.push("metadata");
       }
     }
 
@@ -278,8 +270,9 @@ export const TaskUpdate: ToolHandler = {
     if (blocksChanged) updated.push("blocks");
     if (blockedByChanged) updated.push("blockedBy");
 
-    const fieldsText = updated.length > 0 ? updated.join(", ") : "no changes";
-    return okText(call.id, `Updated task #${taskId} ${fieldsText}`);
+    // Parity: an empty update joins to an empty field list — the reference
+    // emits "Updated task #N " with a trailing space, no "no changes" text.
+    return okText(call.id, `Updated task #${taskId} ${updated.join(", ")}`);
   },
 };
 

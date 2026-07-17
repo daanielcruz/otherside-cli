@@ -28,7 +28,7 @@ import type { PermissionBehavior, PermissionRule } from "@/kernel/permissions/ty
 
 // `cliArg` and `toolsNarrowing` rules are scoped overrides that must not be
 // widened via tool-alias expansion — only first-class rule sources get
-// alias matching. Mirrors upstream's `ruleSourceAllowsAliasExpansion`.
+// alias matching.
 function ruleSourceAllowsAliasExpansion(rule: PermissionRule): boolean {
   return rule.source !== "cliArg" && rule.source !== "toolsNarrowing";
 }
@@ -77,7 +77,7 @@ export class RuleStore {
   // against the named scalar field of the structured tool input, so rules
   // that target a field other than the tool's primary content field (which
   // stays on its existing `match()` path) are still honored. Only deny/ask
-  // are consulted here, mirroring upstream's input-param rule lookup.
+  // are consulted here for input-param rule lookup.
   matchInputParam(
     toolName: string,
     input: unknown,
@@ -117,7 +117,7 @@ export function isCompoundBashCommand(input: string): boolean {
 export function ruleMatches(rule: PermissionRule, toolName: string, input: string): boolean {
   if (!toolNameMatchesRule(rule.ruleValue.toolName, toolName, rule.ruleBehavior !== "allow"))
     return false;
-  // Upstream ignores content-specific rules for MCP tools. Only server- and
+  // Content-specific rules are ignored for MCP tools. Only server- and
   // tool-level MCP rules participate in permission matching.
   if (mcpInfoFromString(toolName) !== null && rule.ruleValue.ruleContent !== undefined)
     return false;
@@ -376,7 +376,7 @@ function webFetchRuleContentMatches(ruleContent: string, input: string): boolean
     target = `domain:${new URL(input).hostname}`;
   } catch {}
 
-  // Upstream compares generated permission content only; legacy full-URL rules
+  // Permission content is compared as generated only; legacy full-URL rules
   // intentionally receive no compatibility fallback.
   if (ruleContent === target) return true;
   const normalizedRule = normalizeDomainRuleContent(ruleContent);

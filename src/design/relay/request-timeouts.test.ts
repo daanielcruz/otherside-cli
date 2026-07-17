@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { SESSION_EVENTS_TIMEOUT_MS } from "@/remote/backend/api.ts";
+import { SESSION_EVENTS_TIMEOUT_MS } from "@/backend/shared/api.ts";
 import { RELAY_POST_TIMEOUT_MS } from "./outbound.ts";
 
 describe("relay request deadlines", () => {

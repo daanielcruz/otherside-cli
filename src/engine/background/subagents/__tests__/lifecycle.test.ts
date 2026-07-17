@@ -20,8 +20,10 @@ import type { Provider } from "@/engine/contract/types.ts";
 import * as providers from "@/engine/providers/registry.ts";
 import { loadSubagentTranscript } from "@/engine/session/transcript/subagent-transcript.ts";
 import { sessionRecordsToMessages } from "@/engine/session/transcript/to-messages.ts";
+import { readSetContains, readSetInsert } from "@/engine/tools/builtins/read/state.ts";
 import { SendMessage } from "@/engine/tools/builtins/sendmessage.ts";
 import { sanitizeMessages } from "@/engine/translator/sanitize.ts";
+import { addSessionHook, listSessionHooks } from "@/kernel/hooks/session-registry.ts";
 import type { ProviderEvent } from "@/kernel/std/types/events.ts";
 import type { Message } from "@/kernel/std/types/message.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
@@ -30,6 +32,7 @@ import { clearAgentSteers, pendingAgentSteerCount, queueAgentSteer } from "../fo
 import {
   clearForkLifecyclesForTests,
   registerRunningFork,
+  resolveForkProfileForResume,
   resumeForkWithMessage,
 } from "../lifecycle.ts";
 
@@ -263,7 +266,7 @@ describe("subagent messaging lifecycle", () => {
     clearAgentSteers(task.id);
   });
 
-  test("reports unknown and non-resumable recipients distinctly", async () => {
+  test("reports missing and stopped recipients distinctly", async () => {
     const ctx: RequestContext = {
       provider: "resume-failure-test" as RequestContext["provider"],
       model: "resume-model",
@@ -288,8 +291,8 @@ describe("subagent messaging lifecycle", () => {
     );
     release();
 
-    const notResumable = await sendMessage("missing-task-agent", "continue", ctx);
-    expect(notResumable).toMatchObject({ delivered: false, code: "not_resumable" });
+    const released = await sendMessage("missing-task-agent", "continue", ctx);
+    expect(released).toMatchObject({ delivered: false, code: "unknown_agent" });
 
     const stoppedTask = startTask({
       parentToolCallId: "stopped-tool-call",
@@ -347,6 +350,33 @@ describe("subagent messaging lifecycle", () => {
     releaseA();
     releaseB();
     clearAgentSteers("name-claim-a");
+  });
+
+  test("completion releases the resume profile and configured hook registrations", async () => {
+    const ctx = minimalCtx("cleanup-test", "cleanup-session");
+    const forkId = "cleanup-agent";
+    addSessionHook(forkId, "preToolUse", {
+      entry: { command: "true", matcher: "" },
+      via: "cleanup-worker",
+    });
+    const release = registerRunningFork(
+      forkId,
+      "cleanup-worker",
+      { ...forkSpecFor(ctx, "cleanup-worker"), agentHooks: { preToolUse: [] } },
+      ctx,
+    );
+    readSetInsert(forkId, "/tmp/cleanup-read.txt", "cached content");
+
+    expect(listSessionHooks(forkId, "preToolUse")).toHaveLength(1);
+    expect(readSetContains(forkId, "/tmp/cleanup-read.txt")).toBe(true);
+    release();
+
+    expect(listSessionHooks(forkId, "preToolUse")).toHaveLength(0);
+    expect(readSetContains(forkId, "/tmp/cleanup-read.txt")).toBe(false);
+    expect(await resolveForkProfileForResume(forkId, undefined)).toMatchObject({
+      ok: false,
+      code: "unknown_agent",
+    });
   });
 
   test("a fork whose abort already fired rejects fast-path inbox delivery", () => {
@@ -564,5 +594,65 @@ describe("subagent messaging lifecycle", () => {
     expect(occurrences(afterSecond, "Steer two.")).toBe(1);
 
     clearAgentSteers(task.id);
+  });
+
+  test("durable resume after task eviction keeps the agent visible to the running panel", async () => {
+    const storageCwd = mkdtempSync(join(tmpdir(), "otherside-durable-visibility-"));
+    const providerId = "durable-visibility-test" as RequestContext["provider"];
+    const captures: RequestCapture[] = [];
+    registerCapturingProvider({ providerId, captures });
+
+    const task = startTask({
+      parentToolCallId: "durable-visibility-call",
+      agentName: "durable-visibility-worker",
+      agentId: "general-purpose",
+      cwd: storageCwd,
+      sessionId: "durable-visibility-session",
+      isBackgrounded: true,
+    });
+    const ctx: RequestContext = {
+      provider: providerId,
+      model: "durable-visibility-model",
+      effort: null,
+      permissionMode: "default",
+      cwd: storageCwd,
+      originalCwd: storageCwd,
+      sessionId: "durable-visibility-session",
+      bgTaskId: task.id,
+    };
+
+    try {
+      const initialResult = await runForkLoopExternal({
+        ctx,
+        name: "durable-visibility-worker",
+        body: "Complete the task.",
+        allowSet: null,
+        prompt: "Initial directive.",
+        forkId: task.id,
+        agentId: "general-purpose",
+      });
+      completeTask(task.id, { content: initialResult.output, isError: initialResult.isError });
+
+      // Terminal eviction releases the in-memory record; the durable sidecar on
+      // disk is the only state a later resume can rebuild the task from.
+      expect(removeTask(task.id)).toBe(true);
+      expect(getBackgroundTask(task.id)).toBeUndefined();
+
+      const completion = completionForGeneration(task.id, 1);
+      const resumed = await resumeForkWithMessage(task.id, "Resume after eviction.", ctx);
+      expect(resumed).toMatchObject({ delivered: true, resumed: true });
+      await completion;
+
+      // The rebuilt record must satisfy the running-agents panel filter
+      // (kind agent + backgrounded + not sidechain) or the resumed agent
+      // lists under /tasks while its panel bullet never returns.
+      const restored = getBackgroundTask(task.id);
+      expect(restored).toBeDefined();
+      expect(restored?.kind).toBe("agent");
+      expect(restored?.isBackgrounded).toBe(true);
+      expect(restored?.isSidechain).toBeUndefined();
+    } finally {
+      rmSync(storageCwd, { recursive: true, force: true });
+    }
   });
 });

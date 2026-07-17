@@ -22,7 +22,7 @@ function sampleContext(): LayerContext {
     sessionId: "sess-fixture",
     cwd: "/tmp/fixture",
     config: DEFAULT_CONFIG,
-    multiproviderEnabled: false,
+    orchestrationMode: "disabled",
     mcpInstructionBlocks: [],
     injections: makeQueue(),
     deferredToolExclusions: new Set<string>(),
@@ -34,7 +34,6 @@ function sampleContext(): LayerContext {
     currentDate: "2026-06-22",
     gitStatus: "On branch main",
     modelDisplayName: "Opus 4.8",
-    modelTierLines: ["Best: Opus 4.8", "Explorer: Sonnet 4.6"],
     availableModels: [
       {
         provider: "codex",
@@ -117,23 +116,23 @@ describe("harness composer purity and golden", () => {
     }
   });
 
-  it("golden: compose defaultStack across 16 matrix combos", () => {
+  it("golden: compose defaultStack across 24 matrix combos", () => {
     const base = sampleContext();
     const combos: Record<string, unknown> = {};
     for (const lean of [false, true]) {
-      for (const multiproviderEnabled of [false, true]) {
+      for (const orchestrationMode of ["disabled", "default", "feudalism"] as const) {
         for (const supportsMidSystem of [false, true]) {
           for (const gitStatus of [undefined, "On branch main"]) {
             const ctx = {
               ...base,
               lean,
-              multiproviderEnabled,
+              orchestrationMode,
               supportsMidSystem,
               injections: makeQueue(),
               ...(gitStatus !== undefined ? { gitStatus } : {}),
             };
             const h = compose(defaultStack(), ctx);
-            const key = `lean=${lean}|mp=${multiproviderEnabled}|mid=${supportsMidSystem}|git=${gitStatus !== undefined}`;
+            const key = `lean=${lean}|mode=${orchestrationMode}|mid=${supportsMidSystem}|git=${gitStatus !== undefined}`;
             combos[key] = {
               systemBlocks: h.systemBlocks,
               userPrepend: h.userPrepend,

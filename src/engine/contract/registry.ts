@@ -25,7 +25,7 @@ export function clearProviderConfigs(): void {
 }
 
 export function providerSortRank(id: ProviderId): number {
-  if (id === "openai-custom") return 2;
-  if (id === "deepseek" || id === "kimi-code" || id === "glm" || id === "minimax") return 1;
+  if (id === "openai") return 2;
+  if (id === "deepseek" || id === "kimi" || id === "glm" || id === "minimax") return 1;
   return 0;
 }

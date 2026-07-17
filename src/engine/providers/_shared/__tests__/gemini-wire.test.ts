@@ -18,10 +18,10 @@ describe("geminiSanitizeSchema", () => {
   test("leaves string enums unchanged", () => {
     const result = geminiSanitizeSchema({
       type: "string",
-      enum: ["general", "warrior", "scout"],
+      enum: ["emperor", "shogun", "daimyo", "samurai"],
     }) as Record<string, unknown>;
 
-    expect(result.enum).toEqual(["general", "warrior", "scout"]);
+    expect(result.enum).toEqual(["emperor", "shogun", "daimyo", "samurai"]);
   });
 
   test("coerces enums nested in properties", () => {
@@ -58,6 +58,6 @@ describe("geminiToolsToFunctionDeclarations", () => {
 
     const parameters = decls[0]!.parameters as Record<string, unknown>;
     const properties = parameters.properties as Record<string, Record<string, unknown>>;
-    expect(properties.tier!.enum).toEqual(["general", "warrior", "scout"]);
+    expect(properties.tier!.enum).toEqual(["emperor", "shogun", "daimyo", "samurai"]);
   });
 });

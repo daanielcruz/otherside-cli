@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
+import type { OrchestrationMode } from "@/kernel/config/orchestration-mode.ts";
 import { WORKFLOW_AGENT_CACHE_KEYS } from "./agent-options.ts";
 
-const AGENT_CACHE_KEY_VERSION = "v4";
+const AGENT_CACHE_KEY_VERSION = "v5";
 const CACHE_KEY_PARTICIPATING_KEYS = WORKFLOW_AGENT_CACHE_KEYS;
 
 function canonicalizeValue(value: unknown): unknown {
@@ -41,9 +42,16 @@ export function normalizeAgentCacheOptions(options: unknown): string {
   return JSON.stringify(canonicalizeValue(picked));
 }
 
-function computeAgentCacheDigest(prompt: string, options: unknown, identity: string): string {
+function computeAgentCacheDigest(
+  prompt: string,
+  options: unknown,
+  identity: string,
+  orchestrationMode: OrchestrationMode,
+): string {
   return createHash("sha256")
     .update(identity)
+    .update("\0")
+    .update(orchestrationMode)
     .update("\0")
     .update(prompt)
     .update("\0")
@@ -56,7 +64,8 @@ export function computeAgentCacheKey(
   options: unknown,
   structuralPath: string,
   prevKey: string,
+  orchestrationMode: OrchestrationMode = "disabled",
 ): string {
   const identity = `${structuralPath}\0${prevKey}`;
-  return `${AGENT_CACHE_KEY_VERSION}:${computeAgentCacheDigest(prompt, options, identity)}`;
+  return `${AGENT_CACHE_KEY_VERSION}:${computeAgentCacheDigest(prompt, options, identity, orchestrationMode)}`;
 }

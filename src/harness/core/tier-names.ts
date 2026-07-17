@@ -1,4 +1,4 @@
-export const TIER_NAMES = ["general", "warrior", "scout"] as const;
+export const TIER_NAMES = ["emperor", "shogun", "daimyo", "samurai"] as const;
 
 export type TierName = (typeof TIER_NAMES)[number];
 

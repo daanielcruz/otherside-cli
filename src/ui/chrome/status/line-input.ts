@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { getProviderConfig } from "@/engine/contract/registry.ts";
 import { findModel } from "@/engine/model/catalog.ts";
+import type { OrchestrationMode } from "@/kernel/config/orchestration-mode.ts";
 import type { ProviderId } from "@/kernel/config/provider-ids.ts";
 import { shellCommand } from "@/kernel/std/proc/shell.ts";
 import { capitalize } from "@/kernel/std/text/text.ts";
@@ -83,7 +84,7 @@ export function buildStatuslineInput({
   const usedPercentage =
     contextWindowSize > 0 ? Math.min(100, Math.round((contextUsed / contextWindowSize) * 100)) : 0;
   const baseName = model?.displayName ?? state.model;
-  const kimiSuffix = state.provider === "kimi-code" ? `${baseName} Thinking` : baseName;
+  const kimiSuffix = state.provider === "kimi" ? `${baseName} Thinking` : baseName;
   const displayName = displayModelName(state, kimiSuffix);
   return {
     session_id: sessionId,
@@ -138,6 +139,20 @@ export function renderNativeStatusline(input: StatuslineInput): string {
     `${formatTokens(available, input.context_window.context_window_size)} available`,
     `${input.context_window.used_percentage}% used`,
   ].join(" · ");
+}
+
+// Transient notice shown for a few seconds at session start and whenever the
+// orchestration mode changes; it never renders as a permanent label.
+export function orchestrationNoticeText(
+  mode: OrchestrationMode,
+  kind: "startup" | "switch",
+): string | null {
+  if (kind === "startup") {
+    if (mode === "disabled") return null;
+    return `Multiprovider orchestration is active in ${mode} mode`;
+  }
+  if (mode === "disabled") return "Multiprovider orchestration disabled";
+  return `Multiprovider orchestration set to ${mode} mode`;
 }
 
 export function effortStatuslineSuffix(

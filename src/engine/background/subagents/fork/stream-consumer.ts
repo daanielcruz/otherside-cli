@@ -1,6 +1,5 @@
 import type { UsageSnapshot } from "@/engine/session/compact/token-count.ts";
 import { nowIso } from "@/engine/session/record/index.ts";
-import { FORK_MAX_ATTEMPTS } from "@/engine/transport/_infra/classify/retry.ts";
 import { AbortError } from "@/kernel/std/stream/abort.ts";
 import { isContentProgressEvent } from "@/kernel/std/stream/content-idle-timeout.ts";
 import type { ForkEventSink, ProviderEvent } from "@/kernel/std/types/events.ts";
@@ -208,10 +207,7 @@ async function finishQuotaExhausted(
     ...(ev.reason !== undefined ? { reason: ev.reason } : {}),
     ...args.parentRef,
   });
-  const output =
-    ev.reason === "rate_limited"
-      ? `rate limited for ${ev.provider}/${ev.model}: ${ev.message}`
-      : `quota exhausted for ${ev.provider}/${ev.model}: ${ev.message}`;
+  const output = ev.message;
   const quotaExhausted = {
     provider: ev.provider,
     model: ev.model,
@@ -293,5 +289,3 @@ async function handleStall(
     ),
   };
 }
-
-export { FORK_MAX_ATTEMPTS };

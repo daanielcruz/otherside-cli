@@ -1,4 +1,3 @@
-import type { PendingChange } from "@/commands/index.ts";
 import type { DesignController } from "@/design/controller.ts";
 import { getProviderConfig } from "@/engine/contract/registry.ts";
 import type { CodexUsage } from "@/engine/providers/codex/usage.ts";
@@ -29,6 +28,7 @@ import { LoginOverlay } from "./login";
 import { LogoutOverlay } from "./logout";
 import { McpOverlay } from "./mcp";
 import { ModelOverlay } from "./model";
+import { OrchestrationOverlay } from "./orchestration";
 import { PermissionsOverlay } from "./permission/rules";
 import { PluginsOverlay } from "./plugins";
 import { RemoteOverlay } from "./remote";
@@ -66,7 +66,6 @@ export interface OverlayRegistryProps {
   onRewind?: (id: string, mode?: RewindMode) => void;
   onResumeSession?: (id: string) => void | Promise<void>;
   isTurnRunning?: () => boolean;
-  enqueueChange?: (change: PendingChange, label: string) => void;
   workflowDetailTargetId?: string | null | undefined;
   onWorkflowDetailOpenChange?: ((open: boolean) => void) | undefined;
 }
@@ -75,15 +74,7 @@ type OverlayRenderer = (props: OverlayRegistryProps) => React.JSX.Element;
 
 const OVERLAY_RENDERERS: Record<OverlayName, OverlayRenderer> = {
   help: () => <HelpOverlay />,
-  model: ({
-    broker,
-    config,
-    onClose,
-    onConfigChange,
-    onOpenLogin,
-    isTurnRunning,
-    enqueueChange,
-  }) => (
+  model: ({ broker, config, onClose, onConfigChange, onOpenLogin, isTurnRunning }) => (
     <ModelOverlay
       broker={broker}
       config={config}
@@ -91,16 +82,14 @@ const OVERLAY_RENDERERS: Record<OverlayName, OverlayRenderer> = {
       onConfigChange={onConfigChange}
       onOpenLogin={onOpenLogin}
       isTurnRunning={isTurnRunning}
-      enqueueChange={enqueueChange}
     />
   ),
-  effort: ({ broker, config, onClose, isTurnRunning, enqueueChange }) => (
+  effort: ({ broker, config, onClose, isTurnRunning }) => (
     <EffortOverlay
       broker={broker}
       config={config}
       onClose={onClose}
       isTurnRunning={isTurnRunning}
-      enqueueChange={enqueueChange}
     />
   ),
   agents: ({ broker, onClose }) => (
@@ -127,7 +116,6 @@ const OVERLAY_RENDERERS: Record<OverlayName, OverlayRenderer> = {
     configInitialTab,
     onConfigChange,
     isTurnRunning,
-    enqueueChange,
   }) => (
     <ConfigOverlay
       broker={broker}
@@ -138,7 +126,6 @@ const OVERLAY_RENDERERS: Record<OverlayName, OverlayRenderer> = {
       initialTab={configInitialTab}
       onConfigChange={onConfigChange}
       isTurnRunning={isTurnRunning}
-      enqueueChange={enqueueChange}
     />
   ),
   permissions: ({ broker, onClose }) => <PermissionsOverlay broker={broker} onClose={onClose} />,
@@ -152,6 +139,14 @@ const OVERLAY_RENDERERS: Record<OverlayName, OverlayRenderer> = {
   stats: usagePanel("stats", "current"),
   mcp: ({ onClose }) => <McpOverlay onClose={onClose} />,
   plugins: ({ onClose }) => <PluginsOverlay onClose={onClose} />,
+  orchestration: ({ config, session, onClose, onConfigChange }) => (
+    <OrchestrationOverlay
+      config={config}
+      cwd={session.cwd}
+      onClose={onClose}
+      onConfigChange={onConfigChange}
+    />
+  ),
   login: ({ broker, config, onClose, onConfigChange, loginInitialProvider }) => (
     <LoginOverlay
       broker={broker}
@@ -236,7 +231,6 @@ function usagePanel(
     config,
     onConfigChange,
     isTurnRunning,
-    enqueueChange,
   }) => (
     <UsageOverlay
       broker={broker}
@@ -253,7 +247,6 @@ function usagePanel(
       config={config}
       onConfigChange={onConfigChange}
       isTurnRunning={isTurnRunning}
-      enqueueChange={enqueueChange}
     />
   );
 }

@@ -19,7 +19,7 @@ import { usePanelNavigation } from "@/ui/hooks/use-panel-navigation.ts";
 import { Color, Glyph } from "@/ui/theme/theme.ts";
 import { Markdown } from "@/ui/transcript/markdown/index.tsx";
 
-/** Reference idle threshold (`DEFAULT_INTERACTION_THRESHOLD_MS` = 6s). */
+/** Idle threshold (`DEFAULT_INTERACTION_THRESHOLD_MS` = 6s). */
 export const PERMISSION_PROMPT_IDLE_MS = 6000;
 
 export function permissionPromptNotificationMessage(
@@ -90,7 +90,7 @@ interface OptionRow {
 }
 
 // A bypass-latched session can return directly to yolo. Otherwise the first
-// option presents the reference's auto-mode wording while mapping to the
+// option presents the auto-mode wording while mapping to the
 // accept-edits equivalent. Manual approval always switches to default.
 export function planOptionsFor(bypassAvailable: boolean): OptionRow[] {
   return [
@@ -606,8 +606,8 @@ function GenericPanel({
         ...(isDesign ? [] : ([["Tab", "amend"]] as [string, string][])),
       ];
   return (
-    <FooterPanel title={title} accent={Color.primaryGlow} footerHints={footerHints}>
-      <Box flexDirection="column" marginBottom={1}>
+    <FooterPanel title={title} accent={Color.primaryGlow} footerHints={footerHints} flushTop>
+      <Box flexDirection="column" marginBottom={isDesign ? 1 : 0}>
         {isDesign ? (
           <Text color={Color.text}>
             {display}

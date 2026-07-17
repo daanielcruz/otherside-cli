@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from "react";
-import type { PendingChange } from "@/commands/index.ts";
 import { listProviderConfigs } from "@/engine/contract/registry.ts";
 import { availableModelsForProvider, defaultModelForProvider } from "@/engine/model/catalog.ts";
 import {
@@ -8,8 +7,19 @@ import {
 } from "@/engine/model/facts/capabilities-runtime.ts";
 import { Box, Text } from "@/ink";
 import type { UserConfig } from "@/kernel/config/config.ts";
-import { fastModeForProvider, updateConfig } from "@/kernel/config/config.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
+import {
+  effectiveOrchestrationMode,
+  fastModeForProvider,
+  normalizeWorkflowSizeGuideline,
+  updateConfig,
+} from "@/kernel/config/config.ts";
+import {
+  IMAGE_GENERATOR_PROVIDER_ID_VALUES,
+  type ImageGeneratorSelection,
+  type ProviderId,
+  VOICE_PROVIDER_ID_VALUES,
+  type VoiceProviderSelection,
+} from "@/kernel/config/provider-ids.ts";
 import type { PermissionMode } from "@/kernel/std/types/request.ts";
 import {
   type CredentialsBundle,
@@ -25,11 +35,13 @@ import {
   applyConfigPatch,
   configPatch,
   cycle,
+  cycleOrchestrationMode,
   filterRows,
   keyedRows,
   rowsFor,
   type SettingsRow,
   type TabId,
+  WORKFLOW_SIZE_GUIDELINE_OPTIONS,
   wrapIndex,
 } from "@/ui/panels/config/rows";
 import { useOverlayClose } from "@/ui/panels/use-overlay-close";
@@ -44,7 +56,6 @@ export interface ConfigOverlayProps {
   initialTab?: TabId | undefined;
   onConfigChange?: ((config: UserConfig) => void) | undefined;
   isTurnRunning?: (() => boolean) | undefined;
-  enqueueChange?: ((change: PendingChange, label: string) => void) | undefined;
 }
 
 export type { TabId } from "@/ui/panels/config/rows";
@@ -68,7 +79,6 @@ export function ConfigOverlay({
   initialTab,
   onConfigChange,
   isTurnRunning,
-  enqueueChange,
 }: ConfigOverlayProps): React.JSX.Element {
   const close = useOverlayClose(onClose);
   const state = useAppSelect((s) => readBrokerSlice(s.engine) ?? broker.read());
@@ -123,6 +133,7 @@ export function ConfigOverlay({
   const selectedRow = filteredRows[rowIdx];
   const activeTab = CONFIG_TABS[tabIdx]?.id ?? "config";
   const editingLanguage = focus === "language";
+  const editingFreeText = editingLanguage;
 
   useEffect(() => {
     setRowIdx((idx) => Math.min(idx, Math.max(0, filteredRows.length - 1)));
@@ -248,7 +259,7 @@ export function ConfigOverlay({
     if (pendingProvider) {
       const { provider, model, fastMode } = pendingProvider;
       // Slip-direct: broker state is re-read on the next request, so applying
-      // immediately is safe mid-turn. No [QUEUED] placeholder.
+      // immediately is safe mid-turn.
       broker.dispatch({ kind: "set_provider", provider, model, fastMode });
       persist({ ...cfg, defaultProvider: provider, defaultModel: model });
       setPendingProvider(null);
@@ -316,7 +327,7 @@ export function ConfigOverlay({
         break;
       }
       case "bool": {
-        toggleBool(row.id);
+        toggleBool(row.id, direction);
         break;
       }
       case "language": {
@@ -324,6 +335,31 @@ export function ConfigOverlay({
           setLanguageDraft(cfg.language ?? "");
           setFocus("language");
         }
+        break;
+      }
+      case "imageGeneratorProvider": {
+        const configured = IMAGE_GENERATOR_PROVIDER_ID_VALUES.filter((provider) =>
+          hasCredential(credentials, provider),
+        );
+        const current = cfg.imageGenProvider ?? "off";
+        const options: ImageGeneratorSelection[] = ["off", ...configured];
+        const next = cycle(options, current, direction || 1);
+        const patch: UserConfig = { ...cfg, imageGenProvider: next };
+        persist(patch);
+        break;
+      }
+      case "voiceProvider": {
+        const configured = VOICE_PROVIDER_ID_VALUES.filter((provider) =>
+          hasCredential(credentials, provider),
+        );
+        const current = cfg.voiceProvider ?? "off";
+        const options: VoiceProviderSelection[] = ["off", ...configured];
+        if (!options.includes(current)) options.push(current);
+        const next = cycle(options, current, direction || 1);
+        const patch: UserConfig = { ...cfg };
+        if (next === "off") delete patch.voiceProvider;
+        else patch.voiceProvider = next;
+        persist(patch);
         break;
       }
       case "imageParserProvider": {
@@ -354,12 +390,18 @@ export function ConfigOverlay({
         persist({ ...cfg, imageParserModel: next });
         break;
       }
+      case "workflowSizeGuideline": {
+        const current = normalizeWorkflowSizeGuideline(cfg.workflowSizeGuideline);
+        const next = cycle(WORKFLOW_SIZE_GUIDELINE_OPTIONS, current, direction || 1);
+        persist({ ...cfg, workflowSizeGuideline: next });
+        break;
+      }
       case "readonly":
         break;
     }
   }
 
-  function toggleBool(id: string | undefined): void {
+  function toggleBool(id: string | undefined, direction = 0): void {
     if (id === "fastMode") {
       const enabled = !state.fastMode;
       // Slip-direct: broker state is re-read on the next request.
@@ -376,12 +418,15 @@ export function ConfigOverlay({
     if (id === "enableWorkflows") {
       persist({ ...cfg, enableWorkflows: !(cfg.enableWorkflows ?? true) });
     }
-    if (id === "imageGen") persist({ ...cfg, imageGen: !(cfg.imageGen ?? false) });
     if (id === "multiprovider") {
-      const enabled = !cfg.tierSelectorEnabled;
-      persist({ ...cfg, tierSelectorEnabled: enabled, orchestratorMode: enabled ? "soft" : "off" });
+      const current = effectiveOrchestrationMode(cfg);
+      const next = cycleOrchestrationMode(current, direction || 1);
+      persist({ ...cfg, orchestrationMode: next });
     }
     if (id === "quotaFallback") persist({ ...cfg, quotaFallback: !(cfg.quotaFallback ?? true) });
+    if (id === "chainOfCommand") {
+      persist({ ...cfg, chainOfCommand: !(cfg.chainOfCommand ?? true) });
+    }
   }
 
   const handleCancel = (): void => {
@@ -404,12 +449,12 @@ export function ConfigOverlay({
       activeTab={tabIdx}
       tabsFocused={focus === "tabs"}
       search={
-        activeTab === "config" && !editingLanguage
+        activeTab === "config" && !editingFreeText
           ? { query, placeholder: "Search settings…", focused: focus === "search" }
           : undefined
       }
       footerHints={
-        editingLanguage ? languageFooterHints() : footerHints(activeTab, focus, selectedRow)
+        editingFreeText ? languageFooterHints() : footerHints(activeTab, focus, selectedRow)
       }
       onCancel={handleCancel}
     >
@@ -430,6 +475,7 @@ export function ConfigOverlay({
               labelSuffix={row.labelSuffix}
               labelSuffixWidth={row.labelSuffixWidth}
               value={row.value}
+              description={row.description}
               selected={focus === "body" && position === rowIdx}
               active={row.active}
               muted={row.muted}
@@ -461,7 +507,7 @@ function LanguageEditor({ draft }: { draft: string }): React.JSX.Element {
       <Text color={Color.text}>Enter your preferred response and voice language:</Text>
       <Box marginTop={1}>
         <Text color={Color.chevron}>{Glyph.chevron}</Text>
-        <LanguageInputValue value={draft} />
+        <LanguageInputValue value={draft} placeholder={LANGUAGE_PLACEHOLDER} />
       </Box>
       <Box marginTop={1}>
         <Text color={Color.muted}>Leave empty for default (English)</Text>
@@ -470,7 +516,13 @@ function LanguageEditor({ draft }: { draft: string }): React.JSX.Element {
   );
 }
 
-function LanguageInputValue({ value }: { value: string }): React.JSX.Element {
+function LanguageInputValue({
+  value,
+  placeholder,
+}: {
+  value: string;
+  placeholder: string;
+}): React.JSX.Element {
   if (value.length > 0) {
     return (
       <>
@@ -479,7 +531,7 @@ function LanguageInputValue({ value }: { value: string }): React.JSX.Element {
       </>
     );
   }
-  const [first = " ", ...rest] = [...LANGUAGE_PLACEHOLDER];
+  const [first = " ", ...rest] = [...placeholder];
   return (
     <>
       <Text inverse>{first}</Text>

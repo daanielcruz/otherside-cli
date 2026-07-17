@@ -1,13 +1,22 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
+import { dirname, join, resolve } from "node:path";
+import {
+  DEFAULT_ORCHESTRATION_MODE,
+  normalizeOrchestrationMode,
+  type OrchestrationMode,
+} from "@/kernel/config/orchestration-mode.ts";
+import type {
+  ImageGeneratorSelection,
+  ProviderId,
+  VoiceProviderSelection,
+} from "@/kernel/config/provider-ids.ts";
 import type { ThemeSetting } from "@/kernel/config/theme-names.ts";
 import type { HookEntry, HookEvent } from "@/kernel/hooks/index.ts";
 import { HOOK_EVENT_VALUES } from "@/kernel/hooks/index.ts";
 import type { McpServerPolicyEntry } from "@/kernel/mcp/protocol/types.ts";
 import type { SettingsPermissionsBlock } from "@/kernel/permissions/types.ts";
 import { withFileLockSync } from "@/kernel/std/fs/file-lock.ts";
-import { configRoot } from "@/kernel/std/fs/paths.ts";
+import { canonicalizeCwd, configRoot } from "@/kernel/std/fs/paths.ts";
 import { atomicWriteFileSync } from "@/kernel/std/fs/secure-fs.ts";
 import type { EffortLevel } from "@/kernel/std/types/effort.ts";
 import type { PermissionMode } from "@/kernel/std/types/request.ts";
@@ -37,6 +46,29 @@ export interface UsageProviderBucket extends UsageBucket {
 
 export type UsageProviderMap = Partial<Record<ProviderId, UsageProviderBucket>>;
 
+/**
+ * Persisted worktree session slot for a project (single slot per project,
+ * keyed by the repository root). Written when a session enters a worktree,
+ * cleared when it exits; resume restores the active worktree from here.
+ */
+export interface ActiveWorktreeSessionEntry {
+  sessionId: string;
+  originalCwd: string;
+  preEnterOriginalCwd?: string;
+  activePath: string;
+  worktreeName?: string;
+  managedBranch?: string;
+  baseSha?: string;
+  ownerRepoRoot?: string;
+  nestedRepoRoot?: string;
+  hookBased?: boolean;
+  lockReason?: string;
+  resumedExisting?: boolean;
+  resetToFreshBase?: boolean;
+  ownership: "created" | "enteredExisting";
+  tmuxSession?: string;
+}
+
 export interface ProjectEntry {
   lastSessionId?: string;
   lastUpdatedAt?: string;
@@ -44,6 +76,17 @@ export interface ProjectEntry {
   mcpTrustAccepted?: boolean;
   permissions?: SettingsPermissionsBlock;
   providers?: UsageProviderMap;
+  activeWorktreeSession?: ActiveWorktreeSessionEntry;
+}
+
+/**
+ * Canonical `projects`-map key for a directory. Case folds on Windows only —
+ * its path APIs freely flip drive/segment casing — so writers and readers of
+ * per-project entries (worktree slot, trust) agree on one key.
+ */
+export function projectConfigKey(dir: string): string {
+  const key = canonicalizeCwd(resolve(dir)).normalize("NFC");
+  return process.platform === "win32" ? key.toLowerCase() : key;
 }
 
 export type SettingsPermissions = SettingsPermissionsBlock;
@@ -90,9 +133,14 @@ export interface SettingsSandboxConfig {
  * Session worktree settings.
  * - baseRef `fresh` (default): branch from origin/<default-branch>, HEAD fallback.
  * - baseRef `head`: branch from current HEAD.
+ * - sparsePaths: cone-mode sparse-checkout paths applied to created worktrees.
+ * - symlinkDirectories: repo-relative directories symlinked from the main
+ *   checkout into created worktrees instead of being materialized.
  */
 export interface WorktreeSettings {
   baseRef?: "fresh" | "head";
+  sparsePaths?: string[];
+  symlinkDirectories?: string[];
 }
 
 export interface GlobalState {
@@ -100,7 +148,13 @@ export interface GlobalState {
   lastStartedAt?: string;
   providers?: UsageProviderMap;
   setupHookFired?: boolean;
+  /** Times the queued-edit prompt hint has been shown; it retires after three. */
+  queuedEditHintShowCount?: number;
 }
+
+export const WORKFLOW_SIZE_GUIDELINES = ["unrestricted", "small", "medium", "large"] as const;
+
+export type WorkflowSizeGuideline = (typeof WORKFLOW_SIZE_GUIDELINES)[number];
 
 export interface UserConfig {
   defaultProvider: ProviderId;
@@ -116,7 +170,8 @@ export interface UserConfig {
   statusline?: StatuslineConfig;
   language?: string;
   antigravityGoogleOneAi?: boolean;
-  imageGen?: boolean;
+  imageGenProvider?: ImageGeneratorSelection;
+  voiceProvider?: VoiceProviderSelection;
   imageParserProvider?: ProviderId;
   imageParserModel?: string;
   memoryRecall?: boolean;
@@ -125,6 +180,7 @@ export interface UserConfig {
   effortLevel?: EffortLevel;
   ultracode?: boolean;
   enableWorkflows?: boolean;
+  workflowSizeGuideline?: WorkflowSizeGuideline;
   // Per-source workflow discovery gates. Absent = enabled: on-disk workflow
   // scripts from that scope are resolvable and runnable. Set false to drop a
   // whole source without touching the master `enableWorkflows` tool gate.
@@ -151,13 +207,11 @@ export interface UserConfig {
    */
   allowedMcpServers?: McpServerPolicyEntry[];
   /**
-   * Present for upstream schema parity (policySettings.allowManagedMcpServersOnly).
-   * Upstream uses this to pick which settings source(s) an allowlist may come
-   * from (managed-only vs. merged across scopes). Otherside only ever sources
-   * `allowedMcpServers`/`deniedMcpServers` from policy scope (see registry.ts),
-   * so this flag has no additional effect here — it is recognized so managed
-   * policy documents remain forward-compatible with a future non-policy allow
-   * list source.
+   * Flag indicating whether to allow managed MCP servers only.
+   * Otherside only ever sources `allowedMcpServers`/`deniedMcpServers` from
+   * policy scope (see registry.ts), so this flag has no additional effect here —
+   * it is recognized so managed policy documents remain forward-compatible with
+   * a future non-policy allow list source.
    */
   allowManagedMcpServersOnly?: boolean;
   enabledPlugins?: Record<string, boolean>;
@@ -175,11 +229,13 @@ export interface UserConfig {
   /** Session EnterWorktree base-ref policy (default fresh). */
   worktree?: WorktreeSettings;
   cleanupPeriodDays?: number;
-  tierSelectorEnabled?: boolean;
-  orchestratorMode?: "off" | "soft";
+  orchestrationMode?: OrchestrationMode;
   // Absent = enabled: tier dispatch reroutes around quota-blocked candidates.
   // false: the agent step fails explicitly instead of rerouting.
   quotaFallback?: boolean;
+  // Absent = enabled: a nested agent cannot launch above its own tier (its
+  // requests clamp to the caller's tier). false lifts the ceiling.
+  chainOfCommand?: boolean;
   terminalProgressBarEnabled?: boolean;
 }
 
@@ -187,16 +243,18 @@ export function fastModeForProvider(cfg: UserConfig, provider: ProviderId): bool
   return cfg.fastModeByProvider?.[provider] ?? cfg.fastMode ?? false;
 }
 
-export function isMultiproviderOrchestrationEnabled(
-  cfg: Pick<UserConfig, "orchestratorMode" | "tierSelectorEnabled"> | undefined,
-): boolean {
-  return (
-    cfg?.orchestratorMode === "soft" ||
-    (cfg?.tierSelectorEnabled === true && cfg.orchestratorMode !== "off")
-  );
+export function effectiveOrchestrationMode(
+  cfg: Pick<UserConfig, "orchestrationMode"> | undefined,
+): OrchestrationMode {
+  return normalizeOrchestrationMode(cfg?.orchestrationMode);
 }
 
-import { isProviderId, PROVIDER_ID_VALUES } from "@/kernel/config/provider-ids.ts";
+import {
+  isImageGeneratorSelection,
+  isProviderId,
+  isVoiceProviderSelection,
+  PROVIDER_ID_VALUES,
+} from "@/kernel/config/provider-ids.ts";
 
 export const DEFAULT_CONFIG: UserConfig = {
   defaultProvider: "anthropic",
@@ -204,8 +262,8 @@ export const DEFAULT_CONFIG: UserConfig = {
   defaultMode: "accept-edits",
   antigravityGoogleOneAi: true,
   outputStyle: "default",
-  tierSelectorEnabled: false,
-  orchestratorMode: "off",
+  orchestrationMode: DEFAULT_ORCHESTRATION_MODE,
+  workflowSizeGuideline: "unrestricted",
 };
 
 export function configPath(): string {
@@ -287,6 +345,15 @@ function readConfigUnlocked(): { config: UserConfig; corrupt: boolean } {
   }
 }
 
+export function normalizeEnabledPlugins(value: unknown): Record<string, boolean> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const result: Record<string, boolean> = {};
+  for (const [pluginId, enabled] of Object.entries(value)) {
+    if (typeof enabled === "boolean") result[pluginId] = enabled;
+  }
+  return result;
+}
+
 export function normalizeConfig(
   raw: Partial<UserConfig> & {
     fast_mode?: unknown;
@@ -295,17 +362,59 @@ export function normalizeConfig(
     hooks?: unknown;
     yolo?: unknown;
     agentVerificationEnabled?: unknown;
+    enabledPlugins?: unknown;
+    imageGen?: unknown;
+    imageGenProvider?: unknown;
+    voiceProvider?: unknown;
+    tierSelectorEnabled?: unknown;
+    orchestratorMode?: unknown;
+    orchestrationMode?: unknown;
   },
 ): UserConfig {
-  const cfg = { ...DEFAULT_CONFIG, ...raw } as UserConfig & {
+  const cfg = {
+    ...DEFAULT_CONFIG,
+    ...raw,
+    workflowSizeGuideline: normalizeWorkflowSizeGuideline(raw.workflowSizeGuideline),
+  } as UserConfig & {
     statusLine?: unknown;
     yolo?: unknown;
     agentVerificationEnabled?: unknown;
+    enabledPlugins?: unknown;
+    imageGen?: unknown;
+    imageGenProvider?: unknown;
+    voiceProvider?: unknown;
+    tierSelectorEnabled?: unknown;
+    orchestratorMode?: unknown;
+    orchestrationMode?: unknown;
   };
-  return cfg;
+  cfg.orchestrationMode = normalizeOrchestrationMode(raw.orchestrationMode);
+  delete (cfg as unknown as Record<string, unknown>).dictationLanguage;
+  delete cfg.tierSelectorEnabled;
+  delete cfg.orchestratorMode;
+  const enabledPlugins = normalizeEnabledPlugins(cfg.enabledPlugins);
+  if (enabledPlugins === undefined) delete cfg.enabledPlugins;
+  else cfg.enabledPlugins = enabledPlugins;
+  const imageGenProvider = cfg.imageGenProvider;
+  if (isImageGeneratorSelection(imageGenProvider)) {
+    cfg.imageGenProvider = imageGenProvider;
+  } else if (cfg.imageGen === true) {
+    cfg.imageGenProvider = "codex";
+  } else {
+    delete cfg.imageGenProvider;
+  }
+  delete cfg.imageGen;
+  if (!isVoiceProviderSelection(cfg.voiceProvider)) delete cfg.voiceProvider;
+  return cfg as UserConfig;
 }
 
 const PERMISSION_MODES = new Set<PermissionMode>(["default", "accept-edits", "plan", "yolo"]);
+
+export function normalizeWorkflowSizeGuideline(value: unknown): WorkflowSizeGuideline {
+  return typeof value === "string" &&
+    (WORKFLOW_SIZE_GUIDELINES as readonly string[]).includes(value)
+    ? (value as WorkflowSizeGuideline)
+    : "unrestricted";
+}
 
 export function normalizeDefaultMode(value: unknown): PermissionMode | undefined {
   if (typeof value !== "string") return undefined;
@@ -314,29 +423,11 @@ export function normalizeDefaultMode(value: unknown): PermissionMode | undefined
 }
 
 export function normalizeProviderId(value: unknown): ProviderId {
-  if (typeof value !== "string") return DEFAULT_CONFIG.defaultProvider;
-  const v =
-    value === "anthropic-oauth"
-      ? "anthropic"
-      : value === "codex-oauth"
-        ? "codex"
-        : value === "kimi"
-          ? "kimi-code"
-          : value;
-  return isProviderId(v) ? v : DEFAULT_CONFIG.defaultProvider;
+  return isProviderId(value) ? value : DEFAULT_CONFIG.defaultProvider;
 }
 
 export function normalizeOptionalProviderId(value: unknown): ProviderId | undefined {
-  if (typeof value !== "string") return undefined;
-  const v =
-    value === "anthropic-oauth"
-      ? "anthropic"
-      : value === "codex-oauth"
-        ? "codex"
-        : value === "kimi"
-          ? "kimi-code"
-          : value;
-  return isProviderId(v) ? v : undefined;
+  return isProviderId(value) ? value : undefined;
 }
 
 export function normalizeFastModeByProvider(
@@ -420,7 +511,21 @@ export function normalizeHooksConfig(
       }
       const command = typeof obj.command === "string" ? obj.command.trim() : "";
       if (!command) return [];
-      return timeoutMs === undefined ? [{ matcher, command }] : [{ matcher, command, timeoutMs }];
+      const base: HookEntry = {
+        matcher,
+        command,
+        ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+        // Async Stop-hook flags (stop-hook-rewake.ts): passed through verbatim.
+        ...(obj.async === true ? { async: true } : {}),
+        ...(obj.asyncRewake === true ? { asyncRewake: true } : {}),
+        ...(typeof obj.rewakeMessage === "string" && obj.rewakeMessage.trim().length > 0
+          ? { rewakeMessage: obj.rewakeMessage }
+          : {}),
+        ...(typeof obj.rewakeSummary === "string" && obj.rewakeSummary.trim().length > 0
+          ? { rewakeSummary: obj.rewakeSummary }
+          : {}),
+      };
+      return [base];
     });
     if (normalized.length > 0) out[normalizedEvent] = normalized;
   }

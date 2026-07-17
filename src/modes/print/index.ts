@@ -104,6 +104,10 @@ export async function runPrintMode(
   runtime: PrintRuntime,
   trace: (msg: string) => void = () => {},
 ): Promise<number> {
+  // Headless runs sustain turn activity without idle windows; JSC needs a
+  // periodic non-forced sweep so dead allocation does not ratchet the footprint.
+  setInterval(() => Bun.gc(false), 1_000).unref();
+
   if (prompt.trim().length === 0) {
     process.stderr.write(
       "Error: Input must be provided either through stdin or as a prompt argument when using --print\n",

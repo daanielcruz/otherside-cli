@@ -12,12 +12,13 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, win32 } from "node:path";
 import {
   acquireResumedWorktreeLease,
   acquireWorktreeLease,
   createWorktree,
   findNestedRepos,
+  isPathWithinRoot,
   isWriteEscapingWorktree,
   pruneOrphanWorktrees,
   setWorktreeCleanupRemovalHookForTests,
@@ -169,6 +170,61 @@ async function setupGitRepo(dir: string): Promise<void> {
   runGit(dir, ["add", "readme.txt"]);
   commitGit(dir, "initial commit");
 }
+
+describe("worktree cwd containment", () => {
+  test("accepts descendants and rejects truly outside POSIX paths", () => {
+    expect(isPathWithinRoot("/repo", "/repo/packages/app")).toBe(true);
+    expect(isPathWithinRoot("/repo", "/repo-other")).toBe(false);
+    expect(isPathWithinRoot("/repo", "/outside")).toBe(false);
+  });
+
+  test("accepts Windows-style descendants and rejects a truly outside path", () => {
+    const windowsPath = {
+      relative: win32.relative,
+      isAbsolute: win32.isAbsolute,
+      sep: win32.sep,
+    };
+    expect(isPathWithinRoot("C:\\repo", "C:\\repo\\packages\\app", windowsPath)).toBe(true);
+    expect(isPathWithinRoot("C:\\repo", "C:\\repo-other", windowsPath)).toBe(false);
+    expect(isPathWithinRoot("C:\\repo", "C:\\outside", windowsPath)).toBe(false);
+  });
+});
+
+describe("worktree root selection", () => {
+  test("returns null outside a git repository", async () => {
+    expect(await createWorktree(tempDir, "workflow-plain-directory")).toBeNull();
+  });
+
+  test("selects the nearest independent git root", async () => {
+    const outer = join(tempDir, "outer");
+    const outerChild = join(outer, "packages", "app");
+    const nested = join(outer, "nested");
+    const nestedChild = join(nested, "src");
+    await mkdir(outerChild, { recursive: true });
+    await setupGitRepo(outer);
+    await mkdir(nestedChild, { recursive: true });
+    await setupGitRepo(nested);
+
+    const outerWorktree = await createWorktree(outerChild, "workflow-nearest-outer");
+    expect(outerWorktree).not.toBeNull();
+    if (!outerWorktree) return;
+    expect(await realpath(outerWorktree.path)).toBe(
+      await realpath(join(outer, ".otherside", "worktrees", "workflow-nearest-outer")),
+    );
+    expect(outerWorktree.warning).toContain(nested);
+    expect(await pathExists(join(outerWorktree.path, "nested", "readme.txt"))).toBe(false);
+    expect((await outerWorktree.cleanup()).deleted).toBe(true);
+
+    const nestedWorktree = await createWorktree(nestedChild, "workflow-nearest-nested");
+    expect(nestedWorktree).not.toBeNull();
+    if (!nestedWorktree) return;
+    expect(await realpath(nestedWorktree.path)).toBe(
+      await realpath(join(nested, ".otherside", "worktrees", "workflow-nearest-nested")),
+    );
+    expect(await readFile(join(nestedWorktree.path, "readme.txt"), "utf8")).toBe("hello world");
+    expect((await nestedWorktree.cleanup()).deleted).toBe(true);
+  });
+});
 
 describe("worktree lifecycle logic", () => {
   test("parent clean + agent without change gets removed", async () => {
@@ -521,6 +577,26 @@ describe("worktree lease and creation rollback", () => {
     expect(await pathExists(wt.path)).toBe(false);
   });
 
+  test("skips an untracked file removed after enumeration", async () => {
+    await setupGitRepo(tempDir);
+    const vanished = join(tempDir, "vanished.txt");
+    let removed = false;
+    await writeFile(vanished, "ephemeral");
+    setWorktreeOverlayCopyHookForTests(async (from) => {
+      if (from.endsWith("vanished.txt")) {
+        removed = true;
+        await rm(from);
+      }
+    });
+
+    const worktree = await createWorktree(tempDir, "workflow-vanished-untracked");
+    expect(worktree).not.toBeNull();
+    expect(removed).toBe(true);
+    if (!worktree) return;
+    expect(await pathExists(join(worktree.path, "vanished.txt"))).toBe(false);
+    expect((await worktree.cleanup()).deleted).toBe(true);
+  });
+
   test("a failed overlay copy rolls the creation back, leaving nothing reusable", async () => {
     await setupGitRepo(tempDir);
     await writeFile(join(tempDir, "untracked.txt"), "secret");
@@ -535,5 +611,49 @@ describe("worktree lease and creation rollback", () => {
     expect(runGit(tempDir, ["worktree", "list"])).not.toContain("workflow-torn");
     expect(runGit(tempDir, ["branch", "--list", "otherside/agent/workflow-torn"]).trim()).toBe("");
     expect(await pathExists(join(tempDir, ".otherside", "worktrees", "workflow-torn"))).toBe(false);
+  });
+
+  test("does not treat a still-present source as vanished on non-ENOENT overlay failure", async () => {
+    await setupGitRepo(tempDir);
+    await writeFile(join(tempDir, "untracked.txt"), "secret");
+    // Inject a non-ENOENT failure while the source still exists. The existence
+    // probe must not swallow this — fail closed and roll the creation back.
+    setWorktreeOverlayCopyHookForTests(() => {
+      const err = new Error("injected EACCES overlay failure") as NodeJS.ErrnoException;
+      err.code = "EACCES";
+      throw err;
+    });
+
+    await expect(createWorktree(tempDir, "workflow-eacces")).rejects.toThrow("worktree isolation");
+    expect(runGit(tempDir, ["worktree", "list"])).not.toContain("workflow-eacces");
+    expect(runGit(tempDir, ["branch", "--list", "otherside/agent/workflow-eacces"]).trim()).toBe(
+      "",
+    );
+    expect(await pathExists(join(tempDir, ".otherside", "worktrees", "workflow-eacces"))).toBe(
+      false,
+    );
+  });
+
+  test("does not skip a broken untracked symlink as a vanished source", async () => {
+    await setupGitRepo(tempDir);
+    // Broken symlink: the link node exists (lstat ok) but its target does not
+    // (stat ENOENT). Fail-closed copy must not misclassify it as vanished.
+    await symlink(join(tempDir, "missing-target-does-not-exist"), join(tempDir, "broken-link"));
+    setWorktreeOverlayCopyHookForTests(() => {
+      const err = new Error("injected failure after broken-symlink probe") as NodeJS.ErrnoException;
+      err.code = "EIO";
+      throw err;
+    });
+
+    await expect(createWorktree(tempDir, "workflow-broken-symlink")).rejects.toThrow(
+      "worktree isolation",
+    );
+    expect(runGit(tempDir, ["worktree", "list"])).not.toContain("workflow-broken-symlink");
+    expect(
+      runGit(tempDir, ["branch", "--list", "otherside/agent/workflow-broken-symlink"]).trim(),
+    ).toBe("");
+    expect(
+      await pathExists(join(tempDir, ".otherside", "worktrees", "workflow-broken-symlink")),
+    ).toBe(false);
   });
 });

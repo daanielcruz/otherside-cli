@@ -6,15 +6,23 @@ beforeEach(() => {
 });
 
 describe("boundary policy", () => {
-  test("T11 mid_turn excludes deferred_output", () => {
+  test("T11 mid_turn delivers deferred_output to the running model", () => {
     emitQueue.emit({
       class: "deferred_output",
-      target: "llm_request",
-      payload: { kind: "tool_result", toolUseId: "a1", content: "x" },
+      target: "both",
+      payload: {
+        kind: "task_notification_xml",
+        text: "<task-notification>done</task-notification>",
+        summary: "done",
+      },
     });
     const result = emitQueue.drainForBoundary("mid_turn");
-    expect(result.consumedIds.length).toBe(0);
-    expect(emitQueue.peek({ class: "deferred_output" }).length).toBe(1);
+    expect(result.consumedIds.length).toBe(1);
+    const block = result.llmBlocks[0];
+    const text = block?.type === "text" ? block.text : "";
+    expect(text).toContain("<task-notification>done</task-notification>");
+    expect(result.notificationTexts).toEqual(["<task-notification>done</task-notification>"]);
+    expect(emitQueue.peek({ class: "deferred_output" }).length).toBe(0);
   });
 
   test("T12 mid_turn drains interrupts", () => {
@@ -89,6 +97,73 @@ describe("boundary policy", () => {
     expect(result.consumedIds.length).toBe(1);
     expect(result.llmBlocks.length).toBeGreaterThan(0);
     expect(emitQueue.peek({ class: "urgent_output" }).length).toBe(0);
+  });
+
+  test("T14 idle_prompt (scheduled wakeup) never drains mid-turn — tool_loop_end and mid_turn skip it; turn_start picks it", () => {
+    // Reference parity: wakeups enqueue at priority "later"
+    // (useScheduledTasks), and the mid-turn fold is capped at "next"
+    // (getCommandsByMaxPriority("next")) — a wakeup must NOT interrupt a
+    // running tool loop.
+    emitQueue.emit({
+      class: "idle_prompt",
+      target: "both",
+      payload: { kind: "user_interrupt_message", text: "loop wakeup" },
+      autoTurn: true,
+      replayKey: "loop:test-job",
+    });
+    const toolLoopEnd = emitQueue.drainForBoundary("tool_loop_end");
+    expect(toolLoopEnd.consumedIds.length).toBe(0);
+    const midTurn = emitQueue.drainForBoundary("mid_turn");
+    expect(midTurn.consumedIds.length).toBe(0);
+    expect(emitQueue.peek({ class: "idle_prompt" }).length).toBe(1);
+    // Still advertises a pending auto-turn so an idle session wakes.
+    expect(emitQueue.hasPendingAutoTurn()).toBe(true);
+    const turnStart = emitQueue.setTurnActive(true);
+    expect(turnStart).not.toBeNull();
+    expect(turnStart?.consumedIds.length).toBe(1);
+    const block = turnStart?.llmBlocks[0];
+    expect(block?.type === "text" ? block.text : "").toBe("loop wakeup");
+    expect(emitQueue.peek({ class: "idle_prompt" }).length).toBe(0);
+  });
+
+  test("T13d turn_start delivers notifications as plain prefixed text (no reminder envelope)", () => {
+    emitQueue.emit({
+      class: "deferred_output",
+      target: "both",
+      payload: {
+        kind: "task_notification_xml",
+        text: "<task-notification>fresh</task-notification>",
+        summary: "fresh",
+      },
+    });
+    const result = emitQueue.setTurnActive(true);
+    expect(result).not.toBeNull();
+    const block = result?.llmBlocks[0];
+    const text = block?.type === "text" ? block.text : "";
+    expect(text.startsWith("[SYSTEM NOTIFICATION - NOT USER INPUT]")).toBe(true);
+    expect(text).toContain("No human input has been received");
+    expect(text).not.toContain("<system-reminder>");
+    expect(text.endsWith("<task-notification>fresh</task-notification>")).toBe(true);
+  });
+
+  test("T15 a stop-hook rewake item marks its consuming drain stopHookActive", () => {
+    emitQueue.emit({
+      class: "urgent_output",
+      target: "both",
+      payload: { kind: "task_notification_xml", text: "<task-notification/>", summary: "rewake" },
+      autoTurn: true,
+      stopHookActive: true,
+    });
+    const result = emitQueue.setTurnActive(true);
+    expect(result?.stopHookActive).toBe(true);
+    emitQueue.setTurnActive(false);
+    emitQueue.emit({
+      class: "deferred_output",
+      target: "both",
+      payload: { kind: "task_notification_xml", text: "<task-notification/>", summary: "plain" },
+    });
+    const plain = emitQueue.setTurnActive(true);
+    expect(plain?.stopHookActive).toBeUndefined();
   });
 
   test("T16 turn_start drains items that arrived during idle", () => {

@@ -229,9 +229,9 @@ interface PreToolUseJsonDecision {
 
 const DEFAULT_HOOK_BLOCK_REASON = "Blocked by hook";
 
-// Parses a single successful hook's stdout into a PreToolUse decision, mirroring
-// upstream processHookJSONOutput: the top-level {decision:"approve"|"block"}
-// shorthand is applied first, then hookSpecificOutput.permissionDecision
+// Parses a single successful hook's stdout into a PreToolUse decision: the
+// top-level {decision:"approve"|"block"} shorthand is applied first, then the
+// hookSpecificOutput.permissionDecision
 // ("allow"|"deny"|"ask") overrides it when present and scoped to PreToolUse.
 // updatedInput is captured whenever present, regardless of decision, so a pure
 // input rewrite with no explicit decision (passthrough) still applies.
@@ -269,8 +269,8 @@ function preToolUseJsonDecision(stdout: string): PreToolUseJsonDecision | null {
   return { decision, reason, updatedInput };
 }
 
-// Aggregates every matching PreToolUse hook's outcome into one decision, honoring
-// upstream's precedence: deny always wins, ask wins over an explicit allow (which
+// Aggregates every matching PreToolUse hook's outcome into one decision with a
+// fixed precedence: deny always wins, ask wins over an explicit allow (which
 // in turn wins over a decision-less passthrough), and a hook whose own decision
 // resolves to deny never contributes updatedInput (whether from its own JSON or
 // a still-pending value from an earlier ask/allow/passthrough hook). A hook
@@ -435,11 +435,9 @@ export async function fireTaskHook(input: {
 
 // PostToolUse hooks run after the tool has already produced its ToolResult:
 // a nonzero exit, timeout, or spawn failure is non-blocking feedback, not a
-// reason to discard or replace what the tool actually returned. Matching
-// upstream (hooks.ts's hook_non_blocking_error attachment, appended after the
-// tool result in toolExecution.ts), every non-"ok" outcome is turned into a
-// short feedback line surfaced alongside -- never in place of -- the tool's
-// own content.
+// reason to discard or replace what the tool actually returned. Every non-"ok"
+// outcome is turned into a short feedback line surfaced alongside -- never in
+// place of -- the tool's own content, appended after the tool result.
 function postToolUseHookFeedback(outcomes: HookOutcome[]): string[] {
   const feedback: string[] = [];
   for (const outcome of outcomes) {

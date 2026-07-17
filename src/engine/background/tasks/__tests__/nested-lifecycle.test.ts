@@ -6,12 +6,13 @@ import {
   completeTaskForRun,
   detachTaskForRun,
   get,
+  markOwnerNotificationsConsumed,
   markOwnerNotificationsPromoted,
-  removeTask,
   reopenTask,
   resetEmitThrottleForTests,
   setEvictionDelayForTests,
   startTask,
+  stopTaskForUser,
   taskRunRef,
 } from "../background.ts";
 import * as controllers from "../background-controllers.ts";
@@ -38,6 +39,14 @@ function notifications(taskId: string) {
   return emitQueue.peek().filter((item) => item.replayKey?.startsWith(`bg:${taskId}:`));
 }
 
+function registerForkOwner(ownerId: string) {
+  return emitQueue.registerOwner(ownerId, {
+    onInventoryConsumed: (replayKeys) => markOwnerNotificationsConsumed(ownerId, replayKeys),
+    onOwnerRelease: ({ promotedReplayKeys }) =>
+      markOwnerNotificationsPromoted(ownerId, promotedReplayKeys),
+  });
+}
+
 beforeEach(() => {
   clear();
   resetEmitThrottleForTests();
@@ -53,7 +62,7 @@ afterEach(() => {
   emitQueue._resetForTests();
 });
 
-describe("nested agent lifecycle parity", () => {
+describe("nested agent lifecycle behavior", () => {
   test("parent cancellation aborts a running linked child without a main notification", () => {
     const parent = agent({ callId: "parent" });
     const child = agent({ callId: "child", parentTaskId: parent.id, ownerId: "parent-fork" });
@@ -151,66 +160,116 @@ describe("nested agent lifecycle parity", () => {
     releaseOwner();
   });
 
-  test("re-emits a detached completion consumed before owner cancellation exactly once", () => {
+  test("a user-initiated kill stops detached descendants instead of reparenting them", () => {
     const releaseOwner = emitQueue.registerOwner("parent-fork");
     const parent = agent({ callId: "parent" });
+    const child = agent({ callId: "child", parentTaskId: parent.id, ownerId: "parent-fork" });
+    const childRun = taskRunRef(child);
+    const childAbort = new AbortController();
+    controllers.register(child.parentToolCallId, {
+      taskId: child.id,
+      signal: () => {},
+      isBackgrounded: () => true,
+      abort: () => childAbort.abort(),
+    });
+    expect(detachTaskForRun(childRun)).toBe(true);
+
+    // The user kill takes the whole tree: the detached child is stopped with
+    // the root, silenced, and never reparented to keep running under main.
+    expect(stopTaskForUser(parent)).toBe(true);
+    expect(get(parent.id)?.status).toBe("killed");
+    expect(get(parent.id)?.stoppedByUser).toBe(true);
+    expect(get(child.id)?.status).toBe("killed");
+    expect(childAbort.signal.aborted).toBe(true);
+    expect(notifications(child.id)).toHaveLength(0);
+    releaseOwner();
+  });
+
+  test("terminal child rows evict independently while the owner remains active", async () => {
+    setEvictionDelayForTests(5);
+    const cases = [
+      { label: "completed", result: { content: "finished", isError: false } },
+      { label: "error", result: { content: "failed", isError: true } },
+      {
+        label: "killed",
+        result: { content: "stopped", isError: false, killed: true, userInitiated: true },
+      },
+    ] as const;
+
+    for (const [index, scenario] of cases.entries()) {
+      const ownerId = `parent-fork-${index}`;
+      const releaseOwner = registerForkOwner(ownerId);
+      const parent = agent({ callId: `parent-${scenario.label}` });
+      const child = agent({
+        callId: `child-${scenario.label}`,
+        parentTaskId: parent.id,
+        ownerId,
+        mode: "detached",
+      });
+
+      expect(completeTaskForRun(taskRunRef(child), scenario.result)).toBe(true);
+      expect(get(child.id)?.terminalNotification).toBe("owner");
+      expect(notifications(child.id)[0]?.target).toBe("inventory");
+      await Bun.sleep(15);
+      expect(get(child.id), scenario.label).toBeUndefined();
+      expect(get(parent.id)?.status).toBe("running");
+
+      releaseOwner();
+      expect(get(child.id)).toBeUndefined();
+      expect(notifications(child.id)[0]?.target).toBe("both");
+      expect(emitQueue.drainForBoundary("turn_start").notificationTexts).toHaveLength(1);
+      expect(emitQueue.drainForBoundary("turn_start").notificationTexts).toHaveLength(0);
+      expect(
+        cancelTaskTree(taskRunRef(parent), {
+          reason: "parent cancelled",
+          suppressRootNotification: true,
+        }),
+      ).toBe(true);
+      expect(emitQueue.drainForBoundary("turn_start").notificationTexts).toHaveLength(0);
+    }
+  });
+
+  test("consumed child notification never replays after cancellation and owner exit", async () => {
+    setEvictionDelayForTests(5);
+    const ownerId = "parent-fork-consumed";
+    const releaseOwner = registerForkOwner(ownerId);
+    const parent = agent({ callId: "parent-consumed" });
     const child = agent({
-      callId: "child",
+      callId: "child-consumed",
       parentTaskId: parent.id,
-      ownerId: "parent-fork",
+      ownerId,
       mode: "detached",
     });
-    const childRun = taskRunRef(child);
 
-    expect(completeTaskForRun(childRun, { content: "finished", isError: false })).toBe(true);
-    expect(emitQueue.takeForOwner("parent-fork")).toHaveLength(1);
-    expect(notifications(child.id)).toHaveLength(0);
-
-    for (let index = 0; index < 1_024; index++) {
-      emitQueue.emitForCompletion({
-        class: "deferred_output",
-        ownerId: "parent-fork",
-        isSubagentOwned: true,
-        payload: { kind: "task_notification_xml", text: `<churn>${index}</churn>` },
-        replayKey: `churn:${index}`,
-      });
-    }
-    expect(emitQueue.takeForOwner("parent-fork")).toHaveLength(1_024);
-    expect(emitQueue.wasReplayKeyConsumed(`bg:${child.id}:${childRun.generation}`)).toBe(false);
-    releaseOwner();
-    expect(get(child.id)?.terminalNotification).toBe("owner");
-
+    expect(completeTaskForRun(taskRunRef(child), { content: "finished", isError: false })).toBe(
+      true,
+    );
+    expect(emitQueue.takeForOwner(ownerId)).toHaveLength(1);
+    expect(get(child.id)?.terminalNotification).toBe("parent");
     expect(
       cancelTaskTree(taskRunRef(parent), {
         reason: "parent cancelled",
         suppressRootNotification: true,
       }),
     ).toBe(true);
-    expect(get(child.id)?.status).toBe("completed");
-    expect(get(child.id)?.ownerId).toBeUndefined();
-    expect(get(child.id)?.terminalNotification).toBe("main");
-    expect(notifications(child.id)).toHaveLength(1);
-    expect(emitQueue.drainForBoundary("turn_start").notificationTexts).toHaveLength(1);
+    expect(get(child.id)?.terminalNotification).toBe("parent");
 
-    expect(
-      cancelTaskTree(taskRunRef(parent), {
-        reason: "parent cancelled again",
-        suppressRootNotification: true,
-      }),
-    ).toBe(false);
+    releaseOwner();
+    expect(notifications(child.id)).toHaveLength(0);
     expect(emitQueue.drainForBoundary("turn_start").notificationTexts).toHaveLength(0);
+    await Bun.sleep(15);
+    expect(get(child.id)).toBeUndefined();
   });
 
-  test("does not replay a detached completion promoted when its owner exits", async () => {
+  test("unread terminal child notification promotes to main once on owner exit", async () => {
     setEvictionDelayForTests(5);
-    const releaseOwner = emitQueue.registerOwner("parent-fork", (replayKeys) =>
-      markOwnerNotificationsPromoted("parent-fork", replayKeys),
-    );
-    const parent = agent({ callId: "parent" });
+    const ownerId = "parent-fork-unread";
+    const releaseOwner = registerForkOwner(ownerId);
+    const parent = agent({ callId: "parent-unread" });
     const child = agent({
-      callId: "child",
+      callId: "child-unread",
       parentTaskId: parent.id,
-      ownerId: "parent-fork",
+      ownerId,
       mode: "detached",
     });
 
@@ -219,132 +278,73 @@ describe("nested agent lifecycle parity", () => {
     );
     expect(get(child.id)?.terminalNotification).toBe("owner");
     expect(notifications(child.id)[0]?.target).toBe("inventory");
+    expect(
+      cancelTaskTree(taskRunRef(parent), {
+        reason: "parent cancelled",
+        suppressRootNotification: true,
+      }),
+    ).toBe(true);
+    expect(get(child.id)?.terminalNotification).toBe("owner");
+    expect(get(parent.id)?.status).toBe("killed");
 
     releaseOwner();
     expect(get(child.id)?.terminalNotification).toBe("main");
     expect(notifications(child.id)[0]?.target).toBe("both");
+    expect(emitQueue.drainForBoundary("turn_start").notificationTexts).toHaveLength(1);
+    expect(emitQueue.drainForBoundary("turn_start").notificationTexts).toHaveLength(0);
     await Bun.sleep(15);
     expect(get(child.id)).toBeUndefined();
-    expect(emitQueue.drainForBoundary("turn_start").notificationTexts).toHaveLength(1);
+  });
+
+  test("three-level notifications stop at the immediate owner", () => {
+    const releaseRootOwner = registerForkOwner("root-fork");
+    const releaseChildOwner = registerForkOwner("child-fork");
+    const root = agent({ callId: "root" });
+    const child = agent({ callId: "child", parentTaskId: root.id, ownerId: "root-fork" });
+    const grandchild = agent({
+      callId: "grandchild",
+      parentTaskId: child.id,
+      ownerId: "child-fork",
+      mode: "detached",
+    });
+
+    expect(completeTaskForRun(taskRunRef(grandchild), { content: "done", isError: false })).toBe(
+      true,
+    );
+    expect(emitQueue.takeForOwner("child-fork")).toHaveLength(1);
+    expect(get(grandchild.id)?.terminalNotification).toBe("parent");
+    expect(emitQueue.takeForOwner("root-fork")).toHaveLength(0);
+    releaseChildOwner();
+    releaseRootOwner();
+    expect(notifications(grandchild.id)).toHaveLength(0);
+    expect(emitQueue.drainForBoundary("turn_start").notificationTexts).toHaveLength(0);
+
+    const unreadRootOwner = registerForkOwner("root-fork-unread");
+    const unreadChildOwner = registerForkOwner("child-fork-unread");
+    const unreadRoot = agent({ callId: "root-unread" });
+    const unreadChild = agent({
+      callId: "child-unread",
+      parentTaskId: unreadRoot.id,
+      ownerId: "root-fork-unread",
+    });
+    const unreadGrandchild = agent({
+      callId: "grandchild-unread",
+      parentTaskId: unreadChild.id,
+      ownerId: "child-fork-unread",
+      mode: "detached",
+    });
 
     expect(
-      cancelTaskTree(taskRunRef(parent), {
-        reason: "parent cancelled",
-        suppressRootNotification: true,
-      }),
+      completeTaskForRun(taskRunRef(unreadGrandchild), { content: "unread", isError: false }),
     ).toBe(true);
-    expect(emitQueue.drainForBoundary("turn_start").notificationTexts).toHaveLength(0);
-  });
-
-  test("retains an owner-consumed completion until delayed parent cancellation", async () => {
-    setEvictionDelayForTests(5);
-    const releaseOwner = emitQueue.registerOwner("parent-fork", (replayKeys) =>
-      markOwnerNotificationsPromoted("parent-fork", replayKeys),
-    );
-    const parent = agent({ callId: "parent" });
-    const child = agent({
-      callId: "child",
-      parentTaskId: parent.id,
-      ownerId: "parent-fork",
-      mode: "detached",
-    });
-
-    expect(completeTaskForRun(taskRunRef(child), { content: "finished", isError: false })).toBe(
-      true,
-    );
-    expect(emitQueue.takeForOwner("parent-fork")).toHaveLength(1);
-    releaseOwner();
-    await Bun.sleep(15);
-    expect(get(child.id)?.terminalNotification).toBe("owner");
-
-    expect(
-      cancelTaskTree(taskRunRef(parent), {
-        reason: "parent cancelled",
-        suppressRootNotification: true,
-      }),
-    ).toBe(true);
-    expect(get(child.id)).toBeUndefined();
+    expect(notifications(unreadGrandchild.id)[0]?.target).toBe("inventory");
+    unreadChildOwner();
+    expect(get(unreadGrandchild.id)?.terminalNotification).toBe("main");
+    expect(notifications(unreadGrandchild.id)[0]?.target).toBe("both");
+    expect(emitQueue.takeForOwner("root-fork-unread")).toHaveLength(0);
     expect(emitQueue.drainForBoundary("turn_start").notificationTexts).toHaveLength(1);
-  });
-
-  test("releases owner-consumed retention when the parent finishes", async () => {
-    setEvictionDelayForTests(5);
-    const releaseOwner = emitQueue.registerOwner("parent-fork", (replayKeys) =>
-      markOwnerNotificationsPromoted("parent-fork", replayKeys),
-    );
-    const parent = agent({ callId: "parent" });
-    const child = agent({
-      callId: "child",
-      parentTaskId: parent.id,
-      ownerId: "parent-fork",
-      mode: "detached",
-    });
-
-    expect(completeTaskForRun(taskRunRef(child), { content: "finished", isError: false })).toBe(
-      true,
-    );
-    expect(emitQueue.takeForOwner("parent-fork")).toHaveLength(1);
-    releaseOwner();
-    await Bun.sleep(15);
-    expect(get(child.id)).toBeDefined();
-
-    expect(completeTaskForRun(taskRunRef(parent), { content: "finished", isError: false })).toBe(
-      true,
-    );
-    expect(get(child.id)).toBeUndefined();
     expect(emitQueue.drainForBoundary("turn_start").notificationTexts).toHaveLength(0);
-  });
-
-  test("does not retain a child that completes after its parent finishes", async () => {
-    setEvictionDelayForTests(5);
-    const releaseOwner = emitQueue.registerOwner("parent-fork", (replayKeys) =>
-      markOwnerNotificationsPromoted("parent-fork", replayKeys),
-    );
-    const parent = agent({ callId: "parent" });
-    const child = agent({
-      callId: "child",
-      parentTaskId: parent.id,
-      ownerId: "parent-fork",
-      mode: "detached",
-    });
-
-    expect(completeTaskForRun(taskRunRef(parent), { content: "finished", isError: false })).toBe(
-      true,
-    );
-    expect(completeTaskForRun(taskRunRef(child), { content: "finished", isError: false })).toBe(
-      true,
-    );
-    expect(emitQueue.takeForOwner("parent-fork")).toHaveLength(1);
-    releaseOwner();
-    await Bun.sleep(15);
-    expect(get(child.id)).toBeUndefined();
-    expect(emitQueue.drainForBoundary("turn_start").notificationTexts).toHaveLength(0);
-  });
-
-  test("releases owner-consumed retention when the parent is removed", async () => {
-    setEvictionDelayForTests(5);
-    const releaseOwner = emitQueue.registerOwner("parent-fork", (replayKeys) =>
-      markOwnerNotificationsPromoted("parent-fork", replayKeys),
-    );
-    const parent = agent({ callId: "parent" });
-    const child = agent({
-      callId: "child",
-      parentTaskId: parent.id,
-      ownerId: "parent-fork",
-      mode: "detached",
-    });
-
-    expect(completeTaskForRun(taskRunRef(child), { content: "finished", isError: false })).toBe(
-      true,
-    );
-    expect(emitQueue.takeForOwner("parent-fork")).toHaveLength(1);
-    releaseOwner();
-    await Bun.sleep(15);
-    expect(get(child.id)).toBeDefined();
-
-    expect(removeTask(parent.id)).toBe(true);
-    expect(get(child.id)).toBeUndefined();
-    expect(emitQueue.drainForBoundary("turn_start").notificationTexts).toHaveLength(0);
+    unreadRootOwner();
   });
 
   test("repeated cascading cancellation is idempotent across descendants and generations", () => {

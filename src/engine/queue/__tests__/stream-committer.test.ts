@@ -53,10 +53,13 @@ function makeCommitter(overrides: Partial<StreamCommitterDeps> = {}) {
 
 function makeObserver(overrides: Partial<TuiTurnObserverDeps> = {}) {
   const turnState = { provider: "anthropic", model: "test-model" } as never;
+  // The broker is the LIVE provider source (mid-turn switches update it); the
+  // default follows whatever turnState the test supplies, and a test may pass
+  // its own `broker` override to diverge the two on purpose.
   const deps = {
     startId: "m1",
     session: { id: "s1", cwd: "/tmp", eventSeq: 1, messages: [] } as never,
-    broker: { read: () => turnState } as never,
+    broker: { read: () => (overrides.turnState ?? turnState) as never } as never,
     turnState,
     recordProviderUsage: () => {},
     mergeContextUsageSnapshot: (previous) => previous,
@@ -391,6 +394,37 @@ describe("stream committer record enrichment", () => {
     await committer.flushAssistant();
 
     expect(appendedRecords[0]).toEqual(expect.objectContaining({ requestId: "req-123" }));
+  });
+
+  it("persists signed thinking verbatim while the transcript entry stays stripped", async () => {
+    appendedRecords.length = 0;
+    const raw = "**Planning the approach**\n\nreal body here";
+    const committer = makeCommitter({ reasoningHeadlinesEnabled: () => true });
+    committer.addThinking(raw);
+    // A signature covers the thinking text exactly as streamed: the persisted
+    // record must carry the unstripped text or a resumed session replays
+    // modified text under a signature that no longer matches it.
+    committer.setSignature("sig-bytes");
+
+    const entries = await committer.flushAssistant();
+
+    expect(appendedRecords[0]).toEqual(
+      expect.objectContaining({ thinking: raw, thinkingSignature: "sig-bytes" }),
+    );
+    expect(entries.find((e) => e.kind === "thinking")).toMatchObject({ text: "real body here" });
+  });
+
+  it("persists stripped thinking when no signature exists", async () => {
+    appendedRecords.length = 0;
+    const committer = makeCommitter({ reasoningHeadlinesEnabled: () => true });
+    committer.addThinking("**Planning the approach**\n\nreal body here");
+
+    await committer.flushAssistant();
+
+    expect(appendedRecords[0]).toEqual(expect.objectContaining({ thinking: "real body here" }));
+    expect(appendedRecords[0]).not.toEqual(
+      expect.objectContaining({ thinkingSignature: expect.anything() }),
+    );
   });
 });
 

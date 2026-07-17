@@ -8,7 +8,7 @@ function agentEntry(id: string, args: Record<string, unknown>): TranscriptEntry 
 
 describe("applyAgentIdentityToTranscript", () => {
   it("stamps the resolved name into tier-dispatch args", () => {
-    const entries = [agentEntry("t_c1", { description: "scan", tier: "warrior" })];
+    const entries = [agentEntry("t_c1", { description: "scan", tier: "daimyo" })];
     const next = applyAgentIdentityToTranscript(entries, "c1", { name: "Generalist" });
     const parsed = JSON.parse(next[0]?.text ?? "{}");
     expect(parsed.subagent_type).toBe("Generalist");

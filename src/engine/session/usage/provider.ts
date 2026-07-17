@@ -130,7 +130,7 @@ export function providerContextWarning(
   modelId: string,
   currentContextTokens: number,
 ): UsageWarning | null {
-  if (provider === "openai-custom") return null;
+  if (provider === "openai") return null;
   const utilization = providerContextUtilization(modelId, currentContextTokens, provider);
   if (utilization === null || utilization < 90) return null;
   const used = Math.min(100, Math.floor(utilization));

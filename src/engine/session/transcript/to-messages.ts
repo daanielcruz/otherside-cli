@@ -278,10 +278,16 @@ function assistantRecordBlocks(record: AssistantMessageRecord): ContentBlock[] {
   const thinking = record.thinking ?? "";
   const signature = record.thinkingSignature ?? "";
   if (thinking.length > 0 || signature.length > 0) {
+    // The block carries the record's provenance: adjacent assistant messages
+    // can merge during rebuild, and a merged message's stamp must not vouch
+    // for a sibling producer's signed reasoning.
     blocks.push({
       type: "thinking",
       text: thinking,
       ...(signature ? { signature } : {}),
+      ...(isProviderId(record.provider) ? { producedBy: record.provider } : {}),
+      ...(record.model ? { producedModel: record.model } : {}),
+      ...(record.producedAccount ? { producedAccount: record.producedAccount } : {}),
     });
   }
   blocks.push(...textBlocks(record.content));
@@ -335,6 +341,28 @@ function preserveResultBlocks(result: unknown): string | ToolResultContentBlock[
             ...(obj.dimensions && typeof obj.dimensions === "object"
               ? { dimensions: obj.dimensions as ImageDimensions }
               : {}),
+          });
+        } else {
+          valid = false;
+          break;
+        }
+      } else if (obj.type === "pdf" && obj.source && typeof obj.source === "object") {
+        const src = obj.source as Record<string, unknown>;
+        if (
+          src.type === "base64" &&
+          src.media_type === "application/pdf" &&
+          typeof src.data === "string" &&
+          src.data.length > 0 &&
+          typeof obj.filename === "string" &&
+          typeof obj.pageCount === "number" &&
+          typeof obj.bytes === "number"
+        ) {
+          blocks.push({
+            type: "pdf",
+            source: { type: "base64", media_type: "application/pdf", data: src.data },
+            filename: obj.filename,
+            pageCount: obj.pageCount,
+            bytes: obj.bytes,
           });
         } else {
           valid = false;

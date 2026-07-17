@@ -1,6 +1,15 @@
 import { homedir } from "node:os";
-import { isAbsolute, join, normalize, resolve } from "node:path";
+import { isAbsolute, join, normalize, resolve, win32 } from "node:path";
 import { getTrackedCwd } from "@/kernel/std/state/cwd-state.ts";
+
+export function windowsShellPathToNative(inputPath: string): string {
+  if (inputPath.startsWith("//")) return inputPath.replaceAll("/", "\\");
+  const drivePath = inputPath.match(/^\/([A-Za-z])(\/|$)/);
+  if (!drivePath) return inputPath.replaceAll("/", "\\");
+  const drive = drivePath[1]?.toUpperCase() ?? "";
+  const rest = inputPath.slice(2).replaceAll("/", "\\");
+  return win32.normalize(`${drive}:${rest || "\\"}`);
+}
 
 /**
  * Expand ~ / relative / absolute path inputs to a native absolute path.
@@ -28,8 +37,12 @@ export function expandPath(inputPath: string, baseDir?: string): string {
   if (trimmedPath.startsWith("~/")) {
     return join(homedir(), trimmedPath.slice(2)).normalize("NFC");
   }
-  if (isAbsolute(trimmedPath)) {
-    return normalize(trimmedPath).normalize("NFC");
+  const nativePath =
+    process.platform === "win32" && /^\/[A-Za-z]\//.test(trimmedPath)
+      ? windowsShellPathToNative(trimmedPath)
+      : trimmedPath;
+  if (isAbsolute(nativePath)) {
+    return normalize(nativePath).normalize("NFC");
   }
-  return resolve(actualBaseDir, trimmedPath).normalize("NFC");
+  return resolve(actualBaseDir, nativePath).normalize("NFC");
 }

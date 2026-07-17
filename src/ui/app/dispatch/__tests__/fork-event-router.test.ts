@@ -91,6 +91,40 @@ describe("fork-event-router skill completion", () => {
   });
 });
 
+describe("fork-event-router stream isolation", () => {
+  it("keeps agent output and resets out of the main transcript", () => {
+    const { routeForkEvent, get } = makeHarness();
+    routeForkEvent({
+      kind: "fork_start",
+      forkId: "agent-fork",
+      parentToolCallId: "agent-call",
+      name: "worker",
+      provider: "codex",
+      model: "gpt-5.5",
+    });
+
+    routeForkEvent({ kind: "fork_text_delta", forkId: "agent-fork", text: "private reasoning" });
+    routeForkEvent({ kind: "fork_stream_reset", forkId: "agent-fork", discardedChars: 7 });
+    routeForkEvent({
+      kind: "fork_complete",
+      forkId: "agent-fork",
+      output: "private result",
+      isError: false,
+    });
+
+    expect(get()).toEqual([]);
+  });
+
+  it("continues streaming skill output into its progress row", () => {
+    const { routeForkEvent, get } = makeHarness();
+    startSkillFork(routeForkEvent, "skill-fork");
+
+    routeForkEvent({ kind: "fork_text_delta", forkId: "skill-fork", text: "public progress" });
+
+    expect(get()[0]?.progress).toEqual([{ kind: "text", text: "public progress" }]);
+  });
+});
+
 describe("fork-event-router quota handling", () => {
   it("ignores fork_quota_exhausted — no main usage panel, no transcript mutation", () => {
     const { routeForkEvent, get } = makeHarness();

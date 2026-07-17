@@ -13,7 +13,7 @@ function sampleContext(): LayerContext {
     sessionId: "sess-fixture",
     cwd: "/tmp/fixture",
     config: DEFAULT_CONFIG,
-    multiproviderEnabled: false,
+    orchestrationMode: "disabled",
     mcpInstructionBlocks: [],
     injections: makeQueue(),
     deferredToolExclusions: new Set<string>(),
@@ -25,26 +25,7 @@ function sampleContext(): LayerContext {
     currentDate: "2026-06-22",
     gitStatus: "On branch main",
     modelDisplayName: "Opus 4.8",
-    modelTierLines: ["Best: Opus 4.8", "Explorer: Sonnet 4.6"],
-    availableModels: [
-      {
-        provider: "codex",
-        models: [
-          { id: "gpt-5.6-sol", display: "GPT-5.6 Sol" },
-          { id: "gpt-5.6-terra", display: "GPT-5.6 Terra" },
-          { id: "gpt-5.6-luna", display: "GPT-5.6 Luna" },
-        ],
-      },
-      {
-        provider: "anthropic",
-        models: [
-          { id: "claude-fable-5", display: "Fable 5" },
-          { id: "claude-opus-4-8", display: "Opus 4.8" },
-          { id: "claude-sonnet-5", display: "Sonnet 5" },
-          { id: "claude-haiku-4-5", display: "Haiku 4.5" },
-        ],
-      },
-    ],
+    availableModels: [],
     knowledgeCutoff: "January 2026",
     agentRows: [
       {
@@ -79,16 +60,14 @@ describe("harness compose snapshot", () => {
     ...harness.userPrepend,
   ];
 
-  it("env-info renders model description, cutoff, and tier line from ctx data", () => {
+  it("env-info renders model description and cutoff without tier doctrine", () => {
     const env = blockText(harness.systemBlocks, "# Environment");
     expect(env).toBeDefined();
     expect(env).toContain(
       " - You are powered by the model named Opus 4.8. The exact model ID is claude-opus-4-8.",
     );
     expect(env).toContain(" - Assistant knowledge cutoff is January 2026.");
-    expect(env).toContain(
-      " - Models on this provider, by tier — Best: Opus 4.8; Explorer: Sonnet 4.6. When building AI applications, default to the most capable (General tier) model.",
-    );
+    expect(env).not.toContain("Models on this provider, by tier");
     expect(env).toContain(
       " - otherside is available as a CLI in the terminal, with a companion mobile app (iOS/Android) for remote pairing and steering sessions on the go.",
     );

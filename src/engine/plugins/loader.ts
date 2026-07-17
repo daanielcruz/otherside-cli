@@ -4,6 +4,14 @@ import type { HookEvent } from "@/kernel/hooks/events.ts";
 import { HOOK_EVENT_VALUES } from "@/kernel/hooks/events.ts";
 import type { HookEntry } from "@/kernel/hooks/exec.ts";
 import { configRoot } from "@/kernel/std/fs/paths.ts";
+import { getTrackedCwd } from "@/kernel/std/state/cwd-state.ts";
+import {
+  createPluginId,
+  isPluginId,
+  normalizeProjectPath,
+  type PluginId,
+  parsePluginId,
+} from "./identity.ts";
 import { findPluginInstallationByPath, listPluginInstallations } from "./installations.ts";
 import {
   type CommandMetadata,
@@ -54,8 +62,12 @@ export interface ResolvedPlugin {
 }
 
 export interface PluginLoadError {
-  path: string;
-  error: string;
+  readonly pluginId?: PluginId;
+  readonly path: string;
+  readonly stage: "discovery" | "manifest" | "registration" | "components";
+  readonly code: string;
+  readonly message: string;
+  readonly recoveryHint: string;
 }
 
 export interface PluginLoadResult {
@@ -379,6 +391,33 @@ export function normalizePluginHooks(raw: unknown, pluginRoot: string): HooksSet
   return {};
 }
 
+function pluginIdForSource(name: string, source: string): PluginId | undefined {
+  if (isPluginId(source)) return source;
+  const marketplace = source.trim() && !source.includes("/") ? source : "local";
+  try {
+    return createPluginId(name, marketplace);
+  } catch {
+    return undefined;
+  }
+}
+
+function loadError(
+  path: string,
+  stage: PluginLoadError["stage"],
+  code: string,
+  message: string,
+  pluginId?: PluginId,
+): PluginLoadError {
+  return {
+    ...(pluginId === undefined ? {} : { pluginId }),
+    path,
+    stage,
+    code,
+    message,
+    recoveryHint: "Fix the plugin manifest or remove the installation, then reload plugins.",
+  };
+}
+
 function loadHooks(manifest: PluginManifest, hooksDir: string, root: string): HooksSettings | null {
   let hooksJsonSettings: HooksSettings | null = null;
   const hooksJsonPath = join(hooksDir, "hooks.json");
@@ -429,17 +468,32 @@ function loadHooks(manifest: PluginManifest, hooksDir: string, root: string): Ho
   return merged;
 }
 
+class PluginManifestLoadError extends Error {
+  readonly code: string;
+
+  constructor(code: string, message: string) {
+    super(message);
+    this.name = "PluginManifestLoadError";
+    this.code = code;
+  }
+}
+
 export function loadPluginFromDirectory(
   pluginDir: string,
   source: string,
-  options?: { requireManifest?: boolean },
+  options?: { requireManifest?: boolean; reportErrors?: boolean },
 ): LoadedPlugin | null {
   const root = resolve(pluginDir);
   const manifestPath = resolveManifestPath(root);
 
   let manifest: PluginManifest;
   if (manifestPath === null) {
-    if (options?.requireManifest) return null;
+    if (options?.requireManifest) {
+      if (options.reportErrors) {
+        throw new PluginManifestLoadError("PLUGIN_MANIFEST_MISSING", "Plugin manifest is missing");
+      }
+      return null;
+    }
     const hasImplicitLayout = [
       "commands",
       "agents",
@@ -455,12 +509,24 @@ export function loadPluginFromDirectory(
     let raw: unknown;
     try {
       raw = readJsonFile(manifestPath);
-    } catch {
+    } catch (error) {
+      if (options?.reportErrors) {
+        throw new PluginManifestLoadError(
+          "PLUGIN_MANIFEST_UNREADABLE",
+          error instanceof Error ? error.message : String(error),
+        );
+      }
       return null;
     }
     try {
       manifest = parseManifest(raw);
-    } catch {
+    } catch (error) {
+      if (options?.reportErrors) {
+        throw new PluginManifestLoadError(
+          "PLUGIN_MANIFEST_INVALID",
+          error instanceof Error ? error.message : String(error),
+        );
+      }
       return null;
     }
   }
@@ -567,59 +633,137 @@ export function resolvePluginComponents(plugin: LoadedPlugin): ResolvedPlugin {
   return { plugin, commands, agents, skills, hooks };
 }
 
-export function loadPluginsFromDirectories(dirs: string[]): PluginLoadResult {
-  const plugins: LoadedPlugin[] = [];
+export interface PluginLoadOptions {
+  readonly cwd?: string;
+}
+
+interface PluginCandidate {
+  readonly pluginId: PluginId;
+  readonly plugin: LoadedPlugin;
+  readonly rank: number;
+}
+
+function candidateRank(scope: "user" | "project" | "local"): number {
+  return scope === "local" ? 3 : scope === "project" ? 2 : 1;
+}
+
+function errorFromLoadFailure(path: string, error: unknown, pluginId?: PluginId): PluginLoadError {
+  if (error instanceof PluginManifestLoadError) {
+    return loadError(path, "manifest", error.code, error.message, pluginId);
+  }
+  return loadError(
+    path,
+    "discovery",
+    "PLUGIN_LOAD_FAILED",
+    error instanceof Error ? error.message : String(error),
+    pluginId,
+  );
+}
+
+export function loadPluginsFromDirectories(
+  dirs: string[],
+  options?: PluginLoadOptions,
+): PluginLoadResult {
+  const candidates = new Map<PluginId, PluginCandidate>();
   const errors: PluginLoadError[] = [];
+  const currentProjectPath = normalizeProjectPath(options?.cwd ?? getTrackedCwd());
+  const managedRoot = resolve(configRoot(), "plugins", "installed");
+
+  function addCandidate(plugin: LoadedPlugin, rank: number, pluginId?: PluginId): void {
+    const canonicalId = pluginId ?? pluginIdForSource(plugin.name, plugin.source);
+    if (!canonicalId) {
+      errors.push(
+        loadError(plugin.path, "registration", "PLUGIN_ID_INVALID", "Plugin has no canonical id"),
+      );
+      return;
+    }
+    const previous = candidates.get(canonicalId);
+    if (!previous || rank >= previous.rank) {
+      candidates.set(canonicalId, { pluginId: canonicalId, plugin, rank });
+    }
+  }
+
+  try {
+    for (const installation of listPluginInstallations()) {
+      if (
+        installation.scope !== "user" &&
+        (installation.projectPath === undefined || installation.projectPath !== currentProjectPath)
+      ) {
+        continue;
+      }
+      const installPath = resolve(installation.installPath);
+      if (!isDirectory(installPath)) {
+        errors.push(
+          loadError(
+            installPath,
+            "discovery",
+            "PLUGIN_PAYLOAD_MISSING",
+            "Installed plugin payload is missing",
+            installation.identity,
+          ),
+        );
+        continue;
+      }
+      try {
+        const loaded = loadPluginFromDirectory(installPath, installation.identity, {
+          requireManifest: true,
+          reportErrors: true,
+        });
+        const parsedPluginId = parsePluginId(installation.identity);
+        if (loaded && parsedPluginId && loaded.manifest.name !== parsedPluginId.name) {
+          errors.push(
+            loadError(
+              installPath,
+              "manifest",
+              "PLUGIN_IDENTITY_MISMATCH",
+              `Managed plugin ${installation.identity} declares manifest name ${JSON.stringify(
+                loaded.manifest.name,
+              )}; expected ${JSON.stringify(parsedPluginId.name)}.`,
+              installation.identity,
+            ),
+          );
+          continue;
+        }
+        if (loaded) addCandidate(loaded, candidateRank(installation.scope), installation.identity);
+      } catch (error) {
+        errors.push(errorFromLoadFailure(installPath, error, installation.identity));
+      }
+    }
+  } catch (error) {
+    errors.push(
+      loadError(
+        join(configRoot(), "plugins", "installed_plugins.json"),
+        "discovery",
+        "PLUGIN_REGISTRY_INVALID",
+        error instanceof Error ? error.message : String(error),
+      ),
+    );
+  }
 
   for (const dir of dirs) {
-    if (!isDirectory(dir)) continue;
+    const resolvedDir = resolve(dir);
+    if (resolvedDir === managedRoot || !isDirectory(dir)) continue;
     let entries: string[];
     try {
       entries = readdirSync(dir);
-    } catch {
+    } catch (error) {
+      errors.push(errorFromLoadFailure(dir, error));
       continue;
     }
     for (const entry of entries) {
       const pluginDir = join(dir, entry);
       if (!isDirectory(pluginDir)) continue;
       try {
-        const loaded = loadPluginFromDirectory(pluginDir, dir);
-        if (loaded !== null) {
-          plugins.push(loaded);
-        }
-      } catch (e) {
-        errors.push({
-          path: pluginDir,
-          error: e instanceof Error ? e.message : String(e),
-        });
-      }
-    }
-  }
-
-  const loadsManagedInstalls = dirs.some(
-    (dir) => resolve(dir) === resolve(configRoot(), "plugins", "installed"),
-  );
-  if (loadsManagedInstalls) {
-    const loadedPaths = new Set(plugins.map((plugin) => resolve(plugin.path)));
-    for (const installation of listPluginInstallations()) {
-      const installPath = resolve(installation.installPath);
-      if (loadedPaths.has(installPath) || !isDirectory(installPath)) continue;
-      try {
-        const loaded = loadPluginFromDirectory(installPath, installation.marketplace, {
-          requireManifest: true,
-        });
-        if (loaded) {
-          plugins.push(loaded);
-          loadedPaths.add(installPath);
-        }
+        const loaded = loadPluginFromDirectory(pluginDir, dir, { reportErrors: true });
+        if (loaded) addCandidate(loaded, 4);
       } catch (error) {
-        errors.push({
-          path: installPath,
-          error: error instanceof Error ? error.message : String(error),
-        });
+        errors.push(errorFromLoadFailure(pluginDir, error));
       }
     }
   }
 
+  const plugins = [...candidates.values()]
+    .sort((left, right) => left.pluginId.localeCompare(right.pluginId))
+    .map((candidate) => candidate.plugin);
   return { plugins, errors };
 }

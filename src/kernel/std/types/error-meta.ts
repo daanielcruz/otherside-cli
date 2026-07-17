@@ -42,10 +42,12 @@ export class QuotaExhaustedError extends Error {
 }
 
 export class ProviderHttpError extends Error {
+  provider: string;
   status: number;
   body: string;
   retryAfterHeader: string | null;
   shouldRetryHeader: string | null;
+  headers: Record<string, string>;
   quotaExhausted: boolean;
   quotaResetEpochMs: number | null;
   constructor(opts: {
@@ -54,19 +56,41 @@ export class ProviderHttpError extends Error {
     body: string;
     retryAfterHeader?: string | null;
     shouldRetryHeader?: string | null;
+    headers?: Headers | Record<string, string | null | undefined>;
     quotaExhausted?: boolean;
     quotaResetEpochMs?: number | null;
   }) {
     const preview = opts.body.length > 500 ? `${opts.body.slice(0, 500)}…` : opts.body;
     super(`HTTP ${opts.status} from ${opts.provider}: ${preview}`);
     this.name = "ProviderHttpError";
+    this.provider = opts.provider;
     this.status = opts.status;
     this.body = opts.body;
-    this.retryAfterHeader = opts.retryAfterHeader ?? null;
-    this.shouldRetryHeader = opts.shouldRetryHeader ?? null;
+    this.headers = normalizeHeaders(opts.headers);
+    this.retryAfterHeader = opts.retryAfterHeader ?? this.headers["retry-after"] ?? null;
+    this.shouldRetryHeader = opts.shouldRetryHeader ?? this.headers["x-should-retry"] ?? null;
+    if (this.retryAfterHeader !== null) this.headers["retry-after"] = this.retryAfterHeader;
+    if (this.shouldRetryHeader !== null) this.headers["x-should-retry"] = this.shouldRetryHeader;
     this.quotaExhausted = opts.quotaExhausted ?? false;
     this.quotaResetEpochMs = opts.quotaResetEpochMs ?? null;
   }
+}
+
+function normalizeHeaders(
+  headers: Headers | Record<string, string | null | undefined> | undefined,
+): Record<string, string> {
+  if (!headers) return {};
+  const normalized: Record<string, string> = {};
+  if (typeof (headers as Headers).forEach === "function") {
+    (headers as Headers).forEach((value, key) => {
+      normalized[key.toLowerCase()] = value;
+    });
+    return normalized;
+  }
+  for (const [key, value] of Object.entries(headers)) {
+    if (value !== null && value !== undefined) normalized[key.toLowerCase()] = value;
+  }
+  return normalized;
 }
 
 export type ErrorClass = ErrorKind;

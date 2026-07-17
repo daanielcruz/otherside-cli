@@ -1,7 +1,7 @@
 import { defaultEffortForModel, effortLevelsForModel } from "@/engine/model/catalog.ts";
 import { listEnabledHookEntries } from "@/engine/plugins/registry.ts";
 import { attachSessionWorktreeHost } from "@/engine/session/worktree.ts";
-import { isMultiproviderOrchestrationEnabled } from "@/kernel/config/config.ts";
+import { effectiveOrchestrationMode } from "@/kernel/config/config.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 import type { AgentDeps } from "./turn/types.ts";
 
@@ -16,8 +16,9 @@ export function makeRequestContext(deps: AgentDeps, turnId?: string): RequestCon
     effort: state.effort,
     fastMode: state.fastMode,
     permissionMode: state.permissionMode,
-    multiproviderEnabled: isMultiproviderOrchestrationEnabled(deps.config),
+    orchestrationMode: effectiveOrchestrationMode(deps.config),
     quotaFallbackEnabled: deps.config.quotaFallback ?? true,
+    chainOfCommandEnabled: deps.config.chainOfCommand ?? true,
     sessionId: deps.session.id,
     // Active cwd (may be a session worktree path). Transcripts key on storageCwd.
     cwd: deps.session.cwd,

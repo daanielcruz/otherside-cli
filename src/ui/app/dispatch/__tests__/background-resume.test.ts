@@ -6,10 +6,7 @@ import { queueActions } from "@/store/queue-store/index.ts";
 import { handleSlashRef, runSubmittedTurnRef } from "@/store/turn-run/index.ts";
 import { createRequestBackgroundResume } from "@/ui/app/dispatch/background-resume.ts";
 import { createPostTurnDrain, type TurnContinuation } from "@/ui/app/drain/post-turn.ts";
-import {
-  completionNoticeDisposition,
-  taskKindForNotificationSummary,
-} from "@/ui/app/hooks/use-async-completion-resume.ts";
+import { completionNoticeDisposition } from "@/ui/app/hooks/use-async-completion-resume.ts";
 
 // A scheduler that fires the timeout callback synchronously, so the test doesn't
 // need to wait on real timers.
@@ -31,13 +28,6 @@ beforeEach(() => {
 afterEach(() => {
   queueActions.clear();
   handleSlashRef.current = () => false;
-});
-
-describe("rerouted owner notice projection", () => {
-  it("retains the shell kind after the task store evicts the task", () => {
-    expect(taskKindForNotificationSummary('Background command "sleep 1" completed')).toBe("shell");
-    expect(taskKindForNotificationSummary('Agent "worker" completed')).toBe("agent");
-  });
 });
 
 describe("completion notice consumption timing", () => {
@@ -159,7 +149,6 @@ describe("requestBackgroundResume gating (D2 — wake driver vs a stale gate)", 
 
 describe("requestBackgroundResume standing queue processor (D4 — direct promotion, no empty resume)", () => {
   const realPostTurnDrain = createPostTurnDrain({
-    applyPendingChange: () => {},
     setTranscript: () => {},
   });
 
@@ -192,39 +181,6 @@ describe("requestBackgroundResume standing queue processor (D4 — direct promot
     expect(handled.slash).toBe("/compact");
     expect(emptyResumeDispatched).toBe(0); // no pointless empty provider turn
     expect(turnGuard.active).toBe(false); // a slash continuation never reserves the guard
-  });
-
-  it("continues to a pending completion after applying a settings-only queue item", () => {
-    queueActions.push({
-      id: "q-change",
-      text: "",
-      expanded: "",
-      pendingChange: { kind: "set_ultracode", enabled: true },
-    });
-    emitQueue.emitForCompletion({
-      class: "deferred_output",
-      ownerId: undefined,
-      isSubagentOwned: false,
-      payload: { kind: "task_notification_xml", text: "<task-notification/>" },
-    });
-    const turnGuard = new TurnGuard();
-    let emptyResumeDispatched = 0;
-    runSubmittedTurnRef.current = async (text) => {
-      if (text === "") emptyResumeDispatched += 1;
-    };
-    const requestBackgroundResume = createRequestBackgroundResume({
-      agent: { injections: { peek: () => [] } } as never,
-      getBgTasksOpen: () => false,
-      autoResumeDispatch: createAutoClearDispatch({ holdMs: 0, scheduler: immediateScheduler }),
-      turnGuard,
-      postTurnDrain: realPostTurnDrain,
-      runtimeConfig: {} as never,
-      setTranscript: () => {},
-    });
-
-    requestBackgroundResume();
-
-    expect(emptyResumeDispatched).toBe(1);
   });
 
   it("promotes a queued text message as a real turn, reserving the guard first", async () => {

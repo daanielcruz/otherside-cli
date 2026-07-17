@@ -65,7 +65,7 @@ export function handleLoginCancel(ctx: KeymapContext): void {
     return;
   }
   if (ctx.phase.kind === "custom") {
-    if (ctx.initialProvider === "openai-custom") ctx.tryClose();
+    if (ctx.initialProvider === "openai") ctx.tryClose();
     else ctx.setPhase({ kind: "list" });
   }
 }
@@ -265,7 +265,7 @@ export function handlePanelKey(ctx: KeymapContext, input: string, key: Key): boo
 
   if (ctx.phase.kind === "custom") {
     if (key.leftArrow) {
-      if (ctx.initialProvider === "openai-custom") ctx.tryClose();
+      if (ctx.initialProvider === "openai") ctx.tryClose();
       else ctx.setPhase({ kind: "list" });
       return true;
     }

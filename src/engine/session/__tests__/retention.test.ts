@@ -436,6 +436,49 @@ describe("retention hardening", () => {
     expect(existsMock(activeJsonl)).toBe(true);
   });
 
+  it("sweeps orphan task-list directories under the config tasks root by retention age", async () => {
+    const liveSessionId = "e93a6eb2-9b2f-410a-ba5e-2f9a76d8b9d7";
+    const regDir = join(base, "config", "session-registry");
+    mkdirMock(regDir, { recursive: true });
+    writeFileMock(
+      join(regDir, `${liveSessionId}.json`),
+      JSON.stringify({
+        pid: process.pid,
+        sessionId: liveSessionId,
+        cwd: base,
+        status: "idle",
+        startedAt: NOW,
+        updatedAt: NOW,
+      }),
+    );
+
+    const tasksRoot = join(base, "config", "tasks");
+    const seed = (name: string, ageMs: number): string => {
+      const dir = join(tasksRoot, name);
+      mkdirMock(dir, { recursive: true });
+      const file = join(dir, "1");
+      writeFileMock(file, JSON.stringify({ id: "1", subject: "s" }));
+      const seconds = (NOW - ageMs) / 1000;
+      utimesMock(file, seconds, seconds);
+      utimesMock(dir, seconds, seconds);
+      return dir;
+    };
+    // Orphans from dead sessions: a stale session-id list and a stale
+    // agent-scoped list both age out; a fresh one and a live session's list stay.
+    const staleSessionList = seed("f13a6eb2-9b2f-410a-ba5e-2f9a76d8b9d8", 40 * DAY_MS);
+    const staleAgentList = seed("agent-list-stale", 40 * DAY_MS);
+    const freshList = seed("agent-list-fresh", 1 * DAY_MS);
+    const liveSessionList = seed(liveSessionId, 40 * DAY_MS);
+
+    const { runRetentionCleanup } = await import("../retention.ts");
+    await runRetentionCleanup(NOW);
+
+    expect(existsMock(staleSessionList)).toBe(false);
+    expect(existsMock(staleAgentList)).toBe(false);
+    expect(existsMock(freshList)).toBe(true);
+    expect(existsMock(liveSessionList)).toBe(true);
+  });
+
   it("prunes orphan task directories in tmp while preserving active ones by PID, registry, and mtime", async () => {
     const tmpDir = join(base, "tmp");
     mkdirMock(tmpDir, { recursive: true });

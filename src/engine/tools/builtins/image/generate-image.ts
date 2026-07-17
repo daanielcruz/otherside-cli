@@ -3,11 +3,13 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
-  type CodexImageInput,
-  type CodexImageResult,
-  generateImage,
+  generateImageWithProvider,
+  type ImageGenerationInput,
+  type ImageGenerationResult,
   type ImageSize,
-} from "@/engine/providers/codex/image.ts";
+  imageGeneratorLabel,
+  resolveImageGeneratorProvider,
+} from "@/engine/providers/image-generation.ts";
 import { removeChromaKey } from "@/engine/tools/_infra/chroma-key.ts";
 import { loadImageFromDisk } from "@/engine/tools/builtins/image/parse-image.ts";
 import type { ToolHandler } from "@/engine/tools/contract.ts";
@@ -16,9 +18,10 @@ import { loadConfig } from "@/kernel/config/config.ts";
 import { imageCacheRoot } from "@/kernel/std/fs/paths.ts";
 import { resizeImageIfTooLarge } from "@/kernel/std/image-resize.ts";
 import { getActivePasteStore } from "@/kernel/std/paste/registry.ts";
+import type { ImageMediaType } from "@/kernel/std/types/image.ts";
 import type { ToolCall, ToolResult } from "@/kernel/std/types/message.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
-import { hasCodexCredentialSync } from "@/kernel/storage/credentials.ts";
+import { hasCredentialSync } from "@/kernel/storage/credentials.ts";
 
 const VALID_SIZES = new Set<ImageSize>(["1024x1024", "1024x1536", "1536x1024"]);
 
@@ -56,10 +59,15 @@ function flattenPromptHead(prompt: string, max: number): string {
   return arr.length <= max ? head : `${arr.slice(0, Math.max(0, max - 1)).join("")}…`;
 }
 
-function persistPng(base64: string, callId: string): string {
+function imageExtension(mediaType: ImageMediaType): string {
+  if (mediaType === "image/jpeg") return "jpg";
+  return mediaType.slice("image/".length);
+}
+
+function persistImage(base64: string, mediaType: ImageMediaType, callId: string): string {
   const root = imageCacheRoot();
   mkdirSync(root, { recursive: true });
-  const filename = `gen-${Date.now()}-${sanitize(callId)}.png`;
+  const filename = `gen-${Date.now()}-${sanitize(callId)}.${imageExtension(mediaType)}`;
   const path = join(root, filename);
   writeFileSync(path, Buffer.from(base64, "base64"));
   return path;
@@ -70,17 +78,21 @@ function sanitize(value: string): string {
   return cleaned.length > 0 ? cleaned.slice(0, 32) : "image";
 }
 
-function normalizePngSize(base64: string, size: ImageSize): string {
+function normalizeImageSize(
+  base64: string,
+  mediaType: ImageMediaType,
+  size: ImageSize,
+): { base64: string; mediaType: ImageMediaType } {
   const [width, height] = size.split("x").map(Number) as [number, number];
-  const resized = resizeImageIfTooLarge(Buffer.from(base64, "base64"), "image/png", {
+  const resized = resizeImageIfTooLarge(Buffer.from(base64, "base64"), mediaType, {
     maxWidth: width,
     maxHeight: height,
     targetRawSize: Number.POSITIVE_INFINITY,
   });
-  return resized.buffer.toString("base64");
+  return { base64: resized.buffer.toString("base64"), mediaType: resized.mediaType };
 }
 
-function inputImages(args: Input): { images: CodexImageInput[] } | { error: string } {
+function inputImages(args: Input): { images: ImageGenerationInput[] } | { error: string } {
   const rawPaths = args.referenced_image_paths;
   if (rawPaths !== undefined && !Array.isArray(rawPaths)) {
     return { error: "`referenced_image_paths` must be an array" };
@@ -107,7 +119,7 @@ function inputImages(args: Input): { images: CodexImageInput[] } | { error: stri
   }
 
   if (paths.length > 0) {
-    const images: CodexImageInput[] = [];
+    const images: ImageGenerationInput[] = [];
     for (const path of paths as string[]) {
       const loaded = loadImageFromDisk(path);
       if (typeof loaded === "string") {
@@ -166,25 +178,29 @@ export const GenerateImage: ToolHandler = {
     const effectivePrompt = transparent ? `${prompt}${CHROMA_KEY_BACKDROP_HINT}` : prompt;
 
     const cfg = await loadConfig();
-    if (ctx.provider !== "codex" && cfg.imageGen !== true) {
+    const generator = resolveImageGeneratorProvider(cfg.imageGenProvider, ctx.provider);
+    if (!generator) {
       return err(
         call.id,
-        "image generation is disabled. Open /config and enable `Codex image gen`.",
+        "image generation is disabled. Open /config and choose an image generator.",
       );
     }
-    if (!hasCodexCredentialSync()) {
+    if (!hasCredentialSync(generator)) {
       return err(
         call.id,
-        "image generation requires Codex credentials. Run `otherside login --provider codex`.",
+        `image generation requires ${imageGeneratorLabel(generator)} credentials. Run \`otherside login --provider ${generator}\`.`,
       );
+    }
+    if (transparent && generator !== "codex") {
+      return err(call.id, "transparent image generation currently requires the Codex generator");
     }
 
     const resolvedImages = inputImages(args);
     if ("error" in resolvedImages) return err(call.id, resolvedImages.error);
 
-    let result: CodexImageResult;
+    let result: ImageGenerationResult;
     try {
-      result = await generateImage({
+      result = await generateImageWithProvider(generator, {
         prompt: effectivePrompt,
         size,
         images: resolvedImages.images,
@@ -199,6 +215,7 @@ export const GenerateImage: ToolHandler = {
     }
 
     let finalBase64 = result.base64;
+    let finalMediaType = result.mediaType;
     if (transparent) {
       try {
         const sourcePng = Buffer.from(result.base64, "base64");
@@ -213,6 +230,7 @@ export const GenerateImage: ToolHandler = {
           spillCleanup: true,
         });
         finalBase64 = removed.png.toString("base64");
+        finalMediaType = "image/png";
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         return err(call.id, `chroma-key removal failed: ${msg}`);
@@ -220,7 +238,9 @@ export const GenerateImage: ToolHandler = {
     }
 
     try {
-      finalBase64 = normalizePngSize(finalBase64, size);
+      const normalized = normalizeImageSize(finalBase64, finalMediaType, size);
+      finalBase64 = normalized.base64;
+      finalMediaType = normalized.mediaType;
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       return err(call.id, `could not resize generated image: ${msg}`);
@@ -228,7 +248,7 @@ export const GenerateImage: ToolHandler = {
 
     let savedPath: string;
     try {
-      savedPath = persistPng(finalBase64, result.callId);
+      savedPath = persistImage(finalBase64, finalMediaType, result.callId);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       return err(call.id, `could not save generated image: ${msg}`);
@@ -239,7 +259,7 @@ export const GenerateImage: ToolHandler = {
       store.add({
         type: "image",
         content: finalBase64,
-        mediaType: "image/png",
+        mediaType: finalMediaType,
         sourcePath: savedPath,
       });
     }

@@ -38,7 +38,7 @@ export function useAutoStart(deps: {
     if (!initialProvider) return;
     if (autoTriggeredRef.current === initialProvider) return;
     autoTriggeredRef.current = initialProvider;
-    if (initialProvider === "openai-custom") {
+    if (initialProvider === "openai") {
       beginOpenAiCustomConfig();
       return;
     }

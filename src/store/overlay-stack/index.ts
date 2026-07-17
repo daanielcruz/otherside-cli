@@ -27,6 +27,7 @@ export const OVERLAY_NAMES = [
   "workflows",
   "ultracode-effort",
   "plugins",
+  "orchestration",
 ] as const;
 
 export type OverlayName = (typeof OVERLAY_NAMES)[number];

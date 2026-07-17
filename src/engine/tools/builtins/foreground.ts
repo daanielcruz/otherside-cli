@@ -1,5 +1,4 @@
 import type { OutputProgress } from "@/engine/tools/_infra/spill-buffer.ts";
-import { recoverCwdIfMissing } from "@/engine/tools/builtins/cwd.ts";
 import {
   BASH_PROGRESS_INTERVAL_MS,
   BASH_PROGRESS_TAIL_LINES,
@@ -12,7 +11,6 @@ import {
   spawnShell,
 } from "@/engine/tools/builtins/exec.ts";
 import { capHeadCombined } from "@/engine/tools/builtins/output.ts";
-import { getTrackedCwd } from "@/kernel/std/state/cwd-state.ts";
 import { formatBytes, formatDuration } from "@/kernel/std/text/format.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 
@@ -59,13 +57,13 @@ export function makeBashProgressSink(
 export async function runForeground(
   command: string,
   timeoutMs: number,
+  cwd: string,
   signal?: AbortSignal,
   onStdout?: (progress: OutputProgress) => void,
   login?: boolean | undefined,
 ): Promise<ForegroundResult> {
-  recoverCwdIfMissing();
   const start = Date.now();
-  const child = spawnShell(command, { cwd: getTrackedCwd(), login });
+  const child = spawnShell(command, { cwd, login });
 
   let timedOut = false;
   let aborted = false;

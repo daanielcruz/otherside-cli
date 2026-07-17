@@ -1,7 +1,11 @@
 import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import { appendFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import { clearScope, MAIN_TASK_SCOPE } from "@/engine/background/tasks/index.ts";
+import {
+  clearScope,
+  MAIN_TASK_SCOPE,
+  removeTaskListFromDisk,
+} from "@/engine/background/tasks/index.ts";
 import { clearSessionState as clearCodexSessionState } from "@/engine/providers/codex/transport/state.ts";
 import { closeAllSockets as closeCodexSockets } from "@/engine/providers/codex/transport/ws.ts";
 import {
@@ -34,6 +38,10 @@ export function cleanupSessionHeapState(sessionId: string, cwd: string): void {
   evictFileHistoryCache(sessionId);
   clearCodexSessionState(sessionId);
   invalidateOffsetIndex(sessionPathForCwd(cwd, sessionId));
+}
+
+export function hasSessionTranscript(s: Session): boolean {
+  return existsSync(sessionPathForCwd(s.storageCwd, s.id));
 }
 
 export async function finalizeSession(s: Session): Promise<void> {
@@ -82,6 +90,7 @@ export async function finalizeSession(s: Session): Promise<void> {
     } catch {}
   } finally {
     cleanupSessionHeapState(s.id, s.storageCwd);
+    removeTaskListFromDisk(s.id);
     detachSessionWorktreeHost(s.id);
     closeCodexSockets();
     await closeAllClients();

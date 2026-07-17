@@ -92,6 +92,7 @@ export function ContextUsageRows({ data }: { data: ContextUsageData }): React.JS
         <Text color={Color.text}>{cat.name}: </Text>
         <Text color={Color.muted}>
           {formatCtxTokens(cat.tokens)} tokens ({cw.toFixed(1)}%)
+          {cat.detail ? ` · ${cat.detail}` : ""}
         </Text>
       </Box>
     );

@@ -1,3 +1,4 @@
+import { canSendPdfNatively } from "@/engine/model/facts/capabilities-runtime.ts";
 import {
   buildGeminiRequest,
   encodeGeminiToolName,
@@ -186,6 +187,7 @@ export function translateRequestAntigravity(
       wrapToolOutput: true,
       alwaysSignFunctionCall: true,
       targetUsedClaude: spec.usedClaude,
+      supportsPdf: canSendPdfNatively(ctx.provider, ctx.model),
     },
   });
   const base = built.body;

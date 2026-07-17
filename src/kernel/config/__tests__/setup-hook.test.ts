@@ -2,7 +2,13 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { claimInitialSetupHook, configPath, type UserConfig } from "../config.ts";
+import {
+  claimInitialSetupHook,
+  configPath,
+  loadConfig,
+  saveConfig,
+  type UserConfig,
+} from "../config.ts";
 
 let oldConfigDir: string | undefined;
 let testConfigDir: string;
@@ -26,6 +32,20 @@ function writeSettings(raw: unknown): void {
   const path = configPath();
   writeFileSync(path, `${JSON.stringify(raw, null, 2)}\n`, { mode: 0o600 });
 }
+
+describe("removed settings", () => {
+  it("ignores and drops the legacy dictation language on persistence", async () => {
+    writeSettings({ dictationLanguage: "pt", language: "Japanese" });
+
+    const cfg = await loadConfig();
+    expect((cfg as unknown as Record<string, unknown>).dictationLanguage).toBeUndefined();
+    expect(cfg.language).toBe("Japanese");
+
+    await saveConfig(cfg);
+    const persisted = JSON.parse(readFileSync(configPath(), "utf8")) as Record<string, unknown>;
+    expect(persisted.dictationLanguage).toBeUndefined();
+  });
+});
 
 describe("claimInitialSetupHook", () => {
   it("claims and marks only the first config creation", () => {

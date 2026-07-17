@@ -14,7 +14,12 @@ import type { SlashContext, SlashHandler, SlashResult } from "@/commands/types.t
 import { getProviderConfig } from "@/engine/contract/registry.ts";
 import { ensureRuntimeModel, findModel } from "@/engine/model/catalog.ts";
 import { activePlanFilePath } from "@/engine/tools/plan-gate.ts";
-import { updateConfig } from "@/kernel/config/config.ts";
+import { effectiveOrchestrationMode, updateConfig } from "@/kernel/config/config.ts";
+import {
+  ORCHESTRATION_MODE_VALUES,
+  type OrchestrationMode,
+  orchestrationModeLabel,
+} from "@/kernel/config/orchestration-mode.ts";
 import { deleteFor, type ProviderSlug } from "@/kernel/storage/credentials.ts";
 import {
   isAutoMemoryEnabled,
@@ -37,13 +42,14 @@ async function handleExit(
   _args: string,
   ctx: SlashContext,
 ): Promise<SlashResult> {
-  // Parity: if still inside an EnterWorktree session, prompt keep/remove (tmux
+  // If still inside an EnterWorktree session, prompt keep/remove (tmux
   // killed on remove, left running on keep) before tearing down the TUI.
   try {
     const { resolveWorktreeOnSessionExit } = await import(
       "@/engine/tools/builtins/worktree-exit.ts"
     );
-    await resolveWorktreeOnSessionExit(ctx.session);
+    const result = await resolveWorktreeOnSessionExit(ctx.session);
+    if (result.action === "cancel") return { kind: "instant" };
   } catch {
     // Best-effort — never block process exit on worktree cleanup failure.
   }
@@ -135,19 +141,28 @@ function handleParallel(cmd: SlashCommand, args: string, ctx: SlashContext): Sla
 }
 
 function handleMultiprovider(cmd: SlashCommand, args: string, ctx: SlashContext): SlashResult {
-  const current = ctx.config?.tierSelectorEnabled ?? false;
-  const enabled = toggleValue(args, current);
-  if (enabled === null) {
-    return { kind: "toggle", command: cmd, feedback: "Usage: /multiprovider [on|off]" };
+  const current = effectiveOrchestrationMode(ctx.config);
+  const raw = args.trim();
+  let selected: OrchestrationMode;
+  if (raw.length === 0) {
+    const index = ORCHESTRATION_MODE_VALUES.indexOf(current);
+    selected = ORCHESTRATION_MODE_VALUES[(index + 1) % ORCHESTRATION_MODE_VALUES.length] ?? current;
+  } else if ((ORCHESTRATION_MODE_VALUES as readonly string[]).includes(raw)) {
+    selected = raw as OrchestrationMode;
+  } else {
+    return {
+      kind: "toggle",
+      command: cmd,
+      feedback: "Usage: /multiprovider [disabled|default|feudalism]",
+    };
   }
   void updateConfig((config) => {
-    config.tierSelectorEnabled = enabled;
-    config.orchestratorMode = enabled ? "soft" : "off";
+    config.orchestrationMode = selected;
   });
   return {
     kind: "toggle",
     command: cmd,
-    feedback: `Multiprovider ${enabled ? "enabled" : "disabled"}`,
+    feedback: `Multiprovider set to ${orchestrationModeLabel(selected)}`,
   };
 }
 
@@ -296,7 +311,7 @@ export const HANDLERS: Record<string, SlashHandler> = {
     const result = await handlePlugins(args);
     const sub = args.trim().split(/\s+/)[0]?.toLowerCase() ?? "";
     // Mutating plugin ops open the panel with the result rendered inside it
-    // (reference parity: command feedback lives in the Plugins overlay).
+    // (command feedback lives in the Plugins overlay).
     // Non-mutating list / marketplace list keep printing to the transcript.
     if (PLUGIN_MUTATING_SUBCOMMANDS.has(sub) && result.feedback) {
       setPendingPluginCommandResult(result.feedback);

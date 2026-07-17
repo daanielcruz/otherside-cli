@@ -78,7 +78,7 @@ describe("microcompact and session heap pruning", () => {
     });
   });
 
-  it("maybeMicroCompact appends content_replacement records to session", () => {
+  it("maybeMicroCompact appends content_replacement records to session", async () => {
     const session = new Session("session-test-id", "/test/cwd");
     session.pushRecord({
       type: "tool_call",
@@ -174,12 +174,13 @@ describe("microcompact and session heap pruning", () => {
         getLastUsage: () => null,
       },
       state: {
-        circuitOpen: false,
         rapidRefillBreakerOpen: false,
         rapidRefillCount: 0,
+        consecutiveCompactFailures: 0,
         turnsSinceLast: 0,
-        consecutiveFailures: 0,
+        lastAutoCompactAttemptTurnId: null,
       },
+      turnId: "turn-1",
       activeAbortController: () => null,
       setActiveAbortController: () => {},
       injections,
@@ -189,7 +190,8 @@ describe("microcompact and session heap pruning", () => {
     process.env.OTHERSIDE_MICROCOMPACT_KEEP = "1";
     process.env.OTHERSIDE_MICROCOMPACT_RATIO = "0.00001";
 
-    const events = Array.from(maybeMicroCompact(deps));
+    const events = [];
+    for await (const event of maybeMicroCompact(deps)) events.push(event);
     expect(events).toHaveLength(1);
     expect(events[0]?.kind).toBe("micro_compact");
 

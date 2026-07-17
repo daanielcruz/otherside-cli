@@ -47,6 +47,7 @@ interface TurnWiringDeps {
   runtimeConfigRef: MutableRefObject<UserConfig>;
   promptHistoryRef: MutableRefObject<string[]>;
   promptHistoryIndexRef: MutableRefObject<number | null>;
+  setPluginStatusNotice?: (notice: string | null) => void;
 }
 
 interface TurnWiringResult extends AgentTranscriptHelpers, BtwController {
@@ -70,6 +71,7 @@ export function useTurnWiring(deps: TurnWiringDeps): TurnWiringResult {
     runtimeConfigRef,
     promptHistoryRef,
     promptHistoryIndexRef,
+    setPluginStatusNotice,
   } = deps;
 
   const { agentBlockText, setAgentNested, setAgentBackgrounded, backgroundCurrentAgent } = useMemo(
@@ -90,12 +92,8 @@ export function useTurnWiring(deps: TurnWiringDeps): TurnWiringResult {
   );
   routeForkEventRef.current = routeForkEvent;
 
-  const pendingInputDrainer = createPendingInputDrainer({
-    applyPendingChange,
-    setTranscript,
-    nextTranscriptId,
-  });
-  const postTurnDrain = createPostTurnDrain({ applyPendingChange, setTranscript });
+  const pendingInputDrainer = createPendingInputDrainer();
+  const postTurnDrain = createPostTurnDrain({ setTranscript });
 
   const promptHistoryNav = useMemo(
     () =>
@@ -118,6 +116,7 @@ export function useTurnWiring(deps: TurnWiringDeps): TurnWiringResult {
     transcriptBatch,
     session,
     broker,
+    ...(setPluginStatusNotice ? { setPluginStatusNotice } : {}),
   });
 
   const recordPanelCommit = createRecordPanelCommit(applySlashResult);

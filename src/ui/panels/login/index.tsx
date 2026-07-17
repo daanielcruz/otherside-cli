@@ -49,7 +49,7 @@ export function LoginOverlay({
   const close = useOverlayClose(onClose);
   const [cursor, setCursor] = useState(0);
   const [phase, setPhase] = useState<Phase>(() =>
-    initialProvider === "openai-custom" ? openAiCustomCredentialsPhase(null) : { kind: "list" },
+    initialProvider === "openai" ? openAiCustomCredentialsPhase(null) : { kind: "list" },
   );
   const [bundle, setBundle] = useState<CredentialsBundle | null>(null);
   const flowRef = useRef<FlowHandle | null>(null);

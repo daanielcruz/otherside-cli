@@ -34,6 +34,7 @@ export interface ViewSlice {
   readonly turnVerb: string;
   readonly thinkingStatus: ThinkingStatus;
   readonly remoteSyncStatus: RemoteSyncStatus;
+  readonly pluginStatusNotice: string | null;
   readonly isTurnRunning: boolean;
   readonly contextWarningSuppressed: boolean;
   readonly turnTipIndex: number | null;
@@ -62,6 +63,7 @@ export const initialViewSlice: ViewSlice = {
   turnVerb: "Thinking",
   thinkingStatus: null,
   remoteSyncStatus: "disconnected",
+  pluginStatusNotice: null,
   isTurnRunning: false,
   contextWarningSuppressed: false,
   turnTipIndex: null,
@@ -133,6 +135,10 @@ export function viewReducer(prev: ViewSlice, action: AppAction): ViewSlice {
       return prev.remoteSyncStatus === action.status
         ? prev
         : { ...prev, remoteSyncStatus: action.status };
+    case "view/setPluginStatusNotice":
+      return prev.pluginStatusNotice === action.notice
+        ? prev
+        : { ...prev, pluginStatusNotice: action.notice };
     case "view/setTurnRunning":
       return prev.isTurnRunning === action.running
         ? prev

@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { encryptEvent, generateSessionKey } from "@/backend/shared/e2ee.ts";
+import { type RatchetCacheEntry, ratchetKeyFor } from "@/backend/shared/session-crypto.ts";
 import type { MethodTable } from "@/design/bridge/dispatch.ts";
 import { createInboundState, handleRelayRow, type InboundDeps } from "@/design/relay/inbound.ts";
 import type { RpcContext } from "@/design/types.ts";
-import { encryptEvent, generateSessionKey } from "@/remote/crypto/e2ee.ts";
-import { type RatchetCacheEntry, ratchetKeyFor } from "@/remote/session/sync/crypto.ts";
 
 const ENC = new TextEncoder();
 const FRAME = JSON.stringify({ jsonrpc: "2.0", method: "noop", params: {} });

@@ -3,24 +3,29 @@ import { join } from "node:path";
 import { parseWorkflowScript } from "@/engine/background/workflows/runtime/parser/meta.ts";
 import { WORKFLOW_SCRIPT_MAX_BYTES } from "@/engine/background/workflows/runtime/parser/types.ts";
 import type { WorkflowDefinition } from "@/engine/background/workflows/runtime/registry/types.ts";
+import type { PluginRegistryEntry } from "@/engine/plugins/registry.ts";
 import * as pluginsRegistry from "@/engine/plugins/registry.ts";
 
 const SCRIPT_EXTENSION = ".js";
 
-export async function getPluginWorkflows(): Promise<WorkflowDefinition[]> {
+export async function getPluginWorkflows(options?: {
+  entries?: readonly PluginRegistryEntry[];
+}): Promise<WorkflowDefinition[]> {
   const seenPaths = new Set<string>();
   const collected: WorkflowDefinition[] = [];
+  const entries = options?.entries ?? pluginsRegistry.list();
 
-  for (const plugin of pluginsRegistry.list()) {
-    if (!pluginsRegistry.isRuntimeEnabled(plugin.name) || !plugin.workflowsPath) continue;
-    collected.push(...(await loadPluginWorkflowsFromDir(plugin, seenPaths)));
+  for (const { pluginId, plugin } of entries) {
+    if (!options?.entries && !pluginsRegistry.isRuntimeEnabled(pluginId)) continue;
+    collected.push(...(await loadPluginWorkflowsFromDir(pluginId, plugin, seenPaths)));
   }
 
   return collected;
 }
 
 async function loadPluginWorkflowsFromDir(
-  plugin: ReturnType<typeof pluginsRegistry.list>[number],
+  pluginId: string,
+  plugin: ReturnType<typeof pluginsRegistry.list>[number]["plugin"],
   seenPaths: Set<string>,
 ): Promise<WorkflowDefinition[]> {
   let entries: import("node:fs").Dirent[];
@@ -31,13 +36,14 @@ async function loadPluginWorkflowsFromDir(
   }
 
   const loaded = await Promise.all(
-    entries.map((entry) => loadPluginWorkflowEntry(plugin, entry, seenPaths)),
+    entries.map((entry) => loadPluginWorkflowEntry(pluginId, plugin, entry, seenPaths)),
   );
   return loaded.filter((workflow): workflow is WorkflowDefinition => workflow !== null);
 }
 
 async function loadPluginWorkflowEntry(
-  plugin: ReturnType<typeof pluginsRegistry.list>[number],
+  pluginId: string,
+  plugin: ReturnType<typeof pluginsRegistry.list>[number]["plugin"],
   entry: import("node:fs").Dirent,
   seenPaths: Set<string>,
 ): Promise<WorkflowDefinition | null> {
@@ -68,7 +74,7 @@ async function loadPluginWorkflowEntry(
       source: "plugin",
       plugin,
       pluginManifest: plugin.manifest,
-      name: `${plugin.name}:${parsed.meta.name}`,
+      name: `${pluginId}:${parsed.meta.name}`,
       description: parsed.meta.description,
       script,
       filePath,

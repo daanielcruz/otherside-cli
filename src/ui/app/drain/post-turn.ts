@@ -1,10 +1,8 @@
 import type { SetStateAction } from "react";
-import type { PendingChange } from "@/commands/index.ts";
 import { getQueueMessages, queueActions } from "@/store/index.ts";
 import type { TranscriptEntry } from "@/ui/transcript/types";
 
 export interface PostTurnDrainDeps {
-  applyPendingChange: (change: PendingChange) => void;
   setTranscript: (value: SetStateAction<readonly TranscriptEntry[]>) => void;
 }
 
@@ -15,7 +13,7 @@ export interface TurnContinuation {
 }
 
 export function createPostTurnDrain(deps: PostTurnDrainDeps): () => TurnContinuation {
-  const { applyPendingChange, setTranscript } = deps;
+  const { setTranscript } = deps;
 
   return () => {
     let nextText: string | null = null;
@@ -24,25 +22,11 @@ export function createPostTurnDrain(deps: PostTurnDrainDeps): () => TurnContinua
     const drained = getQueueMessages();
     if (drained.length > 0) {
       queueActions.clear();
-      const pendingFeedback: string[] = [];
-      for (const q of drained) {
-        if (q.pendingChange) {
-          applyPendingChange(q.pendingChange);
-          if (q.changeFeedback) pendingFeedback.push(q.changeFeedback);
-        }
-      }
-      const drainedEntries = drained.filter((q) => !q.pendingChange);
-      const slashEntries = drainedEntries.filter((q) => q.expanded.trim().startsWith("/"));
-      const messageEntries = drainedEntries.filter((q) => !q.expanded.trim().startsWith("/"));
+      const slashEntries = drained.filter((q) => q.expanded.trim().startsWith("/"));
+      const messageEntries = drained.filter((q) => !q.expanded.trim().startsWith("/"));
       const baseId = `qbnd_${Date.now()}`;
       setTranscript((t) => [
         ...t,
-        ...pendingFeedback.map((feedback, i) => ({
-          id: `${baseId}_change_${i}`,
-          kind: "compact_done" as const,
-          text: feedback,
-          muted: true,
-        })),
         ...messageEntries.map((q, i) => ({
           id: `${baseId}_${i}`,
           kind: "user" as const,

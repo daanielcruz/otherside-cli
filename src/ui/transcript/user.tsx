@@ -123,7 +123,7 @@ const USER_MESSAGE_RIGHT_PADDING = 5;
 
 export function userMessageLines(text: string, width: number): string[] {
   const inner = Math.max(1, width - USER_MESSAGE_PREFIX_WIDTH - USER_MESSAGE_RIGHT_PADDING);
-  return wrapPromptText(text, inner, inner);
+  return wrapPromptText(text, inner);
 }
 
 function keyedUserLines(lines: string[]): { line: string; position: number; key: string }[] {

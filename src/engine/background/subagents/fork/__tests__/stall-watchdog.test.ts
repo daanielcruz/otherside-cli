@@ -321,7 +321,9 @@ describe("fork task reminders", () => {
         return { tool_use_id: call.id, content: "continue" };
       },
     });
-    announceDeferredTool("TaskUpdate");
+    // The declaration set is per-agent: announce in the fork's own scope, as
+    // its own ToolSearch load would.
+    announceDeferredTool("TaskUpdate", forkId);
 
     const streamEvents: ProviderEvent[][] = Array.from({ length: 10 }, (_, index) => [
       { kind: "message_start" },

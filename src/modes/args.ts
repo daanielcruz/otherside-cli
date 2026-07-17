@@ -12,6 +12,10 @@ export type CliMode =
       resumeLatest: boolean;
       model: string | null;
       provider: string | null;
+      /** `--worktree [name]`: enter a session worktree at launch (null name = auto). */
+      worktree: { name: string | null } | null;
+      /** `--tmux`: with `--worktree`, also create a companion tmux session in it. */
+      tmux: boolean;
     }
   | {
       kind: "print";
@@ -37,6 +41,10 @@ export type CliMode =
       mcpConfigs?: string[];
       agentsJson?: string | null;
       jsonSchema?: Record<string, unknown> | null;
+      /** `--worktree [name]`: enter a session worktree at launch (null name = auto). */
+      worktree: { name: string | null } | null;
+      /** `--tmux`: with `--worktree`, also create a companion tmux session in it. */
+      tmux: boolean;
     }
   | { kind: "logout"; provider: string | null }
   | { kind: "statusline" }
@@ -202,6 +210,31 @@ function parseJsonSchemaOption(raw: string | null): JsonSchemaParseResult {
   return { schema: parsed, error: null };
 }
 
+/**
+ * `-w, --worktree [name]` — the value is optional: a following token is the
+ * name only when it is not another flag; `--worktree=name` binds explicitly.
+ */
+function worktreeOption(argv: string[]): { name: string | null } | null {
+  for (let i = 2; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === undefined) continue;
+    if (arg === "--worktree" || arg === "-w") {
+      const next = argv[i + 1];
+      return { name: next && !next.startsWith("-") ? next : null };
+    }
+    if (arg.startsWith("--worktree=")) {
+      const value = arg.slice("--worktree=".length);
+      return { name: value.length > 0 ? value : null };
+    }
+  }
+  return null;
+}
+
+/** `--tmux` (and its `--tmux=classic` spelling) — only meaningful with `--worktree`. */
+function tmuxOption(argv: string[]): boolean {
+  return argv.includes("--tmux") || argv.includes("--tmux=classic");
+}
+
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function isUuid(raw: string): boolean {
@@ -306,6 +339,8 @@ export function parseArgs(argv: string[]): CliMode {
       mcpConfigs,
       agentsJson,
       jsonSchema: jsonSchemaResult.schema,
+      worktree: worktreeOption(argv),
+      tmux: tmuxOption(argv),
     };
   }
   const resumeSessionId = optionValue(argv, "--resume");
@@ -319,6 +354,8 @@ export function parseArgs(argv: string[]): CliMode {
     resumeLatest,
     model: optionValue(argv, "--model"),
     provider: optionValue(argv, "--provider"),
+    worktree: worktreeOption(argv),
+    tmux: tmuxOption(argv),
   };
 }
 
@@ -344,6 +381,9 @@ function consumePrintPrompt(argv: string[], printIdx: number): string {
     if (arg.startsWith("-")) {
       if (arg === "--mcp-config") {
         while (i + 1 < argv.length && !argv[i + 1]!.startsWith("-")) i += 1;
+      } else if (arg === "--worktree" || arg === "-w") {
+        // Optional value: only a following non-flag token belongs to the flag.
+        if (i + 1 < argv.length && !argv[i + 1]!.startsWith("-")) i += 1;
       } else if (!arg.includes("=") && PRINT_VALUE_FLAGS.has(arg)) i += 1;
       continue;
     }

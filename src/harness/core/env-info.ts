@@ -51,11 +51,6 @@ function modelDescription(model: string, displayName: string | undefined): strin
     : `You are powered by the model ${model}.`;
 }
 
-function modelFamilyLine(tierLines: readonly string[]): string | null {
-  if (tierLines.length === 0) return null;
-  return `Models on this provider, by tier — ${tierLines.join("; ")}. When building AI applications, default to the most capable (General tier) model.`;
-}
-
 const SURFACES_LINE =
   "otherside is available as a CLI in the terminal, with a companion mobile app (iOS/Android) for remote pairing and steering sessions on the go.";
 
@@ -76,12 +71,6 @@ function renderEnvInfo(info: EnvInfo, ctx: LayerContext): string {
     if (ctx.knowledgeCutoff) items.push(`Assistant knowledge cutoff is ${ctx.knowledgeCutoff}.`);
   }
 
-  // The per-provider model roster is withheld in multiprovider/tier mode so the
-  // LLM reasons in tiers, not concrete models.
-  if (!ctx.multiproviderEnabled) {
-    const familyLine = modelFamilyLine(ctx.modelTierLines ?? []);
-    if (familyLine) items.push(familyLine);
-  }
   items.push(SURFACES_LINE);
 
   return [

@@ -1,6 +1,6 @@
+import { wrapAnsi } from "@/ink";
 import { prettyJson } from "@/kernel/std/text/json-display.ts";
 import { isRecord } from "@/kernel/std/value-guards.ts";
-import { wrapAnsi } from "@/terminal-runtime/text/ansi-wrap.ts";
 import { GUTTER_CONT } from "@/ui/theme/theme.ts";
 
 // Collapse a string to one terminal-safe line: newlines/tabs/other C0 controls

@@ -28,7 +28,7 @@ function envBaseUrl(): string | null {
 }
 
 export async function currentConfig(): Promise<ResolvedConfig> {
-  const stored = await loadFor("openai-custom");
+  const stored = await loadFor("openai");
   const apiKey = stored ? (stored.apiKey ?? "") : envApiKey();
   const baseUrl = stored?.baseUrl || envBaseUrl() || DEFAULT_BASE_URL;
   return {
@@ -51,7 +51,7 @@ export async function loginWithConfig(
   const trimmedBase = baseUrl.trim();
   const trimmedModel = model?.trim() ?? "";
   if (!trimmedBase) {
-    throw new Error("openai-custom requires baseUrl");
+    throw new Error("openai requires baseUrl");
   }
   const creds: OpenAiCustomCreds =
     trimmedModel.length > 0
@@ -67,14 +67,14 @@ export async function loginWithConfig(
           baseUrl: trimmedBase,
           ...(outputTokenLimit ? { outputTokenLimit } : {}),
         };
-  await saveFor("openai-custom", creds);
+  await saveFor("openai", creds);
   return creds;
 }
 
 export const Auth: AuthStrategy = {
   async load(): Promise<AuthCredentials | null> {
     const cfg = await currentConfig();
-    if (!cfg.apiKey && !envBaseUrl() && !(await loadFor("openai-custom"))) return null;
+    if (!cfg.apiKey && !envBaseUrl() && !(await loadFor("openai"))) return null;
     return { kind: "api_key", raw: cfg };
   },
   async refresh(creds: AuthCredentials): Promise<AuthCredentials> {

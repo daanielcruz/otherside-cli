@@ -65,7 +65,12 @@ export const config: ProviderConfig<"anthropic-messages"> = {
   fallbackEfforts: NO_EFFORT_AUTO,
   deferredOverrides: PERMISSIVE_DEFERRED,
   promptAdapter: anthropicPromptAdapter,
-  recoverableError: (err, _ctx, attempt) => classifyProviderError(err, { attempt: attempt ?? 1 }),
+  recoverableError: (err, ctx, attempt) =>
+    classifyProviderError(err, {
+      attempt: attempt ?? 1,
+      provider: ctx.provider,
+      model: ctx.model,
+    }),
   usageDetails: { sourceLabel: "API key" },
   beginLogin: { kind: "api_key" },
   composeMessages: composeKimiMessages,

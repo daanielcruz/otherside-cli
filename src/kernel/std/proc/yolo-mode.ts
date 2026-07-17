@@ -5,8 +5,8 @@
 // Deliberately sourced only from the CLI --yolo/--permission-mode=yolo flags
 // (see modes/args.ts), never from project settings or a later in-session
 // /permission-mode change. kernel/mcp/config.ts relies on that CLI-only
-// provenance to auto-approve a pending project .mcp.json server the way
-// upstream's bypass-permissions carve-out does, without letting
+// provenance to auto-approve a pending project .mcp.json server the way a
+// bypass-permissions carve-out would, without letting
 // project-controlled state self-approve.
 let current = false;
 

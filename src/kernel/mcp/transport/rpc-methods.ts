@@ -69,12 +69,23 @@ export async function listDirectoryPageVia(
   const params: Record<string, unknown> = { uri };
   if (cursor) params.cursor = cursor;
   const result = (await send("resources/directory/read", params)) as Record<string, unknown> | null;
-  const items = Array.isArray(result?.resources) ? (result.resources as unknown[]) : [];
-  const resources = [];
-  for (const item of items) {
-    const parsed = parseDirectoryEntry(item);
-    if (parsed) resources.push(parsed);
+  if (result === null || !Array.isArray(result.resources)) {
+    throw new Error("Invalid resources/directory/read result: `resources` must be an array");
   }
-  const nextCursor = typeof result?.nextCursor === "string" ? result.nextCursor : undefined;
-  return nextCursor ? { resources, nextCursor } : { resources };
+  const resources = [];
+  for (const item of result.resources) {
+    const parsed = parseDirectoryEntry(item);
+    if (parsed === null) {
+      throw new Error(
+        "Invalid resources/directory/read result: every resource requires string `uri` and `name`",
+      );
+    }
+    resources.push(parsed);
+  }
+  if (result.nextCursor !== undefined && typeof result.nextCursor !== "string") {
+    throw new Error("Invalid resources/directory/read result: `nextCursor` must be a string");
+  }
+  return typeof result.nextCursor === "string"
+    ? { resources, nextCursor: result.nextCursor }
+    : { resources };
 }

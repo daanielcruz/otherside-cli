@@ -63,17 +63,19 @@ function feedbackResult(cmd: SlashCommand, message: string): SlashResult {
 async function confirmTrust(directory: string): Promise<boolean> {
   const result = await askGroup([
     {
-      question: `${directory}\nThis session hasn't worked here before. Is this a directory you created or one you trust?\nOtherside'll be able to read, edit, and execute files here.`,
+      question: `Moving to a new directory:\n\n${directory}\nThis session hasn't worked here before. Is this a directory you created or one you trust?\nOtherside'll be able to read, edit, and execute files here.`,
       header: "Directory trust",
       multiSelect: false,
+      allowFreeform: false,
+      allowChat: false,
       options: [
         {
-          label: "Yes, move here",
-          description: "Trust this directory and change the working directory",
+          label: "No, stay put",
+          description: "",
         },
         {
-          label: "No, stay put",
-          description: "Cancel and keep the current working directory",
+          label: "Yes, move here",
+          description: "",
         },
       ],
     },

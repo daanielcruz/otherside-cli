@@ -1,21 +1,30 @@
 import { describe, expect, it } from "bun:test";
+import type { ContextType } from "react";
 import { clearAgentSteers, queueAgentSteer } from "@/engine/background/subagents/fork/steering.ts";
 import { buildPanelTree } from "@/engine/background/tasks/panel-tree.ts";
+import {
+  cellAtIndex,
+  Ink,
+  paintToTerminal,
+  type Screen,
+  TerminalSizeContext,
+  TimekeeperContext,
+} from "@/ink";
+import { computeListWindow } from "@/kernel/std/list-window.ts";
 import { clamp } from "@/kernel/std/math.ts";
 import type { BrokerState } from "@/store/app-store/broker.ts";
-import { cellAtIndex, type Screen } from "@/terminal-runtime/paint/cell-grid.ts";
-import { paintToTerminal } from "@/terminal-runtime/paint/screen-diff.ts";
-import { TerminalSizeContext } from "@/terminal-runtime/react/dimensions-context.tsx";
+import { dispatch } from "@/store/app-store/index.ts";
+import { resetRightRegion } from "@/store/app-store/right-region-notices.ts";
 import {
   panelRowAllocation,
   panelSelectionFor,
-  panelWindowStart,
   RunningAgentsPanel,
   remapPanelSelectionForAgentCountChange,
   runningPanelHint,
 } from "@/ui/chrome/running-agents-panel.tsx";
 import { StatusBar } from "@/ui/chrome/status/bar.tsx";
 import { Statusline } from "@/ui/chrome/status/line.tsx";
+import { TerminalEmulator } from "@/ui/transcript/__tests__/terminal-emulator.ts";
 
 const WIDTH = 100;
 const NOW = 1_000_000;
@@ -101,10 +110,23 @@ function renderRows(panelHint?: string): string[] {
   return screenToRows(screen);
 }
 
-function renderStatusRows(tokensWarning?: {
-  message: string;
-  severity: "warning" | "error";
-}): string[] {
+function renderStatusRows(mode: "tokens" | "quota" = "tokens"): string[] {
+  resetRightRegion();
+  if (mode === "tokens") {
+    dispatch({ type: "rightRegion/setCounter", text: "179933 tokens" });
+  } else {
+    dispatch({
+      type: "rightRegion/submitEphemeral",
+      notice: {
+        key: "quota-warning",
+        text: "[Codex] 73% Weekly · resets 14:30",
+        tone: "warning",
+        priority: "high",
+        durationMs: 8_000,
+      },
+      now: Date.now(),
+    });
+  }
   const el = (
     <TerminalSizeContext.Provider value={{ columns: WIDTH, rows: 20 }}>
       <Statusline
@@ -114,7 +136,6 @@ function renderStatusRows(tokensWarning?: {
         cwd="/tmp"
         refreshKey="test"
         totalTokens={179_933}
-        tokensWarning={tokensWarning}
       />
       <StatusBar state={yoloState} />
     </TerminalSizeContext.Provider>
@@ -155,12 +176,18 @@ describe("running agents footer hints", () => {
 
   it("puts quota warnings in the token-counter slot without hiding permissions", () => {
     const warning = "[Codex] 73% Weekly · resets 14:30";
-    const takeover = renderStatusRows({ message: warning, severity: "warning" }).join("\n");
+    const takeover = renderStatusRows("quota").join("\n");
     expect(takeover).toContain(warning);
     expect(takeover).not.toContain("179933 tokens");
     expect(takeover).toContain("yolo mode on");
 
-    const restored = renderStatusRows().join("\n");
+    // Clear ephemeral so the counter lane is visible again.
+    dispatch({
+      type: "rightRegion/removeNotice",
+      key: "quota-warning",
+      now: Date.now(),
+    });
+    const restored = renderStatusRows("tokens").join("\n");
     expect(restored).toContain("179933 tokens");
     expect(restored).not.toContain(warning);
     expect(restored).toContain("yolo mode on");
@@ -206,9 +233,15 @@ describe("running-agents-panel capacity", () => {
   });
 
   it("clamps and slides selection windows when capacity changes", () => {
-    expect(panelWindowStart(7, 2, 20, 10)).toBe(2);
-    expect(panelWindowStart(2, 19, 20, 10)).toBe(10);
-    expect(panelWindowStart(9, -1, 3, 10)).toBe(0);
+    expect(
+      computeListWindow({ cursor: 2, total: 20, size: 10, anchor: "edge", previousStart: 7 }).from,
+    ).toBe(2);
+    expect(
+      computeListWindow({ cursor: 19, total: 20, size: 10, anchor: "edge", previousStart: 2 }).from,
+    ).toBe(10);
+    expect(
+      computeListWindow({ cursor: -1, total: 3, size: 10, anchor: "edge", previousStart: 9 }).from,
+    ).toBe(0);
   });
 });
 
@@ -473,6 +506,81 @@ describe("running-agents-panel states", () => {
     expect(tree3.orderedVisibleNodes[1]?.transitiveHiddenCount).toBe(1); // grandchild still hidden
     expect(tree3.orderedVisibleNodes[2]?.transitiveHiddenCount).toBe(0);
     expect(tree3.orderedVisibleNodes[3]?.transitiveHiddenCount).toBe(0);
+  });
+
+  it("hides non-reparented orphan branches while preserving exact-generation reparented roots", () => {
+    const root = {
+      id: "live-root",
+      kind: "agent",
+      status: "running",
+      agentName: "LiveRoot",
+      startedAt: NOW,
+      runGeneration: 0,
+      actions: [],
+      inputTokens: 0,
+      outputTokens: 0,
+    } as never;
+    const orphan = {
+      id: "orphan",
+      kind: "agent",
+      status: "completed",
+      parentTaskId: "evicted-parent",
+      agentName: "Orphan",
+      startedAt: NOW + 1,
+      runGeneration: 2,
+      actions: [],
+      inputTokens: 0,
+      outputTokens: 0,
+    } as never;
+    const orphanChild = {
+      id: "orphan-child",
+      kind: "agent",
+      status: "running",
+      parentTaskId: "orphan",
+      agentName: "OrphanChild",
+      startedAt: NOW + 2,
+      runGeneration: 0,
+      actions: [],
+      inputTokens: 0,
+      outputTokens: 0,
+    } as never;
+    const reparented = {
+      id: "reparented",
+      kind: "agent",
+      status: "running",
+      parentTaskId: "evicted-parent",
+      agentName: "Reparented",
+      startedAt: NOW + 3,
+      runGeneration: 4,
+      reparentedGeneration: 4,
+      actions: [],
+      inputTokens: 0,
+      outputTokens: 0,
+    } as never;
+    const staleReparent = {
+      id: "stale-reparent",
+      kind: "agent",
+      status: "running",
+      parentTaskId: "evicted-parent",
+      agentName: "StaleReparent",
+      startedAt: NOW + 4,
+      runGeneration: 5,
+      reparentedGeneration: 4,
+      actions: [],
+      inputTokens: 0,
+      outputTokens: 0,
+    } as never;
+
+    const tree = buildPanelTree([root, orphan, orphanChild, reparented, staleReparent], undefined);
+
+    expect(tree.orderedVisibleNodes.map((node) => node.task.id)).toEqual([
+      "live-root",
+      "reparented",
+    ]);
+    expect(tree.allNodesMap.has("orphan")).toBe(false);
+    expect(tree.allNodesMap.has("orphan-child")).toBe(false);
+    expect(tree.allNodesMap.has("stale-reparent")).toBe(false);
+    expect(tree.allNodesMap.has("reparented")).toBe(true);
   });
 
   it("renders agentConnector indent one level shallower (depth-2 has no leading spaces)", () => {
@@ -797,5 +905,146 @@ describe("panel selection navigation", () => {
     const lastEnd = Math.min(total, lastStart + 5);
     expect(lastStart).toBeLessThanOrEqual(total - 1);
     expect(total - 1).toBeLessThan(lastEnd);
+  });
+});
+
+type TimeKeeper = NonNullable<ContextType<typeof TimekeeperContext>>;
+
+// A clock whose ticks only fire when the test releases them: proves that
+// between ticks the panel's elapsed display is frozen no matter how often the
+// task rows re-render with fresh data.
+function createManualClock(): { clock: TimeKeeper; fireTicks: () => void } {
+  const pendingTicks: (() => void)[] = [];
+  const clock: TimeKeeper = {
+    subscribeKeepAlive: () => () => {},
+    subscribeFollower: () => () => {},
+    now: () => performance.now(),
+    setTickInterval: () => {},
+    setTimeout: (callback) => {
+      pendingTicks.push(callback);
+      return () => {};
+    },
+  };
+  return {
+    clock,
+    fireTicks: () => {
+      for (const tick of pendingTicks.splice(0)) tick();
+    },
+  };
+}
+
+function createEmulatorStdout(term: TerminalEmulator): NodeJS.WriteStream {
+  const stream = {
+    get columns() {
+      return term.columns;
+    },
+    get rows() {
+      return term.rows;
+    },
+    isTTY: true,
+    write(chunk: unknown) {
+      term.write(String(chunk));
+      return true;
+    },
+    on() {
+      return stream;
+    },
+    off() {
+      return stream;
+    },
+  };
+  return stream as unknown as NodeJS.WriteStream;
+}
+
+function createEmulatorStdin(): NodeJS.ReadStream {
+  const stream = {
+    isTTY: false,
+    isRaw: false,
+    setRawMode() {},
+    listeners: () => [],
+    addListener() {
+      return stream;
+    },
+    removeListener() {
+      return stream;
+    },
+    on() {
+      return stream;
+    },
+    off() {
+      return stream;
+    },
+  };
+  return stream as unknown as NodeJS.ReadStream;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+describe("running-agents-panel live clock", () => {
+  it("holds every row's elapsed seconds across token-only updates between ticks", async () => {
+    const term = new TerminalEmulator(WIDTH, 24);
+    const { clock, fireTicks } = createManualClock();
+    const ink = new Ink({
+      stdout: createEmulatorStdout(term),
+      stdin: createEmulatorStdin(),
+      stderr: createEmulatorStdout(new TerminalEmulator(WIDTH, 24)),
+      exitOnCtrlC: true,
+      patchConsole: false,
+    });
+    const baseAgent = (id: string, name: string, startedAt: number, inputTokens: number) =>
+      ({
+        id,
+        kind: "agent",
+        status: "running",
+        agentName: name,
+        description: `${name} task`,
+        startedAt,
+        inputTokens,
+        outputTokens: 0,
+        actions: [],
+      }) as never;
+    const renderPanel = (agents: never[]) =>
+      ink.render(
+        <TimekeeperContext.Provider value={clock}>
+          <RunningAgentsPanel
+            agents={agents}
+            workflows={[]}
+            selection={undefined}
+            focusInPanel={false}
+            viewingAgentId={undefined}
+            mainLlmBusy={true}
+          />
+        </TimekeeperContext.Provider>,
+      );
+    try {
+      const mountedAt = Date.now();
+      const steady = baseAgent("agent-steady", "Steady", mountedAt - 35_000, 0);
+      renderPanel([steady, baseAgent("agent-busy", "Busy", mountedAt - 20_000, 0)]);
+      ink.onRender();
+      expect(term.visibleText()).toContain("35s");
+      expect(term.visibleText()).toContain("20s");
+
+      // Long enough that a live Date.now() would round to the next second,
+      // short of the 1s tick that is withheld by the manual clock anyway.
+      await sleep(700);
+      renderPanel([steady, baseAgent("agent-busy", "Busy", mountedAt - 20_000, 150_400)]);
+      ink.onRender();
+      const midFrame = term.visibleText();
+      expect(midFrame).toContain("↓ 150.4k tokens");
+      expect(midFrame).toContain("35s");
+      expect(midFrame).toContain("20s · ↓ 150.4k tokens");
+
+      // Releasing the shared clock advances every row's elapsed display.
+      fireTicks();
+      await sleep(0);
+      ink.onRender();
+      const tickedFrame = term.visibleText();
+      expect(tickedFrame).toMatch(/3[6-9]s/);
+      expect(tickedFrame).toMatch(/2[1-9]s · ↓ 150\.4k tokens/);
+    } finally {
+      ink.unmount();
+    }
   });
 });

@@ -5,6 +5,7 @@ import { join } from "node:path";
 
 export const PDF_MAX_PAGES_PER_READ = 20;
 export const PDF_INLINE_PAGE_THRESHOLD = 10;
+export const PDF_MAX_NATIVE_SIZE = 20 * 1024 * 1024;
 const PDF_MAX_EXTRACT_SIZE = 100 * 1024 * 1024;
 const RENDER_DPI = 100;
 
@@ -36,6 +37,34 @@ export function parsePdfPageRange(pages: string): PdfPageRange | null {
     return null;
   }
   return { firstPage: first, lastPage: last };
+}
+
+export type PdfInspection =
+  | { ok: true; data: Buffer; bytes: number; pageCount: number }
+  | { ok: false; error: string };
+
+export function inspectPdf(filePath: string): PdfInspection {
+  let data: Buffer;
+  try {
+    data = readFileSync(filePath);
+  } catch {
+    return { ok: false, error: `PDF does not exist: ${filePath}` };
+  }
+  if (!data.subarray(0, 5).equals(Buffer.from("%PDF-"))) {
+    return { ok: false, error: "File is not a valid PDF (missing %PDF- header)." };
+  }
+  const source = data.toString("latin1");
+  if (/\/Encrypt\b/.test(source)) {
+    return {
+      ok: false,
+      error: "PDF is password-protected. Please provide an unprotected version.",
+    };
+  }
+  const pageCount = (source.match(/\/Type\s*\/Page\b/g) ?? []).length;
+  if (pageCount === 0) {
+    return { ok: false, error: "PDF has an empty page tree." };
+  }
+  return { ok: true, data, bytes: data.length, pageCount };
 }
 
 export function isPdftoppmAvailable(): boolean {

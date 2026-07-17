@@ -310,13 +310,18 @@ export function createStreamCommitter(deps: StreamCommitterDeps): StreamCommitte
     const { body: committedThinking, lastHeadline } = stripHeadlines(accThinking);
     if (lastHeadline !== null) promoteHeadline(lastHeadline);
     const committedSignature = accThinkingSignature;
+    // A signature covers the thinking text exactly as streamed; persisting a
+    // headline-stripped body would replay modified text under a signature that
+    // no longer matches it, which the API rejects. Signed thinking persists
+    // verbatim; headline stripping stays display-only (transcript entry below).
+    const persistedThinking = committedSignature.length > 0 ? accThinking : committedThinking;
     const account = accountFingerprint(turnState.provider);
     const requestId = lastAssistantRequestId(session.messages);
     await appendRecord(session, {
       type: "assistant_message",
       ts: nowIso(),
       content: committedText,
-      ...(hasThinking ? { thinking: committedThinking } : {}),
+      ...(hasThinking ? { thinking: persistedThinking } : {}),
       ...(committedSignature.length > 0 ? { thinkingSignature: committedSignature } : {}),
       ...(usage ? { usage } : {}),
       provider: turnState.provider,

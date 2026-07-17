@@ -30,6 +30,7 @@ function emptySizes(): Record<EmitClass, number> {
     user_message: 0,
     urgent_output: 0,
     deferred_output: 0,
+    idle_prompt: 0,
   };
 }
 
@@ -47,14 +48,24 @@ const subQueues: Record<EmitClass, EmitItem[]> = {
   user_message: [],
   urgent_output: [],
   deferred_output: [],
+  idle_prompt: [],
 };
 
 const consumedStickyKeys = new Set<string>();
 const consumedReplayKeys = new Set<string>();
 const MAX_CONSUMED_REPLAY_KEYS = 1_024;
 const activeOwners = new Map<string, Set<unknown>>();
-const ownerPromotionCallbacks = new Map<string, (replayKeys: readonly string[]) => void>();
+const ownerLifecycleCallbacks = new Map<string, OwnerLifecycleCallbacks>();
 const awaiters: AwaiterEntry[] = [];
+
+export interface OwnerReleaseDisposition {
+  promotedReplayKeys: readonly string[];
+}
+
+export interface OwnerLifecycleCallbacks {
+  onInventoryConsumed?: (replayKeys: readonly string[]) => void;
+  onOwnerRelease?: (disposition: OwnerReleaseDisposition) => void;
+}
 const drainListeners = new Set<(result: DrainResult, boundary: EmitBoundary) => void>();
 
 type NotificationHookRunner = (ctx: NotificationCtx) => void;
@@ -179,7 +190,7 @@ function markReplayKeyConsumed(replayKey: string): void {
   consumedReplayKeys.add(replayKey);
 }
 
-function commitDrain(consumedIds: Set<string>): void {
+function commitDrain(consumedIds: Set<string>, sync = true): void {
   if (consumedIds.size === 0) return;
   for (const klass of PRIORITY_ORDER) {
     const queue = subQueues[klass];
@@ -198,7 +209,7 @@ function commitDrain(consumedIds: Set<string>): void {
     queue.length = 0;
     for (const item of next) queue.push(item);
   }
-  syncStateSnapshot();
+  if (sync) syncStateSnapshot();
 }
 
 function notificationCtxForItem(item: EmitItem): NotificationCtx | null {
@@ -242,20 +253,20 @@ function tryDeliverToAwaitersForDrain(items: readonly EmitItem[]): Set<string> {
   return delivered;
 }
 
-function releaseOwnerInventory(ownerId: string): string[] {
+function releaseOwnerInventory(ownerId: string): void {
   activeOwners.delete(ownerId);
-  const replayKeys: string[] = [];
+  const promotedReplayKeys: string[] = [];
   let changed = false;
   for (const klass of PRIORITY_ORDER) {
     for (const item of subQueues[klass]) {
       if (item.ownerId !== ownerId || item.target !== "inventory") continue;
       item.target = "both";
-      if (item.replayKey !== undefined) replayKeys.push(item.replayKey);
+      if (item.replayKey !== undefined) promotedReplayKeys.push(item.replayKey);
       changed = true;
     }
   }
+  ownerLifecycleCallbacks.get(ownerId)?.onOwnerRelease?.({ promotedReplayKeys });
   if (changed) syncStateSnapshot();
-  return replayKeys;
 }
 
 function hasOwnerInventory(ownerId: string): boolean {
@@ -277,14 +288,14 @@ export interface EmitForCompletionInput {
 }
 
 export const emitQueue = {
-  registerOwner(ownerId: string, onPromote?: (replayKeys: readonly string[]) => void): () => void {
+  registerOwner(ownerId: string, callbacks?: OwnerLifecycleCallbacks): () => void {
     const token = {};
     let tokens = activeOwners.get(ownerId);
     if (!tokens) {
       tokens = new Set<unknown>();
       activeOwners.set(ownerId, tokens);
     }
-    if (onPromote !== undefined) ownerPromotionCallbacks.set(ownerId, onPromote);
+    if (callbacks !== undefined) ownerLifecycleCallbacks.set(ownerId, callbacks);
     tokens.add(token);
     let released = false;
     return () => {
@@ -294,13 +305,15 @@ export const emitQueue = {
       if (currentTokens) {
         currentTokens.delete(token);
         if (currentTokens.size === 0) {
-          const promotedReplayKeys = releaseOwnerInventory(ownerId);
-          const onOwnerPromote = ownerPromotionCallbacks.get(ownerId);
-          ownerPromotionCallbacks.delete(ownerId);
-          onOwnerPromote?.(promotedReplayKeys);
+          releaseOwnerInventory(ownerId);
+          ownerLifecycleCallbacks.delete(ownerId);
         }
       }
     };
+  },
+
+  isOwnerRegistered(ownerId: string): boolean {
+    return activeOwners.has(ownerId);
   },
 
   emit(input: EmitItemInput): string {
@@ -373,7 +386,12 @@ export const emitQueue = {
         consumedIds.add(item.id);
       }
     }
-    commitDrain(consumedIds);
+    const replayKeys = taken.flatMap((item) =>
+      item.replayKey === undefined ? [] : [item.replayKey],
+    );
+    commitDrain(consumedIds, false);
+    ownerLifecycleCallbacks.get(ownerId)?.onInventoryConsumed?.(replayKeys);
+    if (consumedIds.size > 0) syncStateSnapshot();
     return taken;
   },
 
@@ -409,12 +427,14 @@ export const emitQueue = {
     const projected = projectDrain(plan.picked, boundary, policy, queuedMessageLookup);
     const awaiterDelivered = tryDeliverToAwaitersForDrain(plan.picked);
     commitDrain(plan.consumedIds);
+    const stopHookActive = plan.picked.some((item) => item.stopHookActive === true);
     const result: DrainResult = {
       llmBlocks: projected.llmBlocks,
       transcriptEntries: projected.transcriptEntries,
       consumedIds: Array.from(plan.consumedIds).filter((id) => !awaiterDelivered.has(id)),
       removedQueuedMessageIds: projected.removedQueuedMessageIds,
       notificationTexts: projected.notificationTexts,
+      ...(stopHookActive ? { stopHookActive: true } : {}),
     };
     fireNotificationHooksForDrain(plan.picked);
     for (const listener of drainListeners) {
@@ -482,6 +502,10 @@ export const emitQueue = {
     return stateStore.getState().hasPendingAutoTurn;
   },
 
+  isTurnActive(): boolean {
+    return turnActive;
+  },
+
   wasReplayKeyConsumed(replayKey: string): boolean {
     return consumedReplayKeys.has(replayKey);
   },
@@ -514,7 +538,7 @@ export const emitQueue = {
     consumedStickyKeys.clear();
     consumedReplayKeys.clear();
     activeOwners.clear();
-    ownerPromotionCallbacks.clear();
+    ownerLifecycleCallbacks.clear();
     awaiters.length = 0;
     drainListeners.clear();
     turnActive = false;

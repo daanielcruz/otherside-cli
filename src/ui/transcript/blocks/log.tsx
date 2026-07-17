@@ -2,6 +2,7 @@ import { memo, type ReactNode, useRef } from "react";
 import { isInterruptionMessage } from "@/engine/queue/runtime/interruption-text.ts";
 import { Box, useTerminalDimensions } from "@/ink";
 import { AssistantRow, CompactionRow, SkillCompletionRow, ThinkingRow } from "../assistant.tsx";
+import { BashInputRow } from "../bash-input.tsx";
 import { SkillRow } from "../skill.tsx";
 import { OffscreenFreeze } from "../stream/offscreen-freeze.tsx";
 import { isPendingId, isUnsettledUserEcho } from "../stream/static-flush.ts";
@@ -18,7 +19,7 @@ import {
 import { ToolEntryRow } from "../tool.tsx";
 import type { TranscriptEntry } from "../types";
 import { UserRow } from "../user.tsx";
-import { parseTaskNotice, TaskNotice } from "./task-notice.tsx";
+import { PlainTaskNotice, parseTaskNotice, TaskNotice } from "./task-notice.tsx";
 
 export {
   isRetryCountdownSettled,
@@ -50,21 +51,34 @@ export function Log({
   // offscreen, so they cost no diff). The terminal materializes scrollback by
   // itself as the frame grows; nothing is ever printed behind the frame's
   // back, which keeps every full reset able to rebuild the visible region.
+  //
+  // Settled rows render first, then still-pending rows (in-progress tools,
+  // elapsed counters, agent progress — the ones that KEEP re-rendering; a
+  // pending row that crossed the fold and is not frozen mutates scrollback and
+  // forces one full terminal reset per update). Both groups emit into a SINGLE
+  // reconciliation list. Splitting them across two sibling arrays put the two
+  // groups in different implicit-fragment keyspaces, so a row moving from
+  // pending to settled at completion — the settle boundary — was reconciled as
+  // an unmount+remount rather than an in-place update. A remounted row cannot
+  // update the copy the retained frame already froze offscreen: the stale
+  // pending row is stranded in the frame while the completion paints as a fresh
+  // row (the duplicated tool row). One list keeps the boundary an in-place move.
   const settled: StaticItem[] = [];
-  const pending: TranscriptEntry[] = [];
+  const pending: StaticItem[] = [];
   if (introRef.current) settled.push({ kind: "intro", node: introRef.current });
   const lastEntry = entries.length > 0 ? entries[entries.length - 1] : undefined;
   for (const entry of entries) {
     if (isPendingId(entry.id) || isUnsettledUserEcho(entry, lastEntry)) {
-      pending.push(entry);
+      pending.push({ kind: "entry", entry });
     } else {
       settled.push({ kind: "entry", entry });
     }
   }
+  const frameItems: StaticItem[] = [...settled, ...pending];
 
   return (
     <Box flexDirection="column" flexShrink={0}>
-      {settled.map((item) => {
+      {frameItems.map((item) => {
         if (item.kind === "intro") {
           return (
             <OffscreenFreeze key="intro">
@@ -75,7 +89,7 @@ export function Log({
           );
         }
         return (
-          <OffscreenFreeze key={item.entry.id}>
+          <OffscreenFreeze key={frameRowKey(item.entry)}>
             <EntryRow
               entry={item.entry}
               width={columns}
@@ -85,21 +99,6 @@ export function Log({
           </OffscreenFreeze>
         );
       })}
-      {/* Pending rows are the ones that KEEP re-rendering (in-progress tools,
-          elapsed counters, agent progress). Those updates are state-driven, so
-          the clock's visibility gate never sees them — an unfrozen pending row
-          that crossed the fold mutates scrollback and forces one full terminal
-          reset per update. */}
-      {pending.map((entry) => (
-        <OffscreenFreeze key={entry.id}>
-          <EntryRow
-            entry={entry}
-            width={columns}
-            providerShortKey={providerShortKey}
-            {...(currentModel !== undefined ? { currentModel } : {})}
-          />
-        </OffscreenFreeze>
-      ))}
       {liveEntries.map((entry) => (
         <EntryRow
           key={entry.id}
@@ -111,6 +110,16 @@ export function Log({
       ))}
     </Box>
   );
+}
+
+// A tool row changes id across its lifecycle (running `t_…` → completed `r_…`
+// → backgrounded `b_…`) while keeping the same call id and the same transcript
+// slot (the store replaces it in place). Key it by the stable call id so the
+// run→complete transition reconciles as an in-place update; keying by the raw
+// id would remount the row at completion and strand its frozen pending copy in
+// the retained frame. Every other row keeps its id.
+function frameRowKey(entry: TranscriptEntry): string {
+  return entry.kind === "tool" ? `tool:${entry.id.replace(/^[a-z]+_/, "")}` : entry.id;
 }
 
 const EntryRow = memo(function EntryRowImpl({
@@ -127,6 +136,8 @@ const EntryRow = memo(function EntryRowImpl({
   if (entry.kind === "thinking")
     return <ThinkingRow text={entry.text} streaming={entry.streaming === true} />;
   if (entry.kind !== "tool" && isInterruptionMessage(entry.text)) return <InterruptionRow />;
+  if (entry.kind === "bash_input")
+    return <BashInputRow command={entry.text} resultMeta={entry.resultMeta} width={width} />;
   if (entry.kind === "user")
     return (
       <UserRow
@@ -172,7 +183,10 @@ const EntryRow = memo(function EntryRowImpl({
   }
   if (entry.kind === "task_notice") {
     const notice = parseTaskNotice(entry.text);
-    return notice ? <TaskNotice notice={notice} /> : null;
+    if (notice) return <TaskNotice notice={notice} />;
+    // Non-JSON notice text (resume rebuild, parked-notification injections)
+    // still owns a visible row — a delivered notification must never vanish.
+    return <PlainTaskNotice text={entry.text} isError={entry.isError === true} />;
   }
   if (entry.kind === "tool") {
     return (

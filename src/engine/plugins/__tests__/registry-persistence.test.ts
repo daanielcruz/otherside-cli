@@ -11,17 +11,20 @@ import type { LoadedPlugin } from "@/engine/plugins/loader.ts";
 import {
   applyPersistedEnabledState,
   clear,
+  clearEnabledSetting,
   isEnabled,
   isRuntimeEnabled,
   register,
   setEnabled,
 } from "@/engine/plugins/registry.ts";
-import { loadConfigSync } from "@/kernel/config/config.ts";
+import { getSnapshot, pluginStateStore } from "@/engine/plugins/state.ts";
+import { loadConfigSync, updateConfig } from "@/kernel/config/config.ts";
 
 const files = new Map<string, string>();
 const dirs = new Set<string>();
 const openFiles = new Map<number, { path: string; flags: string }>();
 let fdCounter = 1;
+let failWrites = false;
 
 const resolvePath = (p: string) => resolve(p);
 
@@ -69,6 +72,7 @@ function rmFn(p: string, options?: { recursive?: boolean; force?: boolean }): vo
   }
 }
 function writeFileFn(p: string, content: string | Uint8Array): void {
+  if (failWrites) throw new Error("forced settings write failure");
   const resolved = resolvePath(p);
   files.set(resolved, typeof content === "string" ? content : new TextDecoder().decode(content));
 }
@@ -199,12 +203,19 @@ fsMock[`copyFile${S}`] = (src: string, dest: string) => {
 
 mock.module("node:fs", () => fsMock);
 
-const mkPlugin = (name: string): LoadedPlugin => ({
+const mkPlugin = (name: string, source = name): LoadedPlugin => ({
   name,
-  path: `/tmp/${name}`,
-  source: name,
+  path: `/tmp/${name}-${source}`,
+  source,
   manifest: { name },
 });
+
+function resetPluginState(): void {
+  pluginStateStore.replaceLoadedState({ enabled: [], disabled: [], errors: [], warnings: [] });
+  pluginStateStore.replaceDesiredState({ enabled: [], disabled: [] });
+  pluginStateStore.replaceDiskState({ installations: [] });
+  pluginStateStore.markNeedsRefresh(false);
+}
 
 describe("registry persistence", () => {
   const dir = "/virtual-config-dir/os-reg-test";
@@ -215,7 +226,10 @@ describe("registry persistence", () => {
     files.clear();
     dirs.clear();
     openFiles.clear();
+    fdCounter = 1;
+    failWrites = false;
     clear();
+    resetPluginState();
   });
 
   afterAll(() => {
@@ -228,24 +242,188 @@ describe("registry persistence", () => {
     expect(await setEnabled("ghost", false)).toBe(false);
   });
 
-  it("setEnabled persists desired state without changing the loaded runtime", async () => {
-    register(mkPlugin("foo"));
+  it("setEnabled persists intent before updating desired state and leaves active state unchanged", async () => {
+    const plugin = mkPlugin("foo");
+    register(plugin);
+    await updateConfig((cfg) => {
+      cfg.enabledPlugins = { "other@market": true };
+    });
+    pluginStateStore.replaceLoadedState({
+      enabled: [plugin],
+      disabled: [],
+      errors: [],
+      warnings: [],
+    });
+    const before = getSnapshot();
+    let persistedAtStateTransition: Record<string, boolean> | undefined;
+    const unsubscribe = pluginStateStore.subscribe(() => {
+      persistedAtStateTransition = loadConfigSync().enabledPlugins;
+    });
+
     expect(await setEnabled("foo", false)).toBe(true);
+    unsubscribe();
+
+    expect(persistedAtStateTransition).toEqual({
+      "other@market": true,
+      "foo@foo": false,
+    });
     expect(isEnabled("foo")).toBe(false);
     expect(isRuntimeEnabled("foo")).toBe(true);
-    expect(loadConfigSync().enabledPlugins?.foo).toBe(false);
+    const after = getSnapshot();
+    expect(after.desired).toEqual({ enabled: ["other@market"], disabled: ["foo@foo"] });
+    expect(after.enabled).toEqual(before.enabled);
+    expect(after.disabled).toEqual(before.disabled);
+    expect(after.needsRefresh).toBe(true);
+  });
 
-    clear();
-    register(mkPlugin("foo"));
-    expect(isEnabled("foo")).toBe(true);
-    applyPersistedEnabledState(loadConfigSync().enabledPlugins);
+  it("setEnabled rejects an atomic config-write failure without mutating registry or AppState", async () => {
+    const plugin = mkPlugin("foo");
+    register(plugin);
+    applyPersistedEnabledState({ "foo@foo": false });
+    pluginStateStore.replaceDesiredState({ enabled: [], disabled: ["foo@foo"] });
+    pluginStateStore.replaceLoadedState({
+      enabled: [],
+      disabled: [plugin],
+      errors: [],
+      warnings: [],
+    });
+    const beforeSnapshot = getSnapshot();
+    const beforeConfig = loadConfigSync();
+    failWrites = true;
+
+    await expect(setEnabled("foo", true)).rejects.toThrow("forced settings write failure");
+
     expect(isEnabled("foo")).toBe(false);
     expect(isRuntimeEnabled("foo")).toBe(false);
+    expect(getSnapshot()).toBe(beforeSnapshot);
+    expect(getSnapshot().needsRefresh).toBe(beforeSnapshot.needsRefresh);
+    expect(loadConfigSync()).toEqual(beforeConfig);
+  });
+
+  it("canonical persisted keys override legacy bare-name keys regardless of insertion order", () => {
+    register(mkPlugin("shared", "alpha"));
+    register(mkPlugin("shared", "beta"));
+
+    const diagnostics = applyPersistedEnabledState({
+      shared: false,
+      "shared@alpha": true,
+      "shared@beta": false,
+    });
+
+    expect(diagnostics).toEqual([
+      {
+        code: "PLUGIN_AMBIGUOUS",
+        target: "shared",
+        candidates: ["shared@alpha", "shared@beta"],
+      },
+    ]);
+    expect(isEnabled("shared@alpha")).toBe(true);
+    expect(isRuntimeEnabled("shared@alpha")).toBe(true);
+    expect(isEnabled("shared@beta")).toBe(false);
+    expect(isRuntimeEnabled("shared@beta")).toBe(false);
+  });
+
+  it("applies a unique legacy bare-name key to its sole canonical plugin", () => {
+    register(mkPlugin("solo", "official"));
+
+    expect(applyPersistedEnabledState({ solo: false })).toEqual([]);
+    expect(isEnabled("solo@official")).toBe(false);
+    expect(isRuntimeEnabled("solo@official")).toBe(false);
+  });
+
+  it("reports ambiguous legacy names without changing any candidate", () => {
+    register(mkPlugin("shared", "zeta"));
+    register(mkPlugin("shared", "alpha"));
+
+    expect(applyPersistedEnabledState({ shared: false })).toEqual([
+      {
+        code: "PLUGIN_AMBIGUOUS",
+        target: "shared",
+        candidates: ["shared@alpha", "shared@zeta"],
+      },
+    ]);
+    expect(isEnabled("shared@alpha")).toBe(true);
+    expect(isEnabled("shared@zeta")).toBe(true);
+    expect(isRuntimeEnabled("shared@alpha")).toBe(true);
+    expect(isRuntimeEnabled("shared@zeta")).toBe(true);
+  });
+
+  it("migrates a matching legacy key when persisting a canonical setting", async () => {
+    register(mkPlugin("foo"));
+    await updateConfig((cfg) => {
+      cfg.enabledPlugins = {
+        foo: true,
+        "foo@foo": true,
+        "other@market": false,
+      };
+    });
+
+    await setEnabled("foo", false);
+
+    expect(loadConfigSync().enabledPlugins).toEqual({
+      "foo@foo": false,
+      "other@market": false,
+    });
+    expect(getSnapshot().desired).toEqual({
+      enabled: [],
+      disabled: ["foo@foo", "other@market"],
+    });
+    expect(getSnapshot().needsRefresh).toBe(true);
+  });
+
+  it("clears canonical and legacy settings after persistence and keeps runtime state unchanged", async () => {
+    const plugin = mkPlugin("foo");
+    register(plugin);
+    await updateConfig((cfg) => {
+      cfg.enabledPlugins = {
+        foo: false,
+        "foo@foo": false,
+        "other@market": true,
+      };
+    });
+    applyPersistedEnabledState(loadConfigSync().enabledPlugins);
+    pluginStateStore.replaceLoadedState({
+      enabled: [],
+      disabled: [plugin],
+      errors: [],
+      warnings: [],
+    });
+    const activeBefore = getSnapshot();
+
+    await clearEnabledSetting("foo");
+
+    expect(loadConfigSync().enabledPlugins).toEqual({ "other@market": true });
+    expect(isEnabled("foo")).toBe(true);
+    expect(isRuntimeEnabled("foo")).toBe(false);
+    expect(getSnapshot().desired).toEqual({ enabled: ["other@market"], disabled: [] });
+    expect(getSnapshot().enabled).toEqual(activeBefore.enabled);
+    expect(getSnapshot().disabled).toEqual(activeBefore.disabled);
+    expect(getSnapshot().needsRefresh).toBe(true);
+  });
+
+  it("rejects clearEnabledSetting write failure without changing state", async () => {
+    const plugin = mkPlugin("foo");
+    register(plugin);
+    await updateConfig((cfg) => {
+      cfg.enabledPlugins = { foo: false, "foo@foo": false };
+    });
+    applyPersistedEnabledState(loadConfigSync().enabledPlugins);
+    pluginStateStore.replaceDesiredState({ enabled: [], disabled: ["foo@foo"] });
+    const beforeSnapshot = getSnapshot();
+    const beforeConfig = loadConfigSync();
+    failWrites = true;
+
+    await expect(clearEnabledSetting("foo")).rejects.toThrow("forced settings write failure");
+
+    expect(isEnabled("foo")).toBe(false);
+    expect(isRuntimeEnabled("foo")).toBe(false);
+    expect(getSnapshot()).toBe(beforeSnapshot);
+    expect(loadConfigSync()).toEqual(beforeConfig);
   });
 
   it("applyPersistedEnabledState ignores undefined", () => {
     register(mkPlugin("bar"));
-    applyPersistedEnabledState(undefined);
+    expect(applyPersistedEnabledState(undefined)).toEqual([]);
     expect(isEnabled("bar")).toBe(true);
   });
 });

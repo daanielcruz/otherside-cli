@@ -36,7 +36,7 @@ export function createOpenAiCustomActions(deps: {
 
   const beginOpenAiCustomConfig = (): void => {
     setPhase(openAiCustomCredentialsPhase(null));
-    void loadFor("openai-custom").then((stored) => {
+    void loadFor("openai").then((stored) => {
       setPhase(openAiCustomCredentialsPhase(stored ?? null));
     });
   };
@@ -170,7 +170,7 @@ export function createOpenAiCustomActions(deps: {
       outputTokenLimit: outputTokenLimit ? String(outputTokenLimit) : "",
       message: "saving…",
     });
-    void saveFor("openai-custom", {
+    void saveFor("openai", {
       apiKey,
       baseUrl: url,
       model,
@@ -182,18 +182,18 @@ export function createOpenAiCustomActions(deps: {
         if (config) {
           const next = {
             ...config,
-            defaultProvider: "openai-custom" as const,
+            defaultProvider: "openai" as const,
             defaultModel: model,
           };
           broker?.dispatch({
             kind: "set_provider",
-            provider: "openai-custom",
+            provider: "openai",
             model,
-            fastMode: fastModeForProvider(config, "openai-custom"),
+            fastMode: fastModeForProvider(config, "openai"),
           });
           onConfigChange?.(next);
           void updateConfig((current) => {
-            current.defaultProvider = "openai-custom";
+            current.defaultProvider = "openai";
             current.defaultModel = model;
           });
         }

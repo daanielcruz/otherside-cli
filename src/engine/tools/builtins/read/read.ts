@@ -2,15 +2,16 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join } from "node:path";
 import { isTaskOutputPath, taskIdFromOutputPath } from "@/engine/background/tasks/output-files.ts";
 import { nativeVisionModel } from "@/engine/model/facts/capabilities.ts";
-import { canSendNatively } from "@/engine/model/facts/capabilities-runtime.ts";
+import { canSendNatively, canSendPdfNatively } from "@/engine/model/facts/capabilities-runtime.ts";
 import { readNotebookBlocks } from "@/engine/tools/_infra/notebook-read.ts";
 import {
+  inspectPdf,
   isPdftoppmAvailable,
   PDF_INLINE_PAGE_THRESHOLD,
+  PDF_MAX_NATIVE_SIZE,
   PDF_MAX_PAGES_PER_READ,
   type PdfPageRange,
   parsePdfPageRange,
-  pdfPageCount,
   renderPdfPages,
 } from "@/engine/tools/_infra/pdf-read.ts";
 import type { ToolArgSegment, ToolHandler } from "@/engine/tools/contract.ts";
@@ -631,35 +632,63 @@ function readPdfBranch(
   filePath: string,
   pages: string | null,
 ): ToolResult {
-  if (!canSendNatively(ctx.provider, ctx.model)) {
-    return err(
-      call.id,
-      `Reading PDFs requires a vision-capable provider; \`${ctx.provider}\` cannot render PDF pages.`,
-    );
-  }
+  const inspected = inspectPdf(filePath);
+  if (!inspected.ok) return err(call.id, inspected.error);
 
   let range: PdfPageRange | undefined;
   if (pages) {
     const validated = validatePdfRange(call.id, pages);
     if (!validated.ok) return validated.error;
     range = validated.range;
+    if (range.firstPage > inspected.pageCount || range.lastPage > inspected.pageCount) {
+      return err(
+        call.id,
+        `Page range "${pages}" is outside this PDF's ${inspected.pageCount} pages.`,
+      );
+    }
   }
 
+  const supportsNativePdf = canSendPdfNatively(ctx.provider, ctx.model);
+  if (!range && inspected.pageCount > PDF_INLINE_PAGE_THRESHOLD) {
+    return err(
+      call.id,
+      `This PDF has ${inspected.pageCount} pages, which is too many to read at once. Use the pages parameter to read specific page ranges (e.g., pages: "1-5"). Maximum ${PDF_MAX_PAGES_PER_READ} pages per request.`,
+    );
+  }
+  if (!range && supportsNativePdf && inspected.bytes > PDF_MAX_NATIVE_SIZE) {
+    return err(call.id, `PDF file exceeds maximum allowed size of ${PDF_MAX_NATIVE_SIZE} bytes.`);
+  }
+  if (!range && supportsNativePdf) {
+    readSetInsert(readScopeKey(ctx), filePath, "");
+    return {
+      tool_use_id: call.id,
+      content: [
+        { type: "text", text: `[PDF] ${filePath} — ${inspected.pageCount} page(s)` },
+        {
+          type: "pdf",
+          source: {
+            type: "base64",
+            media_type: "application/pdf",
+            data: inspected.data.toString("base64"),
+          },
+          filename: basename(filePath),
+          pageCount: inspected.pageCount,
+          bytes: inspected.bytes,
+        },
+      ],
+    };
+  }
+  if (!canSendNatively(ctx.provider, ctx.model)) {
+    return err(
+      call.id,
+      `Reading PDFs requires a vision-capable provider; \`${ctx.provider}\` cannot render PDF pages.`,
+    );
+  }
   if (!isPdftoppmAvailable()) {
     return err(
       call.id,
       "Reading PDFs requires poppler-utils (pdftoppm). Install with `brew install poppler` on macOS or `apt-get install poppler-utils` on Debian/Ubuntu.",
     );
-  }
-
-  if (!range) {
-    const count = pdfPageCount(filePath);
-    if (count !== null && count > PDF_INLINE_PAGE_THRESHOLD) {
-      return err(
-        call.id,
-        `This PDF has ${count} pages, which is too many to read at once. Use the pages parameter to read specific page ranges (e.g., pages: "1-5"). Maximum ${PDF_MAX_PAGES_PER_READ} pages per request.`,
-      );
-    }
   }
 
   const rendered = renderPdfPages(filePath, range);

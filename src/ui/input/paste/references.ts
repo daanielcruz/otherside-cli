@@ -1,3 +1,4 @@
+import stripAnsi from "strip-ansi";
 import {
   formatTruncatedRef,
   imageRefMatches,
@@ -10,6 +11,15 @@ import type { ContentBlock } from "@/kernel/std/types/message.ts";
 import type { PasteStore } from "@/kernel/std/types/paste.ts";
 
 export const PASTE_THRESHOLD = 800;
+
+// Pasted text is normalized before touching the buffer: NFC keeps offsets
+// aligned with grapheme/width math for decomposed input (e.g. NFD from macOS
+// file dialogs), escape codes are stripped, CR/CRLF become LF, and tabs
+// expand to four spaces so no control byte can corrupt wrap-width math or the
+// painted rows.
+export function normalizePastedText(pasted: string): string {
+  return stripAnsi(pasted.normalize("NFC")).replace(/\r\n?/g, "\n").replaceAll("\t", "    ");
+}
 
 // Programmatic buffer fills (history restore, queued sends) can exceed what
 // the input area renders responsively. Above the threshold the middle of the
@@ -43,6 +53,15 @@ export function refStartingAt(text: string, cursor: number): { start: number; en
     if (ref.start === cursor) return { start: ref.start, end: ref.end };
   }
   return null;
+}
+
+// References are atomic for word operations too: an offset strictly inside
+// one snaps to the requested edge so a word delete never leaves half a chip.
+export function snapOutOfRef(text: string, offset: number, toward: "start" | "end"): number {
+  for (const ref of parsePasteReferences(text)) {
+    if (offset > ref.start && offset < ref.end) return toward === "start" ? ref.start : ref.end;
+  }
+  return offset;
 }
 
 export function joinWithLeadingSpace(

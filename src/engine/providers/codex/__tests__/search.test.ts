@@ -51,7 +51,7 @@ describe("Codex web search", () => {
     expect(config.deferredOverrides?.alwaysDeclare).toContain("WebSearch");
   });
 
-  it("calls alpha/search with Codex auth, filters, and the upstream payload", async () => {
+  it("calls alpha/search with Codex auth, filters, and the expected request payload", async () => {
     let capturedUrl = "";
     let capturedInit: RequestInit | undefined;
     global.fetch = mock((url: string | URL | Request, init?: RequestInit) => {

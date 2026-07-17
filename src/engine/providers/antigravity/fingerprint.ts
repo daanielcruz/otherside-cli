@@ -8,6 +8,7 @@ export const PROD_HOST = "https://cloudcode-pa.googleapis.com";
 export const DAILY_HOST = "https://daily-cloudcode-pa.googleapis.com";
 
 export const STREAM_GENERATE_CONTENT_PATH = "/v1internal:streamGenerateContent";
+export const GENERATE_CONTENT_PATH = "/v1internal:generateContent";
 
 export const ANTIGRAVITY_HOST_VAR = "OTHERSIDE_ANTIGRAVITY_HOST";
 
@@ -54,6 +55,10 @@ export function streamGenerateContentUrl(): string {
   return u.toString();
 }
 
+export function generateContentUrl(): string {
+  return providerEndpoint("antigravity", "images", `${backendHost()}${GENERATE_CONTENT_PATH}`);
+}
+
 export interface AntigravityHeaderOptions {
   bearer: string;
 }
@@ -76,6 +81,8 @@ export interface CloudCodeEnvelopeInput {
   project: string;
   requestId: string;
   request: Record<string, unknown>;
+  requestType?: string;
+  userAgent?: string;
   googleOneAi?: boolean;
 }
 
@@ -95,8 +102,8 @@ export function buildCloudCodeEnvelope(input: CloudCodeEnvelopeInput): Record<st
     requestId: input.requestId,
     request: input.request,
     model: input.model,
-    userAgent: TOP_USER_AGENT,
-    requestType: REQUEST_TYPE,
+    userAgent: input.userAgent ?? TOP_USER_AGENT,
+    requestType: input.requestType ?? REQUEST_TYPE,
   };
   if (input.googleOneAi !== false) {
     envelope.enabledCreditTypes = ["GOOGLE_ONE_AI"];

@@ -107,13 +107,12 @@ export interface UsageOverlayProps {
   config?: UserConfig | undefined;
   onConfigChange?: ((config: UserConfig) => void) | undefined;
   isTurnRunning?: (() => boolean) | undefined;
-  enqueueChange?: ((change: PendingProviderChange, label: string) => void) | undefined;
 }
 
 function usageProviderIds(): ProviderId[] {
   return listProviderConfigs()
     .map((c) => c.provider.id)
-    .filter((id) => id !== "openai-custom");
+    .filter((id) => id !== "openai");
 }
 
 function usageTabsFor(providers: ProviderId[]): { id: UsageTab; label: string }[] {
@@ -284,7 +283,7 @@ export function UsageOverlay({
 
   useEffect(() => {
     if (forcedKimiUsageState) return;
-    if (activeTab !== "kimi-code" || kimiUsageState.status !== "idle") return;
+    if (activeTab !== "kimi" || kimiUsageState.status !== "idle") return;
     const gen = loadGenRef.current[activeTab] ?? 0;
     setKimiUsageState({ status: "loading", data: null });
     void fetchKimiUsage()
@@ -402,7 +401,7 @@ export function UsageOverlay({
     onAnthropicPlan ||
     activeTab === "codex" ||
     activeTab === "antigravity" ||
-    activeTab === "kimi-code" ||
+    activeTab === "kimi" ||
     activeTab === "glm" ||
     activeTab === "minimax" ||
     activeTab === "xai";
@@ -420,7 +419,7 @@ export function UsageOverlay({
       setCodexUsageState({ status: "idle", data: null });
     } else if (activeTab === "antigravity") {
       setAntigravityUsageState({ status: "idle", data: null });
-    } else if (activeTab === "kimi-code") {
+    } else if (activeTab === "kimi") {
       setKimiUsageState({ status: "idle", data: null });
     } else if (activeTab === "glm") {
       setGlmUsageState({ status: "idle", data: null });
@@ -587,7 +586,7 @@ function ProviderUsage({
       />
     );
   }
-  if (provider === "kimi-code") {
+  if (provider === "kimi") {
     return <KimiCombinedUsage usageState={kimiUsageState} maxContentWidth={maxContentWidth} />;
   }
   if (provider === "deepseek") {

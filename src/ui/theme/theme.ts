@@ -35,6 +35,8 @@ export interface ThemeRecord {
   modeAccept: InkColor;
   modePlan: InkColor;
   designSession: InkColor;
+  bashMode: InkColor;
+  bashInputBg: InkColor;
   steel: InkColor;
   border: InkColor;
   chevron: InkColor;
@@ -68,6 +70,8 @@ const SHARED_TUI: Pick<
   | "modeAccept"
   | "modePlan"
   | "designSession"
+  | "bashMode"
+  | "bashInputBg"
   | "fastMode"
   | "titleStrong"
   | "chevron"
@@ -90,6 +94,8 @@ const SHARED_TUI: Pick<
   modeAccept: "#48AAAA",
   modePlan: "#48968C",
   designSession: "#4EBA65",
+  bashMode: "#FD5DB1",
+  bashInputBg: "#413C41",
   fastMode: "#D96F7D",
   titleStrong: "#FFFFFF",
   chevron: "#888888",
@@ -117,9 +123,9 @@ const DARK: ThemeRecord = {
   error: "#FF6B80",
   warning: "#FFC107",
   steel: "#6A9BCC",
-  user: "#D4D4D4",
+  user: "#FFFFFF",
   inverseBg: "#373737",
-  userText: "#D4D4D4",
+  userText: "#FFFFFF",
   assistant: "#D4D4D4",
   system: "#999999",
   toolBody: "#D4D4D4",
@@ -278,6 +284,8 @@ export const Border = {
 
 export const Glyph = {
   chevron: "❯ ",
+  // Prompt-bar chevron pads with NBSP; list rows keep the plain-space variant.
+  promptChevron: "❯\u00A0",
   chevronThin: "› ",
   promptBusy: "… ",
   bolt: "↯",

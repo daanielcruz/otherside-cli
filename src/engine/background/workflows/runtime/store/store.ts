@@ -254,6 +254,10 @@ function finishWorkflowTask(
 function routeWorkflowCompletionNotification(task: LocalWorkflowTaskState): void {
   const status = terminalNotificationStatus(task.status);
   if (status === null) return;
+  // A user-stopped workflow is silent: the user just watched themselves stop
+  // it, and the model must not react to that decision. Model/parent stops and
+  // organic terminals still notify.
+  if (status === "killed" && task.stoppedByUser === true) return;
   const rawResult = status === "completed" ? workflowResultText(task.result) : undefined;
   const result =
     rawResult !== undefined ? truncateWorkflowResult(rawResult, task.outputFile) : undefined;
@@ -274,6 +278,7 @@ function routeWorkflowCompletionNotification(task: LocalWorkflowTaskState): void
     toolUseId: task.parentToolCallId,
     status,
     summary,
+    ...(status === "failed" && task.error !== undefined ? { error: task.error } : {}),
     ...(task.outputFile !== undefined ? { outputFile: task.outputFile } : {}),
     ...(recovery !== undefined ? { recovery } : {}),
     ...(result !== undefined ? { result } : {}),
@@ -287,9 +292,8 @@ function routeWorkflowCompletionNotification(task: LocalWorkflowTaskState): void
       agents,
     },
   });
-  // Every terminal workflow — whether the model stopped it, the user stopped
-  // it, or it finished on its own — nudges an idle session into a fresh turn.
-  // `byUser` only shapes the summary text above; it does not gate the wake.
+  // Model-stopped and organically-terminal workflows nudge an idle session
+  // into a fresh turn; user stops were filtered out above.
   emitQueue.emitForCompletion({
     class: "urgent_output",
     ownerId: task.ownerId,

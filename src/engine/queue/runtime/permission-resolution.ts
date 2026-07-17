@@ -2,6 +2,7 @@ import { lstatSync, readlinkSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { getAgentContext } from "@/engine/agents/agent-context.ts";
+import { resolveManagedSessionWorktreePath } from "@/engine/session/worktree.ts";
 import { isReadOnlyBashCommand } from "@/engine/tools/_infra/command-analysis/read-only.ts";
 import { permissionAbortSignal } from "@/engine/tools/permission-abort-context.ts";
 import type { PermissionDecision } from "@/engine/tools/pipeline.ts";
@@ -137,6 +138,13 @@ function workflowNameFromInput(input: unknown): string | null {
   if (!isRecord(input)) return null;
   const value = input.name;
   return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+async function enterWorktreeExternalPath(input: unknown, cwd: string): Promise<boolean> {
+  if (!isRecord(input) || typeof input.path !== "string" || input.path.length === 0) {
+    return false;
+  }
+  return (await resolveManagedSessionWorktreePath(cwd, input.path)) === null;
 }
 
 function expandHome(filePath: string): string {
@@ -787,7 +795,7 @@ function bashWritePathDecision(
   for (const segment of segments) {
     const write = bashWritePaths(segment);
     if (!write) continue;
-    // As upstream does, fail closed on cp/mv flags: --target-directory and
+    // Fail closed on cp/mv flags: --target-directory and
     // similar options can carry a destination outside the positional argv.
     if (write.hasUnsupportedFlags || compoundHasCd) return "ask";
     for (const filePath of write.paths) {
@@ -822,7 +830,7 @@ function bashWritePathDecision(
 // fast path (MCP-PLAN-001) — a `Bash(mkdir foo:*)` allow rule must still
 // prompt in plan mode even though the path itself would otherwise be a safe,
 // no-`ask` write. Commands outside BASH_WRITE_COMMANDS (e.g. `npm test`) are
-// intentionally NOT treated as writes here, matching upstream: an explicit
+// intentionally NOT treated as writes here: an explicit
 // Bash allow rule for a non-filesystem command still auto-allows in plan
 // mode.
 function bashHasWriteCommand(command: string): boolean {
@@ -832,22 +840,21 @@ function bashHasWriteCommand(command: string): boolean {
     .some((segment) => bashWritePaths(segment) !== null);
 }
 
-// Mirrors upstream's ROOT_VAR_EXPANSION_RE (bashPermissions.ts): an `rm`/
+// Root-var expansion pattern: an `rm`/
 // `rmdir` target that is a bare $VAR or ${VAR} expansion directly followed by
 // `/` and a glob, another expansion, another slash, or the end of the
 // argument expands to the filesystem root (or a top-level directory) when the
 // variable is unset or empty at runtime — e.g. `rm -rf $UNSET/*` becomes
 // `rm -rf /*`. Quotes around the expansion (`"$UNSET"/`) are already stripped
-// by tokenizeRespectingQuotes before this runs, so unlike upstream's raw-text
-// regex this one doesn't need to match quote characters itself.
+// by tokenizeRespectingQuotes before this runs, so this regex doesn't need to
+// match quote characters itself.
 const DANGEROUS_RM_ROOT_VAR_RE =
   /^\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)\/(?:[*$/]|$)/;
 
-// Upstream keeps this one pattern bypass-immune even while a Bash call is
+// This one pattern stays bypass-immune even while a Bash call is
 // otherwise auto-allowed by an allow rule or by yolo/accept-edits mode
-// (permissions.ts: `safetyReason` re-returns the ask for
-// "Dangerous rm operation"/"Dangerous rmdir operation" even when
-// shouldBypassPermissions is true). So — unlike the rest of
+// (the "Dangerous rm operation"/"Dangerous rmdir operation" ask is
+// re-returned even when bypass is set). So — unlike the rest of
 // bashWritePathDecision, whose "ask" is gated by `mode !== "yolo"` below —
 // this check must be OR'd into `mustAsk` unconditionally.
 function bashDangerousRmRootVarDecision(command: string): "ask" | null {
@@ -865,15 +872,14 @@ function bashDangerousRmRootVarDecision(command: string): "ask" | null {
   return null;
 }
 
-// Mirrors upstream's isDangerousRemovalPath / pathInWorkingPath
-// (tools/BashTool/pathValidation.ts, utils/permissions/pathValidation.ts): a
+// Dangerous-removal / working-path check: a
 // path that IS the filesystem root, the user's home directory, or a direct
 // child of root (e.g. `/usr`, `/etc`) is a catastrophic rm/rmdir target on
 // its own; a path that is a tracked working directory (session cwd or an
 // additionalWorkingDirectory) — or an ancestor of one, since removing the
 // ancestor removes the working directory with it — is equally catastrophic.
 // This intentionally compares the plain (lexical) resolved path rather than a
-// symlink-realpath'd one: mirroring upstream's path-segment check, and
+// symlink-realpath'd one: a plain path-segment check, and
 // avoiding a real filesystem quirk (e.g. macOS resolving `/etc` to
 // `/private/etc`) silently moving a genuine direct-child-of-root target out
 // from under the "direct child of root" shape.
@@ -884,11 +890,11 @@ function isCriticalSystemDirectory(absolutePath: string, homeDir: string): boole
   return absolutePath === homeDir;
 }
 
-// Upstream's checkDangerousRemovalPaths runs ahead of any allow rule and
-// stays bypass-immune even while shouldBypassPermissions (yolo) is set —
-// the "Dangerous rm/rmdir operation" ask reason is re-returned by
-// permissions.ts's narrow dangerous-rm exception regardless of bypass state.
-// Like bashDangerousRmRootVarDecision above (a distinct, narrower upstream
+// The dangerous-removal check runs ahead of any allow rule and stays
+// bypass-immune even while yolo is set — the "Dangerous rm/rmdir operation"
+// ask reason is re-returned by the narrow dangerous-rm exception regardless
+// of bypass state.
+// Like bashDangerousRmRootVarDecision above (a distinct, narrower
 // pattern for unresolved `$VAR/` expansions), this must be OR'd into
 // `mustAsk` unconditionally, never gated by `mode !== "yolo"`.
 function bashDangerousRmCriticalPathDecision(
@@ -951,9 +957,9 @@ function bashReadPathDecision(
 // the `cd` destination itself leaves the workspace and every later relative
 // operand is actually resolved there at runtime, not against the original
 // cwd. Checked independently of isReadOnlyBashCommand so both a bare
-// `cd <outside>` and any compound containing it are covered — matching
-// upstream's PATH_EXTRACTORS.cd, which validates the cd target for every
-// Bash call, not only compounds. Multiple `cd`s or unresolvable destinations
+// `cd <outside>` and any compound containing it are covered — the cd target
+// is validated for every Bash call, not only compounds. Multiple `cd`s or
+// unresolvable destinations
 // (globs, `$VAR`, unparseable wrappers) fail closed to "ask" rather than
 // attempt to track an effective cwd across segments.
 function bashCdPathDecision(
@@ -1043,6 +1049,8 @@ export async function resolvePermission(
   const handler = registry.get(call.name);
   const requiresUserInteraction = handler?.requiresUserInteraction?.() ?? false;
   const canonicalName = handler?.schema.name ?? call.name;
+  const enterWorktreeNeedsAsk =
+    canonicalName === "EnterWorktree" && (await enterWorktreeExternalPath(call.input, cwd));
   const workflowName = canonicalName === "Workflow" ? workflowNameFromInput(call.input) : null;
   const ruleInput = workflowName ?? permissionInputForCall(call.input, argsPreview);
   const aliasNames = registry.aliasNamesFor(canonicalName);
@@ -1095,18 +1103,26 @@ export async function resolvePermission(
   if (!hasRuleAsk && isAutoMemoryEdit(call.name, call.input, cwd)) return "allow";
   if (permissionFree && !hasRuleAsk && !requiresUserInteraction) return "allow";
   // PERM-HOOK-ALLOW-BYPASS-001: a PreToolUse hook's explicit
-  // hookSpecificOutput.permissionDecision:"allow" mirrors upstream's
-  // resolveHookPermissionDecision -- it re-checks only the explicit deny/ask
-  // rules just evaluated above and, finding none, resolves straight to allow,
+  // hookSpecificOutput.permissionDecision:"allow" re-checks only the explicit
+  // deny/ask rules just evaluated above and, finding none, resolves straight to allow,
   // bypassing the interactive/headless/background-agent prompt path entirely
   // (askPermission / headlessAutoDeny / backgroundAgentAutoDeny below). A
   // requiresUserInteraction tool (e.g. AskUserQuestion) still owns its own
   // dialog and is excluded here, matching every other bypass above.
   const hookPermission = preToolUseHookPermissionSignal();
+  if (
+    canonicalName === "EnterWorktree" &&
+    !enterWorktreeNeedsAsk &&
+    !hasRuleAsk &&
+    hookPermission !== "ask" &&
+    !requiresUserInteraction
+  ) {
+    return "allow";
+  }
   if (hookPermission === "allow" && !hasRuleAsk && !requiresUserInteraction) return "allow";
   let compound: ReturnType<typeof compoundBashDecision> = null;
   const command = call.name === "Bash" ? bashCommandFromInput(call.input) : null;
-  // Match upstream ordering: argv-level path safety runs after explicit Bash
+  // Ordering: argv-level path safety runs after explicit Bash
   // deny/ask rules but before an allow rule, session grant, or permissive mode.
   const bashPathDecision =
     command === null ? null : bashWritePathDecision(command, cwd, additionalWorkingDirectories);
@@ -1122,10 +1138,9 @@ export async function resolvePermission(
   const mode = currentPermissionMode(deps);
   // MCP-PLAN-001: plan mode keeps a write-shaped call bypass-immune to an
   // already-granted allow rule (persisted rule or session grant — both are
-  // folded into `matched` above), mirroring upstream's mode:'plan' passthrough
-  // rewrite for non-readonly MCP tools (permissions.ts:1730-1745) and the
-  // filesystem write gate that runs before matchingAllowRuleForAllPaths
-  // (filesystem.ts:2114). Only yolo (a distinct, mutually exclusive mode from
+  // folded into `matched` above): a mode:'plan' passthrough rewrite for
+  // non-readonly MCP tools and the filesystem write gate that runs before
+  // the matching allow rule. Only yolo (a distinct, mutually exclusive mode from
   // plan — see currentPermissionMode) ever lets such a call through; a Bash
   // allow rule for a non-filesystem-mutating command (e.g. `npm test:*`)
   // still auto-allows, since only recognized write commands are gated.
@@ -1162,14 +1177,15 @@ export async function resolvePermission(
     // PERM-HOOK-ALLOW-BYPASS-001: a PreToolUse hook's explicit
     // hookSpecificOutput.permissionDecision:"ask" forces the interactive/
     // headless prompt path even when mode (including yolo) or a matched
-    // allow rule would otherwise auto-allow, mirroring upstream's
-    // resolveHookPermissionDecision forceDecision on "ask". An explicit deny
+    // allow rule would otherwise auto-allow: an explicit hook "ask" forces
+    // the prompt path. An explicit deny
     // rule (checked above, before `hookPermission` is even read) still wins,
     // and a requiresUserInteraction tool still owns its own dialog instead of
     // this one (checked further below, unconditionally on `mustAsk`).
     hookPermission === "ask" ||
     (mode !== "yolo" &&
-      (bashPathDecision === "ask" ||
+      (enterWorktreeNeedsAsk ||
+        bashPathDecision === "ask" ||
         bashReadDecision === "ask" ||
         bashCdDecision === "ask" ||
         compound === "ask" ||
@@ -1195,8 +1211,7 @@ export async function resolvePermission(
   // AGENT-PERM-003: a detached named background subagent has no parent turn
   // of its own to answer a prompt, but in an interactive TUI session the
   // permission channel is a session-long duplex the REPL is already
-  // subscribed to (mirroring upstream's hasRequestDialog check in
-  // runAgent.ts, which only auto-avoids prompts when there is no live
+  // subscribed to (prompts are only auto-avoided when there is no live
   // request dialog bound). So auto-deny only when there is no live UI to
   // bubble the ask to; a headless/print or piped run still auto-denies.
   if (agentContext?.shouldAvoidPermissionPrompts === true && getRuntimeKind() !== "interactive")
@@ -1355,7 +1370,7 @@ async function applyUpdate(
     }
     // Only the editable settings files can have rules removed here. Policy,
     // flag, CLI-arg, command, and toolsNarrowing sources are immutable at
-    // this layer, matching upstream's `supportsPersistence` restriction to
+    // this layer, restricting persistence to
     // localSettings/userSettings/projectSettings.
     if (
       update.source !== "userSettings" &&

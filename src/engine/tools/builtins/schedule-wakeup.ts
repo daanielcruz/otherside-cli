@@ -8,6 +8,7 @@ interface Input {
   delaySeconds?: unknown;
   reason?: unknown;
   prompt?: unknown;
+  stop?: unknown;
 }
 
 interface LoopChain {
@@ -39,10 +40,29 @@ function cronFor(timestampMs: number): string {
   return `${target.getMinutes()} ${target.getHours()} * * *`;
 }
 
-function removePendingLoopWakeups(): void {
+function removePendingLoopWakeups(): number {
+  let removed = 0;
   for (const job of cron.list()) {
-    if (job.kind === "loop") cron.remove(job.id);
+    if (job.kind === "loop") {
+      cron.remove(job.id);
+      removed += 1;
+    }
   }
+  return removed;
+}
+
+function stopResult(toolUseId: string, cancelledWakeups: number): ToolResult {
+  if (cancelledWakeups === 0) {
+    return {
+      tool_use_id: toolUseId,
+      content:
+        "Loop stopped — any dynamic loop in this session is ended; there was no pending wakeup to cancel. If you are running a fixed-interval /loop (a recurring cron), it is NOT stopped by this call — cancel it with CronDelete. Nothing more to do this turn.",
+    };
+  }
+  return {
+    tool_use_id: toolUseId,
+    content: `Loop stopped — cancelled ${cancelledWakeups} pending wakeup(s); no further dynamic-loop wakeups scheduled. Nothing more to do this turn.`,
+  };
 }
 
 function formatResult(
@@ -65,7 +85,7 @@ function formatResult(
     : "";
   return {
     tool_use_id: toolUseId,
-    content: `Next wakeup scheduled for ${hhmmss} (in ${secondsFromNow}s)${clampedNote}.`,
+    content: `Next wakeup scheduled for ${hhmmss} (in ${secondsFromNow}s)${clampedNote}. Nothing more to do this turn — the harness re-invokes you when the wakeup fires or a task-notification arrives.`,
   };
 }
 
@@ -80,6 +100,15 @@ export const ScheduleWakeup: ToolHandler = {
   },
   async run(call: ToolCall, _ctx: RequestContext): Promise<ToolResult> {
     const args = (call.input ?? {}) as Input;
+    if (args.stop === true) {
+      return stopResult(call.id, removePendingLoopWakeups());
+    }
+    if (args.delaySeconds === undefined || args.reason === undefined) {
+      return err(call.id, "`delaySeconds` and `reason` are required when `stop` is not true.");
+    }
+    if (args.prompt === undefined) {
+      return err(call.id, "`prompt` is required when `stop` is not true.");
+    }
     if (typeof args.delaySeconds !== "number" || !Number.isFinite(args.delaySeconds)) {
       return err(call.id, "`delaySeconds` must be a finite number");
     }

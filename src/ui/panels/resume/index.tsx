@@ -6,10 +6,11 @@ import {
   sessionCwdFilterFor,
   sessionCwdFilterSeed,
 } from "@/engine/session/paths.ts";
-import { loadSessionForResume } from "@/engine/session/persist.ts";
+import { readActiveChainLines, recordsFromLines } from "@/engine/session/persist.ts";
 import { liveSessionsForCwd } from "@/engine/session/registry.ts";
 import { Box, Text, useTerminalDimensions } from "@/ink";
 import { errorMessage } from "@/kernel/std/errno.ts";
+import { computeListWindow } from "@/kernel/std/list-window.ts";
 import { formatBytes } from "@/kernel/std/text/format.ts";
 import { FooterPanel, FooterPanelPickerRow } from "@/ui/chrome/panel.tsx";
 import { usePanelNavigation } from "@/ui/hooks/use-panel-navigation.ts";
@@ -131,18 +132,17 @@ export function ResumeOverlay({
     setPreview({ id: entry.id, updatedAt: entry.updatedAt, lines: [], loading: true });
     setPreviewScroll(0);
     setMode("preview");
-    void loadSessionForResume(entry.id)
-      .then((loaded) => {
+    void readActiveChainLines(entry.id)
+      .then((lines) => recordsFromLines(lines))
+      .then((records) => {
         if (!aliveRef.current) return;
         setPreview((p) =>
           p && p.id === entry.id
-            ? { ...p, lines: previewLinesFromRecords(loaded.records), loading: false }
+            ? { ...p, lines: previewLinesFromRecords(records), loading: false }
             : p,
         );
       })
       .catch((error: unknown) => {
-        // The resume loader refuses sessions from another directory; surface
-        // that refusal inside the preview instead of a silent empty pane.
         if (!aliveRef.current) return;
         setPreview((p) =>
           p && p.id === entry.id ? { ...p, loading: false, error: errorMessage(error) } : p,
@@ -251,14 +251,15 @@ export function ResumeOverlay({
     },
   });
 
-  const firstVisible = Math.max(
-    0,
-    Math.min(idx - Math.floor(visibleRows / 2), sessions.length - visibleRows),
-  );
-  const lastVisible = Math.min(sessions.length, firstVisible + visibleRows);
-  const visible = sessions.slice(firstVisible, lastVisible);
-  const showTopArrow = firstVisible > 0;
-  const showBottomArrow = lastVisible < sessions.length;
+  const sessionWindow = computeListWindow({
+    cursor: idx,
+    total: sessions.length,
+    size: visibleRows,
+    anchor: "center",
+  });
+  const visible = sessions.slice(sessionWindow.from, sessionWindow.to);
+  const showTopArrow = sessionWindow.above > 0;
+  const showBottomArrow = sessionWindow.below > 0;
   const showCounter = sessions.length > visibleRows || sessions.length === 0;
   const counterText =
     sessions.length > 0
@@ -332,7 +333,7 @@ export function ResumeOverlay({
             <SessionRow
               key={s.id}
               session={s}
-              selected={mode === "list" && firstVisible + i === idx}
+              selected={mode === "list" && sessionWindow.from + i === idx}
               live={liveIds.has(s.id)}
               scrollUp={i === 0 && showTopArrow}
               scrollDown={i === visible.length - 1 && showBottomArrow}

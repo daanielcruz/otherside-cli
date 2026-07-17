@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { Box, Text, useTerminalDimensions } from "@/ink";
-import Ink from "@/terminal-runtime/host/runtime-session.tsx";
+import { Box, Ink, Text, useTerminalDimensions } from "@/ink";
 import { FooterPanel, FooterPanelPickerRow, FooterPanelRow } from "@/ui/chrome/panel.tsx";
 import { visibleResumeRows } from "@/ui/panels/resume/entries.ts";
 import { TerminalEmulator } from "@/ui/transcript/__tests__/terminal-emulator.ts";
@@ -77,9 +76,14 @@ function ResponsivePickerFixture(): React.JSX.Element {
 
 function FooterPanelRowFixture(): React.JSX.Element {
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" width={74}>
       <FooterPanelRow label="Provider" value="Codex" width={60} />
       <FooterPanelRow label="Model" value="gpt-5" width={60} />
+      <FooterPanelRow
+        label="Quota fallback"
+        value="enabled"
+        description="Uses another provider when the preferred provider hits its quota."
+      />
     </Box>
   );
 }
@@ -146,6 +150,15 @@ describe("picker panel rendering", () => {
     expect(model).toContain("gpt-5");
     expect(model).not.toContain("selects the active model");
     expect(model.indexOf("gpt-5")).toBe(62);
+
+    const quota = term.visibleLines()[2] ?? "";
+    expect(quota).toContain("Quota fallback");
+    expect(quota).toContain("enabled");
+    // Default label column is width=34 after the 2-char marker ("  "/chevron),
+    // so values start at index 36 — same formula as the width=60 rows above (62).
+    expect(quota.indexOf("enabled")).toBe(36);
+    expect(term.visibleRowOf("enabled")).toBe(term.visibleRowOf("Quota fallback"));
+    expect(term.countOccurrences("enabled")).toBe(1);
   });
 
   afterEach(() => {

@@ -137,7 +137,7 @@ const QUOTA_COLLECTORS: Partial<Record<ProviderId, () => Promise<QuotaBar[]>>> =
   anthropic: anthropicBars,
   codex: codexBars,
   antigravity: antigravityBars,
-  "kimi-code": kimiBars,
+  kimi: kimiBars,
   glm: async () => {
     const data = await fetchGlmUsage();
     applyGlmQuotaWarning(data);
@@ -158,7 +158,7 @@ const QUOTA_COLLECTORS: Partial<Record<ProviderId, () => Promise<QuotaBar[]>>> =
 function usageProviderIds(): ProviderId[] {
   return listProviderConfigs()
     .map((config) => config.provider.id)
-    .filter((id) => id !== "openai-custom");
+    .filter((id) => id !== "openai");
 }
 
 // Aggregates every provider's counters into one total, matching totalUsage in

@@ -4,11 +4,11 @@ import { lookup } from "@/commands/dispatch.ts";
 import { isImmediateSlash } from "@/commands/immediate.ts";
 
 describe("/fork catalog", () => {
-  test("is registered with a compact description and the reference argument hint", () => {
+  test("is registered with the full description and an argument hint", () => {
     const fork = buildCatalog().find((c) => c.name === "fork");
     expect(fork).toBeDefined();
     expect(fork?.kind).toBe("instant");
-    expect(fork?.description).toBe("spawn an inherited background agent");
+    expect(fork?.description).toBe("Spawn a background agent that inherits the full conversation");
     expect(fork?.argumentHint).toBe("<directive>");
     expect(lookup("fork")?.name).toBe("fork");
   });

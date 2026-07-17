@@ -1,34 +1,44 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useRepeatingClock } from "@/ink";
-import { createAutoClearDispatch } from "@/kernel/std/state/auto-clear-dispatch.ts";
+import { useEffect, useRef } from "react";
+import { submitClipboardImageHint } from "@/store/app-store/right-region-notices.ts";
+import { useIsTerminalFocused } from "@/terminal-runtime";
 import { hasImageInClipboardAsync } from "@/ui/input/paste/clipboard.ts";
 
-const HINT_TIMEOUT_MS = 8_000;
-const HINT_COOLDOWN_MS = 30_000;
-const POLL_MS = 5_000;
+/** Match reference: probe ~1s after terminal focus gain (not a 5s poll). */
+const FOCUS_PROBE_DELAY_MS = 1_000;
 
-export function useClipboardImageHint(): boolean {
-  const [hint, setHint] = useState(false);
-  const hideDispatch = useMemo(() => createAutoClearDispatch({ holdMs: HINT_TIMEOUT_MS }), []);
-  const lastShownRef = useRef(0);
+const CLIPBOARD_IMAGE_TEXT = "Image in clipboard · ctrl+v to paste";
 
-  const tick = useCallback((): void => {
-    void hasImageInClipboardAsync().then((has) => {
-      if (!has) return;
-      const now = Date.now();
-      if (now - lastShownRef.current < HINT_COOLDOWN_MS) return;
-      lastShownRef.current = now;
-      setHint(true);
-      hideDispatch.arm({ onTimeout: () => setHint(false) });
-    });
-  }, [hideDispatch]);
+/**
+ * Focus-gain clipboard image probe. Side-effect only: submits an ephemeral
+ * right-region notice when an image is detected. Returns nothing — display is
+ * owned by RightStatusRegion.
+ *
+ * @param enabled When false (model cannot accept images), never probe/submit.
+ */
+export function useClipboardImageHint(enabled = true): void {
+  const focused = useIsTerminalFocused();
+  const wasFocusedRef = useRef(focused);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    tick();
-    return () => hideDispatch.clear();
-  }, [tick, hideDispatch]);
+    const gainedFocus = focused && !wasFocusedRef.current;
+    wasFocusedRef.current = focused;
+    if (!enabled || !gainedFocus) return;
 
-  useRepeatingClock(tick, POLL_MS);
+    if (timerRef.current !== null) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => {
+      timerRef.current = null;
+      void hasImageInClipboardAsync().then((has) => {
+        if (!has) return;
+        submitClipboardImageHint(CLIPBOARD_IMAGE_TEXT);
+      });
+    }, FOCUS_PROBE_DELAY_MS);
 
-  return hint;
+    return () => {
+      if (timerRef.current !== null) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+    };
+  }, [focused, enabled]);
 }

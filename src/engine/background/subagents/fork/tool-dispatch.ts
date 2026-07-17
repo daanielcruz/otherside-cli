@@ -9,6 +9,7 @@ import {
   cancelTaskTree as bgCancelTaskTree,
   completeTaskForRun as bgCompleteTaskForRun,
   detachTaskForRun as bgDetachTaskForRun,
+  setForkId as bgSetForkId,
   startTask as bgStartTask,
   type TaskCompletion,
   type TaskRunRef,
@@ -16,6 +17,7 @@ import {
 } from "@/engine/background/tasks/background.ts";
 import * as bgControllers from "@/engine/background/tasks/background-controllers.ts";
 import { buildAgentLaunchReceipt } from "@/engine/background/tasks/notification.ts";
+import { ensureChildTaskIdMap } from "@/engine/background/tasks/progress.ts";
 import { cloneWorkflowBoundaryValue } from "@/engine/background/workflows/runtime/sandbox/clone.ts";
 import { partitionForConcurrency } from "@/engine/queue/runtime/concurrency.ts";
 import { nowIso } from "@/engine/session/record/index.ts";
@@ -225,11 +227,13 @@ export async function dispatchForkToolCalls(args: {
         state.structuredOutputConsumed = true;
         continue;
       }
-      const grantedViaToolSearch =
-        args.allowSet?.has("ToolSearch") && activeDeferredToolNames().includes(call.name);
       if (
-        isForkDisallowedTool(call.name, args.spec.permissionMode) ||
-        (args.allowSet !== null && !args.allowSet.has(call.name) && !grantedViaToolSearch)
+        !isDispatchableForkTool(call.name, args.allowSet, {
+          ...(args.spec.permissionMode !== undefined
+            ? { permissionMode: args.spec.permissionMode }
+            : {}),
+          ownerScope: args.ctx.agentOwnerId,
+        })
       ) {
         planItems.push(
           deniedPlanItem(args, call, `tool ${call.name} not allowed for ${args.name}`),
@@ -273,7 +277,12 @@ export async function dispatchForkToolCalls(args: {
           ...(prompt !== undefined ? { prompt } : {}),
         });
         nestedRun = taskRunRef(task);
-        args.ctx.childTaskIdMap?.set(call.id, task.id);
+        // Nested Agent runs use the task id as forkId. Register before dispatch
+        // so usage/tool events resolve to this row instead of collapsing onto
+        // the depth-1 parent when the shared childTaskIdMap was missing.
+        const childTaskIdMap = ensureChildTaskIdMap(args.ctx);
+        childTaskIdMap.set(call.id, task.id);
+        bgSetForkId(task.id, task.id);
       }
       const resolver = getPermissionResolver();
       const nestedRegistration =
@@ -287,13 +296,18 @@ export async function dispatchForkToolCalls(args: {
       let promise: ReturnType<typeof dispatchToolWithAgentContext>;
       let taskCompletionPromise: Promise<ToolResult> | undefined;
       try {
+        const nestedTaskId = nestedRun?.taskId;
         const dispatched = dispatchToolWithAgentContext(
           call,
-          nestedRegistration
+          nestedRegistration && nestedTaskId !== undefined
             ? {
                 ...args.ctx,
                 abortSignal: nestedRegistration.abortController.signal,
                 backgroundController: nestedRegistration.controller,
+                // Pin the nested agent's own task id so its loop and any further
+                // descendants inherit the correct bgTaskId even if map lookup fails.
+                bgTaskId: nestedTaskId,
+                childTaskIdMap: ensureChildTaskIdMap(args.ctx),
               }
             : args.ctx,
           {
@@ -568,10 +582,27 @@ export function forkToolDescription(
   return providerToolDescription({ name, description }, { ...opts, mainAgent: false });
 }
 
+// Dispatch gate: a tool outside the allow set is dispatchable only when THIS
+// agent loaded it through its own ToolSearch call — announcements from the
+// main session (or any other agent) never grant dispatch here.
+export function isDispatchableForkTool(
+  name: string,
+  allowSet: Set<string> | null,
+  opts: {
+    permissionMode?: "default" | "accept-edits" | "plan" | "yolo";
+    ownerScope: string | undefined;
+  },
+): boolean {
+  if (isForkDisallowedTool(name, opts.permissionMode)) return false;
+  if (allowSet === null || allowSet.has(name)) return true;
+  return allowSet.has("ToolSearch") && activeDeferredToolNames(opts.ownerScope).includes(name);
+}
+
 export function isAllowedInForkDeclarations(
   name: string,
   allowSet: Set<string> | null,
   spec: ForkSpec,
+  ownerScope?: string,
 ): boolean {
   if (isForkDisallowedTool(name, spec.permissionMode)) return false;
   if (name === "Agent" && !spec.allowNestedAgents) return false;
@@ -584,7 +615,7 @@ export function isAllowedInForkDeclarations(
   return (
     allowSet === null ||
     allowSet.has(name) ||
-    (spec.deferredAllow?.has(name) ? activeDeferredToolNames().includes(name) : false)
+    (spec.deferredAllow?.has(name) ? activeDeferredToolNames(ownerScope).includes(name) : false)
   );
 }
 

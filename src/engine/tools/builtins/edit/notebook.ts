@@ -1,4 +1,5 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { isAbsolute } from "node:path";
 import type { ToolHandler } from "@/engine/tools/contract.ts";
 import NotebookEditSchema from "@/harness/tools/NotebookEdit/tool.json" with { type: "json" };
 import type { ToolCall, ToolResult } from "@/kernel/std/types/message.ts";
@@ -40,6 +41,7 @@ function parseInput(raw: unknown): ParsedInput | string {
   const obj = (raw ?? {}) as Record<string, unknown>;
   const notebookPath = typeof obj.notebook_path === "string" ? obj.notebook_path : null;
   if (!notebookPath) return "`notebook_path` is required (absolute path to the .ipynb file)";
+  if (!isAbsolute(notebookPath)) return `\`notebook_path\` must be absolute: ${notebookPath}`;
   if (isNetworkSharePath(notebookPath)) return NETWORK_SHARE_PATH_ERROR;
   if (!notebookPath.endsWith(".ipynb")) return "`notebook_path` must end with .ipynb";
   const editModeRaw = typeof obj.edit_mode === "string" ? obj.edit_mode : "replace";

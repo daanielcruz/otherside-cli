@@ -7,6 +7,7 @@ export type DiagnosticStream =
   | "repaints"
   | "frame-timing"
   | "commit-log"
+  | "prompt-cache"
   | "stream-close"
   | "wire"
   | "shell"
@@ -15,6 +16,7 @@ export type DiagnosticStream =
 const BOOLEAN_SETTINGS: Record<Exclude<DiagnosticStream, "commit-log">, DevtoolSettingName> = {
   repaints: "repaintDiagnostics",
   "frame-timing": "frameTiming",
+  "prompt-cache": "promptCacheDiagnostics",
   "stream-close": "streamCloseDiagnostics",
   wire: "wireDiagnostics",
   shell: "shellDiagnostics",

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Box, Text, useTerminalDimensions } from "@/ink";
+import { computeListWindow } from "@/kernel/std/list-window.ts";
 import {
   fileRestoreDiffStatsForTurn,
   fileSnapshotStatsForTurn,
@@ -287,33 +288,34 @@ function Picker({
   selectedIndex: number;
   visibleRows: number;
 }): React.JSX.Element {
-  const firstVisible = Math.max(
-    0,
-    Math.min(selectedIndex - Math.floor(visibleRows / 2), options.length - visibleRows),
-  );
-  const lastVisible = Math.min(options.length, firstVisible + visibleRows);
-  const visible = options.slice(firstVisible, lastVisible);
-  const showTopGap = firstVisible > 0;
-  const showBottomGap = lastVisible < options.length;
+  const window = computeListWindow({
+    cursor: selectedIndex,
+    total: options.length,
+    size: visibleRows,
+    anchor: "center",
+  });
+  const visible = options.slice(window.from, window.to);
+  const showTopGap = window.above > 0;
+  const showBottomGap = window.below > 0;
   return (
     <Box flexDirection="column">
       <Text color={Color.text}>Restore the code and/or conversation to the point before…</Text>
       <Box flexDirection="column" marginTop={1}>
         {showTopGap && (
           <Box paddingLeft={2}>
-            <Text color={Color.muted}>↑ {firstVisible} more above</Text>
+            <Text color={Color.muted}>↑ {window.above} more above</Text>
           </Box>
         )}
         {visible.map((option, visibleIndex) => (
           <RewindOptionRow
             key={option.id}
             option={option}
-            selected={firstVisible + visibleIndex === selectedIndex}
+            selected={window.from + visibleIndex === selectedIndex}
           />
         ))}
         {showBottomGap && (
           <Box paddingLeft={2}>
-            <Text color={Color.muted}>↓ {options.length - lastVisible} more below</Text>
+            <Text color={Color.muted}>↓ {window.below} more below</Text>
           </Box>
         )}
       </Box>

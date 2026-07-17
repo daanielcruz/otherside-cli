@@ -2,6 +2,7 @@ import type { CodexUsage } from "@/engine/providers/codex/usage.ts";
 import type { UsageWarning } from "@/engine/session/usage/limits.ts";
 import type { TokenTotals, UsageByProvider } from "@/engine/session/usage/provider.ts";
 import type { ErrorMeta } from "@/engine/transport/error-meta.ts";
+import type { RightRegionAction, RightRegionSlice } from "@/store/app-store/slices/right-region.ts";
 import type { ContextUsageSnapshot, UsageSlice } from "@/store/app-store/slices/usage.ts";
 import type {
   RemoteSyncStatus,
@@ -17,9 +18,11 @@ export type AppState = {
   readonly engine: EngineSlice;
   readonly view: ViewSlice;
   readonly usage: UsageSlice;
+  readonly rightRegion: RightRegionSlice;
 };
 
 export type AppAction =
+  | RightRegionAction
   | { readonly type: "engine/setSlice"; readonly key: string; readonly value: unknown }
   | { readonly type: "view/showQuota" }
   | { readonly type: "view/hideQuota" }
@@ -36,6 +39,7 @@ export type AppAction =
   | { readonly type: "view/setTurnVerb"; readonly verb: string }
   | { readonly type: "view/setThinkingStatus"; readonly status: ThinkingStatus }
   | { readonly type: "view/setRemoteSyncStatus"; readonly status: RemoteSyncStatus }
+  | { readonly type: "view/setPluginStatusNotice"; readonly notice: string | null }
   | { readonly type: "view/setTurnRunning"; readonly running: boolean }
   | { readonly type: "view/setContextWarningSuppressed"; readonly suppressed: boolean }
   | { readonly type: "view/setTurnTipIndex"; readonly index: number | null }

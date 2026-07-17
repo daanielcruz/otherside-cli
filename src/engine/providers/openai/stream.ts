@@ -29,9 +29,9 @@ function unreachableError(url: string, cause: unknown): Error {
   const reason = cause instanceof Error ? cause.message : String(cause);
   const isDefault = url.startsWith(DEFAULT_BASE_URL);
   const hint = isDefault
-    ? `default URL ${DEFAULT_BASE_URL} expects LM Studio on localhost. Start LM Studio, or run \`/login openai-custom\` to set a different base URL, or export OTHERSIDE_OPENAI_BASE_URL=<url>`
-    : `verify the base URL is reachable, then run \`/login openai-custom\` or export OTHERSIDE_OPENAI_BASE_URL=<url>`;
-  return new Error(`openai-custom: cannot reach ${url} (${reason}). ${hint}`);
+    ? `default URL ${DEFAULT_BASE_URL} expects LM Studio on localhost. Start LM Studio, or run \`/login openai\` to set a different base URL, or export OTHERSIDE_OPENAI_BASE_URL=<url>`
+    : `verify the base URL is reachable, then run \`/login openai\` or export OTHERSIDE_OPENAI_BASE_URL=<url>`;
+  return new Error(`openai: cannot reach ${url} (${reason}). ${hint}`);
 }
 
 interface SimpleChatResponse {
@@ -103,7 +103,7 @@ export const stream: StreamFn = async function* openaiCustomStream(
   }
   await assertOk(resp, target.url);
   if (!resp.body) {
-    throw new Error("openai-custom stream: response had no body");
+    throw new Error("openai stream: response had no body");
   }
   yield* readResponseBody(resp.body);
 };

@@ -14,6 +14,15 @@ export interface CommandHookEntry {
   // expand ${CLAUDE_PLUGIN_ROOT} in the command and inject CLAUDE_PLUGIN_ROOT
   // into the spawn env. Undefined for user/project hooks (no injection).
   pluginRoot?: string;
+  // Async execution flags (Stop hooks): `async` backgrounds the hook
+  // (fire-and-forget); `asyncRewake` backgrounds it AND, when it exits with
+  // code 2 on an interactive session, enqueues a rewake task-notification
+  // (`rewakeMessage` overrides the body prefix, `rewakeSummary` the summary).
+  // Consumed by engine/queue/runtime/stop-hook-rewake.ts.
+  async?: boolean;
+  asyncRewake?: boolean;
+  rewakeMessage?: string;
+  rewakeSummary?: string;
 }
 
 export interface PromptHookEntry {

@@ -1,7 +1,4 @@
 import { useCallback, useEffect, useRef } from "react";
-import type { Session } from "@/engine/session/index.ts";
-import { useRepeatingClock } from "@/ink";
-import type { ContentBlock } from "@/kernel/std/types/message.ts";
 import {
   ensureDevice,
   getActiveSyncSessionId,
@@ -15,7 +12,10 @@ import {
   setRemoteEnabled,
   startSync,
   subscribeRemoteState,
-} from "@/remote/index.ts";
+} from "@/backend/index.ts";
+import type { Session } from "@/engine/session/index.ts";
+import { useRepeatingClock } from "@/ink";
+import type { ContentBlock } from "@/kernel/std/types/message.ts";
 import type { Broker } from "@/store/app-store/broker.ts";
 import {
   getQueueMessages,

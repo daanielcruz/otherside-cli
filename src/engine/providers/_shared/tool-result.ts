@@ -1,4 +1,7 @@
-import type { ToolResultContentBlock } from "@/kernel/std/types/message.ts";
+import {
+  PDF_UNAVAILABLE_PLACEHOLDER,
+  type ToolResultContentBlock,
+} from "@/kernel/std/types/message.ts";
 
 type WireToolResultContent = string | Array<{ type: string; [k: string]: unknown }>;
 
@@ -16,6 +19,9 @@ export function sanitizeToolResultContent(
           data: part.source.data,
         },
       };
+    }
+    if (part.type === "pdf") {
+      return { type: "text", text: PDF_UNAVAILABLE_PLACEHOLDER };
     }
     return part;
   });

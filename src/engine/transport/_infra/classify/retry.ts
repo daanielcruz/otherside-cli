@@ -1,4 +1,17 @@
-import { extractBodyMessage } from "@/engine/providers/_shared/retry.ts";
+import {
+  beginPromptCacheAttempt,
+  finishPromptCacheAttempt,
+  recordPromptCacheEvent,
+} from "@/devtools/prompt-cache.ts";
+import {
+  formatProviderError,
+  resolveProviderError,
+} from "@/engine/providers/_shared/provider-error.ts";
+import {
+  DEFAULT_MAX_ATTEMPTS,
+  DEFAULT_MAX_DELAY_MS,
+  getRetryDelay,
+} from "@/engine/providers/_shared/retry.ts";
 import { markProviderCooldown } from "@/engine/session/usage/provider-health.ts";
 import { classifyProviderError } from "@/engine/transport/_infra/classify/classify.ts";
 import { classifyError } from "@/engine/transport/_infra/classify/error-classifier.ts";
@@ -24,10 +37,22 @@ export type RetryDecision =
       quotaResetEpochMs?: number | null;
     };
 
-const DEFAULT_MAX_ATTEMPTS = 10;
-export const FORK_MAX_ATTEMPTS = 6;
-const RETRY_BASE_DELAY_MS = 1_000;
-const RETRY_MAX_DELAY_MS = 30_000;
+export { DEFAULT_MAX_ATTEMPTS };
+
+export const DEFAULT_RETRY_BUDGET_MS = 180_000;
+export const SIDE_QUESTION_MAX_ATTEMPTS = 6;
+
+export function retryBudgetExhausted(input: {
+  attempts: number;
+  maxAttempts: number;
+  elapsedMs: number;
+  nextDelayMs: number;
+  maxElapsedMs: number;
+}): boolean {
+  return (
+    input.attempts >= input.maxAttempts || input.elapsedMs + input.nextDelayMs > input.maxElapsedMs
+  );
+}
 
 // Shared with tui-observer.ts: what counts as "genuine content" for retry-banner
 // visibility (D2) matches what counts as content for resume-vs-reset (this file) —
@@ -54,10 +79,12 @@ export async function* streamWithRetry(
   ctx: RequestContext,
   provider: StreamRunner,
   buildBody: (() => unknown) | unknown,
-  opts?: { maxAttempts?: number; baseDelayMs?: number },
+  opts?: { maxAttempts?: number; baseDelayMs?: number; maxElapsedMs?: number },
 ): AsyncIterable<ProviderEvent> {
   const maxAttempts = opts?.maxAttempts ?? maxAttemptsFromEnv();
-  const baseDelayMs = opts?.baseDelayMs ?? RETRY_BASE_DELAY_MS;
+  const baseDelayMs = opts?.baseDelayMs;
+  const maxElapsedMs = opts?.maxElapsedMs ?? DEFAULT_RETRY_BUDGET_MS;
+  const startedAt = Date.now();
   const abortSignal = ctx.abortSignal;
   const isBuilder = typeof buildBody === "function";
   let attempts = 0;
@@ -65,13 +92,19 @@ export async function* streamWithRetry(
   let pendingResumeBody: unknown | null = null;
   while (true) {
     if (abortSignal?.aborted) throw new Error("aborted");
-    const body =
-      pendingResumeBody !== null
-        ? pendingResumeBody
-        : isBuilder
-          ? (buildBody as () => unknown)()
-          : buildBody;
+    const resumed = pendingResumeBody !== null;
+    const body = resumed
+      ? pendingResumeBody
+      : isBuilder
+        ? (buildBody as () => unknown)()
+        : buildBody;
     pendingResumeBody = null;
+    const cacheAttempt = beginPromptCacheAttempt({
+      ctx,
+      body,
+      attempt: attempts + 1,
+      resumed,
+    });
     try {
       const raw = provider.stream(ctx, body);
       for await (const ev of provider.translateResponse(raw)) {
@@ -79,10 +112,13 @@ export async function* streamWithRetry(
         if (ev.kind === "message_start" && ev.requestId === undefined && ctx.responseRequestId) {
           ev.requestId = ctx.responseRequestId;
         }
+        recordPromptCacheEvent(cacheAttempt, ev);
         yield ev;
       }
+      finishPromptCacheAttempt(cacheAttempt, "completed");
       return;
     } catch (err) {
+      finishPromptCacheAttempt(cacheAttempt, abortSignal?.aborted ? "aborted" : "transport_error");
       if (abortSignal?.aborted) throw err;
       // An idle timeout means the connection went quiet, not that it closed:
       // the pool still considers the tunnel healthy and hands it to the retry,
@@ -111,50 +147,72 @@ export async function* streamWithRetry(
       }
       if (effectiveDecision.kind === "retry") {
         attempts += 1;
-        if (attempts >= maxAttempts) {
-          // Exhausting the retry budget on a rate limit is a quota condition,
-          // not a generic terminal error: a raw throw here skips provider
-          // cooldown and the caller's tier reroute, so the failure surfaces
-          // as an opaque `HTTP 429 …` with no recovery. Route it through the
-          // same quota_exhausted path the fail branch uses.
-          if (err instanceof ProviderHttpError && (err.status === 429 || err.status === 529)) {
-            const message = extractBodyMessage(err.body);
-            const surfaceMessage =
-              message ??
-              `Rate limit reached (HTTP ${err.status}) — retries exhausted (${maxAttempts}).`;
-            const detailed = classifyProviderError(err, { attempt: attempts });
-            const meta = classifyError({
-              err,
-              decision: detailed,
-              provider: ctx.provider,
-              model: ctx.model,
-              attempt: attempts,
-              source: "stream-retry",
-            });
+        const delayMs =
+          typeof effectiveDecision.delayMs === "number"
+            ? effectiveDecision.delayMs
+            : getRetryDelay(attempts, null, DEFAULT_MAX_DELAY_MS, baseDelayMs);
+        const elapsedMs = Date.now() - startedAt;
+        if (
+          retryBudgetExhausted({
+            attempts,
+            maxAttempts,
+            elapsedMs,
+            nextDelayMs: delayMs,
+            maxElapsedMs,
+          })
+        ) {
+          const classified = resolveProviderError({
+            provider: ctx.provider,
+            model: ctx.model,
+            ...(err instanceof ProviderHttpError
+              ? {
+                  status: err.status,
+                  body: err.body,
+                  headers: {
+                    "retry-after": err.retryAfterHeader,
+                    "x-should-retry": err.shouldRetryHeader,
+                  },
+                }
+              : {}),
+            error: err,
+          });
+          const surfaceMessage = formatProviderError(classified, {
+            retries: Math.max(0, attempts - 1),
+            elapsedMs,
+          });
+          const detailed = classifyProviderError(err, {
+            attempt: attempts,
+            provider: ctx.provider,
+            model: ctx.model,
+          });
+          const meta = classifyError({
+            err,
+            decision: detailed,
+            provider: ctx.provider,
+            model: ctx.model,
+            attempt: attempts,
+            source: "stream-retry",
+          });
+          if (classified.class === "rate_limit" || classified.class === "overloaded") {
             markProviderCooldown(
               ctx.provider,
               null,
               "rate_limited",
-              err.status === 429 ? ctx.model : null,
+              classified.class === "rate_limit" ? ctx.model : null,
             );
             yield {
               kind: "quota_exhausted",
               provider: ctx.provider,
               model: ctx.model,
-              resetEpochMs: err.quotaResetEpochMs,
+              resetEpochMs: err instanceof ProviderHttpError ? err.quotaResetEpochMs : null,
               message: surfaceMessage,
               meta,
               reason: "rate_limited",
             };
             return;
           }
-          throw err;
+          throw new Error(surfaceMessage, { cause: err });
         }
-        const rawBackoff = Math.min(RETRY_MAX_DELAY_MS, baseDelayMs * 2 ** (attempts - 1));
-        const delayMs =
-          effectiveDecision.kind === "retry" && typeof effectiveDecision.delayMs === "number"
-            ? effectiveDecision.delayMs
-            : Math.round(rawBackoff * (1 - Math.random() * 0.25));
         const detail = effectiveDecision as { status?: number; message?: string };
         yield {
           kind: "retry_status",
@@ -243,6 +301,13 @@ export async function* streamWithRetry(
         return;
       }
       throw err;
+    } finally {
+      if (cacheAttempt && !cacheAttempt.finished) {
+        finishPromptCacheAttempt(
+          cacheAttempt,
+          abortSignal?.aborted || cacheAttempt.stopReason === undefined ? "aborted" : "completed",
+        );
+      }
     }
   }
 }

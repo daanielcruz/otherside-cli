@@ -36,7 +36,7 @@ async function claimInWorker(owner: string, scope: string): Promise<Record<strin
   return JSON.parse(stdout.trim()) as Record<string, unknown>;
 }
 
-describe("task tools share the session planning list", () => {
+describe("authorized task tools share the session planning list", () => {
   let tempBaseDir: string;
   let savedConfigDir: string | undefined;
 
@@ -57,9 +57,9 @@ describe("task tools share the session planning list", () => {
     rmSync(tempBaseDir, { recursive: true, force: true });
   });
 
-  test("a main-created task is visible and writable from a subagent context", async () => {
+  test("a main-created task is visible and writable from a workflow worker", async () => {
     const mainCtx = ctxFor();
-    const agentCtx = ctxFor("fork_abc_1");
+    const agentCtx = ctxFor("workflow_worker_1");
     await TaskCreate.run(callFor({ subject: "shared task", description: "d" }), mainCtx);
 
     const listed = await TaskList.run(callFor({}), agentCtx);
@@ -72,10 +72,10 @@ describe("task tools share the session planning list", () => {
     expect(list()[0]?.status).toBe("in_progress");
   });
 
-  test("a subagent-created task lands in the shared session list", async () => {
+  test("a workflow worker-created task lands in the shared session list", async () => {
     await TaskCreate.run(
       callFor({ subject: "agent task", description: "agent-shared" }),
-      ctxFor("fork_abc_2"),
+      ctxFor("workflow_worker_2"),
     );
 
     expect(list()).toHaveLength(1);
@@ -134,6 +134,41 @@ describe("task tools share the session planning list", () => {
     expect(String(completedAssignment.content)).toBe("Updated task #1 owner");
     expect(list()[0]?.owner).toBe("worker-b");
     expect(list()[1]?.owner).toBe("worker-a");
+  });
+
+  test("TaskUpdate parity texts: not-found, failed delete path, empty update, metadata always counts", async () => {
+    const mainCtx = ctxFor();
+
+    // Missing task: bare "Task not found" (no id), also for a delete request.
+    const missing = await TaskUpdate.run(callFor({ taskId: "9", status: "completed" }), mainCtx);
+    expect(String(missing.content)).toBe("Task not found");
+    const missingDelete = await TaskUpdate.run(
+      callFor({ taskId: "9", status: "deleted" }),
+      mainCtx,
+    );
+    expect(String(missingDelete.content)).toBe("Task not found");
+
+    await TaskCreate.run(callFor({ subject: "edges", description: "d" }), mainCtx);
+
+    // No-op update joins to an empty field list with a trailing space.
+    const noop = await TaskUpdate.run(callFor({ taskId: "1" }), mainCtx);
+    expect(String(noop.content)).toBe("Updated task #1 ");
+    const sameSubject = await TaskUpdate.run(callFor({ taskId: "1", subject: "edges" }), mainCtx);
+    expect(String(sameSubject.content)).toBe("Updated task #1 ");
+
+    // A provided metadata object always counts as updated, even when the
+    // merge changes nothing, and precedes status in the field list.
+    const metaNoop = await TaskUpdate.run(callFor({ taskId: "1", metadata: {} }), mainCtx);
+    expect(String(metaNoop.content)).toBe("Updated task #1 metadata");
+    const metaAndStatus = await TaskUpdate.run(
+      callFor({ taskId: "1", metadata: { k: "v" }, status: "in_progress" }),
+      mainCtx,
+    );
+    expect(String(metaAndStatus.content)).toBe("Updated task #1 metadata, status");
+
+    // Existing task deletes keep the update text.
+    const deleted = await TaskUpdate.run(callFor({ taskId: "1", status: "deleted" }), mainCtx);
+    expect(String(deleted.content)).toBe("Updated task #1 deleted");
   });
 
   test("claimTask remains atomic for callers that use the claim API", async () => {

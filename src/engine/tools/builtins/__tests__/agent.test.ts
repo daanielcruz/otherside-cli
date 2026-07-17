@@ -6,8 +6,8 @@ import type {
 } from "@/engine/background/subagents/dispatcher.ts";
 import * as realDispatcher from "@/engine/background/subagents/dispatcher.ts";
 import {
-  AGENT_MULTIPROVIDER_ONLY_FIELDS,
   AGENT_OPTIONS,
+  orchestrationModeForAgentFields,
 } from "@/engine/tools/dynamic/agent-options.ts";
 import agentTool from "@/harness/tools/Agent/tool.json" with { type: "json" };
 import type { ToolCall } from "@/kernel/std/types/message.ts";
@@ -32,7 +32,7 @@ mock.module("@/engine/background/subagents/dispatcher.ts", () => ({
 const { Agent } = await import("../agent.ts");
 
 const baseCtx = {
-  multiproviderEnabled: true,
+  orchestrationMode: "feudalism",
   provider: "anthropic",
   model: "claude-sonnet-4-6",
 } as unknown as RequestContext;
@@ -90,7 +90,7 @@ describe("Agent tool fork vs named subagent", () => {
         description: "test",
         prompt: "do it",
         subagent_type: " explore ",
-        tier: "warrior",
+        tier: "daimyo",
       }),
       baseCtx,
     );
@@ -99,7 +99,7 @@ describe("Agent tool fork vs named subagent", () => {
     const args = dispatchSubagent.mock.calls[0]?.[0];
     if (!args) throw new Error("expected dispatchSubagent call");
     expect(args.subagentType).toBe("explore");
-    expect(args.tierOverride).toBe("warrior");
+    expect(args.tierOverride).toBe("daimyo");
   });
 
   test("allows a named child to launch another named agent", async () => {
@@ -114,14 +114,14 @@ describe("Agent tool fork vs named subagent", () => {
   });
 
   test("allows tier on an omitted (general-purpose) subagent", async () => {
-    await Agent.run(makeCall({ description: "test", prompt: "do it", tier: "warrior" }), baseCtx);
+    await Agent.run(makeCall({ description: "test", prompt: "do it", tier: "daimyo" }), baseCtx);
 
     expect(dispatchFork).toHaveBeenCalledTimes(0);
     expect(dispatchSubagent).toHaveBeenCalledTimes(1);
     const args = dispatchSubagent.mock.calls[0]?.[0];
     if (!args) throw new Error("expected dispatchSubagent call");
     expect(args.subagentType).toBe("general-purpose");
-    expect(args.tierOverride).toBe("warrior");
+    expect(args.tierOverride).toBe("daimyo");
   });
 
   test("routes subagent_type 'fork' to the inheriting fork, not a clean subagent", async () => {
@@ -183,7 +183,7 @@ describe("Agent tool fork vs named subagent", () => {
 
   test("rejects tier on a named fork", async () => {
     const result = await Agent.run(
-      makeCall({ description: "test", prompt: "do it", subagent_type: "fork", tier: "warrior" }),
+      makeCall({ description: "test", prompt: "do it", subagent_type: "fork", tier: "daimyo" }),
       baseCtx,
     );
 
@@ -192,7 +192,7 @@ describe("Agent tool fork vs named subagent", () => {
     expect(result.is_error).toBe(true);
   });
 
-  test("silently ignores model on a fork (fork inherits the parent model)", async () => {
+  test("rejects a concrete model on an Experimental fork", async () => {
     const result = await Agent.run(
       makeCall({
         description: "test",
@@ -203,20 +203,18 @@ describe("Agent tool fork vs named subagent", () => {
       baseCtx,
     );
 
-    // model is accepted at the wire but never reaches the fork invocation
-    // (ForkInvocation carries no model field), so the fork inherits the parent.
-    expect(result.is_error).toBeUndefined();
-    expect(dispatchFork).toHaveBeenCalledTimes(1);
+    expect(result.is_error).toBe(true);
+    expect(result.content).toContain("concrete `provider`/`model` pins are unavailable");
+    expect(dispatchFork).toHaveBeenCalledTimes(0);
     expect(dispatchSubagent).toHaveBeenCalledTimes(0);
   });
 
-  test("forwards name, cwd, and the background task id without a permission override", async () => {
+  test("forwards name and the background task id without a permission override", async () => {
     await Agent.run(
       makeCall({
         description: "test",
         prompt: "do it",
         name: "worker-1",
-        cwd: "/tmp/agent-cwd",
       }),
       { ...baseCtx, bgTaskId: "agent-task-id" },
     );
@@ -225,41 +223,28 @@ describe("Agent tool fork vs named subagent", () => {
     if (!args) throw new Error("expected dispatchSubagent call");
     expect(args.name).toBe("worker-1");
     expect(args.permissionMode).toBeUndefined();
-    expect(args.cwd).toBe("/tmp/agent-cwd");
     expect(args.forkId).toBe("agent-task-id");
   });
 
-  test("forwards cwd to a fork without a permission override", async () => {
-    await Agent.run(
-      makeCall({
-        description: "test",
-        prompt: "do it",
-        subagent_type: "fork",
-        cwd: "/tmp/fork-cwd",
-      }),
-      baseCtx,
-    );
+  test("strips injected cwd before validation and dispatch", async () => {
+    const coerced = Agent.coerceInput?.({
+      description: "test",
+      prompt: "do it",
+      cwd: "/tmp/agent-cwd",
+      isolation: "worktree",
+    });
+    expect(coerced).toEqual({
+      description: "test",
+      prompt: "do it",
+      isolation: "worktree",
+    });
 
-    const args = dispatchFork.mock.calls[0]?.[0];
-    if (!args) throw new Error("expected dispatchFork call");
-    expect(args.permissionMode).toBeUndefined();
-    expect(args.cwd).toBe("/tmp/fork-cwd");
-  });
-
-  test("rejects cwd combined with worktree isolation", async () => {
-    const result = await Agent.run(
-      makeCall({
-        description: "test",
-        prompt: "do it",
-        cwd: "/tmp/agent-cwd",
-        isolation: "worktree",
-      }),
-      baseCtx,
-    );
-
-    expect(result.is_error).toBe(true);
-    expect(result.content).toContain("mutually exclusive");
-    expect(dispatchSubagent).toHaveBeenCalledTimes(0);
+    const result = await Agent.run(makeCall(coerced as Record<string, unknown>), baseCtx);
+    expect(result.is_error).toBeUndefined();
+    const args = dispatchSubagent.mock.calls[0]?.[0];
+    if (!args) throw new Error("expected dispatchSubagent call");
+    expect(args).not.toHaveProperty("cwd");
+    expect(args.isolation).toBe("worktree");
   });
 
   test("resolves remote isolation to local worktree", async () => {
@@ -313,8 +298,10 @@ describe("Agent option descriptor SoT", () => {
     expect(descriptorNames).toEqual(schemaProps);
   });
 
-  test("only the multiprovider-only fields feed the strip set", () => {
-    expect([...AGENT_MULTIPROVIDER_ONLY_FIELDS]).toEqual(["tier", "provider"]);
+  test("mode-specific fields expose the canonical Agent boundary", () => {
+    expect([...orchestrationModeForAgentFields("disabled")]).toEqual(["tier", "provider"]);
+    expect([...orchestrationModeForAgentFields("default")]).toEqual(["tier"]);
+    expect([...orchestrationModeForAgentFields("feudalism")]).toEqual(["model", "provider"]);
   });
 
   test("does not expose a mode property", () => {

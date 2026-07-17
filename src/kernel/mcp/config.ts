@@ -207,8 +207,8 @@ export async function loadMcpConfigChain(cwd: string): Promise<LoadedMcpConfig[]
     const loaded = loadOne(path, "project");
     if (loaded) chain.push(loaded);
   }
-  // Local scope is loaded last so it wins ties in mergeChildWins, matching
-  // upstream's manual-scope precedence: user < approved project < local.
+  // Local scope is loaded last so it wins ties in mergeChildWins, enforcing
+  // the manual-scope precedence: user < approved project < local.
   const local = loadLocalMcpConfig(cwd);
   if (local) chain.push(local);
   return chain;
@@ -321,7 +321,7 @@ function projectMcpServerStatus(
     return "approved";
   }
   // Yolo (--yolo/--dangerously-skip-permissions) also has no approval popup to
-  // show, mirroring upstream's bypass-permissions carve-out (getProjectMcpServerStatus).
+  // show as a bypass-permissions carve-out.
   // isYoloMode() is sourced only from the CLI flag (see yolo-mode.ts), never from
   // project settings, so a malicious .mcp.json cannot self-approve this way.
   if (isYoloMode()) {
@@ -387,7 +387,7 @@ function urlMatchesPattern(url: string, pattern: string): boolean {
  * True if `serverName`/`server` matches a `policySettings.deniedMcpServers`
  * entry (managed-settings.json only — see registry.ts). Checked by name,
  * and, when a server config is available, by exact stdio command array or
- * remote URL pattern. Mirrors upstream isMcpServerDenied.
+ * remote URL pattern.
  */
 export function isMcpServerDenied(
   cwd: string,

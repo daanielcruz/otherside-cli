@@ -57,40 +57,52 @@ function QueueMessage({
     <Box flexDirection="column">
       {wrapped.map((line, index) => (
         // biome-ignore lint/suspicious/noArrayIndexKey: index is safe here as lines are static and don't reorder
-        <QueueRow key={`${id}_${index}`} text={line} columns={columns} showPrefix={index === 0} />
+        <QueueRow key={`${id}_${index}`} text={line} showPrefix={index === 0} width={boxWidth} />
       ))}
     </Box>
   );
 }
 
+export function queueRowParts(
+  text: string,
+  showPrefix: boolean,
+  width: number,
+): { prefix: string; filler: string } {
+  const prefix = showPrefix ? Glyph.chevron : " ".repeat(stringWidth(Glyph.chevron));
+  const fillerWidth = Math.max(
+    0,
+    width - stringWidth(prefix) - stringWidth(text) - QUEUE_INNER_PAD,
+  );
+  return { prefix, filler: " ".repeat(fillerWidth) };
+}
+
 function QueueRow({
   text,
-  columns,
   showPrefix,
+  width,
 }: {
   text: string;
-  columns: number;
   showPrefix: boolean;
+  width: number;
 }): React.JSX.Element {
-  const boxWidth = Math.max(1, columns - QUEUE_LEFT_INDENT);
-  const prefix = showPrefix ? Glyph.chevron : " ".repeat(stringWidth(Glyph.chevron));
-  const used = QUEUE_INNER_PAD + stringWidth(prefix) + stringWidth(text);
-  const rightFill = " ".repeat(Math.max(0, boxWidth - used));
+  const { prefix, filler } = queueRowParts(text, showPrefix, width);
   return (
     <Box>
       <Text>{" ".repeat(QUEUE_LEFT_INDENT)}</Text>
-      <Text backgroundColor={Color.inverseBg}>{" ".repeat(QUEUE_INNER_PAD)}</Text>
-      <Text color={Color.badgePrefix} backgroundColor={Color.inverseBg}>
-        {prefix}
-      </Text>
-      <Text color={Color.queueText} backgroundColor={Color.inverseBg}>
-        {text}
-      </Text>
-      {rightFill.length > 0 && (
-        <Text color={Color.queueText} backgroundColor={Color.inverseBg}>
-          {rightFill}
+      <Box width={width}>
+        <Text color={Color.badgePrefix} backgroundColor={Color.inverseBg}>
+          {prefix}
         </Text>
-      )}
+        <Text color={Color.queueText} backgroundColor={Color.inverseBg}>
+          {text}
+        </Text>
+        <Text backgroundColor={Color.inverseBg}>{" ".repeat(QUEUE_INNER_PAD)}</Text>
+        {filler.length > 0 && (
+          <Text color={Color.queueText} backgroundColor={Color.inverseBg}>
+            {filler}
+          </Text>
+        )}
+      </Box>
     </Box>
   );
 }

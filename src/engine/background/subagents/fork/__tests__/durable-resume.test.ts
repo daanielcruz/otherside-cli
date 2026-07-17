@@ -90,6 +90,7 @@ describe("durable fork resume", () => {
       sessionId: durable.sessionId,
     });
     expect(resolved.profile.task?.forkId).toBe(forkId);
+    expect(resolved.profile.spec.allowSet).toBeNull();
 
     const release = registerRunningFork(
       forkId,
@@ -184,6 +185,12 @@ describe("durable fork resume", () => {
       // A resumed named agent remains asynchronous, so this inherited default
       // reaches the existing background ask → auto-deny path instead of yolo.
       expect(resolved.profile.spec.shouldAvoidPermissionPrompts).toBe(true);
+      expect(resolved.profile.spec.allowSet).toBeInstanceOf(Set);
+      expect(resolved.profile.spec.allowSet?.has("TaskStop")).toBe(true);
+      expect(resolved.profile.spec.allowSet?.has("TaskCreate")).toBe(false);
+      expect(resolved.profile.spec.allowSet?.has("TaskGet")).toBe(false);
+      expect(resolved.profile.spec.allowSet?.has("TaskList")).toBe(false);
+      expect(resolved.profile.spec.allowSet?.has("TaskUpdate")).toBe(false);
 
       if (mode !== "yolo") continue;
       const previousConfigDir = process.env.OTHERSIDE_CONFIG_DIR;

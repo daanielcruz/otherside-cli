@@ -147,44 +147,13 @@ export function createForkEventRouter(deps: ForkEventRouterDeps): {
       if (!isAgentFork(event)) {
         appendSkillText(event.forkId, event.text);
         // Only skill forks drive the main live meter (their progress block reads
-        // it). Agent forks render under their own nested entry and must not feed
-        // the main statusline's context estimate.
+        // it). Agent forks render in their own transcript.
         addLiveOutputTokens(Math.round(event.text.length / 4));
-      } else {
-        const id = `t_fk_${event.forkId}`;
-        setTranscript((t) => {
-          const idx = t.findIndex((entry) => entry.id === id);
-          if (idx === -1) return [...t, { id, kind: "assistant", text: event.text }];
-          const next = [...t];
-          const existing = next[idx];
-          if (existing) next[idx] = { ...existing, text: existing.text + event.text };
-          return next;
-        });
       }
     } else if (event.kind === "fork_stream_reset") {
-      if (event.discardedChars > 0) {
-        if (!isAgentFork(event)) {
-          trimSkillText(event.forkId, event.discardedChars);
-          addLiveOutputTokens(-Math.round(event.discardedChars / 4));
-        } else {
-          const id = `t_fk_${event.forkId}`;
-          setTranscript((t) => {
-            const idx = t.findIndex((entry) => entry.id === id);
-            if (idx === -1) return t;
-            const next = [...t];
-            const existing = next[idx];
-            if (existing) {
-              next[idx] = {
-                ...existing,
-                text: existing.text.slice(
-                  0,
-                  Math.max(0, existing.text.length - event.discardedChars),
-                ),
-              };
-            }
-            return next;
-          });
-        }
+      if (event.discardedChars > 0 && !isAgentFork(event)) {
+        trimSkillText(event.forkId, event.discardedChars);
+        addLiveOutputTokens(-Math.round(event.discardedChars / 4));
       }
     } else if (event.kind === "fork_tool_dispatch_start") {
       const parentCallId = resolveParentCallId(event);
@@ -256,16 +225,7 @@ export function createForkEventRouter(deps: ForkEventRouterDeps): {
       const skillId = `t_${event.forkId}`;
       setTranscript((t) => {
         const idx = t.findIndex((entry) => entry.id === skillId);
-        if (idx === -1) {
-          // Agent-path fork has no skill entry, but may have a streaming
-          // `t_fk_` text entry to finalize (rename to `fk_`).
-          const fkIdx = t.findIndex((entry) => entry.id === `t_fk_${event.forkId}`);
-          if (fkIdx === -1) return t;
-          const out = [...t];
-          const fkEntry = out[fkIdx];
-          if (fkEntry) out[fkIdx] = { ...fkEntry, id: `fk_${event.forkId}` };
-          return out;
-        }
+        if (idx === -1) return t;
         const out = [...t];
         const existing = out[idx];
         if (!existing || existing.kind !== "skill") return out;
@@ -276,11 +236,6 @@ export function createForkEventRouter(deps: ForkEventRouterDeps): {
           isError: event.isError,
           completedAt: Date.now(),
         };
-        const forkTextIdx = out.findIndex((entry) => entry.id === `t_fk_${event.forkId}`);
-        if (forkTextIdx !== -1) {
-          const forkText = out[forkTextIdx];
-          if (forkText) out[forkTextIdx] = { ...forkText, id: `fk_${event.forkId}` };
-        }
         const summary = buildSkillCompletionSummary(
           existing.skillName,
           event.output,

@@ -11,7 +11,7 @@ import { translateRequest, translateResponse } from "@/engine/providers/openai/t
 import { classifyProviderError } from "@/engine/transport/_infra/classify/classify.ts";
 
 const PROVIDER: ApiProvider<"openai-completions"> = {
-  id: "openai-custom",
+  id: "openai",
   api: "openai-completions",
   sourceId: "builtin",
   label: "OpenAI Custom",
@@ -27,7 +27,7 @@ export const config: ProviderConfig<"openai-completions"> = {
       const result = await fetchModelsForConfig(cfg.baseUrl, cfg.apiKey);
       return result.models.map((m) => ({
         api: "openai-completions",
-        provider: "openai-custom",
+        provider: "openai",
         id: m.id,
         displayName: m.displayName ?? m.id,
         contextWindow: m.contextWindow ?? 0,
@@ -64,7 +64,12 @@ export const config: ProviderConfig<"openai-completions"> = {
   allowsCustomModel: true,
   deferredOverrides: PERMISSIVE_DEFERRED,
   promptAdapter: openaiPromptAdapter,
-  recoverableError: (err, _ctx, attempt) => classifyProviderError(err, { attempt: attempt ?? 1 }),
+  recoverableError: (err, ctx, attempt) =>
+    classifyProviderError(err, {
+      attempt: attempt ?? 1,
+      provider: ctx.provider,
+      model: ctx.model,
+    }),
   usageDetails: { sourceLabel: "Custom endpoint" },
   beginLogin: { kind: "openai_custom" },
   composeMessages: composeFlatMessages,

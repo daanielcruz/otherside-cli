@@ -1,3 +1,5 @@
+import { getProviderConfig } from "@/engine/contract/registry.ts";
+import { findModel } from "@/engine/model/catalog.ts";
 import {
   canAutoRoute,
   isVisionCapable,
@@ -15,6 +17,14 @@ export function canSendNatively(provider: ProviderId, model?: string): boolean {
   } catch {
     return false;
   }
+}
+
+export function canSendPdfNatively(provider: ProviderId, model: string): boolean {
+  const catalogModel = findModel(model, provider);
+  if (catalogModel) return catalogModel.supportsPdf === true;
+  const models = getProviderConfig(provider)?.legacyModels;
+  const entries = typeof models === "function" ? models() : (models ?? []);
+  return entries.some((entry) => entry.id === model && entry.supportsPdf === true);
 }
 
 export function resolveParserModel(provider: ProviderId): string {

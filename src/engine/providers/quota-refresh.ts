@@ -201,7 +201,7 @@ function builtinRefresher(provider: ProviderId): QuotaRefresher | undefined {
         fetch: () => fetchXaiUsage(),
         apply: (data) => applyXaiQuotaWarning(data as PlanQuotaData | null),
       };
-    case "kimi-code":
+    case "kimi":
       return {
         fetch: () => fetchKimiUsage(),
         apply: (data) => applyKimiQuotaWarning(data as KimiUsage | null),

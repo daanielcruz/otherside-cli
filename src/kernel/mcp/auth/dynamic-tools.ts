@@ -9,9 +9,9 @@ import type { ToolHandler } from "@/kernel/std/tool-contract.ts";
 const AUTHENTICATE_TOOL_KIND = "authenticate";
 const COMPLETE_AUTHENTICATION_TOOL_KIND = "complete_authentication";
 
-// Upstream's authenticate/complete_authentication pseudo-tools return an
-// unconditional `{ behavior: "allow" }` from checkPermissions
-// (McpAuthTool.ts) — they never trigger the generic tool-use prompt, only
+// The authenticate/complete_authentication pseudo-tools return an
+// unconditional `{ behavior: "allow" }` — they never trigger the generic
+// tool-use prompt, only
 // whatever explicit deny/ask rule the user has configured for the wire name.
 // Matched purely by wire-name shape (not by looking up the registered
 // handler) so permission resolution stays a pure name check independent of

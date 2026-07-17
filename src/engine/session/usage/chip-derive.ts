@@ -18,8 +18,6 @@ export interface DeriveChipUsageArgs {
   model: string;
   contextWarningSuppressed: boolean;
   fallbackContextTokens: number;
-  busy: boolean;
-  liveOutputTokensValue: number;
   queuedText: string;
   autoCompactRemainingPct: (used: number) => number | undefined;
 }
@@ -42,8 +40,6 @@ export function deriveChipUsage(args: DeriveChipUsageArgs): ChipUsage {
     model,
     contextWarningSuppressed,
     fallbackContextTokens,
-    busy,
-    liveOutputTokensValue,
     queuedText,
     autoCompactRemainingPct,
   } = args;
@@ -58,16 +54,15 @@ export function deriveChipUsage(args: DeriveChipUsageArgs): ChipUsage {
     suppressed: contextWarningSuppressed,
   });
   const queuedTokens = queuedText.length > 0 ? roughTokenCountEstimation(queuedText) : 0;
-  const liveOutputTokens = busy
-    ? Math.max(liveOutputTokensValue, mainLastContext.outputTokens)
-    : mainLastContext.outputTokens;
-  const fallbackOutputTokens = busy
-    ? Math.max(liveOutputTokensValue, mainTokenTotals.outputTokens)
-    : mainTokenTotals.outputTokens;
+  // Context arithmetic must stay on the provider usage snapshot: the last
+  // request's input side already contains every earlier round's output, so
+  // the turn-wide live output meter (streamed chars across all rounds plus
+  // subagent output that never enters the main context) would double-count
+  // and push the auto-compact percentage to 0% far before the trigger point.
   const serverTokenUsage =
     serverContextTotal > 0
-      ? serverContextTotal + liveOutputTokens
-      : fallbackContextTokens + fallbackOutputTokens;
+      ? serverContextTotal + mainLastContext.outputTokens
+      : fallbackContextTokens + mainTokenTotals.outputTokens;
   const activeContextTotal = serverTokenUsage + queuedTokens;
   const liveAutoCompactPct = autoCompactRemainingPct(serverTokenUsage);
   const autoCompactWarningPct =

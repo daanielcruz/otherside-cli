@@ -1,5 +1,12 @@
 import { beforeAll, describe, expect, it } from "bun:test";
-import { CATALOG, findFamilyMatch, findModel, type ModelEntry } from "@/engine/model/catalog.ts";
+import {
+  CATALOG,
+  defaultModelForProvider,
+  findFamilyMatch,
+  findModel,
+  type ModelEntry,
+  modelsForProvider,
+} from "@/engine/model/catalog.ts";
 import { registerAllProviders } from "@/engine/providers/bootstrap.ts";
 
 // Locks the behavior that the `--model <id>` mis-route fix (main.ts) relies on:
@@ -13,6 +20,22 @@ describe("model catalog", () => {
       .filter((model) => model.autoCompactTokenLimit === undefined)
       .map((model) => `${model.provider}:${model.id}`);
     expect(missing).toEqual([]);
+  });
+
+  it("exposes the Kimi Code roster with K3 as the default", () => {
+    expect(modelsForProvider("kimi").map((model) => model.id)).toEqual([
+      "k3",
+      "kimi-for-coding",
+      "kimi-for-coding-highspeed",
+    ]);
+    expect(findModel("k3", "kimi")).toMatchObject({
+      displayName: "Kimi K3",
+      contextWindow: 1_000_000,
+      autoCompactTokenLimit: 967_000,
+      efforts: ["max"],
+      defaultEffort: "max",
+    });
+    expect(defaultModelForProvider("kimi")).toBe("k3");
   });
 
   it("resolves a non-anthropic model to its provider with no provider arg", () => {

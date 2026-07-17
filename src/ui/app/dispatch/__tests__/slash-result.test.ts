@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createElement } from "react";
 import type { SlashCommand } from "@/commands/catalog.ts";
 import type { PendingChange, SlashResult } from "@/commands/types.ts";
 import {
@@ -12,8 +13,11 @@ import {
 } from "@/engine/model/catalog.ts";
 import { Agent } from "@/engine/queue/index.ts";
 import { Session } from "@/engine/session/record/index.ts";
+import { cellAtIndex, paintToTerminal, TerminalSizeContext } from "@/ink";
 import { DEFAULT_CONFIG } from "@/kernel/config/config.ts";
 import { Broker } from "@/store/app-store/broker.ts";
+import { appStore } from "@/store/app-store/index.ts";
+import { resetRightRegion } from "@/store/app-store/right-region-notices.ts";
 import { createPasteStore } from "@/store/paste-store/index.ts";
 import {
   createApplySlashResult,
@@ -21,6 +25,9 @@ import {
   shouldRecordLocalCommand,
 } from "@/ui/app/dispatch/slash-result.ts";
 import { createQueueHelpers } from "@/ui/app/drain/queue.ts";
+import { GUTTER_HEAD } from "@/ui/theme/theme.ts";
+import { CommandOutputRow } from "@/ui/transcript/system.tsx";
+import type { TranscriptEntry } from "@/ui/transcript/types";
 
 function command(name: string): SlashCommand {
   return { name, description: "" } as SlashCommand;
@@ -102,11 +109,11 @@ describe("createApplySlashResult — goal routing", () => {
     rmSync(base, { recursive: true, force: true });
   });
 
-  function setup(running: boolean) {
+  function setup(running: boolean, initialTranscript: readonly TranscriptEntry[] = []) {
     const broker = new Broker(
       {
         provider: "anthropic",
-        model: "claude-sonnet-5",
+        model: "anthropic-sonnet-5",
         effort: "high",
         fastMode: false,
         permissionMode: "default",
@@ -124,12 +131,16 @@ describe("createApplySlashResult — goal routing", () => {
       runtimeConfigRef: { current: DEFAULT_CONFIG },
     });
     let turnsStarted = 0;
+    let transcript: readonly TranscriptEntry[] = initialTranscript;
+    let pluginStatusNotice: string | null = null;
     const handler = createApplySlashResult({
       runSkill: () => {},
       runningRef: { current: running },
       applyPendingChange: helpers.applyPendingChange,
       nextTranscriptId: (p) => `${p}_1`,
-      setTranscript: () => {},
+      setTranscript: (update) => {
+        transcript = typeof update === "function" ? update(transcript) : update;
+      },
       agent,
       runSubmittedTurnRef: {
         current: async () => {
@@ -139,8 +150,17 @@ describe("createApplySlashResult — goal routing", () => {
       transcriptBatch: { enqueue: (fn) => fn(), flushNow: () => {} },
       session,
       broker,
+      setPluginStatusNotice: (notice) => {
+        pluginStatusNotice = notice;
+      },
     });
-    return { agent, handler, turnsStarted: () => turnsStarted };
+    return {
+      agent,
+      handler,
+      turnsStarted: () => turnsStarted,
+      transcript: () => transcript,
+      pluginStatusNotice: () => pluginStatusNotice,
+    };
   }
 
   it("applies a running-turn goal immediately (injection pushed), no new turn", async () => {
@@ -157,6 +177,39 @@ describe("createApplySlashResult — goal routing", () => {
     await handler(goalResult(), "/goal b");
     expect(agent.injections.peek()).toContain(GOAL_META);
     expect(turnsStarted()).toBe(1);
+  });
+
+  it("routes plugin install feedback through the local output row", async () => {
+    resetRightRegion();
+    const feedback = "✓ Installed 1 plugin. Run /reload to activate.";
+    const { handler, transcript, pluginStatusNotice } = setup(false, [
+      { id: "user_1", kind: "user", text: "/plugins" },
+    ]);
+    await handler(result({ kind: "toggle", command: command("plugins"), feedback }), "/plugins");
+
+    // Plugin notice is an ephemeral right-region notice (no longer left panelHint).
+    expect(pluginStatusNotice()).toBeNull();
+    expect(appStore.getState().rightRegion.ephemeralCurrent?.text).toBe(
+      "Plugins changed. Run /reload to activate.",
+    );
+    expect(transcript()).toEqual([
+      { id: "user_1", kind: "user", text: "/plugins" },
+      { id: "cmd_out_1", kind: "command_output", text: feedback },
+    ]);
+
+    const screen = paintToTerminal(
+      createElement(
+        TerminalSizeContext.Provider,
+        { value: { columns: 80, rows: 10 } },
+        createElement(CommandOutputRow, { text: feedback }),
+      ),
+      80,
+    ).screen;
+    let firstRow = "";
+    for (let x = 0; x < screen.width; x++) {
+      firstRow += cellAtIndex(screen, x).char;
+    }
+    expect(firstRow).toStartWith(GUTTER_HEAD);
   });
 });
 

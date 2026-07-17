@@ -142,20 +142,24 @@ describe("plugin workflow registry", () => {
     writeWorkflowScript(workflowsPath, "review.js", "review", "from-plugin");
 
     const workflows = await getAllWorkflows(root, config({ enableUserWorkflows: false }));
-    const workflow = workflows.find((entry) => entry.name === "review-plugin:review");
+    const workflow = workflows.find(
+      (entry) => entry.name === "review-plugin@test-plugin-source:review",
+    );
 
     expect(workflow).toMatchObject({
       source: "plugin",
-      name: "review-plugin:review",
+      name: "review-plugin@test-plugin-source:review",
       description: "from-plugin",
       plugin,
       pluginManifest: plugin.manifest,
     });
     expect(workflow?.filePath).toBe(join(workflowsPath, "review.js"));
     expect(workflows.filter((entry) => entry.source === "plugin")).toHaveLength(1);
-    await expect(resolveWorkflow("review-plugin:review", root)).resolves.toMatchObject({
+    await expect(
+      resolveWorkflow("review-plugin@test-plugin-source:review", root),
+    ).resolves.toMatchObject({
       source: "plugin",
-      name: "review-plugin:review",
+      name: "review-plugin@test-plugin-source:review",
     });
     await expect(resolveWorkflow("review", root)).resolves.toBeUndefined();
   });
@@ -169,11 +173,15 @@ describe("plugin workflow registry", () => {
     try {
       await pluginsRegistry.setEnabled(plugin.name, false);
       const beforeReload = await getAllWorkflows(root, config({ enableUserWorkflows: false }));
-      expect(beforeReload.some((entry) => entry.name === "disabled-plugin:hidden")).toBe(true);
+      expect(
+        beforeReload.some((entry) => entry.name === "disabled-plugin@test-plugin-source:hidden"),
+      ).toBe(true);
 
-      pluginsRegistry.applyPersistedEnabledState({ [plugin.name]: false });
+      pluginsRegistry.applyPersistedEnabledState({ "disabled-plugin@test-plugin-source": false });
       const afterReload = await getAllWorkflows(root, config({ enableUserWorkflows: false }));
-      expect(afterReload.some((entry) => entry.name === "disabled-plugin:hidden")).toBe(false);
+      expect(
+        afterReload.some((entry) => entry.name === "disabled-plugin@test-plugin-source:hidden"),
+      ).toBe(false);
     } finally {
       if (originalConfigDir === undefined) delete process.env.OTHERSIDE_CONFIG_DIR;
       else process.env.OTHERSIDE_CONFIG_DIR = originalConfigDir;
@@ -193,7 +201,7 @@ describe("plugin workflow registry", () => {
     const pluginWorkflows = workflows.filter((entry) => entry.source === "plugin");
 
     expect(pluginWorkflows).toHaveLength(1);
-    expect(pluginWorkflows[0]?.name).toBe("scanner-plugin:valid");
+    expect(pluginWorkflows[0]?.name).toBe("scanner-plugin@test-plugin-source:valid");
   });
 
   test("local workflows override same-named plugin workflows and appear after plugins", async () => {

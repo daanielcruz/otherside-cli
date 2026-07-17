@@ -1,4 +1,6 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
+import { clearAuth } from "@/backend/index.ts";
+import { type DeviceAuthPending, type OAuthProvider, oauthLogin } from "@/backend/shared/oauth.ts";
 import type { DesignController } from "@/design/controller.ts";
 import { takePendingBrief } from "@/design/pending-brief.ts";
 import {
@@ -11,19 +13,18 @@ import {
 import type { Session } from "@/engine/session/index.ts";
 import { Box, type Color as InkColor, TerminalLink, Text, useRepeatingClock } from "@/ink";
 import { openBrowser } from "@/kernel/std/browser.ts";
-import { currentUserEmail, currentUserId } from "@/remote/backend/auth.ts";
-import {
-  type DeviceAuthPending,
-  getPendingDeviceAuth,
-  type OAuthProvider,
-  oauthLogin,
-  subscribeDeviceAuth,
-} from "@/remote/backend/oauth.ts";
-import { clearAuth, loadAuth } from "@/remote/index.ts";
-import { FooterPanel, FooterPanelRow } from "@/ui/chrome/panel.tsx";
+import { FooterPanel, FooterPanelRow, PanelDivider } from "@/ui/chrome/panel.tsx";
 import { type PanelRowsNav, usePanelNavigation } from "@/ui/hooks/use-panel-navigation.ts";
+import {
+  type AuthSnapshot,
+  DeviceAuthNotice,
+  LOGIN_PROVIDERS,
+  LoginPick,
+  readAuth,
+  usePendingDeviceAuth,
+} from "@/ui/panels/_shared/backend-account.tsx";
 import { useOverlayClose } from "@/ui/panels/use-overlay-close";
-import { Color, Glyph } from "@/ui/theme/theme.ts";
+import { Color } from "@/ui/theme/theme.ts";
 
 export interface DesignOverlayProps {
   session: Session;
@@ -35,21 +36,6 @@ type View = "main" | "loginPick" | "logoutConfirm";
 type Busy = null | "login" | "start" | "stop";
 type Action = "login" | "start" | "open" | "stop" | "logout";
 
-interface AuthSnapshot {
-  signedIn: boolean;
-  label: string;
-}
-
-interface ProviderChoice {
-  id: OAuthProvider;
-  label: string;
-}
-
-const PROVIDERS: ProviderChoice[] = [
-  { id: "google", label: "Continue with Google" },
-  { id: "apple", label: "Continue with Apple" },
-];
-
 const ACTION_LABEL: Record<Action, string> = {
   login: "Sign in",
   start: "Start design session",
@@ -59,14 +45,6 @@ const ACTION_LABEL: Record<Action, string> = {
 };
 
 const ROW_WIDTH = 22;
-
-function readAuth(): AuthSnapshot {
-  if (!loadAuth()) return { signedIn: false, label: "Not signed in" };
-  const email = currentUserEmail();
-  const id = currentUserId();
-  const label = email ?? (id ? `${id.slice(0, 8)}…` : "Signed in");
-  return { signedIn: true, label };
-}
 
 function mainActions(signedIn: boolean, hasSession: boolean): Action[] {
   if (!signedIn) return ["login"];
@@ -134,11 +112,7 @@ export function DesignOverlay({
   );
   const hasSession = url.length > 0;
 
-  const deviceAuth = useSyncExternalStore(
-    subscribeDeviceAuth,
-    getPendingDeviceAuth,
-    getPendingDeviceAuth,
-  );
+  const deviceAuth = usePendingDeviceAuth();
 
   const [brief] = useState(() => takePendingBrief(sessionId));
   const [auth, setAuth] = useState<AuthSnapshot>(readAuth);
@@ -234,7 +208,7 @@ export function DesignOverlay({
 
   let rows: PanelRowsNav | undefined;
   if (view === "loginPick") {
-    rows = { count: PROVIDERS.length, selected: providerIdx, onChange: setProviderIdx };
+    rows = { count: LOGIN_PROVIDERS.length, selected: providerIdx, onChange: setProviderIdx };
   } else if (view === "main") {
     rows = { count: actions.length, selected: selectedIdx, onChange: setSelected };
   }
@@ -251,7 +225,7 @@ export function DesignOverlay({
         return;
       }
       if (view === "loginPick") {
-        const provider = PROVIDERS[providerIdx];
+        const provider = LOGIN_PROVIDERS[providerIdx];
         if (provider) runLogin(provider.id);
         return;
       }
@@ -280,10 +254,12 @@ export function DesignOverlay({
         onCancel={backToMain}
       >
         <LoginPick
+          description="Sign in to the otherside backend to relay your design session."
           selected={providerIdx}
           busy={busy === "login"}
           error={error}
           deviceAuth={deviceAuth}
+          rowWidth={ROW_WIDTH}
         />
       </FooterPanel>
     );
@@ -334,21 +310,6 @@ export function DesignOverlay({
         deviceAuth={deviceAuth}
       />
     </FooterPanel>
-  );
-}
-
-function DeviceAuthNotice({ pending }: { pending: DeviceAuthPending }): React.JSX.Element {
-  return (
-    <Box marginTop={1} flexDirection="column">
-      <Text color={Color.warning}>Approve this terminal in the browser</Text>
-      <Box>
-        <Text color={Color.muted}>Code </Text>
-        <Text color={Color.text} bold>
-          {pending.userCode}
-        </Text>
-      </Box>
-      <TerminalLink url={pending.verificationUri} />
-    </Box>
   );
 }
 
@@ -470,7 +431,7 @@ function MainView({
         )}
       </Box>
 
-      <Text color={Color.border}>{Glyph.boxHLine.repeat(ROW_WIDTH + 14)}</Text>
+      <PanelDivider width={ROW_WIDTH + 14} />
 
       <Box flexDirection="column" marginTop={1}>
         {actions.map((action, idx) => (
@@ -487,49 +448,6 @@ function MainView({
         <Box marginTop={1}>
           <Text color={Color.muted} dim>
             {busyLabel(busy)}
-          </Text>
-        </Box>
-      )}
-      {deviceAuth !== null && <DeviceAuthNotice pending={deviceAuth} />}
-      {!!error && (
-        <Box marginTop={1}>
-          <Text color={Color.error}>{error}</Text>
-        </Box>
-      )}
-    </Box>
-  );
-}
-
-function LoginPick({
-  selected,
-  busy,
-  error,
-  deviceAuth,
-}: {
-  selected: number;
-  busy: boolean;
-  error: string | null;
-  deviceAuth: DeviceAuthPending | null;
-}): React.JSX.Element {
-  return (
-    <Box flexDirection="column">
-      <Text color={Color.muted}>
-        Sign in to the otherside backend to relay your design session.
-      </Text>
-      <Box flexDirection="column" marginTop={1}>
-        {PROVIDERS.map((provider, idx) => (
-          <FooterPanelRow
-            key={provider.id}
-            label={provider.label}
-            selected={idx === selected}
-            width={ROW_WIDTH}
-          />
-        ))}
-      </Box>
-      {busy && (
-        <Box marginTop={1}>
-          <Text color={Color.muted} dim>
-            Opening browser… complete the sign-in, then return here.
           </Text>
         </Box>
       )}

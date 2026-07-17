@@ -218,7 +218,7 @@ export const WebFetch: ToolHandler = {
           : markdown;
       const question =
         promptArg.length > 0 ? promptArg : "Summarize the main content of this page concisely.";
-      // Providers without a scout/warrior tier resolve to the "inherit" sentinel;
+      // Providers without a samurai/daimyo tier resolve to the "inherit" sentinel;
       // fall back to the active session model so the gate never sends that id.
       const auxModel = auxiliaryModelFor(ctx.provider);
       const gateModel = auxModel === "inherit" ? ctx.model : auxModel;

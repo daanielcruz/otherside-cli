@@ -1,6 +1,5 @@
 import type { PendingChange } from "@/commands/index.ts";
-import { getProviderConfig } from "@/engine/contract/registry.ts";
-import { effortLevelsForModel, findModel } from "@/engine/model/catalog.ts";
+import { effortLevelsForModel } from "@/engine/model/catalog.ts";
 import type { Agent } from "@/engine/queue/index.ts";
 import { appendRecord, nowIso, type Session } from "@/engine/session/index.ts";
 import { sessionMetaFromBrokerState } from "@/engine/session/state.ts";
@@ -30,26 +29,6 @@ export interface QueueHelpers {
   pushQueued: (text: string) => void;
   popAllQueued: () => string | null;
   applyPendingChange: (change: PendingChange) => void;
-  enqueuePendingChange: (change: PendingChange, label: string, recallText?: string) => void;
-}
-
-export function formatQueuedActionLabel(change: PendingChange): string {
-  switch (change.kind) {
-    case "set_model": {
-      const providerLabel = getProviderConfig(change.provider)?.provider.label ?? change.provider;
-      const modelEntry = findModel(change.model, change.provider);
-      const modelLabel = modelEntry?.displayName ?? change.model;
-      return `At next turn Otherside will switch to ${providerLabel} - ${modelLabel}`;
-    }
-    case "set_effort":
-      return `At next turn Otherside will set effort to ${change.effort}`;
-    case "set_ultracode":
-      return `At next turn Otherside will ${change.enabled ? "enable" : "disable"} ultracode`;
-    case "set_fast_mode":
-      return `At next turn Otherside will ${change.enabled ? "enable" : "disable"} fast mode`;
-    case "set_goal":
-      return `At next turn Otherside will set goal: ${change.condition}`;
-  }
 }
 
 export function createQueueHelpers(deps: QueueHelpersDeps): QueueHelpers {
@@ -98,7 +77,7 @@ export function createQueueHelpers(deps: QueueHelpersDeps): QueueHelpers {
   const popAllQueued = (): string | null => {
     const current = getQueueMessages();
     if (current.length === 0) return null;
-    const joined = current.map((m) => m.recallText ?? m.text).join("\n");
+    const joined = current.map((m) => m.text).join("\n");
     queueActions.clear();
     return joined;
   };
@@ -159,27 +138,9 @@ export function createQueueHelpers(deps: QueueHelpersDeps): QueueHelpers {
     }
   };
 
-  const enqueuePendingChange = (
-    change: PendingChange,
-    label: string,
-    recallText?: string,
-  ): void => {
-    const text = `[QUEUED] ${formatQueuedActionLabel(change)}`;
-    const msg: QueuedMessage = {
-      id: `qc_${Date.now()}_${getQueueMessages().length}`,
-      text,
-      expanded: "",
-      pendingChange: change,
-      ...(recallText !== undefined ? { recallText } : {}),
-      changeFeedback: label,
-    };
-    queueActions.push(msg);
-  };
-
   return {
     pushQueued,
     popAllQueued,
     applyPendingChange,
-    enqueuePendingChange,
   };
 }

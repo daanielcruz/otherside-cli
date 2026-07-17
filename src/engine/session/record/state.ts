@@ -40,8 +40,9 @@ export class Session {
   cwd: string;
   /**
    * Project cwd used for transcript / tool-result persistence.
-   * Fixed at session construction for worktree switches; rewritten by /cd
-   * when the session project identity relocates.
+   * Rewritten by /cd when the session project identity relocates, and by
+   * worktree enter/exit — the transcript follows the active worktree and
+   * returns to the pre-enter project anchor on exit.
    */
   storageCwd: string;
   gitBranch?: string;
@@ -66,27 +67,15 @@ export class Session {
   }
 
   stamp(): SessionStamp {
-    // Transcript identity is always the project storage cwd, not the active worktree path.
+    // Transcript identity is always the project storage cwd, not the active
+    // worktree path. Worktree session state travels as its own transcript
+    // record (`worktree_state`), never on this per-line stamp.
     const s: SessionStamp = {
       sessionId: this.id,
       cwd: this.storageCwd,
       version: OTHERSIDE_VERSION,
     };
     if (this.gitBranch) s.gitBranch = this.gitBranch;
-    if (this.worktree !== null) {
-      s.worktree = {
-        originalCwd: this.worktree.originalCwd,
-        activePath: this.worktree.activePath,
-        ownership: this.worktree.ownership,
-        ...(this.worktree.managedBranch !== undefined
-          ? { managedBranch: this.worktree.managedBranch }
-          : {}),
-        ...(this.worktree.baseSha !== undefined ? { baseSha: this.worktree.baseSha } : {}),
-        ...(this.worktree.tmuxSession !== undefined
-          ? { tmuxSession: this.worktree.tmuxSession }
-          : {}),
-      };
-    }
     return s;
   }
 

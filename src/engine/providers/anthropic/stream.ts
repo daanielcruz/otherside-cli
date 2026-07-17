@@ -22,7 +22,7 @@ export const anthropicStream: StreamFn = async function* anthropicStreamFn(
   body: unknown,
 ): AsyncIterable<Uint8Array> {
   const auth = await anthropicAuthorizationHeader();
-  const fp = anthropicFingerprint(ctx);
+  const fp = anthropicFingerprint(ctx, body);
 
   const headers: Record<string, string> = {
     Authorization: auth,
@@ -58,6 +58,7 @@ export const anthropicStream: StreamFn = async function* anthropicStreamFn(
     const text = await resp.text().catch(() => "");
     const retryAfterHeader = resp.headers.get("retry-after");
     const quota = detectQuotaExhaustion({
+      provider: "anthropic",
       status: resp.status,
       headers: resp.headers,
       body: text,

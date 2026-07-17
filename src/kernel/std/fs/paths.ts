@@ -1,7 +1,7 @@
 import { execFile, spawnSync } from "node:child_process";
-import { realpathSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { isAbsolute, join, relative, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { isWindows } from "../proc/platform.ts";
 
 export function getDisplayPath(filePath: string): string {
@@ -110,29 +110,92 @@ export function canonicalizeCwd(cwd: string): string {
   }
 }
 
+/**
+ * Nearest ancestor of `cwd` (inclusive) that carries a `.git` entry — a
+ * directory for a main checkout, a file for a linked worktree. Pure fs walk:
+ * the cheap "is this a git repo at all" gate that must run before any git
+ * process is spawned (spawning `git` outside a repo is wasted work, and on
+ * macOS without Command Line Tools every `git` invocation pops the CLT
+ * installer dialog).
+ */
+export function gitAncestorRoot(cwd: string): string | null {
+  let dir = resolve(cwd);
+  for (let depth = 0; depth < 64; depth += 1) {
+    try {
+      statSync(join(dir, ".git"));
+      return dir;
+    } catch {}
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+  return null;
+}
+
+// One resume/list flow probes the same cwd several times (latest-session scan,
+// resume-cwd assert); a short-lived memo collapses those into a single
+// `git worktree list` spawn without letting long sessions read stale results.
+const WORKTREE_LIST_MEMO_TTL_MS = 5_000;
+const worktreeListMemo = new Map<string, { at: number; paths: string[] }>();
+
+function memoizedWorktreePaths(cwd: string): string[] | null {
+  const hit = worktreeListMemo.get(cwd);
+  if (hit === undefined) return null;
+  if (Date.now() - hit.at > WORKTREE_LIST_MEMO_TTL_MS) {
+    worktreeListMemo.delete(cwd);
+    return null;
+  }
+  return hit.paths;
+}
+
+function memoizeWorktreePaths(cwd: string, paths: string[]): string[] {
+  worktreeListMemo.set(cwd, { at: Date.now(), paths });
+  return paths;
+}
+
+// `git worktree list` with repo-local hook/fsmonitor execution disabled — the
+// enumeration must never run configured hooks or spawn a filesystem monitor.
+const WORKTREE_LIST_ARGS = [
+  "-c",
+  "core.hooksPath=/dev/null",
+  "-c",
+  "core.fsmonitor=",
+  "worktree",
+  "list",
+  "--porcelain",
+];
+
 export function worktreePathsFor(cwd: string): string[] {
-  const result = spawnSync("git", ["worktree", "list", "--porcelain"], {
+  const memo = memoizedWorktreePaths(cwd);
+  if (memo !== null) return memo;
+  if (gitAncestorRoot(cwd) === null) return memoizeWorktreePaths(cwd, []);
+  const result = spawnSync("git", WORKTREE_LIST_ARGS, {
     cwd,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
     timeout: 1500,
   });
-  if (result.status !== 0 || typeof result.stdout !== "string") return [];
-  return parseWorktreeList(result.stdout);
+  if (result.status !== 0 || typeof result.stdout !== "string") {
+    return memoizeWorktreePaths(cwd, []);
+  }
+  return memoizeWorktreePaths(cwd, parseWorktreeList(result.stdout));
 }
 
 export function worktreePathsForAsync(cwd: string): Promise<string[]> {
-  return new Promise((resolve) => {
+  const memo = memoizedWorktreePaths(cwd);
+  if (memo !== null) return Promise.resolve(memo);
+  if (gitAncestorRoot(cwd) === null) return Promise.resolve(memoizeWorktreePaths(cwd, []));
+  return new Promise((resolvePaths) => {
     execFile(
       "git",
-      ["worktree", "list", "--porcelain"],
+      WORKTREE_LIST_ARGS,
       { cwd, encoding: "utf8", timeout: 1500 },
       (error, stdout) => {
         if (error || typeof stdout !== "string") {
-          resolve([]);
+          resolvePaths(memoizeWorktreePaths(cwd, []));
           return;
         }
-        resolve(parseWorktreeList(stdout));
+        resolvePaths(memoizeWorktreePaths(cwd, parseWorktreeList(stdout)));
       },
     );
   });

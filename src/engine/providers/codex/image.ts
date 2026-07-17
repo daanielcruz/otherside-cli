@@ -3,30 +3,14 @@ import {
   ProviderHttpError,
   parseRetryAfterHeader,
 } from "@/engine/providers/_shared/retry.ts";
+import type {
+  ImageGenerationRequest,
+  ImageGenerationResult,
+} from "@/engine/providers/image-generation.ts";
 import { truncateEllipsis } from "@/kernel/std/text/text.ts";
-import type { ImageMediaType } from "@/kernel/std/types/image.ts";
 import { currentTokens, ensureInstallationId } from "./auth.ts";
 import { buildHeaders, CHATGPT_BASE_URL } from "./fingerprint.ts";
 import { buildCodexRequestMetadata } from "./metadata.ts";
-
-export type ImageSize = "1024x1024" | "1024x1536" | "1536x1024";
-
-export interface CodexImageInput {
-  data: string;
-  mediaType: ImageMediaType;
-}
-
-export interface CodexImageRequest {
-  prompt: string;
-  size?: ImageSize;
-  images?: CodexImageInput[];
-  abortSignal?: AbortSignal;
-}
-
-export interface CodexImageResult {
-  base64: string;
-  callId: string;
-}
 
 const IMAGE_MODEL = "gpt-image-2";
 
@@ -34,7 +18,7 @@ function isAborted(error: unknown, signal?: AbortSignal): boolean {
   return signal?.aborted === true || (error instanceof Error && error.name === "AbortError");
 }
 
-export async function generateImage(req: CodexImageRequest): Promise<CodexImageResult> {
+export async function generateImage(req: ImageGenerationRequest): Promise<ImageGenerationResult> {
   const tokens = await currentTokens();
   const ids = await ensureInstallationId();
   const conversationId = crypto.randomUUID();
@@ -93,6 +77,7 @@ export async function generateImage(req: CodexImageRequest): Promise<CodexImageR
     const text = await resp.text().catch(() => "");
     const retryAfterHeader = resp.headers.get("retry-after");
     const quota = detectQuotaExhaustion({
+      provider: "codex",
       status: resp.status,
       headers: resp.headers,
       body: text,
@@ -123,5 +108,5 @@ export async function generateImage(req: CodexImageRequest): Promise<CodexImageR
     throw new Error(`codex image ${operation} response contained no image`);
   }
 
-  return { base64, callId: crypto.randomUUID() };
+  return { base64, mediaType: "image/png", callId: crypto.randomUUID() };
 }

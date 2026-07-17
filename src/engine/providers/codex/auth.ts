@@ -6,6 +6,7 @@ import { uuidv4 } from "@/kernel/std/id.ts";
 import { type CodexTokens, loadFor, saveFor } from "@/kernel/storage/credentials.ts";
 import {
   CALLBACK_PATH,
+  CALLBACK_PORTS,
   CLIENT_ID,
   DEFAULT_PORT,
   OAUTH_AUTHORIZE_URL,
@@ -63,7 +64,20 @@ export function parseJwtAccountId(jwt: string): string | null {
   return null;
 }
 
-function buildAuthorizeUrl(challenge: string, state: string, redirectUri: string): string {
+/**
+ * Build the authorize URL, byte-identical to the live ChatGPT Desktop wire.
+ *
+ * Key/value order matches the captured authorize exactly. `originStableId` is
+ * the per-install surface id (persisted `installationId`, generate-once). The
+ * `redirect_uri` MUST use an IdP-registered loopback port (see CALLBACK_PORTS);
+ * any other port returns authorize_hydra_invalid_request.
+ */
+function buildAuthorizeUrl(
+  challenge: string,
+  state: string,
+  redirectUri: string,
+  originStableId: string,
+): string {
   const u = new URL(OAUTH_AUTHORIZE_URL);
   u.searchParams.set("response_type", "code");
   u.searchParams.set("client_id", CLIENT_ID);
@@ -71,10 +85,13 @@ function buildAuthorizeUrl(challenge: string, state: string, redirectUri: string
   u.searchParams.set("scope", SCOPE);
   u.searchParams.set("code_challenge", challenge);
   u.searchParams.set("code_challenge_method", "S256");
-  u.searchParams.set("state", state);
   u.searchParams.set("id_token_add_organizations", "true");
   u.searchParams.set("codex_cli_simplified_flow", "true");
+  u.searchParams.set("state", state);
   u.searchParams.set("originator", ORIGINATOR_HTTP);
+  u.searchParams.set("source_surface_stable_id", originStableId);
+  u.searchParams.set("codex_origin_stable_id", originStableId);
+  u.searchParams.set("codex_streamlined_login", "true");
   return u.toString();
 }
 
@@ -89,12 +106,12 @@ async function exchangeCode(
   form.set("redirect_uri", redirectUri);
   form.set("client_id", CLIENT_ID);
   form.set("code_verifier", verifier);
+  // Live exchange is form-urlencoded with minimal headers (no originator).
   const resp = await fetch(OAUTH_TOKEN_URL, {
     method: "POST",
     headers: {
       "Content-Type": "application/x-www-form-urlencoded",
-      "User-Agent": userAgent(),
-      originator: ORIGINATOR_HTTP,
+      Accept: "*/*",
     },
     body: form.toString(),
   });
@@ -110,6 +127,7 @@ async function refreshOauth(refreshToken: string): Promise<RefreshResponse> {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
+      Accept: "*/*",
       "User-Agent": userAgent(),
       originator: ORIGINATOR_HTTP,
     },
@@ -182,19 +200,25 @@ export async function login(): Promise<CodexTokens> {
 export type CodexLoginHandle = PkceFlowHandle<CodexTokens>;
 
 export async function beginLogin(): Promise<CodexLoginHandle> {
+  const prior = (await loadFor("codex")) ?? undefined;
+  const originStableId = prior?.installationId ?? uuidv4();
   return runPkceFlow<CodexTokens>({
     providerLabel: "Codex",
     callbackPath: CALLBACK_PATH,
     portStart: DEFAULT_PORT,
     portEnd: DEFAULT_PORT + 32,
+    // The OAuth client only registers these two loopback redirect URIs; any
+    // other port is rejected by the IdP (authorize_hydra_invalid_request).
+    ports: CALLBACK_PORTS,
     redirectUriHost: "localhost",
+    // App-server uses a 64-byte PKCE verifier (86-char base64url).
+    verifierBytes: 64,
     buildAuthorizeUrl: ({ challenge, state, redirectUri }) =>
-      buildAuthorizeUrl(challenge, state, redirectUri),
+      buildAuthorizeUrl(challenge, state, redirectUri, originStableId),
     exchange: async ({ code, verifier, redirectUri }) => {
       const exchanged = await exchangeCode(code, verifier, redirectUri);
-      const prior = (await loadFor("codex")) ?? undefined;
       const next = tokensFromExchange(exchanged, prior);
-      if (!next.installationId) next.installationId = uuidv4();
+      if (!next.installationId) next.installationId = originStableId;
       if (!next.windowId) next.windowId = uuidv4();
       await saveFor("codex", next);
       return next;

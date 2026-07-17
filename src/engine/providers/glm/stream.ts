@@ -48,6 +48,7 @@ export const glmStream: StreamFn = async function* glmStreamFn(
     const text = await resp.text().catch(() => "");
     const retryAfterHeader = resp.headers.get("retry-after");
     const quota = detectQuotaExhaustion({
+      provider: "glm",
       status: resp.status,
       headers: resp.headers,
       body: text,

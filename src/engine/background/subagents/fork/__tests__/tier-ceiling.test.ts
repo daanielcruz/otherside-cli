@@ -26,13 +26,13 @@ const BASE_INVOCATION: Parameters<typeof resolveSubagentRoutingForDispatch>[2] =
   prompt: "Test prompt",
 };
 
-function warriorContext(): RequestContext {
+function shogunContext(): RequestContext {
   return {
     provider: "codex",
     model: "gpt-5.6-terra",
     effort: null,
     permissionMode: "default",
-    multiproviderEnabled: true,
+    orchestrationMode: "feudalism",
   } as RequestContext;
 }
 
@@ -49,7 +49,7 @@ function nestedContext(): AgentContext {
 
 function resolveNested(invocation: Parameters<typeof resolveSubagentRoutingForDispatch>[2]) {
   return runWithAgentContext(nestedContext(), () =>
-    resolveSubagentRoutingForDispatch(warriorContext(), TEST_DEF, invocation),
+    resolveSubagentRoutingForDispatch(shogunContext(), TEST_DEF, invocation),
   );
 }
 
@@ -64,19 +64,28 @@ afterEach(() => {
 });
 
 describe("nested tier ceiling", () => {
-  it("clamps a nested warrior request for general and reports the downgrade", async () => {
-    const result = await resolveNested({ ...BASE_INVOCATION, tierOverride: "general" });
+  it("clamps an emperor request to the nested shogun ceiling and reports the downgrade", async () => {
+    const result = await resolveNested({
+      ...BASE_INVOCATION,
+      tierOverride: "emperor",
+    });
 
     expect(result).toMatchObject({
       ok: true,
       ctx: { provider: "codex", model: "gpt-5.6-terra" },
-      routingNotice: "tier clamped to warrior: nested agents cannot launch above their own tier.",
+      routingNotice: "tier clamped to shogun: nested agents cannot launch above their own tier.",
     });
   });
 
   it("leaves nested same-tier and lower-tier requests unchanged", async () => {
-    const sameTier = await resolveNested({ ...BASE_INVOCATION, tierOverride: "warrior" });
-    const lowerTier = await resolveNested({ ...BASE_INVOCATION, tierOverride: "scout" });
+    const sameTier = await resolveNested({
+      ...BASE_INVOCATION,
+      tierOverride: "shogun",
+    });
+    const lowerTier = await resolveNested({
+      ...BASE_INVOCATION,
+      tierOverride: "daimyo",
+    });
 
     expect(sameTier).toMatchObject({
       ok: true,
@@ -90,38 +99,42 @@ describe("nested tier ceiling", () => {
     if (lowerTier.ok) expect(lowerTier.routingNotice).toBeUndefined();
   });
 
-  it("clamps a pinned model above the nested ceiling to tier routing", async () => {
+  it("rejects a pinned model above the nested ceiling in feudalism", async () => {
     const result = await resolveNested({
       ...BASE_INVOCATION,
       providerOverride: "codex",
       modelOverride: "gpt-5.6-sol",
     });
 
-    expect(result).toMatchObject({
-      ok: true,
-      ctx: { provider: "codex", model: "gpt-5.6-terra" },
-      routingNotice: "tier clamped to warrior: nested agents cannot launch above their own tier.",
-    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("InputValidationError");
+      expect(result.error).toContain(
+        "concrete `provider`/`model` pins are unavailable in feudalism mode",
+      );
+    }
   });
 
-  it("allows an unranked pinned model unchanged", async () => {
+  it("rejects an unranked pinned model in feudalism", async () => {
     const result = await resolveNested({
       ...BASE_INVOCATION,
       providerOverride: "codex",
       modelOverride: "gpt-5.5",
     });
 
-    expect(result).toMatchObject({
-      ok: true,
-      ctx: { provider: "codex", model: "gpt-5.5" },
-    });
-    if (result.ok) expect(result.routingNotice).toBeUndefined();
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("InputValidationError");
+      expect(result.error).toContain(
+        "concrete `provider`/`model` pins are unavailable in feudalism mode",
+      );
+    }
   });
 
   it("leaves main-session requests unrestricted", async () => {
-    const result = await resolveSubagentRoutingForDispatch(warriorContext(), TEST_DEF, {
+    const result = await resolveSubagentRoutingForDispatch(shogunContext(), TEST_DEF, {
       ...BASE_INVOCATION,
-      tierOverride: "general",
+      tierOverride: "emperor",
     });
 
     expect(result).toMatchObject({
@@ -133,14 +146,16 @@ describe("nested tier ceiling", () => {
 
   it("clamps workflow tier routing in a nested context", () => {
     const result = runWithAgentContext(nestedContext(), () =>
-      resolveWorkflowAgentModelContextDetailed(warriorContext(), { tier: "general" }),
+      resolveWorkflowAgentModelContextDetailed(shogunContext(), {
+        tier: "emperor",
+      }),
     );
 
     expect(result).toMatchObject({
       ok: true,
       ctx: { provider: "codex", model: "gpt-5.6-terra" },
       degradedReasons: [
-        "tier clamped to warrior: nested agents cannot launch above their own tier.",
+        "tier clamped to shogun: nested agents cannot launch above their own tier.",
       ],
     });
   });

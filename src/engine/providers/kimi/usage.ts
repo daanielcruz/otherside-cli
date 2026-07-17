@@ -134,12 +134,12 @@ function intValue(value: unknown): number | null {
 }
 
 export async function refreshKimiQuotaWarning(): Promise<void> {
-  await refreshProviderQuota("kimi-code");
+  await refreshProviderQuota("kimi");
 }
 
 export function applyKimiQuotaWarning(usage: KimiUsage | null): void {
   if (!usage) {
-    applyQuotaWarning("kimi-code", []);
+    applyQuotaWarning("kimi", []);
     return;
   }
   const candidates: QuotaCandidate[] = [];
@@ -147,7 +147,7 @@ export function applyKimiQuotaWarning(usage: KimiUsage | null): void {
   for (const row of usage.limits) {
     pushKimiCandidate(candidates, row, kimiRowLabel(row.label));
   }
-  applyQuotaWarning("kimi-code", candidates);
+  applyQuotaWarning("kimi", candidates);
 }
 
 function pushKimiCandidate(
@@ -161,7 +161,7 @@ function pushKimiCandidate(
     label,
     utilization,
     resetsAt: kimiResetIso(row),
-    provider: "kimi-code",
+    provider: "kimi",
     trackingStatus: "tracked",
   });
 }

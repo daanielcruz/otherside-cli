@@ -109,7 +109,11 @@ export const config: ProviderConfig<"codex-responses"> = {
     ) {
       return { kind: "retry", delayMs: 0, reason: "dropped stale encrypted reasoning" };
     }
-    return classifyProviderError(err, { attempt: attempt ?? 1 });
+    return classifyProviderError(err, {
+      attempt: attempt ?? 1,
+      provider: ctx.provider,
+      model: ctx.model,
+    });
   },
   usageDetails: { sourceLabel: "ChatGPT OAuth" },
   beginLogin: { kind: "oauth_pkce", begin: codexBeginLogin },

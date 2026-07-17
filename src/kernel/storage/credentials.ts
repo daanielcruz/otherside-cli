@@ -86,17 +86,14 @@ export interface OpenAiCustomCreds {
 
 export interface CredentialsBundle {
   anthropic?: AnthropicTokens;
-  "anthropic-oauth"?: AnthropicTokens;
   codex?: CodexTokens;
-  "codex-oauth"?: CodexTokens;
   xai?: XaiTokens;
   deepseek?: DeepseekCreds;
-  "kimi-code"?: KimiCreds;
   kimi?: KimiCreds;
   minimax?: MinimaxCreds;
   glm?: GlmCreds;
   antigravity?: GoogleOauthTokens;
-  "openai-custom"?: OpenAiCustomCreds;
+  openai?: OpenAiCustomCreds;
 }
 
 export type ProviderSlug =
@@ -106,18 +103,15 @@ export type ProviderSlug =
   | "deepseek"
   | "glm"
   | "xai"
-  | "kimi-code"
+  | "kimi"
   | "minimax"
-  | "openai-custom";
+  | "openai";
 
 type CredentialSlug = ProviderSlug;
 type AnyCredential = CredentialsBundle[keyof CredentialsBundle];
 
 export function hasCredential(bundle: CredentialsBundle | null, slug: ProviderSlug): boolean {
   if (!bundle) return false;
-  if (slug === "anthropic") return Boolean(bundle.anthropic || bundle["anthropic-oauth"]);
-  if (slug === "codex") return Boolean(bundle.codex || bundle["codex-oauth"]);
-  if (slug === "kimi-code") return Boolean(bundle["kimi-code"] || bundle.kimi);
   if (slug === "glm") return Boolean(bundle.glm?.zcodeJwtToken);
   return Boolean(bundle[slug]);
 }
@@ -128,10 +122,10 @@ export function hasConfiguredCredential(
 ): boolean {
   if (hasCredential(bundle, slug)) return true;
   if (slug === "deepseek") return hasNonEmptyEnv("OTHERSIDE_DEEPSEEK_API_KEY", "DEEPSEEK_API_KEY");
-  if (slug === "kimi-code") return hasNonEmptyEnv("OTHERSIDE_KIMI_API_KEY", "KIMI_API_KEY");
+  if (slug === "kimi") return hasNonEmptyEnv("OTHERSIDE_KIMI_API_KEY", "KIMI_API_KEY");
   if (slug === "minimax") return hasNonEmptyEnv("OTHERSIDE_MINIMAX_API_KEY", "MINIMAX_API_KEY");
   if (slug === "glm") return hasCredential(bundle, slug);
-  if (slug === "openai-custom") {
+  if (slug === "openai") {
     return hasNonEmptyEnv(
       "OTHERSIDE_OPENAI_API_KEY",
       "OPENAI_API_KEY",
@@ -145,27 +139,35 @@ function hasNonEmptyEnv(...keys: string[]): boolean {
   return keys.some((key) => (process.env[key]?.trim() ?? "").length > 0);
 }
 
-export function hasCodexCredentialSync(): boolean {
+export function hasCredentialSync(slug: ProviderSlug): boolean {
   const path = credentialsPath();
   if (!existsSync(path)) return false;
   try {
-    const all = JSON.parse(readFileSync(path, "utf8")) as Partial<CredentialsBundle>;
-    const tokens = all.codex ?? all["codex-oauth"];
-    return Boolean(tokens?.accessToken);
+    const all = JSON.parse(readFileSync(path, "utf8")) as CredentialsBundle;
+    if (slug === "codex") {
+      return Boolean(all.codex?.accessToken);
+    }
+    if (slug === "xai") return Boolean(all.xai?.accessToken);
+    if (slug === "antigravity") return Boolean(all.antigravity?.accessToken);
+    return hasCredential(all, slug);
   } catch {
     return false;
   }
+}
+
+export function hasCodexCredentialSync(): boolean {
+  return hasCredentialSync("codex");
 }
 
 export const PROVIDER_FALLBACK_ORDER: ProviderSlug[] = [
   "anthropic",
   "codex",
   "xai",
-  "kimi-code",
+  "kimi",
   "deepseek",
   "minimax",
   "glm",
-  "openai-custom",
+  "openai",
 ];
 
 export function firstLoggedProvider(
@@ -184,18 +186,7 @@ export async function loadAll(): Promise<CredentialsBundle> {
   const file = Bun.file(credentialsPath());
   if (!(await file.exists())) return {};
   try {
-    const all = (await file.json()) as CredentialsBundle & { grok?: unknown };
-    if (all.grok !== undefined && all.xai === undefined) {
-      all.xai = all.grok as XaiTokens;
-      delete all.grok;
-      const path = credentialsPath();
-      mkdirSync(dirname(path), { recursive: true });
-      const tmp = `${path}.tmp.${Date.now()}`;
-      await Bun.write(tmp, JSON.stringify(all, null, 2));
-      chmodIfPosix(tmp, 0o600);
-      renameReplaceSync(tmp, path);
-    }
-    return all;
+    return (await file.json()) as CredentialsBundle;
   } catch {
     return {};
   }
@@ -245,8 +236,5 @@ export async function deleteFor(slug: ProviderSlug): Promise<void> {
 function storageKeys(
   slug: CredentialSlug,
 ): [keyof CredentialsBundle, ...(keyof CredentialsBundle)[]] {
-  if (slug === "anthropic") return ["anthropic", "anthropic-oauth"];
-  if (slug === "codex") return ["codex", "codex-oauth"];
-  if (slug === "kimi-code") return ["kimi-code", "kimi"];
   return [slug];
 }

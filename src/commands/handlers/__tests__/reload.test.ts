@@ -18,7 +18,7 @@ afterEach(() => {
 });
 
 describe("formatReloadFeedback", () => {
-  it("matches reference category set, order, separator, and pluralization", () => {
+  it("formats the category set, order, separator, and pluralization", () => {
     expect(
       formatReloadFeedback({
         plugins: 2,
@@ -68,7 +68,7 @@ describe("countPluginHooks", () => {
     plugins.register(makePlugin("gamma"));
 
     // Runtime-disable beta only (desired + runtime via applyPersistedEnabledState)
-    plugins.applyPersistedEnabledState({ beta: false });
+    plugins.applyPersistedEnabledState({ "beta@test": false });
 
     expect(countPluginHooks()).toBe(3);
   });

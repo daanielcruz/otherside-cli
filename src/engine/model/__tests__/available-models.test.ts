@@ -46,7 +46,7 @@ afterEach(() => {
 describe("availableModelListing", () => {
   it("orders providers by strongest model and lists the full catalog per provider", () => {
     const listing = availableModelListing();
-    expect(listing.map((row) => row.provider)).toEqual(["codex", "anthropic"]);
+    expect(listing.map((row) => row.provider)).toEqual(["anthropic", "codex"]);
     expect(listing.find((row) => row.provider === "codex")?.models.map((m) => m.id)).toEqual([
       "gpt-5.6-sol",
       "gpt-5.6-terra",
@@ -63,6 +63,12 @@ describe("availableModelListing", () => {
       "claude-sonnet-5",
       "claude-haiku-4-5",
     ]);
+  });
+
+  it("limits Disabled-mode listings to the active provider", () => {
+    const listing = availableModelListing("anthropic");
+    expect(listing.map((row) => row.provider)).toEqual(["anthropic"]);
+    expect(listing.find((row) => row.provider === "anthropic")?.models.length).toBeGreaterThan(0);
   });
 
   it("includes catalog models that belong to no tier roster", () => {

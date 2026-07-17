@@ -29,7 +29,7 @@ beforeEach(async () => {
   process.env.OTHERSIDE_KIMI_API_KEY = "test-key";
   await Bun.write(
     join(configDir, "credentials.json"),
-    JSON.stringify({ "kimi-code": { apiKey: "test-key" } }),
+    JSON.stringify({ kimi: { apiKey: "test-key" } }),
   );
   global.fetch = mock(async () => Response.json({ unexpected: true })) as unknown as typeof fetch;
 });
@@ -52,15 +52,15 @@ describe("fetchUsageSnapshot Kimi quota state", () => {
       summary: { label: "Weekly limit", used: 100, limit: 100 },
       limits: [],
     });
-    expect(warningForProvider("kimi-code")).not.toBeNull();
-    expect(getRoutingUsage("kimi-code")).not.toBeNull();
+    expect(warningForProvider("kimi")).not.toBeNull();
+    expect(getRoutingUsage("kimi")).not.toBeNull();
 
     const snapshot = await fetchUsageSnapshot({});
-    const provider = snapshot.providers.find((entry) => entry.id === "kimi-code");
+    const provider = snapshot.providers.find((entry) => entry.id === "kimi");
 
     expect(provider?.bars).toEqual([]);
     expect(provider?.warning).toBeNull();
-    expect(warningForProvider("kimi-code")).toBeNull();
-    expect(getRoutingUsage("kimi-code")).toBeNull();
+    expect(warningForProvider("kimi")).toBeNull();
+    expect(getRoutingUsage("kimi")).toBeNull();
   });
 });

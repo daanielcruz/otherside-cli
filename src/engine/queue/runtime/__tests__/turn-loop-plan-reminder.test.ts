@@ -77,11 +77,11 @@ function makeHost(
       config: { defaultProvider: "xai", defaultModel: "grok-4.5" } as never,
     },
     compactState: {
-      circuitOpen: false,
       rapidRefillBreakerOpen: false,
       rapidRefillCount: 0,
+      consecutiveCompactFailures: 0,
       turnsSinceLast: Number.POSITIVE_INFINITY,
-      consecutiveFailures: 0,
+      lastAutoCompactAttemptTurnId: null,
     },
     sessionAllowedToolPatterns: new Set(),
     loadedNestedMemoryPaths: new Set(),

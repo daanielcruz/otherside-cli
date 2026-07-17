@@ -41,6 +41,8 @@ describe("central devtools config", () => {
         codex: {
           responses: "https://127.0.0.1:8443/responses",
           responsesWs: "wss://127.0.0.1:8443/responses",
+          voice: "wss://127.0.0.1:8443/voice",
+          voiceCalls: "https://127.0.0.1:8443/voice/calls",
         },
       },
     });
@@ -52,6 +54,10 @@ describe("central devtools config", () => {
     );
     expect(providerEndpoint("codex", "responsesWs", "fallback")).toBe(
       "wss://127.0.0.1:8443/responses",
+    );
+    expect(providerEndpoint("codex", "voice", "fallback")).toBe("wss://127.0.0.1:8443/voice");
+    expect(providerEndpoint("codex", "voiceCalls", "fallback")).toBe(
+      "https://127.0.0.1:8443/voice/calls",
     );
   });
 

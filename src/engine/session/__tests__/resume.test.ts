@@ -1,7 +1,20 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import * as childProcessModule from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+const originalChildProcess = { ...childProcessModule };
+mock.module("node:child_process", () => ({
+  ...originalChildProcess,
+  execFile: (
+    _file: string,
+    _args: string[],
+    _options: unknown,
+    callback: (error: Error | null, stdout: string, stderr: string) => void,
+  ) => callback(null, "", ""),
+}));
+
 import { sessionPathForCwd } from "@/engine/session/paths.ts";
 import { appendRecord, loadSessionForResume } from "@/engine/session/persist.ts";
 import type { SessionRecord } from "@/engine/session/record/index.ts";
@@ -15,7 +28,43 @@ import {
   replayInjectionsFromRecords,
 } from "../resume.ts";
 
+afterAll(() => {
+  mock.module("node:child_process", () => originalChildProcess);
+});
+
 describe("hydrateSessionFromRecords", () => {
+  it("hydrates model context independently from full render records", () => {
+    const session = new Session("test-session");
+    const pasteStoreRef = { current: {} as PasteStore };
+    const records: SessionRecord[] = [
+      {
+        type: "user_message",
+        ts: "2026-06-23T00:00:00.000Z",
+        content: "visible pre-compact history",
+      },
+      {
+        type: "user_message",
+        ts: "2026-06-23T00:00:01.000Z",
+        content: "active model context",
+      },
+    ];
+
+    hydrateSessionFromRecords({
+      session,
+      id: "test-session",
+      records,
+      modelRecords: [records[1]!],
+      usageRecords: [],
+      chainHead: null,
+      pasteStoreRef,
+      createPasteStore: () => ({}) as PasteStore,
+    });
+
+    expect(session.records).toEqual(records);
+    expect(JSON.stringify(session.messages)).not.toContain("visible pre-compact history");
+    expect(JSON.stringify(session.messages)).toContain("active model context");
+  });
+
   it("reconstructs contentReplacementState from records", () => {
     const session = new Session("test-session");
     const pasteStoreRef = { current: {} as PasteStore };

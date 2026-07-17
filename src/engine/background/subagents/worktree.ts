@@ -14,8 +14,95 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { hostname } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { startsWithDir } from "@/kernel/std/fs/paths.ts";
+
+// Windows rejects paths beyond MAX_PATH (~260) unless long-path APIs are used.
+// Git for Windows also fails ("Filename too long") on deep trees without
+// core.longpaths. Keep a safety margin under the classic limit.
+const WINDOWS_MAX_PATH = 260;
+const WINDOWS_PATH_SAFETY_MARGIN = 12;
+
+function isWindowsPlatform(): boolean {
+  return process.platform === "win32";
+}
+
+function win32LongPath(path: string): string {
+  if (!isWindowsPlatform()) return path;
+  if (path.startsWith("\\\\?\\")) return path;
+  const normalized = resolve(path);
+  if (normalized.startsWith("\\\\")) {
+    return `\\\\?\\UNC\\${normalized.slice(2)}`;
+  }
+  return `\\\\?\\${normalized}`;
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await lstat(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Best-effort recursive delete. Windows commonly returns EBUSY/EPERM while a
+// handle is closing, and Git may leave long-path trees that `git worktree remove`
+// cannot delete — retry and use the \\?\ long-path form on win32.
+async function removeDirRobust(path: string, attempts = 6): Promise<boolean> {
+  for (let i = 0; i < attempts; i++) {
+    if (!(await pathExists(path))) return true;
+    try {
+      await rm(path, { recursive: true, force: true });
+    } catch {
+      if (isWindowsPlatform()) {
+        try {
+          await rm(win32LongPath(path), { recursive: true, force: true });
+        } catch {}
+      }
+    }
+    if (!(await pathExists(path))) return true;
+    await new Promise<void>((resolve) => setTimeout(resolve, 20 * (i + 1)));
+  }
+  return !(await pathExists(path));
+}
+
+function isErrnoException(error: unknown): error is NodeJS.ErrnoException {
+  return typeof error === "object" && error !== null && "code" in error;
+}
+
+function isUnmaterializablePathError(error: unknown): boolean {
+  if (!isErrnoException(error)) return false;
+  if (error.code === "ENAMETOOLONG") return true;
+  // On Windows, copyfile/mkdir often surfaces dest-too-long as ENOENT while
+  // still reporting the source path — treat that as unmaterializable only when
+  // the source is still present (checked by the caller).
+  return isWindowsPlatform() && error.code === "ENOENT";
+}
+
+function exceedsWindowsPathLimit(path: string): boolean {
+  return isWindowsPlatform() && path.length >= WINDOWS_MAX_PATH - WINDOWS_PATH_SAFETY_MARGIN;
+}
+
+// Remove a failed overlay dest and any empty parents created under the worktree
+// for it. Leaves non-empty siblings alone.
+async function cleanupPartialOverlayDest(worktreePath: string, to: string): Promise<void> {
+  await rm(to, { recursive: true, force: true }).catch(() => {});
+  const root = resolve(worktreePath);
+  let current = dirname(to);
+  while (true) {
+    const resolved = resolve(current);
+    if (resolved === root || !resolved.startsWith(root + sep)) break;
+    try {
+      const entries = await readdir(resolved);
+      if (entries.length > 0) break;
+      await rm(resolved, { recursive: true, force: true });
+    } catch {
+      break;
+    }
+    current = dirname(resolved);
+  }
+}
 
 export interface Worktree {
   path: string;
@@ -89,7 +176,11 @@ export function setWorktreeOverlayCopyHookForTests(
   overlayCopyHook = hook;
 }
 
-async function replicateDirtyChanges(repoRoot: string, worktreePath: string): Promise<void> {
+async function replicateDirtyChanges(
+  repoRoot: string,
+  worktreePath: string,
+  omittedRoots: readonly string[],
+): Promise<void> {
   const diff = await gitBytes(repoRoot, ["-c", "core.autocrlf=false", "diff", "HEAD", "--binary"]);
   if (!diff.ok) throw new Error("worktree isolation: failed to snapshot tracked changes");
   if (diff.stdout.byteLength > 0 && !(await gitApply(worktreePath, diff.stdout))) {
@@ -98,22 +189,81 @@ async function replicateDirtyChanges(repoRoot: string, worktreePath: string): Pr
 
   const untracked = await git(repoRoot, UNTRACKED_FILES_ARGS);
   if (!untracked.ok) throw new Error("worktree isolation: failed to list untracked files");
-  const relPaths = untracked.stdout.split("\0").filter((path) => path.length > 0);
+  const omittedRelPaths = omittedRoots.map((path) => relative(repoRoot, path).split(sep).join("/"));
+  const relPaths = untracked.stdout
+    .split("\0")
+    .filter((path) => path.length > 0)
+    .filter((path) => {
+      const normalized = path.replace(/\/+$/, "");
+      return !omittedRelPaths.some(
+        (omitted) => normalized === omitted || normalized.startsWith(`${omitted}/`),
+      );
+    });
   // Settle every copy before surfacing a failure so no cp is still writing into
   // the worktree while the caller rolls the torn creation back.
   const copies = await Promise.allSettled(
     relPaths.map(async (rel) => {
       const from = join(repoRoot, rel);
       const to = join(worktreePath, rel);
-      await mkdir(dirname(to), { recursive: true });
-      await overlayCopyHook?.(from, to);
-      await cp(from, to);
+      // Avoid mkdir of paths Windows/Git cannot later delete (long-path trees
+      // poison `git worktree remove` even when the file copy itself is skipped).
+      if (exceedsWindowsPathLimit(to)) return;
+      try {
+        await mkdir(dirname(to), { recursive: true });
+        await overlayCopyHook?.(from, to);
+        await cp(from, to);
+      } catch (error) {
+        // Drop any partial dest (empty long-path dirs) before deciding fate —
+        // those trees poison later `git worktree remove` on Windows.
+        await cleanupPartialOverlayDest(worktreePath, to);
+        // Untracked files are a point-in-time snapshot. A file that vanished
+        // after `ls-files` is no longer part of the source overlay — only skip
+        // when the source is actually gone (do not trust error.path alone:
+        // Windows long-path dest failures often report the source path).
+        // Use lstat so a broken symlink still counts as present (stat would
+        // ENOENT-follow and misclassify it as vanished).
+        try {
+          await lstat(from);
+        } catch (statErr) {
+          if (errnoCode(statErr) === "ENOENT") return;
+          // Unexpected probe failure — surface the original copy error rather
+          // than masking a real overlay failure behind the probe.
+          throw error;
+        }
+        // Source still exists but this platform cannot materialize `to` (classic
+        // Windows MAX_PATH / Git "Filename too long"). Skip rather than fail the
+        // whole worktree — the path is unusable as an overlay target here.
+        if (isUnmaterializablePathError(error)) return;
+        throw error;
+      }
     }),
   );
   const failed = copies.find((result) => result.status === "rejected");
   if (failed !== undefined && failed.status === "rejected") {
     throw new Error(`worktree isolation: failed to copy untracked file: ${String(failed.reason)}`);
   }
+}
+
+export interface PathPlatform {
+  relative(from: string, to: string): string;
+  isAbsolute(path: string): boolean;
+  sep: string;
+}
+
+const nativePath: PathPlatform = { relative, isAbsolute, sep };
+
+export function isPathWithinRoot(
+  root: string,
+  path: string,
+  pathPlatform: PathPlatform = nativePath,
+): boolean {
+  const relativePath = pathPlatform.relative(root, path);
+  return (
+    relativePath === "" ||
+    (!pathPlatform.isAbsolute(relativePath) &&
+      relativePath !== ".." &&
+      !relativePath.startsWith(`..${pathPlatform.sep}`))
+  );
 }
 
 function worktreeSlug(agentId: string): string {
@@ -430,10 +580,33 @@ async function removeWorktree(
     return false;
   }
   await cleanupRemovalHook?.(quarantinePath);
-  const removed = await git(repoRoot, ["worktree", "remove", quarantinePath]);
+  // Prefer git's non-force removal so a post-seal write (race) is preserved.
+  // On Windows, long-path leftovers or briefly locked files can make remove fail
+  // even when the tree is still baseline-identical — only then fall back to
+  // --force / filesystem delete. Never force-delete when the tree drifted
+  // (valuable agent work must survive). Compare write-tree to baseline.tree
+  // (not the fingerprint): seal advances HEAD, which would make a fingerprint
+  // recheck look "dirty" even when the working tree is unchanged.
+  let removed = await git(repoRoot, ["worktree", "remove", quarantinePath]);
   if (!removed.ok) {
-    await restoreQuarantinedWorktree(repoRoot, quarantinePath, path, baseline);
-    return false;
+    const staged = await git(quarantinePath, ["add", "-A", "--", "."]);
+    const tree = staged.ok ? await git(quarantinePath, ["write-tree"]) : { ok: false, stdout: "" };
+    const contentUnchanged = tree.ok && tree.stdout.trim() === baseline.tree;
+    if (!contentUnchanged) {
+      await restoreQuarantinedWorktree(repoRoot, quarantinePath, path, baseline);
+      return false;
+    }
+    removed = await git(repoRoot, ["worktree", "remove", "--force", quarantinePath]);
+    if (!removed.ok) {
+      await removeDirRobust(quarantinePath);
+      await git(repoRoot, ["worktree", "prune"]);
+    }
+    if ((await pathExists(quarantinePath)) || (await pathExists(path))) {
+      if (await pathExists(quarantinePath)) {
+        await restoreQuarantinedWorktree(repoRoot, quarantinePath, path, baseline);
+      }
+      return false;
+    }
   }
   return (await git(repoRoot, ["branch", "-D", branch])).ok;
 }
@@ -644,7 +817,8 @@ async function rollbackWorktreeCreation(
 ): Promise<void> {
   await git(repoRoot, ["worktree", "remove", "--force", path]);
   await git(repoRoot, ["branch", "-D", branch]);
-  await rm(path, { recursive: true, force: true }).catch(() => {});
+  await removeDirRobust(path);
+  await git(repoRoot, ["worktree", "prune"]);
 }
 
 export async function createWorktree(cwd: string, agentId: string): Promise<Worktree | null> {
@@ -664,7 +838,7 @@ async function createWorktreeLocked(
   if (activeSourceRoot === null) return null;
   const cwdReal = await realpath(cwd);
   const activeSourceRootReal = await realpath(activeSourceRoot);
-  if (cwdReal !== activeSourceRootReal && !cwdReal.startsWith(`${activeSourceRootReal}/`)) {
+  if (!isPathWithinRoot(activeSourceRootReal, cwdReal)) {
     throw new Error(
       `worktree isolation: cwd ${cwdReal} is outside the resolved repo ${activeSourceRootReal}`,
     );
@@ -721,7 +895,7 @@ async function createWorktreeLocked(
   // must roll it back so a torn overlay never survives as a reusable worktree —
   // a published baseline is the creation's completion marker.
   try {
-    await replicateDirtyChanges(activeSourceRoot, path);
+    await replicateDirtyChanges(activeSourceRoot, path, nestedRepos);
     const head = await git(path, ["rev-parse", "HEAD"]);
     const fingerprint = await calculateFingerprint(path);
     const tree = await snapshotWorktreeTree(path);

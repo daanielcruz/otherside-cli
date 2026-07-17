@@ -9,6 +9,9 @@
 
     "moduleResolution": "bundler",
     "paths": {
+      "ink": ["./src/terminal-runtime/index.ts"],
+      "@/ink": ["./src/terminal-runtime/index.ts"],
+      "@/ink/*": ["./src/terminal-runtime/*"],
       "@/*": ["./src/*"]
     },
     "allowImportingTsExtensions": true,

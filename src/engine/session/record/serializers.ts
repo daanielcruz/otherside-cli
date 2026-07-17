@@ -83,7 +83,6 @@ function upstreamLineFor(
       _os: os,
     };
     if (stamp.gitBranch) out.gitBranch = stamp.gitBranch;
-    if (stamp.worktree) out.worktree = stamp.worktree;
     if (sidechain) out.isSidechain = true;
     if (agentId) out.agentId = agentId;
     return out;
@@ -152,6 +151,8 @@ function upstreamLineFor(
     out.compactMetadata = {
       trigger: r.trigger === "manual" ? "manual" : "auto",
       preTokens: r.preTokens ?? 0,
+      ...(r.preservedSegment ? { preservedSegment: r.preservedSegment } : {}),
+      ...(r.preservedMessages ? { preservedMessages: r.preservedMessages } : {}),
     };
     const priorHead = typeof out.parentUuid === "string" ? out.parentUuid : undefined;
     const logicalParent = priorHead ?? r.leafUuid;
@@ -240,6 +241,8 @@ function compactionSidecar(r: CompactionMarkRecord): OsSidecar {
   const compaction: OsCompactionSidecar = { summaryRef: readCompactionSummaryText(r.summary_ref) };
   if (r.version !== undefined) compaction.version = r.version;
   if (r.trigger !== undefined) compaction.trigger = r.trigger;
+  if (r.preservedSegment !== undefined) compaction.preservedSegment = r.preservedSegment;
+  if (r.preservedMessages !== undefined) compaction.preservedMessages = r.preservedMessages;
   if (r.preTokens !== undefined) compaction.preTokens = r.preTokens;
   if (r.preservedImages !== undefined) compaction.preservedImages = r.preservedImages;
   if (r.error !== undefined) compaction.error = r.error;

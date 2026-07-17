@@ -1,4 +1,4 @@
-export const CLAUDE_CODE_VERSION = "2.1.209";
+export const CLAUDE_CODE_VERSION = "2.1.211";
 
 export const STAINLESS_LANG = "js";
 export const STAINLESS_PACKAGE_VERSION = "0.94.0";

@@ -10,6 +10,7 @@ import type { EffortLevel } from "@/kernel/std/types/effort.ts";
 import * as backgroundControllers from "./background-controllers.ts";
 import * as taskRecords from "./index.ts";
 import {
+  AGENT_NOTIFICATION_NOTE,
   buildAgentSummary,
   buildBashSummary,
   buildCompletionNotification,
@@ -78,6 +79,7 @@ export interface BackgroundTask {
   outputTokens: number;
   exitCode?: number;
   result?: { content: string; isError: boolean };
+  error?: string;
   notified: boolean;
   stoppedByUser?: boolean;
 }
@@ -242,6 +244,7 @@ export function startShellTask(input: {
   parentToolCallId: string;
   isSidechain?: boolean;
   ownerId?: string;
+  sessionId?: string;
   // Mid-run promotion (ctrl+b / auto-background) hands over a shell that has
   // already been running; the task must keep the original spawn time or the
   // elapsed display restarts from zero at the moment of promotion.
@@ -263,6 +266,7 @@ export function startShellTask(input: {
     isBackgrounded: true,
     ...(input.isSidechain ? { isSidechain: true } : {}),
     ...(input.ownerId !== undefined ? { ownerId: input.ownerId } : {}),
+    ...(input.sessionId !== undefined ? { sessionId: input.sessionId } : {}),
     backgroundedAt: Date.now(),
     actions: [],
     assistantText: "",
@@ -403,6 +407,30 @@ export function setTaskOwner(taskId: string, ownerId: string | undefined): void 
   if (task !== undefined) setTaskOwnerForRun(taskRunRef(task), ownerId);
 }
 
+function taskNotificationReplayKey(task: BackgroundTask): string {
+  return `bg:${task.id}:${task.runGeneration}`;
+}
+
+export function markOwnerNotificationsConsumed(
+  ownerId: string,
+  replayKeys: readonly string[],
+): void {
+  const consumed = new Set(replayKeys);
+  let changed = false;
+  for (const task of store.values()) {
+    if (
+      task.ownerId !== ownerId ||
+      task.terminalNotification !== "owner" ||
+      !consumed.has(taskNotificationReplayKey(task))
+    ) {
+      continue;
+    }
+    task.terminalNotification = "parent";
+    changed = true;
+  }
+  if (changed) emit();
+}
+
 export function markOwnerNotificationsPromoted(
   ownerId: string,
   replayKeys: readonly string[],
@@ -413,12 +441,11 @@ export function markOwnerNotificationsPromoted(
     if (
       task.ownerId !== ownerId ||
       task.terminalNotification !== "owner" ||
-      !promoted.has(`bg:${task.id}:${task.runGeneration}`)
+      !promoted.has(taskNotificationReplayKey(task))
     ) {
       continue;
     }
     task.terminalNotification = "main";
-    releaseOwnerNotificationRetention(taskRunRef(task));
     changed = true;
   }
   if (changed) emit();
@@ -488,7 +515,6 @@ const EVICT_DELAY_MS = 30_000;
 let evictDelayMs = EVICT_DELAY_MS;
 const evictionHolds = new Map<string, number>();
 const pendingEvictions = new Map<string, TaskRunRef>();
-const ownerNotificationRetentions = new Map<string, TaskRunRef>();
 const evictionTimers = new Map<
   string,
   { timer: ReturnType<typeof setTimeout>; generation: number; token: string }
@@ -521,53 +547,17 @@ export function holdTaskEviction(taskId: string): () => void {
   };
 }
 
-function retainOwnerNotification(task: BackgroundTask): void {
-  if (
-    task.kind !== "agent" ||
-    task.parentTaskId === undefined ||
-    task.terminalNotification !== "owner" ||
-    store.get(task.parentTaskId)?.status !== "running"
-  ) {
-    return;
-  }
-  ownerNotificationRetentions.set(task.id, taskRunRef(task));
-}
-
-function releaseOwnerNotificationRetention(ref: TaskRunRef): void {
-  const retained = ownerNotificationRetentions.get(ref.taskId);
-  if (retained?.generation !== ref.generation || retained.token !== ref.token) return;
-  ownerNotificationRetentions.delete(ref.taskId);
-  const pending = pendingEvictions.get(ref.taskId);
-  if (pending?.generation === ref.generation && pending.token === ref.token) {
-    evictTaskForRun(pending);
-  }
-}
-
-function releaseChildNotificationRetentions(parentTaskId: string): void {
-  for (const child of store.values()) {
-    if (child.parentTaskId === parentTaskId) {
-      releaseOwnerNotificationRetention(taskRunRef(child));
-    }
-  }
-}
-
 function evictTaskForRun(ref: TaskRunRef): void {
   const pending = pendingEvictions.get(ref.taskId);
   if (pending !== undefined && pending.token === ref.token) pendingEvictions.delete(ref.taskId);
   const task = store.get(ref.taskId);
   if (!taskMatchesRun(task, ref)) return;
   if (task.status === "running") return;
-  const retained = ownerNotificationRetentions.get(ref.taskId);
-  if (retained?.generation === ref.generation && retained.token === ref.token) {
-    pendingEvictions.set(ref.taskId, ref);
-    return;
-  }
   if (evictionHolds.has(ref.taskId)) {
     pendingEvictions.set(ref.taskId, ref);
     return;
   }
   store.delete(ref.taskId);
-  ownerNotificationRetentions.delete(ref.taskId);
   completedOutputTokens.delete(ref.taskId);
   emit();
   // Eviction releases in-memory state ONLY. The on-disk .log must survive: the
@@ -602,6 +592,7 @@ function prepareTaskForResume(task: BackgroundTask): void {
   delete task.exitCode;
   delete task.stoppedByUser;
   delete task.result;
+  delete task.error;
   // The resumed run streams fresh output; stale text from the previous run
   // must not surface through TaskOutput or prefix the new deltas.
   task.assistantText = "";
@@ -611,7 +602,6 @@ function prepareTaskForResume(task: BackgroundTask): void {
 export function reopenTask(taskId: string): BackgroundTask | undefined {
   const task = store.get(taskId);
   if (!task || task.status === "running") return undefined;
-  ownerNotificationRetentions.delete(taskId);
   prepareTaskForResume(task);
   pendingEvictions.delete(taskId);
   const timer = evictionTimers.get(taskId);
@@ -626,7 +616,6 @@ export function reopenTask(taskId: string): BackgroundTask | undefined {
 export function restoreTaskForResume(snapshot: BackgroundTask): BackgroundTask | undefined {
   if (store.has(snapshot.id) || snapshot.status === "running") return undefined;
   const restored = cloneTask(snapshot);
-  ownerNotificationRetentions.delete(restored.id);
   prepareTaskForResume(restored);
   pendingEvictions.delete(restored.id);
   const timer = evictionTimers.get(restored.id);
@@ -643,6 +632,7 @@ export function restoreTaskForResume(snapshot: BackgroundTask): BackgroundTask |
 export interface TaskCompletion {
   content: string;
   isError: boolean;
+  error?: string;
   killed?: boolean;
   exitCode?: number;
   userInitiated?: boolean;
@@ -670,6 +660,20 @@ export function completeTask(taskId: string, result: TaskCompletion): void {
   if (task !== undefined) completeTaskForRun(taskRunRef(task), result);
 }
 
+/**
+ * User-initiated kill from a UI surface. A user kill always takes the whole
+ * descendant tree with it — detached (backgrounded) children included — and
+ * can stop a parked root; children are silenced, the root notifies as killed
+ * by user.
+ */
+export function stopTaskForUser(task: BackgroundTask): boolean {
+  return cancelTaskTree(taskRunRef(task), {
+    reason: "Killed by user",
+    userInitiated: true,
+    includeDetached: true,
+  });
+}
+
 function finishTaskForRun(
   ref: TaskRunRef,
   result: TaskCompletion,
@@ -685,6 +689,8 @@ function finishTaskForRun(
   if (result.exitCode !== undefined) task.exitCode = result.exitCode;
   if (result.userInitiated === true) task.stoppedByUser = true;
   task.result = { content: result.content, isError: result.isError };
+  if (result.isError) task.error = result.error ?? result.content;
+  else delete task.error;
 
   if (terminalNotification !== undefined) {
     task.terminalNotification = terminalNotification;
@@ -698,9 +704,6 @@ function finishTaskForRun(
     routeBackgroundedNotification(ref);
   }
 
-  if (task.terminalNotification === "owner") retainOwnerNotification(task);
-  else releaseOwnerNotificationRetention(ref);
-  releaseChildNotificationRetentions(task.id);
   emit();
   const snapshot = cloneTask(task);
   for (const fn of completionListeners) fn(snapshot);
@@ -721,7 +724,7 @@ function routeBackgroundedNotification(ref: TaskRunRef): void {
   const status = taskFinalStatus(task.status);
   const description = task.description ?? task.agentName;
   const isAgent = task.kind === "agent";
-  const failureError = status === "failed" ? task.result?.content : undefined;
+  const failureError = status === "failed" ? task.error : undefined;
   const byUser = status === "killed" && task.stoppedByUser === true;
   const summary = isAgent
     ? buildAgentSummary(description, status, {
@@ -732,21 +735,34 @@ function routeBackgroundedNotification(ref: TaskRunRef): void {
         ...(task.exitCode !== undefined ? { exitCode: task.exitCode } : {}),
         byUser,
       });
+  // A killed task's result.content holds the cancellation reason, not agent
+  // output, so only completed runs ship a <result>.
   const agentResult = isAgent && status === "completed" ? task.result?.content : undefined;
+  const agentUsage =
+    isAgent && task.endedAt !== undefined
+      ? {
+          totalTokens: task.inputTokens + task.outputTokens,
+          toolUses: task.actions.length,
+          durationMs: Math.max(0, task.endedAt - task.startedAt),
+        }
+      : undefined;
   const notificationText = buildCompletionNotification({
     taskId: task.id,
     toolUseId: task.parentToolCallId,
     outputFile: getTaskOutputPath(task.id),
     status,
     summary,
+    ...(isAgent && failureError !== undefined ? { error: failureError } : {}),
+    ...(isAgent ? { note: AGENT_NOTIFICATION_NOTE } : {}),
     ...(agentResult !== undefined && agentResult.length > 0 ? { result: agentResult } : {}),
+    ...(agentUsage !== undefined ? { usage: agentUsage } : {}),
   });
   const notificationId = emitQueue.emitForCompletion({
     class: "deferred_output",
     ownerId: task.ownerId,
     isSubagentOwned: task.ownerId !== undefined,
     payload: { kind: "task_notification_xml", text: notificationText, summary },
-    replayKey: `bg:${task.id}:${task.runGeneration}`,
+    replayKey: taskNotificationReplayKey(task),
   });
   const queued = emitQueue.peek().find((item) => item.id === notificationId);
   task.terminalNotification = queued?.target === "inventory" ? "owner" : "main";
@@ -758,6 +774,7 @@ function reparentDetachedRun(ref: TaskRunRef): boolean {
   if (
     !taskMatchesRun(task, ref) ||
     task.lifecycleMode !== "detached" ||
+    task.status !== "running" ||
     task.reparentedGeneration === ref.generation
   ) {
     return false;
@@ -774,7 +791,6 @@ function reparentDetachedRun(ref: TaskRunRef): boolean {
       task.terminalNotification = "main";
     }
   }
-  releaseOwnerNotificationRetention(ref);
   emit();
   return true;
 }
@@ -844,11 +860,9 @@ export function subscribeCompletion(fn: CompletionListener): () => void {
 }
 
 export function removeTask(taskId: string): boolean {
-  if (store.has(taskId)) releaseChildNotificationRetentions(taskId);
   const ok = store.delete(taskId);
   completedOutputTokens.delete(taskId);
   pendingEvictions.delete(taskId);
-  ownerNotificationRetentions.delete(taskId);
   const timer = evictionTimers.get(taskId);
   if (timer !== undefined) clearTimeout(timer.timer);
   evictionTimers.delete(taskId);
@@ -861,7 +875,6 @@ export function clear(): void {
   completedOutputTokens.clear();
   evictionHolds.clear();
   pendingEvictions.clear();
-  ownerNotificationRetentions.clear();
   for (const entry of evictionTimers.values()) clearTimeout(entry.timer);
   evictionTimers.clear();
   runTokenCounter = 0;

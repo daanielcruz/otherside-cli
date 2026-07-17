@@ -265,41 +265,43 @@ export function FooterPanel({
       )}
       {!!subtitle && (
         <Box marginTop={1} paddingX={2}>
-          <Text dim>{subtitle}</Text>
+          {typeof subtitle === "string" ? <Text dim>{subtitle}</Text> : subtitle}
         </Box>
       )}
       {search !== undefined && (
         <Box marginBottom={1} paddingX={2}>
           <Box
             borderStyle="round"
-            borderColor={search.focused ? Color.highlight : Color.border}
+            {...(search.focused ? { borderColor: Color.highlight } : { borderDimColor: true })}
             paddingX={1}
             width="100%"
           >
-            <Text color={Color.muted}>{`${Glyph.search} `}</Text>
-            {search.query.length > 0 ? (
-              <>
-                <Text color={Color.text}>{search.query}</Text>
-                {search.focused && <Text inverse> </Text>}
-              </>
-            ) : (
-              <PlaceholderCursor placeholder={search.placeholder} focused={search.focused} />
-            )}
+            <Text color={search.focused ? undefined : Color.muted}>
+              <Text>{`${Glyph.search} `}</Text>
+              {search.query.length > 0 ? (
+                <>
+                  <Text color={search.focused ? Color.text : undefined}>{search.query}</Text>
+                  {search.focused && <Text inverse> </Text>}
+                </>
+              ) : (
+                <PlaceholderCursor placeholder={search.placeholder} focused={search.focused} />
+              )}
+            </Text>
           </Box>
         </Box>
       )}
-      <Box flexDirection="column" paddingX={3} marginTop={contentMarginTop(search, flushTop)}>
+      <Box flexDirection="column" paddingX={2} marginTop={contentMarginTop(search, flushTop)}>
         {children}
       </Box>
       {!!inputGuide && (
-        <Box marginTop={1} paddingX={3}>
-          <Text dim italic wrap="truncate-end">
+        <Box marginTop={1} paddingX={2}>
+          <Text color={Color.muted} italic wrap="truncate-end">
             {inputGuide}
           </Text>
         </Box>
       )}
       {footerHints.length > 0 && (
-        <Box marginTop={1} paddingX={3} flexWrap="wrap">
+        <Box marginTop={1} paddingX={2} flexWrap="wrap">
           {footerHints.map(([key, label], index) => (
             <Box key={`${key}:${label}`} marginRight={index + 1 === footerHints.length ? 0 : 1}>
               <Text color={Color.muted}>
@@ -387,32 +389,47 @@ export function FooterPanelRow({
         : Math.max(0, width - labelLen - labelSuffixWidth);
   return (
     <Box width="100%" overflow="hidden">
-      <Text color={markerColor}>{selected || active ? Glyph.chevron : "  "}</Text>
-      {typeof label === "string" ? (
+      {/* The marker never shrinks: as the row's only flexible child it would
+          absorb narrow-width overflow, wrapping its spaces into a phantom
+          second line that shifts every row below. */}
+      <Box flexShrink={0}>
+        <Text color={markerColor}>{selected || active ? Glyph.chevron : "  "}</Text>
+      </Box>
+      <Box width={width} flexShrink={0}>
+        {typeof label === "string" ? (
+          <Text color={labelColor} bold={selected}>
+            {label}
+          </Text>
+        ) : (
+          label
+        )}
+        {labelSuffix}
+        {descriptionPlacement === "after-label" && descriptionText !== undefined && (
+          <Box width={descriptionWidth} overflow="hidden">
+            <Text color={Color.subtle} wrap="truncate-end">
+              {descriptionText}
+            </Text>
+          </Box>
+        )}
         <Text color={labelColor} bold={selected}>
-          {label}
+          {" ".repeat(labelPadding)}
         </Text>
-      ) : (
-        label
-      )}
-      {labelSuffix}
-      {descriptionPlacement === "after-label" && descriptionText !== undefined && (
-        <Box width={descriptionWidth} overflow="hidden">
-          <Text color={Color.subtle} wrap="truncate-end">
-            {descriptionText}
+      </Box>
+      {value !== undefined && (
+        <Box flexShrink={0}>
+          {/* One-line ellipsis: default wrap would fold an edge-clamped value
+              onto a second row at narrow widths. */}
+          <Text color={valueColor ?? (muted ? Color.muted : Color.text)} wrap="truncate-end">
+            {value}
           </Text>
         </Box>
       )}
-      <Text color={labelColor} bold={selected}>
-        {" ".repeat(labelPadding)}
-      </Text>
-      {value !== undefined && (
-        <Text color={valueColor ?? (muted ? Color.muted : Color.text)}>{value}</Text>
-      )}
       {descriptionPlacement !== "after-label" && descriptionText !== undefined && (
-        <Text color={Color.muted} wrap="truncate-end">
-          {descriptionText}
-        </Text>
+        <Box flexGrow={1} overflow="hidden">
+          <Text color={Color.muted} wrap="truncate-end">
+            {descriptionText}
+          </Text>
+        </Box>
       )}
     </Box>
   );
@@ -494,11 +511,38 @@ function tabMarginRight(index: number, count: number, active: boolean): number {
   return active ? 2 : 3;
 }
 
+export function ListOverflowIndicator({
+  direction,
+  count,
+  suffix,
+  paddingLeft = 0,
+}: {
+  direction: "up" | "down";
+  count?: number;
+  suffix?: "above" | "below";
+  paddingLeft?: number;
+}): React.JSX.Element {
+  const arrow = direction === "up" ? Glyph.arrowUp : Glyph.arrowDown;
+  return (
+    <Box height={1} paddingLeft={paddingLeft} overflow="hidden">
+      <Text
+        color={Color.muted}
+      >{`${arrow}${count === undefined ? "" : ` ${count}`} more${suffix === undefined ? "" : ` ${suffix}`}`}</Text>
+    </Box>
+  );
+}
+
+export function PanelDivider({ width }: { width: number }): React.JSX.Element {
+  return <Text color={Color.border}>{Glyph.boxHLine.repeat(width)}</Text>;
+}
+
+export function panelDividerText(width: number): string {
+  return Glyph.boxHLine.repeat(width);
+}
+
 const WINDOW_MIN_ROWS = 3;
 const WINDOW_CHROME_ROWS = 7;
 const WINDOW_OVERFLOW_INDICATOR_ROWS = 2;
-const ROW_INDENT = "  ";
-
 export interface ListPanelItem {
   id: string;
   label: string | ReactNode;
@@ -598,16 +642,17 @@ export function ListPanel({
         <Text color={Color.muted}>No items found.</Text>
       ) : (
         <Box flexDirection="column">
-          {overflow && (
-            <Box height={1}>
-              {window.above > 0 && (
-                <Text dim>
-                  {ROW_INDENT}
-                  {Glyph.arrowUp} {window.above} more above
-                </Text>
-              )}
-            </Box>
-          )}
+          {overflow &&
+            (window.above > 0 ? (
+              <ListOverflowIndicator
+                direction="up"
+                count={window.above}
+                suffix="above"
+                paddingLeft={2}
+              />
+            ) : (
+              <Box height={1} />
+            ))}
           {visible.map((item, index) => {
             const rowProps: FooterPanelRowProps = {
               label: item.label,
@@ -624,16 +669,17 @@ export function ListPanel({
             }
             return <FooterPanelRow key={item.id} {...rowProps} />;
           })}
-          {overflow && (
-            <Box height={1}>
-              {window.below > 0 && (
-                <Text dim>
-                  {ROW_INDENT}
-                  {Glyph.arrowDown} {window.below} more below
-                </Text>
-              )}
-            </Box>
-          )}
+          {overflow &&
+            (window.below > 0 ? (
+              <ListOverflowIndicator
+                direction="down"
+                count={window.below}
+                suffix="below"
+                paddingLeft={2}
+              />
+            ) : (
+              <Box height={1} />
+            ))}
         </Box>
       )}
     </FooterPanel>

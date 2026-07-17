@@ -1,3 +1,4 @@
+import type { OrchestrationMode } from "@/kernel/config/orchestration-mode.ts";
 import type { ProviderId } from "@/kernel/config/provider-ids.ts";
 import type { HookEntry } from "@/kernel/hooks/exec.ts";
 import type { EffortLevel } from "@/kernel/std/types/effort.ts";
@@ -58,10 +59,15 @@ export interface RequestContext {
   suppressThinkingSummary?: boolean;
   permissionMode: PermissionMode;
   permissionModeIsFixed?: boolean;
-  multiproviderEnabled?: boolean;
+  /** Canonical orchestration boundary carried into tools and prompt assembly. */
+  orchestrationMode?: OrchestrationMode;
   // When false, tier dispatch fails a step instead of rerouting around a
   // quota-blocked candidate ("Quota fallback" in /config). Absent = enabled.
   quotaFallbackEnabled?: boolean;
+  // Chain of command ("Chain of command" in /config, absent = enabled): a
+  // nested agent cannot launch above its own tier — higher requests clamp to
+  // the caller's tier. When false, nested launches may request any tier.
+  chainOfCommandEnabled?: boolean;
   // Set after a stream idle timeout: a wedged pooled socket looks healthy to
   // the pool, so every retry through it stalls again. Sticky for the rest of
   // this request; fetch-based streams then bypass the pool (keepalive:false).

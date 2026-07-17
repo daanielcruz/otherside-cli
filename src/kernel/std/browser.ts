@@ -4,7 +4,8 @@ export async function openBrowser(url: string): Promise<void> {
   const platform = getPlatform();
   try {
     if (platform === "macos") {
-      Bun.spawn(["open", url], { stdout: "ignore", stderr: "ignore" });
+      // `-u` treats the arg as a URL (avoids path/option misparse on long OAuth URLs).
+      Bun.spawn(["open", "-u", url], { stdout: "ignore", stderr: "ignore" });
       return;
     }
     if (platform === "windows") {

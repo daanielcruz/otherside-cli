@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import type { PendingChange } from "@/commands/index.ts";
 import { getQueueMessages, queueActions } from "@/store/index.ts";
 import { createPostTurnDrain } from "@/ui/app/drain/post-turn.ts";
 import type { TranscriptEntry } from "@/ui/transcript/types";
@@ -7,15 +6,13 @@ import type { TranscriptEntry } from "@/ui/transcript/types";
 afterEach(() => queueActions.clear());
 
 function makeDrain() {
-  const applied: PendingChange[] = [];
   let current: readonly TranscriptEntry[] = [];
   const drain = createPostTurnDrain({
-    applyPendingChange: (c) => applied.push(c),
     setTranscript: (v) => {
       current = typeof v === "function" ? v(current) : v;
     },
   });
-  return { drain, applied, getCurrent: () => current };
+  return { drain, getCurrent: () => current };
 }
 
 describe("createPostTurnDrain", () => {
@@ -33,22 +30,6 @@ describe("createPostTurnDrain", () => {
     expect(cont.nextRestoreEntryId).toBeDefined();
     expect(getCurrent().some((e) => e.kind === "user" && e.text === "hello")).toBe(true);
     expect(getQueueMessages()).toHaveLength(0);
-  });
-
-  it("applies pending changes and returns null nextText when no messages/slash remain", () => {
-    const change = { kind: "set_effort", effort: "high" } as PendingChange;
-    queueActions.push({
-      id: "qc1",
-      text: "[QUEUED] effort",
-      expanded: "",
-      pendingChange: change,
-      changeFeedback: "effort -> high",
-    });
-    const { drain, applied, getCurrent } = makeDrain();
-    const cont = drain();
-    expect(applied).toEqual([change]);
-    expect(cont.nextText).toBeNull();
-    expect(getCurrent().some((e) => e.text === "effort -> high")).toBe(true);
   });
 
   it("prioritizes a message over a slash and re-queues the slash", () => {

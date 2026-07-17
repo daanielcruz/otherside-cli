@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from "react";
-import { Box, type Color as InkColor, Text, useStdout } from "@/ink";
 import {
   beginPair,
   ensureDevice,
@@ -14,19 +13,33 @@ import {
   setAutoEnable,
   setRemoteEnabled,
   syncPeersWithBackend,
-} from "@/remote/index.ts";
+} from "@/backend/index.ts";
+import { type OAuthProvider, oauthLogin } from "@/backend/shared/oauth.ts";
+import { Box, type Color as InkColor, Text, useStdout } from "@/ink";
 import { readRemoteInvalidationEpoch, useAppSelect } from "@/store/index.ts";
-import { FooterPanel, FooterPanelRow } from "@/ui/chrome/panel.tsx";
+import { FooterPanel, FooterPanelRow, PanelDivider } from "@/ui/chrome/panel.tsx";
 import { usePanelNavigation } from "@/ui/hooks/use-panel-navigation.ts";
+import {
+  type AuthSnapshot,
+  LOGIN_PROVIDERS,
+  LoginPick,
+  readAuth,
+  usePendingDeviceAuth,
+} from "@/ui/panels/_shared/backend-account.tsx";
 import { useOverlayDispatch } from "@/ui/panels/context";
 import { useOverlayClose } from "@/ui/panels/use-overlay-close";
-import { Color, Glyph } from "@/ui/theme/theme.ts";
+import { Color } from "@/ui/theme/theme.ts";
 
 export interface RemoteOverlayProps {
   onClose?: () => void;
 }
 
-type Sub = { kind: "list" } | { kind: "unpair"; peer: Peer } | { kind: "pair" };
+type Sub =
+  | { kind: "login" }
+  | { kind: "loginPick" }
+  | { kind: "list" }
+  | { kind: "unpair"; peer: Peer }
+  | { kind: "pair" };
 
 type PairPhase = "awaiting" | "confirmed" | "failed";
 
@@ -84,9 +97,15 @@ export function RemoteOverlay({ onClose }: RemoteOverlayProps = {}): React.JSX.E
   const invalidationEpoch = useAppSelect((s) => readRemoteInvalidationEpoch(s.engine));
   const initialSnapshot = readSnapshot();
   const [snapshot, setSnapshot] = useState<RemoteSnapshot>(initialSnapshot);
-  const [sub, setSub] = useState<Sub>(
-    initialSnapshot.peers.length === 0 ? { kind: "pair" } : { kind: "list" },
-  );
+  const [auth, setAuth] = useState<AuthSnapshot>(readAuth);
+  const [sub, setSub] = useState<Sub>(() => {
+    if (!readAuth().signedIn) return { kind: "login" };
+    return initialSnapshot.peers.length === 0 ? { kind: "pair" } : { kind: "list" };
+  });
+  const [loginBusy, setLoginBusy] = useState(false);
+  const [loginError, setLoginError] = useState<string | null>(null);
+  const [providerIdx, setProviderIdx] = useState(0);
+  const deviceAuth = usePendingDeviceAuth();
   const invalidationMounted = useRef(false);
 
   useEffect(() => {
@@ -96,7 +115,12 @@ export function RemoteOverlay({ onClose }: RemoteOverlayProps = {}): React.JSX.E
     }
     const next = readSnapshot();
     setSnapshot(next);
-    if (next.peers.length === 0) setSub({ kind: "pair" });
+    setAuth(readAuth());
+    if (!readAuth().signedIn) {
+      setSub({ kind: "login" });
+    } else if (next.peers.length === 0) {
+      setSub({ kind: "pair" });
+    }
   }, [invalidationEpoch]);
 
   const [settingIdx, setSettingIdx] = useState(0);
@@ -110,6 +134,7 @@ export function RemoteOverlay({ onClose }: RemoteOverlayProps = {}): React.JSX.E
   const settings = settingRows(snapshot);
 
   useEffect(() => {
+    if (!readAuth().signedIn) return;
     void syncPeersWithBackend().then(() => {
       const fresh = readSnapshot();
       if (fresh.peers.length === 0) {
@@ -162,6 +187,21 @@ export function RemoteOverlay({ onClose }: RemoteOverlayProps = {}): React.JSX.E
     };
   }, [sub.kind, pairEpoch]);
 
+  function runLogin(provider: OAuthProvider): void {
+    setLoginBusy(true);
+    setLoginError(null);
+    oauthLogin(provider)
+      .then(() => {
+        setAuth(readAuth());
+        const fresh = readSnapshot();
+        setSnapshot(fresh);
+        setSub(fresh.peers.length === 0 ? { kind: "pair" } : { kind: "list" });
+        void syncPeersWithBackend().then(() => setSnapshot(readSnapshot()));
+      })
+      .catch((err) => setLoginError(err instanceof Error ? err.message : String(err)))
+      .finally(() => setLoginBusy(false));
+  }
+
   function backToList(): void {
     invalidatePrevFrameRef.current?.();
     setSub({ kind: "list" });
@@ -192,7 +232,12 @@ export function RemoteOverlay({ onClose }: RemoteOverlayProps = {}): React.JSX.E
   }
 
   const handleCancel = (): void => {
-    if (sub.kind === "list" || snapshot.peers.length === 0) {
+    if (sub.kind === "loginPick") {
+      setSub({ kind: "login" });
+      setLoginError(null);
+      return;
+    }
+    if (sub.kind === "login" || sub.kind === "list" || snapshot.peers.length === 0) {
       close();
     } else {
       backToList();
@@ -203,7 +248,12 @@ export function RemoteOverlay({ onClose }: RemoteOverlayProps = {}): React.JSX.E
     onClose: close,
     skipEsc: true,
     onBack: () => {
-      if (sub.kind === "list" || snapshot.peers.length === 0) {
+      if (sub.kind === "loginPick") {
+        setSub({ kind: "login" });
+        setLoginError(null);
+        return true;
+      }
+      if (sub.kind === "login" || sub.kind === "list" || snapshot.peers.length === 0) {
         close();
         return true;
       }
@@ -217,8 +267,28 @@ export function RemoteOverlay({ onClose }: RemoteOverlayProps = {}): React.JSX.E
             selected: settingIdx,
             onChange: setSettingIdx,
           }
-        : undefined,
+        : sub.kind === "loginPick"
+          ? {
+              count: LOGIN_PROVIDERS.length,
+              selected: providerIdx,
+              onChange: setProviderIdx,
+            }
+          : undefined,
     onActivate: () => {
+      if (sub.kind === "login") {
+        if (!loginBusy) {
+          setProviderIdx(0);
+          setLoginError(null);
+          setSub({ kind: "loginPick" });
+        }
+        return;
+      }
+      if (sub.kind === "loginPick") {
+        if (loginBusy) return;
+        const provider = LOGIN_PROVIDERS[providerIdx];
+        if (provider) runLogin(provider.id);
+        return;
+      }
       if (sub.kind !== "list") return;
       if (settingIdx === 0) {
         toggleSetting("session");
@@ -250,6 +320,59 @@ export function RemoteOverlay({ onClose }: RemoteOverlayProps = {}): React.JSX.E
       return false;
     },
   });
+
+  if (sub.kind === "login") {
+    return (
+      <FooterPanel
+        command="/remote"
+        title="Remote Session"
+        accent={Color.primaryGlow}
+        footerHints={[
+          ["Enter", "select"],
+          ["Esc", "close"],
+        ]}
+        onCancel={handleCancel}
+      >
+        <Box flexDirection="column">
+          <Box flexDirection="column" marginBottom={1}>
+            <FooterPanelRow label="Account" value={auth.label} width={ROW_WIDTH} muted />
+          </Box>
+          <PanelDivider width={ROW_WIDTH + 12} />
+          <Box flexDirection="column" marginTop={1}>
+            <FooterPanelRow label="Sign in" selected width={ROW_WIDTH} />
+          </Box>
+          <Box marginTop={1}>
+            <Text color={Color.muted}>Sign in first, then pair your mobile device.</Text>
+          </Box>
+        </Box>
+      </FooterPanel>
+    );
+  }
+
+  if (sub.kind === "loginPick") {
+    return (
+      <FooterPanel
+        command="/remote"
+        title="Sign in"
+        accent={Color.primaryGlow}
+        footerHints={[
+          ["↑↓", "navigate"],
+          ["Enter", "choose"],
+          ["Esc/←", "back"],
+        ]}
+        onCancel={handleCancel}
+      >
+        <LoginPick
+          description="Sign in to the otherside backend to link your mobile device."
+          selected={providerIdx}
+          busy={loginBusy}
+          error={loginError}
+          deviceAuth={deviceAuth}
+          rowWidth={ROW_WIDTH}
+        />
+      </FooterPanel>
+    );
+  }
 
   if (sub.kind === "pair") {
     const pairHints: [string, string][] = [
@@ -309,6 +432,7 @@ export function RemoteOverlay({ onClose }: RemoteOverlayProps = {}): React.JSX.E
     >
       <Box flexDirection="column">
         <Box flexDirection="column" marginBottom={1}>
+          <FooterPanelRow label="Account" value={auth.label} width={ROW_WIDTH} muted />
           <FooterPanelRow label="CLI device" value={snapshot.deviceName} width={ROW_WIDTH} muted />
           {snapshot.peers.map((peer) => (
             <FooterPanelRow
@@ -328,7 +452,7 @@ export function RemoteOverlay({ onClose }: RemoteOverlayProps = {}): React.JSX.E
           />
         </Box>
 
-        <Text color={Color.border}>{Glyph.boxHLine.repeat(ROW_WIDTH + 12)}</Text>
+        <PanelDivider width={ROW_WIDTH + 12} />
 
         <Box flexDirection="column" marginTop={1}>
           {settings.map((row, idx) => (

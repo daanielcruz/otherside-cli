@@ -31,6 +31,8 @@ export function mcpServerSpecName(spec: McpServerSpec): string {
 
 const registry = new Map<string, SubagentDef>();
 
+export type AgentRegistrySnapshot = readonly SubagentDef[];
+
 export function register(def: SubagentDef): void {
   registry.set(def.id, def);
 }
@@ -54,6 +56,15 @@ export function list(): SubagentDef[] {
   return [...registry.values()]
     .filter((def) => def.id !== "fork")
     .sort((a, b) => a.id.localeCompare(b.id));
+}
+
+export function snapshot(): AgentRegistrySnapshot {
+  return [...registry.values()];
+}
+
+export function replaceSnapshot(next: AgentRegistrySnapshot): void {
+  registry.clear();
+  for (const def of next) registry.set(def.id, def);
 }
 
 export function clear(): void {

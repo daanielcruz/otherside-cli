@@ -7,7 +7,7 @@ import {
   allTimeUsageByProviderAsync,
 } from "@/engine/session/usage/store.ts";
 
-describe("allTimeUsageByProvider async/sync parity", () => {
+describe("allTimeUsageByProvider async and sync agree", () => {
   const base = join(
     tmpdir(),
     `otherside-usage-store-${Date.now()}-${Math.random().toString(36).slice(2)}`,

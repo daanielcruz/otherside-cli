@@ -90,7 +90,7 @@ memory body line
     "stream": true,
     "system": [
       {
-        "text": "x-anthropic-billing-header: cc_version=2.1.209.533; cc_entrypoint=cli; cch=da8db;",
+        "text": "x-anthropic-billing-header: cc_version=2.1.211.801; cc_entrypoint=cli; cch=18ace;",
         "type": "text",
       },
       {
@@ -156,12 +156,12 @@ FIXED-STATIC-B"
       },
     ],
   },
-  "bodyHash": "1482e3a62ba24ba0320811479d30fde957658df289641c902bca68c201f2f11a",
+  "bodyHash": "0ffc610e7ad7234ee6ee964d02cca3a3342422ab2d3bbe095ea8889194213f7a",
   "headers": {
     "Accept": "application/json",
     "Authorization": "<authorization>",
     "Content-Type": "application/json",
-    "User-Agent": "claude-cli/2.1.209 (external, cli)",
+    "User-Agent": "claude-cli/2.1.211 (external, cli)",
     "X-Claude-Code-Session-Id": "sess-fixture-00000000-0000-0000-0000-000000000000",
     "X-Stainless-Arch": "<x-stainless-arch>",
     "X-Stainless-Lang": "js",
@@ -171,7 +171,7 @@ FIXED-STATIC-B"
     "X-Stainless-Runtime": "node",
     "X-Stainless-Runtime-Version": "v26.3.0",
     "X-Stainless-Timeout": "600",
-    "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,advanced-tool-use-2025-11-20,effort-2025-11-24,extended-cache-ttl-2025-04-11",
+    "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,effort-2025-11-24,extended-cache-ttl-2025-04-11",
     "anthropic-dangerous-direct-browser-access": "true",
     "anthropic-version": "2023-06-01",
     "x-app": "cli",
@@ -271,7 +271,7 @@ memory body line
     "stream": true,
     "system": [
       {
-        "text": "x-anthropic-billing-header: cc_version=2.1.209.533; cc_entrypoint=cli; cch=31be2;",
+        "text": "x-anthropic-billing-header: cc_version=2.1.211.801; cc_entrypoint=cli; cch=a480c;",
         "type": "text",
       },
       {
@@ -337,12 +337,12 @@ FIXED-STATIC-B"
       },
     ],
   },
-  "bodyHash": "2090de3d5d8b71442edf1c7e3200356dc5795188f1f9a8cea509780d78dc5dc9",
+  "bodyHash": "63efd4b8c89eaff53309338b07b286b9ec0ddc1b3e223a2f2316648581286b75",
   "headers": {
     "Accept": "application/json",
     "Authorization": "<authorization>",
     "Content-Type": "application/json",
-    "User-Agent": "claude-cli/2.1.209 (external, cli)",
+    "User-Agent": "claude-cli/2.1.211 (external, cli)",
     "X-Claude-Code-Session-Id": "sess-fixture-00000000-0000-0000-0000-000000000000",
     "X-Stainless-Arch": "<x-stainless-arch>",
     "X-Stainless-Lang": "js",
@@ -352,7 +352,7 @@ FIXED-STATIC-B"
     "X-Stainless-Runtime": "node",
     "X-Stainless-Runtime-Version": "v26.3.0",
     "X-Stainless-Timeout": "600",
-    "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,advanced-tool-use-2025-11-20,effort-2025-11-24,extended-cache-ttl-2025-04-11",
+    "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,effort-2025-11-24,extended-cache-ttl-2025-04-11",
     "anthropic-dangerous-direct-browser-access": "true",
     "anthropic-version": "2023-06-01",
     "x-app": "cli",
@@ -452,7 +452,7 @@ memory body line
     "stream": true,
     "system": [
       {
-        "text": "x-anthropic-billing-header: cc_version=2.1.209.533; cc_entrypoint=cli; cch=da8db;",
+        "text": "x-anthropic-billing-header: cc_version=2.1.211.801; cc_entrypoint=cli; cch=18ace;",
         "type": "text",
       },
       {
@@ -518,12 +518,12 @@ FIXED-STATIC-B"
       },
     ],
   },
-  "bodyHash": "1482e3a62ba24ba0320811479d30fde957658df289641c902bca68c201f2f11a",
+  "bodyHash": "0ffc610e7ad7234ee6ee964d02cca3a3342422ab2d3bbe095ea8889194213f7a",
   "headers": {
     "Accept": "application/json",
     "Authorization": "<authorization>",
     "Content-Type": "application/json",
-    "User-Agent": "claude-cli/2.1.209 (external, cli)",
+    "User-Agent": "claude-cli/2.1.211 (external, cli)",
     "X-Claude-Code-Session-Id": "sess-fixture-00000000-0000-0000-0000-000000000000",
     "X-Stainless-Arch": "<x-stainless-arch>",
     "X-Stainless-Lang": "js",
@@ -533,7 +533,7 @@ FIXED-STATIC-B"
     "X-Stainless-Runtime": "node",
     "X-Stainless-Runtime-Version": "v26.3.0",
     "X-Stainless-Timeout": "600",
-    "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,context-1m-2025-08-07,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,advanced-tool-use-2025-11-20,effort-2025-11-24,extended-cache-ttl-2025-04-11",
+    "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,context-1m-2025-08-07,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,effort-2025-11-24,extended-cache-ttl-2025-04-11",
     "anthropic-dangerous-direct-browser-access": "true",
     "anthropic-version": "2023-06-01",
     "x-app": "cli",
@@ -629,7 +629,7 @@ memory body line
     "stream": true,
     "system": [
       {
-        "text": "x-anthropic-billing-header: cc_version=2.1.209.533; cc_entrypoint=cli; cch=8b9b7;",
+        "text": "x-anthropic-billing-header: cc_version=2.1.211.801; cc_entrypoint=cli; cch=23897;",
         "type": "text",
       },
       {
@@ -695,12 +695,12 @@ FIXED-STATIC-B"
       },
     ],
   },
-  "bodyHash": "3b882b3a193f13fbe704383b76629e5fb18a97bbff79673d6e8b287e4bdb62cd",
+  "bodyHash": "ad03648c93b42f4e01a4b2ab6de5cecb3a980a57bb6084f39bc27eb8df9fa7cb",
   "headers": {
     "Accept": "application/json",
     "Authorization": "<authorization>",
     "Content-Type": "application/json",
-    "User-Agent": "claude-cli/2.1.209 (external, cli)",
+    "User-Agent": "claude-cli/2.1.211 (external, cli)",
     "X-Claude-Code-Session-Id": "sess-fixture-00000000-0000-0000-0000-000000000000",
     "X-Stainless-Arch": "<x-stainless-arch>",
     "X-Stainless-Lang": "js",
@@ -710,7 +710,7 @@ FIXED-STATIC-B"
     "X-Stainless-Runtime": "node",
     "X-Stainless-Runtime-Version": "v26.3.0",
     "X-Stainless-Timeout": "600",
-    "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,advanced-tool-use-2025-11-20,effort-2025-11-24,extended-cache-ttl-2025-04-11",
+    "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,effort-2025-11-24,extended-cache-ttl-2025-04-11",
     "anthropic-dangerous-direct-browser-access": "true",
     "anthropic-version": "2023-06-01",
     "x-app": "cli",
@@ -803,7 +803,7 @@ memory body line
     "stream": true,
     "system": [
       {
-        "text": "x-anthropic-billing-header: cc_version=2.1.209.533; cc_entrypoint=cli; cch=fe7d9;",
+        "text": "x-anthropic-billing-header: cc_version=2.1.211.801; cc_entrypoint=cli; cch=df6b5;",
         "type": "text",
       },
       {
@@ -870,12 +870,12 @@ FIXED-STATIC-B"
       },
     ],
   },
-  "bodyHash": "2a317ce8251a256b055ca7493710ab689537b2187597f1d2a679536206091396",
+  "bodyHash": "43cfb55274d37221a2fb0c0a29b0884ae40e0394c1518362a86f39bc38bd5e9b",
   "headers": {
     "Accept": "application/json",
     "Authorization": "<authorization>",
     "Content-Type": "application/json",
-    "User-Agent": "claude-cli/2.1.209 (external, cli)",
+    "User-Agent": "claude-cli/2.1.211 (external, cli)",
     "X-Claude-Code-Session-Id": "sess-fixture-00000000-0000-0000-0000-000000000000",
     "X-Stainless-Arch": "<x-stainless-arch>",
     "X-Stainless-Lang": "js",
@@ -885,7 +885,7 @@ FIXED-STATIC-B"
     "X-Stainless-Runtime": "node",
     "X-Stainless-Runtime-Version": "v26.3.0",
     "X-Stainless-Timeout": "600",
-    "anthropic-beta": "oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,claude-code-20250219,advanced-tool-use-2025-11-20,extended-cache-ttl-2025-04-11",
+    "anthropic-beta": "oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,claude-code-20250219,extended-cache-ttl-2025-04-11",
     "anthropic-dangerous-direct-browser-access": "true",
     "anthropic-version": "2023-06-01",
     "x-app": "cli",
@@ -978,7 +978,7 @@ memory body line
     "stream": true,
     "system": [
       {
-        "text": "x-anthropic-billing-header: cc_version=2.1.209.533; cc_entrypoint=cli; cch=fe7d9;",
+        "text": "x-anthropic-billing-header: cc_version=2.1.211.801; cc_entrypoint=cli; cch=df6b5;",
         "type": "text",
       },
       {
@@ -1045,12 +1045,12 @@ FIXED-STATIC-B"
       },
     ],
   },
-  "bodyHash": "2a317ce8251a256b055ca7493710ab689537b2187597f1d2a679536206091396",
+  "bodyHash": "43cfb55274d37221a2fb0c0a29b0884ae40e0394c1518362a86f39bc38bd5e9b",
   "headers": {
     "Accept": "application/json",
     "Authorization": "<authorization>",
     "Content-Type": "application/json",
-    "User-Agent": "claude-cli/2.1.209 (external, cli)",
+    "User-Agent": "claude-cli/2.1.211 (external, cli)",
     "X-Claude-Code-Session-Id": "sess-fixture-00000000-0000-0000-0000-000000000000",
     "X-Stainless-Arch": "<x-stainless-arch>",
     "X-Stainless-Lang": "js",
@@ -1060,7 +1060,7 @@ FIXED-STATIC-B"
     "X-Stainless-Runtime": "node",
     "X-Stainless-Runtime-Version": "v26.3.0",
     "X-Stainless-Timeout": "600",
-    "anthropic-beta": "oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,claude-code-20250219,advanced-tool-use-2025-11-20,extended-cache-ttl-2025-04-11",
+    "anthropic-beta": "oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,claude-code-20250219,extended-cache-ttl-2025-04-11",
     "anthropic-dangerous-direct-browser-access": "true",
     "anthropic-version": "2023-06-01",
     "x-app": "cli",
@@ -1142,7 +1142,7 @@ memory body line
     "stream": true,
     "system": [
       {
-        "text": "x-anthropic-billing-header: cc_version=2.1.209.533; cc_entrypoint=cli; cch=12672;",
+        "text": "x-anthropic-billing-header: cc_version=2.1.211.801; cc_entrypoint=cli; cch=0f198;",
         "type": "text",
       },
       {
@@ -1195,12 +1195,12 @@ FIXED-STATIC-B"
       },
     ],
   },
-  "bodyHash": "37ae730ac16f3829a6d3e8b6abf2f4e3fb28db2e62b812865ced943e5a59f363",
+  "bodyHash": "c83eaa43fba46d8df7d1f67bb1a472958b79518c19eea638b04637611b1c9d06",
   "headers": {
     "Accept": "application/json",
     "Authorization": "<authorization>",
     "Content-Type": "application/json",
-    "User-Agent": "claude-cli/2.1.209 (external, cli)",
+    "User-Agent": "claude-cli/2.1.211 (external, cli)",
     "X-Claude-Code-Session-Id": "sess-fixture-00000000-0000-0000-0000-000000000000",
     "X-Stainless-Arch": "<x-stainless-arch>",
     "X-Stainless-Lang": "js",
@@ -1310,7 +1310,7 @@ memory body line
     "stream": true,
     "system": [
       {
-        "text": "x-anthropic-billing-header: cc_version=2.1.209.533; cc_entrypoint=cli; cch=31be2;",
+        "text": "x-anthropic-billing-header: cc_version=2.1.211.801; cc_entrypoint=cli; cch=a480c;",
         "type": "text",
       },
       {
@@ -1376,12 +1376,12 @@ FIXED-STATIC-B"
       },
     ],
   },
-  "bodyHash": "ac725d2cd33bdc55054dc285d6d66363cb89d573db1b07bef3c62572b6907810",
+  "bodyHash": "64995ecd0dbf92834001cc08047b9a866b09e06fa84b0b61a62ef4830d249f0c",
   "headers": {
     "Accept": "application/json",
     "Authorization": "<authorization>",
     "Content-Type": "application/json",
-    "User-Agent": "claude-cli/2.1.209 (external, cli)",
+    "User-Agent": "claude-cli/2.1.211 (external, cli)",
     "X-Claude-Code-Session-Id": "sess-fixture-00000000-0000-0000-0000-000000000000",
     "X-Stainless-Arch": "<x-stainless-arch>",
     "X-Stainless-Lang": "js",
@@ -1391,7 +1391,7 @@ FIXED-STATIC-B"
     "X-Stainless-Runtime": "node",
     "X-Stainless-Runtime-Version": "v26.3.0",
     "X-Stainless-Timeout": "600",
-    "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,advanced-tool-use-2025-11-20,effort-2025-11-24,extended-cache-ttl-2025-04-11",
+    "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,effort-2025-11-24,extended-cache-ttl-2025-04-11",
     "anthropic-dangerous-direct-browser-access": "true",
     "anthropic-version": "2023-06-01",
     "x-app": "cli",
@@ -1481,7 +1481,7 @@ memory body line
     "stream": true,
     "system": [
       {
-        "text": "x-anthropic-billing-header: cc_version=2.1.209.533; cc_entrypoint=cli; cch=26dde;",
+        "text": "x-anthropic-billing-header: cc_version=2.1.211.801; cc_entrypoint=cli; cch=35387;",
         "type": "text",
       },
       {
@@ -1543,12 +1543,12 @@ FIXED-STATIC-B"
       },
     ],
   },
-  "bodyHash": "3cd556b1a5f5a7a997b8240cec4712e589ef7c06fa8b53d3c44c1dcd7b74e396",
+  "bodyHash": "ea0a78f7546529b04dd7209fa7baa3d3956e7a0c8e040841d5e57cf442ed4ecb",
   "headers": {
     "Accept": "application/json",
     "Authorization": "<authorization>",
     "Content-Type": "application/json",
-    "User-Agent": "claude-cli/2.1.209 (external, cli)",
+    "User-Agent": "claude-cli/2.1.211 (external, cli)",
     "X-Claude-Code-Session-Id": "sess-fixture-00000000-0000-0000-0000-000000000000",
     "X-Stainless-Arch": "<x-stainless-arch>",
     "X-Stainless-Lang": "js",
@@ -1558,7 +1558,7 @@ FIXED-STATIC-B"
     "X-Stainless-Runtime": "node",
     "X-Stainless-Runtime-Version": "v26.3.0",
     "X-Stainless-Timeout": "600",
-    "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,advanced-tool-use-2025-11-20,effort-2025-11-24,extended-cache-ttl-2025-04-11",
+    "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,effort-2025-11-24,extended-cache-ttl-2025-04-11",
     "anthropic-dangerous-direct-browser-access": "true",
     "anthropic-version": "2023-06-01",
     "x-app": "cli",
@@ -1670,7 +1670,7 @@ exports[`anthropic-compat wire-request golden kimi / kimi-for-coding 1`] = `
   "headers": {
     "Accept": "application/json",
     "Content-Type": "application/json",
-    "User-Agent": "claude-cli/2.1.209 (external, sdk-cli)",
+    "User-Agent": "claude-cli/2.1.211 (external, sdk-cli)",
     "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20,effort-2025-11-24",
     "anthropic-dangerous-direct-browser-access": "true",
     "anthropic-version": "2023-06-01",
@@ -1914,7 +1914,7 @@ exports[`anthropic-compat wire-request golden minimax / minimax-m2.7 1`] = `
     "Accept": "application/json",
     "Authorization": "<authorization>",
     "Content-Type": "application/json",
-    "User-Agent": "claude-cli/2.1.209 (external, cli)",
+    "User-Agent": "claude-cli/2.1.211 (external, cli)",
     "anthropic-version": "2023-06-01",
     "x-client-request-id": "<x-client-request-id>",
   },
@@ -2028,7 +2028,7 @@ exports[`anthropic-compat wire-request golden deepseek / deepseek-v4-pro 1`] = `
     "Accept": "application/json",
     "Authorization": "<authorization>",
     "Content-Type": "application/json",
-    "User-Agent": "claude-cli/2.1.209 (external, cli)",
+    "User-Agent": "claude-cli/2.1.211 (external, cli)",
     "anthropic-version": "2023-06-01",
     "x-client-request-id": "<x-client-request-id>",
   },
@@ -2139,7 +2139,7 @@ exports[`anthropic-compat wire-request golden deepseek / deepseek-v4-pro / disab
     "Accept": "application/json",
     "Authorization": "<authorization>",
     "Content-Type": "application/json",
-    "User-Agent": "claude-cli/2.1.209 (external, cli)",
+    "User-Agent": "claude-cli/2.1.211 (external, cli)",
     "anthropic-version": "2023-06-01",
     "x-client-request-id": "<x-client-request-id>",
   },
@@ -2523,5 +2523,272 @@ exports[`Antigravity wire-request golden suppresses thinking summaries for a for
     "User-Agent": "antigravity/cli/1.1.0 (aidev_client; os_type=<os>; arch=<arch>; auth_method=consumer)",
   },
   "url": "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse",
+}
+`;
+
+exports[`Antigravity wire-request golden captures the Gemini-family wire envelope 1`] = `
+{
+  "body": {
+    "enabledCreditTypes": [
+      "GOOGLE_ONE_AI",
+    ],
+    "model": "gemini-3.5-flash-low",
+    "project": "project-fixture",
+    "request": {
+      "contents": [
+        {
+          "parts": [
+            {
+              "text": "explain the build",
+            },
+          ],
+          "role": "user",
+        },
+        {
+          "parts": [
+            {
+              "functionCall": {
+                "args": {
+                  "command": "make build-install",
+                },
+                "id": "toolu_fixture",
+                "name": "Bash",
+              },
+              "thoughtSignature": "skip_thought_signature_validator",
+            },
+          ],
+          "role": "model",
+        },
+        {
+          "parts": [
+            {
+              "functionResponse": {
+                "id": "toolu_fixture",
+                "name": "Bash",
+                "response": {
+                  "output": "ok",
+                },
+              },
+            },
+          ],
+          "role": "user",
+        },
+        {
+          "parts": [
+            {
+              "text": "now ship it",
+            },
+          ],
+          "role": "user",
+        },
+      ],
+      "generationConfig": {
+        "maxOutputTokens": 65536,
+        "thinkingConfig": {
+          "includeThoughts": true,
+          "thinkingBudget": 4000,
+        },
+      },
+      "labels": {
+        "last_execution_id": "98a82813-fdd3-54b6-bb16-13521d3f9680",
+        "last_step_index": "2",
+        "model_enum": "MODEL_PLACEHOLDER_M20",
+        "trajectory_id": "3dc3323c-b36b-54b9-b7c6-9879603a57a6",
+        "used_claude": "false",
+        "used_claude_conservative": "false",
+        "used_non_gemini_model": "false",
+      },
+      "sessionId": "6361632629695228385",
+      "systemInstruction": {
+        "parts": [
+          {
+            "text": "FIXED-SYSTEM-PROMPT",
+          },
+        ],
+        "role": "user",
+      },
+      "toolConfig": {
+        "functionCallingConfig": {
+          "mode": "VALIDATED",
+        },
+      },
+      "tools": [
+        {
+          "functionDeclarations": [
+            {
+              "description": "Run a shell command.",
+              "name": "Bash",
+              "parameters": {
+                "properties": {
+                  "command": {
+                    "type": "string",
+                  },
+                },
+                "required": [
+                  "command",
+                ],
+                "type": "object",
+              },
+            },
+          ],
+        },
+        {
+          "functionDeclarations": [
+            {
+              "description": "Read a file.",
+              "name": "Read",
+              "parameters": {
+                "properties": {
+                  "file_path": {
+                    "type": "string",
+                  },
+                },
+                "required": [
+                  "file_path",
+                ],
+                "type": "object",
+              },
+            },
+          ],
+        },
+      ],
+    },
+    "requestId": "agent/conversation-fixture/1700000000000/trajectory-fixture/1",
+    "requestType": "agent",
+    "userAgent": "antigravity",
+  },
+  "bodyHash": "020692146063f861de43bebbca2b8f02c97984c9978c6e78e58941e268d6f744",
+  "headers": {
+    "Accept-Encoding": "gzip",
+    "Authorization": "<authorization>",
+    "Content-Type": "application/json",
+    "Transfer-Encoding": "chunked",
+    "User-Agent": "antigravity/cli/1.1.0 (aidev_client; os_type=<os>; arch=<arch>; auth_method=consumer)",
+  },
+  "url": "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse",
+}
+`;
+
+exports[`anthropic-compat wire-request golden kimi / k3 / max 1`] = `
+{
+  "body": {
+    "max_tokens": 32000,
+    "messages": [
+      {
+        "content": [
+          {
+            "text": "explain the build",
+            "type": "text",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "content": [
+          {
+            "id": "toolu_fixture",
+            "input": {
+              "command": "make build-install",
+            },
+            "name": "Bash",
+            "type": "tool_use",
+          },
+        ],
+        "role": "assistant",
+      },
+      {
+        "content": [
+          {
+            "content": "ok",
+            "tool_use_id": "toolu_fixture",
+            "type": "tool_result",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "content": [
+          {
+            "text": "now ship it",
+            "type": "text",
+          },
+        ],
+        "role": "user",
+      },
+    ],
+    "metadata": {
+      "user_id": "{"device_id":"","account_uuid":"","session_id":"sess-fixture-00000000-0000-0000-0000-000000000000"}",
+    },
+    "model": "k3",
+    "stream": true,
+    "system": [
+      {
+        "text": "FIXED-SYSTEM-PROMPT",
+        "type": "text",
+      },
+    ],
+    "thinking": {
+      "effort": "max",
+      "type": "enabled",
+    },
+    "tools": [
+      {
+        "description": "Run a shell command.",
+        "input_schema": {
+          "properties": {
+            "command": {
+              "type": "string",
+            },
+          },
+          "required": [
+            "command",
+          ],
+          "type": "object",
+        },
+        "name": "Bash",
+      },
+      {
+        "cache_control": {
+          "ttl": "5m",
+          "type": "ephemeral",
+        },
+        "description": "Read a file.",
+        "input_schema": {
+          "properties": {
+            "file_path": {
+              "type": "string",
+            },
+          },
+          "required": [
+            "file_path",
+          ],
+          "type": "object",
+        },
+        "name": "Read",
+      },
+    ],
+  },
+  "bodyHash": "7c591ad922a16ea3be7f0b8b0fb789103e9427cb768afd7112fe58a17ecc524d",
+  "headers": {
+    "Accept": "application/json",
+    "Content-Type": "application/json",
+    "User-Agent": "claude-cli/2.1.211 (external, sdk-cli)",
+    "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20,effort-2025-11-24",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "anthropic-version": "2023-06-01",
+    "x-api-key": "<x-api-key>",
+    "x-app": "cli",
+    "x-claude-code-session-id": "sess-fixture-00000000-0000-0000-0000-000000000000",
+    "x-client-request-id": "<x-client-request-id>",
+    "x-stainless-arch": "<x-stainless-arch>",
+    "x-stainless-lang": "js",
+    "x-stainless-os": "<x-stainless-os>",
+    "x-stainless-package-version": "0.94.0",
+    "x-stainless-retry-count": "0",
+    "x-stainless-runtime": "node",
+    "x-stainless-runtime-version": "v26.3.0",
+    "x-stainless-timeout": "600",
+  },
+  "url": "https://api.kimi.com/coding/v1/messages",
 }
 `;

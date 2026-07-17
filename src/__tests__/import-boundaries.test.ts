@@ -5,7 +5,7 @@ import { dirname, join, normalize, relative, resolve } from "node:path";
 const srcRoot = join(import.meta.dir, "..");
 const importPattern =
   /\bimport\s+(?:type\s+)?(?:[^'"]*?\s+from\s*)?["']([^"']+)["']|\bimport\s*\(\s*["']([^"']+)["']\s*\)/g;
-const remoteEngineAllowlist = new Set<string>();
+const backendEngineAllowlist = new Set<string>();
 const kernelFloorAllowlist: Array<{ file: string; specifier: string; reason: string }> = [];
 
 const infraImportAllowlist = new Map<string, string>([
@@ -16,18 +16,6 @@ const infraImportAllowlist = new Map<string, string>([
   [
     "design/capabilities/llm-stream.ts imports @/engine/transport/_infra/classify/retry.ts",
     "existing design bridge import pending engine transport public surface",
-  ],
-  [
-    "design/relay/outbound.ts imports @/remote/_infra/cortex.ts",
-    "existing design relay import pending remote public surface",
-  ],
-  [
-    "design/relay/relay.ts imports @/remote/_infra/realtime.ts",
-    "existing design relay import pending remote public surface",
-  ],
-  [
-    "design/relay/wire.ts imports @/remote/_infra/cortex.ts",
-    "existing design relay import pending remote public surface",
   ],
   [
     "main.ts imports @/engine/transport/_infra/classify/classifiers/index.ts",
@@ -105,17 +93,17 @@ describe("import boundaries", () => {
     const offenders = importOffenders(
       "engine",
       (specifier) =>
-        specifier.startsWith("@/remote") ||
+        specifier.startsWith("@/backend") ||
         specifier.startsWith("@/store") ||
         specifier.startsWith("@/ui"),
     );
     expect(offenders).toEqual([]);
   });
 
-  it("keeps remote off engine internals", () => {
-    const offenders = importOffenders("remote", (specifier) => {
+  it("keeps backend off engine internals", () => {
+    const offenders = importOffenders("backend", (specifier) => {
       if (!specifier.startsWith("@/engine")) return false;
-      return !remoteEngineAllowlist.has(specifier);
+      return !backendEngineAllowlist.has(specifier);
     });
     expect(offenders).toEqual([]);
   });
@@ -130,7 +118,7 @@ describe("import boundaries", () => {
         specifier.startsWith("@/engine") ||
         specifier.startsWith("@/store") ||
         specifier.startsWith("@/ui") ||
-        specifier.startsWith("@/remote") ||
+        specifier.startsWith("@/backend") ||
         specifier.startsWith("@/harness"),
     ).filter((entry) => !allowlist.has(entry.replace(/:\d+ /, " ")));
     expect(offenders).toEqual([]);
@@ -141,23 +129,36 @@ describe("import boundaries", () => {
     expect(offenders).toEqual([]);
   });
 
-  it("keeps harness off engine, ui, and remote internals", () => {
+  it("keeps harness off engine, ui, and backend internals", () => {
     const offenders = importOffenders(
       "harness",
       (specifier) =>
         specifier.startsWith("@/engine") ||
         specifier.startsWith("@/ui") ||
-        specifier.startsWith("@/remote"),
+        specifier.startsWith("@/backend"),
     );
     expect(offenders).toEqual([]);
   });
 
-  it("keeps engine off ui and remote internals", () => {
+  it("keeps engine off ui and backend internals", () => {
     const offenders = importOffenders(
       "engine",
-      (specifier) => specifier.startsWith("@/ui") || specifier.startsWith("@/remote"),
+      (specifier) => specifier.startsWith("@/ui") || specifier.startsWith("@/backend"),
     );
     expect(offenders).toEqual([]);
+  });
+
+  it("keeps backend surface subtrees independent", () => {
+    const appOffenders = importOffenders("backend/app", (specifier) =>
+      specifier.startsWith("@/backend/design"),
+    );
+    const designOffenders = importOffenders("backend/design", (specifier) =>
+      specifier.startsWith("@/backend/app"),
+    );
+    const bridgeOffenders = importOffenders("design", (specifier) =>
+      specifier.startsWith("@/backend/app"),
+    );
+    expect([...appOffenders, ...designOffenders, ...bridgeOffenders]).toEqual([]);
   });
 
   it("keeps module _infra directories private", () => {
@@ -185,5 +186,21 @@ describe("import boundaries", () => {
       .map(repoPath)
       .filter((path) => path !== "store/index.ts");
     expect(looseFiles).toEqual([]);
+  });
+
+  it("routes render-layer imports through the @/ink barrel", () => {
+    const allowlist = new Set(["global.d.ts"]);
+    const offenders = allSourceFiles()
+      .filter((file) => !repoPath(file).startsWith("terminal-runtime/"))
+      .flatMap((file) =>
+        importsIn(file)
+          .filter(({ specifier }) => specifier.startsWith("@/terminal-runtime/"))
+          .filter(() => !allowlist.has(repoPath(file)))
+          .map(
+            ({ line, specifier }) =>
+              `${repoPath(file)}:${line} imports ${specifier} — import the render layer through @/ink (terminal-runtime/index.ts barrel)`,
+          ),
+      );
+    expect(offenders).toEqual([]);
   });
 });

@@ -68,6 +68,70 @@ export function taskNoticeTextFromNotification(content: string): string {
   return summary && summary.length > 0 ? summary : "Background task completed";
 }
 
+export function taskNoticeReplayTextFromNotification(content: string): string {
+  const summary = taskNoticeTextFromNotification(content);
+  // Summary shapes: `Agent "X" finished`, `… failed: <error>`,
+  // `… was stopped[ by user| by parent agent]`, `Background command "X" completed
+  // (exit code N)` / `failed with exit code N` / `was stopped`, and the
+  // workflow variants of the same. The verb anchors the description; error
+  // text, attribution, exit code, and ` · duration` ride after it.
+  const match = summary.match(
+    /^(Agent|Background command|Dynamic workflow) "([\s\S]*)" (?:finished|completed|failed|was stopped)/,
+  );
+  const exitMatch = summary.match(/(?:\(exit code (-?\d+)\)|failed with exit code (-?\d+))/);
+  const durationSuffix = summary.match(/ · ((?:\d+\s*(?:ms|h|m|s)\s*)+)$/)?.[1];
+  const statusText = content.match(/<status>([^<]+)<\/status>/)?.[1];
+  const status =
+    statusText === "failed" || statusText === "error"
+      ? "failed"
+      : statusText === "killed"
+        ? "killed"
+        : "completed";
+  const durationTag = Number(content.match(/<duration_ms>(\d+)<\/duration_ms>/)?.[1]);
+  const durationMs = Number.isFinite(durationTag)
+    ? durationTag
+    : parseNoticeDuration(durationSuffix);
+  const taskId = content.match(/<task-id>([^<]+)<\/task-id>/)?.[1]?.trim();
+  const taskKind =
+    match?.[1] === "Background command"
+      ? "shell"
+      : match?.[1] === "Dynamic workflow"
+        ? "workflow"
+        : "agent";
+  const exitCodeText = exitMatch?.[1] ?? exitMatch?.[2];
+  const exitCode = exitCodeText === undefined ? undefined : Number(exitCodeText);
+  const structuredError = decodeTaskNoticeXml(
+    content.match(/<error>([\s\S]*?)<\/error>/)?.[1]?.trim(),
+  );
+  const legacyError =
+    status === "failed" && taskKind !== "shell"
+      ? decodeTaskNoticeXml(summary.match(/ failed: ([\s\S]+?)(?: · [\d\shms]+)?$/)?.[1]?.trim())
+      : undefined;
+  const error = structuredError || legacyError;
+  return JSON.stringify({
+    taskKind,
+    status,
+    description: match?.[2] ?? summary,
+    durationMs,
+    ...(taskId ? { taskId } : {}),
+    ...(exitCode !== undefined ? { exitCode } : {}),
+    ...(error !== undefined ? { error } : {}),
+  });
+}
+
+function parseNoticeDuration(value: string | undefined): number {
+  if (value === undefined) return 0;
+  let total = 0;
+  for (const match of value.matchAll(/(\d+)\s*(ms|h|m|s)/g)) {
+    const amount = Number(match[1]);
+    if (match[2] === "h") total += amount * 3_600_000;
+    else if (match[2] === "m") total += amount * 60_000;
+    else if (match[2] === "s") total += amount * 1_000;
+    else total += amount;
+  }
+  return total;
+}
+
 const CONTROL_PLANE_BLOCKS = [
   /<system-reminder>[\s\S]*?<\/system-reminder>/gi,
   /<task-notification>[\s\S]*?<\/task-notification>/gi,

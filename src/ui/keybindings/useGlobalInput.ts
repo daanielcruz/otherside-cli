@@ -6,10 +6,9 @@ import {
 } from "@/engine/background/subagents/fork/steering.ts";
 import {
   type BackgroundTask,
-  cancelTaskTree,
   completeTask,
   removeTask as removeBackgroundTask,
-  taskRunRef,
+  stopTaskForUser,
 } from "@/engine/background/tasks/background.ts";
 import * as bgControllers from "@/engine/background/tasks/background-controllers.ts";
 import {
@@ -22,7 +21,7 @@ import { killBackground } from "@/engine/tools/builtins/bash.ts";
 import { useInput, useTerminalDimensions } from "@/ink";
 import type { Broker } from "@/store/app-store/broker.ts";
 import { dispatch, overlayStack } from "@/store/index.ts";
-import { setPromptMenuOpen, setPromptText } from "@/store/prompt/index.ts";
+import { isPromptSearchOpen, setPromptMenuOpen, setPromptText } from "@/store/prompt/index.ts";
 import {
   type BackgroundFocusAction,
   nextBackgroundFocusDown,
@@ -30,6 +29,7 @@ import {
 } from "@/ui/app/background-focus.ts";
 import { bgPillLabelFor } from "@/ui/app/status-text.ts";
 import { panelSelectionFor } from "@/ui/chrome/running-agents-panel.tsx";
+import { voiceCaptureActiveRef } from "@/ui/input/use-voice-input.ts";
 import { type CancellationKey, dispatchCancellation } from "@/ui/keybindings/cancel-ladder.ts";
 import { topModalLayer } from "@/ui/keybindings/modal-focus.ts";
 import type { Overlay } from "@/ui/panels/registry.tsx";
@@ -155,10 +155,7 @@ function stopBackgroundTask(task: BackgroundTask): void {
     });
     return;
   }
-  cancelTaskTree(taskRunRef(task), {
-    reason: "Killed by user",
-    userInitiated: true,
-  });
+  stopTaskForUser(task);
 }
 
 // Global terminal-input router: the single `useInput` handler for panel focus,
@@ -214,6 +211,9 @@ export function useGlobalInput(deps: GlobalInputDeps): void {
   };
 
   useInput((input, key) => {
+    // An open history search owns the keyboard (Escape accepts, Ctrl+C
+    // cancels); every global binding yields while it is up.
+    if (isPromptSearchOpen()) return;
     if (key.ctrl && input === "x") {
       ctrlXRef.current = true;
       if (ctrlXTimeoutRef.current) clearTimeout(ctrlXTimeoutRef.current);
@@ -352,12 +352,17 @@ export function useGlobalInput(deps: GlobalInputDeps): void {
     // Inside the agent view a bare "x" types into the prompt (the view is a
     // conversation with the agent); stopping the viewed agent stays available
     // through the focused panel's own "x" handler above.
-    if (key.ctrl && (input === "c" || input === "d")) {
+    // Ctrl+D with prompt text is a forward-delete owned by the prompt; only
+    // an empty prompt routes it into the cancellation/exit ladder.
+    if (key.ctrl && (input === "c" || (input === "d" && promptText.length === 0))) {
       if (viewingAgentId !== null) runViewedAgentCancellation("ctrl-c");
       else runCancellation("ctrl-c", input === "d" ? "Ctrl-D" : "Ctrl-C");
       return;
     }
     if (key.escape) {
+      // An active voice capture owns Escape: the prompt handler cancels the
+      // capture and the buffer must survive, so the cancel ladder yields.
+      if (voiceCaptureActiveRef.current) return;
       if (viewingAgentId !== null) {
         runViewedAgentCancellation("esc");
         return;

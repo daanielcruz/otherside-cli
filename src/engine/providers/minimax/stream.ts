@@ -49,6 +49,7 @@ export const minimaxStream: StreamFn = async function* minimaxStreamFn(
     const text = await resp.text().catch(() => "");
     const retryAfterHeader = resp.headers.get("retry-after");
     const quota = detectQuotaExhaustion({
+      provider: "minimax",
       status: resp.status,
       headers: resp.headers,
       body: text,

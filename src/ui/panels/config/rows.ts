@@ -6,9 +6,26 @@ import {
   canSendNatively,
   resolveParserModel,
 } from "@/engine/model/facts/capabilities-runtime.ts";
+import { imageGeneratorLabel } from "@/engine/providers/image-generation.ts";
+import { voiceProviderLabel } from "@/engine/voice/index.ts";
 import { type Color as InkColor } from "@/ink";
-import { isMultiproviderOrchestrationEnabled, type UserConfig } from "@/kernel/config/config.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
+import {
+  effectiveOrchestrationMode,
+  normalizeWorkflowSizeGuideline,
+  type UserConfig,
+  WORKFLOW_SIZE_GUIDELINES,
+  type WorkflowSizeGuideline,
+} from "@/kernel/config/config.ts";
+import {
+  ORCHESTRATION_MODE_VALUES,
+  type OrchestrationMode,
+  orchestrationModeLabel,
+} from "@/kernel/config/orchestration-mode.ts";
+import {
+  isImageGeneratorProviderId,
+  isVoiceProviderId,
+  type ProviderId,
+} from "@/kernel/config/provider-ids.ts";
 import type { PermissionMode } from "@/kernel/std/types/request.ts";
 import {
   type CodexTokens,
@@ -28,8 +45,11 @@ export type RowKind =
   | "permission"
   | "bool"
   | "language"
+  | "imageGeneratorProvider"
+  | "voiceProvider"
   | "imageParserProvider"
   | "imageParserModel"
+  | "workflowSizeGuideline"
   | "readonly";
 
 export interface SettingsRow {
@@ -37,6 +57,7 @@ export interface SettingsRow {
   labelSuffix?: ReactNode | undefined;
   labelSuffixWidth?: number | undefined;
   value?: string | undefined;
+  description?: string | undefined;
   kind: RowKind;
   id?: string | undefined;
   active?: boolean | undefined;
@@ -115,12 +136,46 @@ export function detailsRows(
   return rows;
 }
 
+function imageGeneratorDisplay(
+  cfg: UserConfig,
+  turnProvider: ProviderId,
+  credentials: CredentialsBundle | null,
+): string {
+  const selection = cfg.imageGenProvider;
+  if (!selection || selection === "off") {
+    if (!selection && isImageGeneratorProviderId(turnProvider)) {
+      const suffix = hasCredential(credentials, turnProvider) ? "" : " · not configured";
+      return `${imageGeneratorLabel(turnProvider)} · native default${suffix}`;
+    }
+    return "Off";
+  }
+  const suffix = hasCredential(credentials, selection) ? "" : " · not configured";
+  return `${imageGeneratorLabel(selection)}${suffix}`;
+}
+
+function voiceProviderDisplay(
+  cfg: UserConfig,
+  turnProvider: ProviderId,
+  credentials: CredentialsBundle | null,
+): string {
+  const selection = cfg.voiceProvider;
+  if (!selection || selection === "off") {
+    if (!selection && isVoiceProviderId(turnProvider)) {
+      const suffix = hasCredential(credentials, turnProvider) ? "" : " · not configured";
+      return `${voiceProviderLabel(turnProvider)} · native default${suffix}`;
+    }
+    return "Off";
+  }
+  const suffix = hasCredential(credentials, selection) ? "" : " · not configured";
+  return `${voiceProviderLabel(selection)}${suffix}`;
+}
+
 export function configRows(
   state: Readonly<BrokerState>,
   cfg: UserConfig,
   credentials: CredentialsBundle | null,
 ): SettingsRow[] {
-  const codexConfigured = hasCredential(credentials, "codex");
+  const orchestrationMode = effectiveOrchestrationMode(cfg);
   const rows: SettingsRow[] = [
     row(
       "Provider",
@@ -139,22 +194,21 @@ export function configRows(
       rows.push(row("Image parser model", modelDisplayWithContext(modelId), "imageParserModel"));
     }
   }
-  if (state.provider !== "codex") {
-    if (codexConfigured) {
-      const enabled = cfg.imageGen === true;
-      rows.push(
-        row("Codex image gen", enabled ? "true" : "false", "bool", {
-          id: "imageGen",
-        }),
-      );
-    } else {
-      rows.push(
-        row("Codex image gen", "Not available · codex not configured", "readonly", {
-          muted: true,
-        }),
-      );
-    }
-  }
+  rows.push(
+    row(
+      "Image generator",
+      imageGeneratorDisplay(cfg, state.provider, credentials),
+      "imageGeneratorProvider",
+      {
+        id: "imageGenProvider",
+      },
+    ),
+  );
+  rows.push(
+    row("Voice provider", voiceProviderDisplay(cfg, state.provider, credentials), "voiceProvider", {
+      id: "voiceProvider",
+    }),
+  );
   rows.push(row("More...", undefined, "modelPanel", { id: "modelPanel" }));
   rows.push(
     blank(),
@@ -166,25 +220,41 @@ export function configRows(
     }),
   );
   rows.push(
-    row("Parallel tasks", (cfg.parallelTasks ?? false) ? "enabled" : "disabled", "bool", {
+    row("Encourage parallel tasks", (cfg.parallelTasks ?? false) ? "enabled" : "disabled", "bool", {
       id: "parallelTasks",
     }),
     row("Workflows", (cfg.enableWorkflows ?? true) ? "enabled" : "disabled", "bool", {
       id: "enableWorkflows",
     }),
     row(
-      "Orchestration",
-      isMultiproviderOrchestrationEnabled(cfg) ? "experimental tiering" : "disabled",
-      "bool",
+      "Workflow size guideline",
+      normalizeWorkflowSizeGuideline(cfg.workflowSizeGuideline),
+      "workflowSizeGuideline",
       {
-        id: "multiprovider",
+        id: "workflowSizeGuideline",
+        description: workflowSizeGuidelineDescription(cfg.workflowSizeGuideline),
       },
     ),
+    row("Orchestration", orchestrationModeLabel(orchestrationMode), "bool", {
+      id: "multiprovider",
+      description: orchestrationDescription(orchestrationMode),
+    }),
   );
-  if (isMultiproviderOrchestrationEnabled(cfg)) {
+  if (orchestrationMode === "feudalism") {
     rows.push(
       row("Quota fallback", (cfg.quotaFallback ?? true) ? "enabled" : "disabled", "bool", {
         id: "quotaFallback",
+        description:
+          (cfg.quotaFallback ?? true)
+            ? "Uses another provider when the preferred provider hits its quota."
+            : "Stops when the preferred provider hits its quota.",
+      }),
+      row("Chain of command", (cfg.chainOfCommand ?? true) ? "enabled" : "disabled", "bool", {
+        id: "chainOfCommand",
+        description:
+          (cfg.chainOfCommand ?? true)
+            ? "Nested agents cannot launch above their own tier."
+            : "Nested agents may request any tier.",
       }),
     );
   }
@@ -248,8 +318,42 @@ export function wrapIndex(index: number, length: number): number {
   return ((index % length) + length) % length;
 }
 
+export const WORKFLOW_SIZE_GUIDELINE_OPTIONS: readonly WorkflowSizeGuideline[] =
+  WORKFLOW_SIZE_GUIDELINES;
+
+export function workflowSizeGuidelineDescription(value: unknown): string {
+  switch (normalizeWorkflowSizeGuideline(value)) {
+    case "small":
+      return "Advisory target: keep workflows under 5 agents.";
+    case "medium":
+      return "Advisory target: keep workflows under 15 agents.";
+    case "large":
+      return "Advisory target: keep workflows under 50 agents.";
+    default:
+      return "No advisory workflow-size target.";
+  }
+}
+
 export function boolText(value: boolean): string {
   return value ? "true" : "false";
+}
+
+export function orchestrationDescription(mode: OrchestrationMode): string {
+  switch (mode) {
+    case "disabled":
+      return "Agents use models from the current provider only.";
+    case "default":
+      return "Agents can select any available provider and model.";
+    case "feudalism":
+      return "Routes each delegated task through the emperor, shogun, daimyo, or samurai tier roster.";
+  }
+}
+
+export function cycleOrchestrationMode(
+  current: OrchestrationMode,
+  direction: number,
+): OrchestrationMode {
+  return cycle(ORCHESTRATION_MODE_VALUES, current, direction || 1);
 }
 
 export const PERMISSION_MODE_SHORT_TITLE: Record<PermissionMode, string> = {
@@ -278,10 +382,10 @@ export const PROVIDER_AUTH_RANK: Record<ProviderId, number> = {
   codex: 0,
   xai: 0,
   deepseek: 1,
-  "kimi-code": 1,
+  kimi: 1,
   minimax: 1,
   glm: 1,
-  "openai-custom": 2,
+  openai: 2,
 };
 
 export function sortProvidersByAuthKind(ids: readonly ProviderId[]): ProviderId[] {
@@ -337,7 +441,7 @@ export function providerCredentialDisplay(
       ? { value: maskEmail(email), valueColor: Color.success }
       : { value: "not logged in", muted: true };
   }
-  if (provider === "kimi-code") {
+  if (provider === "kimi") {
     const apiKey = credentials.kimi?.apiKey;
     return apiKey
       ? { value: `API key ${maskSecret(apiKey)}`, valueColor: Color.success }
@@ -361,10 +465,8 @@ export function providerCredentialDisplay(
       ? { value: `API key ${maskSecret(apiKey)}`, valueColor: Color.success }
       : { value: "not configured", muted: true };
   }
-  if (provider === "openai-custom") {
-    const custom = credentials["openai-custom"] as
-      | (OpenAiCustomCreds & { model?: string })
-      | undefined;
+  if (provider === "openai") {
+    const custom = credentials.openai as (OpenAiCustomCreds & { model?: string }) | undefined;
     if (!custom?.baseUrl) return { value: "not configured", muted: true };
     const keyLabel = custom.apiKey ? `API key ${maskSecret(custom.apiKey)}` : "no API key";
     const modelSuffix = custom.model ? ` · ${custom.model}` : "";
@@ -382,11 +484,11 @@ export function providerCredentialDisplay(
   return { value: "not configured", muted: true };
 }
 
-export function formatContextWindow(value: number): string {
+export const formatContextWindow = (value: number): string => {
   if (value >= 1_000_000) return `${Math.round(value / 1_000_000)}M context`;
   if (value >= 1_000) return `${Math.round(value / 1_000)}K context`;
   return `${value} context`;
-}
+};
 
 export function formatTokens(value: number): string {
   if (value >= 1_000) return `${Math.round(value / 1_000)}K max output`;

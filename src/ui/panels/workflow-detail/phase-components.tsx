@@ -1,6 +1,7 @@
 import { Box, Text } from "@/ink";
 import { formatScrollWindowLabel, type ListWindow } from "@/kernel/std/list-window.ts";
 import { stringWidth } from "@/kernel/std/text/string-width.ts";
+import { panelDividerText } from "@/ui/chrome/panel.tsx";
 import { Color, Glyph } from "@/ui/theme/theme.ts";
 import { PHASE_ROW_WIDTH, phaseRowColor, phaseRowGlyph } from "./constants.ts";
 import { truncateToWidth } from "./segments.tsx";
@@ -15,7 +16,7 @@ export function WorkflowHeader(props: {
   return (
     <Box flexDirection="column">
       <Text color={Color.text} wrap="truncate-end">
-        {Glyph.boxHLine.repeat(Math.max(1, width))}
+        {panelDividerText(Math.max(1, width))}
       </Text>
       <Text bold color={Color.primaryGlow} wrap="truncate-end">
         {" "}

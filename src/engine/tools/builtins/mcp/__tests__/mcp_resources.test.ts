@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,6 +8,7 @@ import {
   ReadMcpResourceTool,
 } from "@/engine/tools/builtins/mcp/mcp_resources.ts";
 import { closeAllClients, setMcpClientSpawnerForTests } from "@/kernel/mcp/client/registry.ts";
+import { setMcpSkillsEnabledForTests } from "@/kernel/mcp/protocol/parse.ts";
 import type {
   McpClient,
   McpDirectoryListPage,
@@ -79,9 +80,12 @@ describe("MCP resource tools (handlers)", () => {
   let cwd: string | undefined;
   let prevConfigDir: string | undefined;
 
+  beforeEach(() => setMcpSkillsEnabledForTests(true));
+
   afterEach(async () => {
     await closeAllClients();
     setMcpClientSpawnerForTests(null);
+    setMcpSkillsEnabledForTests(null);
     if (cwd) rmSync(cwd, { recursive: true, force: true });
     cwd = undefined;
     if (prevConfigDir === undefined) delete process.env.OTHERSIDE_CONFIG_DIR;
@@ -171,11 +175,32 @@ describe("MCP resource tools (handlers)", () => {
       ctx(cwd!),
     );
     expect(result.is_error).toBeUndefined();
-    expect(JSON.parse(result.content as string)).toEqual({
-      resources: [
-        { uri: "file:///a", name: "a" },
-        { uri: "file:///d", name: "d", mimeType: "inode/directory" },
-      ],
+    expect(result.content).toBe(
+      'Directory listing (2 entries):\na\nd/\n\n{"resources":[{"uri":"file:///a","name":"a"},{"uri":"file:///d","name":"d","mimeType":"inode/directory"}]}',
+    );
+  });
+
+  it("ReadMcpResourceDirTool returns the feature-gate error as a successful tool result", async () => {
+    setMcpSkillsEnabledForTests(false);
+    setupServer(
+      new ResourceClient({
+        caps: {
+          resources: {},
+          extensions: { [MCP_SKILLS_EXTENSION_URI]: { directoryRead: true } },
+        },
+      }),
+    );
+    const result = await ReadMcpResourceDirTool.run(
+      {
+        id: "3-gated",
+        name: ReadMcpResourceDirTool.schema.name,
+        input: { server: "demo", uri: "file:///" },
+      },
+      ctx(cwd!),
+    );
+    expect(result).toEqual({
+      tool_use_id: "3-gated",
+      content: "Directory listing is not enabled in this build.",
     });
   });
 
@@ -200,7 +225,7 @@ describe("MCP resource tools (handlers)", () => {
       },
       ctx(cwd!),
     );
-    expect(result.is_error).toBe(true);
+    expect(result.is_error).toBeUndefined();
     expect(result.content).toContain("Not a directory resource: file:///leaf");
     expect(result.content).toContain("ReadMcpResourceTool");
   });

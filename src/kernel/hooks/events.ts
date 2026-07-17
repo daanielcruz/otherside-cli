@@ -49,6 +49,9 @@ export interface UserPromptSubmitCtx {
 
 export interface StopCtx {
   sessionId: string;
+  /** True when the stopping turn was started by a stop-hook rewake
+   * notification — lets a hook script break the rewake loop. */
+  stopHookActive?: boolean;
 }
 
 export interface SubagentStopCtx {
@@ -174,7 +177,10 @@ export function envFor(ev: EventCtx): Record<string, string> {
     case "userPromptSubmit":
       return { PROMPT_TEXT: ev.ctx.promptText };
     case "stop":
-      return { SESSION_ID: ev.ctx.sessionId };
+      return {
+        SESSION_ID: ev.ctx.sessionId,
+        STOP_HOOK_ACTIVE: ev.ctx.stopHookActive === true ? "true" : "false",
+      };
     case "subagentStop":
       return { SESSION_ID: ev.ctx.sessionId, SUBAGENT_ID: ev.ctx.subagentId };
     case "preCompact":

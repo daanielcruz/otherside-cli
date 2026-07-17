@@ -10,25 +10,28 @@ export interface AvailableProviderModels {
 }
 
 /**
- * Models usable for multiprovider delegation, grouped by provider.
- * Providers are ordered by their strongest tier appearance (general →
- * warrior → scout); usable providers with no tier membership follow in
- * registry order. Within a provider the FULL model catalog is listed —
- * not just tier members — in catalog (strongest-first) order, deduped by
- * base id. Models without remaining quota (or credentials) are omitted.
+ * Models usable for delegation, grouped by provider. With no activeProvider,
+ * providers are ordered by their strongest tier appearance (general → warrior →
+ * scout), with usable providers lacking tier membership following in registry
+ * order. With activeProvider, only that provider is returned. Within a provider
+ * the FULL model catalog is listed — not just tier members — in catalog
+ * (strongest-first) order, deduped by base id. Models without remaining quota
+ * (or credentials) are omitted.
  */
 export function availableModelListing(activeProvider?: ProviderId): AvailableProviderModels[] {
-  const providerOrder: ProviderId[] = [];
-  for (const tier of TIER_NAMES) {
-    const detail = resolveTierDetailed(tier, undefined, activeProvider);
-    for (const candidate of detail.candidates) {
-      if (!candidate.usable) continue;
-      if (!providerOrder.includes(candidate.provider)) providerOrder.push(candidate.provider);
+  const providerOrder: ProviderId[] = activeProvider === undefined ? [] : [activeProvider];
+  if (activeProvider === undefined) {
+    for (const tier of TIER_NAMES) {
+      const detail = resolveTierDetailed(tier, undefined, activeProvider);
+      for (const candidate of detail.candidates) {
+        if (!candidate.usable) continue;
+        if (!providerOrder.includes(candidate.provider)) providerOrder.push(candidate.provider);
+      }
     }
-  }
-  for (const provider of PROVIDER_ID_VALUES) {
-    if (!providerOrder.includes(provider) && isProviderUsableNow(provider, activeProvider)) {
-      providerOrder.push(provider);
+    for (const provider of PROVIDER_ID_VALUES) {
+      if (!providerOrder.includes(provider) && isProviderUsableNow(provider, activeProvider)) {
+        providerOrder.push(provider);
+      }
     }
   }
 

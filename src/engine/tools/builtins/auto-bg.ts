@@ -1,10 +1,12 @@
 import { completeTask, startShellTask } from "@/engine/background/tasks/background.ts";
+import { startPressureReap } from "@/engine/background/tasks/pressure-reap.ts";
 import { startStallWatchdog } from "@/engine/background/tasks/stall-watchdog.ts";
 import type { OutputProgress, SpillBuffer } from "@/engine/tools/_infra/spill-buffer.ts";
 import {
   type BackgroundShell,
   disposeShellStreams,
   ensureExitCleanup,
+  killBackground,
   MAX_CONCURRENT,
   newShellId,
   newShellStreams,
@@ -17,7 +19,7 @@ import {
   createBackgroundOutputLimiter,
   MAX_BACKGROUND_OUTPUT_BYTES,
 } from "@/engine/tools/builtins/background-output-limit.ts";
-import { cleanupCwdFile, recoverCwdIfMissing } from "@/engine/tools/builtins/cwd.ts";
+import { cleanupCwdFile } from "@/engine/tools/builtins/cwd.ts";
 import {
   BASH_PROGRESS_INTERVAL_MS,
   drainStream,
@@ -32,7 +34,6 @@ import {
   truncationMarker,
 } from "@/engine/tools/builtins/output.ts";
 import { isAutoBackgroundableCommand } from "@/engine/tools/builtins/safety.ts";
-import { getTrackedCwd } from "@/kernel/std/state/cwd-state.ts";
 import { formatDuration } from "@/kernel/std/text/format.ts";
 
 const PROMOTED_RESULT_TAIL_CHARS = 2_000;
@@ -77,8 +78,10 @@ export async function runForegroundWithAutoBg(opts: {
   userBgSignaled?: Promise<void> | undefined;
   isSidechain?: boolean;
   ownerId?: string;
+  sessionId?: string;
   onStdout?: (progress: OutputProgress) => void;
   originalCommand?: string;
+  cwd: string;
   cwdFilePath?: string | null;
   login?: boolean | undefined;
 }): Promise<AutoBgOutcome | AutoBgEligibleSpawn> {
@@ -89,6 +92,7 @@ export async function runForegroundWithAutoBg(opts: {
     const result = await runForeground(
       opts.command,
       opts.timeoutMs,
+      opts.cwd,
       opts.signal,
       opts.onStdout,
       opts.login,
@@ -99,15 +103,15 @@ export async function runForegroundWithAutoBg(opts: {
     const result = await runForeground(
       opts.command,
       opts.timeoutMs,
+      opts.cwd,
       opts.signal,
       opts.onStdout,
       opts.login,
     );
     return { promoted: false, result };
   }
-  recoverCwdIfMissing();
   const start = Date.now();
-  const child = spawnShell(opts.command, { cwd: getTrackedCwd(), login: opts.login });
+  const child = spawnShell(opts.command, { cwd: opts.cwd, login: opts.login });
   const shellId = newShellId();
   const shell: BackgroundShell = {
     id: shellId,
@@ -199,6 +203,7 @@ export async function runForegroundWithAutoBg(opts: {
       parentToolCallId: opts.parentToolCallId,
       ...(opts.isSidechain ? { isSidechain: true } : {}),
       ...(opts.ownerId !== undefined ? { ownerId: opts.ownerId } : {}),
+      ...(opts.sessionId !== undefined ? { sessionId: opts.sessionId } : {}),
       startedAt: shell.startedAt,
     });
     const stopStallWatchdog = startStallWatchdog({
@@ -206,9 +211,18 @@ export async function runForegroundWithAutoBg(opts: {
       toolUseId: opts.parentToolCallId,
     });
     shell.stopWatchdog = stopStallWatchdog;
+    shell.stopPressureReap = startPressureReap({
+      taskId: shellId,
+      ownerId: opts.ownerId,
+      kill: () => {
+        killBackground(shellId);
+      },
+    });
     void child.exited.then(async (code) => {
       stopStallWatchdog();
       delete shell.stopWatchdog;
+      shell.stopPressureReap?.();
+      delete shell.stopPressureReap;
       await Promise.allSettled([stdoutDrain, stderrDrain]);
       stopOutput();
       shell.status = "exited";

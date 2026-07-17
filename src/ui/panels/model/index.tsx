@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { keptModelFeedback, type PendingChange, setModelFeedback } from "@/commands/index.ts";
+import { keptModelFeedback, setModelFeedback } from "@/commands/index.ts";
 import {
   getProviderConfig,
   listProviderConfigs,
@@ -39,7 +39,6 @@ export interface ModelOverlayProps {
   onOpenLogin?: ((provider?: ProviderId) => void) | undefined;
   initialBundle?: CredentialsBundle | null;
   isTurnRunning?: (() => boolean) | undefined;
-  enqueueChange?: ((change: PendingChange, label: string) => void) | undefined;
 }
 
 export function ModelOverlay({
@@ -50,7 +49,6 @@ export function ModelOverlay({
   onOpenLogin,
   initialBundle,
   isTurnRunning,
-  enqueueChange,
 }: ModelOverlayProps = {}): React.JSX.Element {
   const overlayState = useOverlayState();
   const dispatch = useOverlayDispatch();
@@ -59,7 +57,6 @@ export function ModelOverlay({
   const close = useOverlayClose(onClose);
   const applyConfig = onConfigChange ?? dispatch.onConfigChange;
   const openLogin = onOpenLogin ?? dispatch.onOpenLogin;
-  const enqueue = enqueueChange ?? dispatch.enqueueChange;
   const state = useAppSelect((s) => readBrokerSlice(s.engine) ?? activeBroker.read());
   const [cfg, setCfg] = useState(activeConfigInit);
   const [bodyIdx, setBodyIdx] = useState(0);
@@ -113,7 +110,7 @@ export function ModelOverlay({
   function applyModelSelection(modelId: string): void {
     const fastMode = fastModeForProvider(cfg, provider);
     // Slip-direct: broker state is re-read on the next request, so applying
-    // immediately is safe mid-turn. No [QUEUED] placeholder.
+    // immediately is safe mid-turn.
     activeBroker.dispatch({ kind: "set_provider", provider, model: modelId, fastMode });
     const nextCfg = { ...cfg, defaultProvider: provider, defaultModel: modelId };
     setCfg(nextCfg);
@@ -143,7 +140,7 @@ export function ModelOverlay({
       return;
     }
     if (row.kind === "openai_config") {
-      openLogin?.("openai-custom");
+      openLogin?.("openai");
       return;
     }
     if (row.kind === "login") {
@@ -292,7 +289,7 @@ type ModelRowEntry =
   | { kind: "login"; id: string; label: string; provider: ProviderId }
   | { kind: "change_provider"; id: string; label: string }
   | { kind: "openai_config"; id: string; label: string }
-  | { kind: "openai_delete"; id: string; label: string; provider: "openai-custom" };
+  | { kind: "openai_delete"; id: string; label: string; provider: "openai" };
 
 function modelRows(
   provider: ProviderId,
@@ -300,7 +297,7 @@ function modelRows(
   isLoggedIn: boolean,
 ): ModelRowEntry[] {
   if (!isLoggedIn) {
-    if (provider === "openai-custom") {
+    if (provider === "openai") {
       return [
         {
           kind: "openai_config",
@@ -347,7 +344,7 @@ function modelRows(
           active: model.id === activeModel,
         }));
 
-  if (provider === "openai-custom") {
+  if (provider === "openai") {
     return [
       ...baseRows,
       {
@@ -364,7 +361,7 @@ function modelRows(
         kind: "openai_delete",
         id: "openai:delete",
         label: "Delete config",
-        provider: "openai-custom",
+        provider: "openai",
       },
     ];
   }

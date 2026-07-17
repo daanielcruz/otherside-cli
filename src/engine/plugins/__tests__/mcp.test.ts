@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { encodePluginPathSegment } from "@/engine/plugins/installations.ts";
 import type { LoadedPlugin } from "@/engine/plugins/loader.ts";
 import type { PluginManifest } from "@/engine/plugins/manifest.ts";
 import { gatherPluginMcpServers } from "@/engine/plugins/mcp.ts";
@@ -28,14 +29,19 @@ describe("gatherPluginMcpServers", () => {
     const out = gatherPluginMcpServers({
       existsSync: (p) => p === join(pluginDir, "server.js"),
     });
-    expect(Object.keys(out)).toEqual(["plugin:demo:api"]);
-    expect(out["plugin:demo:api"]).toEqual({
+    expect(Object.keys(out)).toEqual(["plugin:demo@demo:api"]);
+    expect(out["plugin:demo@demo:api"]).toEqual({
       type: "stdio",
       command: "node",
       args: [join(pluginDir, "server.js")],
       env: {
         CLAUDE_PLUGIN_ROOT: pluginDir,
-        CLAUDE_PLUGIN_DATA: join(configRoot(), "plugins", "data", "demo-demo"),
+        CLAUDE_PLUGIN_DATA: join(
+          configRoot(),
+          "plugins",
+          "data",
+          encodePluginPathSegment("demo@demo"),
+        ),
       },
       cwd: join(pluginDir, "runtime"),
     });
@@ -59,13 +65,18 @@ describe("gatherPluginMcpServers", () => {
       source: "rooted",
       manifest,
     } as unknown as LoadedPlugin);
-    expect(gatherPluginMcpServers()["plugin:rooted:api"]).toEqual({
+    expect(gatherPluginMcpServers()["plugin:rooted@rooted:api"]).toEqual({
       type: "stdio",
       command: `${pluginDir}/bin/run`,
       args: ["--data", `${pluginDir}/data`],
       env: {
         CLAUDE_PLUGIN_ROOT: pluginDir,
-        CLAUDE_PLUGIN_DATA: join(configRoot(), "plugins", "data", "rooted-rooted"),
+        CLAUDE_PLUGIN_DATA: join(
+          configRoot(),
+          "plugins",
+          "data",
+          encodePluginPathSegment("rooted@rooted"),
+        ),
         DATA_DIR: `${pluginDir}/data`,
       },
     });
@@ -88,7 +99,7 @@ describe("gatherPluginMcpServers", () => {
       source: "rootedhttp",
       manifest,
     } as unknown as LoadedPlugin);
-    expect(gatherPluginMcpServers()["plugin:rootedhttp:web"]).toEqual({
+    expect(gatherPluginMcpServers()["plugin:rootedhttp@rootedhttp:web"]).toEqual({
       type: "http",
       url: `https://x/${pluginDir}`,
       headers: { "X-Root": pluginDir },
@@ -109,7 +120,7 @@ describe("gatherPluginMcpServers", () => {
       manifest,
     } as unknown as LoadedPlugin);
     const out = gatherPluginMcpServers();
-    expect(out["plugin:remote:web"]).toEqual({
+    expect(out["plugin:remote@remote:web"]).toEqual({
       type: "http",
       url: "https://example.com/mcp",
       oauthScopes: "openid profile",
@@ -141,8 +152,11 @@ describe("gatherPluginMcpServers", () => {
       } as unknown as LoadedPlugin);
 
       const servers = gatherPluginMcpServers();
-      expect(Object.keys(servers).sort()).toEqual(["plugin:strform:base", "plugin:strform:shared"]);
-      expect(servers["plugin:strform:shared"]).toEqual({
+      expect(Object.keys(servers).sort()).toEqual([
+        "plugin:strform@strform:base",
+        "plugin:strform@strform:shared",
+      ]);
+      expect(servers["plugin:strform@strform:shared"]).toEqual({
         type: "sse",
         url: "https://override.example/sse",
       });
@@ -174,7 +188,7 @@ describe("gatherPluginMcpServers", () => {
       } as unknown as LoadedPlugin);
 
       expect(gatherPluginMcpServers()).toEqual({
-        "plugin:arrayform:one": { type: "http", url: "https://second.example/mcp" },
+        "plugin:arrayform@arrayform:one": { type: "http", url: "https://second.example/mcp" },
       });
     } finally {
       rmSync(pluginDir, { recursive: true, force: true });
@@ -193,8 +207,8 @@ describe("gatherPluginMcpServers", () => {
       manifest,
     } as unknown as LoadedPlugin);
 
-    expect(gatherPluginMcpServers()["plugin:layered:web"]).toBeDefined();
-    applyPersistedEnabledState({ layered: false });
+    expect(gatherPluginMcpServers()["plugin:layered@layered:web"]).toBeDefined();
+    applyPersistedEnabledState({ "layered@layered": false });
     expect(gatherPluginMcpServers()).toEqual({});
   });
 });

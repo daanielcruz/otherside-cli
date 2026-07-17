@@ -3,6 +3,7 @@ import { isAbsolute, join } from "node:path";
 import type { LspServerSpec } from "@/kernel/lsp/client.ts";
 import { expandPluginRoot } from "@/kernel/std/fs/plugin-root.ts";
 import type { LspServerConfig as ManifestLspServerConfig } from "./manifest.ts";
+import type { PluginRegistryEntry } from "./registry.ts";
 import * as plugins from "./registry.ts";
 
 function resolveMaybePath(
@@ -74,24 +75,28 @@ function adaptServer(
 
 export function gatherPluginLspServerSpecs(options?: {
   existsSync?: (path: string) => boolean;
+  entries?: readonly PluginRegistryEntry[];
 }): LspServerSpec[] {
   const existsSyncFn = options?.existsSync ?? existsSync;
   const out: LspServerSpec[] = [];
-  for (const plugin of plugins.list()) {
-    if (!plugins.isRuntimeEnabled(plugin.name)) continue;
+  const entries = options?.entries ?? plugins.list();
+  for (const { pluginId, plugin } of entries) {
+    if (!options?.entries && !plugins.isRuntimeEnabled(pluginId)) continue;
     const spec = plugin.manifest.lspServers;
     if (!spec || typeof spec === "string") continue;
-    for (const server of Object.values(spec)) {
+    for (const [serverName, server] of Object.entries(spec)) {
       const adapted = adaptServer(server, plugin.path, existsSyncFn);
-      if (adapted !== null) out.push(adapted);
+      if (adapted !== null) {
+        out.push({ ...adapted, pluginId, serverName } as LspServerSpec);
+      }
     }
   }
   return out;
 }
 
 export function hasEnabledPluginLspServers(): boolean {
-  for (const plugin of plugins.list()) {
-    if (!plugins.isRuntimeEnabled(plugin.name)) continue;
+  for (const { pluginId, plugin } of plugins.list()) {
+    if (!plugins.isRuntimeEnabled(pluginId)) continue;
     const spec = plugin.manifest.lspServers;
     if (spec && typeof spec !== "string" && Object.keys(spec).length > 0) return true;
   }

@@ -52,7 +52,7 @@ export function buildCatalog(): SlashCommand[] {
     {
       name: "cd",
       kind: "instant",
-      description: "Change the current working directory",
+      description: "change the working directory",
       argumentHint: "<path>",
     },
     {
@@ -76,8 +76,13 @@ export function buildCatalog(): SlashCommand[] {
     {
       name: "multiprovider",
       kind: "toggle",
-      description: "toggle multi-provider routing",
-      argumentHint: "[on|off]",
+      description: "set provider orchestration mode",
+      argumentHint: "[disabled|default|feudalism]",
+    },
+    {
+      name: "orchestration",
+      kind: "panel",
+      description: "orchestration mode and tier rosters",
     },
     {
       name: "copy",
@@ -218,8 +223,7 @@ export function buildCatalog(): SlashCommand[] {
     {
       name: "reload",
       kind: "instant",
-      aliases: ["reload-plugins"],
-      description: "reload skills, agents, and MCP servers without restarting",
+      description: "reload all skills, agents, plugins, and MCP servers without restarting",
     },
     {
       name: "tasks",

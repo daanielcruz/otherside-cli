@@ -1,14 +1,19 @@
+import { isMainAgentContext } from "@/engine/background/subagents/fork/spawn-depth.ts";
 import type { Session } from "@/engine/session/record/state.ts";
+import { loadCustomSessionTitle } from "@/engine/session/title/store.ts";
 import {
   attachSessionWorktreeHost,
+  clearLatchedWorktreeName,
   exitSessionWorktree,
   getActiveWorktree,
+  isAgentContext,
   type SessionWorktreeState,
 } from "@/engine/session/worktree.ts";
 import type { ToolHandler } from "@/engine/tools/contract.ts";
 import ExitWorktreeSchema from "@/harness/tools/ExitWorktree/tool.json" with { type: "json" };
 import { askGroup } from "@/kernel/channels/ask.ts";
 import { getRuntimeKind } from "@/kernel/std/proc/runtime-mode.ts";
+import { setTrackedCwd } from "@/kernel/std/state/cwd-state.ts";
 import type { ToolCall, ToolResult } from "@/kernel/std/types/message.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 import { runProcessSafely } from "@/utils/execFileNoThrow.ts";
@@ -32,6 +37,10 @@ export type SessionExitWorktreePrompt = {
   changedFiles: number;
   commits: number;
   ownership: SessionWorktreeState["ownership"];
+  /** Session title, when one exists — a titled clean worktree prompts instead of auto-removing. */
+  sessionTitle?: string;
+  /** Change/title summary line shown under the prompt heading. */
+  subtitle: string;
   options: Array<{
     value: SessionExitWorktreeAction;
     label: string;
@@ -40,7 +49,7 @@ export type SessionExitWorktreePrompt = {
 };
 
 export type SessionExitWorktreeResult = {
-  action: "none" | "keep" | "remove";
+  action: "none" | "cancel" | "keep" | "remove";
   message: string;
   worktreePath?: string;
   worktreeBranch?: string;
@@ -53,11 +62,11 @@ const NO_ACTIVE_SESSION_MESSAGE =
   "No-op: there is no active EnterWorktree session to exit. This tool only operates on worktrees created by EnterWorktree in the current session — it will not touch worktrees created manually or in a previous session. No filesystem changes were made.";
 
 function err(toolUseId: string, msg: string): ToolResult {
-  return { tool_use_id: toolUseId, content: msg, is_error: true };
-}
-
-function ok(toolUseId: string, payload: unknown): ToolResult {
-  return { tool_use_id: toolUseId, content: JSON.stringify(payload) };
+  return {
+    tool_use_id: toolUseId,
+    content: `<tool_use_error>${msg}</tool_use_error>`,
+    is_error: true,
+  };
 }
 
 function okText(toolUseId: string, message: string): ToolResult {
@@ -72,6 +81,19 @@ export async function killTmuxSession(sessionName: string): Promise<boolean> {
     preserveOutputOnError: false,
   });
   return code === 0;
+}
+
+/** True when `git status` succeeds in the worktree — it is still a live checkout. */
+async function worktreeStatusOk(worktreePath: string): Promise<boolean> {
+  try {
+    const proc = Bun.spawn(["git", "-C", worktreePath, "status", "--porcelain"], {
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    return (await proc.exited) === 0;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -114,6 +136,12 @@ export async function countWorktreeChanges(
   }
 }
 
+function restorationMessage(originalCwd: string, restoredCwd: string): string {
+  return restoredCwd === originalCwd
+    ? `Session is now back in ${originalCwd}.`
+    : `The original directory ${originalCwd} no longer exists, so the session is now in ${restoredCwd}. Consider restarting Otherside from an existing directory.`;
+}
+
 function formatChangeParts(
   changedFiles: number,
   commits: number,
@@ -150,12 +178,38 @@ function sessionCtxFrom(session: Session): RequestContext {
   };
 }
 
+/** Prompt subtitle: pending changes first, then a titled-session hint, then the generic line. */
+export function sessionExitSubtitle(
+  summary: WorktreeChangeSummary,
+  branch: string | undefined,
+  sessionTitle: string | undefined,
+): string {
+  const hasFiles = summary.changedFiles > 0;
+  const hasCommits = summary.commits > 0;
+  const branchName = branch ?? "the worktree branch";
+  const fileWord = summary.changedFiles === 1 ? "file" : "files";
+  const commitWord = summary.commits === 1 ? "commit" : "commits";
+  if (hasFiles && hasCommits) {
+    return `You have ${summary.changedFiles} uncommitted ${fileWord} and ${summary.commits} ${commitWord} on ${branchName}. All will be lost if you remove.`;
+  }
+  if (hasFiles) {
+    return `You have ${summary.changedFiles} uncommitted ${fileWord}. These will be lost if you remove the worktree.`;
+  }
+  if (hasCommits) {
+    return `You have ${summary.commits} ${commitWord} on ${branchName}. The branch will be deleted if you remove the worktree.`;
+  }
+  if (sessionTitle !== undefined && sessionTitle.length > 0) {
+    return `This session was named "${sessionTitle}". Keep the worktree to resume it later, or remove it to clean up.`;
+  }
+  return "You are working in a worktree. Keep it to continue working there, or remove it to clean up.";
+}
+
 async function defaultSessionExitAsk(
   prompt: SessionExitWorktreePrompt,
 ): Promise<SessionExitWorktreeAction> {
   const result = await askGroup([
     {
-      question: "Exiting worktree session — keep or remove the worktree?",
+      question: `Exiting worktree session — ${prompt.subtitle}`,
       header: "Worktree exit",
       multiSelect: false,
       options: prompt.options.map((opt) => ({
@@ -185,31 +239,6 @@ function buildSessionExitOptions(
       ? "All changes and commits will be lost."
       : "Clean up the worktree directory.";
 
-  if (state.ownership === "enteredExisting") {
-    // Never offer remove for worktrees we did not create.
-    if (hasTmux) {
-      return [
-        {
-          value: "keep",
-          label: "Keep worktree and tmux session",
-          description: `Stays at ${state.activePath}. Reattach with: tmux attach -t ${state.tmuxSession}`,
-        },
-        {
-          value: "keep-kill-tmux",
-          label: "Keep worktree, kill tmux session",
-          description: `Keeps worktree at ${state.activePath}, terminates tmux session.`,
-        },
-      ];
-    }
-    return [
-      {
-        value: "keep",
-        label: "Keep worktree",
-        description: `Stays at ${state.activePath}`,
-      },
-    ];
-  }
-
   if (hasTmux) {
     return [
       {
@@ -219,7 +248,7 @@ function buildSessionExitOptions(
       },
       {
         value: "keep-kill-tmux",
-        label: "Keep worktree, kill tmux session",
+        label: "Keep worktree, end tmux session",
         description: `Keeps worktree at ${state.activePath}, terminates tmux session.`,
       },
       {
@@ -247,8 +276,9 @@ function buildSessionExitOptions(
 /**
  * Session-end keep/remove lifecycle.
  * - No active worktree → no-op
- * - enteredExisting → keep only (never remove a tree we did not create)
- * - created + pristine → auto-remove (silent clean exit)
+ * - enteredExisting → keep, no prompt (never remove a tree we did not create)
+ * - created + pristine + untitled → auto-remove (silent clean exit)
+ * - created + pristine + titled → prompt (the title marks a resumable session)
  * - created + dirty (or probe fail) → prompt keep/remove; tmux killed on remove,
  *   left running on keep (name returned for reattach)
  */
@@ -258,7 +288,7 @@ export async function resolveWorktreeOnSessionExit(
     ask?: (prompt: SessionExitWorktreePrompt) => Promise<SessionExitWorktreeAction>;
     /** When non-interactive, default action (default: keep). */
     nonInteractiveDefault?: "keep" | "remove";
-    /** Force kill tmux even on keep (e.g. user chose "keep, kill tmux"). */
+    /** Force kill tmux even on keep (e.g. user chose "keep, end tmux"). */
     killTmuxOnKeep?: boolean;
   },
 ): Promise<SessionExitWorktreeResult> {
@@ -267,10 +297,38 @@ export async function resolveWorktreeOnSessionExit(
     return { action: "none", message: "No active worktree session" };
   }
 
-  const summary =
-    (await countWorktreeChanges(state.activePath, state.baseSha)) ??
-    ({ changedFiles: 1, commits: 0 } satisfies WorktreeChangeSummary);
+  const rawSummary = await countWorktreeChanges(state.activePath, state.baseSha);
+  // A worktree whose git status probe fails outright (directory removed out
+  // from under the session) gets a silent leave, never a keep/remove prompt.
+  if (
+    state.ownership !== "enteredExisting" &&
+    !state.hookBased &&
+    rawSummary === null &&
+    !(await worktreeStatusOk(state.activePath))
+  ) {
+    clearLatchedWorktreeName();
+    try {
+      await exitSessionWorktree(sessionCtxFrom(session), {
+        action: "keep",
+        restoreStrategy: "parent-chain",
+      });
+    } catch {
+      // already detached or gone
+    }
+    const tmuxNote = state.tmuxSession
+      ? `. Detached tmux session ${state.tmuxSession} may still be running — end it with: tmux kill-session -t ${state.tmuxSession}`
+      : "";
+    return {
+      action: "keep",
+      worktreePath: state.activePath,
+      ...(state.managedBranch !== undefined ? { worktreeBranch: state.managedBranch } : {}),
+      message: `Worktree at ${state.activePath} is no longer accessible — exiting${tmuxNote}`,
+    };
+  }
+
+  const summary = rawSummary ?? ({ changedFiles: 1, commits: 0 } satisfies WorktreeChangeSummary);
   const pristine = summary.changedFiles === 0 && summary.commits === 0;
+  const sessionTitle = (await loadCustomSessionTitle(session.id).catch(() => null)) ?? undefined;
   const runtime = getRuntimeKind();
   const interactive = runtime === "interactive" || runtime === null;
   const ask = options?.ask ?? defaultSessionExitAsk;
@@ -278,12 +336,14 @@ export async function resolveWorktreeOnSessionExit(
 
   let action: SessionExitWorktreeAction = "keep";
   let killTmuxOnKeep = options?.killTmuxOnKeep === true;
+  let enteredExistingExit = false;
 
   if (state.ownership === "enteredExisting") {
-    // Never remove foreign/entered trees on session exit.
+    // Never remove foreign/entered trees on session exit; leave silently.
     action = "keep";
-  } else if (pristine) {
-    // Clean created worktree: remove silently (CC parity).
+    enteredExistingExit = true;
+  } else if (pristine && sessionTitle === undefined) {
+    // Clean untitled worktree: remove silently.
     action = "remove";
   } else if (!interactive) {
     action = nonInteractiveDefault;
@@ -295,12 +355,19 @@ export async function resolveWorktreeOnSessionExit(
       changedFiles: summary.changedFiles,
       commits: summary.commits,
       ownership: state.ownership,
+      ...(sessionTitle !== undefined ? { sessionTitle } : {}),
+      subtitle: sessionExitSubtitle(summary, state.managedBranch, sessionTitle),
       options: buildSessionExitOptions(state, summary),
     };
     action = await ask(prompt);
     if (action === "cancel") {
-      // Escape / cancel aborts the process exit path's destructive choice → keep.
-      action = "keep";
+      return {
+        action: "cancel",
+        worktreePath: state.activePath,
+        ...(state.managedBranch !== undefined ? { worktreeBranch: state.managedBranch } : {}),
+        ...(state.tmuxSession !== undefined ? { tmuxSessionName: state.tmuxSession } : {}),
+        message: "Worktree exit cancelled",
+      };
     }
     if (action === "keep-kill-tmux") {
       killTmuxOnKeep = true;
@@ -318,34 +385,52 @@ export async function resolveWorktreeOnSessionExit(
       await killTmuxSession(tmuxName);
     }
     try {
-      await exitSessionWorktree(ctx, {
+      const foundation = await exitSessionWorktree(ctx, {
         action: "remove",
         discardChanges: !pristine,
+        restoreStrategy: "parent-chain",
       });
-      const discardParts: string[] = [];
-      if (summary.commits > 0) {
-        discardParts.push(`${summary.commits} ${summary.commits === 1 ? "commit" : "commits"}`);
+      if (foundation.action === "keep") {
+        return {
+          action: "keep",
+          worktreePath,
+          ...(worktreeBranch !== undefined ? { worktreeBranch } : {}),
+          message: `Worktree could not be removed — kept at ${worktreePath}`,
+        };
       }
-      if (summary.changedFiles > 0) {
-        discardParts.push(
-          `${summary.changedFiles} uncommitted ${summary.changedFiles === 1 ? "file" : "files"}`,
-        );
+      if (pristine) {
+        return {
+          action: "remove",
+          worktreePath,
+          ...(worktreeBranch !== undefined ? { worktreeBranch } : {}),
+          discardedFiles: 0,
+          discardedCommits: 0,
+          message: "Worktree removed (no changes)",
+        };
       }
-      const discardNote =
-        discardParts.length > 0 ? ` Discarded ${discardParts.join(" and ")}.` : "";
       const tmuxNote = tmuxName ? " Tmux session terminated." : "";
+      const branchName = worktreeBranch ?? "the worktree branch";
+      const commitWord = summary.commits === 1 ? "commit" : "commits";
+      const detail =
+        summary.commits > 0 && summary.changedFiles > 0
+          ? ` ${summary.commits} ${commitWord} and uncommitted changes were discarded.`
+          : summary.commits > 0
+            ? ` ${summary.commits} ${commitWord} on ${branchName} ${summary.commits === 1 ? "was" : "were"} discarded.`
+            : summary.changedFiles > 0
+              ? " Uncommitted changes were discarded."
+              : "";
       return {
         action: "remove",
         worktreePath,
         ...(worktreeBranch !== undefined ? { worktreeBranch } : {}),
         discardedFiles: summary.changedFiles,
         discardedCommits: summary.commits,
-        message: `Worktree removed at ${worktreePath}.${discardNote}${tmuxNote}`,
+        message: `Worktree removed.${detail}${tmuxNote}`,
       };
     } catch (e) {
       // Fall back to keep semantics if remove fails mid-flight.
       try {
-        await exitSessionWorktree(ctx, { action: "keep" });
+        await exitSessionWorktree(ctx, { action: "keep", restoreStrategy: "parent-chain" });
       } catch {
         // already detached or gone
       }
@@ -363,19 +448,29 @@ export async function resolveWorktreeOnSessionExit(
   if (killTmuxOnKeep && tmuxName) {
     await killTmuxSession(tmuxName);
   }
-  await exitSessionWorktree(ctx, { action: "keep" });
-  const tmuxNote =
-    tmuxName && !killTmuxOnKeep
-      ? ` Reattach to tmux session with: tmux attach -t ${tmuxName}`
-      : killTmuxOnKeep && tmuxName
-        ? " Tmux session terminated."
-        : "";
+  await exitSessionWorktree(ctx, { action: "keep", restoreStrategy: "parent-chain" });
+  if (enteredExistingExit) {
+    return {
+      action: "keep",
+      worktreePath,
+      ...(worktreeBranch !== undefined ? { worktreeBranch } : {}),
+      ...(tmuxName !== undefined ? { tmuxSessionName: tmuxName } : {}),
+      message: `Returned to ${state.originalCwd} (worktree at ${worktreePath} left in place)`,
+    };
+  }
+  const branchSuffix = worktreeBranch ? ` on branch ${worktreeBranch}` : "";
+  const message =
+    killTmuxOnKeep && tmuxName
+      ? `Worktree kept at ${worktreePath}${branchSuffix}. Tmux session terminated.`
+      : tmuxName
+        ? `Worktree kept. Your work is saved at ${worktreePath}${branchSuffix}. Reattach to tmux session with: tmux attach -t ${tmuxName}`
+        : `Worktree kept. Your work is saved at ${worktreePath}${branchSuffix}`;
   return {
     action: "keep",
     worktreePath,
     ...(worktreeBranch !== undefined ? { worktreeBranch } : {}),
     ...(tmuxName !== undefined && !killTmuxOnKeep ? { tmuxSessionName: tmuxName } : {}),
-    message: `Worktree kept at ${worktreePath}${worktreeBranch ? ` on branch ${worktreeBranch}` : ""}.${tmuxNote}`,
+    message,
   };
 }
 
@@ -406,17 +501,23 @@ export const ExitWorktree: ToolHandler = {
     if (action !== "keep" && action !== "remove") {
       return err(call.id, '`action` must be "keep" or "remove"');
     }
+    // Agents never relocate the session they belong to — rejected before any
+    // state is read, even when this agent owns the controller that entered.
+    if (isAgentContext(ctx)) {
+      return err(
+        call.id,
+        "ExitWorktree cannot be called from a subagent — this agent is already isolated; use Bash with `cd` for directory changes within it.",
+      );
+    }
+    const active = getActiveWorktree(ctx);
     const discardChanges = args.discard_changes === true;
 
-    const active = getActiveWorktree(ctx);
-    if (active === null) {
-      return okText(call.id, NO_ACTIVE_SESSION_MESSAGE);
-    }
+    if (active === null) return err(call.id, NO_ACTIVE_SESSION_MESSAGE);
 
     if (action === "remove" && active.ownership === "enteredExisting") {
       return err(
         call.id,
-        `This session entered an existing worktree (${active.activePath}); it was not created by EnterWorktree, so this tool will not remove it. Use action: "keep" to return to ${active.originalCwd}, then remove the worktree manually with \`git worktree remove\` if desired.`,
+        `This session is not the owner of the worktree at ${active.activePath} — it either entered a pre-existing worktree via EnterWorktree({path}) or resumed into a checkout whose liveness lock another running Otherside session still holds — so this tool will not remove it. Use action: "keep" to return to ${active.originalCwd}. If no other session is using it, remove it yourself with \`git worktree remove\`; while a live session's lock is present, git will refuse and name the owner.`,
       );
     }
 
@@ -442,8 +543,6 @@ export const ExitWorktree: ToolHandler = {
     const worktreePath = active.activePath;
     const worktreeBranch = active.managedBranch;
     const originalCwd = active.originalCwd;
-
-    // Pre-count for discard reporting (best-effort; zeros if probe fails after gate).
     const preSummary = (await countWorktreeChanges(worktreePath, active.baseSha)) ?? {
       changedFiles: 0,
       commits: 0,
@@ -451,33 +550,34 @@ export const ExitWorktree: ToolHandler = {
 
     if (action === "keep") {
       try {
-        await exitSessionWorktree(ctx, { action: "keep" });
-      } catch (e) {
-        return err(call.id, e instanceof Error ? e.message : String(e));
+        const result = await exitSessionWorktree(ctx, { action: "keep" });
+        if (isMainAgentContext(ctx)) setTrackedCwd(result.restoredCwd);
+        const tmuxNote = tmuxSessionName
+          ? ` Tmux session ${tmuxSessionName} is still running; reattach with: tmux attach -t ${tmuxSessionName}`
+          : "";
+        return okText(
+          call.id,
+          `Exited worktree. Your work is preserved at ${worktreePath}${worktreeBranch ? ` on branch ${worktreeBranch}` : ""}. ${restorationMessage(originalCwd, result.restoredCwd)}${tmuxNote}`,
+        );
+      } catch (error) {
+        return err(call.id, error instanceof Error ? error.message : String(error));
       }
-      const tmuxNote = tmuxSessionName
-        ? ` Tmux session ${tmuxSessionName} is still running; reattach with: tmux attach -t ${tmuxSessionName}`
-        : "";
-      return ok(call.id, {
-        action: "keep" as const,
-        originalCwd,
-        worktreePath,
-        ...(worktreeBranch !== undefined ? { worktreeBranch } : {}),
-        ...(tmuxSessionName !== undefined ? { tmuxSessionName } : {}),
-        message: `Exited worktree. Your work is preserved at ${worktreePath}${worktreeBranch ? ` on branch ${worktreeBranch}` : ""}. Session is now back in ${originalCwd}.${tmuxNote}`,
-      });
     }
 
-    // action === "remove"
-    if (tmuxSessionName) {
-      await killTmuxSession(tmuxSessionName);
-    }
-
+    if (tmuxSessionName) await killTmuxSession(tmuxSessionName);
     try {
       const result = await exitSessionWorktree(ctx, {
         action: "remove",
         discardChanges,
       });
+      if (isMainAgentContext(ctx)) setTrackedCwd(result.restoredCwd);
+      if (result.action === "keep") {
+        return okText(
+          call.id,
+          `Exited worktree but could not remove it — kept at ${worktreePath}. ${restorationMessage(originalCwd, result.restoredCwd)}`,
+        );
+      }
+
       const discardedFiles = result.discardedFiles ?? preSummary.changedFiles;
       const discardedCommits = result.discardedCommits ?? preSummary.commits;
       const discardParts: string[] = [];
@@ -491,21 +591,12 @@ export const ExitWorktree: ToolHandler = {
       }
       const discardNote =
         discardParts.length > 0 ? ` Discarded ${discardParts.join(" and ")}.` : "";
-      return ok(call.id, {
-        action: "remove" as const,
-        originalCwd: result.originalCwd,
-        worktreePath: result.worktreePath ?? worktreePath,
-        ...(result.worktreeBranch !== undefined
-          ? { worktreeBranch: result.worktreeBranch }
-          : worktreeBranch !== undefined
-            ? { worktreeBranch }
-            : {}),
-        discardedFiles,
-        discardedCommits,
-        message: `Exited and removed worktree at ${worktreePath}.${discardNote} Session is now back in ${result.originalCwd}.`,
-      });
-    } catch (e) {
-      return err(call.id, e instanceof Error ? e.message : String(e));
+      return okText(
+        call.id,
+        `Exited and removed worktree at ${worktreePath}.${discardNote} ${restorationMessage(originalCwd, result.restoredCwd)}`,
+      );
+    } catch (error) {
+      return err(call.id, error instanceof Error ? error.message : String(error));
     }
   },
 };

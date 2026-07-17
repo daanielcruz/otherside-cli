@@ -5,10 +5,8 @@ import {
   runForkLoopExternal,
   type SubagentResult,
 } from "@/engine/background/subagents/dispatcher.ts";
-import {
-  clampNestedPinnedModel,
-  clampNestedTier,
-} from "@/engine/background/subagents/fork/tier-ceiling.ts";
+import { resolveToolModelOverride } from "@/engine/background/subagents/fork/routing.ts";
+import { clampNestedTier } from "@/engine/background/subagents/fork/tier-ceiling.ts";
 import {
   acquireWorktreeLease,
   createWorktree,
@@ -58,7 +56,8 @@ import {
   usableActiveProviderForTierResolution,
 } from "@/engine/model/tier/resolver.ts";
 import { currentProviderPlan } from "@/engine/providers/_shared/plan.ts";
-import { isProviderId, type ProviderId } from "@/kernel/config/provider-ids.ts";
+import type { OrchestrationMode } from "@/kernel/config/orchestration-mode.ts";
+import type { ProviderId } from "@/kernel/config/provider-ids.ts";
 import { errorMessage } from "@/kernel/std/errno.ts";
 import type { ForkEventSink } from "@/kernel/std/types/events.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
@@ -212,8 +211,42 @@ export interface WorkflowAgentModelContextDetail {
 const DIVERSIFY_PROVIDER_SPREAD = 3;
 const BEST_OF_TIER_SPREAD = 1;
 
+function orchestrationModeOf(ctx: RequestContext): OrchestrationMode {
+  return ctx.orchestrationMode ?? "disabled";
+}
+
+function workflowOrchestrationOptionError(
+  ctx: RequestContext,
+  opts: Pick<ReturnType<typeof readAgentOptions>, "provider" | "model" | "tier" | "diversify">,
+): string | undefined {
+  const mode = orchestrationModeOf(ctx);
+  if (mode === "disabled") {
+    if (opts.provider !== undefined) {
+      return "InputValidationError: `provider` is unavailable when orchestration is disabled. Use `model` with the active provider.";
+    }
+    if (opts.tier !== undefined) {
+      return "InputValidationError: `tier` is unavailable when orchestration is disabled. Use `model` with the active provider.";
+    }
+    if (opts.diversify !== undefined) {
+      return "InputValidationError: `diversify` is available only in feudalism mode.";
+    }
+  }
+  if (mode === "default") {
+    if (opts.tier !== undefined) {
+      return "InputValidationError: `tier` is unavailable in Default mode. Use concrete `provider` + `model` pins or omit overrides.";
+    }
+    if (opts.diversify !== undefined) {
+      return "InputValidationError: `diversify` is unavailable in Default mode. Use concrete `provider` + `model` pins or omit overrides.";
+    }
+  }
+  if (mode === "feudalism" && (opts.provider !== undefined || opts.model !== undefined)) {
+    return "InputValidationError: concrete `provider`/`model` pins are unavailable in feudalism mode. Use `tier` routing instead.";
+  }
+  return undefined;
+}
+
 function workflowQuotaFallbackDisabledError(tier: string, skipped: TierCandidateDetail): string {
-  return `Quota fallback is disabled: tier "${tier}" would reroute past ${skipped.provider}/${skipped.model}, which is quota-blocked (${skipped.blockedReasons.join("; ")}). The agent fails instead of rerouting. Enable "Quota fallback" in /config, pin provider+model, or retry after the quota resets.`;
+  return `Quota fallback is disabled: tier "${tier}" would reroute past ${skipped.provider}/${skipped.model}, which is quota-blocked (${skipped.blockedReasons.join("; ")}). The agent fails instead of rerouting. Enable "Quota fallback" in /config or retry after the quota resets.`;
 }
 
 export function resolveWorkflowAgentModelContextDetailed(
@@ -222,23 +255,27 @@ export function resolveWorkflowAgentModelContextDetailed(
   poolState?: { allocationCount: number },
   pinnedPool?: TierResolution[],
 ): WorkflowAgentModelContextDetail {
+  const optionError = workflowOrchestrationOptionError(ctx, opts);
+  if (optionError !== undefined) return { ok: false, ctx, error: optionError };
   const tierClamp =
-    opts.tier !== undefined && isTierName(opts.tier) ? clampNestedTier(ctx, opts.tier) : undefined;
+    orchestrationModeOf(ctx) === "feudalism" && opts.tier !== undefined && isTierName(opts.tier)
+      ? clampNestedTier(ctx, opts.tier)
+      : undefined;
   const tier = tierClamp?.tier ?? opts.tier;
   if (tier !== undefined) {
-    if (ctx.multiproviderEnabled !== true) {
+    if (orchestrationModeOf(ctx) !== "feudalism") {
       return {
         ok: false,
         ctx,
         error:
-          "InputValidationError: `tier` selection requires multi-provider orchestration, which is disabled. Enable it in /config (Multiprovider).",
+          "InputValidationError: `tier` selection requires feudalism mode. Enable feudalism in /config.",
       };
     }
     if (!isTierName(tier)) {
       return {
         ok: false,
         ctx,
-        error: "InputValidationError: tier must be one of: general, warrior, scout.",
+        error: "InputValidationError: tier must be one of: emperor, shogun, daimyo, samurai.",
       };
     }
 
@@ -353,7 +390,12 @@ export function resolveWorkflowAgentModelContextDetailed(
   }
 
   // No tier selection — the agent inherits the parent's model and provider.
-  const error = exhaustedProviderLaunchError(ctx.provider, ctx.provider, ctx.model);
+  const error = exhaustedProviderLaunchError(
+    ctx.provider,
+    ctx.provider,
+    ctx.model,
+    orchestrationModeOf(ctx),
+  );
   return error === null ? { ok: true, ctx } : { ok: false, ctx, error };
 }
 
@@ -368,16 +410,15 @@ export function resolveWorkflowAgentModelContext(
   return { ok: true, ctx: detailed.ctx };
 }
 
-// An explicit tier wins; otherwise, when multiprovider orchestration is on, a
-// named agentType infers its tier (explore→scout, plan→general, …). Without
-// multiprovider (or without an agentType) there is no tier — the agent inherits
-// the parent model.
+// An explicit tier wins; otherwise, in tiering mode, a named agentType infers
+// its tier (explore→daimyo, plan→emperor, …; inference never picks samurai).
+// Other modes inherit the parent model unless they receive a concrete pin.
 export function resolveEffectiveTier(
   ctx: RequestContext,
   opts: Pick<ReturnType<typeof readAgentOptions>, "tier" | "agentType">,
 ): string | undefined {
   if (opts.tier !== undefined) return opts.tier;
-  if (ctx.multiproviderEnabled === true && opts.agentType !== undefined) {
+  if (orchestrationModeOf(ctx) === "feudalism" && opts.agentType !== undefined) {
     return defaultTierForAgentType(opts.agentType);
   }
   return undefined;
@@ -464,47 +505,46 @@ export async function createWorkflowSubagentBridge(
     const cacheScope = activeCacheScope();
     const structuralPath = `${cacheScope.path}/agent:${cacheScope.chain.callIndex}`;
     cacheScope.chain.callIndex += 1;
-    const cacheKey = options.journal
-      ? computeAgentCacheKey(prompt, rawOptions, structuralPath, cacheScope.chain.prevKey)
-      : undefined;
-    if (cacheKey !== undefined) cacheScope.chain.prevKey = cacheKey;
     const baseCtx: RequestContext = {
       ...options.ctx,
       abortSignal: options.signal,
     };
-    // An explicit (provider, model) pin bypasses tier routing entirely; a bare
-    // model wins over tier too — it stays on the inherited provider (applied
-    // below via findModel) instead of overlaying a tier-routed sibling.
+    const optionError = workflowOrchestrationOptionError(baseCtx, opts);
+    // An explicit (provider, model) pin is literal in Default mode. Experimental
+    // mode has no concrete pin path; tier routing owns the selection there.
     const explicitPin =
       opts.provider === undefined
         ? null
-        : baseCtx.multiproviderEnabled !== true
+        : opts.model === undefined
           ? ({
               ok: false,
-              error:
-                "InputValidationError: `provider` requires multi-provider orchestration, which is disabled. Enable it in /config (Multiprovider), or use `model` with an active-provider model id.",
+              error: "InputValidationError: `provider` requires `model` to name the pinned model.",
             } as const)
-          : opts.model === undefined
-            ? ({
-                ok: false,
-                error:
-                  "InputValidationError: `provider` requires `model` to name the pinned model.",
-              } as const)
-            : resolveModelPin(opts.provider, opts.model, baseCtx.provider);
-    const explicitPinClamp =
-      opts.provider !== undefined && opts.model !== undefined && isProviderId(opts.provider)
-        ? clampNestedPinnedModel(
-            baseCtx,
-            opts.provider,
-            findModel(opts.model, opts.provider)?.id ?? opts.model,
-          )
-        : undefined;
+          : resolveModelPin(
+              opts.provider,
+              opts.model,
+              baseCtx.provider,
+              orchestrationModeOf(baseCtx),
+            );
+    const explicitModel =
+      opts.provider === undefined && opts.model !== undefined
+        ? resolveToolModelOverride(baseCtx, opts.model)
+        : null;
     const effectiveTier =
-      explicitPinClamp?.tier ??
-      (explicitPin === null && opts.model === undefined
+      optionError === undefined && explicitPin === null && explicitModel === null
         ? resolveEffectiveTier(baseCtx, opts)
-        : undefined);
-    const effectiveDiversify = explicitPinClamp === undefined ? opts.diversify : undefined;
+        : undefined;
+    const effectiveDiversify = optionError === undefined ? opts.diversify : undefined;
+    const cacheKey = options.journal
+      ? computeAgentCacheKey(
+          prompt,
+          rawOptions,
+          structuralPath,
+          cacheScope.chain.prevKey,
+          orchestrationModeOf(baseCtx),
+        )
+      : undefined;
+    if (cacheKey !== undefined) cacheScope.chain.prevKey = cacheKey;
     const poolKey =
       effectiveTier !== undefined ? `${effectiveTier}:${effectiveDiversify ? "d" : "1"}` : "";
     let allocationCount = 0;
@@ -513,19 +553,7 @@ export async function createWorkflowSubagentBridge(
       tierAllocationCounts[poolKey] = allocationCount + 1;
     }
     const resolveContext = (): WorkflowAgentModelContextDetail => {
-      if (explicitPinClamp !== undefined) {
-        const resolved = resolveWorkflowAgentModelContextDetailed(
-          baseCtx,
-          { tier: explicitPinClamp.tier },
-          { allocationCount },
-          poolKey ? tierPinnedPools[poolKey] : undefined,
-        );
-        if (!resolved.ok) return resolved;
-        return {
-          ...resolved,
-          degradedReasons: [explicitPinClamp.notice, ...(resolved.degradedReasons ?? [])],
-        };
-      }
+      if (optionError !== undefined) return { ok: false, ctx: baseCtx, error: optionError };
       if (explicitPin !== null) {
         return explicitPin.ok
           ? {
@@ -537,6 +565,11 @@ export async function createWorkflowSubagentBridge(
               },
             }
           : { ok: false, ctx: baseCtx, error: explicitPin.error };
+      }
+      if (explicitModel !== null) {
+        return explicitModel.ok
+          ? { ok: true, ctx: explicitModel.ctx }
+          : { ok: false, ctx: baseCtx, error: explicitModel.error };
       }
       return resolveWorkflowAgentModelContextDetailed(
         baseCtx,
@@ -556,7 +589,10 @@ export async function createWorkflowSubagentBridge(
         // never sleep out a cooldown (a quota window can be hours — the next
         // phase would silently stall). Take the substitute; degraded routing
         // is already surfaced via degradedReasons below.
-        decisionHook: async () => ({ decision: "use_fallback", timedOut: false }),
+        decisionHook: async () => ({
+          decision: "use_fallback",
+          timedOut: false,
+        }),
         sleepUntil: (untilEpochMs) => sleepUntilWorkflowFallback(untilEpochMs, options.signal),
       })
     ).value;
@@ -576,9 +612,6 @@ export async function createWorkflowSubagentBridge(
     const selectedCtx = resolved.ok ? resolved.ctx : baseCtx;
     const agentCtx: RequestContext = {
       ...selectedCtx,
-      ...(opts.model !== undefined && explicitPinClamp === undefined
-        ? { model: findModel(opts.model, selectedCtx.provider)?.id ?? opts.model }
-        : {}),
       ...(opts.effort !== undefined ? { effort: opts.effort } : {}),
     };
     const modelDisplay =
@@ -665,7 +698,11 @@ export async function createWorkflowSubagentBridge(
       // Record the dispatch before the fork so a crash mid-run is distinguishable
       // from a key that was never attempted.
       if (options.journal && cacheKey !== undefined) {
-        await options.journal.append({ type: "started", key: cacheKey, agentId });
+        await options.journal.append({
+          type: "started",
+          key: cacheKey,
+          agentId,
+        });
       }
       const runFork = forkRunnerOverride ?? options.runFork ?? defaultForkRunner;
       const meter = options.meter;
@@ -710,7 +747,10 @@ export async function createWorkflowSubagentBridge(
         const agentController = new AbortController();
         const onParentAbort = (): void => agentController.abort(WORKFLOW_PARENT_ABORT_REASON);
         if (options.signal.aborted) agentController.abort(WORKFLOW_PARENT_ABORT_REASON);
-        else options.signal.addEventListener("abort", onParentAbort, { once: true });
+        else
+          options.signal.addEventListener("abort", onParentAbort, {
+            once: true,
+          });
         options.onAgentController?.(agentId, agentController);
         try {
           transcripts.begin(agentId, prompt);

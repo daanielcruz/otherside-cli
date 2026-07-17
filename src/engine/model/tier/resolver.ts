@@ -1,11 +1,13 @@
 import { readFileSync, statSync } from "node:fs";
-import type { TierName } from "@/engine/model/tier/names.ts";
+import { TIER_NAMES, type TierName } from "@/engine/model/tier/names.ts";
+import { loadRosterOverlay } from "@/engine/model/tier/roster-overlay.ts";
 import {
   baseModelId,
-  GENERAL_MODELS,
-  SCOUT_MODELS,
+  DAIMYO_MODELS,
+  EMPEROR_MODELS,
+  SAMURAI_MODELS,
+  SHOGUN_MODELS,
   type TierModel,
-  WARRIOR_MODELS,
 } from "@/engine/model/tier/tiers.ts";
 import * as providers from "@/engine/providers/registry.ts";
 import type { RoutingBalanceStatus, RoutingTrackingStatus } from "@/engine/session/usage/limits.ts";
@@ -21,10 +23,21 @@ import {
 } from "@/kernel/storage/credentials.ts";
 
 const TIER_LISTS: Record<TierName, readonly TierModel[]> = {
-  general: GENERAL_MODELS,
-  warrior: WARRIOR_MODELS,
-  scout: SCOUT_MODELS,
+  emperor: EMPEROR_MODELS,
+  shogun: SHOGUN_MODELS,
+  daimyo: DAIMYO_MODELS,
+  samurai: SAMURAI_MODELS,
 };
+
+// Cascade is positional and stops at daimyo: samurai is an explicit
+// destination only, never a fallback — weak models must not silently absorb
+// work briefed for a stronger tier.
+function cascadeFrom(tier: TierName): readonly TierName[] {
+  if (tier === "samurai") return ["samurai"];
+  const start = TIER_NAMES.indexOf(tier);
+  const chain = start >= 0 ? TIER_NAMES.slice(start) : [tier];
+  return chain.filter((candidate) => candidate !== "samurai");
+}
 
 export interface TierResolution {
   provider: ProviderId;
@@ -323,9 +336,10 @@ export function resolvedTierSummary(
   activeProvider?: ProviderId,
 ): Record<TierName, TierResolution | null> {
   return {
-    general: resolveTier("general", undefined, activeProvider),
-    warrior: resolveTier("warrior", undefined, activeProvider),
-    scout: resolveTier("scout", undefined, activeProvider),
+    emperor: resolveTier("emperor", undefined, activeProvider),
+    shogun: resolveTier("shogun", undefined, activeProvider),
+    daimyo: resolveTier("daimyo", undefined, activeProvider),
+    samurai: resolveTier("samurai", undefined, activeProvider),
   };
 }
 
@@ -333,9 +347,10 @@ export function resolvedTierRoster(
   activeProvider?: ProviderId,
 ): Record<TierName, TierResolution[]> {
   return {
-    general: resolveTierTopN("general", 3, undefined, activeProvider),
-    warrior: resolveTierTopN("warrior", 3, undefined, activeProvider),
-    scout: resolveTierTopN("scout", 3, undefined, activeProvider),
+    emperor: resolveTierTopN("emperor", tierRosterSize("emperor"), undefined, activeProvider),
+    shogun: resolveTierTopN("shogun", tierRosterSize("shogun"), undefined, activeProvider),
+    daimyo: resolveTierTopN("daimyo", tierRosterSize("daimyo"), undefined, activeProvider),
+    samurai: resolveTierTopN("samurai", tierRosterSize("samurai"), undefined, activeProvider),
   };
 }
 
@@ -407,6 +422,10 @@ export function resolveTierTopNDetailed(
   };
 }
 
+export function tierRosterSize(tier: TierName): number {
+  return stableTierRoster(tier).length;
+}
+
 export function resolveTierRankDetailed(
   tier: TierName,
   rank: number,
@@ -448,12 +467,7 @@ export function resolveTierWithCascadeDetailed(
   exclude?: ProviderId,
   activeProvider?: ProviderId,
 ): TierCascadeResolutionDetail {
-  const cascade: TierName[] =
-    tier === "general"
-      ? ["general", "warrior", "scout"]
-      : tier === "warrior"
-        ? ["warrior", "scout"]
-        : ["scout"];
+  const cascade = cascadeFrom(tier);
   const tiers: TierResolutionDetail[] = [];
   for (const nextTier of cascade) {
     const detail = resolveTierDetailed(nextTier, exclude, activeProvider);
@@ -485,12 +499,7 @@ export function resolveTierTopNWithCascadeDetailed(
   exclude?: ProviderId,
   activeProvider?: ProviderId,
 ): TierTopNCascadeResolutionDetail {
-  const cascade: TierName[] =
-    tier === "general"
-      ? ["general", "warrior", "scout"]
-      : tier === "warrior"
-        ? ["warrior", "scout"]
-        : ["scout"];
+  const cascade = cascadeFrom(tier);
   const tiers: TierTopNResolutionDetail[] = [];
   for (const nextTier of cascade) {
     const detail = resolveTierTopNDetailed(nextTier, count, exclude, activeProvider);
@@ -568,18 +577,23 @@ function noCascadeTopNUsableTierError(tier: TierName, tiers: TierTopNResolutionD
     )
     .filter((value) => value.length > 0)
     .join(" || ");
-  const cascade =
-    tier === "general"
-      ? "general -> warrior -> scout"
-      : tier === "warrior"
-        ? "warrior -> scout"
-        : "scout";
+  const cascade = cascadeFrom(tier).join(" -> ");
   return detail.length > 0
     ? `No usable provider found for tier cascade ${cascade}. Diagnostics: ${detail}`
     : `No usable provider found for tier cascade ${cascade}.`;
 }
 
 function stableTierRoster(tier: TierName): readonly TierModel[] {
+  // A tier present in the orchestration.json overlay (user global ← project)
+  // replaces the built-in seed for that tier; array order is the rank.
+  const overlay = loadRosterOverlay(process.cwd())[tier];
+  if (overlay !== undefined) {
+    return overlay.map((entry, index) => ({
+      provider: entry.provider,
+      name: entry.model,
+      pos: index + 1,
+    }));
+  }
   // Defensive: an invalid or legacy tier name (e.g. "best", "explorer") must not
   // spread `undefined` and throw a TypeError; callers degrade to "no candidates".
   const list = TIER_LISTS[tier];
@@ -701,9 +715,10 @@ function buildExcludedCandidate(
 }
 
 function tierForEntry(entry: TierModel): TierName {
-  if (GENERAL_MODELS.includes(entry)) return "general";
-  if (WARRIOR_MODELS.includes(entry)) return "warrior";
-  return "scout";
+  if (EMPEROR_MODELS.includes(entry)) return "emperor";
+  if (SHOGUN_MODELS.includes(entry)) return "shogun";
+  if (DAIMYO_MODELS.includes(entry)) return "daimyo";
+  return "samurai";
 }
 
 function noUsableTierError(tier: TierName, candidates: TierCandidateDetail[]): string {
@@ -720,12 +735,7 @@ function noCascadeUsableTierError(tier: TierName, tiers: TierResolutionDetail[])
     )
     .filter((value) => value.length > 0)
     .join(" || ");
-  const cascade =
-    tier === "general"
-      ? "general -> warrior -> scout"
-      : tier === "warrior"
-        ? "warrior -> scout"
-        : "scout";
+  const cascade = cascadeFrom(tier).join(" -> ");
   return detail.length > 0
     ? `No usable provider found for tier cascade ${cascade}. Diagnostics: ${detail}`
     : `No usable provider found for tier cascade ${cascade}.`;

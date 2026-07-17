@@ -22,9 +22,11 @@ import {
   resolveTierTopNWithCascadeDetailed,
   type TierCandidateDetail,
   tierModelCandidateNow,
+  tierRosterSize,
   usableActiveProviderForTierResolution,
 } from "@/engine/model/tier/resolver.ts";
 import * as providers from "@/engine/providers/registry.ts";
+import type { OrchestrationMode } from "@/kernel/config/orchestration-mode.ts";
 import { isProviderId, type ProviderId } from "@/kernel/config/provider-ids.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 import { clampNestedPinnedModel, clampNestedTier, type TierClamp } from "./tier-ceiling.ts";
@@ -42,6 +44,10 @@ export type ToolRoutingResult =
   // resolution itself — callers surface those to the step, and only those.
   | { ok: false; error: string; gated?: boolean };
 
+function modeOf(ctx: RequestContext): OrchestrationMode {
+  return ctx.orchestrationMode ?? "disabled";
+}
+
 function withTierClampNotice(result: ToolRoutingResult, clamp: TierClamp): ToolRoutingResult {
   if (!result.ok) return result;
   return {
@@ -57,6 +63,7 @@ function clampRequestedModel(
   provider: ProviderId,
   model: string,
 ): TierClamp | undefined {
+  if (modeOf(ctx) !== "feudalism") return undefined;
   return clampNestedPinnedModel(ctx, provider, findModel(model, provider)?.id ?? model);
 }
 
@@ -65,6 +72,7 @@ export function quotaRerouteForInvocation(
   invocation: SubagentInvocation,
   result: SubagentResult,
 ): { tier: TierName; provider: ProviderId } | undefined {
+  if (modeOf(ctx) !== "feudalism") return undefined;
   if (result.quotaExhausted === undefined) return undefined;
   if (invocation.tierRankOverride !== undefined) return undefined;
   if (!invocation.tierOverride || !isTierName(invocation.tierOverride)) return undefined;
@@ -80,6 +88,12 @@ export function resolveToolTierQuotaReroute(
   tier: TierName,
   exhaustedProvider: ProviderId,
 ): ToolRoutingResult {
+  if (modeOf(ctx) !== "feudalism") {
+    return {
+      ok: false,
+      error: "InputValidationError: quota fallback is available only in feudalism mode.",
+    };
+  }
   if (ctx.quotaFallbackEnabled === false) {
     return {
       ok: false,
@@ -106,7 +120,7 @@ export function resolveToolTierQuotaReroute(
 }
 
 function quotaFallbackDisabledError(tier: string, skipped: TierCandidateDetail): string {
-  return `Quota fallback is disabled: tier "${tier}" would reroute past ${skipped.provider}/${skipped.model}, which is quota-blocked (${skipped.blockedReasons.join("; ")}). The step fails instead of rerouting. Enable "Quota fallback" in /config, pin a specific provider/model, or retry after the quota resets.`;
+  return `Quota fallback is disabled: tier "${tier}" would reroute past ${skipped.provider}/${skipped.model}, which is quota-blocked (${skipped.blockedReasons.join("; ")}). The step fails instead of rerouting. Enable "Quota fallback" in /config or retry after the quota resets.`;
 }
 
 export function resolveToolTierOverride(
@@ -114,25 +128,30 @@ export function resolveToolTierOverride(
   tierRaw: string,
   rankRaw?: number,
 ): ToolRoutingResult {
-  if (ctx.multiproviderEnabled !== true) {
+  const mode = modeOf(ctx);
+  if (mode !== "feudalism") {
+    const remedy =
+      mode === "default"
+        ? "use concrete `provider` + `model` pins or omit overrides"
+        : "use `model` with an active-provider model id";
     return {
       ok: false,
-      error:
-        "InputValidationError: `tier` selection requires multi-provider orchestration, which is disabled. Enable it in /config (Multiprovider), or use `model` with an active-provider model id.",
+      error: `InputValidationError: \`tier\` selection requires feudalism mode. Enable feudalism in /config, or ${remedy}.`,
     };
   }
   if (!isTierName(tierRaw)) {
     return {
       ok: false,
-      error: "InputValidationError: tier must be one of: general, warrior, scout.",
+      error: "InputValidationError: tier must be one of: emperor, shogun, daimyo, samurai.",
     };
   }
   const activeProvider = usableActiveProviderForTierResolution(ctx.provider);
   if (rankRaw !== undefined) {
-    if (!Number.isInteger(rankRaw) || rankRaw < 1 || rankRaw > 3) {
+    const maxRank = tierRosterSize(tierRaw);
+    if (!Number.isInteger(rankRaw) || rankRaw < 1 || rankRaw > maxRank) {
       return {
         ok: false,
-        error: "InputValidationError: tier_rank / tierRank must be an integer 1, 2, or 3.",
+        error: `InputValidationError: tier_rank / tierRank must be an integer between 1 and ${maxRank} for tier "${tierRaw}".`,
       };
     }
     const ranked = resolveTierRankDetailed(tierRaw, rankRaw, activeProvider);
@@ -148,7 +167,11 @@ export function resolveToolTierOverride(
     }
     return {
       ok: true,
-      ctx: { ...ctx, provider: ranked.resolution.provider, model: ranked.resolution.model },
+      ctx: {
+        ...ctx,
+        provider: ranked.resolution.provider,
+        model: ranked.resolution.model,
+      },
     };
   }
   // A bare tier keeps the caller's own model only when that model is currently
@@ -165,7 +188,11 @@ export function resolveToolTierOverride(
     callerCandidate !== null &&
     isQuotaDisplacedCandidate(callerCandidate)
   ) {
-    return { ok: false, gated: true, error: quotaFallbackDisabledError(tierRaw, callerCandidate) };
+    return {
+      ok: false,
+      gated: true,
+      error: quotaFallbackDisabledError(tierRaw, callerCandidate),
+    };
   }
   const resolved = resolveTierTopNWithCascadeDetailed(tierRaw, 1, undefined, activeProvider);
   if (resolved.resolutions.length === 0) {
@@ -184,7 +211,11 @@ export function resolveToolTierOverride(
   if (ctx.quotaFallbackEnabled === false) {
     const skipped = quotaDisplacedBeforeTopNSelection(resolved);
     if (skipped !== null) {
-      return { ok: false, gated: true, error: quotaFallbackDisabledError(tierRaw, skipped) };
+      return {
+        ok: false,
+        gated: true,
+        error: quotaFallbackDisabledError(tierRaw, skipped),
+      };
     }
   }
   const fallbackDeviation =
@@ -252,11 +283,18 @@ function resolveSubagentRouting(
   invocation: SubagentInvocation,
 ): ToolRoutingResult {
   if (invocation.providerOverride !== undefined) {
-    if (ctx.multiproviderEnabled !== true) {
+    if (modeOf(ctx) === "disabled") {
       return {
         ok: false,
         error:
-          "InputValidationError: `provider` requires multi-provider orchestration, which is disabled. Enable it in /config (Multiprovider), or use `model` with an active-provider model id.",
+          "InputValidationError: `provider` is unavailable when orchestration is disabled. Use `model` with an active-provider model id.",
+      };
+    }
+    if (modeOf(ctx) === "feudalism") {
+      return {
+        ok: false,
+        error:
+          "InputValidationError: concrete `provider`/`model` pins are unavailable in feudalism mode. Use `tier` routing instead.",
       };
     }
     if (invocation.modelOverride === undefined) {
@@ -275,6 +313,7 @@ function resolveSubagentRouting(
       invocation.providerOverride,
       invocation.modelOverride,
       ctx.provider,
+      modeOf(ctx),
     );
     if (!pin.ok) return pin;
     const next: RequestContext = {
@@ -291,6 +330,13 @@ function resolveSubagentRouting(
     return { ok: true, ctx: next };
   }
   if (invocation.modelOverride !== undefined) {
+    if (modeOf(ctx) === "feudalism") {
+      return {
+        ok: false,
+        error:
+          "InputValidationError: concrete `model` pins are unavailable in feudalism mode. Use `tier` routing instead.",
+      };
+    }
     const clamp = clampRequestedModel(ctx, ctx.provider, invocation.modelOverride);
     if (clamp !== undefined) {
       return withTierClampNotice(resolveToolTierOverride(ctx, clamp.tier), clamp);
@@ -319,7 +365,7 @@ function resolveAgentDefinitionModelOverride(
   const key = getProviderConfig(ctx.provider)?.provider.shortKey ?? ctx.provider;
   const override = def.model[key];
   if (!override) {
-    const error = exhaustedProviderLaunchError(ctx.provider, ctx.provider, ctx.model);
+    const error = exhaustedProviderLaunchError(ctx.provider, ctx.provider, ctx.model, modeOf(ctx));
     return error === null ? { ok: true, ctx } : { ok: false, error };
   }
   const clamp = clampRequestedModel(ctx, ctx.provider, override.model);
@@ -331,7 +377,10 @@ function resolveAgentDefinitionModelOverride(
   if (!override.effort) return resolved;
   return {
     ok: true,
-    ctx: { ...resolved.ctx, effort: override.effort as RequestContext["effort"] },
+    ctx: {
+      ...resolved.ctx,
+      effort: override.effort as RequestContext["effort"],
+    },
   };
 }
 
@@ -352,7 +401,7 @@ export function resolveToolModelOverride(
       error: invalidModelOverrideError(override, ctx.provider),
     };
   }
-  const quotaError = exhaustedProviderLaunchError(ctx.provider, ctx.provider, model);
+  const quotaError = exhaustedProviderLaunchError(ctx.provider, ctx.provider, model, modeOf(ctx));
   if (quotaError !== null) return { ok: false, error: quotaError };
   const next: RequestContext = { ...ctx, model };
   if (next.effort !== null && !effortLevelsForModel(model, ctx.provider).includes(next.effort)) {
@@ -372,5 +421,5 @@ function invalidModelOverrideError(
       : providers.get(providerId).allowsCustomModel()
         ? " No static model roster is available for this provider; use a model id exposed by the active provider."
         : ` No model overrides are currently available for "${providerId}".`;
-  return `InputValidationError: model "${override}" is not available on active provider "${providerId}".${roster} Cross-provider model ids and unknown aliases are rejected. Use \`tier\` for cross-provider selection when the tool supports it, or omit \`model\` to inherit the parent model.`;
+  return `InputValidationError: model "${override}" is not available on active provider "${providerId}".${roster} Cross-provider model ids and unknown aliases are rejected. Use a model exposed by the active provider, or omit \`model\` to inherit the parent model.`;
 }

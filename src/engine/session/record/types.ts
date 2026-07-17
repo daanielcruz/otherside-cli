@@ -3,6 +3,7 @@ import type { ToolResultMeta } from "@/kernel/std/types/message.ts";
 
 export type TranscriptKind =
   | "user"
+  | "bash_input"
   | "assistant"
   | "system"
   | "tool"

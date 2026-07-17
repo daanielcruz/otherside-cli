@@ -85,7 +85,7 @@ describe("armPermissionPromptNotification", () => {
     expect(calls).toEqual([]);
   });
 
-  it("uses the reference 6s idle threshold by default", () => {
+  it("defaults to a 6s idle threshold", () => {
     expect(PERMISSION_PROMPT_IDLE_MS).toBe(6000);
   });
 });

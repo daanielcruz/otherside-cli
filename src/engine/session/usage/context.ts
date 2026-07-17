@@ -25,6 +25,8 @@ export interface ContextUsageCategory {
   name: string;
   tokens: number;
   color: ContextCategoryColor;
+  /** Optional source detail rendered after the token figures (e.g. "3 files"). */
+  detail?: string;
 }
 
 export interface ContextUsageData {
@@ -102,7 +104,16 @@ export function getContextBreakdown(input: ContextBreakdownInput): ContextUsageD
     { name: "System prompt", tokens: harness.systemTokens, color: "steel" },
     { name: "System tools", tokens: harness.toolDefTokens, color: "muted" },
     { name: "Custom agents", tokens: auxiliary.customAgents, color: "success" },
-    { name: "Memory files", tokens: auxiliary.memoryFiles, color: "warning" },
+    {
+      name: "Memory files",
+      tokens: auxiliary.memoryFiles,
+      color: "warning",
+      ...(auxiliary.memoryFileCount > 0
+        ? {
+            detail: `${auxiliary.memoryFileCount} ${auxiliary.memoryFileCount === 1 ? "file" : "files"}`,
+          }
+        : {}),
+    },
     { name: "Skills", tokens: auxiliary.skills, color: "inlineCode" },
     { name: "Messages", tokens: tokens.total, color: "primary" },
     { name: "Free space", tokens: free, color: "subtle" },
@@ -152,11 +163,14 @@ function estimateBlockTokens(block: ContentBlock): number {
 function auxiliarySectionTokens(): {
   customAgents: number;
   memoryFiles: number;
+  memoryFileCount: number;
   skills: number;
 } {
+  const memory = memoryFilesBlock();
   return {
     customAgents: estimateTextTokens(renderCustomAgentsBlock()),
-    memoryFiles: estimateTextTokens(renderMemoryFilesBlock()),
+    memoryFiles: estimateTextTokens(memory.text),
+    memoryFileCount: memory.count,
     skills: estimateTextTokens(renderSkillsBlock()),
   };
 }
@@ -173,12 +187,13 @@ function renderCustomAgentsBlock(): string {
   return lines.join("\n\n");
 }
 
-function renderMemoryFilesBlock(): string {
+function memoryFilesBlock(): { text: string; count: number } {
   try {
-    const out = renderMemorySection(collectMemoryFiles(process.cwd()));
-    return typeof out === "string" ? out : "";
+    const files = collectMemoryFiles(process.cwd());
+    const out = renderMemorySection(files);
+    return { text: typeof out === "string" ? out : "", count: files.length };
   } catch {
-    return "";
+    return { text: "", count: 0 };
   }
 }
 

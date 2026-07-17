@@ -86,11 +86,11 @@ describe("payload diagnostics", () => {
         config: {} as never,
       },
       compactState: {
-        circuitOpen: false,
         rapidRefillBreakerOpen: false,
         rapidRefillCount: 0,
+        consecutiveCompactFailures: 0,
         turnsSinceLast: Number.POSITIVE_INFINITY,
-        consecutiveFailures: 0,
+        lastAutoCompactAttemptTurnId: null,
       },
       sessionAllowedToolPatterns: new Set<string>(),
       loadedNestedMemoryPaths: new Set<string>(),

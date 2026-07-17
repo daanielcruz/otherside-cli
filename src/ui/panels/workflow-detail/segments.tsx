@@ -5,6 +5,7 @@ import { type Color as InkColor, Text } from "@/ink";
 import { formatDuration, formatTokens } from "@/kernel/std/text/format.ts";
 import { pluralize } from "@/kernel/std/text/pluralize.ts";
 import { stringWidth } from "@/kernel/std/text/string-width.ts";
+import { panelDividerText } from "@/ui/chrome/panel.tsx";
 import {
   type AgentDisplayStatus,
   agentStatusGlyph,
@@ -155,7 +156,7 @@ function buildPaneRuleColumn(input: {
   const dashCount = Math.max(0, width - used - stringWidth(tagText));
   out.push(
     <Text key="dash" color={Color.text}>
-      {Glyph.boxHLine.repeat(dashCount)}
+      {panelDividerText(dashCount)}
     </Text>,
   );
   if (tagText) {

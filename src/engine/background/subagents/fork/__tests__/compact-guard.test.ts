@@ -108,15 +108,12 @@ describe("fork compaction breaker and blocking-limit guard", () => {
   it("re-arms the compact-failure circuit after enough turns pass without a rapid refill", async () => {
     const providerId = `fork-circuit-rearm-${crypto.randomUUID()}` as ProviderId;
     const model = "fork-circuit-rearm-model";
-    // A huge window with a tiny autoCompactTokenLimit override guarantees the
-    // per-turn autocompact threshold is always crossed, while the blocking
-    // limit (which ignores autoCompactTokenLimit) stays far out of reach --
-    // isolating the circuit-breaker re-arm from the blocking-limit guard.
+    // The effective-window threshold is crossed after each main turn while the
+    // blocking limit stays far enough away to isolate circuit-breaker behavior.
     registerRuntimeModel({
       id: model,
       displayName: model,
-      contextWindow: 200_000,
-      autoCompactTokenLimit: 50,
+      contextWindow: 33_100,
       provider: providerId,
       efforts: [],
       defaultEffort: null,
@@ -170,8 +167,7 @@ describe("fork compaction breaker and blocking-limit guard", () => {
     registerRuntimeModel({
       id: model,
       displayName: model,
-      contextWindow: 200_000,
-      autoCompactTokenLimit: 50,
+      contextWindow: 33_100,
       provider: providerId,
       efforts: [],
       defaultEffort: null,

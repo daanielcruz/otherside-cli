@@ -32,7 +32,7 @@ export function resolveWorkflowAgentProfile(
     return {
       ok: true,
       body: WORKFLOW_AGENT_BODY,
-      allowSet: null,
+      allowSet: resolveDefaultAllowSetForFork("workflow", ctx ?? WORKFLOW_DEFAULT_CTX),
       extraDeclarations: announcedMcpDeclarations(),
     };
   }
@@ -59,14 +59,25 @@ function isSkillToolName(name: string): boolean {
   return toolRegistry.getNamespace(name)?.startsWith("skill:") ?? false;
 }
 
+export function resolveDefaultAllowSetForFork(kind: AgentKind, ctx: RequestContext): Set<string> {
+  const registryNames = toolRegistry.list().map((handler) => handler.schema.name);
+  return new Set(
+    resolveToolsetFor(kind, {
+      isBuiltIn: (name) => !isMcpToolName(name) && !isSkillToolName(name),
+      isBuiltInAgent: true,
+      spawnDepth: agentSpawnDepth(ctx),
+      mcpToolNames: registryNames.filter(isMcpToolName),
+      skillToolNames: registryNames.filter(isSkillToolName),
+    }),
+  );
+}
+
 export function resolveAllowSetForFork(
   def: SubagentDef,
   kind: AgentKind,
   ctx: RequestContext,
-): Set<string> | null {
-  const registryNames = toolRegistry.list().map((h) => h.schema.name);
-  const mcpToolNames = registryNames.filter(isMcpToolName);
-  const skillToolNames = registryNames.filter(isSkillToolName);
+): Set<string> {
+  const registryNames = toolRegistry.list().map((handler) => handler.schema.name);
   const pool = resolveToolsetFor(kind, {
     isBuiltIn: (name) => !isMcpToolName(name) && !isSkillToolName(name),
     isBuiltInAgent: def.scope === "builtin",
@@ -74,12 +85,9 @@ export function resolveAllowSetForFork(
     // The roster is keyed on the DEFINITION's mode, never the parent's: a
     // plan-pinned agent carries ExitPlanMode regardless of who spawned it.
     ...(def.permissionMode !== undefined ? { permissionMode: def.permissionMode } : {}),
-    mcpToolNames,
-    skillToolNames,
+    mcpToolNames: registryNames.filter(isMcpToolName),
+    skillToolNames: registryNames.filter(isSkillToolName),
   });
-  const hasExplicitTools = def.tools?.kind === "list";
-  const hasDisallow = (def.disallowedTools ?? []).length > 0;
-  if (!hasExplicitTools && !hasDisallow) return null;
   const allow = new Set(pool);
   if (def.tools?.kind === "list") {
     const explicit = new Set(def.tools.tools.map(baseToolName));

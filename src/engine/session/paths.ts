@@ -2,9 +2,11 @@ import { closeSync, openSync, readdirSync, readFileSync, readSync, statSync } fr
 import { readdir, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { loadConfigSync, projectConfigKey } from "@/kernel/config/config.ts";
 import {
   canonicalizeCwd,
   configRoot,
+  gitAncestorRoot,
   isEphemeralCwd,
   projectPath,
   projectSlug,
@@ -149,6 +151,7 @@ export async function sessionCwdFilterFor(cwd: string): Promise<SessionCwdFilter
   const canonical = canonicalizeCwd(cwd);
   matchSet.add(canonical);
   for (const wt of await worktreePathsForAsync(canonical)) matchSet.add(wt);
+  for (const slotPath of projectWorktreeSlotPaths(canonical)) matchSet.add(slotPath);
   return filterFromMatchSet(matchSet);
 }
 
@@ -247,7 +250,7 @@ async function statProjectDir(input: StatProjectDirInput): Promise<SessionFileSt
 
 export function listSessionFiles(filterCwd?: string): SessionFileMeta[] {
   const matchSet = filterCwd === undefined ? null : buildMatchSet(filterCwd);
-  const slugSet = filterCwd === undefined ? null : buildSlugSet(filterCwd);
+  const slugSet = matchSet === null ? null : slugSetFrom(matchSet);
   const out: SessionFileMeta[] = [];
   for (const { root, projectDirName } of listProjectDirsSync()) {
     const projectDir = join(root, projectDirName);
@@ -286,13 +289,40 @@ function buildMatchSet(cwd: string): Set<string> {
   const canonical = canonicalizeCwd(cwd);
   set.add(canonical);
   for (const wt of worktreePathsFor(canonical)) set.add(wt);
+  for (const slotPath of projectWorktreeSlotPaths(canonical)) set.add(slotPath);
   return set;
 }
 
-function buildSlugSet(cwd: string): Set<string> {
+function slugSetFrom(matchSet: Set<string>): Set<string> {
   const slugs = new Set<string>();
-  for (const path of buildMatchSet(cwd)) slugs.add(projectSlug(path));
+  for (const path of matchSet) slugs.add(projectSlug(path));
   return slugs;
+}
+
+/**
+ * Worktree paths recorded in this project's persisted worktree-session slot.
+ * A crashed worktree session whose worktree was later removed is invisible to
+ * `git worktree list`, but its transcript still lives under the worktree's
+ * project dir — the slot is the only surviving pointer, so its path joins the
+ * resume match set to keep that session findable from the original repo.
+ */
+function projectWorktreeSlotPaths(canonicalCwd: string): string[] {
+  try {
+    const keys = new Set<string>([projectConfigKey(canonicalCwd)]);
+    const root = gitAncestorRoot(canonicalCwd);
+    if (root !== null) keys.add(projectConfigKey(root));
+    const out: string[] = [];
+    for (const [key, entry] of Object.entries(loadConfigSync().projects ?? {})) {
+      const slot = entry?.activeWorktreeSession;
+      if (slot === undefined || !keys.has(key)) continue;
+      if (typeof slot.activePath === "string" && slot.activePath.length > 0) {
+        out.push(slot.activePath);
+      }
+    }
+    return out;
+  } catch {
+    return [];
+  }
 }
 
 export function latestSessionId(filterCwd?: string): string | null {

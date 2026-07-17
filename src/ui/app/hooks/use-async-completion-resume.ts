@@ -13,6 +13,7 @@ import type { LocalWorkflowTaskState } from "@/engine/background/workflows/runti
 import { emitQueue } from "@/engine/queue/emit.ts";
 import { applyAgentIdentityToTranscript } from "@/engine/session/record/transcript-update.ts";
 import type { AutoClearDispatch } from "@/kernel/std/state/auto-clear-dispatch.ts";
+import { taskNoticeReplayTextFromNotification } from "@/ui/transcript/records/entry-builders.ts";
 import { elapsedMs } from "@/ui/transcript/stats.ts";
 import type { TranscriptEntry } from "@/ui/transcript/types";
 
@@ -27,16 +28,40 @@ function notificationStatus(text: string): "completed" | "failed" | "killed" {
   return "completed";
 }
 
-export function taskKindForNotificationSummary(summary: string): "shell" | "agent" {
-  return summary.startsWith("Background command") ? "shell" : "agent";
-}
-
 export function completionNoticeDisposition(replayKey: string): "append" | "park" {
   return emitQueue.wasReplayKeyConsumed(replayKey) ? "append" : "park";
 }
 
 export function backgroundTaskNoticeIdentity(taskId: string, runGeneration: number): string {
   return `bg:${taskId}:${runGeneration}`;
+}
+
+export function backgroundTaskNoticeData(task: BackgroundTask): Record<string, unknown> {
+  const status = taskFinalStatus(task.status);
+  const notice: Record<string, unknown> = {
+    taskKind: task.kind,
+    status,
+    description: task.description ?? task.agentName,
+    durationMs: task.endedAt ? task.endedAt - task.startedAt : 0,
+    taskId: task.id,
+  };
+  if (task.kind === "shell" && task.exitCode !== undefined) notice.exitCode = task.exitCode;
+  if (task.kind === "agent" && status === "failed" && task.error !== undefined) {
+    notice.error = task.error;
+  }
+  return notice;
+}
+
+export function workflowTaskNoticeData(task: LocalWorkflowTaskState): Record<string, unknown> {
+  const status = taskFinalStatus(task.status);
+  return {
+    taskKind: "workflow",
+    status,
+    description: task.title ?? task.description ?? task.workflowName,
+    durationMs: elapsedMs(task.startedAt, task.endedAt),
+    taskId: task.id,
+    ...(status === "failed" && task.error !== undefined ? { error: task.error } : {}),
+  };
 }
 
 export function recordBackgroundTaskTransition(
@@ -125,15 +150,7 @@ export function useAsyncCompletionResume(deps: AsyncCompletionResumeDeps): void 
   }, []);
   const appendBackgroundTaskNotice = useCallback(
     (task: BackgroundTask): void => {
-      const isShell = task.kind === "shell";
-      const notice: Record<string, unknown> = {
-        taskKind: isShell ? "shell" : "agent",
-        status: taskFinalStatus(task.status),
-        description: task.description ?? task.agentName,
-        durationMs: task.endedAt ? task.endedAt - task.startedAt : 0,
-        taskId: task.id,
-      };
-      if (isShell && task.exitCode !== undefined) notice.exitCode = task.exitCode;
+      const notice = backgroundTaskNoticeData(task);
       const replayKey = backgroundTaskNoticeIdentity(task.id, task.runGeneration);
       appendOrParkNotice(
         {
@@ -149,19 +166,13 @@ export function useAsyncCompletionResume(deps: AsyncCompletionResumeDeps): void 
   );
   const appendWorkflowNotice = useCallback(
     (task: LocalWorkflowTaskState): void => {
-      const status = taskFinalStatus(task.status);
+      const notice = workflowTaskNoticeData(task);
       appendOrParkNotice(
         {
           id: `wn_${task.id}`,
           kind: "task_notice",
-          text: JSON.stringify({
-            taskKind: "workflow",
-            status,
-            description: task.title ?? task.description ?? task.workflowName,
-            durationMs: elapsedMs(task.startedAt, task.endedAt),
-            taskId: task.id,
-          }),
-          isError: status === "failed",
+          text: JSON.stringify(notice),
+          isError: notice.status === "failed",
         },
         `wf:${task.id}`,
       );
@@ -183,18 +194,11 @@ export function useAsyncCompletionResume(deps: AsyncCompletionResumeDeps): void 
           continue;
         }
         const status = notificationStatus(item.payload.text);
-        const summary = item.payload.summary ?? "Background agent";
         appendOrParkNotice(
           {
             id: `n_${item.replayKey}`,
             kind: "task_notice",
-            text: JSON.stringify({
-              taskKind: taskKindForNotificationSummary(summary),
-              status,
-              description: summary,
-              durationMs: 0,
-              taskId,
-            }),
+            text: taskNoticeReplayTextFromNotification(item.payload.text),
             isError: status === "failed",
           },
           item.replayKey,
@@ -215,13 +219,7 @@ export function useAsyncCompletionResume(deps: AsyncCompletionResumeDeps): void 
         {
           id: `wn_${taskId}`,
           kind: "task_notice",
-          text: JSON.stringify({
-            taskKind: "workflow",
-            status,
-            description: item.payload.summary ?? "Background workflow",
-            durationMs: 0,
-            taskId,
-          }),
+          text: taskNoticeReplayTextFromNotification(item.payload.text),
           isError: status === "failed",
         },
         item.replayKey,

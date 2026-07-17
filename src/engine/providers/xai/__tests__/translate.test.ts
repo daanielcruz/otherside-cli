@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { buildAnthropicMessages } from "@/engine/providers/anthropic/translate.ts";
 import { translateRequestGrok, translateResponseGrok } from "@/engine/providers/xai/translate.ts";
+import type { SessionRecord } from "@/engine/session/record/schema.ts";
+import { sessionRecordsToMessages } from "@/engine/session/transcript/to-messages.ts";
 import type { ProviderEvent } from "@/kernel/std/types/events.ts";
 import type { Message } from "@/kernel/std/types/message.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
@@ -79,6 +82,78 @@ describe("translateRequestGrok", () => {
     ]);
   });
 
+  test("replays PDF tool results as a placeholder without rewriting session history", () => {
+    const pdf = {
+      type: "pdf" as const,
+      source: { type: "base64" as const, media_type: "application/pdf" as const, data: "cGRm" },
+      filename: "report.pdf",
+      pageCount: 1,
+      bytes: 3,
+    };
+    const records: SessionRecord[] = [
+      {
+        type: "tool_call",
+        ts: "2026-07-16T00:00:00.000Z",
+        call_id: "pdf",
+        tool_name: "Read",
+        args: { file_path: "/tmp/report.pdf" },
+      },
+      {
+        type: "tool_result",
+        ts: "2026-07-16T00:00:01.000Z",
+        call_id: "pdf",
+        result: [pdf],
+        is_error: false,
+      },
+    ];
+    const sessionMessages = sessionRecordsToMessages(records);
+
+    const xaiBody = translateRequestGrok(ctx({}), sessionMessages, []) as {
+      input: Array<Record<string, unknown>>;
+    };
+    expect(xaiBody.input).toEqual([
+      {
+        type: "function_call",
+        call_id: "pdf",
+        name: "Read",
+        arguments: JSON.stringify({ file_path: "/tmp/report.pdf" }),
+        status: "completed",
+      },
+      {
+        type: "function_call_output",
+        call_id: "pdf",
+        output:
+          "[PDF content is unavailable on this provider. Re-read the file to provide page images.]",
+      },
+    ]);
+    expect(JSON.stringify(xaiBody)).not.toContain("cGRm");
+
+    const storedResult = records.find(
+      (record): record is Extract<SessionRecord, { type: "tool_result" }> =>
+        record.type === "tool_result",
+    );
+    expect(storedResult?.result).toEqual([pdf]);
+    const rebuiltResult = sessionMessages[1]!.content[0];
+    expect(rebuiltResult).toEqual({ type: "tool_result", tool_use_id: "pdf", content: [pdf] });
+
+    const anthropic = buildAnthropicMessages(sessionMessages, {
+      provider: "anthropic",
+      model: "claude-opus-4-8",
+    } as RequestContext);
+    expect(anthropic.out[1]?.content).toEqual([
+      {
+        type: "tool_result",
+        tool_use_id: "pdf",
+        content: [
+          {
+            type: "document",
+            source: { type: "base64", media_type: "application/pdf", data: "cGRm" },
+          },
+        ],
+      },
+    ]);
+  });
+
   test("maps a user image turn to an input_image content array", () => {
     const messages: Message[] = [
       {
@@ -142,11 +217,12 @@ describe("translateRequestGrok", () => {
     expect(body.reasoning).toEqual({ effort: "low" });
   });
 
-  test("injects the hosted web_search tool and drops the WebSearch client decl", () => {
+  test("injects one hosted web_search tool and drops both client aliases", () => {
     const messages: Message[] = [{ role: "user", content: [{ type: "text", text: "hi" }] }];
     const tools = [
       { name: "Read", input_schema: { type: "object", properties: {} } },
       { name: "WebSearch", input_schema: { type: "object", properties: { query: {} } } },
+      { name: "web_search", input_schema: { type: "object", properties: { query: {} } } },
     ];
     const body = translateRequestGrok(ctx({}), messages, tools) as Record<string, unknown>;
     expect(body.tools).toEqual([

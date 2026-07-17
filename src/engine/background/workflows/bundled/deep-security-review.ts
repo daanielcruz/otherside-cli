@@ -561,7 +561,7 @@ async function writeArtifacts(paths, contents) {
       label: "writer",
       phase: "Verify",
       schema: WRITER_SCHEMA,
-      tier: "general"
+      tier: "emperor"
     });
     if (!writerResult) {
       return { written: {}, reportPath: "", bundleDir: BUNDLE_DIR, errors: ["artifact writer returned no structured result"] };
@@ -636,7 +636,7 @@ const scope = await safeAgent(
   "5. For EVERY vulnerability class below, decide inScope (the repo has surface for it) or not, with a one-line reason. Silence is not a pass — mark N/A classes explicitly with a reason.\\n\\n" +
   "## Vulnerability classes\\n" + CATEGORY_LIST + "\\n\\n" +
   "Return the scope object. Structured output only.",
-  { label: "prep", phase: "Prep", schema: SCOPE_SCHEMA, tier: "general" }
+  { label: "prep", phase: "Prep", schema: SCOPE_SCHEMA, tier: "emperor" }
 )
 if (!scope) {
   return { error: "Prep agent returned no result — cannot establish the audit scope." }
@@ -845,7 +845,7 @@ const plan = await safeAgent(
   "- sinks: dangerous APIs or patterns to look out for\\n" +
   "- safeSiblings: examples of safe/correct patterns in the repo that should be checked for divergence\\n" +
   "Return structured rails for each in-scope category. Structured output only.",
-  { label: "planner", phase: "Prep", schema: PLANNER_SCHEMA, tier: "general" }
+  { label: "planner", phase: "Prep", schema: PLANNER_SCHEMA, tier: "emperor" }
 ) || { rails: [] }
 
 const AUDITOR_PROMPT = (lane, rail) => {
@@ -943,7 +943,7 @@ function debateCandidate(c) {
       () => safeAgent(PROSECUTOR_PROMPT(c), { label: "prosecute:" + short, phase: "Debate", schema: ARGUMENT_SCHEMA }),
       () => safeAgent(DEFENDER_PROMPT(c), { label: "defend:" + short, phase: "Debate", schema: ARGUMENT_SCHEMA }),
     ]).then(([pro, def]) =>
-      safeAgent(JUDGE_PROMPT(c, pro, def), { label: "judge:" + short, phase: "Debate", schema: VERDICT_SCHEMA, tier: "general" }).then(judgeVerdict => {
+      safeAgent(JUDGE_PROMPT(c, pro, def), { label: "judge:" + short, phase: "Debate", schema: VERDICT_SCHEMA, tier: "emperor" }).then(judgeVerdict => {
         if (judgeVerdict) {
           validationReceipts.push({
             findingId: c.id,
@@ -957,7 +957,7 @@ function debateCandidate(c) {
       })
     )
   }
-  return safeAgent(JUDGE_SOLO_PROMPT(c), { label: "judge:" + short, phase: "Debate", schema: VERDICT_SCHEMA, tier: "general" }).then(judgeVerdict => {
+  return safeAgent(JUDGE_SOLO_PROMPT(c), { label: "judge:" + short, phase: "Debate", schema: VERDICT_SCHEMA, tier: "emperor" }).then(judgeVerdict => {
     if (judgeVerdict) {
       validationReceipts.push({
         findingId: c.id,
@@ -979,7 +979,7 @@ const scanned = await pipeline(
       label: "audit:" + lane.key,
       phase: "Scan",
       schema: CANDIDATES_SCHEMA,
-      tier: "warrior"
+      tier: "daimyo"
     }).then(r => {
       if (!r) return { lane, candidates: [] }
       log("audit:" + lane.key + " — " + r.candidates.length + " candidates")
@@ -1004,7 +1004,7 @@ if (P.sweep) {
       "## Cross-cutting sweep — gaps only\\n\\n" + SCOPE_BLOCK + "\\n" +
       "## Already found (do NOT re-derive)\\n" + known + "\\n\\n" + CROSS_FILE_LENS + "\\n\\n" +
       "Hunt ONLY for vulnerabilities the per-class auditors miss: bugs that span multiple files, exploit CHAINS across classes, a guard dropped in a refactor, an unsafe call site diverging from a safe sibling. Surface up to " + SWEEP_MAX + " NEW candidates. If nothing new, return an empty list. " + FINDING_FIELDS + "\\n\\nStructured output only.",
-      { label: "sweep-" + round, phase: "Scan", schema: CANDIDATES_SCHEMA, tier: "general" }
+      { label: "sweep-" + round, phase: "Scan", schema: CANDIDATES_SCHEMA, tier: "emperor" }
     )
     if (!sweep || sweep.candidates.length === 0) break
     const sweepCandidatesWithIds = sweep.candidates.slice(0, SWEEP_MAX).map(c => assignStableIdentity({ ...c, category: c.category || "cross-cutting" }));
@@ -1028,7 +1028,7 @@ if (P.prove && survivors.length > 0) {
   const ordered = survivors.slice().sort((a, b) => sevRank[a.severity] - sevRank[b.severity])
   const toProve = ordered.slice(0, P.maxProve)
   const proven = await parallel(toProve.map(c => () =>
-    safeAgent(PROVER_PROMPT(c), { label: "prove:" + (c.file || "").split("/").pop(), phase: "Prove", schema: PROVE_SCHEMA, tier: "general" })
+    safeAgent(PROVER_PROMPT(c), { label: "prove:" + (c.file || "").split("/").pop(), phase: "Prove", schema: PROVE_SCHEMA, tier: "emperor" })
       .then(p => {
         if (!p) return c
         const severity = p.severity || c.severity
@@ -1062,7 +1062,7 @@ if (survivors.length > 0) {
         "## Escalator " + (i + 1) + " — correlate findings into exploit chains\\n\\n" + SCOPE_BLOCK + "\\n" +
         "## Confirmed findings\\n" + findingsBlock + "\\n\\n" +
         "Chain findings that compose into a larger attack: a hardcoded dev token + a debug endpoint + a missing auth check is a critical chain, not three lows. For each chain, list the finding ids and the end-to-end impact. Then rerank severity for any finding whose severity changes in chain context (cite the id). Do not invent findings — only correlate the ids above. Structured output only.",
-        { label: "escalate-" + i, phase: "Escalate", schema: ESCALATE_SCHEMA, tier: "general" }
+        { label: "escalate-" + i, phase: "Escalate", schema: ESCALATE_SCHEMA, tier: "emperor" }
       )
     )
   )).filter(Boolean)
@@ -1237,7 +1237,7 @@ const report = await safeAgent(
   "4. Fill the Summary tally and the highest-severity chain. Keep the Frame coverage lines provided.\\n" +
   "5. Include the Preflight inspection, Threat model summary, and Artifact bundle information in their respective sections.\\n" +
   "6. Write a 2-3 sentence executive summary.\\n\\nStructured output only — reportMarkdown is the full report text.",
-  { label: "render", phase: "Report", schema: REPORT_SCHEMA, tier: "general" }
+  { label: "render", phase: "Report", schema: REPORT_SCHEMA, tier: "emperor" }
 )
 
 const fallbackMarkdown =
@@ -1257,7 +1257,7 @@ let reportVerdict = { verdict: "PARTIAL", issues: ["report-verify did not run"] 
 const verify = await safeAgent(
   "## Independent report verification\\n\\n" + SCOPE_BLOCK + "\\n" +
   "Re-read the report below against the actual source files. For each finding: open the cited file at the cited lines and confirm the snippet matches BYTE-FOR-BYTE; confirm every required field is present; confirm Critical/High findings have a concrete exploit path reachable from an attacker-controllable surface (flag any reachable only from already-trusted code); confirm severities are neither inflated nor deflated. Return PASS, or PARTIAL/FAIL with the specific issues to fix.\\n\\n## Report under review\\n" + finalMarkdown + "\\n\\nStructured output only.",
-  { label: "report-verify", phase: "Verify", schema: REPORT_VERDICT_SCHEMA, agentType: "verifier", tier: "general" }
+  { label: "report-verify", phase: "Verify", schema: REPORT_VERDICT_SCHEMA, agentType: "verifier", tier: "emperor" }
 )
 if (verify) {
   reportVerdict = verify
@@ -1271,14 +1271,14 @@ if (verify) {
       "## Revise the security report to fix verification issues\\n\\n" + SCOPE_BLOCK + "\\n" +
       "A verifier flagged these issues:\\n" + verify.issues.map(s => "- " + s).join("\\n") + "\\n\\n" +
       "Fix them by re-reading the cited files (correct snippets, add missing fields, fix severities, drop unreachable Critical/High claims). Keep the output format. Return the corrected reportMarkdown.\\n\\n## Current report\\n" + finalMarkdown + "\\n\\nStructured output only.",
-      { label: "report-fix", phase: "Verify", schema: REPORT_SCHEMA, tier: "general" }
+      { label: "report-fix", phase: "Verify", schema: REPORT_SCHEMA, tier: "emperor" }
     )
     if (fixed && fixed.reportMarkdown) {
       finalMarkdown = fixed.reportMarkdown
       const reverify = await safeAgent(
         "## Re-verify the revised report\\n\\n" + SCOPE_BLOCK + "\\n" +
         "Confirm the earlier issues are resolved. Return PASS, or PARTIAL/FAIL with what remains.\\n\\n## Revised report\\n" + finalMarkdown + "\\n\\nStructured output only.",
-        { label: "report-reverify", phase: "Verify", schema: REPORT_VERDICT_SCHEMA, agentType: "verifier", tier: "general" }
+        { label: "report-reverify", phase: "Verify", schema: REPORT_VERDICT_SCHEMA, agentType: "verifier", tier: "emperor" }
       )
       if (reverify) {
         reportVerdict = reverify

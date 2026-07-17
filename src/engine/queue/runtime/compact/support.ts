@@ -12,17 +12,23 @@ import type { Message } from "@/kernel/std/types/message.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 import type { AgentDeps } from "../turn/types.ts";
 
+// Consecutive summarization failures that pause auto-compaction until the
+// breaker re-arms. Auto-compaction is the only bound on session.messages
+// growth, so the pause is never permanent for the session.
+export const MAX_CONSECUTIVE_COMPACT_FAILURES = 3;
+
 export interface CompactState {
-  circuitOpen: boolean;
   rapidRefillBreakerOpen: boolean;
   rapidRefillCount: number;
+  consecutiveCompactFailures: number;
   turnsSinceLast: number;
-  consecutiveFailures: number;
+  lastAutoCompactAttemptTurnId: string | null;
 }
 
 export interface CompactOrchestrationDeps {
   agentDeps: AgentDeps;
   state: CompactState;
+  turnId: string | null;
   activeAbortController(): AbortController | null;
   setActiveAbortController(ctrl: AbortController | null): void;
   injections: InjectionQueue;

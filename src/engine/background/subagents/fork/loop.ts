@@ -6,6 +6,7 @@ import {
 import {
   cancelTaskTree,
   get as getBackgroundTask,
+  markOwnerNotificationsConsumed,
   markOwnerNotificationsPromoted,
   taskRunRef,
 } from "@/engine/background/tasks/background.ts";
@@ -194,9 +195,11 @@ async function runForkLoop(spec: ForkSpec): Promise<SubagentResult> {
     await writeDurableForkSpec(durableRef, serializeDurableForkSpec(activeSpec, forkId, ctx));
   }
 
-  const releaseNotificationOwner = emitQueue.registerOwner(forkId, (replayKeys) =>
-    markOwnerNotificationsPromoted(forkId, replayKeys),
-  );
+  const releaseNotificationOwner = emitQueue.registerOwner(forkId, {
+    onInventoryConsumed: (replayKeys) => markOwnerNotificationsConsumed(forkId, replayKeys),
+    onOwnerRelease: ({ promotedReplayKeys }) =>
+      markOwnerNotificationsPromoted(forkId, promotedReplayKeys),
+  });
   let releaseAddress = (): void => {};
   let result: SubagentResult | undefined;
   try {

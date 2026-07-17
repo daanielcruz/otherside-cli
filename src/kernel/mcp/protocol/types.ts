@@ -33,7 +33,7 @@ export type RemoteServerConfig = HttpServerConfig | SseServerConfig;
  * - `serverCommand`: matches a stdio server's full `[command, ...args]` array
  *   element-for-element.
  * - `serverUrl`: matches a remote (http/sse) server's URL, with `*` wildcards.
- * Mirrors upstream's AllowedMcpServerEntrySchema/DeniedMcpServerEntrySchema.
+ * Allowed/denied MCP server entry schema.
  */
 export type McpServerPolicyEntry =
   | { serverName: string }
@@ -67,7 +67,6 @@ export interface McpResourceInfo {
 export interface McpDirectoryEntry {
   uri: string;
   name: string;
-  description?: string;
   mimeType?: string;
 }
 

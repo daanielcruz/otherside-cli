@@ -10,6 +10,7 @@ import {
   getTaskOutputPath,
   getTaskSpillPath,
 } from "@/engine/background/tasks/output-files.ts";
+import { startPressureReap } from "@/engine/background/tasks/pressure-reap.ts";
 import { startStallWatchdog } from "@/engine/background/tasks/stall-watchdog.ts";
 import { SpillBuffer } from "@/engine/tools/_infra/spill-buffer.ts";
 import {
@@ -17,7 +18,6 @@ import {
   createBackgroundOutputLimiter,
   MAX_BACKGROUND_OUTPUT_BYTES,
 } from "@/engine/tools/builtins/background-output-limit.ts";
-import { recoverCwdIfMissing } from "@/engine/tools/builtins/cwd.ts";
 import {
   drainStream,
   killProcessTree,
@@ -26,7 +26,6 @@ import {
   spawnShell,
 } from "@/engine/tools/builtins/exec.ts";
 import { generateTaskId } from "@/kernel/std/id.ts";
-import { getTrackedCwd } from "@/kernel/std/state/cwd-state.ts";
 
 export const MAX_CONCURRENT = 10;
 const RETAINED_EXITED = 50;
@@ -48,6 +47,7 @@ export interface BackgroundShell {
   ownerId?: string;
   stopOutput?: () => void;
   stopWatchdog?: () => void;
+  stopPressureReap?: () => void;
   terminate?: () => void;
 }
 
@@ -87,6 +87,7 @@ export function newShellStreams(id: string): { stdout: ShellStream; stderr: Shel
 export function disposeShellStreams(shell: BackgroundShell): void {
   shell.stopOutput?.();
   shell.stopWatchdog?.();
+  shell.stopPressureReap?.();
   shell.stdout.buffer.dispose();
   shell.stderr.buffer.dispose();
 }
@@ -120,6 +121,8 @@ interface SpawnBackgroundInput {
   parentToolCallId: string;
   isSidechain?: boolean;
   ownerId?: string;
+  sessionId?: string;
+  cwd: string;
   login?: boolean | undefined;
 }
 
@@ -127,9 +130,8 @@ export function spawnBackground(input: SpawnBackgroundInput): { id: string } | {
   if (runningShellCount() >= MAX_CONCURRENT) {
     return { error: `background shell cap reached (${MAX_CONCURRENT} concurrent)` };
   }
-  recoverCwdIfMissing();
   ensureExitCleanup();
-  const child = spawnShell(input.execCommand, { cwd: getTrackedCwd(), login: input.login });
+  const child = spawnShell(input.execCommand, { cwd: input.cwd, login: input.login });
   const id = newShellId();
   const shell: BackgroundShell = {
     id,
@@ -149,10 +151,18 @@ export function spawnBackground(input: SpawnBackgroundInput): { id: string } | {
     parentToolCallId: input.parentToolCallId,
     ...(input.isSidechain ? { isSidechain: true } : {}),
     ...(input.ownerId !== undefined ? { ownerId: input.ownerId } : {}),
+    ...(input.sessionId !== undefined ? { sessionId: input.sessionId } : {}),
     startedAt: shell.startedAt,
   });
   const stopStallWatchdog = startStallWatchdog({ taskId: id, toolUseId: input.parentToolCallId });
   shell.stopWatchdog = stopStallWatchdog;
+  shell.stopPressureReap = startPressureReap({
+    taskId: id,
+    ownerId: input.ownerId,
+    kill: () => {
+      killBackground(id);
+    },
+  });
   const log = makeTaskLogAppender(getTaskOutputPath(id));
   let outputOpen = true;
   let terminationRequested = false;
@@ -195,6 +205,8 @@ export function spawnBackground(input: SpawnBackgroundInput): { id: string } | {
   void child.exited.then(async (code) => {
     stopStallWatchdog();
     delete shell.stopWatchdog;
+    shell.stopPressureReap?.();
+    delete shell.stopPressureReap;
     await Promise.allSettled([stdoutDrain, stderrDrain]);
     stopOutput();
     shell.status = "exited";

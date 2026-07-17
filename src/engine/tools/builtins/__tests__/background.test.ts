@@ -160,6 +160,7 @@ describe("spawnBackground completion", () => {
         command: "ignored",
         displayCommand: "post-exit drain test",
         parentToolCallId: "call-post-exit-drain",
+        cwd: process.cwd(),
       });
       expect("error" in spawned).toBe(false);
       if ("error" in spawned) return;
@@ -210,6 +211,7 @@ describe("spawnBackground completion", () => {
         displayCommand: "owner cleanup drain test",
         parentToolCallId: "call-owner-cleanup-drain",
         ownerId: "owner-cleanup-test",
+        cwd: process.cwd(),
       });
       expect("error" in spawned).toBe(false);
       if ("error" in spawned) return;

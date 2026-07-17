@@ -70,7 +70,6 @@ describe("buildTaskReminderInjection — history-scanning throttle", () => {
     const messages = [userText("start"), ...plainAssistantTurns(10)];
     const reminder = buildTaskReminderInjection({
       messages,
-      scope: undefined,
       effectiveTools: TASK_UPDATE_TOOLS,
     });
     expect(reminder).not.toBeNull();
@@ -82,7 +81,6 @@ describe("buildTaskReminderInjection — history-scanning throttle", () => {
     expect(
       buildTaskReminderInjection({
         messages,
-        scope: undefined,
         effectiveTools: TASK_UPDATE_TOOLS,
       }),
     ).toBeNull();
@@ -98,7 +96,6 @@ describe("buildTaskReminderInjection — history-scanning throttle", () => {
     expect(
       buildTaskReminderInjection({
         messages,
-        scope: undefined,
         effectiveTools: TASK_UPDATE_TOOLS,
       }),
     ).toBeNull();
@@ -109,7 +106,6 @@ describe("buildTaskReminderInjection — history-scanning throttle", () => {
     expect(
       buildTaskReminderInjection({
         messages,
-        scope: undefined,
         effectiveTools: [{ name: "Read" }],
       }),
     ).toBeNull();
@@ -120,7 +116,6 @@ describe("buildTaskReminderInjection — history-scanning throttle", () => {
     expect(
       buildTaskReminderInjection({
         messages,
-        scope: undefined,
         effectiveTools: TASK_UPDATE_TOOLS,
       }),
     ).not.toBeNull();
@@ -130,7 +125,6 @@ describe("buildTaskReminderInjection — history-scanning throttle", () => {
     const messages = [userText("start"), ...plainAssistantTurns(10)];
     const reminder = buildTaskReminderInjection({
       messages,
-      scope: undefined,
       effectiveTools: TASK_UPDATE_TOOLS,
     });
     expect(reminder).not.toBeNull();
@@ -140,7 +134,6 @@ describe("buildTaskReminderInjection — history-scanning throttle", () => {
     expect(
       buildTaskReminderInjection({
         messages,
-        scope: undefined,
         effectiveTools: TASK_UPDATE_TOOLS,
       }),
     ).toBeNull();
@@ -150,7 +143,6 @@ describe("buildTaskReminderInjection — history-scanning throttle", () => {
     expect(
       buildTaskReminderInjection({
         messages,
-        scope: undefined,
         effectiveTools: TASK_UPDATE_TOOLS,
       }),
     ).toBeNull();
@@ -160,7 +152,6 @@ describe("buildTaskReminderInjection — history-scanning throttle", () => {
     expect(
       buildTaskReminderInjection({
         messages,
-        scope: undefined,
         effectiveTools: TASK_UPDATE_TOOLS,
       }),
     ).not.toBeNull();
@@ -203,7 +194,6 @@ describe("persisted reminder keeps the cache breakpoint stable across turns", ()
   test("reminder anchors the breakpoint the turn it lands, then survives verbatim as the anchor advances", () => {
     const reminder = buildTaskReminderInjection({
       messages: [userText("start"), ...plainAssistantTurns(10)],
-      scope: undefined,
       effectiveTools: TASK_UPDATE_TOOLS,
     });
     expect(reminder).not.toBeNull();

@@ -1,5 +1,4 @@
 import { useCallback, useMemo } from "react";
-import type { PendingChange } from "@/commands/index.ts";
 import { createDesignController, type DesignControllerDeps } from "@/design/controller.ts";
 import type { BackgroundTask } from "@/engine/background/tasks/background.ts";
 import type { CodexUsage } from "@/engine/providers/codex/usage.ts";
@@ -40,7 +39,6 @@ interface OverlayWiringDeps {
   displayTranscript: readonly TranscriptEntry[];
   rewindToTranscriptId: RewindToTranscriptIdFn;
   resumeSession: ResumeSessionFn;
-  enqueuePendingChange: (change: PendingChange, label: string) => void;
   recordPanelCommit: (commandName: string, feedback: string) => void;
   workflowDetailTargetId: string | null | undefined;
   slashLifecycle: { onSessionFinalize: DesignControllerDeps["onFinalize"] };
@@ -74,7 +72,6 @@ export function useOverlayWiring(deps: OverlayWiringDeps): OverlayWiringResult {
     displayTranscript,
     rewindToTranscriptId,
     resumeSession,
-    enqueuePendingChange,
     recordPanelCommit,
     workflowDetailTargetId,
     slashLifecycle,
@@ -150,7 +147,6 @@ export function useOverlayWiring(deps: OverlayWiringDeps): OverlayWiringResult {
       onRewind: rewindToTranscriptId,
       onResumeSession: resumeSession,
       isTurnRunning: isTurnRunningProbe,
-      enqueueChange: enqueuePendingChange,
       workflowDetailTargetId,
       onWorkflowDetailOpenChange,
     }),
@@ -175,7 +171,6 @@ export function useOverlayWiring(deps: OverlayWiringDeps): OverlayWiringResult {
       rewindToTranscriptId,
       resumeSession,
       isTurnRunningProbe,
-      enqueuePendingChange,
       workflowDetailTargetId,
       onWorkflowDetailOpenChange,
       setCodexUsage,
@@ -211,7 +206,6 @@ export function useOverlayWiring(deps: OverlayWiringDeps): OverlayWiringResult {
       onConfigChange: handleConfigChange,
       onOpenLogin: openLoginOverlay,
       onCodexUsage: setCodexUsage,
-      enqueueChange: enqueuePendingChange,
       onResumeSession: resumeSession,
       onRewind: rewindByIdMode,
       isTurnRunning: isTurnRunningProbe,
@@ -222,7 +216,6 @@ export function useOverlayWiring(deps: OverlayWiringDeps): OverlayWiringResult {
       openOverlayByName,
       handleConfigChange,
       openLoginOverlay,
-      enqueuePendingChange,
       resumeSession,
       rewindByIdMode,
       isTurnRunningProbe,

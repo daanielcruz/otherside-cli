@@ -8,7 +8,7 @@ import {
 } from "../paths.ts";
 
 describe("isEphemeralCwd", () => {
-  it("persists sessions in user temp cwds (upstream parity)", () => {
+  it("persists sessions in user temp cwds", () => {
     expect(isEphemeralCwd("/tmp/work")).toBe(false);
     expect(isEphemeralCwd("/private/tmp/osd")).toBe(false);
     expect(isEphemeralCwd("/var/folders/bf/abc/T/scratch")).toBe(false);

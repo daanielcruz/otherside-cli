@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { getProviderConfig } from "@/engine/contract/registry.ts";
-import { Box, Text, useApp } from "@/ink";
+import { Text, useApp } from "@/ink";
 import { deleteFor, type ProviderSlug } from "@/kernel/storage/credentials.ts";
 import type { Broker } from "@/store/app-store/broker.ts";
+import { FooterPanel } from "@/ui/chrome/panel.tsx";
 import { useOverlayState } from "@/ui/panels/context";
 import { Color } from "@/ui/theme/theme.ts";
 
@@ -13,7 +14,7 @@ export interface LogoutOverlayProps {
 
 type Phase = "running" | "done" | "error";
 
-export function LogoutOverlay({ broker }: LogoutOverlayProps = {}): React.JSX.Element {
+export function LogoutOverlay({ broker, onClose }: LogoutOverlayProps = {}): React.JSX.Element {
   const state = useOverlayState();
   const activeBroker = broker ?? state.broker;
   const { exit } = useApp();
@@ -41,26 +42,26 @@ export function LogoutOverlay({ broker }: LogoutOverlayProps = {}): React.JSX.El
 
   if (phase === "error") {
     return (
-      <Box flexDirection="column" paddingX={1}>
+      <FooterPanel onCancel={onClose}>
         <Text color={Color.error}>logout failed: {errorMsg ?? "unknown error"}</Text>
-      </Box>
+      </FooterPanel>
     );
   }
 
   if (phase === "done") {
     return (
-      <Box flexDirection="column" paddingX={1}>
+      <FooterPanel onCancel={onClose}>
         <Text>
           Successfully logged out from your{" "}
           {getProviderConfig(provider)?.provider.label ?? provider} account.
         </Text>
-      </Box>
+      </FooterPanel>
     );
   }
 
   return (
-    <Box flexDirection="column" paddingX={1}>
+    <FooterPanel onCancel={onClose}>
       <Text color={Color.muted}>Logging out…</Text>
-    </Box>
+    </FooterPanel>
   );
 }

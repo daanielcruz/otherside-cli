@@ -18,7 +18,7 @@ export function isSonnetModel(base: string): boolean {
   return base.includes("sonnet");
 }
 
-// Wire beta allowlist (first-party). Matches reference: haiku denied; sonnet-5 /
+// Wire beta allowlist (first-party): haiku denied; sonnet-5 /
 // opus-4-8 / fable-5 carry mid-conversation-system-2026-04-07 on agentic mains.
 const MID_CONVERSATION_SYSTEM_BETA_SUPPORTED: ReadonlySet<string> = new Set([
   "claude-opus-4-8",
@@ -28,7 +28,7 @@ const MID_CONVERSATION_SYSTEM_BETA_SUPPORTED: ReadonlySet<string> = new Set([
 
 // System-block mid-conversation path stays narrower than the beta: only opus-4-8
 // and fable-5 assemble mid-system blocks; sonnet-5 keeps user-message injections
-// (reference also keeps sonnet off the mid-system wording latch).
+// (sonnet also stays off the mid-system wording latch).
 const MID_CONVERSATION_SYSTEM_SUPPORTED: ReadonlySet<string> = new Set([
   "claude-opus-4-8",
   "claude-fable-5",

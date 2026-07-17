@@ -41,7 +41,8 @@ const ALL_PROVIDERS = (): CredentialsBundle =>
     codex: { accessToken: "x" },
     glm: { zcodeJwtToken: "x" },
     antigravity: { accessToken: "x" },
-    "kimi-code": { apiKey: "x" },
+    xai: { apiKey: "x" },
+    kimi: { apiKey: "x" },
     deepseek: { apiKey: "x" },
     minimax: { apiKey: "x" },
   }) as unknown as CredentialsBundle;
@@ -130,7 +131,7 @@ describe("isProviderUsable — raw usability (no active-provider exemption)", ()
 describe("resolveTierDetailed routing diagnostics", () => {
   it("marks a fully spent tracked provider blocked with a utilization reason", () => {
     setRoutingUsage("glm", { trackingStatus: "tracked", utilizationPct: 100 });
-    const detail = resolveTierDetailed("general");
+    const detail = resolveTierDetailed("shogun");
     const glmCandidate = detail.candidates.find((candidate) => candidate.provider === "glm");
     expect(glmCandidate?.blocked).toBe(true);
     expect(glmCandidate?.blockedReasons.some((reason) => reason.includes("utilization"))).toBe(
@@ -140,14 +141,14 @@ describe("resolveTierDetailed routing diagnostics", () => {
 
   it("keeps a high-but-not-spent active provider routeable (no predictive block)", () => {
     setRoutingUsage("codex", { trackingStatus: "tracked", utilizationPct: 99 });
-    const detail = resolveTierDetailed("general", undefined, "codex");
+    const detail = resolveTierDetailed("emperor", undefined, "codex");
     const codexCandidate = detail.candidates.find((candidate) => candidate.provider === "codex");
     expect(codexCandidate?.blocked).toBe(false);
   });
 
   it("blocks the active provider too when its balance is exhausted (no exemption)", () => {
     setRoutingUsage("codex", { trackingStatus: "untracked", balanceStatus: "exhausted" });
-    const detail = resolveTierDetailed("general", undefined, "codex");
+    const detail = resolveTierDetailed("emperor", undefined, "codex");
     const codexCandidate = detail.candidates.find((candidate) => candidate.provider === "codex");
     expect(codexCandidate?.blocked).toBe(true);
     expect(codexCandidate?.quotaBlocked).toBe(true);
@@ -158,7 +159,7 @@ describe("resolveTierDetailed routing diagnostics", () => {
 
   it("blocks the active provider too at 100% utilization (no exemption)", () => {
     setRoutingUsage("codex", { trackingStatus: "tracked", utilizationPct: 100 });
-    const detail = resolveTierDetailed("general", undefined, "codex");
+    const detail = resolveTierDetailed("emperor", undefined, "codex");
     const codexCandidate = detail.candidates.find((candidate) => candidate.provider === "codex");
     expect(codexCandidate?.blocked).toBe(true);
     expect(codexCandidate?.quotaBlocked).toBe(true);
@@ -166,13 +167,13 @@ describe("resolveTierDetailed routing diagnostics", () => {
 
   it("still blocks the active provider under a runtime cooldown", () => {
     markProviderCooldown("codex", Date.now() + 60_000, "rate_limited");
-    const detail = resolveTierDetailed("general", undefined, "codex");
+    const detail = resolveTierDetailed("emperor", undefined, "codex");
     const codexCandidate = detail.candidates.find((candidate) => candidate.provider === "codex");
     expect(codexCandidate?.blocked).toBe(true);
   });
 
   it("keeps the active provider routeable when usage is unavailable", () => {
-    const detail = resolveTierDetailed("general", undefined, "anthropic");
+    const detail = resolveTierDetailed("emperor", undefined, "anthropic");
     const anthropicCandidate = detail.candidates.find(
       (candidate) => candidate.provider === "anthropic",
     );
@@ -182,7 +183,7 @@ describe("resolveTierDetailed routing diagnostics", () => {
   it("re-admits an exhausted provider immediately after a recovery observation", () => {
     setRoutingUsage("codex", { trackingStatus: "tracked", balanceStatus: "exhausted" });
     expect(
-      resolveTierDetailed("general").candidates.find((candidate) => candidate.provider === "codex")
+      resolveTierDetailed("emperor").candidates.find((candidate) => candidate.provider === "codex")
         ?.blocked,
     ).toBe(true);
     // Live SoT recovery — no cooldown, no waiting: the very next resolve sees it.
@@ -192,7 +193,7 @@ describe("resolveTierDetailed routing diagnostics", () => {
       balanceStatus: "available",
     });
     expect(
-      resolveTierDetailed("general").candidates.find((candidate) => candidate.provider === "codex")
+      resolveTierDetailed("emperor").candidates.find((candidate) => candidate.provider === "codex")
         ?.blocked,
     ).toBe(false);
   });
@@ -206,7 +207,7 @@ describe("resolveTierDetailed routing diagnostics", () => {
     const until = Date.now() + 60_000;
     markProviderCooldown("anthropic", until, "rate_limited", "claude-fable-5");
 
-    const detail = resolveTierDetailed("general");
+    const detail = resolveTierDetailed("emperor");
     const fable = detail.candidates.find((candidate) => candidate.model === "claude-fable-5");
     const opus = detail.candidates.find((candidate) => candidate.model === "claude-opus-4-8");
 
@@ -230,14 +231,14 @@ describe("Fable weekly limit gates only the Fable model", () => {
 
   it("falls through to opus when the Fable week is spent", () => {
     setUsageLimits({ seven_day_fable: { utilization: 1, resetsAt: futureSeconds() } }, allowed);
-    const resolved = resolveTier("general");
+    const resolved = resolveTier("emperor");
     expect(resolved?.provider).toBe("anthropic");
     expect(resolved?.model).toBe("claude-opus-4-8");
   });
 
   it("keeps Fable selected when its week still has room", () => {
     setUsageLimits({ seven_day_fable: { utilization: 0.5, resetsAt: futureSeconds() } }, allowed);
-    expect(resolveTier("general")?.model).toBe("claude-fable-5");
+    expect(resolveTier("emperor")?.model).toBe("claude-fable-5");
   });
 
   it("keeps Fable once its week has reset", () => {
@@ -245,35 +246,35 @@ describe("Fable weekly limit gates only the Fable model", () => {
       { seven_day_fable: { utilization: 1, resetsAt: Math.floor(Date.now() / 1000) - 10 } },
       allowed,
     );
-    expect(resolveTier("general")?.model).toBe("claude-fable-5");
+    expect(resolveTier("emperor")?.model).toBe("claude-fable-5");
   });
 });
 
 describe("resolveTierRank strict semantics", () => {
-  // warrior roster sorted by pos: 1 antigravity, 2 codex, 3 anthropic, ...
+  // daimyo roster sorted by pos: 1 codex, 2 antigravity, 3 antigravity, 4 xai, 5 deepseek
   it("maps a rank to the fixed roster slot", () => {
     observeProvider("antigravity");
     observeProvider("codex");
 
-    expect(resolveTierRank("warrior", 1)?.provider).toBe("antigravity");
-    expect(resolveTierRank("warrior", 2)?.provider).toBe("codex");
-    expect(resolveTierRank("warrior", 3)?.provider).toBe("anthropic");
+    expect(resolveTierRank("daimyo", 1)?.provider).toBe("codex");
+    expect(resolveTierRank("daimyo", 2)?.provider).toBe("antigravity");
+    expect(resolveTierRank("daimyo", 4)?.provider).toBe("xai");
   });
 
   it("returns null for a blocked slot instead of falling back to another provider", () => {
     observeProvider("codex");
     markProviderCooldown("codex", Date.now() + 60_000, "rate_limited");
-    const ranked = resolveTierRankDetailed("warrior", 2);
+    const ranked = resolveTierRankDetailed("daimyo", 1);
     expect(ranked.resolution).toBeNull();
     expect(ranked.candidate?.provider).toBe("codex");
-    // Strict rank must NOT compact to the next usable provider (anthropic).
-    expect(resolveTierRank("warrior", 2)).toBeNull();
-    expect(resolveTierRank("warrior", 3)?.provider).toBe("anthropic");
+    // Strict rank must NOT compact to the next usable provider (antigravity).
+    expect(resolveTierRank("daimyo", 1)).toBeNull();
+    expect(resolveTierRank("daimyo", 2)?.provider).toBe("antigravity");
   });
 
   it("rejects out-of-range ranks", () => {
-    expect(resolveTierRankDetailed("scout", 9).error).toContain("rank");
-    expect(resolveTierRank("scout", 9)).toBeNull();
+    expect(resolveTierRankDetailed("samurai", 9).error).toContain("rank");
+    expect(resolveTierRank("samurai", 9)).toBeNull();
   });
 });
 
@@ -290,17 +291,20 @@ describe("top-N compaction vs strict rank", () => {
       },
     );
     markProviderCooldown("codex", Date.now() + 60_000, "rate_limited");
-    const top = resolveTierTopN("warrior", 3);
+    const top = resolveTierTopN("daimyo", 3);
     const providers = top.map((r) => r.provider);
     expect(providers).not.toContain("codex");
+    // Top-N selects distinct providers, so antigravity's two roster slots
+    // compact to one entry: antigravity, xai, deepseek.
     expect(providers.length).toBe(3);
     expect(new Set(providers).size).toBe(3);
+    expect(providers[0]).toBe("antigravity");
   });
 
   it("resolveTier returns the first usable provider", () => {
-    observeProvider("antigravity");
-    const resolved = resolveTier("warrior");
-    expect(resolved?.provider).toBe("antigravity");
+    observeProvider("codex");
+    const resolved = resolveTier("daimyo");
+    expect(resolved?.provider).toBe("codex");
   });
 });
 
@@ -315,20 +319,20 @@ describe("invalid / legacy tier names", () => {
 
 describe("tierContainsModel", () => {
   it("matches a model that defines the tier", () => {
-    expect(tierContainsModel("general", "anthropic", "claude-opus-4-8")).toBe(true);
-    expect(tierContainsModel("general", "codex", "gpt-5.6-sol")).toBe(true);
-    expect(tierContainsModel("scout", "anthropic", "claude-haiku-4-5")).toBe(true);
+    expect(tierContainsModel("emperor", "anthropic", "claude-opus-4-8")).toBe(true);
+    expect(tierContainsModel("emperor", "codex", "gpt-5.6-sol")).toBe(true);
+    expect(tierContainsModel("samurai", "anthropic", "claude-haiku-4-5")).toBe(true);
   });
 
   it("ignores the context-window suffix when matching", () => {
-    expect(tierContainsModel("general", "anthropic", "claude-opus-4-8")).toBe(true);
-    expect(tierContainsModel("general", "anthropic", "claude-opus-4-8[1m]")).toBe(true);
+    expect(tierContainsModel("emperor", "anthropic", "claude-opus-4-8")).toBe(true);
+    expect(tierContainsModel("emperor", "anthropic", "claude-opus-4-8[1m]")).toBe(true);
   });
 
   it("is false across tiers and for unknown models/providers", () => {
-    expect(tierContainsModel("general", "anthropic", "claude-haiku-4-5")).toBe(false);
-    expect(tierContainsModel("scout", "codex", "gpt-5.6-sol")).toBe(false);
-    expect(tierContainsModel("general", "anthropic", "made-up-model")).toBe(false);
+    expect(tierContainsModel("emperor", "anthropic", "claude-haiku-4-5")).toBe(false);
+    expect(tierContainsModel("samurai", "codex", "gpt-5.6-sol")).toBe(false);
+    expect(tierContainsModel("emperor", "anthropic", "made-up-model")).toBe(false);
     expect(tierContainsModel("best" as never, "anthropic", "claude-opus-4-8")).toBe(false);
   });
 });
@@ -343,7 +347,7 @@ describe("unobserved provider routing deprioritization", () => {
     });
     // Leave the higher scout ranks (antigravity, xai, codex) unobserved.
 
-    const result = resolveTierDetailed("scout", undefined, "anthropic");
+    const result = resolveTierDetailed("samurai", undefined, "anthropic");
 
     // Should pick anthropic (claude-haiku-4-5) over the unobserved higher ranks
     // because anthropic is observed and they are not.
@@ -353,12 +357,12 @@ describe("unobserved provider routing deprioritization", () => {
 
   it("does not hard-block unobserved providers when all are unobserved", () => {
     // Leave every provider as null (unobserved).
-    const result = resolveTierDetailed("scout", undefined, "anthropic");
+    const result = resolveTierDetailed("samurai", undefined, "anthropic");
 
-    // Should fall through normally by pos order (picking gemini-3-flash-medium
-    // on antigravity, scout rank 1).
+    // Should fall through normally by pos order (picking gemini-3-flash-low
+    // on antigravity, samurai rank 1).
     expect(result.selected?.provider).toBe("antigravity");
-    expect(result.selected?.model).toBe("gemini-3-flash-medium");
+    expect(result.selected?.model).toBe("gemini-3-flash-low");
   });
 });
 
@@ -468,20 +472,19 @@ describe("loadCredentialsSync mtime memo", () => {
 });
 
 describe("resolveTierTopNWithCascadeDetailed and quotaDisplacedBeforeTopNSelection", () => {
-  it("cascades general to warrior when all general candidates are blocked", () => {
+  it("cascades emperor to shogun when all emperor candidates are blocked", () => {
     markProviderCooldown("codex", Date.now() + 60_000, "rate_limited");
     markProviderCooldown("anthropic", Date.now() + 60_000, "rate_limited");
-    markProviderCooldown("glm", Date.now() + 60_000, "rate_limited");
-    markProviderCooldown("antigravity", Date.now() + 60_000, "rate_limited");
 
     observeProvider("antigravity");
     observeProvider("codex");
 
-    const result = resolveTierTopNWithCascadeDetailed("general", 3);
-    expect(result.selectedTier).toBe("warrior");
+    // emperor (fable/sol/opus) is fully blocked; shogun still has grok-4.5 + glm.
+    const result = resolveTierTopNWithCascadeDetailed("emperor", 3);
+    expect(result.selectedTier).toBe("shogun");
     expect(result.selected.length).toBeGreaterThan(0);
     for (const c of result.selected) {
-      expect(c.tier).toBe("warrior");
+      expect(c.tier).toBe("shogun");
     }
   });
 
@@ -490,18 +493,15 @@ describe("resolveTierTopNWithCascadeDetailed and quotaDisplacedBeforeTopNSelecti
     markProviderCooldown("anthropic", Date.now() + 60_000, "rate_limited");
     markProviderCooldown("glm", Date.now() + 60_000, "rate_limited");
     markProviderCooldown("antigravity", Date.now() + 60_000, "rate_limited");
-
-    markProviderCooldown("codex", Date.now() + 60_000, "rate_limited");
-    markProviderCooldown("anthropic", Date.now() + 60_000, "rate_limited");
-    markProviderCooldown("glm", Date.now() + 60_000, "rate_limited");
-    markProviderCooldown("antigravity", Date.now() + 60_000, "rate_limited");
     markProviderCooldown("deepseek", Date.now() + 60_000, "rate_limited");
-    markProviderCooldown("kimi-code", Date.now() + 60_000, "rate_limited");
+    markProviderCooldown("kimi", Date.now() + 60_000, "rate_limited");
 
-    const result = resolveTierTopNWithCascadeDetailed("general", 3);
-    expect(result.selectedTier).toBe("warrior");
+    // Only xai survives; the cascade stops at shogun (grok-4.5) with a single
+    // usable candidate and never mixes daimyo entries in.
+    const result = resolveTierTopNWithCascadeDetailed("emperor", 3);
+    expect(result.selectedTier).toBe("shogun");
     expect(result.selected.length).toBe(1);
-    expect(result.selected[0]!.provider).toBe("minimax");
+    expect(result.selected[0]!.provider).toBe("xai");
   });
 
   it("returns empty when no candidate is usable in any tier", () => {
@@ -510,14 +510,15 @@ describe("resolveTierTopNWithCascadeDetailed and quotaDisplacedBeforeTopNSelecti
       "anthropic",
       "glm",
       "antigravity",
+      "xai",
       "deepseek",
-      "kimi-code",
+      "kimi",
       "minimax",
     ]) {
       markProviderCooldown(p as ProviderId, Date.now() + 60_000, "rate_limited");
     }
 
-    const result = resolveTierTopNWithCascadeDetailed("general", 3);
+    const result = resolveTierTopNWithCascadeDetailed("emperor", 3);
     expect(result.selectedTier).toBeNull();
     expect(result.selected.length).toBe(0);
     expect(result.resolutions.length).toBe(0);
@@ -530,30 +531,32 @@ describe("resolveTierTopNWithCascadeDetailed and quotaDisplacedBeforeTopNSelecti
     markProviderCooldown("glm", Date.now() + 60_000, "rate_limited");
     markProviderCooldown("antigravity", Date.now() + 60_000, "rate_limited");
 
-    const result = resolveTierTopNWithCascadeDetailed("general", 3);
-    expect(result.selectedTier).toBe("warrior");
+    // emperor is fully blocked (codex quota-spent, anthropic cooled); the
+    // cascade lands on shogun via xai while codex remains the displaced slot.
+    const result = resolveTierTopNWithCascadeDetailed("emperor", 3);
+    expect(result.selectedTier).toBe("shogun");
 
     const displaced = quotaDisplacedBeforeTopNSelection(result);
     expect(displaced).not.toBeNull();
     expect(displaced?.provider).toBe("codex");
-    expect(displaced?.tier).toBe("general");
+    expect(displaced?.tier).toBe("emperor");
   });
 
   it("detects quota displaced candidate skipped in the selected tier", () => {
     markProviderCooldown("anthropic", Date.now() + 60_000, "rate_limited");
     markProviderCooldown("glm", Date.now() + 60_000, "rate_limited");
 
-    setRoutingUsage("codex", { trackingStatus: "tracked", utilizationPct: 100 });
-    observeProvider("antigravity");
+    setRoutingUsage("xai", { trackingStatus: "tracked", utilizationPct: 100 });
+    observeProvider("codex");
 
-    const result = resolveTierTopNWithCascadeDetailed("general", 1);
-    expect(result.selectedTier).toBe("general");
-    expect(result.selected.map((s) => s.provider)).toContain("antigravity");
-    expect(result.selected.map((s) => s.provider)).not.toContain("codex");
+    const result = resolveTierTopNWithCascadeDetailed("shogun", 1);
+    expect(result.selectedTier).toBe("shogun");
+    expect(result.selected.map((s) => s.provider)).toContain("codex");
+    expect(result.selected.map((s) => s.provider)).not.toContain("xai");
 
     const displaced = quotaDisplacedBeforeTopNSelection(result);
     expect(displaced).not.toBeNull();
-    expect(displaced?.provider).toBe("codex");
-    expect(displaced?.tier).toBe("general");
+    expect(displaced?.provider).toBe("xai");
+    expect(displaced?.tier).toBe("shogun");
   });
 });

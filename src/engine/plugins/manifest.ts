@@ -123,6 +123,10 @@ const PluginManifestSchema = z.object({
 
   author: AuthorSchema.optional(),
 
+  homepage: z.string().optional(),
+
+  repository: z.string().optional(),
+
   commands: z
     .union([z.string(), z.array(z.string()), z.record(z.string(), CommandMetadataSchema)])
     .optional(),

@@ -4,17 +4,29 @@ import { MAX_AGENT_SPAWN_DEPTH } from "./agent-context.ts";
 
 export type AgentKind = "main" | "subagent" | "workflow" | "headless" | "bypass-latch";
 
+// Parity 2.1.211: tools no agent may carry, external-build shape (reference
+// constants module, disallowed-set generator on "external"). Reference
+// members we do not ship (ConnectGitHub, RefreshMcpTools, EndConversation)
+// are omitted.
 export const ALL_AGENT_DISALLOWED_TOOLS: ReadonlySet<string> = new Set([
   "EnterPlanMode",
   "ExitPlanMode",
   "AskUserQuestion",
   "ScheduleWakeup",
   "TaskOutput",
+  "WaitForMcpServers",
   "Workflow",
 ]);
 
 export const CUSTOM_AGENT_DISALLOWED_TOOLS: ReadonlySet<string> = new Set(["Workflow"]);
 
+// Parity 2.1.211 async allowlist: from the task family only TaskStop rides
+// along — planning Task tools stay out of async agents. The reference's
+// teammate widening and its experimental Task-tool strip are both behind
+// default-off flags and are not ported. Reference members we do not ship
+// (PowerShell, REPL, Monitor, Artifact) are omitted; MultiEdit/LS are local
+// adaptations of shipped surfaces. Agent is NOT allowlisted: it rides the
+// spawn-depth rule, which the reference applies to every non-main kind.
 export const ASYNC_AGENT_ALLOWED_TOOLS: ReadonlySet<string> = new Set([
   "Bash",
   "Read",
@@ -32,10 +44,13 @@ export const ASYNC_AGENT_ALLOWED_TOOLS: ReadonlySet<string> = new Set([
   "StructuredOutput",
   "ToolSearch",
   "Skill",
-  "Agent",
   "SendMessage",
+  "EnterWorktree",
+  "ExitWorktree",
 ]);
 
+// Parity: the workflow subagent definition additionally disallows the Agent
+// tool on top of the shared (non-async) filter.
 const WORKFLOW_DISALLOWED_EXTRAS: ReadonlySet<string> = new Set(["Agent"]);
 
 export interface ToolsetCtx {
@@ -53,15 +68,18 @@ export interface ToolsetCtx {
 export function resolveToolsetFor(kind: AgentKind, ctx: ToolsetCtx): readonly string[] {
   const pool = assembleToolPool(ctx);
   if (kind === "main") return pool;
+  // Parity 2.1.211: workflow workers run the reference's synchronous-agent
+  // filter (full pool minus the all-agent disallow set), so the planning Task
+  // tools flow to them naturally; only async agents get the allowlist cut.
   const filtered = filterToolsForAgent(pool, {
-    isAsync: true,
+    isAsync: kind !== "workflow",
     isBuiltInAgent: ctx.isBuiltInAgent ?? true,
     spawnDepth: ctx.spawnDepth,
     kind,
     ...(ctx.permissionMode !== undefined ? { permissionMode: ctx.permissionMode } : {}),
   });
   if (kind === "workflow") {
-    return filtered.filter((t) => !WORKFLOW_DISALLOWED_EXTRAS.has(t));
+    return filtered.filter((name) => !WORKFLOW_DISALLOWED_EXTRAS.has(name));
   }
   return filtered;
 }
@@ -112,13 +130,13 @@ export function filterToolsForAgent(tools: readonly string[], args: FilterArgs):
     }
     if (ALL_AGENT_DISALLOWED_TOOLS.has(name)) continue;
     if (!args.isBuiltInAgent && CUSTOM_AGENT_DISALLOWED_TOOLS.has(name)) continue;
-    if (args.isAsync && !ASYNC_AGENT_ALLOWED_TOOLS.has(name)) {
-      if (name === "Agent" && args.spawnDepth < MAX_AGENT_SPAWN_DEPTH) {
-        out.push(name);
-        continue;
-      }
+    // Parity: the spawn-depth rule owns the Agent tool for every non-main
+    // kind — below the ceiling it stays, at the ceiling it drops, async or not.
+    if (name === "Agent") {
+      if (args.spawnDepth < MAX_AGENT_SPAWN_DEPTH) out.push(name);
       continue;
     }
+    if (args.isAsync && !ASYNC_AGENT_ALLOWED_TOOLS.has(name)) continue;
     out.push(name);
   }
   // A plan-mode agent always carries ExitPlanMode, even when the incoming

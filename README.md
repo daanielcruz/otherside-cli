@@ -2,7 +2,7 @@
 
 <img src="assets/banner.png" alt="otherside cli" width="720">
 
-![status](https://img.shields.io/badge/status-0.9.0--pre-EC4899?style=for-the-badge&labelColor=1a1a2e)
+![status](https://img.shields.io/badge/status-0.9.1--pre-EC4899?style=for-the-badge&labelColor=1a1a2e)
 ![typescript](https://img.shields.io/badge/typescript-5+-51158C?style=for-the-badge&logo=typescript&logoColor=white&labelColor=1a1a2e)
 ![license](https://img.shields.io/badge/license-MIT-51158C?style=for-the-badge&labelColor=1a1a2e)
 
@@ -35,36 +35,43 @@ With native support for top-tier AI providers and local models, Otherside allows
 ## Coming next
 
 - **Go Rebuild**: Rebuilding the entire CLI in Go, focused on native performance, minimal memory (RAM), and CPU use.
-- **Feudalism orchestration**: Replacing the current three-tier preview with four fixed capability classes—`emperor`, `shogun`, `daimyo`, and `samurai`—and one rank-ordered model roster.
+- **Non-verbose mode**: A quieter transcript that keeps tool noise out of the way.
+- **Memory usage improvements**: Lower footprint on long interactive sessions.
+- **Customizable agents panel**: Managing agent definitions from a dedicated panel.
+- **Multiprovider polish and new modes**: Refinements to orchestration plus additional routing modes.
 - **UI polish and bug fixes**: Continuing maintenance of this TypeScript client until the Go transition is complete (see [**Known Bugs**](#known-bugs)).
 
 ## Multiprovider orchestration
 
-> **Multiprovider is in preview.** It is disabled by default and can be enabled through `/config` or `/multiprovider`. The current release uses the three-tier router below; Feudalism is the planned replacement and is not active yet.
+> **Multiprovider is disabled by default** and can be enabled through `/config` or `/multiprovider`, with two modes: **default** (concrete provider/model routing from the full catalog) and **feudalism** (tier routing below).
 
 Most agent CLIs delegate every subtask to the same model family. Otherside can route delegated Agent and Workflow work across eligible providers, while keeping the concrete provider and model visible.
 
-Current capability tiers:
+Feudalism routes each delegated task through four fixed capability tiers:
 
-- **general**: deep reasoning for planning, synthesis, and final review;
-- **warrior**: capable execution for implementation, debugging, and iterative tool work;
-- **scout**: inexpensive fan-out for searches, inventories, and mechanical sweeps.
+- **emperor**: deep reasoning for planning, synthesis, hard calls, and final review;
+- **shogun**: complex execution with judgment — tactical planning, multi-step implementation, review passes;
+- **daimyo**: fast capable execution for code edits, debugging, and iterative tool work;
+- **samurai**: the cheapest, fastest ranks, used only on explicit selection for mechanical fan-out.
 
-Current tier rosters, in routing priority order:
+Tier rosters, rank-ordered (rank 1 is the resolver's first choice):
 
 | Tier | Models |
 |---|---|
-| **general** | `gpt-5.6-sol` · `claude-fable-5` · `claude-opus-4-8` · `grok-4.5` · `glm-5.2` · `gemini-3.1-pro-high` |
-| **warrior** | `gemini-3-flash` · `gpt-5.6-terra` · `claude-sonnet-5` · `grok-composer-2.5-fast` · `glm-5-turbo` · `deepseek-v4-flash` · `kimi-for-coding` · `minimax-m3` |
-| **scout** | `gemini-3-flash-medium` · `grok-composer-2.5-fast` · `gpt-5.6-luna` · `claude-haiku-4-5` · `glm-5-turbo` |
+| **emperor** | `claude-fable-5` · `gpt-5.6-sol` · `claude-opus-4-8` |
+| **shogun** | `grok-4.5` · `gpt-5.6-terra` · `claude-sonnet-5` · `glm-5.2` |
+| **daimyo** | `gpt-5.6-luna` · `gemini-3-flash` · `gemini-3.1-pro-high` · `grok-composer-2.5-fast` · `deepseek-v4-pro` |
+| **samurai** | `gemini-3-flash-low` · `gemini-3-flash-medium` · `glm-5-turbo` · `claude-haiku-4-5` · `deepseek-v4-flash` · `kimi-for-coding` · `minimax-m3` |
 
 Routing rules:
 
 - Candidates are checked against credentials, quota, cooldowns, and runtime availability on every allocation.
-- A named agent without an explicit tier is inferred from intent; explicit `provider` + `model` pins take precedence over tier routing.
+- An unusable model cascades to the next rank; an empty tier cascades down (`emperor → shogun → daimyo`). `samurai` is never a fallback — it only runs when explicitly selected.
+- **Chain of command** (default on, `/config`): a nested agent cannot launch above its own tier — higher requests clamp to the caller's tier.
+- A named agent without an explicit tier is inferred from intent (inference never selects `samurai`); explicit `provider` + `model` pins take precedence over tier routing.
 - Workflow `diversify: true` can spread independent calls across distinct eligible providers in one tier.
 - `/parallel`, `/fork`, and `/workflows` provide direct control over concurrent and deterministic delegated work.
-- Rosters ship with releases and are never fetched or customized at runtime.
+- Rosters ship with releases and are never fetched at runtime.
 
 ## Design
 
@@ -151,11 +158,11 @@ irm https://othersidecli.com/install.ps1 | iex
 Pin a release:
 
 ```bash
-OTHERSIDE_VERSION=v0.9.0-pre bash -c "$(curl -fsSL https://othersidecli.com/install.sh)"
+OTHERSIDE_VERSION=v0.9.1-pre bash -c "$(curl -fsSL https://othersidecli.com/install.sh)"
 ```
 
 ```powershell
-$env:OTHERSIDE_VERSION = "v0.9.0-pre"
+$env:OTHERSIDE_VERSION = "v0.9.1-pre"
 irm https://othersidecli.com/install.ps1 | iex
 ```
 
@@ -253,7 +260,7 @@ Each provider has its own authentication, tool adaptation, and model catalog beh
 ```bash
 otherside --provider deepseek
 otherside --provider codex --model gpt-5.5
-otherside --provider openai-custom --model <your-model>
+otherside --provider openai --model <your-model>
 ```
 
 | Provider | Slug | Auth | Default model | Notes |
@@ -262,11 +269,11 @@ otherside --provider openai-custom --model <your-model>
 | Codex | `codex` | OAuth | `gpt-5.6-sol` | GPT-5.x models and hosted image generation. |
 | Antigravity | `antigravity` | OAuth | `gemini-3-flash` | Google account path; Gemini, Claude, and GPT-OSS models. |
 | xAI | `xai` | OAuth | `grok-4.5` | Grok models through SuperGrok OAuth. |
-| Kimi | `kimi-code` | API key | `kimi-for-coding` | K2.7 Code and usage limits in `/usage`. |
+| Kimi | `kimi` | API key | `kimi-for-coding` | K2.7 Code and usage limits in `/usage`. |
 | DeepSeek | `deepseek` | API key | `deepseek-v4-pro` | V4 Pro and Flash; configurable vision side-channel. |
 | MiniMax | `minimax` | API key | `minimax-m2.7` | M2.7 and M3 models. |
 | GLM (Z.AI) | `glm` | OAuth | `glm-5.2` | GLM-5.2 and GLM-5-Turbo; native web search. |
-| OpenAI Custom | `openai-custom` | API key | (set your own) | Any OpenAI-compatible endpoint, including local runtimes. |
+| OpenAI Custom | `openai` | API key | (set your own) | Any OpenAI-compatible endpoint, including local runtimes. |
 
 From the interactive TUI, sign in or out with:
 
@@ -275,7 +282,7 @@ From the interactive TUI, sign in or out with:
 /logout [provider]
 ```
 
-`openai-custom` works with any OpenAI-compatible endpoint: LM Studio, llama.cpp, vLLM, Hugging Face TGI, or any self-hosted runtime.
+`openai` works with any OpenAI-compatible endpoint: LM Studio, llama.cpp, vLLM, Hugging Face TGI, or any self-hosted runtime.
 
 ### Important: Antigravity
 

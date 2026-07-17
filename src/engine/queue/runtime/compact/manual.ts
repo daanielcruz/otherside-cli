@@ -4,7 +4,6 @@ import { currentLocalISODate } from "@/engine/queue/runtime/turn-prompts.ts";
 import { pruneContentReplacementStateForSession } from "@/engine/session/compact/content-replacement-prune.ts";
 import {
   getModelAutoCompactThreshold,
-  MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES,
   maxOutputTokensForModel,
 } from "@/engine/session/compact/index.ts";
 import { clearLastUsage } from "@/engine/session/compact/last-usage.ts";
@@ -19,6 +18,7 @@ import { estimateTokens } from "@/engine/session/compact/token-count.ts";
 import { appendRecord, nowIso, sessionPathForCwd } from "@/engine/session/index.ts";
 import { MAIN_SCOPE, readSetClearExcept } from "@/engine/tools/builtins/read/state.ts";
 import { assembleProviderTurn } from "@/engine/translator/index.ts";
+import { makeQueue } from "@/harness/composer/queue.ts";
 import {
   formatCompactSummary,
   getCompactUserSummaryMessage,
@@ -113,11 +113,13 @@ async function summarizeForCompact(
 ): Promise<CompactSummary> {
   try {
     const provider = providers.get(run.ctx.provider);
+    const summaryInjections = makeQueue();
+    for (const injection of deps.injections.peek()) summaryInjections.push(injection);
     const turn = assembleProviderTurn({
       ctx: run.ctx,
       provider,
       messages: deps.agentDeps.session.messages,
-      injections: deps.injections,
+      injections: summaryInjections,
       config: deps.agentDeps.config,
       currentDate: currentLocalISODate(),
     });
@@ -132,10 +134,6 @@ async function summarizeForCompact(
       turn.harness,
     );
   } catch (err) {
-    deps.state.consecutiveFailures += 1;
-    if (deps.state.consecutiveFailures >= MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES) {
-      deps.state.circuitOpen = true;
-    }
     opts?.onCompactDone?.({
       mode: "failed",
       durationMs: Date.now() - run.start,
@@ -166,14 +164,8 @@ async function applyCompactSummary(
       preTokens: run.preTokens,
       error: errorMsg,
     });
-    console.error(errorMsg);
     throw new Error(errorMsg);
   }
-  deps.state.consecutiveFailures = 0;
-  deps.state.circuitOpen = false;
-  deps.state.rapidRefillCount = 0;
-  deps.state.rapidRefillBreakerOpen = false;
-  deps.state.turnsSinceLast = 0;
   const summaryMessage = getCompactUserSummaryMessage(result.summary, {
     transcriptPath: run.transcriptPath,
   });
@@ -185,11 +177,6 @@ async function applyCompactSummary(
     compactBrokerState.permissionMode,
     preservedImages,
   );
-  readSetClearExcept(
-    MAIN_SCOPE,
-    restoredFiles.map((file) => file.path),
-  );
-  deps.clearNestedMemory?.();
   const newMessages: Message[] = [
     { role: "user", content: [{ type: "text", text: summaryMessage }] },
   ];
@@ -197,8 +184,7 @@ async function applyCompactSummary(
     newMessages.push({ role: "user", content: rehydrationBlocks });
   }
   const beforeTokens = estimateTokens(deps.agentDeps.session.messages);
-  deps.agentDeps.session.messages.splice(0, deps.agentDeps.session.messages.length, ...newMessages);
-  clearLastUsage();
+
   await appendRecord(deps.agentDeps.session, {
     type: "compaction_mark",
     ts: nowIso(),
@@ -210,13 +196,25 @@ async function applyCompactSummary(
     trigger: "manual",
     ...(preservedImages.length > 0 ? { preservedImages } : {}),
   });
+
+  deps.agentDeps.session.messages.splice(0, deps.agentDeps.session.messages.length, ...newMessages);
+  clearLastUsage();
+  readSetClearExcept(
+    MAIN_SCOPE,
+    restoredFiles.map((file) => file.path),
+  );
+  deps.clearNestedMemory?.();
+  pruneContentReplacementStateForSession(deps.agentDeps.session);
+  deps.injections.drain();
   const compactBoundaryIdx = deps.agentDeps.session.records.findLastIndex(
     (r) => r.type === "compaction_mark",
   );
   if (compactBoundaryIdx > 0) {
     deps.agentDeps.session.records.splice(0, compactBoundaryIdx);
   }
-  pruneContentReplacementStateForSession(deps.agentDeps.session);
+  deps.state.rapidRefillCount = 0;
+  deps.state.rapidRefillBreakerOpen = false;
+  deps.state.turnsSinceLast = 0;
   await fireConfiguredHooks(deps.agentDeps.config, "postCompact", {
     kind: "postCompact",
     ctx: {
@@ -271,7 +269,7 @@ export async function* forceCompactOnOverflow(
   });
   compactPromise.catch(() => {});
   for await (const ev of queue.iterate(() => settled)) {
-    if (ev.kind === "retry_status" || ev.kind === "quota_exhausted") yield ev;
+    if (ev.kind === "retry_status") yield ev;
   }
   try {
     const result = await compactPromise;

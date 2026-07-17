@@ -108,8 +108,8 @@ describe("createConcurrencyGate — per-provider isolation", () => {
       },
     });
     // Two simultaneous first-acquires of the same provider.
-    const a = gate.acquire("kimi-code");
-    const b = gate.acquire("kimi-code").then(() => "b-granted");
+    const a = gate.acquire("kimi");
+    const b = gate.acquire("kimi").then(() => "b-granted");
     await a;
     await flush();
     // limitFor ran exactly once → one shared pool, so b must be blocked at limit 1.

@@ -11,6 +11,8 @@ export interface GroupQuestion {
   header?: string;
   options: QuestionOption[];
   multiSelect: boolean;
+  allowFreeform?: boolean;
+  allowChat?: boolean;
 }
 
 export interface GroupAnswer {

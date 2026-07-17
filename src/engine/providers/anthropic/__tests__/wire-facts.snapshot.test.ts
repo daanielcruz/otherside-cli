@@ -1,7 +1,16 @@
 import { describe, expect, it } from "bun:test";
-import { fingerprint } from "@/engine/providers/anthropic/_infra/fingerprint.ts";
+import {
+  ADVANCED_TOOL_USE_BETA,
+  EXTENDED_CACHE_TTL_BETA,
+  FAST_MODE_BETA,
+  fingerprint,
+  STRUCTURED_OUTPUTS_BETA,
+} from "@/engine/providers/anthropic/_infra/fingerprint.ts";
+import { _resetWireLatchesForTests } from "@/engine/providers/anthropic/_infra/wire-latches.ts";
 import { translateRequestAnthropic } from "@/engine/providers/anthropic/translate.ts";
 import { registerAllProviders } from "@/engine/providers/bootstrap.ts";
+import { clampSelectionRequest } from "@/engine/queue/runtime/select.ts";
+import { clampTitleRequest } from "@/engine/session/title/generate.ts";
 import type { Message } from "@/kernel/std/types/message.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 import { MODELS } from "../config.ts";
@@ -18,6 +27,13 @@ registerAllProviders();
 const MESSAGES: Message[] = [{ role: "user", content: [{ type: "text", text: "hello" }] }];
 const TOOLS: unknown[] = [
   { name: "Bash", description: "Run a shell command.", input_schema: { type: "object" } },
+  { name: "ToolSearch", description: "Find tools.", input_schema: { type: "object" } },
+  {
+    name: "DeferredToolPlaceholder",
+    description: "Reserved deferred tool.",
+    input_schema: { type: "object" },
+    defer_loading: true,
+  },
 ];
 
 function context(overrides: Partial<RequestContext>): RequestContext {
@@ -34,8 +50,15 @@ function context(overrides: Partial<RequestContext>): RequestContext {
 }
 
 function wireFacts(ctx: RequestContext): Record<string, unknown> {
-  const body = translateRequestAnthropic(ctx, MESSAGES, TOOLS) as Record<string, unknown>;
-  const print = fingerprint(ctx);
+  const translated = translateRequestAnthropic(ctx, MESSAGES, TOOLS);
+  const body = (
+    ctx.cacheRole === "title"
+      ? clampTitleRequest(translated)
+      : ctx.requestRole === "memory_recall"
+        ? clampSelectionRequest(translated)
+        : translated
+  ) as Record<string, unknown>;
+  const print = fingerprint(ctx, body);
   return {
     betas: print.betaHeaders,
     userAgent: print.userAgent,
@@ -73,15 +96,76 @@ const MATRIX: ReadonlyArray<{ label: string; ctx: RequestContext }> = [
     }
     return list;
   }),
+  ...MODELS.map((model) => ({
+    label: `${model.id} / non-agentic side query`,
+    ctx: context({ model: model.id, effort: null, agentic: false }),
+  })),
   {
     label: "haiku / title (non-agentic, structured)",
     ctx: context({ model: "claude-haiku-4-5", agentic: false, cacheRole: "title" }),
   },
   {
+    label: "haiku / memory recall (non-agentic, extended cache)",
+    ctx: context({ model: "claude-haiku-4-5", agentic: false, requestRole: "memory_recall" }),
+  },
+  {
     label: "opus / sub-agent (suppressThinkingSummary → bare adaptive, no display)",
-    ctx: context({ suppressThinkingSummary: true }),
+    ctx: context({ suppressThinkingSummary: true, agentOwnerId: "nested-fixture" }),
+  },
+  {
+    label: "haiku / nested agent",
+    ctx: context({ model: "claude-haiku-4-5", agentOwnerId: "nested-fixture" }),
   },
 ];
+
+describe("anthropic beta feature gates", () => {
+  it("emits advanced tool use only with deferred tool loading", () => {
+    const ctx = context({});
+    const withDeferredLoading = translateRequestAnthropic(ctx, MESSAGES, TOOLS);
+    const withoutDeferredLoading = translateRequestAnthropic(ctx, MESSAGES, [TOOLS[0]]);
+
+    expect(fingerprint(ctx, withDeferredLoading).betaHeaders).toContain(ADVANCED_TOOL_USE_BETA);
+    expect(fingerprint(ctx, withoutDeferredLoading).betaHeaders).not.toContain(
+      ADVANCED_TOOL_USE_BETA,
+    );
+  });
+
+  it("omits advanced tool use from non-agentic requests", () => {
+    const ctx = context({ agentic: false });
+    const body = translateRequestAnthropic(ctx, MESSAGES, TOOLS);
+
+    expect(fingerprint(ctx, body).betaHeaders).not.toContain(ADVANCED_TOOL_USE_BETA);
+  });
+
+  it("tracks structured output on agentic requests", () => {
+    const ctx = context({});
+    const body = {
+      ...(translateRequestAnthropic(ctx, MESSAGES, TOOLS) as Record<string, unknown>),
+      output_config: { format: { type: "json_schema" } },
+    };
+
+    expect(fingerprint(ctx, body).betaHeaders).toContain(STRUCTURED_OUTPUTS_BETA);
+  });
+
+  it("scopes extended cache TTL to main and memory-recall requests", () => {
+    const main = context({});
+    const nested = context({ agentOwnerId: "nested-fixture" });
+    const memoryRecall = context({ agentic: false, requestRole: "memory_recall" });
+
+    expect(fingerprint(main).betaHeaders).toContain(EXTENDED_CACHE_TTL_BETA);
+    expect(fingerprint(nested).betaHeaders).not.toContain(EXTENDED_CACHE_TTL_BETA);
+    expect(fingerprint(memoryRecall).betaHeaders).toContain(EXTENDED_CACHE_TTL_BETA);
+  });
+
+  it("keeps a latched fast beta off side queries", () => {
+    _resetWireLatchesForTests();
+    fingerprint(context({ fastMode: true }));
+
+    expect(fingerprint(context({ agentic: false })).betaHeaders).not.toContain(FAST_MODE_BETA);
+    expect(fingerprint(context({ fastMode: false })).betaHeaders).toContain(FAST_MODE_BETA);
+    _resetWireLatchesForTests();
+  });
+});
 
 describe("anthropic wire-fact golden (gates model registry #1)", () => {
   for (const { label, ctx } of MATRIX) {

@@ -2,17 +2,18 @@ import type { TranscriptEntry } from "@/engine/session/record/types.ts";
 import type { ContentBlock } from "@/kernel/std/types/message.ts";
 
 // SoT: the priority order IS the class enumeration; EmitClass derives from it.
-// Background notifications ride one of two lanes named by delivery urgency:
-// urgent_output reaches the model at the next LLM call (drained at every
-// tool-loop boundary); deferred_output rides tool-loop ends and turn_start —
-// completions steer the ongoing turn between tool batches without ever
-// cutting into a streaming response.
+// Background notifications ride one of two lanes named by delivery urgency.
+// They fold at the next turn boundary — after a response or tool batch, never
+// during streaming — and trigger the same continuation as queued user input.
+// idle_prompt is the lowest lane: it drains ONLY at turn_start, so scheduled
+// wakeups never enter a running turn.
 export const PRIORITY_ORDER = [
   "interrupt_agent_workflow",
   "interrupt_bash",
   "user_message",
   "urgent_output",
   "deferred_output",
+  "idle_prompt",
 ] as const;
 
 export type EmitClass = (typeof PRIORITY_ORDER)[number];
@@ -27,9 +28,7 @@ export type EmitPayload =
   | { kind: "task_notification_xml"; text: string; summary?: string; isError?: boolean }
   | { kind: "queued_message"; queuedMessageId: string }
   | { kind: "fork_event"; event: unknown }
-  | { kind: "user_interrupt_message"; text: string }
-  | { kind: "killed_by_user"; taskId: string; content: string }
-  | { kind: "killed_workflow"; taskId: string };
+  | { kind: "user_interrupt_message"; text: string };
 
 export interface EmitItemInput {
   class: EmitClass;
@@ -39,6 +38,9 @@ export interface EmitItemInput {
   ownerId?: string;
   replayKey?: string;
   sticky?: boolean;
+  /** Marks a stop-hook rewake: the turn that consumes this item runs its own
+   * Stop hooks with STOP_HOOK_ACTIVE so a hook can break the rewake loop. */
+  stopHookActive?: boolean;
 }
 
 export interface EmitItem extends EmitItemInput {
@@ -80,6 +82,8 @@ export interface DrainResult {
    * consumer persists each as a queued_command attachment record so resume
    * rebuilds the same conversation. */
   notificationTexts: readonly string[];
+  /** True when a consumed item was a stop-hook rewake (see EmitItemInput). */
+  stopHookActive?: boolean;
 }
 
 export interface CancelResult {
@@ -95,6 +99,8 @@ export const BOUNDARY_POLICY: Record<EmitBoundary, BoundaryPolicy> = {
       { class: "user_message", target: "llm_request" },
       { class: "urgent_output", target: "both" },
       { class: "deferred_output", target: "both" },
+      // idle_prompt (scheduled wakeups) drains here and ONLY here.
+      { class: "idle_prompt", target: "both" },
     ],
   },
   mid_turn: {
@@ -102,6 +108,8 @@ export const BOUNDARY_POLICY: Record<EmitBoundary, BoundaryPolicy> = {
       { class: "interrupt_agent_workflow", target: "llm_request" },
       { class: "interrupt_bash", target: "llm_request" },
       { class: "user_message", target: "llm_request" },
+      { class: "urgent_output", target: "llm_request" },
+      { class: "deferred_output", target: "llm_request" },
     ],
     wrapSystemReminder: true,
   },

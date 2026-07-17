@@ -34,6 +34,7 @@ import WaitForMcpServersSchema from "@/harness/tools/WaitForMcpServers/tool.json
 };
 import WorkflowSchema from "@/harness/tools/Workflow/tool.json" with { type: "json" };
 import { hasConnectedResourcesCapableMcpServer, hasPendingMcpServers } from "@/kernel/mcp/index.ts";
+import { isEnvDefinedFalsy } from "@/kernel/std/proc/env.ts";
 import { Edit as EditTool } from "./builtins/edit/edit.ts";
 import { Read as ReadTool } from "./builtins/read/read.ts";
 import { ReportFindings } from "./builtins/report-findings.ts";
@@ -58,6 +59,14 @@ export { isReadOnlyBashCommand } from "@/engine/tools/_infra/command-analysis/re
 export { parseSedEditCommand } from "@/engine/tools/_infra/command-analysis/sed-edit.ts";
 
 type ToolCatalogKind = "base" | "deferred";
+
+// Parity 2.1.211: the planning task tools are default-ON with an explicit
+// env kill-switch — only a defined falsy value ("0"/"false"/"no"/"off")
+// removes them. The reference's model denylist flag ships empty (no-op) and
+// is not ported.
+function planningTaskToolsEnabled(): boolean {
+  return !isEnvDefinedFalsy(process.env.CLAUDE_CODE_ENABLE_TASKS);
+}
 
 interface ToolCatalogEntry {
   schema: ToolSchema;
@@ -109,12 +118,12 @@ const TOOL_CATALOG = [
   },
   { schema: ScheduleWakeupSchema, kind: "deferred" },
   { schema: SendMessageSchema, kind: "deferred" },
-  { schema: TaskCreateSchema, kind: "deferred" },
-  { schema: TaskGetSchema, kind: "deferred" },
-  { schema: TaskListSchema, kind: "deferred" },
+  { schema: TaskCreateSchema, kind: "deferred", isAvailable: planningTaskToolsEnabled },
+  { schema: TaskGetSchema, kind: "deferred", isAvailable: planningTaskToolsEnabled },
+  { schema: TaskListSchema, kind: "deferred", isAvailable: planningTaskToolsEnabled },
   { schema: TaskOutputSchema, kind: "deferred" },
   { schema: TaskStopSchema, kind: "deferred" },
-  { schema: TaskUpdateSchema, kind: "deferred" },
+  { schema: TaskUpdateSchema, kind: "deferred", isAvailable: planningTaskToolsEnabled },
   { schema: WebFetchSchema, kind: "deferred" },
   { schema: WebSearchSchema, kind: "deferred" },
   {

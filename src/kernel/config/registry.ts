@@ -1,13 +1,20 @@
 import {
   normalizeDefaultMode,
+  normalizeEnabledPlugins,
   normalizeFastModeByProvider,
   normalizeHooksConfig,
   normalizeOptionalProviderId,
   normalizeStatuslineConfig,
+  normalizeWorkflowSizeGuideline,
   type SettingsPermissions,
   type SettingsSandboxConfig,
   type UserConfig,
 } from "@/kernel/config/config.ts";
+import { isOrchestrationMode } from "@/kernel/config/orchestration-mode.ts";
+import {
+  isImageGeneratorSelection,
+  isVoiceProviderSelection,
+} from "@/kernel/config/provider-ids.ts";
 import type {
   AnySettingDescriptor,
   SettingDescriptor,
@@ -24,8 +31,7 @@ const isBool = (v: unknown): boolean | undefined => (typeof v === "boolean" ? v 
 const isString = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
 const isPlainObject = (v: unknown): boolean => !!v && typeof v === "object" && !Array.isArray(v);
 
-// A valid entry has exactly one of the three matchers, mirroring upstream's
-// AllowedMcpServerEntrySchema/DeniedMcpServerEntrySchema mutual-exclusivity.
+// A valid entry has exactly one of the three matchers, ensuring they are mutually exclusive.
 function isMcpServerPolicyEntry(v: unknown): v is McpServerPolicyEntry {
   if (!isPlainObject(v)) return false;
   const entry = v as Record<string, unknown>;
@@ -59,11 +65,31 @@ export const SETTING_REGISTRY: readonly AnySettingDescriptor[] = [
     merge: "override",
     validate: isBool,
   }),
-  setting({ key: "imageGen", scopes: ["user"], merge: "override", validate: isBool }),
+  setting({
+    key: "imageGenProvider",
+    scopes: ["user"],
+    merge: "override",
+    validate: (v) => (isImageGeneratorSelection(v) ? v : undefined),
+  }),
+  setting({
+    key: "voiceProvider",
+    scopes: ["user"],
+    merge: "override",
+    validate: (v) => (isVoiceProviderSelection(v) ? v : undefined),
+  }),
   setting({ key: "memoryRecall", scopes: ["user"], merge: "override", validate: isBool }),
   setting({ key: "autoMemoryEnabled", scopes: ["user"], merge: "override", validate: isBool }),
   setting({ key: "ultracode", scopes: ["user"], merge: "override", validate: isBool }),
   setting({ key: "enableWorkflows", scopes: ["user"], merge: "override", validate: isBool }),
+  setting({
+    key: "workflowSizeGuideline",
+    scopes: ["user"],
+    merge: "override",
+    validate: (value) => {
+      const normalized = normalizeWorkflowSizeGuideline(value);
+      return normalized === value ? normalized : undefined;
+    },
+  }),
   setting({ key: "enableUserWorkflows", scopes: ["user"], merge: "override", validate: isBool }),
   setting({
     key: "enableProjectWorkflows",
@@ -71,7 +97,6 @@ export const SETTING_REGISTRY: readonly AnySettingDescriptor[] = [
     merge: "override",
     validate: isBool,
   }),
-  setting({ key: "tierSelectorEnabled", scopes: ["user"], merge: "override", validate: isBool }),
   setting({
     key: "cachedExtraUsageDisabledReason",
     scopes: ["user"],
@@ -86,10 +111,10 @@ export const SETTING_REGISTRY: readonly AnySettingDescriptor[] = [
       typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.floor(v) : undefined,
   }),
   setting({
-    key: "orchestratorMode",
+    key: "orchestrationMode",
     scopes: ["user"],
     merge: "override",
-    validate: (v) => (v === "off" || v === "soft" ? v : undefined),
+    validate: (v) => (isOrchestrationMode(v) ? v : undefined),
   }),
   setting({
     key: "statusline",
@@ -105,9 +130,9 @@ export const SETTING_REGISTRY: readonly AnySettingDescriptor[] = [
   }),
   setting({
     key: "enabledPlugins",
-    scopes: ["user"],
-    merge: "override",
-    validate: (v) => (isPlainObject(v) ? (v as Record<string, boolean>) : undefined),
+    scopes: ["user", "project", "local", "session", "policy"],
+    merge: "map-override",
+    validate: normalizeEnabledPlugins,
   }),
   setting({
     key: "imageParserModel",
@@ -189,8 +214,16 @@ export const SETTING_REGISTRY: readonly AnySettingDescriptor[] = [
     merge: "override",
     validate: (v) => {
       if (!isPlainObject(v)) return undefined;
-      const baseRef = (v as { baseRef?: unknown }).baseRef;
+      const { baseRef, sparsePaths, symlinkDirectories } = v as {
+        baseRef?: unknown;
+        sparsePaths?: unknown;
+        symlinkDirectories?: unknown;
+      };
       if (baseRef !== undefined && baseRef !== "fresh" && baseRef !== "head") return undefined;
+      const stringList = (value: unknown): boolean =>
+        value === undefined ||
+        (Array.isArray(value) && value.every((entry) => typeof entry === "string"));
+      if (!stringList(sparsePaths) || !stringList(symlinkDirectories)) return undefined;
       return v as UserConfig["worktree"];
     },
   }),

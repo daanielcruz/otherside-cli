@@ -7,38 +7,35 @@ import {
   type ResolvedTierRoster,
 } from "@/harness/core/tier-guidance.ts";
 
-const FAMILY_LINE = "Models on this provider, by tier";
-
-function ctx(multiproviderEnabled: boolean): LayerContext {
+function ctx(orchestrationMode: "disabled" | "feudalism"): LayerContext {
   return {
     model: "claude-opus-4-8",
     modelDisplayName: "Opus 4.8",
-    modelTierLines: ["General: Opus 4.8", "Warrior: Sonnet 4.6", "Scout: Haiku 4.5"],
     knowledgeCutoff: "January 2026",
-    multiproviderEnabled,
+    orchestrationMode,
   } as unknown as LayerContext;
 }
 
 const ROSTER: ResolvedTierRoster = {
-  general: [{ provider: "anthropic", display: "Opus 4.8" }],
-  warrior: [
+  emperor: [{ provider: "anthropic", display: "Opus 4.8" }],
+  shogun: [{ provider: "xai", display: "Grok-x" }],
+  daimyo: [
     { provider: "anthropic", display: "Sonnet 4.6" },
     { provider: "codex", display: "GPT-x" },
   ],
-  scout: [],
+  samurai: [],
 };
 
-describe("multiprovider hides the concrete model roster", () => {
-  test("env-info keeps the model-family list when multiprovider is OFF", () => {
-    const out = envInfoLayer.render(ctx(false));
-    expect(out).toContain(FAMILY_LINE);
+describe("orchestration prompt boundaries", () => {
+  test("env-info withholds tier doctrine in Disabled mode", () => {
+    const out = envInfoLayer.render(ctx("disabled"));
+    expect(out).not.toContain("Models on this provider, by tier");
     expect(out).toContain("You are powered by the model named Opus 4.8");
   });
 
-  test("env-info withholds the model-family list when multiprovider is ON", () => {
-    const out = envInfoLayer.render(ctx(true));
-    expect(out).not.toContain(FAMILY_LINE);
-    // the identity line still names the current model
+  test("env-info withholds concrete model-family guidance in feudalism", () => {
+    const out = envInfoLayer.render(ctx("feudalism"));
+    expect(out).not.toContain("Models on this provider, by tier");
     expect(out).toContain("You are powered by the model named Opus 4.8");
   });
 
@@ -47,7 +44,7 @@ describe("multiprovider hides the concrete model roster", () => {
     expect(section).not.toContain("(anthropic)");
     expect(section).not.toContain("(codex)");
     expect(section).not.toContain("Resolved tier roster");
-    expect(section).toContain("the strategist and commander");
+    expect(section).toContain("the highest reasoning rank");
     expect(section).toContain("authenticate more providers");
   });
 

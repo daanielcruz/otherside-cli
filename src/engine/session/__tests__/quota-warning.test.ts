@@ -208,8 +208,8 @@ describe("provider usage helpers tag the producing provider", () => {
     applyKimiQuotaWarning({
       limits: [{ label: "Weekly", used: 97, limit: 100, resetsAt: null }],
     });
-    expect(getRoutingUsage("kimi-code")?.trackingStatus).toBe("tracked");
-    expect(getRoutingUsage("kimi-code")?.utilizationPct).toBe(97);
+    expect(getRoutingUsage("kimi")?.trackingStatus).toBe("tracked");
+    expect(getRoutingUsage("kimi")?.utilizationPct).toBe(97);
   });
 
   it("applyAntigravityQuotaWarning wires antigravity routing usage", () => {

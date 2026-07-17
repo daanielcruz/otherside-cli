@@ -1,5 +1,10 @@
 import { describe, expect, it } from "bun:test";
-import { agentTranscriptPathForCwd } from "@/engine/session/paths.ts";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { appendRecord } from "@/engine/session/append.ts";
+import { agentTranscriptPathForCwd, sessionPathForCwd } from "@/engine/session/paths.ts";
+import { Session } from "@/engine/session/record/state.ts";
 import {
   enqueueWrite,
   offsetIndexForAppend,
@@ -54,6 +59,56 @@ describe("enqueueWrite chain reclamation", () => {
     await Promise.all([first, second]);
     await Promise.resolve();
     expect(pendingWriteChainCount()).toBe(0);
+  });
+});
+
+describe("appendRecord persistence commit", () => {
+  it("leaves pending metadata, records, and the chain untouched when persistence rejects", async () => {
+    const configDir = mkdtempSync(join(tmpdir(), "otherside-append-atomic-"));
+    const previousConfigDir = process.env.OTHERSIDE_CONFIG_DIR;
+    process.env.OTHERSIDE_CONFIG_DIR = configDir;
+    try {
+      const session = new Session("append-atomic", "/append-atomic-cwd");
+      session.chain.headUuid = "existing-head";
+      session.pendingMeta = {
+        type: "session_meta",
+        ts: "2026-01-01T00:00:00.000Z",
+        cwd: session.cwd,
+      };
+      session.records.push({
+        type: "user_message",
+        ts: "2026-01-01T00:00:01.000Z",
+        uuid: "existing-record",
+        content: "already persisted",
+      });
+      const path = sessionPathForCwd(session.storageCwd, session.id);
+      mkdirSync(dirname(path), { recursive: true });
+      mkdirSync(path);
+      const record = {
+        type: "assistant_message" as const,
+        ts: "2026-01-01T00:00:02.000Z",
+        content: "must not become visible after a failed write",
+      };
+      const before = structuredClone({
+        records: session.records,
+        pendingMeta: session.pendingMeta,
+        chainHead: session.chain.headUuid,
+        record,
+      });
+
+      await expect(appendRecord(session, record)).rejects.toThrow();
+
+      expect({
+        records: session.records,
+        pendingMeta: session.pendingMeta,
+        chainHead: session.chain.headUuid,
+        record,
+      }).toEqual(before);
+    } finally {
+      if (previousConfigDir === undefined) delete process.env.OTHERSIDE_CONFIG_DIR;
+      else process.env.OTHERSIDE_CONFIG_DIR = previousConfigDir;
+      rmSync(configDir, { recursive: true, force: true });
+    }
   });
 });
 

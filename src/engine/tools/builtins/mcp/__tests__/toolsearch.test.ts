@@ -2,7 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { activeDeferredToolNames, clearDeferredAnnouncements } from "@/engine/tools/deferred.ts";
 import * as toolRegistry from "@/engine/tools/registry.ts";
+import { EnterWorktree } from "../../worktree-enter.ts";
+import { ExitWorktree } from "../../worktree-exit.ts";
 import { keywordSearch, ToolSearch } from "../toolsearch.ts";
 
 describe("keywordSearch ranking", () => {
@@ -32,6 +35,42 @@ describe("keywordSearch ranking", () => {
 
   test("returns nothing when no term matches", () => {
     expect(keywordSearch(pool, "kubernetes")).toEqual([]);
+  });
+});
+
+describe("deferred tool references", () => {
+  test("loads EnterWorktree and ExitWorktree by exact select query", async () => {
+    const hadEnter = toolRegistry.get("EnterWorktree") !== undefined;
+    const hadExit = toolRegistry.get("ExitWorktree") !== undefined;
+    if (!hadEnter) toolRegistry.registerWithNamespace("builtin", EnterWorktree);
+    if (!hadExit) toolRegistry.registerWithNamespace("builtin", ExitWorktree);
+    clearDeferredAnnouncements();
+    try {
+      const result = await ToolSearch.run(
+        {
+          id: "toolsearch-worktrees",
+          name: "ToolSearch",
+          input: { query: "select:EnterWorktree,ExitWorktree" },
+        },
+        {
+          provider: "anthropic",
+          model: "claude-haiku-4-5",
+          effort: null,
+          permissionMode: "default",
+          sessionId: "toolsearch-worktrees",
+          cwd: process.cwd(),
+        },
+      );
+      expect(result.content).toEqual([
+        { type: "tool_reference", tool_name: "EnterWorktree" },
+        { type: "tool_reference", tool_name: "ExitWorktree" },
+      ]);
+      expect(activeDeferredToolNames()).toEqual(["EnterWorktree", "ExitWorktree"]);
+    } finally {
+      clearDeferredAnnouncements();
+      if (!hadEnter) toolRegistry.unregister("EnterWorktree");
+      if (!hadExit) toolRegistry.unregister("ExitWorktree");
+    }
   });
 });
 
@@ -69,8 +108,7 @@ describe("MCP catalog permissions", () => {
           cwd: workspace,
         },
       );
-      if (typeof result.content !== "string") throw new Error("expected ToolSearch JSON content");
-      expect(JSON.parse(result.content)).toMatchObject({ tools: [] });
+      expect(result.content).toBe("No matching deferred tools found");
 
       writeFileSync(
         join(configDir, "settings.json"),
@@ -87,9 +125,7 @@ describe("MCP catalog permissions", () => {
           cwd: workspace,
         },
       );
-      if (typeof askResult.content !== "string")
-        throw new Error("expected ToolSearch JSON content");
-      expect(JSON.parse(askResult.content)).toMatchObject({ tools: [{ name }] });
+      expect(askResult.content).toEqual([{ type: "tool_reference", tool_name: name }]);
     } finally {
       toolRegistry.unregister(name);
       if (previousConfigDir === undefined) delete process.env.OTHERSIDE_CONFIG_DIR;

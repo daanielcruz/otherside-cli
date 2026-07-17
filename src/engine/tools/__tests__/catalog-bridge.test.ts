@@ -72,7 +72,7 @@ describe("tool catalog ↔ handler bridge (gates #3)", () => {
     setMcpClientSpawnerForTests(null);
   });
 
-  it("exposes worktree tools in reference deferred order with handlers", () => {
+  it("exposes worktree tools in the deferred order with handlers", () => {
     const names = deferredToolNames();
     expect(names.indexOf("EnterWorktree")).toBe(names.indexOf("EnterPlanMode") + 1);
     expect(names.indexOf("ExitWorktree")).toBe(names.indexOf("ExitPlanMode") + 1);
@@ -82,7 +82,30 @@ describe("tool catalog ↔ handler bridge (gates #3)", () => {
     }
   });
 
-  it("exposes ScheduleWakeup in reference deferred order with a handler", () => {
+  it("planning task tools are default-on and drop only on an explicit falsy kill-switch", () => {
+    const planningTools = ["TaskCreate", "TaskGet", "TaskList", "TaskUpdate"];
+    const saved = process.env.CLAUDE_CODE_ENABLE_TASKS;
+    try {
+      delete process.env.CLAUDE_CODE_ENABLE_TASKS;
+      for (const name of planningTools) expect(deferredToolNames()).toContain(name);
+
+      // A truthy value keeps them (parity: only an explicit falsy disables).
+      process.env.CLAUDE_CODE_ENABLE_TASKS = "1";
+      for (const name of planningTools) expect(deferredToolNames()).toContain(name);
+
+      process.env.CLAUDE_CODE_ENABLE_TASKS = "false";
+      const disabled = deferredToolNames();
+      for (const name of planningTools) expect(disabled).not.toContain(name);
+      // The runtime task tools are not covered by the switch.
+      expect(disabled).toContain("TaskOutput");
+      expect(disabled).toContain("TaskStop");
+    } finally {
+      if (saved === undefined) delete process.env.CLAUDE_CODE_ENABLE_TASKS;
+      else process.env.CLAUDE_CODE_ENABLE_TASKS = saved;
+    }
+  });
+
+  it("exposes ScheduleWakeup in the deferred order with a handler", () => {
     const names = deferredToolNames();
     expect(BASE_TOOL_NAMES).not.toContain("ScheduleWakeup");
     expect(names).toContain("ScheduleWakeup");

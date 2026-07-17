@@ -1,3 +1,4 @@
+import type { TierName } from "@/engine/model/tier/names.ts";
 import type { ProviderId } from "@/kernel/config/provider-ids.ts";
 
 const CONTEXT_WINDOW_SUFFIX = /\[1m\]$/i;
@@ -21,38 +22,58 @@ export function isLeanModel(provider: ProviderId, model: string): boolean {
   return LEAN_MODELS.some((m) => m.provider === provider && m.name === baseModelId(model));
 }
 
-export const GENERAL_MODELS: readonly TierModel[] = [
-  { provider: "codex", name: "gpt-5.6-sol", pos: 1 },
-  { provider: "anthropic", name: "claude-fable-5", pos: 2 },
+export const EMPEROR_MODELS: readonly TierModel[] = [
+  { provider: "anthropic", name: "claude-fable-5", pos: 1 },
+  { provider: "codex", name: "gpt-5.6-sol", pos: 2 },
   { provider: "anthropic", name: "claude-opus-4-8", pos: 3 },
-  { provider: "xai", name: "grok-4.5", pos: 4 },
+];
+
+export const SHOGUN_MODELS: readonly TierModel[] = [
+  { provider: "xai", name: "grok-4.5", pos: 1 },
+  { provider: "kimi", name: "k3", pos: 2 },
+  { provider: "codex", name: "gpt-5.6-terra", pos: 3 },
+  { provider: "anthropic", name: "claude-sonnet-5", pos: 4 },
   { provider: "glm", name: "glm-5.2", pos: 5 },
-  { provider: "antigravity", name: "gemini-3.1-pro-high", pos: 6 },
 ];
 
-export const WARRIOR_MODELS: readonly TierModel[] = [
-  { provider: "antigravity", name: "gemini-3-flash", pos: 1 },
-  { provider: "codex", name: "gpt-5.6-terra", pos: 2 },
-  { provider: "anthropic", name: "claude-sonnet-5", pos: 5 },
-  { provider: "xai", name: "grok-composer-2.5-fast", pos: 6 },
-  { provider: "glm", name: "glm-5-turbo", pos: 7 },
-  { provider: "deepseek", name: "deepseek-v4-flash", pos: 8 },
-  { provider: "kimi-code", name: "kimi-for-coding", pos: 9 },
-  { provider: "minimax", name: "minimax-m3", pos: 10 },
+export const DAIMYO_MODELS: readonly TierModel[] = [
+  { provider: "codex", name: "gpt-5.6-luna", pos: 1 },
+  { provider: "antigravity", name: "gemini-3-flash", pos: 2 },
+  { provider: "antigravity", name: "gemini-3.1-pro-high", pos: 3 },
+  { provider: "xai", name: "grok-composer-2.5-fast", pos: 4 },
+  { provider: "deepseek", name: "deepseek-v4-pro", pos: 5 },
+  { provider: "kimi", name: "kimi-for-coding", pos: 6 },
 ];
 
-export const SCOUT_MODELS: readonly TierModel[] = [
-  { provider: "antigravity", name: "gemini-3-flash-medium", pos: 1 }, // we choose gemini instead luna or grok composer because its more cheap for scouting.
-  { provider: "xai", name: "grok-composer-2.5-fast", pos: 2 },
-  { provider: "codex", name: "gpt-5.6-luna", pos: 3 },
+export const SAMURAI_MODELS: readonly TierModel[] = [
+  { provider: "antigravity", name: "gemini-3-flash-low", pos: 1 },
+  { provider: "antigravity", name: "gemini-3-flash-medium", pos: 2 },
+  { provider: "glm", name: "glm-5-turbo", pos: 3 },
   { provider: "anthropic", name: "claude-haiku-4-5", pos: 4 },
-  { provider: "glm", name: "glm-5-turbo", pos: 5 },
+  { provider: "deepseek", name: "deepseek-v4-flash", pos: 5 },
+  { provider: "minimax", name: "minimax-m3", pos: 6 },
+  { provider: "kimi", name: "kimi-for-coding-highspeed", pos: 7 },
 ];
+
+const TIER_SEEDS: Record<TierName, readonly TierModel[]> = {
+  emperor: EMPEROR_MODELS,
+  shogun: SHOGUN_MODELS,
+  daimyo: DAIMYO_MODELS,
+  samurai: SAMURAI_MODELS,
+};
+
+// The built-in roster for a tier, rank-sorted — the layer under any
+// orchestration.json overlay.
+export function seedTierRoster(tier: TierName): readonly TierModel[] {
+  const list = TIER_SEEDS[tier];
+  if (!list) return [];
+  return [...list].sort((a, b) => a.pos - b.pos);
+}
 
 export function auxiliaryModelFor(provider: ProviderId): string {
-  const scout = SCOUT_MODELS.find((m) => m.provider === provider);
-  if (scout) return scout.name;
-  const warrior = WARRIOR_MODELS.find((m) => m.provider === provider);
-  if (warrior) return warrior.name;
+  const samurai = SAMURAI_MODELS.find((m) => m.provider === provider);
+  if (samurai) return samurai.name;
+  const daimyo = DAIMYO_MODELS.find((m) => m.provider === provider);
+  if (daimyo) return daimyo.name;
   return "inherit";
 }

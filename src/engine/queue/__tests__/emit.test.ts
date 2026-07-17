@@ -38,6 +38,59 @@ describe("emitQueue.takeForOwner", () => {
     expect(emitQueue.peek({ class: "deferred_output" }).length).toBe(1);
     release();
   });
+
+  it("notifies the owner lifecycle after consuming replay keys", () => {
+    const lifecycle: string[] = [];
+    const release = emitQueue.registerOwner("fork_x", {
+      onInventoryConsumed: (replayKeys) => {
+        lifecycle.push(...replayKeys);
+        expect(emitQueue.peek({ ownerId: "fork_x" })).toEqual([]);
+      },
+    });
+    emitQueue.emitForCompletion({
+      class: "deferred_output",
+      ownerId: "fork_x",
+      isSubagentOwned: true,
+      payload: { kind: "task_notification_xml", text: "done" },
+      replayKey: "bg:child:0",
+    });
+
+    expect(emitQueue.takeForOwner("fork_x")).toHaveLength(1);
+    expect(lifecycle).toEqual(["bg:child:0"]);
+    release();
+  });
+
+  it("reports the replay keys promoted when an owner exits", () => {
+    let promotedReplayKeys: readonly string[] | undefined;
+    const release = emitQueue.registerOwner("fork_x", {
+      onOwnerRelease: (disposition) => {
+        promotedReplayKeys = disposition.promotedReplayKeys;
+        expect(emitQueue.peek().find((item) => item.replayKey === "bg:child:0")?.target).toBe(
+          "both",
+        );
+      },
+    });
+    emitQueue.emitForCompletion({
+      class: "deferred_output",
+      ownerId: "fork_x",
+      isSubagentOwned: true,
+      payload: { kind: "task_notification_xml", text: "promote" },
+      replayKey: "bg:child:0",
+    });
+    emitQueue.emitForCompletion({
+      class: "urgent_output",
+      ownerId: "fork_x",
+      isSubagentOwned: true,
+      payload: { kind: "tool_result", toolUseId: "keep", content: "keep" },
+    });
+
+    release();
+
+    expect(promotedReplayKeys).toEqual(["bg:child:0"]);
+    const [remaining] = emitQueue.peek({ class: "urgent_output" });
+    expect(remaining?.target).toBe("both");
+    expect(emitQueue.peek().some((item) => item.replayKey === "bg:child:0")).toBe(true);
+  });
 });
 
 describe("emitQueue.drainForBoundary", () => {
@@ -100,7 +153,7 @@ describe("emitQueue.drainForBoundary", () => {
     expect(emitQueue.peek().map((item) => item.id)).toEqual([secondId]);
   });
 
-  it("keeps urgent and deferred output queued across the mid-turn boundary", () => {
+  it("drains urgent and deferred output with user input at the mid-turn boundary", () => {
     const userId = emitQueue.emit({
       class: "user_message",
       target: "llm_request",
@@ -124,12 +177,11 @@ describe("emitQueue.drainForBoundary", () => {
     });
 
     const midTurn = emitQueue.drainForBoundary("mid_turn");
-    expect(midTurn.consumedIds).toEqual([userId]);
-    expect(emitQueue.peek().map((item) => item.id)).toEqual([urgentId, deferredId]);
+    expect(midTurn.consumedIds).toEqual([userId, urgentId, deferredId]);
+    expect(emitQueue.peek()).toEqual([]);
 
     const loopEnd = emitQueue.drainForBoundary("tool_loop_end");
-    expect(loopEnd.consumedIds).toEqual([urgentId, deferredId]);
-    expect(emitQueue.peek()).toEqual([]);
+    expect(loopEnd.consumedIds).toEqual([]);
   });
 });
 

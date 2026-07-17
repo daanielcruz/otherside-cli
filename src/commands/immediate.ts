@@ -3,7 +3,7 @@ import { lookup as slashLookup } from "@/commands/index.ts";
 
 const IMMEDIATE_SLASH_KINDS = new Set<SlashKind>(["panel", "auth"]);
 // Commands that mutate broker/session state and must reach handleSlash mid-turn
-// (not sit as a [QUEUED] message that only applies at turn end). `goal` pushes
+// (never deferred behind the queued-input drain). `goal` pushes
 // its meta message onto the running turn's injection queue; `fast`/`effort`/
 // `model` re-read broker state on the next request, so applying immediately is
 // safe and matches the behavior of the same change via /config. Ultracode is

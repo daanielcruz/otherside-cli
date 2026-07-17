@@ -46,7 +46,7 @@ function assistantMsg(text: string): Message {
 function baseCtx(messages: Message[]): RequestContext {
   return {
     provider: "anthropic",
-    model: "claude-opus-4-6",
+    model: "test-model",
     effort: null,
     permissionMode: "default",
     sessionId: "sess-fork-cmd",

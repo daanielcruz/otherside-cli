@@ -1,14 +1,13 @@
 import { listProviderConfigs } from "@/engine/contract/registry.ts";
 import type { ProviderId } from "@/kernel/config/provider-ids.ts";
 
-export const AUTOCOMPACT_FALLBACK_RATIO = 0.9;
 export const MAX_OUTPUT_TOKENS_FOR_SUMMARY = 20_000;
+export const AUTO_COMPACT_BUFFER_TOKENS = 13_000;
 export const MANUAL_COMPACT_BUFFER_TOKENS = 3_000;
 
 export const MIN_AUTO_COMPACT_WINDOW = 100_000;
 export const MAX_AUTO_COMPACT_WINDOW = 1_000_000;
 
-export const MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES = 3;
 export const RAPID_REFILL_TURN_THRESHOLD = 3;
 export const MAX_CONSECUTIVE_RAPID_REFILLS = 3;
 export const AUTOCOMPACT_RAPID_REFILL_ERROR_MESSAGE = `Autocompact is thrashing: the context refilled to the limit within ${RAPID_REFILL_TURN_THRESHOLD} turns of the previous compact, ${MAX_CONSECUTIVE_RAPID_REFILLS} times in a row. A file being read or a tool output is likely too large for the context window. Try reading in smaller chunks, or use a tool that returns a summary.`;
@@ -100,7 +99,7 @@ function baseAutoCompactThreshold(contextWindow: number, maxOutputTokens: number
   const effective = getEffectiveContextWindowSize(contextWindow, maxOutputTokens);
   const bufferEnv = bufferEnvOverride();
   if (bufferEnv !== null) return effective - bufferEnv;
-  return Math.min(Math.floor(contextWindow * AUTOCOMPACT_FALLBACK_RATIO), effective);
+  return effective - AUTO_COMPACT_BUFFER_TOKENS;
 }
 
 export function getAutoCompactThreshold(
