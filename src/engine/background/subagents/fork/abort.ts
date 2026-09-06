@@ -1,13 +1,5 @@
 import { AbortError } from "@/kernel/std/stream/abort.ts";
 
-export function combineAbortSignals(
-  primary: AbortSignal | undefined,
-  secondary: AbortSignal,
-): AbortSignal {
-  if (primary === undefined) return secondary;
-  return AbortSignal.any([primary, secondary]);
-}
-
 export async function* iterateWithAbortSignal<T>(
   iterable: AsyncIterable<T>,
   signal: AbortSignal,

@@ -13,7 +13,7 @@ import {
   getWorkflowTask,
   resetWorkflowTasksForTests,
 } from "@/engine/background/workflows/runtime/store/store.ts";
-import type { LocalWorkflowTaskState } from "@/engine/background/workflows/runtime/store/types.ts";
+import type { WorkflowTaskLifecycle } from "@/engine/background/workflows/runtime/store/types.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 
 describe("createWorkflowTokenMeter and createWorkflowBudget", () => {
@@ -63,7 +63,7 @@ describe("createWorkflowTokenMeter and createWorkflowBudget", () => {
 return { spent: budget.spent(), remaining: budget.remaining() };
 `;
 
-    const initialTask: LocalWorkflowTaskState = {
+    const initialTask: WorkflowTaskLifecycle = {
       id: "w_initial",
       type: "local_workflow",
       status: "completed",

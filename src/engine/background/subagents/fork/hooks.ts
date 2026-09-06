@@ -1,9 +1,9 @@
 import type { ParsedHookEntry, ParsedHooks } from "@/engine/agents/frontmatter.ts";
 import type { HookEvent } from "@/kernel/hooks/events.ts";
-import type { HookEntry } from "@/kernel/hooks/exec.ts";
 import { fireHookEntries, handlersFromHookMap } from "@/kernel/hooks/handler.ts";
 import type { HookHandler } from "@/kernel/hooks/index.ts";
 import { addSessionHook, listSessionHooks } from "@/kernel/hooks/session-registry.ts";
+import type { HookEntry } from "@/kernel/std/types/hook-entry.ts";
 
 const HOOK_EVENTS: ReadonlySet<string> = new Set([
   "preToolUse",
@@ -65,14 +65,14 @@ function hookEntryFromParsed(parsed: ParsedHookEntry): HookEntry | null {
       type: "prompt",
       matcher: parsed.matcher,
       prompt: parsed.prompt,
-      ...(parsed.timeoutMs !== undefined ? { timeoutMs: parsed.timeoutMs } : {}),
+      ...(parsed.timeout !== undefined ? { timeout: parsed.timeout } : {}),
     };
   }
   if (!parsed.command) return null;
   return {
     matcher: parsed.matcher,
     command: parsed.command,
-    ...(parsed.timeoutMs !== undefined ? { timeoutMs: parsed.timeoutMs } : {}),
+    ...(parsed.timeout !== undefined ? { timeout: parsed.timeout } : {}),
   };
 }
 

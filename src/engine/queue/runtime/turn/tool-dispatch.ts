@@ -1,69 +1,52 @@
-import { recordPayloadDiagnostic } from "@/devtools/payload.ts";
 import { runWithPermissionResolver } from "@/engine/agents/agent-context.ts";
 import { get as getAgentDef } from "@/engine/agents/registry.ts";
 import {
-  type BackgroundTask,
   addUsage as bgAddUsage,
   appendAction as bgAppendAction,
   appendAssistantText as bgAppendAssistantText,
   completeAction as bgCompleteAction,
-  completeTask as bgCompleteTask,
-  completeTaskForRun as bgCompleteTaskForRun,
   detachTaskForRun as bgDetachTaskForRun,
   discardAssistantText as bgDiscardAssistantText,
   failAction as bgFailAction,
-  list as bgList,
-  markBackgrounded as bgMarkBackgrounded,
-  markTaskNotified as bgMarkTaskNotified,
   setForkId as bgSetForkId,
   setModel as bgSetModel,
   setUsageSnapshot as bgSetUsageSnapshot,
-  startShellTask as bgStartShellTask,
   startTask as bgStartTask,
   type TaskRunRef,
   taskRunRef,
 } from "@/engine/background/tasks/background.ts";
 import * as bgControllers from "@/engine/background/tasks/background-controllers.ts";
-import {
-  buildAgentLaunchReceipt,
-  wrapNotificationForModel,
-} from "@/engine/background/tasks/notification.ts";
+import { wrapNotificationForModel } from "@/engine/background/tasks/notification.ts";
 import { listEnabledHookHandlers } from "@/engine/plugins/registry.ts";
 import { QuotaExhaustedError } from "@/engine/providers/_shared/retry.ts";
 import { emitQueue } from "@/engine/queue/emit.ts";
+import { previewArgs } from "@/engine/queue/runtime/args-preview.ts";
+import { partitionForConcurrency } from "@/engine/queue/runtime/concurrency.ts";
+import { mergeAsyncStreams } from "@/engine/queue/runtime/merge-async-streams.ts";
+import { collectNestedMemoryForTool } from "@/engine/queue/runtime/nested-memory.ts";
 import { drainOrphanInterrupts } from "@/engine/queue/runtime/orphan-synth.ts";
+import { resolvePermission } from "@/engine/queue/runtime/permission-resolution.ts";
+import { queuedInputBlocks } from "@/engine/queue/runtime/turn-prompts.ts";
 import { appendRecord, nowIso } from "@/engine/session/index.ts";
 import {
   foldTextIntoToolResult,
   lastFoldableToolResult,
 } from "@/engine/session/transcript/tool-result-fold.ts";
-import {
-  getPersistenceThreshold,
-  isPersistedOutputWrapper,
-  maybePersistLargeToolResult,
-} from "@/engine/tool-result-storage/index.ts";
 import { resolveToolResultImagesForNonVision } from "@/engine/tools/builtins/image/parse-image.ts";
 import { dispatch as dispatchTool } from "@/engine/tools/pipeline.ts";
-import { getMaxToolUseConcurrency } from "@/kernel/config/tool-use-concurrency.ts";
-import { handlersFromConfig } from "@/kernel/hooks/handler.ts";
-import { generateTaskId } from "@/kernel/std/id.ts";
-import { isAbortError } from "@/kernel/std/stream/abort.ts";
+import { maxConcurrentToolUses } from "@/kernel/config/tool-use-concurrency.ts";
+import { firePostToolBatchHooks, handlersFromConfig } from "@/kernel/hooks/handler.ts";
 import { AsyncStream } from "@/kernel/std/stream/async.ts";
 import type { AgentEvent, BackgroundController } from "@/kernel/std/types/events.ts";
-import {
-  type ContentBlock,
-  type ToolCall,
-  toolResultIsErrorField,
-  toolResultText,
-} from "@/kernel/std/types/message.ts";
+import { type ContentBlock, type ToolCall } from "@/kernel/std/types/message.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
-import { isRecord } from "@/kernel/std/value-guards.ts";
-import { previewArgs } from "../args-preview.ts";
-import { partitionForConcurrency } from "../concurrency.ts";
-import { mergeAsyncStreams } from "../merge-async-streams.ts";
-import { collectNestedMemoryForTool } from "../nested-memory.ts";
-import { resolvePermission } from "../permission-resolution.ts";
-import { queuedInputBlocks } from "../turn-prompts.ts";
+import {
+  commitDispatchToolResult,
+  type DispatchEntry,
+  settleDispatch,
+  stageDispatchTaskCompletion,
+  TurnCancelledError,
+} from "./dispatch-settle.ts";
 import type { TurnLoopHost } from "./types.ts";
 
 const BASH_PROMOTION_HANDOFF_GRACE_MS = 250;
@@ -84,223 +67,6 @@ export function appendNotificationRecords(
       },
     }).catch(() => {});
   }
-}
-
-export interface DispatchEntry {
-  call: ToolCall;
-  queue: AsyncStream<AgentEvent>;
-  abortController: AbortController;
-  isAgentTool: boolean;
-  isBackgroundable: boolean;
-  bgTaskId: string | undefined;
-  bgRun?: TaskRunRef;
-  releaseController?: () => void;
-  toolResultCommitted?: boolean;
-  pendingTaskCompletion?: Parameters<typeof bgCompleteTask>[1];
-  flags: { backgrounded: boolean; dispatchDone: boolean; settled: boolean };
-  backgroundPromise: Promise<void>;
-  dispatchPromise: Promise<import("@/kernel/std/types/message.ts").ToolResult>;
-  outcome: Promise<DispatchOutcome>;
-}
-
-export type DispatchOutcome =
-  | { kind: "backgrounded"; placeholder: string }
-  | { kind: "completed"; block: ContentBlock }
-  | { kind: "failed"; error: unknown };
-
-function completeDispatchTask(
-  entry: Pick<DispatchEntry, "bgRun" | "bgTaskId">,
-  result: Parameters<typeof bgCompleteTask>[1],
-): void {
-  if (entry.bgRun !== undefined) {
-    bgCompleteTaskForRun(entry.bgRun, result);
-  } else if (entry.bgTaskId !== undefined) {
-    bgCompleteTask(entry.bgTaskId, result);
-  }
-}
-
-function stageDispatchTaskCompletion(
-  entry: DispatchEntry,
-  result: Parameters<typeof bgCompleteTask>[1],
-): void {
-  entry.pendingTaskCompletion = result;
-  if (entry.toolResultCommitted) {
-    completeDispatchTask(entry, result);
-    delete entry.pendingTaskCompletion;
-  }
-}
-
-function commitDispatchToolResult(entry: DispatchEntry): void {
-  if (entry.toolResultCommitted) return;
-  entry.toolResultCommitted = true;
-  if (entry.pendingTaskCompletion !== undefined) {
-    completeDispatchTask(entry, entry.pendingTaskCompletion);
-    delete entry.pendingTaskCompletion;
-  }
-}
-
-export async function settleDispatch(
-  host: TurnLoopHost,
-  entry: DispatchEntry,
-): Promise<DispatchOutcome> {
-  const { call, queue, abortController, isAgentTool, isBackgroundable, flags } = entry;
-  const finish = (outcome: DispatchOutcome): DispatchOutcome => {
-    flags.settled = true;
-    queue.signal();
-    return outcome;
-  };
-  try {
-    if (isBackgroundable) {
-      const verdict = await Promise.race([
-        entry.dispatchPromise.then(() => "done" as const),
-        entry.backgroundPromise.then(() => "background" as const),
-      ]);
-      if (verdict === "background" && flags.backgrounded && !flags.dispatchDone) {
-        if (entry.bgTaskId) bgMarkBackgrounded(entry.bgTaskId);
-        else if (!isAgentTool) {
-          let handoffTimer: ReturnType<typeof setTimeout> | null = null;
-          const handoffTimeout = new Promise<null>((resolve) => {
-            handoffTimer = setTimeout(() => {
-              handoffTimer = null;
-              resolve(null);
-            }, BASH_PROMOTION_HANDOFF_GRACE_MS);
-          });
-          const promotedShellId = await Promise.race([
-            entry.dispatchPromise.then((result) =>
-              result.meta?.kind === "bash" && result.meta.status === "background"
-                ? (result.meta.shell_id ?? null)
-                : null,
-            ),
-            handoffTimeout,
-          ]).catch(() => null);
-          if (handoffTimer !== null) clearTimeout(handoffTimer);
-          entry.bgTaskId = promotedShellId ?? ensureBackgroundShellTask(call).id;
-        }
-        const llmId = entry.bgTaskId ?? call.id;
-        const placeholder = isAgentTool
-          ? buildAgentLaunchReceipt(llmId)
-          : `Bash command moved to background.\nbashId: ${llmId}\nThe shell is still running. You will be notified automatically when it exits.\nBriefly tell the user the command is running in the background and end your response. Do not generate any other text — the result will arrive in a subsequent message.`;
-        appendRecord(host.deps.session, {
-          type: "tool_result",
-          ts: nowIso(),
-          call_id: call.id,
-          result: placeholder,
-          is_error: false,
-        }).catch(() => {});
-        entry.dispatchPromise
-          .then((result) => {
-            if (result.meta?.kind === "bash" && result.meta.status === "background") {
-              const realId = result.meta.shell_id;
-              if (entry.bgTaskId && realId !== undefined && entry.bgTaskId !== realId) {
-                bgMarkTaskNotified(entry.bgTaskId);
-                bgCompleteTask(entry.bgTaskId, {
-                  content: `superseded by shell ${realId}`,
-                  isError: false,
-                  killed: true,
-                });
-              }
-              return;
-            }
-            const aborted = abortController.signal.aborted;
-            const text = aborted ? "Stopped by user" : toolResultText(result.content);
-            const isError = aborted ? false : (result.is_error ?? false);
-            if (entry.bgTaskId) {
-              stageDispatchTaskCompletion(entry, {
-                content: text,
-                isError,
-                ...(aborted ? { killed: true, userInitiated: true } : {}),
-              });
-            }
-          })
-          .catch((err) => {
-            const aborted = abortController.signal.aborted || isAbortError(err);
-            const msg = err instanceof Error ? err.message : String(err);
-            if (entry.bgTaskId) {
-              stageDispatchTaskCompletion(entry, {
-                content: aborted ? "Stopped by user" : `error: ${msg}`,
-                isError: !aborted,
-                killed: aborted,
-                ...(aborted ? { userInitiated: true } : {}),
-              });
-            }
-          })
-          .finally(() => {
-            entry.releaseController?.();
-          });
-        queue.push({ kind: "tool_dispatch_backgrounded", id: call.id, name: call.name });
-        return finish({ kind: "backgrounded", placeholder });
-      }
-      entry.releaseController?.();
-    }
-
-    const result = await entry.dispatchPromise;
-    recordPayloadDiagnostic("tool-handler-result", result.content, {
-      toolName: call.name,
-      toolUseId: call.id,
-    });
-    if (host.cancelled) {
-      return finish({ kind: "failed", error: new TurnCancelledError() });
-    }
-    const resultText = toolResultText(result.content);
-    if (entry.bgTaskId) {
-      stageDispatchTaskCompletion(entry, {
-        content: resultText,
-        isError: result.is_error ?? false,
-      });
-    }
-    const toolResultBlock = await maybePersistLargeToolResult(
-      {
-        type: "tool_result",
-        tool_use_id: call.id,
-        content: result.content,
-        ...toolResultIsErrorField(result.is_error, result.meta),
-      },
-      call.name,
-      getPersistenceThreshold(call.name),
-    );
-    recordPayloadDiagnostic("tool-persisted-result", toolResultBlock.content, {
-      toolName: call.name,
-      toolUseId: call.id,
-    });
-    const wasPersisted =
-      isPersistedOutputWrapper(toolResultBlock.content) &&
-      !isPersistedOutputWrapper(result.content);
-    queue.push({
-      kind: "tool_dispatch_complete",
-      id: call.id,
-      name: call.name,
-      content: toolResultText(toolResultBlock.content),
-      ...(wasPersisted ? { displayContent: resultText } : {}),
-      isError: result.is_error ?? false,
-      ...(result.meta ? { meta: result.meta } : {}),
-    });
-    return finish({ kind: "completed", block: toolResultBlock });
-  } catch (err) {
-    return finish({ kind: "failed", error: err });
-  }
-}
-
-export class TurnCancelledError extends Error {
-  constructor() {
-    super("Interrupted by user");
-  }
-}
-
-export function ensureBackgroundShellTask(call: ToolCall): BackgroundTask {
-  const existing = bgList().find((task) => task.parentToolCallId === call.id);
-  if (existing) return existing;
-  return bgStartShellTask({
-    shellId: generateTaskId("b"),
-    command: commandLabelFromInput(call.input, call.name),
-    parentToolCallId: call.id,
-  });
-}
-
-function commandLabelFromInput(input: unknown, fallback: string): string {
-  if (isRecord(input) && typeof input.command === "string" && input.command.length > 0) {
-    return input.command;
-  }
-  return fallback;
 }
 
 export function createConcurrencyWindow(
@@ -342,7 +108,7 @@ export async function* dispatchTurnToolCalls(args: {
   try {
     for (const group of partitionForConcurrency(toolCalls)) {
       const dispatchEntries: DispatchEntry[] = [];
-      const runInWindow = createConcurrencyWindow(getMaxToolUseConcurrency());
+      const runInWindow = createConcurrencyWindow(maxConcurrentToolUses());
       for (const call of group) {
         if (host.cancelled) {
           resultBlocks.push({
@@ -674,6 +440,26 @@ async function* finalizeToolDispatchBatch(args: {
         block.content = await resolveToolResultImagesForNonVision(ctx, block.content);
       }
     }
+  }
+  if (toolCalls.length > 0) {
+    await firePostToolBatchHooks(host.deps.config, {
+      kind: "postToolBatch",
+      ctx: {
+        sessionId: ctx.sessionId,
+        cwd: ctx.cwd,
+        toolCalls: toolCalls.map((call) => {
+          const response = resultBlocks.find(
+            (block) => block.type === "tool_result" && block.tool_use_id === call.id,
+          );
+          return {
+            tool_name: call.name,
+            tool_input: call.input,
+            tool_use_id: call.id,
+            ...(response?.type === "tool_result" ? { tool_response: response.content } : {}),
+          };
+        }),
+      },
+    });
   }
   if (resultBlocks.length > 0) {
     host.deps.session.messages.push({ role: "user", content: resultBlocks });

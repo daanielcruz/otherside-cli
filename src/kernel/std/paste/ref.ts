@@ -44,8 +44,12 @@ export function parsePasteReferences(text: string): PasteReference[] {
   return out;
 }
 
+export function formatImageRef(id: number): string {
+  return `[Image #${id}]`;
+}
+
 export function formatPasteRef(type: "text" | "image", id: number, content: string): string {
-  if (type === "image") return `[Image #${id}]`;
+  if (type === "image") return formatImageRef(id);
   const lines = (content.match(NEWLINE_RE) ?? []).length;
   return lines === 0 ? `[Pasted text #${id}]` : `[Pasted text #${id} +${lines} lines]`;
 }

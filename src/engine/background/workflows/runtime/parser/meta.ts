@@ -10,7 +10,7 @@ import {
   WORKFLOW_SCRIPT_MAX_BYTES,
   type WorkflowMeta,
   WorkflowParseError,
-  type WorkflowPhaseDescriptor,
+  type WorkflowPhaseSpec,
 } from "@/engine/background/workflows/runtime/parser/types.ts";
 
 const META_EXPORT_NAME = "meta";
@@ -129,15 +129,15 @@ function readOptionalMetaFields(
   return output;
 }
 
-function collectPhases(value: WorkflowLiteral | undefined): WorkflowPhaseDescriptor[] | undefined {
+function collectPhases(value: WorkflowLiteral | undefined): WorkflowPhaseSpec[] | undefined {
   if (!Array.isArray(value)) return undefined;
-  const out: WorkflowPhaseDescriptor[] = [];
+  const out: WorkflowPhaseSpec[] = [];
   for (let i = 0; i < value.length; i++) {
     const phase = value[i];
     if (phase === null || typeof phase !== "object" || Array.isArray(phase)) continue;
     const rec = phase as WorkflowLiteralObject;
     if (typeof rec.title !== "string") continue;
-    const entry: WorkflowPhaseDescriptor = { index: i, title: rec.title };
+    const entry: WorkflowPhaseSpec = { index: i, title: rec.title };
     if (typeof rec.detail === "string") entry.detail = rec.detail;
     if (typeof rec.model === "string") entry.model = rec.model;
     out.push(entry);

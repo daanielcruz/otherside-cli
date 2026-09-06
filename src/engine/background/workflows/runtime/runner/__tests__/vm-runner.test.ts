@@ -1,12 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import type { Script } from "node:vm";
-import { compileWorkflowScript } from "@/engine/background/workflows/runtime/compiler/compile.ts";
+import { compileWorkflowProgram } from "@/engine/background/workflows/runtime/compiler/compile.ts";
 import type { WorkflowVmContextOptions } from "@/engine/background/workflows/runtime/runner/context.ts";
 import { runWorkflowVm } from "@/engine/background/workflows/runtime/runner/vm-runner.ts";
 import { WORKFLOW_SCRIPT_FILENAME } from "@/engine/background/workflows/runtime/sandbox/errors.ts";
 
 function compileBody(body: string): Script {
-  const compiled = compileWorkflowScript(body);
+  const compiled = compileWorkflowProgram(body);
   if (!compiled.ok) throw new Error(`fixture failed to compile: ${compiled.error}`);
   return compiled.vmScript;
 }

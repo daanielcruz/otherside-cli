@@ -34,6 +34,7 @@ export function formatReloadFeedback(counts: {
   hooks: number;
   mcpServers: number;
   lspServers: number;
+  agentFailures?: readonly string[];
 }): string {
   // Category set + order:
   // plugins · skills · agents · hooks · plugin MCP servers · plugin LSP servers
@@ -45,7 +46,10 @@ export function formatReloadFeedback(counts: {
     `${counts.mcpServers} ${pluralize(counts.mcpServers, "plugin MCP server")}`,
     `${counts.lspServers} ${pluralize(counts.lspServers, "plugin LSP server")}`,
   ];
-  return `Reloaded: ${parts.join(" · ")}`;
+  // A file that failed to parse is silently absent from the counts, so the
+  // reload feedback is the only place the user learns it was skipped.
+  const failures = counts.agentFailures ?? [];
+  return [`Reloaded: ${parts.join(" · ")}`, ...failures].join("\n");
 }
 
 export async function handleReload(
@@ -58,7 +62,7 @@ export async function handleReload(
   clearSkills();
   clearAgents();
   clearPlugins();
-  const { agents, skills, plugins } = loadCorpus({ config, cwd });
+  const { agents, skills, plugins, agentFailures } = loadCorpus({ config, cwd });
   // Plugin runtime state swaps transactionally: MCP clients and deferred tool
   // announcements for removed servers are cleaned up, and a failed swap rolls
   // back to the freshly loaded corpus with needsRefresh re-armed.
@@ -83,6 +87,7 @@ export async function handleReload(
       hooks,
       mcpServers,
       lspServers,
+      agentFailures,
     }),
   };
 }

@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import { registerAllBuiltins } from "@/engine/tools/register-builtins.ts";
+import * as toolRegistry from "@/engine/tools/registry.ts";
 import { MAX_AGENT_SPAWN_DEPTH } from "../agent-context.ts";
 import { ASYNC_AGENT_ALLOWED_TOOLS, filterToolsForAgent, resolveToolsetFor } from "../toolset.ts";
 
@@ -31,6 +32,16 @@ describe("filterToolsForAgent", () => {
     const out = filterToolsForAgent(["EnterWorktree", "ExitWorktree", "WaitForMcpServers"], BASE);
     expect(out).toEqual(["EnterWorktree", "ExitWorktree"]);
     expect(filterToolsForAgent(["WaitForMcpServers"], { ...BASE, isAsync: false })).toEqual([]);
+  });
+
+  // The allowlist filters an incoming pool, so a name nothing is registered under can
+  // never reach an agent. Carrying one only misleads a reader into thinking the tool
+  // exists — and a planning tool named there would contradict the rule right above it.
+  it("names only tools that exist", () => {
+    const missing = [...ASYNC_AGENT_ALLOWED_TOOLS].filter(
+      (name) => toolRegistry.get(name) === undefined,
+    );
+    expect(missing).toEqual([]);
   });
 
   it("mcp tools bypass every check", () => {

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
-  agentDisplayName,
+  addressedMessageText,
   clear,
   dequeue,
   enqueue,
@@ -12,10 +12,10 @@ import {
 afterEach(() => clear());
 
 describe("agent inbox addressing", () => {
-  test("routes the reserved main alias and the session id to the same inbox", () => {
+  test("routes the reserved main address and the session id to the same inbox", () => {
     registerMainAgent("session-1");
 
-    expect(enqueue("main", "from alias")).toMatchObject({
+    expect(enqueue("main", "from address")).toMatchObject({
       delivered: true,
       agentId: "session-1",
     });
@@ -23,82 +23,62 @@ describe("agent inbox addressing", () => {
       delivered: true,
       agentId: "session-1",
     });
-    expect(dequeue("session-1")?.message).toBe("from alias");
+    expect(dequeue("session-1")?.message).toBe("from address");
     expect(dequeue("session-1")?.message).toBe("from id");
-  });
-
-  test("prevents spawned agents from claiming the main alias", () => {
-    expect(() => registerAgent("worker-1", "main")).toThrow(
-      'agent name "main" is reserved for the main conversation',
-    );
-    expect(resolveAgentId("worker-1")).toBeNull();
   });
 
   test("delivers running-agent messages through its turn-boundary handler", () => {
     const delivered: string[] = [];
-    const unregister = registerAgent("worker-1", "worker", (message) => {
+    const unregister = registerAgent("worker-1", (message) => {
       delivered.push(message.message);
     });
 
-    expect(enqueue("worker", "steer now")).toMatchObject({
+    expect(enqueue("worker-1", "steer now")).toMatchObject({
       delivered: true,
       agentId: "worker-1",
     });
     expect(delivered).toEqual(["steer now"]);
 
     unregister();
-    expect(enqueue("worker", "too late")).toMatchObject({
+    expect(enqueue("worker-1", "too late")).toMatchObject({
       delivered: false,
       code: "unknown_recipient",
     });
   });
 
-  test("two registerAgent claims on one name results in ambiguous_recipient, and unregistering one resolves it", () => {
-    const unregister1 = registerAgent("worker-1", "worker-alias");
-    const unregister2 = registerAgent("worker-2", "worker-alias");
-
-    const result = enqueue("worker-alias", "hello");
-    expect(result).toEqual({
+  // Addressing is id-only: a label that is not a registered id never routes.
+  test("rejects any recipient that is not a registered id", () => {
+    registerAgent("worker-1");
+    expect(resolveAgentId("worker-1")).toBe("worker-1");
+    expect(resolveAgentId("worker-alias")).toBeNull();
+    expect(enqueue("worker-alias", "hello")).toMatchObject({
       delivered: false,
-      code: "ambiguous_recipient",
-      reason:
-        'name "worker-alias" is claimed by 2 running agents: worker-1, worker-2 — address one by its id',
+      code: "unknown_recipient",
     });
-
-    unregister1();
-
-    const result2 = enqueue("worker-alias", "hello again");
-    expect(result2).toMatchObject({
-      delivered: true,
-      agentId: "worker-2",
-    });
-
-    const msg = dequeue("worker-2");
-    expect(msg?.message).toBe("hello again");
-
-    unregister2();
   });
 
   test("from field round-trips through enqueue/dequeue", () => {
-    registerAgent("worker-3", "worker-3-alias");
+    registerAgent("worker-3");
     const result = enqueue("worker-3", "hello", undefined, "sender-1");
     expect(result.delivered).toBe(true);
 
     const msg = dequeue("worker-3");
     expect(msg?.from).toBe("sender-1");
   });
+});
 
-  test("agentDisplayName returns the alias for a single-claimant id and null otherwise", () => {
-    // Single claimant
-    const unregister1 = registerAgent("worker-4", "worker-4-alias");
-    expect(agentDisplayName("worker-4")).toBe("worker-4-alias");
+describe("addressedMessageText", () => {
+  test("leads with the sender so the agent knows who to answer", () => {
+    expect(addressedMessageText({ message: "ship it", from: "main" })).toBe("[From main]\nship it");
+  });
 
-    // Multiple claimant on same alias
-    const unregister2 = registerAgent("worker-5", "worker-4-alias");
-    expect(agentDisplayName("worker-4")).toBeNull();
-    expect(agentDisplayName("worker-5")).toBeNull();
+  test("names both the sender and what it answers", () => {
+    expect(addressedMessageText({ message: "done", from: "reviewer", replyTo: "msg-1" })).toBe(
+      "[From reviewer · Reply to msg-1]\ndone",
+    );
+  });
 
-    unregister1();
-    unregister2();
+  test("adds nothing when the message is addressed by neither", () => {
+    expect(addressedMessageText({ message: "plain" })).toBe("plain");
   });
 });

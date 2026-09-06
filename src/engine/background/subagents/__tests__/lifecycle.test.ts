@@ -68,17 +68,21 @@ function registerTestProvider(args: {
       args.captures.push({ ctx, messages });
       return { turn };
     },
-    stream: async function* () {},
-    translateResponse: async function* () {
+    startStreamAttempt: () => {
       const current = turn++;
-      if (current === 0) await args.waitForFirstTurn;
-      const events =
-        current === 0
-          ? longAnswer("initial")
-          : current === 1
-            ? longAnswer("steered")
-            : longAnswer("resumed");
-      for (const event of events) yield event;
+      return {
+        events: (async function* () {
+          if (current === 0) await args.waitForFirstTurn;
+          const events =
+            current === 0
+              ? longAnswer("initial")
+              : current === 1
+                ? longAnswer("steered")
+                : longAnswer("resumed");
+          for (const event of events) yield event;
+        })(),
+        abort: () => {},
+      };
     },
     recoverableError: () => ({ kind: "fail", reason: "test" }),
   } as unknown as Provider);
@@ -120,10 +124,14 @@ function registerCapturingProvider(args: {
       args.captures.push({ ctx, messages });
       return { turn };
     },
-    stream: async function* () {},
-    translateResponse: async function* () {
+    startStreamAttempt: () => {
       const current = turn++;
-      for (const event of longAnswer(`turn-${current}`)) yield event;
+      return {
+        events: (async function* () {
+          for (const event of longAnswer(`turn-${current}`)) yield event;
+        })(),
+        abort: () => {},
+      };
     },
     recoverableError: () => ({ kind: "fail", reason: "test" }),
   } as unknown as Provider);
@@ -231,7 +239,7 @@ describe("subagent messaging lifecycle", () => {
     });
 
     await waitUntil(() => resolveAgentId(task.id) === task.id);
-    expect(await sendMessage("resume-worker", "Running steering marker.", ctx)).toMatchObject({
+    expect(await sendMessage(task.id, "Running steering marker.", ctx)).toMatchObject({
       delivered: true,
       to: task.id,
       resumed: false,
@@ -254,7 +262,7 @@ describe("subagent messaging lifecycle", () => {
         resolve();
       });
     });
-    const resumed = await sendMessage("resume-worker", "Finished follow-up marker.", ctx);
+    const resumed = await sendMessage(task.id, "Finished follow-up marker.", ctx);
     expect(resumed).toMatchObject({ delivered: true, to: task.id, resumed: true });
     await resumedCompletion;
 
@@ -322,7 +330,7 @@ describe("subagent messaging lifecycle", () => {
     expect(stopped).toMatchObject({ delivered: false, code: "stopped_by_user" });
   });
 
-  test("a running name holder keeps its alias when a later fork claims the same name", () => {
+  test("addressing is id-only: two forks with the same label stay independently reachable", () => {
     const ctx = minimalCtx("name-claim-test", "name-claim-session");
     const releaseA = registerRunningFork(
       "name-claim-a",
@@ -337,12 +345,12 @@ describe("subagent messaging lifecycle", () => {
       ctx,
     );
 
-    // The alias stays pinned to the still-running holder A; B is reachable by id.
-    expect(resolveAgentId("shared-name")).toBe("name-claim-a");
+    // The display label never routes; each fork answers only to its id.
+    expect(resolveAgentId("shared-name")).toBeNull();
+    expect(resolveAgentId("name-claim-a")).toBe("name-claim-a");
     expect(resolveAgentId("name-claim-b")).toBe("name-claim-b");
 
-    // A message addressed to the shared name reaches A, not the later claimant B.
-    const delivery = enqueue("shared-name", "for the running holder");
+    const delivery = enqueue("name-claim-a", "for the first fork");
     expect(delivery.delivered).toBe(true);
     expect(pendingAgentSteerCount("name-claim-a")).toBe(1);
     expect(pendingAgentSteerCount("name-claim-b")).toBe(0);

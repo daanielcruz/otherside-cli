@@ -55,12 +55,16 @@ function registerProvider(events: ProviderEvent[] | ProviderEvent[][], failure?:
       capturedCtx = next;
       return {};
     },
-    stream: async function* () {},
-    translateResponse: async function* () {
-      if (failure !== undefined) throw failure;
+    startStreamAttempt: () => {
       const current = turns[Math.min(turn, turns.length - 1)] ?? [];
       turn++;
-      for (const event of current) yield event;
+      return {
+        events: (async function* () {
+          if (failure !== undefined) throw failure;
+          for (const event of current) yield event;
+        })(),
+        abort: () => {},
+      };
     },
     recoverableError: () => ({ kind: "fail", reason: "test" }),
   } as unknown as Provider;

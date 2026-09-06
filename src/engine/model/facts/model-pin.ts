@@ -1,8 +1,8 @@
 import { CATALOG, findFamilyMatch, type ModelEntry, parseModelId } from "@/engine/model/catalog.ts";
-import { providerUsabilityNow } from "@/engine/model/tier/resolver.ts";
-import { formatResetTime } from "@/engine/session/usage/limits.ts";
-import type { OrchestrationMode } from "@/kernel/config/orchestration-mode.ts";
-import { isProviderId, type ProviderId } from "@/kernel/config/provider-ids.ts";
+import { providerUsabilityNow } from "@/engine/model/tier/usability.ts";
+import { formatResetTime } from "@/kernel/std/intl.ts";
+import type { OrchestrationMode } from "@/kernel/std/types/orchestration-mode.ts";
+import { isProviderId, type ProviderId } from "@/kernel/std/types/provider-ids.ts";
 
 export interface ModelPinResolution {
   provider: ProviderId;
@@ -85,11 +85,14 @@ export function resolveModelPin(
   const provider = rawProvider;
   const entry = catalogMatch(pin, provider);
   if (!entry) {
-    const carriers = providersCarrying(pin);
-    const hint =
-      carriers.length > 0
-        ? ` It exists on provider(s): ${carriers.join(", ")}.`
-        : ` Models on "${provider}": ${providerModelIds(provider).join(", ")}.`;
+    let hint = "";
+    if (orchestrationMode !== "feudalism") {
+      const carriers = providersCarrying(pin);
+      hint =
+        carriers.length > 0
+          ? ` It exists on provider(s): ${carriers.join(", ")}.`
+          : ` Models on "${provider}": ${providerModelIds(provider).join(", ")}.`;
+    }
     return {
       ok: false,
       error: `InputValidationError: model "${pin}" is not available on provider "${provider}".${hint}`,

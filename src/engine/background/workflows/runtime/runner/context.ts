@@ -2,13 +2,13 @@ import { createContext, runInContext } from "node:vm";
 import type { WorkflowBudgetState } from "@/engine/background/workflows/runtime/budget/budget.ts";
 import { createWorkflowVmBoundaryClone } from "@/engine/background/workflows/runtime/sandbox/clone.ts";
 import {
-  buildVmSafeError,
+  toSandboxError,
   wrapSyncForVm,
 } from "@/engine/background/workflows/runtime/sandbox/errors.ts";
-import { applyWorkflowSandbox } from "@/engine/background/workflows/runtime/sandbox/harden.ts";
+import { enforceWorkflowSandbox } from "@/engine/background/workflows/runtime/sandbox/harden.ts";
 import {
-  createAbortableTimers,
-  type WorkflowAbortableTimers,
+  createCancellableTimers,
+  type WorkflowCancellableTimers,
 } from "@/engine/background/workflows/runtime/sandbox/timers.ts";
 
 export interface WorkflowVmHooks {
@@ -29,7 +29,7 @@ export interface WorkflowVmContextOptions {
 
 export interface WorkflowVmContextResult {
   context: object;
-  timers: WorkflowAbortableTimers;
+  timers: WorkflowCancellableTimers;
 }
 
 function wrapAsyncForVm<Args extends unknown[]>(
@@ -46,22 +46,22 @@ function wrapAsyncForVm<Args extends unknown[]>(
         ? cloneIntoVm(result)
         : result;
     } catch (error) {
-      throw buildVmSafeError(error);
+      throw toSandboxError(error);
     }
   };
   Object.setPrototypeOf(wrapped, null);
   return wrapped;
 }
 
-export function buildWorkflowVmContext(
+export function buildWorkflowSandboxScope(
   options: WorkflowVmContextOptions = {},
 ): WorkflowVmContextResult {
   const hooks = options.hooks ?? {};
-  const timers = createAbortableTimers(options.signal, (message) => hooks.log?.(message));
+  const timers = createCancellableTimers(options.signal, (message) => hooks.log?.(message));
   const context = createContext(buildContextGlobals({ hooks, timers }), {
     codeGeneration: { strings: false, wasm: false },
   });
-  applyWorkflowSandbox(context);
+  enforceWorkflowSandbox(context);
 
   const cloneIntoVm = createWorkflowVmBoundaryClone(context);
   const makeVmRecord = runInContext(
@@ -107,7 +107,7 @@ export function buildWorkflowVmContext(
 
 function buildContextGlobals(input: {
   hooks: WorkflowVmHooks;
-  timers: WorkflowAbortableTimers;
+  timers: WorkflowCancellableTimers;
 }): Record<string, unknown> {
   return {
     __proto__: null,

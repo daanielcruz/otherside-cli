@@ -8,11 +8,10 @@ import type { Model } from "@/engine/model/types.ts";
 import type { WebSearchInput, WebSearchPayload } from "@/engine/tools/common.ts";
 import type { DeferredOverrides } from "@/engine/tools/deferred-overrides.ts";
 import type { Api } from "@/engine/translator/dispatch/types.ts";
-import type { RetryDecision } from "@/engine/transport/_infra/classify/retry.ts";
 import type { ComposedHarness } from "@/harness/composer/injections.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
 import type { ProviderEvent } from "@/kernel/std/types/events.ts";
 import type { ContentBlock, Message } from "@/kernel/std/types/message.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 
 export interface UsageDetails {
@@ -22,7 +21,21 @@ export interface UsageDetails {
 
 export type { AuthCredentials, AuthStrategy } from "@/engine/contract/auth.ts";
 export type { WireFingerprint } from "@/engine/contract/wire-fingerprint.ts";
-export type { RetryDecision } from "@/engine/transport/_infra/classify/retry.ts";
+
+export type RetryDecision =
+  | { kind: "retry"; delayMs?: number; reason?: string }
+  | {
+      kind: "fail";
+      reason: string;
+      userMessage?: string;
+      quotaExhausted?: boolean;
+      quotaResetEpochMs?: number | null;
+    };
+
+export interface ProviderStreamAttempt {
+  readonly events: AsyncIterable<ProviderEvent>;
+  abort(reason: unknown): void;
+}
 
 export type ApiProviderSourceId = "builtin" | "user" | "extension";
 
@@ -62,7 +75,11 @@ export interface ProviderConfig<A extends Api> {
     tools: unknown[],
   ) => unknown;
   readonly translateResponse?: (raw: AsyncIterable<Uint8Array>) => AsyncIterable<ProviderEvent>;
-  readonly stream?: (ctx: RequestContext, body: unknown) => AsyncIterable<Uint8Array>;
+  readonly stream?: (
+    ctx: RequestContext,
+    body: unknown,
+    signal: AbortSignal,
+  ) => AsyncIterable<Uint8Array>;
   readonly deferredOverrides?: DeferredOverrides;
   readonly promptAdapter?: ProviderPromptAdapter;
   readonly recoverableError?: (
@@ -114,8 +131,7 @@ export interface Provider {
   injectHeaders(ctx: RequestContext): Record<string, string>;
 
   translateRequest(ctx: RequestContext, messages: Message[], tools: unknown[]): unknown;
-  translateResponse(raw: AsyncIterable<Uint8Array>): AsyncIterable<ProviderEvent>;
-  stream(ctx: RequestContext, body: unknown): AsyncIterable<Uint8Array>;
+  startStreamAttempt(ctx: RequestContext, body: unknown): ProviderStreamAttempt;
   getResumeBody?(ctx: RequestContext, originalBody: unknown): unknown | null;
 
   defaultModels(): ModelEntry[];

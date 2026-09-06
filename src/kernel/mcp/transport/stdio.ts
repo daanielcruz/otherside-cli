@@ -5,23 +5,36 @@ import {
   PROTOCOL_VERSION,
   REQUEST_TIMEOUT_MS,
 } from "@/kernel/mcp/protocol/constants.ts";
+import {
+  deliverInboundNotice,
+  isInboundNotice,
+  isInboundRequest,
+  replyToInbound,
+} from "@/kernel/mcp/protocol/inbound.ts";
 import { parseInstructions, parseServerCapabilities } from "@/kernel/mcp/protocol/parse.ts";
+import { rejectPendingOnAbort } from "@/kernel/mcp/protocol/request-signal.ts";
 import type {
   JsonRpcNotification,
   JsonRpcRequest,
   JsonRpcResponse,
+  McpCallToolOptions,
   McpClient,
   McpDirectoryListPage,
+  McpPromptInfo,
   McpResourceInfo,
   McpServerCapabilities,
   McpToolInfo,
   StdioServerConfig,
 } from "@/kernel/mcp/protocol/types.ts";
 import { McpRpcError } from "@/kernel/mcp/protocol/types.ts";
+import { clientCapabilities } from "@/kernel/mcp/transport/capabilities.ts";
 import { bashCommand } from "@/kernel/std/proc/shell.ts";
+import { AbortError } from "@/kernel/std/stream/abort.ts";
 import {
   callToolVia,
+  getPromptVia,
   listDirectoryPageVia,
+  listPromptsVia,
   listResourcesVia,
   listToolsVia,
   readResourceVia,
@@ -32,6 +45,7 @@ interface PendingRequest {
   reject: (err: Error) => void;
   timer: ReturnType<typeof setTimeout>;
   method: string;
+  dropAbort: () => void;
 }
 
 interface WritableSink {
@@ -51,9 +65,14 @@ export class StdioTransport implements McpClient {
   private instructions: string | null = null;
   private capabilities: McpServerCapabilities | null = null;
   private writer: WritableStreamDefaultWriter<Uint8Array> | WritableSink | null = null;
+  /** Names this server to whoever answers its questions. */
+  private serverName = "mcp";
+  /** Aborted on close, so an answer in flight learns the connection is gone. */
+  private readonly lifetime = new AbortController();
 
-  static async spawn(config: StdioServerConfig): Promise<StdioTransport> {
+  static async spawn(config: StdioServerConfig, name = "mcp"): Promise<StdioTransport> {
     const client = new StdioTransport();
+    client.serverName = name;
     await client.start(config);
     return client;
   }
@@ -74,7 +93,7 @@ export class StdioTransport implements McpClient {
     try {
       const initialized = await this.request("initialize", {
         protocolVersion: PROTOCOL_VERSION,
-        capabilities: {},
+        capabilities: clientCapabilities(),
         clientInfo: { name: CLIENT_NAME, version: CLIENT_VERSION },
       });
       this.instructions = parseInstructions(initialized);
@@ -121,6 +140,25 @@ export class StdioTransport implements McpClient {
     } catch {
       return;
     }
+    // A message carrying a method is the server asking us something, not
+    // answering: it gets a reply of its own rather than being dropped.
+    if (isInboundRequest(msg)) {
+      void replyToInbound({
+        message: msg,
+        server: this.serverName,
+        signal: this.lifetime.signal,
+        send: (reply) => {
+          if (!this.closed) this.write(reply as JsonRpcNotification);
+        },
+      });
+      return;
+    }
+    // A method with no id is the server telling us something. Nothing may be
+    // watching it, but dropping it before anyone can is how a catalog goes stale.
+    if (isInboundNotice(msg)) {
+      deliverInboundNotice({ server: this.serverName, method: msg.method, params: msg.params });
+      return;
+    }
     if (typeof msg.id !== "number") return;
     const pending = this.pending.get(msg.id);
     if (!pending) return;
@@ -132,6 +170,7 @@ export class StdioTransport implements McpClient {
     );
     this.pending.delete(msg.id);
     clearTimeout(pending.timer);
+    pending.dropAbort();
     if (msg.error) {
       pending.reject(new McpRpcError(pending.method, msg.error));
       return;
@@ -150,26 +189,43 @@ export class StdioTransport implements McpClient {
     }
   }
 
-  private request(method: string, params: unknown): Promise<unknown> {
+  private request(method: string, params: unknown, signal?: AbortSignal): Promise<unknown> {
     if (this.closed) return Promise.reject(new Error(`MCP server closed before \`${method}\``));
+    if (signal?.aborted) return Promise.reject(new AbortError());
     const id = this.nextId++;
     return new Promise<unknown>((resolve, reject) => {
+      const settle = (fn: () => void): void => {
+        const pending = this.pending.get(id);
+        if (!pending) return;
+        this.pending.delete(id);
+        clearTimeout(pending.timer);
+        pending.dropAbort();
+        fn();
+      };
       const timer = setTimeout(() => {
-        if (this.pending.delete(id)) {
+        settle(() =>
           reject(
             new Error(`MCP request \`${method}\` timed out after ${REQUEST_TIMEOUT_MS / 1000}s`),
-          );
-        }
+          ),
+        );
       }, REQUEST_TIMEOUT_MS);
-      this.pending.set(id, { resolve, reject, timer, method });
+      const dropAbort = rejectPendingOnAbort(signal, (error) => settle(() => reject(error)));
+      this.pending.set(id, { resolve, reject, timer, method, dropAbort });
       try {
         this.write({ jsonrpc: "2.0", id, method, params });
       } catch (e) {
-        this.pending.delete(id);
-        clearTimeout(timer);
-        reject(e instanceof Error ? e : new Error(String(e)));
+        settle(() => reject(e instanceof Error ? e : new Error(String(e))));
       }
     });
+  }
+
+  announce(method: string, params: unknown): void {
+    if (this.closed) return;
+    try {
+      this.notify(method, params);
+    } catch {
+      // The connection went away; the close path is what reports that.
+    }
   }
 
   private notify(method: string, params: unknown): void {
@@ -184,8 +240,19 @@ export class StdioTransport implements McpClient {
     return this.tools;
   }
 
-  async callTool(name: string, args: unknown): Promise<unknown> {
-    return callToolVia((method, params) => this.request(method, params), { name, args });
+  async callTool(name: string, args: unknown, options?: McpCallToolOptions): Promise<unknown> {
+    return callToolVia((method, params) => this.request(method, params, options?.signal), {
+      name,
+      args,
+    });
+  }
+
+  async listPrompts(): Promise<McpPromptInfo[]> {
+    return listPromptsVia((method, params) => this.request(method, params));
+  }
+
+  async getPrompt(name: string, args: Record<string, string>): Promise<unknown> {
+    return getPromptVia((method, params) => this.request(method, params), { name, args });
   }
 
   async listResources(): Promise<McpResourceInfo[]> {
@@ -219,8 +286,10 @@ export class StdioTransport implements McpClient {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    this.lifetime.abort();
     for (const [, pending] of this.pending) {
       clearTimeout(pending.timer);
+      pending.dropAbort();
       pending.reject(new Error(`MCP server closed while waiting for \`${pending.method}\``));
     }
     this.pending.clear();

@@ -34,13 +34,13 @@ const PROJECT_ENV_VARS = [
   "GCLOUD_PROJECT",
 ];
 
-const LOAD_CODE_ASSIST_PATH = "/v1internal:loadCodeAssist";
+export const LOAD_CODE_ASSIST_PATH = "/v1internal:loadCodeAssist";
 const ONBOARD_USER_PATH = "/v1internal:onboardUser";
 const ANTIGRAVITY_IDE_TYPE = "ANTIGRAVITY";
 const VALIDATION_REQUIRED_CODE = "VALIDATION_REQUIRED";
 const ONBOARD_POLL_ATTEMPTS = 20;
 const ONBOARD_POLL_INTERVAL_MS = 2000;
-const CODE_ASSIST_METADATA = { ideType: ANTIGRAVITY_IDE_TYPE };
+export const CODE_ASSIST_METADATA = { ideType: ANTIGRAVITY_IDE_TYPE };
 
 interface GoogleTokenResponse {
   access_token: string;
@@ -163,6 +163,35 @@ async function refreshTokens(prior: GoogleOauthTokens): Promise<GoogleOauthToken
   return next;
 }
 
+let activeRefreshPromise: Promise<GoogleOauthTokens> | null = null;
+
+function tokensChanged(current: GoogleOauthTokens, prior: GoogleOauthTokens): boolean {
+  return current.accessToken !== prior.accessToken || current.refreshToken !== prior.refreshToken;
+}
+
+async function executeRefresh(prior?: GoogleOauthTokens): Promise<GoogleOauthTokens> {
+  try {
+    const stored = await loadFor("antigravity");
+    if (!stored) {
+      throw new Error(
+        "not logged in to antigravity — run `otherside login --provider antigravity`",
+      );
+    }
+    // A different flow may have refreshed this persistent credential since the
+    // caller observed it. Reuse that result instead of another token exchange.
+    if (prior && tokensChanged(stored, prior)) return stored;
+    if (stored.expiresAt - REFRESH_SAFETY_MARGIN_MS > Date.now()) return stored;
+    return refreshTokens(stored);
+  } finally {
+    activeRefreshPromise = null;
+  }
+}
+
+function runRefresh(prior?: GoogleOauthTokens): Promise<GoogleOauthTokens> {
+  if (!activeRefreshPromise) activeRefreshPromise = executeRefresh(prior);
+  return activeRefreshPromise;
+}
+
 export type AntigravityLoginHandle = PkceFlowHandle<GoogleOauthTokens>;
 
 export async function beginLogin(): Promise<AntigravityLoginHandle> {
@@ -190,7 +219,7 @@ export async function currentTokens(): Promise<GoogleOauthTokens> {
     throw new Error("not logged in to antigravity — run `otherside login --provider antigravity`");
   }
   if (tokens.expiresAt - REFRESH_SAFETY_MARGIN_MS <= Date.now()) {
-    tokens = await refreshTokens(tokens);
+    tokens = await runRefresh(tokens);
   }
   return tokens;
 }
@@ -235,7 +264,7 @@ class ValidationCancelledError extends Error {
   }
 }
 
-function codeAssistHeaders(accessToken: string): Record<string, string> {
+export function codeAssistHeaders(accessToken: string): Record<string, string> {
   return {
     Authorization: `Bearer ${accessToken}`,
     "User-Agent": userAgent(),
@@ -370,5 +399,5 @@ export async function finalizeLogin(opts: {
 
 export const Auth: AuthStrategy = buildOauthAuthStrategy<GoogleOauthTokens>({
   providerId: "antigravity",
-  refresh: (tokens) => refreshTokens(tokens),
+  refresh: (tokens) => runRefresh(tokens),
 });

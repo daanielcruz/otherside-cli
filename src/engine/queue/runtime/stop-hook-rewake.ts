@@ -1,18 +1,17 @@
 import { escapeXml } from "@/engine/background/tasks/notification.ts";
 import { emitQueue } from "@/engine/queue/emit.ts";
-import { DEFAULT_TIMEOUT_MS } from "@/kernel/hooks/constants.ts";
-import { type CommandHookEntry, fireEntry, type HookOutcome } from "@/kernel/hooks/exec.ts";
+import { fireEntry, type HookOutcome } from "@/kernel/hooks/exec.ts";
+import { hookOutcomeText } from "@/kernel/hooks/response.ts";
+import type { CommandHookEntry } from "@/kernel/std/types/hook-entry.ts";
 
-// Async Stop-hook rewake — parity with the reference's Okd/flushPendingAsyncRewakeHooks
-// (utils/hooks.ts): a Stop hook flagged `async` or `asyncRewake` is launched in
+// Async Stop-hook rewake: a Stop hook flagged `async` or `asyncRewake` is launched in
 // the background at turn end instead of blocking it. When an `asyncRewake`
 // hook later exits with code 2, a task-notification is enqueued so the next
 // turn (an idle session auto-wakes via autoTurn) receives the hook's feedback.
 //
-// Gates, each mirrored from the reference:
+// Gates:
 // - `async` backgrounds the hook unconditionally (fire-and-forget; no rewake).
-// - `asyncRewake` backgrounds AND rewakes, but only on an interactive session
-//   (reference: `e.asyncRewake && X` with X = interactive/streaming-input).
+// - `asyncRewake` backgrounds AND rewakes, but only on an interactive session.
 // - `forceSyncExecution` (internal callers) suppresses both (`&& !d`).
 // - Rewake fires ONLY on exit code 2 (`f.code === 2`) — the Stop-hook blocking
 //   convention; any other exit is silent.
@@ -65,7 +64,7 @@ export function buildStopHookRewakeNotification(
 ): { text: string; summary: string } {
   const summary = entry.rewakeSummary?.trim() || "Stop hook feedback";
   const prefix = entry.rewakeMessage ?? 'Stop hook blocking error from command "Stop":';
-  const body = outcome.stderr.trim() || outcome.stdout.trim();
+  const body = hookOutcomeText(outcome);
   const text = `<task-notification>\n<summary>${escapeXml(summary)}</summary>\n</task-notification>\n${prefix} ${body}`;
   return { text, summary };
 }
@@ -82,14 +81,10 @@ export function launchAsyncStopHook(input: AsyncStopHookGateInput): boolean {
   const run = (async (): Promise<void> => {
     let outcome: HookOutcome;
     try {
-      outcome = await fireEntry(
-        entry,
-        {
-          kind: "stop",
-          ctx: { sessionId: input.sessionId, stopHookActive: input.stopHookActive === true },
-        },
-        entry.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-      );
+      outcome = await fireEntry(entry, {
+        kind: "stop",
+        ctx: { sessionId: input.sessionId, stopHookActive: input.stopHookActive === true },
+      });
     } catch {
       return;
     }
@@ -111,10 +106,9 @@ export function launchAsyncStopHook(input: AsyncStopHookGateInput): boolean {
 
 /**
  * Waits (bounded) for in-flight async Stop hooks so a session shutdown does
- * not orphan a rewake mid-write. Reference: flushPendingAsyncRewakeHooks with
- * ASYNC_REWAKE_FLUSH_TIMEOUT_MS.
+ * not orphan a rewake mid-write.
  */
-export async function flushPendingAsyncRewakeHooks(): Promise<void> {
+export async function drainPendingAsyncRewakeHooks(): Promise<void> {
   if (pendingAsyncStopHooks.size === 0) return;
   const settled = Promise.allSettled([...pendingAsyncStopHooks]);
   let timer: ReturnType<typeof setTimeout> | null = null;

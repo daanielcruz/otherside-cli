@@ -140,7 +140,7 @@ export async function* streamHttp(ctx: RequestContext, body: unknown): AsyncIter
       // OAuth endpoint when the stored token is the one the server rejected.
       let newTokens = await currentTokens().catch(() => null);
       if (!newTokens || newTokens.accessToken === tokens.accessToken) {
-        newTokens = await forceRefreshTokens().catch(() => null);
+        newTokens = await forceRefreshTokens(tokens).catch(() => null);
       }
       if (newTokens && newTokens.accessToken !== tokens.accessToken) {
         const retryHeaders = buildHeaders({

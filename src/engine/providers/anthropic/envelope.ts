@@ -1,4 +1,6 @@
-export const ANTHROPIC_ENVELOPE_DEFAULTS = {
+type AnthropicThinkingDisplay = "summarized" | "omitted";
+
+const ANTHROPIC_ENVELOPE_DEFAULTS = {
   max_tokens: 64000,
   thinking: {
     type: "adaptive",
@@ -22,10 +24,23 @@ export function anthropicEnvelopeDefaults(): Record<string, unknown> {
   return structuredClone(ANTHROPIC_ENVELOPE_DEFAULTS) as Record<string, unknown>;
 }
 
+export function applyAnthropicThinkingDisplay(
+  body: Record<string, unknown>,
+  display: AnthropicThinkingDisplay,
+): void {
+  const thinking = body.thinking;
+  if (typeof thinking !== "object" || thinking === null || Array.isArray(thinking)) return;
+  const adaptive = thinking as Record<string, unknown>;
+  if (adaptive.type !== "adaptive") return;
+  if (display === "summarized") adaptive.display = display;
+  else delete adaptive.display;
+}
+
 export function maxOutputTokensForModel(model: string): number {
   const m = model.toLowerCase();
   if (
     m.includes("fable-5") ||
+    m.includes("opus-5") ||
     m.includes("opus-4-8") ||
     m.includes("opus-4-7") ||
     m.includes("opus-4-6") ||

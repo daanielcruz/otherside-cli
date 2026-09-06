@@ -8,8 +8,8 @@ export const QUOTA_WARN_PCT = 70;
  * At/above this utilization percent a provider is "blocked" (red / non-routeable).
  * 100 means real exhaustion only: nothing blocks predictively below a fully spent
  * window. Gates must compare the raw (untruncated) percentage, and an explicit
- * provider signal (e.g. Codex `rate_limit_reached_type`) always wins over this
- * derived cutoff — see applyQuotaWarning.
+ * provider exhaustion signal always wins over this derived cutoff — see
+ * applyQuotaWarning.
  */
 export const QUOTA_BLOCK_PCT = 100;
 

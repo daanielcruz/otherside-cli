@@ -1,9 +1,12 @@
 import { afterEach, beforeAll, describe, expect, it } from "bun:test";
+import { resolveStartupBroker } from "@/boot/startup-broker.ts";
+import { formatDirectResumeError } from "@/boot/startup-resume.ts";
 import { registerAllProviders } from "@/engine/providers/bootstrap.ts";
 import type { UserConfig } from "@/kernel/config/config.ts";
 import type { CredentialsBundle } from "@/kernel/storage/credentials.ts";
 import type { CliMode } from "@/modes/args.ts";
-import { formatDirectResumeError, resolveStartupBroker } from "../main.ts";
+import { applyBootPreludeMargin } from "@/modes/interactive/index.ts";
+import { getProcessBroker } from "@/store/app-store/broker.ts";
 
 const savedResumeProvider = process.env.OTHERSIDE_DEVTOOLS_RESUME_PROVIDER;
 const savedResumeModel = process.env.OTHERSIDE_DEVTOOLS_RESUME_MODEL;
@@ -11,6 +14,10 @@ const savedResumeModel = process.env.OTHERSIDE_DEVTOOLS_RESUME_MODEL;
 afterEach(() => {
   restoreEnv("OTHERSIDE_DEVTOOLS_RESUME_PROVIDER", savedResumeProvider);
   restoreEnv("OTHERSIDE_DEVTOOLS_RESUME_MODEL", savedResumeModel);
+  // Resolving a startup broker constructs one, and constructing one claims the process
+  // registration the chrome reads before it reads the store mirror. Left claimed, the
+  // last route resolved here answers for every file that runs after this one.
+  getProcessBroker()?.release();
 });
 
 describe("resolveStartupBroker fresh-session default", () => {
@@ -39,6 +46,8 @@ describe("resolveStartupBroker fresh-session default", () => {
     resumeLatest: false,
     provider: null,
     model: null,
+    effort: null,
+    thinkingDisplay: null,
     worktree: null,
     tmux: false,
   };
@@ -53,6 +62,7 @@ describe("resolveStartupBroker fresh-session default", () => {
     model: null,
     effort: null,
     provider: null,
+    thinkingDisplay: null,
     resumeSessionId: null,
     resumeLatest: false,
     maxTurns: null,
@@ -70,6 +80,33 @@ describe("resolveStartupBroker fresh-session default", () => {
       isResume: false,
     });
     expect(result.broker.read().permissionMode).toBe("default");
+  });
+
+  // The flag is accepted in both modes, so it has to mean the same thing in both. An
+  // interactive launch that quietly ignored it would leave the session reasoning at a
+  // level the reader did not ask for and the chrome faithfully reporting it.
+  it("honours --effort on an interactive launch", () => {
+    const result = resolveStartupBroker({
+      mode: { ...interactiveMode, effort: "xhigh" },
+      cfg: baseCfg,
+      allCreds: dummyAllCreds,
+      customCreds: null,
+      resumeRecords: [],
+      isResume: false,
+    });
+    expect(result.broker.read().effort).toBe("xhigh");
+  });
+
+  it("ignores an effort level the catalog does not name", () => {
+    const result = resolveStartupBroker({
+      mode: { ...interactiveMode, effort: "ultra" },
+      cfg: baseCfg,
+      allCreds: dummyAllCreds,
+      customCreds: null,
+      resumeRecords: [],
+      isResume: false,
+    });
+    expect(result.broker.read().effort).not.toBe("ultra");
   });
 
   it("keeps interactive on accept-edits by default", () => {
@@ -261,5 +298,19 @@ describe("direct resume errors", () => {
     ).toBe(
       "\u001b[31mThis session belongs to a different directory. Open /repo to resume it.\u001b[39m\n",
     );
+  });
+});
+
+describe("applyBootPreludeMargin", () => {
+  it("gives a resumed (empty) prelude exactly one leading blank row", () => {
+    const rows = applyBootPreludeMargin([]);
+    expect(rows).toEqual([""]);
+    expect(rows).toHaveLength(1);
+  });
+
+  it("leaves a fresh (non-empty) prelude unchanged", () => {
+    const banner = ["  banner", "", "tagline", ""];
+    expect(applyBootPreludeMargin(banner)).toBe(banner);
+    expect(applyBootPreludeMargin(banner)).toEqual(banner);
   });
 });

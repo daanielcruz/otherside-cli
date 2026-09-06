@@ -1,6 +1,11 @@
-import { TOOL_INTERRUPT_MESSAGE } from "@/engine/queue/runtime/interruption-text.ts";
+import {
+  isInterruptionMessage,
+  TOOL_INTERRUPT_MESSAGE,
+} from "@/engine/queue/runtime/interruption-text.ts";
 import { parseBashTurnText } from "@/engine/queue/turn/bash-input.ts";
 import { isCompactionBoundary, type SessionRecord } from "@/engine/session/index.ts";
+import type { McpCallIdentity } from "@/kernel/mcp/index.ts";
+import { isProviderId, type ProviderModelRoute } from "@/kernel/std/types/provider-ids.ts";
 import {
   formatElapsed,
   formatTurnDuration,
@@ -18,18 +23,10 @@ import {
   taskNotificationFromAttachment,
   transcriptImagesFromRecord,
 } from "@/ui/transcript/records/entry-builders.ts";
+import { SILENT_TOOL_NAME_SET } from "@/ui/transcript/tool-render/silent-tools.ts";
 import type { TranscriptEntry } from "@/ui/transcript/types";
 
-export const SILENT_TOOL_NAMES = new Set([
-  "TaskCreate",
-  "TaskGet",
-  "TaskList",
-  "TaskUpdate",
-  "AskUserQuestion",
-  "EnterPlanMode",
-  "ExitPlanMode",
-  "ToolSearch",
-]);
+export { SILENT_TOOL_NAME_SET as SILENT_TOOL_NAMES } from "@/ui/transcript/tool-render/silent-tools.ts";
 
 export interface TranscriptProjectionOptions {
   isRunning?: boolean;
@@ -55,7 +52,13 @@ export function sessionRecordsToTranscript(
   }
   const callByCallId = new Map<
     string,
-    { name: string; args: unknown; provider?: string; model?: string }
+    {
+      name: string;
+      args: unknown;
+      provider?: string;
+      model?: string;
+      mcpIdentity?: McpCallIdentity;
+    }
   >();
   // A background agent's tool result is only the launch receipt; its real
   // outcome arrives later as a task-notification record. Index those by task
@@ -76,14 +79,22 @@ export function sessionRecordsToTranscript(
         args: record.args,
         ...(record.provider ? { provider: record.provider } : {}),
         ...(record.model ? { model: record.model } : {}),
+        ...(record.mcpIdentity ? { mcpIdentity: record.mcpIdentity } : {}),
       });
-      if (SILENT_TOOL_NAMES.has(record.tool_name)) silentCallIds.add(record.call_id);
+      if (SILENT_TOOL_NAME_SET.has(record.tool_name)) silentCallIds.add(record.call_id);
     }
   }
   const entries: TranscriptEntry[] = [];
   filtered.forEach((record, index) => {
     const id = `rec_${index}`;
     if (record.type === "user_message") {
+      // The cancel path persists its marker as a user message so the model reads
+      // it, but on screen it is the system row that hugs the block it cut short.
+      // Replaying it as a user turn would open a block the live view never did.
+      if (isInterruptionMessage(record.content)) {
+        entries.push({ id, kind: "system", text: record.content });
+        return;
+      }
       if (record.content.trimStart().startsWith("<task-notification>")) {
         entries.push({
           id,
@@ -129,13 +140,19 @@ export function sessionRecordsToTranscript(
       const hasContent = record.content.trim().length > 0;
       if (!hasThinking && !hasContent) return;
       const producer = includeProducerMetadata
-        ? {
-            ...(record.provider ? { producedBy: record.provider } : {}),
-            ...(record.model ? { producedModel: record.model } : {}),
-          }
+        ? producedFieldsFromParts(record.provider, record.model)
         : {};
-      if (hasThinking && includeThinking) {
-        entries.push({ id: `${id}_th`, kind: "thinking", text: thinking, ...producer });
+      // Replayed thinking never rejoins the prompt-screen flow, but the detailed
+      // reader is the explicit surface for it: without the flag, resumed
+      // reasoning would be unreachable everywhere.
+      if (hasThinking) {
+        entries.push({
+          id: `${id}_th`,
+          kind: "thinking",
+          text: thinking,
+          ...(includeThinking ? {} : { detailOnly: true }),
+          ...producer,
+        });
       }
       if (hasContent) {
         entries.push({ id, kind: "assistant", text: record.content, ...producer });
@@ -159,8 +176,8 @@ export function sessionRecordsToTranscript(
         text: isRunning ? running : TOOL_INTERRUPT_MESSAGE,
         isError: !isRunning,
         ...(inputText.length > 0 ? { input: inputText } : {}),
-        ...(includeProducerMetadata && record.provider ? { producedBy: record.provider } : {}),
-        ...(includeProducerMetadata && record.model ? { producedModel: record.model } : {}),
+        ...(record.mcpIdentity ? { mcpIdentity: record.mcpIdentity } : {}),
+        ...(includeProducerMetadata ? producedFieldsFromParts(record.provider, record.model) : {}),
       });
       return;
     }
@@ -203,10 +220,18 @@ export function sessionRecordsToTranscript(
         text: resultText,
         isError: noticeError ?? record.is_error,
         ...(inputText.length > 0 ? { input: inputText } : {}),
+        ...(call?.mcpIdentity ? { mcpIdentity: call.mcpIdentity } : {}),
         ...(record.meta ? { resultMeta: record.meta } : {}),
-        ...(record.agentModel ? { agentModel: record.agentModel } : {}),
-        ...(includeProducerMetadata && call?.provider ? { producedBy: call.provider } : {}),
-        ...(includeProducerMetadata && call?.model ? { producedModel: call.model } : {}),
+        ...(record.agentRoute
+          ? {
+              agentRoute: record.agentRoute,
+              agentModel: record.agentRoute.model,
+              agentProvider: record.agentRoute.provider,
+            }
+          : record.agentModel
+            ? { agentModel: record.agentModel }
+            : {}),
+        ...producedFieldsFromCall(call, includeProducerMetadata),
       });
       return;
     }
@@ -267,4 +292,27 @@ export function sessionRecordsToTranscript(
 function launchReceiptAgentId(resultText: string): string | null {
   if (!resultText.startsWith("Async agent launched successfully")) return null;
   return resultText.match(/^agentId:\s*(\S+)/m)?.[1] ?? null;
+}
+
+function producedFieldsFromParts(
+  provider: string | undefined,
+  model: string | undefined,
+): Pick<TranscriptEntry, "producedRoute" | "producedBy" | "producedModel"> {
+  const route =
+    provider !== undefined && isProviderId(provider) && model !== undefined
+      ? ({ provider, model } satisfies ProviderModelRoute)
+      : undefined;
+  return {
+    ...(route !== undefined ? { producedRoute: route } : {}),
+    ...(provider !== undefined ? { producedBy: provider } : {}),
+    ...(model !== undefined ? { producedModel: model } : {}),
+  };
+}
+
+function producedFieldsFromCall(
+  call: { provider?: string; model?: string } | undefined,
+  include: boolean,
+): Pick<TranscriptEntry, "producedRoute" | "producedBy" | "producedModel"> {
+  if (!include || call === undefined) return {};
+  return producedFieldsFromParts(call.provider, call.model);
 }

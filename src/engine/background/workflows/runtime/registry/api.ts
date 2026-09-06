@@ -1,8 +1,8 @@
-import { compileWorkflowScript } from "@/engine/background/workflows/runtime/compiler/compile.ts";
-import { readWorkflowFromPath } from "@/engine/background/workflows/runtime/history/paths.ts";
+import { compileWorkflowProgram } from "@/engine/background/workflows/runtime/compiler/compile.ts";
+import { loadWorkflowFromPath } from "@/engine/background/workflows/runtime/history/paths.ts";
 import { parseWorkflowScript } from "@/engine/background/workflows/runtime/parser/meta.ts";
 import type { WorkflowDefinition } from "@/engine/background/workflows/runtime/registry/types.ts";
-import { buildVmSafeError } from "@/engine/background/workflows/runtime/sandbox/errors.ts";
+import { toSandboxError } from "@/engine/background/workflows/runtime/sandbox/errors.ts";
 
 const PHASE_MARKER = "▸";
 
@@ -16,7 +16,8 @@ export interface WorkflowApiOptions {
   cwd: string;
   signal: AbortSignal;
   resolveWorkflow: (name: string, cwd: string) => Promise<WorkflowDefinition | undefined>;
-  getAllWorkflows: (cwd: string) => Promise<WorkflowDefinition[]>;
+  /** Names offered back when a reference misses — the roster, not every resolvable workflow. */
+  listWorkflows: (cwd: string) => Promise<WorkflowDefinition[]>;
   runChild: (run: WorkflowChildRun) => Promise<unknown>;
   recordPhase: (title: string) => void;
   log: (message: string) => void;
@@ -32,9 +33,9 @@ export function createWorkflowApi(options: WorkflowApiOptions): WorkflowApiHook 
   return async (ref: unknown, args?: unknown): Promise<unknown> => {
     if (options.signal.aborted) return new Promise<never>(() => {});
     const resolved = await resolveWorkflowReference(ref, options);
-    const compiled = compileWorkflowScript(resolved.body);
+    const compiled = compileWorkflowProgram(resolved.body);
     if (!compiled.ok) {
-      throw buildVmSafeError(`workflow('${resolved.name}'): ${compiled.error}`);
+      throw toSandboxError(`workflow('${resolved.name}'): ${compiled.error}`);
     }
     const phaseLabel = nextPhaseLabel(phaseCounts, resolved.name);
     const parentPhase = options.getCurrentPhase();
@@ -49,7 +50,7 @@ export function createWorkflowApi(options: WorkflowApiOptions): WorkflowApiHook 
       options.log(`${PHASE_MARKER} ${resolved.name} done`);
       return result;
     } catch (error) {
-      const safe = buildVmSafeError(error);
+      const safe = toSandboxError(error);
       options.log(`${PHASE_MARKER} ${resolved.name} failed: ${safe.message}`);
       throw safe;
     } finally {
@@ -61,7 +62,7 @@ export function createWorkflowApi(options: WorkflowApiOptions): WorkflowApiHook 
 export function createNestedWorkflowRejectHook(): WorkflowApiHook {
   return () =>
     Promise.reject(
-      buildVmSafeError(
+      toSandboxError(
         "workflow() cannot be called from within a child workflow — nesting is limited to one level. Inline the inner script or call its agents directly.",
       ),
     );
@@ -74,10 +75,10 @@ async function resolveWorkflowReference(
   if (typeof ref === "string") {
     const resolved = await options.resolveWorkflow(ref, options.cwd);
     if (!resolved) {
-      const available = (await options.getAllWorkflows(options.cwd))
+      const available = (await options.listWorkflows(options.cwd))
         .map((workflow) => workflow.name)
         .join(", ");
-      throw buildVmSafeError(
+      throw toSandboxError(
         `workflow('${ref}'): no workflow with that name. Available: ${available || "(none)"}`,
       );
     }
@@ -85,13 +86,13 @@ async function resolveWorkflowReference(
   }
   const scriptPath = readScriptPathReference(ref);
   if (scriptPath !== undefined) {
-    const loaded = await readWorkflowFromPath(options.cwd, scriptPath);
+    const loaded = await loadWorkflowFromPath(options.cwd, scriptPath);
     if (!loaded.ok)
-      throw buildVmSafeError(`workflow({scriptPath: '${scriptPath}'}): ${loaded.error}`);
+      throw toSandboxError(`workflow({scriptPath: '${scriptPath}'}): ${loaded.error}`);
     const parsed = parseWorkflowScript(loaded.script);
     return { name: parsed.meta.name, body: parsed.body };
   }
-  throw buildVmSafeError("workflow() expects a workflow name (string) or {scriptPath: string}.");
+  throw toSandboxError("workflow() expects a workflow name (string) or {scriptPath: string}.");
 }
 
 function readScriptPathReference(ref: unknown): string | undefined {

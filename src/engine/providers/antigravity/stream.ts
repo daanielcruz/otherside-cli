@@ -57,6 +57,7 @@ async function rejectStatus(res: Http1Response): Promise<void> {
 export const antigravityStream: StreamFn = async function* antigravityStreamFn(
   ctx: RequestContext,
   body: unknown,
+  signal: AbortSignal,
 ): AsyncIterable<Uint8Array> {
   const tokens = await currentTokens();
   const project = await resolveProjectId(tokens);
@@ -66,7 +67,7 @@ export const antigravityStream: StreamFn = async function* antigravityStreamFn(
   const request = isRequestBody(body) ? body : {};
   const ids = turnIds(ctx.sessionId, ctx.agentOwnerId);
   const envelope = buildCloudCodeEnvelope({
-    model: resolveAntigravityModel(ctx.model).wireModel,
+    model: resolveAntigravityModel(ctx.model, ctx.effort).wireModel,
     project,
     requestId: buildRequestId({
       conversationId: ids.conversationId,
@@ -81,7 +82,7 @@ export const antigravityStream: StreamFn = async function* antigravityStreamFn(
     url: new URL(streamGenerateContentUrl()),
     headerLines: headerLinesFrom(buildInferenceHeaders({ bearer })),
     payload: Buffer.from(JSON.stringify(envelope), "utf8"),
-    ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}),
+    abortSignal: signal,
   });
 
   await rejectStatus(res);

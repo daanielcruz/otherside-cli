@@ -17,6 +17,10 @@ export interface McpServerStatusEntry {
 }
 
 const clients = new Map<string, Promise<McpClient>>();
+/** The server name each live client was opened for, keyed the same way. */
+const clientNames = new Map<string, string>();
+/** Clients that finished connecting, so a caller can read them without awaiting. */
+const openClients = new Map<string, McpClient>();
 const serverStatuses = new Map<string, McpServerStatusEntry>();
 /** Status names owned by the main session, including plugin MCP names containing `:`. */
 const sessionStatusNames = new Set<string>();
@@ -55,7 +59,7 @@ async function spawnClient(name: string, config: McpServerConfig): Promise<McpCl
   if (clientSpawnerOverride) return clientSpawnerOverride(name, config);
   if (config.type === "http") return HttpTransport.create(name, config);
   if (config.type === "sse") return SseTransport.create(name, config);
-  return StdioTransport.spawn(config);
+  return StdioTransport.spawn(config, name);
 }
 
 export function setMcpClientSpawnerForTests(spawner: ClientSpawner | null): void {
@@ -80,6 +84,7 @@ function trackClient(
       }
       serverStatuses.set(statusName, { name: statusName, status: "connected" });
       markResourceCapable(statusName, client);
+      openClients.set(key, client);
       return client;
     },
     (error) => {
@@ -106,11 +111,15 @@ async function resolveCachedClient(
     if (!client.isClosed()) return client;
     if (clients.get(key) !== tracked) return client;
     clients.delete(key);
+    openClients.delete(key);
+    clientNames.delete(key);
     if (statusName) clearResourceCapable(statusName);
     return null;
   } catch (error) {
     if (clients.get(key) === tracked) {
       clients.delete(key);
+      openClients.delete(key);
+      clientNames.delete(key);
       if (statusName) clearResourceCapable(statusName);
     }
     throw error;
@@ -140,6 +149,7 @@ async function clientForKey(
     }
     const tracked = trackClient(name, config, key, statusName, namespace === "session");
     clients.set(key, tracked);
+    clientNames.set(key, name);
     const client = await resolveCachedClient(key, tracked, statusName);
     if (client) return client;
   }
@@ -162,6 +172,8 @@ export async function dropClient(name: string, config: McpServerConfig): Promise
   const existing = clients.get(key);
   if (!existing) return;
   clients.delete(key);
+  openClients.delete(key);
+  clientNames.delete(key);
   serverStatuses.delete(name);
   sessionStatusNames.delete(name);
   clearResourceCapable(name);
@@ -174,6 +186,8 @@ export async function dropClientsForNamespace(namespace: string): Promise<void> 
   for (const [key, tracked] of clients.entries()) {
     if (!key.startsWith(prefix)) continue;
     clients.delete(key);
+    openClients.delete(key);
+    clientNames.delete(key);
     existing.push(tracked);
   }
   for (const name of serverStatuses.keys()) {
@@ -187,6 +201,34 @@ export async function dropClientsForNamespace(namespace: string): Promise<void> 
 
 export function mcpServerStatuses(names: string[]): McpServerStatusEntry[] {
   return names.map((name) => serverStatuses.get(name) ?? { name, status: "pending" });
+}
+
+/**
+ * Tells every connected server something changed on our side. Notifications
+ * carry no id and get no reply, so this neither waits nor reports — a server
+ * that has gone away simply does not hear it.
+ */
+/**
+ * Every client that is open, with the server name it was opened for. A client
+ * still connecting is left out: a caller asking now wants what it can use now.
+ */
+export function listConnectedClients(): { name: string; client: McpClient }[] {
+  const open: { name: string; client: McpClient }[] = [];
+  for (const [key, client] of openClients.entries()) {
+    if (!clients.has(key) || client.isClosed()) continue;
+    open.push({ name: clientNames.get(key) ?? key, client });
+  }
+  return open;
+}
+
+export function announceToConnected(method: string, params: unknown): void {
+  for (const tracked of clients.values()) {
+    void tracked
+      .then((client) => {
+        if (!client.isClosed()) client.announce(method, params);
+      })
+      .catch(() => {});
+  }
 }
 
 export function hasPendingMcpServers(): boolean {
@@ -210,6 +252,8 @@ export async function keepOnlyClients(
     if (!key.startsWith("session:")) continue;
     if (!activeKeys.has(key)) {
       clients.delete(key);
+      openClients.delete(key);
+      clientNames.delete(key);
       toClose.push(tracked);
     }
   }
@@ -227,7 +271,14 @@ export async function closeAllClients(): Promise<void> {
 
 export const MCP_DISABLED_INSPECTION: McpServerInspection = {
   status: "disabled",
-  statusText: "○ disabled",
+  statusText: "◯ disabled",
+  tools: [],
+  error: null,
+};
+
+export const MCP_PENDING_INSPECTION: McpServerInspection = {
+  status: "pending",
+  statusText: "◯ connecting…",
   tools: [],
   error: null,
 };
@@ -236,15 +287,14 @@ export async function inspectServer(
   name: string,
   config: McpServerConfig,
 ): Promise<McpServerInspection> {
+  let client: McpClient;
   try {
-    const client = await clientFor(name, config);
-    const tools = await client.listTools();
-    return { status: "connected", statusText: "✔ connected", tools, error: null };
+    client = await clientFor(name, config);
   } catch (e) {
     if (e instanceof UnauthorizedError) {
       return {
         status: "needs-auth",
-        statusText: "⚠ needs auth",
+        statusText: "△ needs authentication",
         tools: [],
         error: e.message,
       };
@@ -253,6 +303,18 @@ export async function inspectServer(
       status: "failed",
       statusText: "✘ failed",
       tools: [],
+      error: e instanceof Error ? e.message : String(e),
+    };
+  }
+  try {
+    const tools = await client.listTools();
+    return { status: "connected", statusText: "✔ connected", tools, error: null };
+  } catch (e) {
+    return {
+      status: "connected",
+      statusText: "✔ connected",
+      tools: [],
+      toolsError: true,
       error: e instanceof Error ? e.message : String(e),
     };
   }

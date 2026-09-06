@@ -11,13 +11,14 @@ import { registerProviderConfig, unregisterProviderConfig } from "@/engine/contr
 import type { ApiProviderSourceId, ProviderConfig } from "@/engine/contract/types.ts";
 import type { WireFingerprint } from "@/engine/contract/wire-fingerprint.ts";
 import { emitQueue } from "@/engine/queue/emit.ts";
-import { loadSubagentTranscript } from "@/engine/session/transcript/subagent-transcript.ts";
 import { announceDeferredTool, clearDeferredAnnouncements } from "@/engine/tools/deferred.ts";
 import { registerAllBuiltins } from "@/engine/tools/register-builtins.ts";
 import * as toolRegistry from "@/engine/tools/registry.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
-import type { ProviderEvent } from "@/kernel/std/types/events.ts";
+import { classifyProviderError } from "@/engine/transport/_infra/classify/classify.ts";
+import { StreamSilenceError } from "@/kernel/std/stream/idle-timeout.ts";
+import type { ForkEvent, ProviderEvent } from "@/kernel/std/types/events.ts";
 import type { Message } from "@/kernel/std/types/message.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 import { runForkLoopInContext } from "../loop-runner.ts";
 import type { ForkSpec } from "../types.ts";
@@ -47,9 +48,12 @@ afterEach(async () => {
 function createMockProviderConfig(
   id: string,
   opts: {
+    streamEmitsKeepalive?: boolean;
     contentIdleTimeoutMs?: number;
-    streamDelay?: number;
+    streamErrors?: Array<unknown | undefined>;
     streamEvents?: ProviderEvent[][];
+    stream?: NonNullable<ProviderConfig<"openai-completions">["stream"]>;
+    translateResponse?: NonNullable<ProviderConfig<"openai-completions">["translateResponse"]>;
     translateRequest?: (messages: Message[]) => unknown;
   },
 ) {
@@ -66,76 +70,157 @@ function createMockProviderConfig(
       return { name: "test", version: "1" } as unknown as WireFingerprint;
     },
     translateRequest: (_ctx, messages) => opts.translateRequest?.(messages) ?? {},
-    translateResponse: (raw: AsyncIterable<Uint8Array>) => {
-      const attempt = callCount++;
-      return (async function* () {
-        if (opts.streamDelay) {
-          await new Promise((resolve) => setTimeout(resolve, opts.streamDelay));
-        }
-        const events = opts.streamEvents?.[attempt] ?? opts.streamEvents?.[0] ?? [];
-        for (const ev of events) {
-          yield ev;
-        }
-      })();
-    },
-    stream: (ctx: RequestContext, body: unknown) => {
-      return (async function* () {
-        yield new Uint8Array();
-      })();
-    },
+    translateResponse:
+      opts.translateResponse ??
+      (() => {
+        const attempt = callCount++;
+        return (async function* () {
+          const error = opts.streamErrors?.[attempt];
+          if (error !== undefined) throw error;
+          const events = opts.streamEvents?.[attempt] ?? opts.streamEvents?.[0] ?? [];
+          for (const ev of events) yield ev;
+        })();
+      }),
+    stream:
+      opts.stream ??
+      (() =>
+        (async function* () {
+          yield new Uint8Array();
+        })()),
     featureFlags: {} as unknown as ProviderFeatureFlags,
     defaultModelId: "mock-model",
-    fallbackEfforts: { levels: [], default: "low" } as unknown as FallbackEfforts,
+    fallbackEfforts: {
+      levels: [],
+      default: "low",
+    } as unknown as FallbackEfforts,
     deferredOverrides: {
       excludeFromCatalog: [],
       alwaysDeclare: [],
       emitDeferredReminder: false,
     },
     promptAdapter: {} as unknown as ProviderPromptAdapter,
-    recoverableError: () => ({ kind: "fail", reason: "test" }),
+    recoverableError: (error, ctx, attempt) => {
+      const decision = classifyProviderError(error, {
+        ...(attempt !== undefined ? { attempt } : {}),
+        provider: ctx.provider,
+        model: ctx.model,
+      });
+      return decision.kind === "retry" ? { ...decision, delayMs: 0 } : decision;
+    },
     usageDetails: { sourceLabel: "mock" },
     beginLogin: {} as unknown as LoginFlow,
     composeMessages: (_harness: unknown, history: Message[]) => history,
     auth: { strategy: "none" } as unknown as AuthStrategy,
-    ...(opts.contentIdleTimeoutMs !== undefined
-      ? { contentIdleTimeoutMs: opts.contentIdleTimeoutMs }
-      : {}),
+    ...(opts.streamEmitsKeepalive === true ? { streamEmitsKeepalive: true } : {}),
+    ...(opts.contentIdleTimeoutMs === undefined
+      ? {}
+      : { contentIdleTimeoutMs: opts.contentIdleTimeoutMs }),
   };
   registerProviderConfig(mockConfig);
+  return { getCallCount: () => callCount };
 }
 
-describe("fork stall watchdog tests", () => {
-  it("clears stall timer when stream consumption ends, so slow tool dispatch does not trigger stall retry", async () => {
-    const providerId = "watchdog-slow-tool-provider";
-    const toolName = "slow_test_tool";
-
-    // Tool that takes 100ms to execute
-    toolRegistry.register({
-      schema: {
-        name: toolName,
-        description: "A slow test tool",
-        inputSchema: { type: "object", properties: {} },
+describe("fork shared stream watchdog integration", () => {
+  it("aborts one ping-fed stream after terminal content idle", async () => {
+    const providerId = "watchdog-content-idle-provider";
+    const callerAbort = new AbortController();
+    let streamCalls = 0;
+    let bytesEmitted = 0;
+    let sourceClosed = false;
+    let attemptSignal: AbortSignal | undefined;
+    let abortReason: unknown;
+    createMockProviderConfig(providerId, {
+      streamEmitsKeepalive: true,
+      contentIdleTimeoutMs: 25,
+      stream: (_ctx, _body, signal) => {
+        streamCalls += 1;
+        attemptSignal = signal;
+        signal.addEventListener("abort", () => (abortReason = signal.reason), {
+          once: true,
+        });
+        return (async function* () {
+          try {
+            while (!signal.aborted) {
+              bytesEmitted += 1;
+              yield new Uint8Array([1]);
+              await Bun.sleep(1);
+            }
+          } finally {
+            sourceClosed = true;
+          }
+        })();
       },
-      async run(call, ctx) {
-        await new Promise((resolve) => setTimeout(resolve, 100));
-        return { tool_use_id: call.id, content: "success" };
-      },
+      translateResponse: (raw) => ({
+        [Symbol.asyncIterator]() {
+          const bytes = raw[Symbol.asyncIterator]();
+          return {
+            async next(): Promise<IteratorResult<ProviderEvent>> {
+              while (true) {
+                const result = await bytes.next();
+                if (result.done) return { done: true, value: undefined };
+              }
+            },
+          };
+        },
+      }),
     });
 
-    createMockProviderConfig(providerId, {
+    const spec: ForkSpec = {
+      name: "test-content-idle-fork",
+      body: "Test content-idle handling",
+      allowSet: new Set(),
+      prompt: "Encounter a content-idle timeout",
+      ctx: {
+        provider: providerId as ProviderId,
+        model: "mock-model",
+        cwd: tempDir,
+        sessionId: "test-session-content-idle",
+        permissionMode: "default",
+        effort: null,
+        abortSignal: callerAbort.signal,
+      },
+    };
+    const originalSignal = spec.ctx.abortSignal;
+
+    try {
+      const result = await runForkLoopInContext(spec, "fork-content-idle", spec.ctx);
+      expect(result).toEqual({
+        output:
+          "fork error: content stream idle 25ms — aborting (live connection, no model output)",
+        isError: true,
+      });
+      expect(streamCalls).toBe(1);
+      expect(spec.ctx.abortSignal).toBe(originalSignal);
+      expect(callerAbort.signal.aborted).toBe(false);
+      expect(attemptSignal?.aborted).toBe(true);
+      expect(abortReason).toBeInstanceOf(StreamSilenceError);
+      expect((abortReason as StreamSilenceError).scope).toBe("content");
+      await Bun.sleep(20);
+      expect(sourceClosed).toBe(true);
+      const bytesAfterClose = bytesEmitted;
+      await Bun.sleep(20);
+      expect(bytesEmitted).toBe(bytesAfterClose);
+    } finally {
+      unregisterProviderConfig(providerId as ProviderId);
+    }
+  });
+
+  it("keeps transport failures on the shared retry path", async () => {
+    const providerId = "watchdog-transport-retry-provider";
+    const emitted: ForkEvent[] = [];
+    const provider = createMockProviderConfig(providerId, {
+      streamErrors: [
+        new Error(
+          "The socket connection was closed unexpectedly. For more information, pass verbose: true in the second argument to fetch()",
+        ),
+      ],
       streamEvents: [
-        // Turn 0: yields a tool call
-        [
-          { kind: "message_start" },
-          { kind: "tool_call_complete", id: "call-1", name: toolName, input: {} },
-          { kind: "message_stop", stop_reason: "tool_calls" },
-        ],
-        // Turn 1: finishes successfully
+        [],
         [
           { kind: "message_start" },
           {
             kind: "text_delta",
-            text: "The subagent kept working across multiple turns and will report full findings once every step of the assigned task has been completed successfully.",
+            text: "The transport retry recovered successfully and the subagent completed with a sufficiently detailed final report for its caller.",
           },
           { kind: "message_stop", stop_reason: "stop" },
         ],
@@ -144,157 +229,26 @@ describe("fork stall watchdog tests", () => {
 
     try {
       const spec: ForkSpec = {
-        name: "test-slow-tool-fork",
-        body: "Test slow tool",
-        allowSet: new Set([toolName]),
-        prompt: "Run the slow tool",
-        stallMs: 50, // Small stall timer (50ms)
+        name: "test-transport-retry-fork",
+        body: "Test transport retry handling",
+        allowSet: new Set(),
+        prompt: "Recover from a transport failure",
+        sink: (event) => emitted.push(event),
         ctx: {
           provider: providerId as ProviderId,
           model: "mock-model",
           cwd: tempDir,
-          sessionId: "test-session-slow-tool",
+          sessionId: "test-session-transport-retry",
           permissionMode: "default",
           effort: null,
         },
       };
 
-      const result = await runForkLoopInContext(spec, "fork-slow-tool", spec.ctx);
+      const result = await runForkLoopInContext(spec, "fork-transport-retry", spec.ctx);
       expect(result.isError).toBe(false);
-      expect(result.stalled).toBeUndefined();
-
-      const transcript = await loadSubagentTranscript({
-        cwd: tempDir,
-        sessionId: spec.ctx.sessionId,
-        forkId: "fork-slow-tool",
-      });
-
-      // Verify that there are no "stream stalled" messages in the transcript
-      const stalledMessages = transcript.filter(
-        (r) => r.type === "assistant_message" && r.content.includes("stream stalled"),
-      );
-      expect(stalledMessages.length).toBe(0);
-    } finally {
-      toolRegistry.unregister(toolName);
-      unregisterProviderConfig(providerId as ProviderId);
-    }
-  });
-
-  it("re-arms the stall timer before the next stream attempt, and fires if it stalls again", async () => {
-    const providerId = "watchdog-retry-stall-provider";
-
-    // Set up a mock provider that has a 100ms stream delay
-    // This will trigger a stall timeout of 50ms on every attempt
-    createMockProviderConfig(providerId, {
-      streamDelay: 100,
-      streamEvents: [
-        [
-          { kind: "message_start" },
-          { kind: "text_delta", text: "Should stall" },
-          { kind: "message_stop", stop_reason: "stop" },
-        ],
-      ],
-    });
-
-    try {
-      const spec: ForkSpec = {
-        name: "test-retry-stall-fork",
-        body: "Test retry stall",
-        allowSet: new Set(),
-        prompt: "Stall me",
-        stallMs: 50, // Small stall timer (50ms)
-        ctx: {
-          provider: providerId as ProviderId,
-          model: "mock-model",
-          cwd: tempDir,
-          sessionId: "test-session-retry-stall",
-          permissionMode: "default",
-          effort: null,
-        },
-      };
-
-      const result = await runForkLoopInContext(spec, "fork-retry-stall", spec.ctx);
-      expect(result.isError).toBe(true);
-      expect(result.stalled).toBe(true);
-
-      const transcript = await loadSubagentTranscript({
-        cwd: tempDir,
-        sessionId: spec.ctx.sessionId,
-        forkId: "fork-retry-stall",
-      });
-
-      // Verify that "stream stalled — no events for 50ms" is present
-      const stalledMessages = transcript.filter(
-        (r) =>
-          r.type === "assistant_message" &&
-          r.content.includes("stream stalled — no events for 50ms"),
-      );
-      // We expect 2 retries, meaning we see the retry message twice (attempt 1 and 2)
-      expect(stalledMessages.length).toBe(2);
-
-      // And we expect 1 final stall message when retries are exhausted
-      const finalStallMessages = transcript.filter(
-        (r) =>
-          r.type === "assistant_message" && r.content.includes("stalled — no progress for 50ms"),
-      );
-      expect(finalStallMessages.length).toBe(1);
-    } finally {
-      unregisterProviderConfig(providerId as ProviderId);
-    }
-  });
-
-  it("resolves the stall timer using the provider config contentIdleTimeoutMs if spec.stallMs is not set", async () => {
-    const providerId = "watchdog-provider-config-timeout-provider";
-
-    // Set up provider config with contentIdleTimeoutMs = 80ms
-    // The stream has a delay of 120ms. Since 120ms > 80ms, it will stall.
-    // If it fell back to the 180s default, it would NOT stall.
-    createMockProviderConfig(providerId, {
-      contentIdleTimeoutMs: 80,
-      streamDelay: 120,
-      streamEvents: [
-        [
-          { kind: "message_start" },
-          { kind: "text_delta", text: "Resolved timeout stall" },
-          { kind: "message_stop", stop_reason: "stop" },
-        ],
-      ],
-    });
-
-    try {
-      const spec: ForkSpec = {
-        name: "test-provider-timeout-fork",
-        body: "Test provider timeout resolution",
-        allowSet: new Set(),
-        prompt: "Stall on provider timeout",
-        // spec.stallMs is left undefined!
-        ctx: {
-          provider: providerId as ProviderId,
-          model: "mock-model",
-          cwd: tempDir,
-          sessionId: "test-session-provider-timeout",
-          permissionMode: "default",
-          effort: null,
-        },
-      };
-
-      const result = await runForkLoopInContext(spec, "fork-provider-timeout", spec.ctx);
-      expect(result.isError).toBe(true);
-      expect(result.stalled).toBe(true);
-
-      const transcript = await loadSubagentTranscript({
-        cwd: tempDir,
-        sessionId: spec.ctx.sessionId,
-        forkId: "fork-provider-timeout",
-      });
-
-      // Verify that it stalled using the resolved 80ms timeout
-      const stalledMessages = transcript.filter(
-        (r) =>
-          r.type === "assistant_message" &&
-          r.content.includes("stream stalled — no events for 80ms"),
-      );
-      expect(stalledMessages.length).toBe(2);
+      expect(result.output).toContain("The transport retry recovered successfully");
+      expect(provider.getCallCount()).toBe(2);
+      expect(emitted.filter((event) => event.kind === "fork_retry_status")).toHaveLength(1);
     } finally {
       unregisterProviderConfig(providerId as ProviderId);
     }
@@ -465,7 +419,10 @@ describe("fork maxTurns owned-completion grace", () => {
       // completion notification lands in this owner's inventory and is therefore
       // pending at the next turn's maxTurns boundary.
       const timer = setTimeout(() => {
-        completeTask(bgTask.id, { content: "bg result payload", isError: false });
+        completeTask(bgTask.id, {
+          content: "bg result payload",
+          isError: false,
+        });
       }, 25);
 
       const result = await runForkLoopInContext(spec, forkId, spec.ctx);

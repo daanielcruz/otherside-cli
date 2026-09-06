@@ -19,9 +19,19 @@ export interface KimiUsageRow {
   resetInSeconds?: number | undefined;
 }
 
+export interface KimiExtraUsage {
+  balanceCents: number;
+  totalCents: number;
+  monthlyChargeLimitEnabled: boolean;
+  monthlyChargeLimitCents: number;
+  monthlyUsedCents: number;
+  currency: string;
+}
+
 export interface KimiUsage {
   summary?: KimiUsageRow | undefined;
   limits: KimiUsageRow[];
+  extraUsage?: KimiExtraUsage | null | undefined;
 }
 
 export async function fetchKimiUsage(): Promise<KimiUsage | null> {
@@ -58,8 +68,43 @@ export function parseKimiUsagePayload(value: unknown): KimiUsage | null {
       if (row) limits.push(row);
     });
   }
-  if (!summary && limits.length === 0) return null;
-  return { ...(summary ? { summary } : {}), limits };
+  const extraUsage = parseKimiExtraUsage(root.boosterWallet);
+  if (!summary && limits.length === 0 && extraUsage === null) return null;
+  return { ...(summary ? { summary } : {}), limits, extraUsage };
+}
+
+const FIXED_POINT_CENTS = 1_000_000;
+
+function parseKimiExtraUsage(value: unknown): KimiExtraUsage | null {
+  const wallet = objectValue(value);
+  const balance = objectValue(wallet?.balance);
+  if (!wallet || !balance || balance.type !== "BOOSTER") return null;
+  const totalRaw = intValue(balance.amount);
+  if (totalRaw === null || totalRaw <= 0) return null;
+  const monthlyLimit = moneyValue(wallet.monthlyChargeLimit);
+  const monthlyUsed = moneyValue(wallet.monthlyUsed);
+  return {
+    balanceCents: fixedPointCents(intValue(balance.amountLeft) ?? 0),
+    totalCents: fixedPointCents(totalRaw),
+    monthlyChargeLimitEnabled: wallet.monthlyChargeLimitEnabled === true,
+    monthlyChargeLimitCents: monthlyLimit?.cents ?? 0,
+    monthlyUsedCents: monthlyUsed?.cents ?? 0,
+    currency: monthlyLimit?.currency || monthlyUsed?.currency || "USD",
+  };
+}
+
+function fixedPointCents(value: number): number {
+  const cents = value / FIXED_POINT_CENTS;
+  if (cents > 0 && cents < 1) return 1;
+  return Math.round(cents);
+}
+
+function moneyValue(value: unknown): { cents: number; currency: string } | null {
+  const money = objectValue(value);
+  if (!money) return null;
+  const cents = intValue(money.priceInCents);
+  if (cents === null) return null;
+  return { cents, currency: stringValue(money.currency) ?? "" };
 }
 
 function toUsageRow(data: Record<string, unknown>, defaultLabel: string): KimiUsageRow | null {

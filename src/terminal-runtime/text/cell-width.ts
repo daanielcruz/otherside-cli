@@ -1,179 +1,95 @@
-import emojiRegex from "emoji-regex";
 import { eastAsianWidth } from "get-east-asian-width";
 import stripAnsi from "strip-ansi";
-import { getGraphemeSegmenter } from "@/utils/intl.js";
+import { sharedGraphemeSegmenter } from "@/kernel/std/intl.ts";
 
-const EMOJI_REGEX = emojiRegex();
+export interface StringWidthOptions {
+  ambiguousIsNarrow?: boolean;
+  countAnsiEscapeCodes?: boolean;
+}
 
-function stringWidthJavaScript(str: string): number {
-  if (typeof str !== "string" || str.length === 0) {
-    return 0;
+const BASIC_PRINTABLE_TEXT = /^[\u0020-\u007e]*$/;
+const INVISIBLE_GRAPHEME =
+  /^(?:\p{Default_Ignorable_Code_Point}|\p{Control}|\p{Format}|\p{Mark}|\p{Surrogate})+$/v;
+const INVISIBLE_PREFIX =
+  /^[\p{Default_Ignorable_Code_Point}\p{Control}\p{Format}\p{Mark}\p{Surrogate}]+/v;
+const RENDERED_EMOJI = /^\p{RGI_Emoji}$/v;
+const KEYCAP_SEQUENCE = /^[\d#*]\u20e3$/;
+const PICTOGRAPH = /\p{Extended_Pictographic}/gu;
+const C1_CSI = "\u009b";
+
+const nativeCellWidth =
+  typeof Bun !== "undefined" && typeof Bun.stringWidth === "function" ? Bun.stringWidth : null;
+
+export function stringWidth(input: string, options: StringWidthOptions = {}): number {
+  if (typeof input !== "string" || input.length === 0) return 0;
+
+  const ambiguousIsNarrow = options.ambiguousIsNarrow ?? true;
+  const countAnsiEscapeCodes = options.countAnsiEscapeCodes ?? false;
+  const nativeCanHonorContract =
+    nativeCellWidth !== null && ambiguousIsNarrow && !input.includes(C1_CSI);
+  if (nativeCanHonorContract) {
+    return nativeCellWidth(input, { countAnsiEscapeCodes });
   }
 
-  let isPureAscii = true;
-  for (let i = 0; i < str.length; i++) {
-    const code = str.charCodeAt(i);
+  const visibleText = countAnsiEscapeCodes ? input : removeTerminalSequences(input);
+  return measureVisibleCells(visibleText, !ambiguousIsNarrow);
+}
 
-    if (code >= 127 || code === 0x1b) {
-      isPureAscii = false;
-      break;
-    }
-  }
-  if (isPureAscii) {
-    let width = 0;
-    for (let i = 0; i < str.length; i++) {
-      const code = str.charCodeAt(i);
-      if (code > 0x1f) {
-        width++;
-      }
-    }
-    return width;
+export function paintCellWidth(input: string): number {
+  if (typeof input !== "string" || input.length === 0) return 0;
+  // The paint contract counts an 8-bit CSI introducer as a zero-width cell and
+  // its payload as text; native measurement drifts across runtime builds on
+  // that byte, so C1 input always takes the deterministic path.
+  if (nativeCellWidth !== null && !input.includes(C1_CSI)) {
+    return nativeCellWidth(input, { ambiguousIsNarrow: true });
   }
 
-  if (str.includes("\x1b")) {
-    str = stripAnsi(str);
-    if (str.length === 0) {
-      return 0;
-    }
-  }
+  const visibleText = input.includes("\u001b") ? stripAnsi(input) : input;
+  return measureVisibleCells(visibleText, false);
+}
 
-  if (!needsSegmentation(str)) {
-    let width = 0;
-    for (const char of str) {
-      const codePoint = char.codePointAt(0)!;
-      if (!isZeroWidth(codePoint)) {
-        width += eastAsianWidth(codePoint, { ambiguousAsWide: false });
-      }
-    }
-    return width;
-  }
+function removeTerminalSequences(input: string): string {
+  if (!input.includes("\u001b") && !input.includes(C1_CSI)) return input;
+  return stripAnsi(input);
+}
 
-  let width = 0;
+function measureVisibleCells(input: string, ambiguousAsWide: boolean): number {
+  if (input.length === 0) return 0;
+  if (BASIC_PRINTABLE_TEXT.test(input)) return input.length;
 
-  for (const { segment: grapheme } of getGraphemeSegmenter().segment(str)) {
-    EMOJI_REGEX.lastIndex = 0;
-    if (EMOJI_REGEX.test(grapheme)) {
-      width += getEmojiWidth(grapheme);
+  const widthOptions = { ambiguousAsWide };
+  let cells = 0;
+  for (const { segment } of sharedGraphemeSegmenter().segment(input)) {
+    if (INVISIBLE_GRAPHEME.test(segment)) continue;
+    if (RENDERED_EMOJI.test(segment) || isJoinedEmoji(segment)) {
+      cells += 2;
       continue;
     }
 
-    for (const char of grapheme) {
-      const codePoint = char.codePointAt(0)!;
-      if (!isZeroWidth(codePoint)) {
-        width += eastAsianWidth(codePoint, { ambiguousAsWide: false });
-        break;
-      }
-    }
+    const firstVisibleCodePoint = segment.replace(INVISIBLE_PREFIX, "").codePointAt(0);
+    if (firstVisibleCodePoint === undefined) continue;
+    cells += eastAsianWidth(firstVisibleCodePoint, widthOptions);
+    cells += trailingFullwidthCells(segment, widthOptions);
   }
-
-  return width;
+  return cells;
 }
 
-function needsSegmentation(str: string): boolean {
-  for (const char of str) {
-    const cp = char.codePointAt(0)!;
-
-    if (cp >= 0x1f300 && cp <= 0x1faff) return true;
-    if (cp >= 0x2600 && cp <= 0x27bf) return true;
-    if (cp >= 0x1f1e6 && cp <= 0x1f1ff) return true;
-
-    if (cp >= 0xfe00 && cp <= 0xfe0f) return true;
-    if (cp === 0x200d) return true;
-  }
-  return false;
+function isJoinedEmoji(segment: string): boolean {
+  if (segment.length > 50) return false;
+  if (KEYCAP_SEQUENCE.test(segment)) return true;
+  if (!segment.includes("\u200d")) return false;
+  return (segment.match(PICTOGRAPH)?.length ?? 0) >= 2;
 }
 
-function getEmojiWidth(grapheme: string): number {
-  const first = grapheme.codePointAt(0)!;
-  if (first >= 0x1f1e6 && first <= 0x1f1ff) {
-    let count = 0;
-    for (const _ of grapheme) count++;
-    return count === 1 ? 1 : 2;
+function trailingFullwidthCells(
+  segment: string,
+  widthOptions: { ambiguousAsWide: boolean },
+): number {
+  let cells = 0;
+  for (const character of segment.slice(1)) {
+    if (character < "\uff00" || character > "\uffef") continue;
+    const codePoint = character.codePointAt(0);
+    if (codePoint !== undefined) cells += eastAsianWidth(codePoint, widthOptions);
   }
-
-  if (grapheme.length === 2) {
-    const second = grapheme.codePointAt(1);
-    if (
-      second === 0xfe0f &&
-      ((first >= 0x30 && first <= 0x39) || first === 0x23 || first === 0x2a)
-    ) {
-      return 1;
-    }
-  }
-
-  return 2;
+  return cells;
 }
-
-function isZeroWidth(codePoint: number): boolean {
-  if (codePoint >= 0x20 && codePoint < 0x7f) return false;
-  if (codePoint >= 0xa0 && codePoint < 0x0300) return codePoint === 0x00ad;
-
-  if (codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f)) return true;
-
-  if (
-    (codePoint >= 0x200b && codePoint <= 0x200d) ||
-    codePoint === 0xfeff ||
-    (codePoint >= 0x2060 && codePoint <= 0x2064)
-  ) {
-    return true;
-  }
-
-  if (
-    (codePoint >= 0xfe00 && codePoint <= 0xfe0f) ||
-    (codePoint >= 0xe0100 && codePoint <= 0xe01ef)
-  ) {
-    return true;
-  }
-
-  if (
-    (codePoint >= 0x0300 && codePoint <= 0x036f) ||
-    (codePoint >= 0x1ab0 && codePoint <= 0x1aff) ||
-    (codePoint >= 0x1dc0 && codePoint <= 0x1dff) ||
-    (codePoint >= 0x20d0 && codePoint <= 0x20ff) ||
-    (codePoint >= 0xfe20 && codePoint <= 0xfe2f)
-  ) {
-    return true;
-  }
-
-  if (codePoint >= 0x0900 && codePoint <= 0x0d4f) {
-    const offset = codePoint & 0x7f;
-    if (offset <= 0x03) return true;
-    if (offset >= 0x3a && offset <= 0x4f) return true;
-    if (offset >= 0x51 && offset <= 0x57) return true;
-    if (offset >= 0x62 && offset <= 0x63) return true;
-  }
-
-  if (
-    codePoint === 0x0e31 ||
-    (codePoint >= 0x0e34 && codePoint <= 0x0e3a) ||
-    (codePoint >= 0x0e47 && codePoint <= 0x0e4e) ||
-    codePoint === 0x0eb1 ||
-    (codePoint >= 0x0eb4 && codePoint <= 0x0ebc) ||
-    (codePoint >= 0x0ec8 && codePoint <= 0x0ecd)
-  ) {
-    return true;
-  }
-
-  if (
-    (codePoint >= 0x0600 && codePoint <= 0x0605) ||
-    codePoint === 0x06dd ||
-    codePoint === 0x070f ||
-    codePoint === 0x08e2
-  ) {
-    return true;
-  }
-
-  if (codePoint >= 0xd800 && codePoint <= 0xdfff) return true;
-  if (codePoint >= 0xe0000 && codePoint <= 0xe007f) return true;
-
-  return false;
-}
-
-const bunStringWidth =
-  typeof Bun !== "undefined" && typeof Bun.stringWidth === "function" ? Bun.stringWidth : null;
-
-const BUN_STRING_WIDTH_OPTS = { ambiguousIsNarrow: true } as const;
-
-export const stringWidth: (str: string) => number = bunStringWidth
-  ? (str) => bunStringWidth(str, BUN_STRING_WIDTH_OPTS)
-  : stringWidthJavaScript;

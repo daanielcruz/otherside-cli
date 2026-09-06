@@ -2,8 +2,8 @@ import { appendFileSync, mkdirSync, readdirSync, readFileSync, writeFileSync } f
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import * as v8 from "node:v8";
+import { OTHERSIDE_VERSION } from "@/boot/version.ts";
 import { devtoolBoolean, devtoolNumber, devtoolPath } from "@/devtools/settings.ts";
-import { OTHERSIDE_VERSION } from "@/engine/session/record/state.ts";
 import { configRoot } from "@/kernel/std/fs/paths.ts";
 
 // Debug-only heap/memory instrument. Fully OFF unless OTHERSIDE_DEBUG_HEAPDUMP is

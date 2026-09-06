@@ -9,6 +9,7 @@ function harness(overrides: Partial<ComposedHarness> = {}): ComposedHarness {
     combined: "",
     systemBlocks: [],
     userPrepend: [],
+    midSystemPromotion: "off",
     ...overrides,
   };
 }

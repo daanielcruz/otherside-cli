@@ -1,38 +1,22 @@
-import { errorMessage } from "@/kernel/std/errno.ts";
-import { resizeImageIfTooLarge } from "@/kernel/std/image-resize.ts";
 import type { ImageMediaType } from "@/kernel/std/types/image.ts";
 import type { ToolResultContentBlock } from "@/kernel/std/types/message.ts";
 
-export function contentContainsImages(content: string | ToolResultContentBlock[]): boolean {
+export function contentHasImageBlocks(content: string | ToolResultContentBlock[]): boolean {
   return Array.isArray(content) && content.some((block) => block.type === "image");
 }
 
 export function imageBlock(data: string, mimeTypeValue: unknown): ToolResultContentBlock {
-  try {
-    const mediaType = imageMediaType(mimeTypeValue);
-    const resized = resizeImageIfTooLarge(Buffer.from(data, "base64"), mediaType);
-    return {
-      type: "image",
-      source: {
-        type: "base64",
-        media_type: resized.mediaType,
-        data: resized.buffer.toString("base64"),
-      },
-      ...(resized.dimensions
-        ? {
-            dimensions: {
-              originalWidth: resized.dimensions.originalWidth,
-              originalHeight: resized.dimensions.originalHeight,
-              displayWidth: resized.dimensions.width,
-              displayHeight: resized.dimensions.height,
-            },
-          }
-        : {}),
-    };
-  } catch (error) {
-    const message = errorMessage(error);
-    return textBlock(`[image resize failed: ${message}]`);
+  if (Buffer.from(data, "base64").length === 0) {
+    return textBlock("[image decode failed: empty image data]");
   }
+  return {
+    type: "image",
+    source: {
+      type: "base64",
+      media_type: imageMediaType(mimeTypeValue),
+      data,
+    },
+  };
 }
 
 export function imageMediaType(value: unknown): ImageMediaType {
@@ -51,7 +35,7 @@ export function isImageMimeType(value: unknown): boolean {
   );
 }
 
-export function extensionForMimeType(mimeType: string | undefined): string {
+export function fileExtensionForMimeType(mimeType: string | undefined): string {
   const base = mimeType?.split(";")[0]?.trim().toLowerCase();
   if (base === "application/pdf") return "pdf";
   if (base === "application/json") return "json";

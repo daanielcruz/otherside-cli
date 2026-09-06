@@ -1,9 +1,11 @@
+import { getProviderConfig } from "@/engine/contract/registry.ts";
 import {
   formatProviderError,
   resolveProviderError,
 } from "@/engine/providers/_shared/provider-error.ts";
 import { getRetryDelay, ProviderHttpError } from "@/engine/providers/_shared/retry.ts";
-import { StreamIdleTimeoutError } from "@/kernel/std/stream/idle-timeout.ts";
+import { StreamSilenceError } from "@/kernel/std/stream/idle-timeout.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 
 export interface ClassifyOptions {
   attempt?: number;
@@ -47,11 +49,28 @@ export function classifyProviderError(
   options: ClassifyOptions = {},
 ): RetryDecisionDetailed {
   const attempt = options.attempt ?? 1;
-  if (error instanceof StreamIdleTimeoutError) {
+  if (error instanceof StreamSilenceError) {
+    const reason = `${error.scope} stream idle ${error.silenceMs}ms`;
+    // Keepalives prove the connection is alive, so content silence means the
+    // model itself is wedged. Without that proof, the content deadline may fire
+    // before the quiet-provider byte deadline and reconnecting can recover.
+    if (
+      error.scope === "content" &&
+      options.provider !== undefined &&
+      getProviderConfig(options.provider as ProviderId)?.streamEmitsKeepalive === true
+    ) {
+      const abortReason = `${reason} — aborting (live connection, no model output)`;
+      return {
+        kind: "fail",
+        reason: abortReason,
+        userMessage: abortReason,
+        message: abortReason,
+      };
+    }
     return {
       kind: "retry",
       delayMs: getRetryDelay(attempt),
-      reason: `${error.kind} stream idle ${error.idleMs}ms — reconnecting`,
+      reason: `${reason} — reconnecting`,
     };
   }
 

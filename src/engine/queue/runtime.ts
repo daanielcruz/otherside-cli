@@ -60,7 +60,7 @@ export function runGoal(
   const goal = setActiveGoal(sessionId, trimmed);
   return {
     feedback: `Goal set: ${trimmed}`,
-    metaMessage: buildGoalMetaMessage(trimmed),
+    metaMessage: composeGoalMetaMessage(trimmed),
     event: { kind: "goal_set", condition: trimmed, setAt: goal.setAt },
   };
 }
@@ -82,17 +82,26 @@ function formatLastCheck(reason: string): string {
   return `Last check: ${firstLine.trim()}`;
 }
 
-function buildGoalMetaMessage(condition: string): string {
+function composeGoalMetaMessage(condition: string): string {
   return `A session-scoped Stop hook is now active with condition: "${condition}". Briefly acknowledge the goal, then immediately start (or continue) working toward it — treat the condition itself as your directive and do not pause to ask the user what to do. The hook will block stopping until the condition holds. It auto-clears once the condition is met — do not tell the user to run \`/goal clear\` after success; that's only for clearing a goal early.`;
 }
 
-export function formatGoalStatusBar(goal: ActiveGoal): string {
-  const minutes = Math.max(0, Math.floor((Date.now() - goal.setAt) / 60_000));
-  const elapsed =
-    minutes === 0
-      ? "<1m"
-      : minutes < 60
-        ? `${minutes}m`
-        : `${Math.floor(minutes / 60)}h${minutes % 60}m`;
-  return `${BULLSEYE} /goal active (${elapsed})`;
+const SECOND_MS = 1_000;
+const MINUTE_MS = 60 * SECOND_MS;
+const HOUR_MS = 60 * MINUTE_MS;
+const DAY_MS = 24 * HOUR_MS;
+
+/** Coarsest unit that fits the span, so the readout stays one short token. */
+function formatGoalElapsed(elapsedMs: number): string {
+  if (elapsedMs >= DAY_MS) return `${Math.floor(elapsedMs / DAY_MS)}d`;
+  if (elapsedMs >= HOUR_MS) return `${Math.floor(elapsedMs / HOUR_MS)}h`;
+  if (elapsedMs >= MINUTE_MS) return `${Math.floor(elapsedMs / MINUTE_MS)}m`;
+  return `${Math.floor(elapsedMs / SECOND_MS)}s`;
+}
+
+/** The span is omitted for the first second, while it has nothing to say yet. */
+export function formatGoalStatusBar(goal: ActiveGoal, now: number = Date.now()): string {
+  const elapsedMs = Math.max(0, now - goal.setAt);
+  const span = elapsedMs < SECOND_MS ? "" : ` (${formatGoalElapsed(elapsedMs)})`;
+  return `${BULLSEYE} /goal active${span}`;
 }

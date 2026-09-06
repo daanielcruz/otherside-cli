@@ -2,8 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+  clearRoutingUsage,
+  clearUsageLimits,
+  getRoutingUsage,
+  stopUsageSweepTimerForTests,
+} from "@/engine/session/usage/limits.ts";
 import { saveFor } from "@/kernel/storage/credentials.ts";
-import { fetchGlmUsage, parseGlmUsagePayload } from "../usage.ts";
+import { applyGlmQuotaWarning, fetchGlmUsage, parseGlmUsagePayload } from "../usage.ts";
 
 let configDir: string;
 let originalConfigDir: string | undefined;
@@ -25,6 +31,9 @@ describe("glm usage", () => {
       process.env.OTHERSIDE_CONFIG_DIR = originalConfigDir;
     }
     rmSync(configDir, { recursive: true, force: true });
+    clearRoutingUsage("glm");
+    clearUsageLimits();
+    stopUsageSweepTimerForTests();
   });
 
   it("fetches Z.AI monitor quota with the project API key", async () => {
@@ -42,6 +51,16 @@ describe("glm usage", () => {
     expect(seenInit?.method).toBe("GET");
     expect(seenInit?.body).toBeUndefined();
     expect(seenInit?.headers).toEqual({ authorization: "ak-test.sk-test" });
+  });
+
+  it("accepts Z.AI's code 0 success envelope", async () => {
+    global.fetch = mock(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ code: 0, success: true, data: { limits: [] } })),
+      ),
+    ) as unknown as typeof fetch;
+
+    await expect(fetchGlmUsage()).resolves.toBeNull();
   });
 
   it("throws on body-level Z.AI monitor errors", async () => {
@@ -94,20 +113,66 @@ describe("glm usage", () => {
       windows: [
         {
           label: "5-hour prompt pool",
-          limit: { utilization: 3, resetsAt: "2026-07-04T08:16:45.847Z" },
+          limit: { utilization: 97, resetsAt: "2026-07-04T08:16:45.847Z" },
           detail: undefined,
         },
         {
           label: "Weekly quota",
-          limit: { utilization: 39, resetsAt: "2026-07-08T09:19:23.988Z" },
+          limit: { utilization: 61, resetsAt: "2026-07-08T09:19:23.988Z" },
           detail: undefined,
         },
         {
           label: "MCP quota",
-          limit: { utilization: 2, resetsAt: "2026-07-17T09:19:23.990Z" },
+          limit: { utilization: 98, resetsAt: "2026-07-17T09:19:23.990Z" },
           detail: "118 / 4,000 calls",
         },
       ],
     });
+  });
+
+  it("parses explicit exhaustion and routes it through the quota gate", () => {
+    const usage = parseGlmUsagePayload({
+      code: 200,
+      data: {
+        limits: [
+          {
+            type: "TOKENS_LIMIT",
+            unit: 3,
+            number: 5,
+            percentage: 0,
+          },
+        ],
+      },
+    });
+
+    expect(usage?.windows[0]?.limit.utilization).toBe(100);
+    applyGlmQuotaWarning(usage);
+    expect(getRoutingUsage("glm")?.balanceStatus).toBe("exhausted");
+  });
+
+  it("fails closed on missing and malformed limit fields", () => {
+    expect(parseGlmUsagePayload(null)).toBeNull();
+    expect(parseGlmUsagePayload({})).toBeNull();
+    expect(parseGlmUsagePayload({ data: { limits: {} } })).toBeNull();
+    expect(
+      parseGlmUsagePayload({
+        data: {
+          limits: [null, "invalid", { type: "TOKENS_LIMIT" }, { percentage: "100" }],
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it("leaves reset timestamps null when epoch milliseconds are invalid", () => {
+    expect(
+      parseGlmUsagePayload({
+        data: {
+          limits: [
+            { type: "TOKENS_LIMIT", percentage: 50, nextResetTime: Number.MAX_VALUE },
+            { type: "TIME_LIMIT", percentage: 25, nextResetTime: -1 },
+          ],
+        },
+      })?.windows.map((window) => window.limit.resetsAt),
+    ).toEqual([null, null]);
   });
 });

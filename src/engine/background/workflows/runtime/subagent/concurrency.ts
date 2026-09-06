@@ -1,5 +1,5 @@
 import { cpus } from "node:os";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 
 const WORKFLOW_PLAN_TIERS: Partial<Record<ProviderId, Record<string, number>>> = {
   glm: { lite: 1, pro: 2, max: 7 },

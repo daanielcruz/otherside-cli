@@ -1,6 +1,6 @@
 import { isLeanModel } from "@/engine/model/tier/tiers.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
 import { isEnvDefinedFalsy, isEnvTruthy } from "@/kernel/std/proc/env.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 
 const EAP_SUFFIX = /-eap($|\[)/i;
 

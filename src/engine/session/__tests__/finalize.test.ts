@@ -1,5 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { create, get } from "@/engine/background/tasks/index.ts";
@@ -21,6 +29,7 @@ const EMPTY_HARNESS: ComposedHarness = {
   combined: "",
   systemBlocks: [],
   userPrepend: [],
+  midSystemPromotion: "off",
 };
 
 class FakeMcpClient implements McpClient {
@@ -53,6 +62,16 @@ class FakeMcpClient implements McpClient {
   serverInstructions(): string | null {
     return null;
   }
+
+  async listPrompts() {
+    return [];
+  }
+
+  async getPrompt() {
+    return { messages: [] };
+  }
+
+  announce(): void {}
 
   isClosed(): boolean {
     return this.closed;
@@ -197,6 +216,48 @@ describe("finalizeSession", () => {
     expect(existsSync(path)).toBe(false);
   });
 
+  it("keeps a recorded transcript whose message records are only on disk", async () => {
+    const s = new Session("session-4b", base);
+    const path = sessionPathForCwd(s.storageCwd, s.id);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(
+      path,
+      `${JSON.stringify({ type: "user_message", ts: new Date().toISOString(), content: "hi" })}\n`,
+      "utf8",
+    );
+
+    await finalizeSession(s);
+
+    expect(existsSync(path)).toBe(true);
+  });
+
+  it("keeps a transcript past the head budget without parsing it", async () => {
+    const s = new Session("session-4c", base);
+    const path = sessionPathForCwd(s.storageCwd, s.id);
+    mkdirSync(dirname(path), { recursive: true });
+    // No message record anywhere, but the file is larger than the head budget.
+    const filler = `${JSON.stringify({ type: "system", subtype: "noise", pad: "x".repeat(4096) })}\n`;
+    writeFileSync(path, filler.repeat(Math.ceil((64 * 1024 + 1) / filler.length)), "utf8");
+    expect(statSync(path).size).toBeGreaterThan(64 * 1024);
+
+    await finalizeSession(s);
+
+    expect(existsSync(path)).toBe(true);
+  });
+
+  it("drops a sub-head-budget transcript with no message records", async () => {
+    const s = new Session("session-4d", base);
+    const path = sessionPathForCwd(s.storageCwd, s.id);
+    mkdirSync(dirname(path), { recursive: true });
+    const filler = `${JSON.stringify({ type: "system", subtype: "noise", pad: "x".repeat(1024) })}\n`;
+    writeFileSync(path, filler.repeat(8), "utf8");
+    expect(statSync(path).size).toBeLessThan(64 * 1024);
+
+    await finalizeSession(s);
+
+    expect(existsSync(path)).toBe(false);
+  });
+
   it("cleans up heap maps on session finalization", async () => {
     const s = new Session("session-5", base);
     s.pushRecord({
@@ -219,8 +280,11 @@ describe("finalizeSession", () => {
 
     expect(readSetContains("session-5", "test-file.txt")).toBe(false);
     expect(getAssembledTurn("session-5")).toBeUndefined();
-    expect(existsSync(taskDir)).toBe(false);
-    expect(get("1", "session-5")).toBeUndefined();
+    // The task list survives session end on disk (age-based retention and the
+    // all-complete reset own its cleanup); a later read re-hydrates it, which
+    // is what lets a resumed session show its tasks again.
+    expect(existsSync(taskDir)).toBe(true);
+    expect(get("1", "session-5")).toBeDefined();
   });
 
   it("cleans up heap maps even for empty session finalization", async () => {
@@ -240,8 +304,8 @@ describe("finalizeSession", () => {
 
     expect(readSetContains("session-6", "test-file.txt")).toBe(false);
     expect(getAssembledTurn("session-6")).toBeUndefined();
-    expect(existsSync(taskDir)).toBe(false);
-    expect(get("1", "session-6")).toBeUndefined();
+    expect(existsSync(taskDir)).toBe(true);
+    expect(get("1", "session-6")).toBeDefined();
   });
 
   it("closes cached MCP clients on session finalization", async () => {

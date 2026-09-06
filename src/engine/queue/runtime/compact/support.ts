@@ -1,16 +1,16 @@
+import type { AgentDeps } from "@/engine/queue/runtime/turn/types.ts";
 import { groupByApiRound } from "@/engine/session/compact/grouping.ts";
 import { estimateHarnessTokens } from "@/engine/session/compact/harness-baseline.ts";
-import { resolveAutoCompactWindow } from "@/engine/session/compact/index.ts";
+import { configuredCompactWindow } from "@/engine/session/compact/index.ts";
 import {
+  countTokensWithEstimates,
   hasAuthoritativeUsage,
-  tokenCountWithEstimation,
   type UsageSnapshot,
 } from "@/engine/session/compact/token-count.ts";
 import type { InjectionQueue } from "@/harness/composer/injections.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
 import type { Message } from "@/kernel/std/types/message.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
-import type { AgentDeps } from "../turn/types.ts";
 
 // Consecutive summarization failures that pause auto-compaction until the
 // breaker re-arms. Auto-compaction is the only bound on session.messages
@@ -42,13 +42,13 @@ export function computeUsedContextTokens(
   provider: ProviderId,
   model: string,
 ): number {
-  const messageTokens = tokenCountWithEstimation(messages, lastUsage);
+  const messageTokens = countTokensWithEstimates(messages, lastUsage);
   if (hasAuthoritativeUsage(messages, lastUsage)) return messageTokens;
   return messageTokens + estimateHarnessTokens(provider, model);
 }
 
 export function resolveCompactWindow(model: { contextWindow: number }): number {
-  return resolveAutoCompactWindow(model.contextWindow).window;
+  return configuredCompactWindow(model.contextWindow).window;
 }
 
 export function splitPreservedTail(

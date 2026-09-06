@@ -80,6 +80,8 @@ export function resolveConfig(cwd: string, sessionOverride?: Partial<UserConfig>
       } else if (desc.merge === "map-override") {
         const existing = (target[desc.key] as Record<string, unknown> | undefined) ?? {};
         target[desc.key] = { ...existing, ...(validated as Record<string, unknown>) };
+      } else if (desc.merge === "map-append") {
+        target[desc.key] = appendMapOfLists(target[desc.key], validated);
       } else {
         target[desc.key] = validated;
       }
@@ -89,12 +91,42 @@ export function resolveConfig(cwd: string, sessionOverride?: Partial<UserConfig>
   return result;
 }
 
+/**
+ * Fold a map-of-arrays scope value onto the accumulated one: entries for a key
+ * present in both are concatenated, lower scope first, so nothing is replaced.
+ */
+function appendMapOfLists(existing: unknown, incoming: unknown): Record<string, unknown> {
+  const out: Record<string, unknown> = isPlainObject(existing) ? { ...existing } : {};
+  if (!isPlainObject(incoming)) return out;
+  for (const [key, value] of Object.entries(incoming)) {
+    if (!Array.isArray(value)) continue;
+    const current = out[key];
+    out[key] = Array.isArray(current) ? [...current, ...value] : [...value];
+  }
+  return out;
+}
+
+/**
+ * Where managed policy is read from, lowest precedence first: a file plus a
+ * drop-in directory whose `.json` entries merge in sorted order, once under the
+ * config root and once under the system policy directory.
+ */
+export function policySettingsSources(): { file: string; dropDir: string }[] {
+  return [configRoot(), systemPolicyDir()].map((dir) => ({
+    file: join(dir, MANAGED_SETTINGS_FILE),
+    dropDir: join(dir, MANAGED_SETTINGS_DROP_DIR),
+  }));
+}
+
+const MANAGED_SETTINGS_FILE = "managed-settings.json";
+const MANAGED_SETTINGS_DROP_DIR = "managed-settings.d";
+
 function readPolicyRaw(): Record<string, unknown> {
   const out: Record<string, unknown> = {};
-  mergeJsonFile(out, join(configRoot(), "managed-settings.json"));
-  mergeDropDir(out, join(configRoot(), "managed-settings.d"));
-  mergeJsonFile(out, join(systemPolicyDir(), "managed-settings.json"));
-  mergeDropDir(out, join(systemPolicyDir(), "managed-settings.d"));
+  for (const source of policySettingsSources()) {
+    mergeJsonFile(out, source.file);
+    mergeDropDir(out, source.dropDir);
+  }
   return out;
 }
 
@@ -135,6 +167,10 @@ function mergePolicyValues(
         ...(isPlainObject(existing) ? existing : {}),
         ...(value as Record<string, unknown>),
       };
+      continue;
+    }
+    if (descriptor?.scopes.includes("policy") && descriptor.merge === "map-append") {
+      target[key] = appendMapOfLists(target[key], value);
       continue;
     }
     target[key] = value;

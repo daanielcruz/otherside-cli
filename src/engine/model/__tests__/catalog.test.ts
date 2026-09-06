@@ -1,18 +1,28 @@
-import { beforeAll, describe, expect, it } from "bun:test";
+import { afterEach, beforeAll, describe, expect, it } from "bun:test";
 import {
   CATALOG,
+  defaultEffortForModel,
   defaultModelForProvider,
   findFamilyMatch,
   findModel,
+  findUniqueModel,
   type ModelEntry,
   modelsForProvider,
+  registerRuntimeModel,
+  resetRuntimeModelsForTests,
 } from "@/engine/model/catalog.ts";
 import { registerAllProviders } from "@/engine/providers/bootstrap.ts";
+import { clearRoutingUsage, clearUsageLimits } from "@/engine/session/usage/limits.ts";
+import { providerRouteability } from "@/engine/session/usage/provider-routeability.ts";
+import { applyScopedQuotaWarnings } from "@/engine/session/usage/quota-warning.ts";
 
-// Locks the behavior that the `--model <id>` mis-route fix (main.ts) relies on:
-// findModel(id) with no provider resolves a model to its owning provider across
-// the whole catalog, so a non-active-provider model id routes correctly.
+// CLI model inputs may infer a provider only when the catalog has one owner.
 beforeAll(() => registerAllProviders());
+afterEach(() => {
+  resetRuntimeModelsForTests();
+  clearRoutingUsage();
+  clearUsageLimits();
+});
 
 describe("model catalog", () => {
   it("defines an auto-compact limit for every built-in model", () => {
@@ -22,45 +32,105 @@ describe("model catalog", () => {
     expect(missing).toEqual([]);
   });
 
+  it("exposes Opus 5 as the default Anthropic model", () => {
+    expect(modelsForProvider("anthropic").map((model) => model.id)[0]).toBe("claude-opus-5");
+    expect(findModel({ provider: "anthropic", model: "claude-opus-5" })).toMatchObject({
+      displayName: "Opus 5",
+      contextWindow: 1_000_000,
+      autoCompactTokenLimit: 967_000,
+      supports1m: true,
+      supportsPdf: true,
+      efforts: ["low", "medium", "high", "xhigh", "max"],
+      defaultEffort: "high",
+    });
+    expect(defaultModelForProvider("anthropic")).toBe("claude-opus-5");
+  });
+
+  it("keeps an explicit effort-less default instead of the provider fallback", () => {
+    expect(defaultEffortForModel({ provider: "anthropic", model: "claude-haiku-4-5" })).toBeNull();
+    expect(defaultEffortForModel({ provider: "anthropic", model: "claude-opus-5" })).toBe("high");
+    expect(defaultEffortForModel({ provider: "anthropic", model: "not-in-the-catalog" })).toBe(
+      "high",
+    );
+  });
+
   it("exposes the Kimi Code roster with K3 as the default", () => {
     expect(modelsForProvider("kimi").map((model) => model.id)).toEqual([
       "k3",
       "kimi-for-coding",
       "kimi-for-coding-highspeed",
     ]);
-    expect(findModel("k3", "kimi")).toMatchObject({
+    expect(findModel({ provider: "kimi", model: "k3" })).toMatchObject({
       displayName: "Kimi K3",
       contextWindow: 1_000_000,
       autoCompactTokenLimit: 967_000,
-      efforts: ["max"],
+      efforts: ["high", "max"],
       defaultEffort: "max",
     });
     expect(defaultModelForProvider("kimi")).toBe("k3");
   });
 
-  it("resolves a non-anthropic model to its provider with no provider arg", () => {
-    expect(findModel("minimax-m2.7")?.provider).toBe("minimax");
-    expect(findModel("deepseek-v4-pro")?.provider).toBe("deepseek");
+  it("resolves unique CLI model inputs to their provider", () => {
+    expect(findUniqueModel("minimax-m2.7")?.provider).toBe("minimax");
+    expect(findUniqueModel("deepseek-v4-pro")?.provider).toBe("deepseek");
+    expect(findUniqueModel("claude-opus-4-8")?.provider).toBe("anthropic");
   });
 
-  it("resolves the default anthropic model", () => {
-    expect(findModel("claude-opus-4-8")?.provider).toBe("anthropic");
+  it("rejects an unqualified model owned by multiple providers", () => {
+    registerRuntimeModel({
+      id: "shared-model",
+      displayName: "Shared Anthropic model",
+      contextWindow: 100_000,
+      provider: "anthropic",
+      efforts: [],
+      defaultEffort: null,
+    });
+    registerRuntimeModel({
+      id: "shared-model",
+      displayName: "Shared Codex model",
+      contextWindow: 200_000,
+      provider: "codex",
+      efforts: [],
+      defaultEffort: null,
+    });
+
+    expect(findUniqueModel("shared-model")).toBeUndefined();
+    expect(findModel({ provider: "anthropic", model: "shared-model" })?.contextWindow).toBe(
+      100_000,
+    );
+    expect(findModel({ provider: "codex", model: "shared-model" })?.contextWindow).toBe(200_000);
   });
 
   it("returns undefined for an unknown model id", () => {
-    expect(findModel("totally-not-a-model-xyz")).toBeUndefined();
+    expect(findUniqueModel("totally-not-a-model-xyz")).toBeUndefined();
   });
 
-  it("resolves a bare family shorthand ('sonnet') scoped to one provider", () => {
-    expect(findModel("sonnet", "anthropic")?.id).toBe("claude-sonnet-5");
-    expect(findModel("haiku", "anthropic")?.id).toBe("claude-haiku-4-5");
+  it("resolves a bare family shorthand inside one provider route", () => {
+    expect(findModel({ provider: "anthropic", model: "sonnet" })?.id).toBe("claude-sonnet-5");
+    expect(findModel({ provider: "anthropic", model: "haiku" })?.id).toBe("claude-haiku-4-5");
   });
 
-  it("never guesses a provider from a bare family shorthand alone", () => {
-    // Unlike a full/base id, a family shorthand only resolves once a
-    // provider is named — findModel(id) with no provider must not scan
-    // every provider's catalog for it.
-    expect(findModel("sonnet")).toBeUndefined();
+  it("never infers a provider from a bare family shorthand", () => {
+    expect(findUniqueModel("sonnet")).toBeUndefined();
+  });
+
+  it("resolves display names even while the route is quota-blocked", () => {
+    applyScopedQuotaWarnings("anthropic", [
+      {
+        scopeKey: "session",
+        displayLabel: "Session",
+        applicability: { type: "global" },
+        label: "Session",
+        utilization: 100,
+        resetsAt: null,
+        trackingStatus: "tracked",
+      },
+    ]);
+    expect(providerRouteability("anthropic", undefined, "claude-haiku-4-5").usable).toBe(false);
+    // Display resolution never consults quota/availability state.
+    expect(findModel({ provider: "anthropic", model: "claude-haiku-4-5" })?.displayName).toBe(
+      "Haiku 4.5",
+    );
   });
 });
 

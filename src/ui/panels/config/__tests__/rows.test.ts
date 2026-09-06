@@ -1,13 +1,17 @@
 import { describe, expect, it } from "bun:test";
 import { DEFAULT_CONFIG } from "@/kernel/config/config.ts";
 import type { BrokerState } from "@/store/app-store/broker.ts";
+import { stripAnsi } from "@/terminal-runtime/text/presentation-sequences.ts";
+import { toggledBoolConfig } from "../row-actions.ts";
 import {
   configRows,
   cycle,
   cycleOrchestrationMode,
-  WORKFLOW_SIZE_GUIDELINE_OPTIONS,
+  editorModeDescription,
+  WORKFLOW_SIZE_CLASS_OPTIONS,
   workflowSizeGuidelineDescription,
 } from "../rows.ts";
+import { createConfigPanel } from "../string-view.ts";
 
 const state: BrokerState = {
   provider: "anthropic",
@@ -15,46 +19,56 @@ const state: BrokerState = {
   effort: null,
   fastMode: false,
   permissionMode: "default",
+  orchestrationMode: "disabled",
 };
 
 describe("workflow size guideline config row", () => {
   it("shows every value in the approved order with advisory descriptions", () => {
-    expect(WORKFLOW_SIZE_GUIDELINE_OPTIONS).toEqual(["unrestricted", "small", "medium", "large"]);
-    expect(WORKFLOW_SIZE_GUIDELINE_OPTIONS.map(workflowSizeGuidelineDescription)).toEqual([
+    expect(WORKFLOW_SIZE_CLASS_OPTIONS).toEqual(["unrestricted", "small", "medium", "large"]);
+    expect(WORKFLOW_SIZE_CLASS_OPTIONS.map(workflowSizeGuidelineDescription)).toEqual([
       "No advisory workflow-size target.",
       "Advisory target: keep workflows under 5 agents.",
       "Advisory target: keep workflows under 15 agents.",
       "Advisory target: keep workflows under 50 agents.",
     ]);
+    expect(workflowSizeGuidelineDescription(undefined)).toBe(
+      "Default advisory target: keep workflows under 15 agents.",
+    );
     expect(
       configRows(state, DEFAULT_CONFIG, null).find((row) => row.id === "workflowSizeGuideline"),
     ).toMatchObject({
-      label: "Workflow size guideline",
-      value: "unrestricted",
+      label: "Dynamic workflow size",
+      value: "default (medium)",
       kind: "workflowSizeGuideline",
     });
   });
 
   it("cycles through every value in both directions", () => {
-    expect(cycle(WORKFLOW_SIZE_GUIDELINE_OPTIONS, "unrestricted", 1)).toBe("small");
-    expect(cycle(WORKFLOW_SIZE_GUIDELINE_OPTIONS, "large", 1)).toBe("unrestricted");
-    expect(cycle(WORKFLOW_SIZE_GUIDELINE_OPTIONS, "unrestricted", -1)).toBe("large");
+    expect(cycle(WORKFLOW_SIZE_CLASS_OPTIONS, "unrestricted", 1)).toBe("small");
+    expect(cycle(WORKFLOW_SIZE_CLASS_OPTIONS, "large", 1)).toBe("unrestricted");
+    expect(cycle(WORKFLOW_SIZE_CLASS_OPTIONS, "unrestricted", -1)).toBe("large");
   });
 });
 
 describe("orchestration config rows", () => {
   it("renders exact mode values and descriptions", () => {
     const expected = [
-      ["disabled", "Agents use models from the current provider only."],
-      ["default", "Agents can select any available provider and model."],
+      [
+        "disabled",
+        "Agents use models from the current provider only. Full setup in /orchestration.",
+      ],
+      [
+        "default",
+        "Agents can select any available provider and model. Full setup in /orchestration.",
+      ],
       [
         "feudalism",
-        "Routes each delegated task through the emperor, shogun, daimyo, or samurai tier roster.",
+        "Routes each delegated task through the emperor, shogun, daimyo, or samurai tier roster. Full setup in /orchestration.",
       ],
     ] as const;
     for (const [value, description] of expected) {
       const mode = value === "feudalism" ? "feudalism" : value;
-      const row = configRows(state, { ...DEFAULT_CONFIG, orchestrationMode: mode }, null).find(
+      const row = configRows({ ...state, orchestrationMode: mode }, DEFAULT_CONFIG, null).find(
         (candidate) => candidate.id === "multiprovider",
       );
       expect(row).toMatchObject({
@@ -76,25 +90,50 @@ describe("orchestration config rows", () => {
   it("shows quota only in feudalism with exact descriptions", () => {
     for (const mode of ["disabled", "default"] as const) {
       expect(
-        configRows(state, { ...DEFAULT_CONFIG, orchestrationMode: mode }, null).some(
+        configRows({ ...state, orchestrationMode: mode }, DEFAULT_CONFIG, null).some(
           (row) => row.id === "quotaFallback",
         ),
       ).toBe(false);
     }
-    const enabled = configRows(
-      state,
-      { ...DEFAULT_CONFIG, orchestrationMode: "feudalism", quotaFallback: true },
-      null,
-    ).find((row) => row.id === "quotaFallback");
+    const feudalState = { ...state, orchestrationMode: "feudalism" as const };
+    const enabled = configRows(feudalState, { ...DEFAULT_CONFIG, quotaFallback: true }, null).find(
+      (row) => row.id === "quotaFallback",
+    );
     expect(enabled?.description).toBe(
       "Uses another provider when the preferred provider hits its quota.",
     );
     const disabled = configRows(
-      state,
-      { ...DEFAULT_CONFIG, orchestrationMode: "feudalism", quotaFallback: false },
+      feudalState,
+      { ...DEFAULT_CONFIG, quotaFallback: false },
       null,
     ).find((row) => row.id === "quotaFallback");
     expect(disabled?.description).toBe("Stops when the preferred provider hits its quota.");
+  });
+});
+
+describe("multi-model fork config row", () => {
+  it("defaults to disabled with the inherit hint, in every orchestration mode", () => {
+    for (const mode of ["disabled", "default", "feudalism"] as const) {
+      const row = configRows({ ...state, orchestrationMode: mode }, DEFAULT_CONFIG, null).find(
+        (candidate) => candidate.id === "multiModelFork",
+      );
+      expect(row).toMatchObject({
+        label: "Multi-model fork",
+        value: "disabled",
+        kind: "bool",
+        description: "Agents always inherit this session's provider and model.",
+      });
+    }
+  });
+
+  it("names the approval cost once enabled", () => {
+    const row = configRows(state, { ...DEFAULT_CONFIG, multiModelFork: true }, null).find(
+      (candidate) => candidate.id === "multiModelFork",
+    );
+    expect(row).toMatchObject({
+      value: "enabled",
+      description: "Agents may run on another provider/model after you approve the extra cost.",
+    });
   });
 });
 
@@ -109,6 +148,33 @@ describe("language config rows", () => {
     });
     expect(rows.some((row) => row.id === "dictationLanguage")).toBe(false);
     expect(rows.some((row) => row.label === "Dictation language")).toBe(false);
+  });
+});
+
+describe("config panel list window", () => {
+  it("moves the visible settings window with the selected row", () => {
+    const panel = createConfigPanel(() => {});
+    const down = {
+      kind: "key" as const,
+      fn: false,
+      name: "down",
+      ctrl: false,
+      meta: false,
+      shift: false,
+      option: false,
+      super: false,
+      sequence: undefined,
+      raw: undefined,
+      isPasted: false,
+    };
+
+    const initial = panel.render(80).map(stripAnsi);
+    expect(initial.some((line) => line.includes("more below"))).toBe(true);
+
+    for (let index = 0; index < 5; index++) panel.handleKey(down);
+    const afterMoving = panel.render(80).map(stripAnsi);
+    expect(afterMoving.some((line) => line.includes("more above"))).toBe(true);
+    expect(afterMoving.some((line) => line.includes("more below"))).toBe(true);
   });
 });
 
@@ -161,5 +227,65 @@ describe("media provider config rows", () => {
     expect(nonNativeRows.find((row) => row.id === "voiceProvider")?.value).toBe(
       "Anthropic · not configured",
     );
+  });
+});
+
+describe("transcript view config rows", () => {
+  it("offers thinking summaries, verbose output, and startup view mode with defaults", () => {
+    const rows = configRows(state, DEFAULT_CONFIG, null);
+    expect(rows.find((row) => row.id === "showThinkingSummaries")).toMatchObject({
+      label: "Thinking summaries",
+      value: "true",
+      kind: "bool",
+    });
+    expect(rows.find((row) => row.id === "verbose")).toMatchObject({
+      label: "Verbose output",
+      value: "false",
+      kind: "bool",
+    });
+  });
+
+  it("reflects persisted values", () => {
+    const rows = configRows(
+      state,
+      { ...DEFAULT_CONFIG, showThinkingSummaries: false, verbose: true },
+      null,
+    );
+    expect(rows.find((row) => row.id === "showThinkingSummaries")?.value).toBe("false");
+    expect(rows.find((row) => row.id === "verbose")?.value).toBe("true");
+  });
+});
+
+describe("editor mode config row", () => {
+  it("offers the setting with the shipped default in force", () => {
+    expect(
+      configRows(state, DEFAULT_CONFIG, null).find((row) => row.id === "editorMode"),
+    ).toMatchObject({
+      label: "Editor mode",
+      value: "normal",
+      kind: "bool",
+    });
+  });
+
+  it("names the mode in force once it is chosen", () => {
+    const rows = configRows(state, { ...DEFAULT_CONFIG, editorMode: "vim" }, null);
+
+    expect(rows.find((row) => row.id === "editorMode")?.value).toBe("vim");
+  });
+
+  // The prompt resolves the mode once when it is built, so a row that promised an
+  // immediate change would be lying about what the reader just did.
+  it("says when a change starts applying", () => {
+    expect(editorModeDescription("vim")).toContain("Takes effect from the next session.");
+    expect(editorModeDescription("normal")).toContain("Takes effect from the next session.");
+    expect(editorModeDescription("vim")).toContain("Modal editing");
+  });
+
+  it("flips between the two modes and back", () => {
+    const toVim = toggledBoolConfig(DEFAULT_CONFIG, "editorMode", state, 0);
+    expect(toVim?.cfg.editorMode).toBe("vim");
+
+    const backToNormal = toggledBoolConfig(toVim?.cfg ?? DEFAULT_CONFIG, "editorMode", state, 0);
+    expect(backToNormal?.cfg.editorMode).toBe("normal");
   });
 });

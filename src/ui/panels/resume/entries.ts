@@ -2,10 +2,13 @@ import { displayTitleFrom, titlesFromHeadTail } from "@/engine/session/index.ts"
 import { LITE_READ_BYTES, readSessionLite } from "@/engine/session/lite.ts";
 import type { SessionCwdFilter, SessionFileStat } from "@/engine/session/paths.ts";
 import type { SessionRecord } from "@/engine/session/record/index.ts";
-import { pickerMaxHeight } from "@/ui/chrome/picker-geometry.ts";
+
+export function flattenLine(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
 
 export function clip(value: string, max: number): string {
-  const flat = value.replace(/\s+/g, " ").trim();
+  const flat = flattenLine(value);
   return flat.length <= max ? flat : `${flat.slice(0, max - 1)}…`;
 }
 
@@ -96,7 +99,7 @@ export function liteEntryFrom(stat: SessionFileStat): LiteSessionEntry {
 export interface EnrichSliceInput {
   rows: SessionFileStat[];
   startIndex: number;
-  filter: SessionCwdFilter;
+  filter: SessionCwdFilter | undefined;
   onFlush: (outcomes: EnrichOutcome[]) => void;
 }
 
@@ -136,7 +139,7 @@ export async function enrichSlice(input: EnrichSliceInput): Promise<number> {
 
 export interface EnrichRowInput {
   row: SessionFileStat;
-  filter: SessionCwdFilter;
+  filter: SessionCwdFilter | undefined;
   buffer: Buffer;
 }
 
@@ -157,13 +160,14 @@ export async function enrichRow(input: EnrichRowInput): Promise<EnrichedSessionE
     });
   }
   const scanned = scanSessionHead(lite.head);
-  const cwdMatched = scanned.cwd !== null && input.filter.matchSet.has(scanned.cwd);
-  if (!input.row.slugMatched && !cwdMatched) return null;
+  const cwdMatched =
+    input.filter !== undefined && scanned.cwd !== null && input.filter.matchSet.has(scanned.cwd);
+  if (input.filter !== undefined && !input.row.slugMatched && !cwdMatched) return null;
   const title = displayTitleFrom(titlesFromHeadTail(lite));
   return enrichedEntryFrom({
     row: input.row,
-    title: title !== undefined ? clip(title, LABEL_CLIP_CHARS) : null,
-    preview: clip(scanned.preview, LABEL_CLIP_CHARS),
+    title: title !== undefined ? flattenLine(title) : null,
+    preview: flattenLine(scanned.preview),
     cwd: scanned.cwd,
     branch: scanned.branch,
   });
@@ -238,39 +242,43 @@ export function labelFor(entry: SessionEntry): string {
 }
 
 export function formatRelative(ts: number, now = Date.now()): string {
-  const diff = Math.max(0, now - ts);
-  const sec = Math.floor(diff / 1000);
-  if (sec < 60) return "just now";
-  const min = Math.floor(sec / 60);
-  if (min < 60) return `${min} minute${min === 1 ? "" : "s"} ago`;
-  const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr} hour${hr === 1 ? "" : "s"} ago`;
-  const day = Math.floor(hr / 24);
-  if (day < 7) return `${day} day${day === 1 ? "" : "s"} ago`;
-  const wk = Math.floor(day / 7);
-  if (wk < 5) return `${wk} week${wk === 1 ? "" : "s"} ago`;
-  const mon = Math.floor(day / 30);
-  if (mon < 12) return `${mon} month${mon === 1 ? "" : "s"} ago`;
-  return `${Math.floor(mon / 12)} year${Math.floor(mon / 12) === 1 ? "" : "s"} ago`;
+  const seconds = Math.floor(Math.max(0, now - ts) / 1_000);
+  if (seconds < 60) return relativeUnit(seconds, "second");
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return relativeUnit(minutes, "minute");
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return relativeUnit(hours, "hour");
+  const days = Math.floor(hours / 24);
+  if (days < 7) return relativeUnit(days, "day");
+  const weeks = Math.floor(days / 7);
+  if (weeks < 5) return relativeUnit(weeks, "week");
+  const months = Math.floor(days / 30);
+  if (months < 12) return relativeUnit(months, "month");
+  return relativeUnit(Math.floor(months / 12), "year");
+}
+
+function relativeUnit(value: number, unit: string): string {
+  return `${value} ${unit}${value === 1 ? "" : "s"} ago`;
 }
 
 export const ROWS_PER_SESSION = 3;
-export const RESUME_CHROME_ROWS = 10;
 
-export function metaTextFor(entry: SessionEntry, sizeText: string, now = Date.now()): string {
+export function formatSessionSize(sizeBytes: number): string {
+  const kibibytes = sizeBytes / 1_024;
+  if (kibibytes < 1) return `${sizeBytes} bytes`;
+  if (kibibytes < 1_024) return `${trimDecimal(kibibytes)}KB`;
+  const mebibytes = kibibytes / 1_024;
+  if (mebibytes < 1_024) return `${trimDecimal(mebibytes)}MB`;
+  return `${trimDecimal(mebibytes / 1_024)}GB`;
+}
+
+function trimDecimal(value: number): string {
+  return value.toFixed(1).replace(/\.0$/, "");
+}
+
+export function metaTextFor(entry: SessionEntry, now = Date.now()): string {
   const branch = entry.phase === "enriched" ? (entry.branch ?? "HEAD") : "HEAD";
-  return `${formatRelative(entry.updatedAt, now)} · ${branch} · ${sizeText}`;
-}
-
-export function resumeMaxHeight(terminalRows: number): number {
-  return pickerMaxHeight(terminalRows);
-}
-
-export function visibleResumeRows(terminalRows: number): number {
-  return Math.max(
-    1,
-    Math.floor((resumeMaxHeight(terminalRows) - RESUME_CHROME_ROWS) / ROWS_PER_SESSION),
-  );
+  return `${formatRelative(entry.updatedAt, now)} · ${branch} · ${formatSessionSize(entry.sizeBytes)}`;
 }
 
 export interface PreviewLine {

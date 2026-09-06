@@ -3,8 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { recordPayloadDiagnostic } from "@/devtools/payload.ts";
 import {
-  contentContainsImages,
-  extensionForMimeType,
+  contentHasImageBlocks,
+  fileExtensionForMimeType,
   stringifyJson,
   textBlock,
 } from "@/kernel/mcp/client/output/blocks.ts";
@@ -41,7 +41,7 @@ export function handleLargeMcpContent(
 ): string | ToolResultContentBlock[] {
   if (!mcpContentNeedsHandling(result.content)) return result.content;
   if (isLargeOutputFilesDisabled()) return truncateMcpContent(result.content);
-  if (contentContainsImages(result.content)) return truncateMcpContent(result.content);
+  if (contentHasImageBlocks(result.content)) return truncateMcpContent(result.content);
   const persisted = persistLargeMcpContent(result, context);
   if (persisted === null) return truncateMcpContent(result.content);
   return largeOutputInstructions({
@@ -137,7 +137,7 @@ export function persistBinaryBlock(
   const mimeType = typeof mimeTypeValue === "string" ? mimeTypeValue : undefined;
   const id = `mcp-${sanitizeNamePart(context.serverName)}-blob-${Date.now()}-${outputSerial}`;
   outputSerial += 1;
-  const ext = extensionForMimeType(mimeType);
+  const ext = fileExtensionForMimeType(mimeType);
   const filePath = outputPath(context, id, ext);
   try {
     mkdirSync(outputDir(context), { recursive: true });

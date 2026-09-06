@@ -101,24 +101,52 @@ export const MAX_DIRECTORY_PAGES = 20;
 /** Tool output character bound for MCP resource tools. */
 export const MAX_MCP_RESOURCE_OUTPUT_CHARS = 100_000;
 
-export type McpServerStatus = "disabled" | "connected" | "failed" | "needs-auth" | "untrusted";
+export type McpServerStatus =
+  | "disabled"
+  | "connected"
+  | "failed"
+  | "needs-auth"
+  | "pending"
+  | "untrusted";
 
 export interface McpServerInspection {
   status: McpServerStatus;
   statusText: string;
   tools: McpToolInfo[];
+  /** Connected, but the tools/list call itself failed. */
+  toolsError?: boolean;
   error: string | null;
+}
+
+export interface McpCallToolOptions {
+  /** Ends the call when the turn that started it ends. Absent = only the transport deadline applies. */
+  signal?: AbortSignal;
+}
+
+export interface McpPromptInfo {
+  name: string;
+  description?: string;
+  /** Declared in order; a call zips its positional arguments onto these. */
+  argumentNames: string[];
 }
 
 export interface McpClient {
   listTools(): Promise<McpToolInfo[]>;
-  callTool(name: string, args: unknown): Promise<unknown>;
+  callTool(name: string, args: unknown, options?: McpCallToolOptions): Promise<unknown>;
   listResources(): Promise<McpResourceInfo[]>;
   readResource(uri: string): Promise<unknown>;
   /** One page of `resources/directory/read`. Pagination is the caller's concern. */
   listDirectory(uri: string, options?: { cursor?: string }): Promise<McpDirectoryListPage>;
+  listPrompts(): Promise<McpPromptInfo[]>;
+  /** `prompts/get`, whose result carries the messages the prompt expands to. */
+  getPrompt(name: string, args: Record<string, string>): Promise<unknown>;
   serverCapabilities(): McpServerCapabilities | null;
   serverInstructions(): string | null;
+  /**
+   * Tells the server something changed on our side. It is fire-and-forget by the
+   * protocol's own shape — a notification carries no id and gets no reply.
+   */
+  announce(method: string, params: unknown): void;
   isClosed(): boolean;
   close(): void;
 }

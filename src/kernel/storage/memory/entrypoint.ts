@@ -53,7 +53,7 @@ function truncationReason(stats: TruncationStats): string {
   return `${stats.lineCount} lines and ${formatSize(stats.byteCount)}`;
 }
 
-export function truncateEntrypointContent(raw: string): string {
+export function trimEntrypointContent(raw: string): string {
   const trimmed = raw.trim();
   const lines = trimmed.split("\n");
   const lineHit = lines.length > MAX_ENTRYPOINT_LINES;

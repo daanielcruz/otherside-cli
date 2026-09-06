@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { parseSelectionResponse } from "../parse.ts";
-import { formatMemoryManifest, type MemoryHeader } from "../scan.ts";
+import { type MemoryHeader, renderMemoryManifest } from "../scan.ts";
 
 describe("parseSelectionResponse", () => {
   it("parses a plain JSON object", () => {
@@ -48,7 +48,7 @@ describe("parseSelectionResponse", () => {
   });
 });
 
-describe("formatMemoryManifest", () => {
+describe("renderMemoryManifest", () => {
   const header = (overrides: Partial<MemoryHeader>): MemoryHeader => ({
     filename: "topic.md",
     filePath: "/mem/topic.md",
@@ -59,7 +59,7 @@ describe("formatMemoryManifest", () => {
   });
 
   it("renders type tag, filename, timestamp, and description", () => {
-    const manifest = formatMemoryManifest([
+    const manifest = renderMemoryManifest([
       header({
         filename: "user_role.md",
         type: "user",
@@ -72,12 +72,12 @@ describe("formatMemoryManifest", () => {
   });
 
   it("omits the tag and description when absent", () => {
-    const manifest = formatMemoryManifest([header({})]);
+    const manifest = renderMemoryManifest([header({})]);
     expect(manifest).toBe("- topic.md (2026-01-02T03:04:05.000Z)");
   });
 
   it("joins entries with newlines", () => {
-    const manifest = formatMemoryManifest([
+    const manifest = renderMemoryManifest([
       header({ filename: "a.md" }),
       header({ filename: "b.md" }),
     ]);

@@ -1,4 +1,4 @@
-import { forceRefreshAuth, loadFreshAuth } from "./auth.ts";
+import { currentUserId, forceRefreshAuth, loadFreshAuth } from "./auth.ts";
 import { CortexApiError, cortexFetch } from "./cortex.ts";
 import type { SessionWrap } from "./e2ee.ts";
 
@@ -13,8 +13,14 @@ export class RemoteApiError extends Error {
   }
 }
 
-export async function callCortex<T>(path: string, body: unknown, forceRefresh = false): Promise<T> {
-  const auth = forceRefresh ? await forceRefreshAuth() : await loadFreshAuth();
+export async function callCortex<T>(
+  path: string,
+  body: unknown,
+  rejectedAccessToken?: string,
+): Promise<T> {
+  const auth = rejectedAccessToken
+    ? await forceRefreshAuth(rejectedAccessToken)
+    : await loadFreshAuth();
   if (!auth) {
     throw new RemoteApiError("unauthorized", "CLI is not paired — run /remote pair", "");
   }
@@ -28,8 +34,8 @@ export async function callCortex<T>(path: string, body: unknown, forceRefresh = 
     });
   } catch (err) {
     if (err instanceof CortexApiError) {
-      if (err.code === "unauthorized" && !forceRefresh) {
-        return callCortex<T>(path, body, true);
+      if (err.code === "unauthorized" && !rejectedAccessToken) {
+        return callCortex<T>(path, body, auth.accessToken);
       }
       throw new RemoteApiError(err.code, err.message, err.requestId);
     }
@@ -42,6 +48,7 @@ export const SESSION_EVENTS_TIMEOUT_MS = 10_000;
 export interface SessionEventRow {
   id: string;
   session_id: string;
+  instance_id: string;
   sender_device_id: string;
   type: string;
   payload: Record<string, unknown>;
@@ -49,19 +56,40 @@ export interface SessionEventRow {
   ts: string;
 }
 
-/** Newest-first page of durable session events (cortex keyset order). */
-export async function listSessionEvents(sessionId: string, limit = 50): Promise<SessionEventRow[]> {
+export interface SessionEventCursor {
+  ts: string;
+  id: string;
+}
+
+export interface SessionEventPageOptions {
+  limit?: number;
+  after?: SessionEventCursor;
+}
+
+export async function listSessionEvents(
+  sessionId: string,
+  options: SessionEventPageOptions = {},
+): Promise<SessionEventRow[]> {
   const auth = await loadFreshAuth();
   if (!auth) {
     throw new RemoteApiError("unauthorized", "CLI is not paired — run /remote pair", "");
   }
+  const query = new URLSearchParams();
+  query.set("limit", String(options.limit ?? 50));
+  if (options.after) {
+    query.set("after_ts", options.after.ts);
+    query.set("after_id", options.after.id);
+  }
   try {
-    return await cortexFetch<SessionEventRow[]>(`/v1/sessions/${sessionId}/events?limit=${limit}`, {
-      method: "GET",
-      token: auth.accessToken,
-      client: "cli",
-      signal: AbortSignal.timeout(SESSION_EVENTS_TIMEOUT_MS),
-    });
+    return await cortexFetch<SessionEventRow[]>(
+      `/v1/sessions/${sessionId}/events?${query.toString()}`,
+      {
+        method: "GET",
+        token: auth.accessToken,
+        client: "cli",
+        signal: AbortSignal.timeout(SESSION_EVENTS_TIMEOUT_MS),
+      },
+    );
   } catch (err) {
     if (err instanceof CortexApiError) {
       throw new RemoteApiError(err.code, err.message, err.requestId);
@@ -92,7 +120,7 @@ interface RegisterDedupeEntry {
 const registerEnvironmentDedupeCache = new Map<string, RegisterDedupeEntry>();
 
 function registerDedupeKey(input: RegisterEnvironmentInput): string {
-  return `${input.kind ?? "cli"}|${input.fingerprint_hash}|${input.device_label}`;
+  return `${currentUserId() ?? ""}|${input.id ?? ""}|${input.kind ?? "cli"}|${input.fingerprint_hash}|${input.device_label}`;
 }
 
 export function registerEnvironment(

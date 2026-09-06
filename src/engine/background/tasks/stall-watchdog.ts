@@ -1,15 +1,13 @@
 import { emitQueue } from "@/engine/queue/emit.ts";
 import { get } from "./background.ts";
 import { buildStallNotification } from "./notification.ts";
-import { getTaskOutputPath } from "./output-files.ts";
+import { resolveTaskLogPath } from "./output-files.ts";
 
-let stallEpoch = 0;
+const OBSERVATION_PERIOD_MS = 5_000;
+const QUIET_PERIOD_MS = 45_000;
+const INSPECTION_SUFFIX_LENGTH = 1024;
 
-const STALL_CHECK_INTERVAL_MS = 5_000;
-const STALL_THRESHOLD_MS = 45_000;
-const STALL_TAIL_BYTES = 1024;
-
-const PROMPT_PATTERNS = [
+const INTERACTIVE_LAST_LINE_SIGNALS = [
   /\(y\/n\)/i,
   /\[y\/n\]/i,
   /\(yes\/no\)/i,
@@ -19,9 +17,16 @@ const PROMPT_PATTERNS = [
   /Overwrite\?/i,
 ];
 
-export function looksLikePrompt(tail: string): boolean {
-  const lastLine = tail.trimEnd().split("\n").pop() ?? "";
-  return PROMPT_PATTERNS.some((p) => p.test(lastLine));
+let notificationSequence = 0;
+
+export function finalLineRequestsInput(outputSuffix: string): boolean {
+  const finalLine = outputSuffix.trimEnd().split("\n").at(-1) ?? "";
+  return INTERACTIVE_LAST_LINE_SIGNALS.some((signal) => signal.test(finalLine));
+}
+
+export interface StallWatchdogTimerApi {
+  setInterval(callback: () => void, delayMs: number): ReturnType<typeof setInterval>;
+  clearInterval(timer: ReturnType<typeof setInterval>): void;
 }
 
 export interface StallWatchdogOptions {
@@ -30,62 +35,84 @@ export interface StallWatchdogOptions {
   intervalMs?: number;
   thresholdMs?: number;
   now?: () => number;
+  timerApi?: StallWatchdogTimerApi;
 }
 
-export function startStallWatchdog(opts: StallWatchdogOptions): () => void {
-  const interval = opts.intervalMs ?? STALL_CHECK_INTERVAL_MS;
-  const threshold = opts.thresholdMs ?? STALL_THRESHOLD_MS;
-  const now = opts.now ?? (() => Date.now());
+const systemTimerApi: StallWatchdogTimerApi = {
+  setInterval: (callback, delayMs) => setInterval(callback, delayMs),
+  clearInterval: (timer) => clearInterval(timer),
+};
 
-  let lastSize = 0;
-  let lastGrowth = now();
-  let cancelled = false;
+function detachFromProcessLifetime(timer: ReturnType<typeof setInterval>): void {
+  const detachable = timer as { unref?: () => void };
+  detachable.unref?.();
+}
 
-  const tick = (): void => {
-    if (cancelled) return;
-    const task = get(opts.taskId);
-    if (!task) return;
-    if (task.status !== "running") return;
-    if (task.notified) return;
-    const buffer = task.shellOutput;
-    const size = buffer.length;
-    if (size > lastSize) {
-      lastSize = size;
-      lastGrowth = now();
+function emitInteractiveWait(
+  task: NonNullable<ReturnType<typeof get>>,
+  toolUseId: string | undefined,
+  outputSuffix: string,
+): void {
+  const description = task.description ?? task.agentName;
+  const summary = `Background command "${description}" appears to be waiting for interactive input`;
+  const text = buildStallNotification({
+    taskId: task.id,
+    ...(toolUseId !== undefined ? { toolUseId } : {}),
+    outputFile: resolveTaskLogPath(task.id),
+    summary,
+    tail: outputSuffix,
+  });
+  notificationSequence += 1;
+  emitQueue.emit({
+    class: "urgent_output",
+    target: "both",
+    payload: { kind: "task_notification_xml", text, summary },
+    replayKey: `stall:${task.id}:${notificationSequence}`,
+  });
+}
+
+export function watchForInteractiveWait(options: StallWatchdogOptions): () => void {
+  const clock = options.now ?? Date.now;
+  const timers = options.timerApi ?? systemTimerApi;
+  const observationPeriod = options.intervalMs ?? OBSERVATION_PERIOD_MS;
+  const quietPeriod = options.thresholdMs ?? QUIET_PERIOD_MS;
+
+  let greatestObservedLength = 0;
+  let quietPeriodStartedAt = clock();
+  let monitoring = true;
+  let timer: ReturnType<typeof setInterval>;
+
+  const inspectTask = (): void => {
+    if (!monitoring) return;
+
+    const task = get(options.taskId);
+    if (task === undefined || task.status !== "running" || task.notified) return;
+
+    const output = task.shellOutput;
+    if (output.length > greatestObservedLength) {
+      greatestObservedLength = output.length;
+      quietPeriodStartedAt = clock();
       return;
     }
-    if (now() - lastGrowth < threshold) return;
-    const tail = buffer.slice(-STALL_TAIL_BYTES);
-    if (!looksLikePrompt(tail)) {
-      lastGrowth = now();
+
+    if (clock() - quietPeriodStartedAt < quietPeriod) return;
+
+    const outputSuffix = output.slice(-INSPECTION_SUFFIX_LENGTH);
+    if (!finalLineRequestsInput(outputSuffix)) {
+      quietPeriodStartedAt = clock();
       return;
     }
-    cancelled = true;
-    clearInterval(timer);
-    const description = task.description ?? task.agentName;
-    const summary = `Background command "${description}" appears to be waiting for interactive input`;
-    const notificationText = buildStallNotification({
-      taskId: task.id,
-      ...(opts.toolUseId !== undefined ? { toolUseId: opts.toolUseId } : {}),
-      outputFile: getTaskOutputPath(task.id),
-      summary,
-      tail,
-    });
-    stallEpoch += 1;
-    emitQueue.emit({
-      class: "urgent_output",
-      target: "both",
-      payload: { kind: "task_notification_xml", text: notificationText, summary },
-      replayKey: `stall:${task.id}:${stallEpoch}`,
-    });
+
+    monitoring = false;
+    timers.clearInterval(timer);
+    emitInteractiveWait(task, options.toolUseId, outputSuffix);
   };
 
-  const timer = setInterval(tick, interval);
-  if (typeof (timer as { unref?: () => void }).unref === "function") {
-    (timer as { unref: () => void }).unref();
-  }
-  return () => {
-    cancelled = true;
-    clearInterval(timer);
+  timer = timers.setInterval(inspectTask, observationPeriod);
+  detachFromProcessLifetime(timer);
+
+  return (): void => {
+    monitoring = false;
+    timers.clearInterval(timer);
   };
 }

@@ -11,6 +11,12 @@ export interface Skill {
   context: "inline" | "fork";
   body: string;
   builtin: boolean;
+  /** Where the skill came from: user dir, project dir, bundled, or a plugin. */
+  source: "user" | "project" | "builtin" | "plugin";
+  /** Skill directory (or markdown file) when loaded from disk. */
+  skillRoot?: string;
+  /** The skill's own frontmatter opts out of model invocation (author lock). */
+  authorModelLock: boolean;
 }
 
 const registry = createRegistry<Skill>({

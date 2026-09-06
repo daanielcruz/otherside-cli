@@ -18,7 +18,7 @@ export function cleanupCwdFile(cwdFilePath: string | null): void {
   } catch {}
 }
 
-export function shouldMaintainProjectWorkingDir(): boolean {
+export function maintainProjectWorkingDir(): boolean {
   const v = (process.env.OTHERSIDE_BASH_MAINTAIN_PROJECT_WORKING_DIR ?? "").trim().toLowerCase();
   return MAINTAIN_PROJECT_WORKING_DIR_TRUTHY.includes(v);
 }

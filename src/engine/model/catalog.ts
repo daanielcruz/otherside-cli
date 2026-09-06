@@ -1,7 +1,7 @@
 import { getProviderConfig, listProviderConfigs } from "@/engine/contract/registry.ts";
 import type { ParsedModelId } from "@/engine/model/types.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
 import type { EffortLevel } from "@/kernel/std/types/effort.ts";
+import type { ProviderId, ProviderModelRoute } from "@/kernel/std/types/provider-ids.ts";
 import { registerModelCatalogProvider } from "@/kernel/storage/model-catalog.ts";
 
 export type { ParsedModelId };
@@ -66,7 +66,7 @@ function passthroughContextWindow(id: string): number {
 }
 
 export function ensureRuntimeModel(id: string, provider: ProviderId): ModelEntry {
-  const found = findModel(id, provider);
+  const found = findModel({ provider, model: id });
   if (found) return found;
   const entry: ModelEntry = {
     id,
@@ -80,15 +80,13 @@ export function ensureRuntimeModel(id: string, provider: ProviderId): ModelEntry
   return entry;
 }
 
-function pickById(
-  catalog: ModelEntry[],
-  id: string,
-  provider?: ProviderId,
-): ModelEntry | undefined {
-  if (provider) return catalog.find((m) => m.id === id && m.provider === provider);
-  const matches = catalog.filter((m) => m.id === id);
-  if (matches.length === 0) return undefined;
-  return matches.find((m) => m.efforts.length > 0) ?? matches[0];
+function pickByRoute(catalog: ModelEntry[], route: ProviderModelRoute): ModelEntry | undefined {
+  return catalog.find((entry) => entry.id === route.model && entry.provider === route.provider);
+}
+
+function pickUniqueById(catalog: ModelEntry[], id: string): ModelEntry | undefined {
+  const matches = catalog.filter((entry) => entry.id === id);
+  return matches.length === 1 ? matches[0] : undefined;
 }
 
 // A trailing version sequence: one or more "-<digits>" or "-<digits>.<digits>"
@@ -116,40 +114,42 @@ export function findFamilyMatch(catalog: ModelEntry[], base: string): ModelEntry
   return matches.length === 1 ? matches[0] : undefined;
 }
 
-export function findModel(id: string, provider?: ProviderId): ModelEntry | undefined {
+export function findModel(route: ProviderModelRoute): ModelEntry | undefined {
   const catalog = CATALOG();
-  const exact = pickById(catalog, id, provider);
+  const exact = pickByRoute(catalog, route);
   if (exact) return exact;
-  const base = parseModelId(id).base;
-  const baseMatch = pickById(catalog, base, provider);
+  const base = parseModelId(route.model).base;
+  const baseMatch = pickByRoute(catalog, { ...route, model: base });
   if (baseMatch) return baseMatch;
-  // Family shorthand is a same-provider concern only (see findFamilyMatch) —
-  // skip it when no provider was given, matching the exact/base steps above
-  // never guessing a provider from an ambiguous bare family name either.
-  if (!provider) return undefined;
   return findFamilyMatch(
-    catalog.filter((m) => m.provider === provider),
+    catalog.filter((entry) => entry.provider === route.provider),
     base,
   );
 }
 
-export function resolveModelId(id: string, provider?: ProviderId): string {
-  const found = findModel(id, provider);
-  return found ? found.id : id;
+export function findUniqueModel(id: string): ModelEntry | undefined {
+  const catalog = CATALOG();
+  const exact = pickUniqueById(catalog, id);
+  if (exact) return exact;
+  return pickUniqueById(catalog, parseModelId(id).base);
 }
 
-export function effortLevelsForModel(id: string, provider?: ProviderId): EffortLevel[] {
-  const m = findModel(id, provider);
-  if (m) return m.efforts;
-  if (!provider) return [];
-  return getProviderConfig(provider)?.fallbackEfforts?.levels ?? [];
+export function resolveModelId(route: ProviderModelRoute): string {
+  return findModel(route)?.id ?? route.model;
 }
 
-export function defaultEffortForModel(id: string, provider?: ProviderId): EffortLevel | null {
-  const m = findModel(id, provider);
-  if (m) return m.defaultEffort;
-  if (!provider) return null;
-  return getProviderConfig(provider)?.fallbackEfforts?.default ?? null;
+export function effortLevelsForModel(route: ProviderModelRoute): EffortLevel[] {
+  return (
+    findModel(route)?.efforts ?? getProviderConfig(route.provider)?.fallbackEfforts?.levels ?? []
+  );
+}
+
+export function defaultEffortForModel(route: ProviderModelRoute): EffortLevel | null {
+  // A cataloged model owns its default outright: an explicit null means the
+  // route is effort-less, not that the provider fallback should answer.
+  const found = findModel(route);
+  if (found !== undefined) return found.defaultEffort;
+  return getProviderConfig(route.provider)?.fallbackEfforts?.default ?? null;
 }
 
 export function modelsForProvider(provider: ProviderId): ModelEntry[] {
@@ -168,7 +168,7 @@ export function defaultModelForProvider(provider: ProviderId): string {
   const raw = cfg?.defaultModelId;
   const id = typeof raw === "function" ? raw() : raw;
   if (id) return id;
-  return modelsForProvider(provider)[0]?.id ?? "claude-opus-4-8";
+  return modelsForProvider(provider)[0]?.id ?? "claude-opus-5";
 }
 
 export interface InitialModelInputs {
@@ -180,16 +180,16 @@ export interface InitialModelInputs {
 export function pickInitialModel(inputs: InitialModelInputs): string {
   const { provider, savedDefaultProvider, savedDefaultModel } = inputs;
   if (provider === savedDefaultProvider && savedDefaultModel) {
-    const saved = findModel(savedDefaultModel, provider);
+    const saved = findModel({ provider, model: savedDefaultModel });
     if (saved && saved.provider === provider) return saved.id;
   }
   return defaultModelForProvider(provider);
 }
 
-export function modelDisplayWithContext(id: string, provider?: ProviderId): string {
-  const model = findModel(id, provider);
-  if (!model) return id;
-  const suffix = parseModelId(id).is1m ? "1M" : compactContext(model.contextWindow);
+export function modelDisplayWithContext(route: ProviderModelRoute): string {
+  const model = findModel(route);
+  if (!model) return route.model;
+  const suffix = parseModelId(route.model).is1m ? "1M" : compactContext(model.contextWindow);
   return `${model.displayName} · ${suffix} context`;
 }
 

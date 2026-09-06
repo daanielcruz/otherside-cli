@@ -1,66 +1,50 @@
-import type {
-  NamedColor,
-  TextStyle,
-  UnderlineStyle,
+import { csi } from "@/terminal-runtime/terminal/control-sequences.js";
+import type { TextStyle } from "@/terminal-runtime/terminal/protocol-contracts.js";
+import {
+  createDefaultStyle,
+  NAMED_COLORS,
+  UNDERLINE_STYLES,
 } from "@/terminal-runtime/terminal/protocol-contracts.js";
-import { createDefaultStyle } from "@/terminal-runtime/terminal/protocol-contracts.js";
 
-const PALETTE_NAMES: NamedColor[] = [
-  "black",
-  "red",
-  "green",
-  "yellow",
-  "blue",
-  "magenta",
-  "cyan",
-  "white",
-  "brightBlack",
-  "brightRed",
-  "brightGreen",
-  "brightYellow",
-  "brightBlue",
-  "brightMagenta",
-  "brightCyan",
-  "brightWhite",
-];
-
-const UNDERLINE_MODES: UnderlineStyle[] = ["none", "single", "double", "curly", "dotted", "dashed"];
+export function sgr(...codes: number[]): string {
+  return csi(...codes, "m");
+}
 
 type CodeParam = { value: number | null; subparams: number[]; colon: boolean };
 
-function parseCodeParams(str: string): CodeParam[] {
-  if (str === "") return [{ value: 0, subparams: [], colon: false }];
+function parseCodeParams(input: string): CodeParam[] {
+  if (input === "") return [{ value: 0, subparams: [], colon: false }];
 
   const result: CodeParam[] = [];
   let current: CodeParam = { value: null, subparams: [], colon: false };
-  let num = "";
-  let inSub = false;
+  let digits = "";
+  let readingSubparameter = false;
 
-  for (let i = 0; i <= str.length; i++) {
-    const c = str[i];
-    if (c === ";" || c === undefined) {
-      const n = num === "" ? null : parseInt(num, 10);
-      if (inSub) {
-        if (n !== null) current.subparams.push(n);
+  for (let index = 0; index <= input.length; index++) {
+    const character = input[index];
+    if (character === ";" || character === undefined) {
+      const value = digits === "" ? null : parseInt(digits, 10);
+      if (readingSubparameter) {
+        if (value !== null) current.subparams.push(value);
       } else {
-        current.value = n;
+        current.value = value;
       }
       result.push(current);
       current = { value: null, subparams: [], colon: false };
-      num = "";
-      inSub = false;
-    } else if (c === ":") {
-      const n = num === "" ? null : parseInt(num, 10);
-      if (!inSub) {
-        current.value = n;
+      digits = "";
+      readingSubparameter = false;
+    } else if (character === ":") {
+      const value = digits === "" ? null : parseInt(digits, 10);
+      if (!readingSubparameter) {
+        current.value = value;
         current.colon = true;
-        inSub = true;
-      } else {
-        if (n !== null) current.subparams.push(n);
+        readingSubparameter = true;
+      } else if (value !== null) {
+        current.subparams.push(value);
       }
-      num = "";
-    } else if (c >= "0" && c <= "9") {
-      num += c;
+      digits = "";
+    } else if (character >= "0" && character <= "9") {
+      digits += character;
     }
   }
   return result;
@@ -68,43 +52,44 @@ function parseCodeParams(str: string): CodeParam[] {
 
 function parseExtendedRGB(
   params: CodeParam[],
-  idx: number,
+  index: number,
 ): { r: number; g: number; b: number } | { index: number } | null {
-  const p = params[idx];
-  if (!p) return null;
+  const parameter = params[index];
+  if (!parameter) return null;
 
-  if (p.colon && p.subparams.length >= 1) {
-    if (p.subparams[0] === 5 && p.subparams.length >= 2) {
-      return { index: p.subparams[1]! };
+  if (parameter.colon && parameter.subparams.length >= 1) {
+    if (parameter.subparams[0] === 5 && parameter.subparams.length >= 2) {
+      return { index: parameter.subparams[1]! };
     }
-    if (p.subparams[0] === 2 && p.subparams.length >= 4) {
-      const off = p.subparams.length >= 5 ? 1 : 0;
+    if (parameter.subparams[0] === 2 && parameter.subparams.length >= 4) {
+      const componentOffset = parameter.subparams.length >= 5 ? 1 : 0;
       return {
-        r: p.subparams[1 + off]!,
-        g: p.subparams[2 + off]!,
-        b: p.subparams[3 + off]!,
+        r: parameter.subparams[1 + componentOffset]!,
+        g: parameter.subparams[2 + componentOffset]!,
+        b: parameter.subparams[3 + componentOffset]!,
       };
     }
   }
 
-  const next = params[idx + 1];
-  if (!next) return null;
-  if (next.value === 5 && params[idx + 2]?.value !== null && params[idx + 2]?.value !== undefined) {
-    return { index: params[idx + 2]!.value! };
+  const nextParameter = params[index + 1];
+  if (!nextParameter) return null;
+  const indexedColor = params[index + 2]?.value;
+  if (nextParameter.value === 5 && indexedColor !== null && indexedColor !== undefined) {
+    return { index: indexedColor };
   }
-  if (next.value === 2) {
-    const r = params[idx + 2]?.value;
-    const g = params[idx + 3]?.value;
-    const b = params[idx + 4]?.value;
+  if (nextParameter.value === 2) {
+    const red = params[index + 2]?.value;
+    const green = params[index + 3]?.value;
+    const blue = params[index + 4]?.value;
     if (
-      r !== null &&
-      r !== undefined &&
-      g !== null &&
-      g !== undefined &&
-      b !== null &&
-      b !== undefined
+      red !== null &&
+      red !== undefined &&
+      green !== null &&
+      green !== undefined &&
+      blue !== null &&
+      blue !== undefined
     ) {
-      return { r, g, b };
+      return { r: red, g: green, b: blue };
     }
   }
   return null;
@@ -112,173 +97,183 @@ function parseExtendedRGB(
 
 export function applyRenderCodes(paramStr: string, style: TextStyle): TextStyle {
   const params = parseCodeParams(paramStr);
-  let s = { ...style };
-  let i = 0;
+  let nextStyle = { ...style };
+  let parameterIndex = 0;
 
-  while (i < params.length) {
-    const p = params[i]!;
-    const code = p.value ?? 0;
+  while (parameterIndex < params.length) {
+    const parameter = params[parameterIndex]!;
+    const code = parameter.value ?? 0;
 
     if (code === 0) {
-      s = createDefaultStyle();
-      i++;
+      nextStyle = createDefaultStyle();
+      parameterIndex++;
       continue;
     }
     if (code === 1) {
-      s.bold = true;
-      i++;
+      nextStyle.bold = true;
+      parameterIndex++;
       continue;
     }
     if (code === 2) {
-      s.dim = true;
-      i++;
+      nextStyle.dim = true;
+      parameterIndex++;
       continue;
     }
     if (code === 3) {
-      s.italic = true;
-      i++;
+      nextStyle.italic = true;
+      parameterIndex++;
       continue;
     }
     if (code === 4) {
-      s.underline = p.colon ? (UNDERLINE_MODES[p.subparams[0]!] ?? "single") : "single";
-      i++;
+      nextStyle.underline = parameter.colon
+        ? (UNDERLINE_STYLES[parameter.subparams[0]!] ?? "single")
+        : "single";
+      parameterIndex++;
       continue;
     }
     if (code === 5 || code === 6) {
-      s.blink = true;
-      i++;
+      nextStyle.blink = true;
+      parameterIndex++;
       continue;
     }
     if (code === 7) {
-      s.inverse = true;
-      i++;
+      nextStyle.inverse = true;
+      parameterIndex++;
       continue;
     }
     if (code === 8) {
-      s.hidden = true;
-      i++;
+      nextStyle.hidden = true;
+      parameterIndex++;
       continue;
     }
     if (code === 9) {
-      s.strikethrough = true;
-      i++;
+      nextStyle.strikethrough = true;
+      parameterIndex++;
       continue;
     }
     if (code === 21) {
-      s.underline = "double";
-      i++;
+      nextStyle.underline = "double";
+      parameterIndex++;
       continue;
     }
     if (code === 22) {
-      s.bold = false;
-      s.dim = false;
-      i++;
+      nextStyle.bold = false;
+      nextStyle.dim = false;
+      parameterIndex++;
       continue;
     }
     if (code === 23) {
-      s.italic = false;
-      i++;
+      nextStyle.italic = false;
+      parameterIndex++;
       continue;
     }
     if (code === 24) {
-      s.underline = "none";
-      i++;
+      nextStyle.underline = "none";
+      parameterIndex++;
       continue;
     }
     if (code === 25) {
-      s.blink = false;
-      i++;
+      nextStyle.blink = false;
+      parameterIndex++;
       continue;
     }
     if (code === 27) {
-      s.inverse = false;
-      i++;
+      nextStyle.inverse = false;
+      parameterIndex++;
       continue;
     }
     if (code === 28) {
-      s.hidden = false;
-      i++;
+      nextStyle.hidden = false;
+      parameterIndex++;
       continue;
     }
     if (code === 29) {
-      s.strikethrough = false;
-      i++;
+      nextStyle.strikethrough = false;
+      parameterIndex++;
       continue;
     }
     if (code === 53) {
-      s.overline = true;
-      i++;
+      nextStyle.overline = true;
+      parameterIndex++;
       continue;
     }
     if (code === 55) {
-      s.overline = false;
-      i++;
+      nextStyle.overline = false;
+      parameterIndex++;
       continue;
     }
 
     if (code >= 30 && code <= 37) {
-      s.fg = { type: "named", name: PALETTE_NAMES[code - 30]! };
-      i++;
+      nextStyle.fg = { type: "named", name: NAMED_COLORS[code - 30]! };
+      parameterIndex++;
       continue;
     }
     if (code === 39) {
-      s.fg = { type: "default" };
-      i++;
+      nextStyle.fg = { type: "default" };
+      parameterIndex++;
       continue;
     }
     if (code >= 40 && code <= 47) {
-      s.bg = { type: "named", name: PALETTE_NAMES[code - 40]! };
-      i++;
+      nextStyle.bg = { type: "named", name: NAMED_COLORS[code - 40]! };
+      parameterIndex++;
       continue;
     }
     if (code === 49) {
-      s.bg = { type: "default" };
-      i++;
+      nextStyle.bg = { type: "default" };
+      parameterIndex++;
       continue;
     }
     if (code >= 90 && code <= 97) {
-      s.fg = { type: "named", name: PALETTE_NAMES[code - 90 + 8]! };
-      i++;
+      nextStyle.fg = { type: "named", name: NAMED_COLORS[code - 90 + 8]! };
+      parameterIndex++;
       continue;
     }
     if (code >= 100 && code <= 107) {
-      s.bg = { type: "named", name: PALETTE_NAMES[code - 100 + 8]! };
-      i++;
+      nextStyle.bg = { type: "named", name: NAMED_COLORS[code - 100 + 8]! };
+      parameterIndex++;
       continue;
     }
 
     if (code === 38) {
-      const c = parseExtendedRGB(params, i);
-      if (c) {
-        s.fg = "index" in c ? { type: "indexed", index: c.index } : { type: "rgb", ...c };
-        i += p.colon ? 1 : "index" in c ? 3 : 5;
+      const parsedColor = parseExtendedRGB(params, parameterIndex);
+      if (parsedColor) {
+        nextStyle.fg =
+          "index" in parsedColor
+            ? { type: "indexed", index: parsedColor.index }
+            : { type: "rgb", ...parsedColor };
+        parameterIndex += parameter.colon ? 1 : "index" in parsedColor ? 3 : 5;
         continue;
       }
     }
     if (code === 48) {
-      const c = parseExtendedRGB(params, i);
-      if (c) {
-        s.bg = "index" in c ? { type: "indexed", index: c.index } : { type: "rgb", ...c };
-        i += p.colon ? 1 : "index" in c ? 3 : 5;
+      const parsedColor = parseExtendedRGB(params, parameterIndex);
+      if (parsedColor) {
+        nextStyle.bg =
+          "index" in parsedColor
+            ? { type: "indexed", index: parsedColor.index }
+            : { type: "rgb", ...parsedColor };
+        parameterIndex += parameter.colon ? 1 : "index" in parsedColor ? 3 : 5;
         continue;
       }
     }
     if (code === 58) {
-      const c = parseExtendedRGB(params, i);
-      if (c) {
-        s.underlineColor =
-          "index" in c ? { type: "indexed", index: c.index } : { type: "rgb", ...c };
-        i += p.colon ? 1 : "index" in c ? 3 : 5;
+      const parsedColor = parseExtendedRGB(params, parameterIndex);
+      if (parsedColor) {
+        nextStyle.underlineColor =
+          "index" in parsedColor
+            ? { type: "indexed", index: parsedColor.index }
+            : { type: "rgb", ...parsedColor };
+        parameterIndex += parameter.colon ? 1 : "index" in parsedColor ? 3 : 5;
         continue;
       }
     }
     if (code === 59) {
-      s.underlineColor = { type: "default" };
-      i++;
+      nextStyle.underlineColor = { type: "default" };
+      parameterIndex++;
       continue;
     }
 
-    i++;
+    parameterIndex++;
   }
-  return s;
+  return nextStyle;
 }

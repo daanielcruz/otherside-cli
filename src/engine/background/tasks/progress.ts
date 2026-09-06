@@ -10,7 +10,7 @@ import {
   discardAssistantText,
   failAction,
   setForkId,
-  setModel,
+  setRoute,
   setUsageSnapshot,
 } from "./background.ts";
 
@@ -106,7 +106,7 @@ export function routeForkEventToTask(taskId: string, event: ForkEvent): void {
   }
   if (event.kind === "fork_start") {
     setForkId(taskId, event.forkId);
-    setModel(taskId, event.model, event.effort, event.provider);
+    setRoute(taskId, { provider: event.provider, model: event.model }, event.effort);
     return;
   }
   if (event.kind === "fork_usage") {

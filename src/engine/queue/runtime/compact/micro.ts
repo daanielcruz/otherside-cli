@@ -1,7 +1,7 @@
 import { findModel } from "@/engine/model/catalog.ts";
 import {
-  getModelAutoCompactThreshold,
-  maxOutputTokensForModel,
+  modelAutoCompactTrigger,
+  providerCompactOutputLimit,
 } from "@/engine/session/compact/index.ts";
 import {
   applyTimeBasedMicroCompact,
@@ -24,12 +24,12 @@ export async function* maybeMicroCompact(
   if (deps.agentDeps.config.autoCompact === false) return;
   if (process.env.DISABLE_COMPACT || process.env.DISABLE_AUTO_COMPACT) return;
   const state = deps.agentDeps.broker.read();
-  const model = findModel(state.model);
+  const model = findModel({ provider: state.provider, model: state.model });
   if (!model) return;
   const window = resolveCompactWindow(model);
-  const maxOutput = maxOutputTokensForModel(state.model);
+  const maxOutput = providerCompactOutputLimit({ provider: state.provider, model: state.model });
   const lastUsage = deps.agentDeps.getLastUsage?.() ?? null;
-  const threshold = getModelAutoCompactThreshold({
+  const threshold = modelAutoCompactTrigger({
     model,
     window,
     maxOutputTokens: maxOutput,

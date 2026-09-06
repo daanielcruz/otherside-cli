@@ -13,23 +13,25 @@ import {
   clearProviderCooldowns,
   markProviderCooldown,
 } from "@/engine/session/usage/provider-health.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 import type { CredentialsBundle } from "@/kernel/storage/credentials.ts";
 import { credentialsPath } from "@/kernel/storage/credentials.ts";
+import { quotaDisplacedBeforeTopNSelection } from "../tier/quota-displacement.ts";
 import {
-  invalidateCredentialsMemoForTests,
-  isProviderUsable,
-  isProviderUsableNow,
-  quotaDisplacedBeforeTopNSelection,
   resolveTier,
   resolveTierDetailed,
   resolveTierRank,
   resolveTierRankDetailed,
   resolveTierTopN,
   resolveTierTopNWithCascadeDetailed,
-  setCredentialsLoaderForTests,
   tierContainsModel,
 } from "../tier/resolver.ts";
+import {
+  invalidateCredentialsMemoForTests,
+  isProviderUsable,
+  isProviderUsableNow,
+  setCredentialsLoaderForTests,
+} from "../tier/usability.ts";
 
 registerAllProviders();
 
@@ -97,7 +99,7 @@ describe("isProviderUsable — raw usability (no active-provider exemption)", ()
         status: "rejected",
         unifiedRateLimitFallbackAvailable: false,
         utilization: 0.8,
-        isUsingOverage: false,
+        isOverageActive: false,
       },
     );
     expect(isProviderUsable("anthropic", creds)).toBe(false);
@@ -112,7 +114,7 @@ describe("isProviderUsable — raw usability (no active-provider exemption)", ()
         status: "allowed",
         unifiedRateLimitFallbackAvailable: false,
         utilization: 1,
-        isUsingOverage: false,
+        isOverageActive: false,
       },
     );
     expect(isProviderUsable("anthropic", creds)).toBe(true);
@@ -198,55 +200,38 @@ describe("resolveTierDetailed routing diagnostics", () => {
     ).toBe(false);
   });
 
-  it("surfaces a model-scoped cooldown while routing to a sibling model", () => {
-    // anthropic-only credentials: the sibling-model routing under test lives on
-    // anthropic (fable -> opus); other providers would outrank it in the roster.
-    setCredentialsLoaderForTests(
-      () => ({ anthropic: { accessToken: "x" } }) as unknown as CredentialsBundle,
-    );
+  it("surfaces an Opus 5 model cooldown and falls through to the next emperor", () => {
     const until = Date.now() + 60_000;
-    markProviderCooldown("anthropic", until, "rate_limited", "claude-fable-5");
+    markProviderCooldown("anthropic", until, "rate_limited", "claude-opus-5");
 
     const detail = resolveTierDetailed("emperor");
-    const fable = detail.candidates.find((candidate) => candidate.model === "claude-fable-5");
-    const opus = detail.candidates.find((candidate) => candidate.model === "claude-opus-4-8");
+    const opus = detail.candidates.find((candidate) => candidate.model === "claude-opus-5");
 
-    expect(detail.resolution).toEqual({ provider: "anthropic", model: "claude-opus-4-8" });
-    expect(fable?.blocked).toBe(true);
-    expect(fable?.cooldownUntilEpochMs).toBe(until);
+    expect(detail.resolution).toEqual({ provider: "codex", model: "gpt-6-astra" });
+    expect(opus?.blocked).toBe(true);
+    expect(opus?.cooldownUntilEpochMs).toBe(until);
     expect(
-      fable?.blockedReasons.some((reason) => reason.includes("model claude-fable-5 cooldown")),
+      opus?.blockedReasons.some((reason) => reason.includes("model claude-opus-5 cooldown")),
     ).toBe(true);
-    expect(opus?.blocked).toBe(false);
   });
 });
 
-describe("Fable weekly limit gates only the Fable model", () => {
-  const futureSeconds = (): number => Math.floor(Date.now() / 1000) + 86_400;
-  const allowed = {
-    status: "allowed",
-    unifiedRateLimitFallbackAvailable: false,
-    isUsingOverage: false,
-  } as const;
-
-  it("falls through to opus when the Fable week is spent", () => {
-    setUsageLimits({ seven_day_fable: { utilization: 1, resetsAt: futureSeconds() } }, allowed);
-    const resolved = resolveTier("emperor");
-    expect(resolved?.provider).toBe("anthropic");
-    expect(resolved?.model).toBe("claude-opus-4-8");
-  });
-
-  it("keeps Fable selected when its week still has room", () => {
-    setUsageLimits({ seven_day_fable: { utilization: 0.5, resetsAt: futureSeconds() } }, allowed);
-    expect(resolveTier("emperor")?.model).toBe("claude-fable-5");
-  });
-
-  it("keeps Fable once its week has reset", () => {
+describe("emperor Anthropic roster", () => {
+  it("uses Opus 5 regardless of the Fable weekly window", () => {
     setUsageLimits(
-      { seven_day_fable: { utilization: 1, resetsAt: Math.floor(Date.now() / 1000) - 10 } },
-      allowed,
+      { seven_day_fable: { utilization: 1, resetsAt: Math.floor(Date.now() / 1000) + 86_400 } },
+      {
+        status: "allowed",
+        unifiedRateLimitFallbackAvailable: false,
+        isOverageActive: false,
+      },
     );
-    expect(resolveTier("emperor")?.model).toBe("claude-fable-5");
+    const detail = resolveTierDetailed("emperor");
+    expect(detail.resolution).toEqual({ provider: "anthropic", model: "claude-opus-5" });
+    expect(detail.candidates.some((candidate) => candidate.model === "claude-fable-5")).toBe(false);
+    expect(detail.candidates.some((candidate) => candidate.model === "claude-opus-4-8")).toBe(
+      false,
+    );
   });
 });
 
@@ -287,7 +272,7 @@ describe("top-N compaction vs strict rank", () => {
         status: "allowed",
         unifiedRateLimitFallbackAvailable: false,
         utilization: 0.1,
-        isUsingOverage: false,
+        isOverageActive: false,
       },
     );
     markProviderCooldown("codex", Date.now() + 60_000, "rate_limited");
@@ -319,19 +304,19 @@ describe("invalid / legacy tier names", () => {
 
 describe("tierContainsModel", () => {
   it("matches a model that defines the tier", () => {
-    expect(tierContainsModel("emperor", "anthropic", "claude-opus-4-8")).toBe(true);
-    expect(tierContainsModel("emperor", "codex", "gpt-5.6-sol")).toBe(true);
+    expect(tierContainsModel("emperor", "anthropic", "claude-opus-5")).toBe(true);
+    expect(tierContainsModel("emperor", "codex", "gpt-6-astra")).toBe(true);
     expect(tierContainsModel("samurai", "anthropic", "claude-haiku-4-5")).toBe(true);
   });
 
   it("ignores the context-window suffix when matching", () => {
-    expect(tierContainsModel("emperor", "anthropic", "claude-opus-4-8")).toBe(true);
-    expect(tierContainsModel("emperor", "anthropic", "claude-opus-4-8[1m]")).toBe(true);
+    expect(tierContainsModel("emperor", "anthropic", "claude-opus-5")).toBe(true);
+    expect(tierContainsModel("emperor", "anthropic", "claude-opus-5[1m]")).toBe(true);
   });
 
   it("is false across tiers and for unknown models/providers", () => {
     expect(tierContainsModel("emperor", "anthropic", "claude-haiku-4-5")).toBe(false);
-    expect(tierContainsModel("samurai", "codex", "gpt-5.6-sol")).toBe(false);
+    expect(tierContainsModel("samurai", "codex", "gpt-6-astra")).toBe(false);
     expect(tierContainsModel("emperor", "anthropic", "made-up-model")).toBe(false);
     expect(tierContainsModel("best" as never, "anthropic", "claude-opus-4-8")).toBe(false);
   });
@@ -359,10 +344,10 @@ describe("unobserved provider routing deprioritization", () => {
     // Leave every provider as null (unobserved).
     const result = resolveTierDetailed("samurai", undefined, "anthropic");
 
-    // Should fall through normally by pos order (picking gemini-3-flash-low
+    // Should fall through normally by pos order (picking gemini-3.8-flash-low
     // on antigravity, samurai rank 1).
     expect(result.selected?.provider).toBe("antigravity");
-    expect(result.selected?.model).toBe("gemini-3-flash-low");
+    expect(result.selected?.model).toBe("gemini-3.8-flash-low");
   });
 });
 
@@ -479,7 +464,7 @@ describe("resolveTierTopNWithCascadeDetailed and quotaDisplacedBeforeTopNSelecti
     observeProvider("antigravity");
     observeProvider("codex");
 
-    // emperor (fable/sol/opus) is fully blocked; shogun still has grok-4.5 + glm.
+    // emperor (fable/sol/opus) is fully blocked; shogun still has grok-4.6 + glm.
     const result = resolveTierTopNWithCascadeDetailed("emperor", 3);
     expect(result.selectedTier).toBe("shogun");
     expect(result.selected.length).toBeGreaterThan(0);
@@ -496,7 +481,7 @@ describe("resolveTierTopNWithCascadeDetailed and quotaDisplacedBeforeTopNSelecti
     markProviderCooldown("deepseek", Date.now() + 60_000, "rate_limited");
     markProviderCooldown("kimi", Date.now() + 60_000, "rate_limited");
 
-    // Only xai survives; the cascade stops at shogun (grok-4.5) with a single
+    // Only xai survives; the cascade stops at shogun (grok-4.6) with a single
     // usable candidate and never mixes daimyo entries in.
     const result = resolveTierTopNWithCascadeDetailed("emperor", 3);
     expect(result.selectedTier).toBe("shogun");

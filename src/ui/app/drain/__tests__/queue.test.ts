@@ -24,18 +24,26 @@ beforeEach(() => {
 
 afterEach(() => {
   rmSync(base, { recursive: true, force: true });
+  // The fixture broker claims the process registration on construction; leaving it
+  // claimed would answer for a route later files never set.
+  for (const broker of brokers.splice(0)) broker.release();
 });
 
+const brokers: Broker[] = [];
+
 function setup() {
-  const broker = new Broker(
-    {
-      provider: "anthropic",
-      model: "claude-sonnet-5",
-      effort: "high",
-      fastMode: false,
-      permissionMode: "default",
-    },
-    { findModel, effortLevelsForModel, defaultEffortForModel, defaultModelForProvider },
+  const broker = registerFixtureBroker(
+    new Broker(
+      {
+        provider: "anthropic",
+        model: "claude-sonnet-5",
+        effort: "high",
+        fastMode: false,
+        permissionMode: "default",
+        orchestrationMode: "disabled",
+      },
+      { findModel, effortLevelsForModel, defaultEffortForModel, defaultModelForProvider },
+    ),
   );
   const session = new Session("session-qh", base);
   const agent = new Agent({
@@ -82,3 +90,8 @@ describe("applyPendingChange", () => {
     expect(session.pendingMeta).toBeNull();
   });
 });
+
+function registerFixtureBroker(broker: Broker): Broker {
+  brokers.push(broker);
+  return broker;
+}

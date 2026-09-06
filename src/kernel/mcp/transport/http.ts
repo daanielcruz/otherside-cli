@@ -7,11 +7,14 @@ import {
   REQUEST_TIMEOUT_MS,
 } from "@/kernel/mcp/protocol/constants.ts";
 import { parseInstructions, parseServerCapabilities } from "@/kernel/mcp/protocol/parse.ts";
+import { mcpRequestSignal } from "@/kernel/mcp/protocol/request-signal.ts";
 import {
   type HttpServerConfig,
   type JsonRpcResponse,
+  type McpCallToolOptions,
   type McpClient,
   type McpDirectoryListPage,
+  type McpPromptInfo,
   type McpResourceInfo,
   McpRpcError,
   type McpServerCapabilities,
@@ -25,10 +28,14 @@ import {
   resetMcpConnectionErrors,
   scheduleReconnect,
 } from "@/kernel/mcp/runtime/reconnect.ts";
+import { clientCapabilities } from "@/kernel/mcp/transport/capabilities.ts";
+import { AbortError } from "@/kernel/std/stream/abort.ts";
 import { buildHeaders, hasManualAuthHeader } from "./headers.ts";
 import {
   callToolVia,
+  getPromptVia,
   listDirectoryPageVia,
+  listPromptsVia,
   listResourcesVia,
   listToolsVia,
   readResourceVia,
@@ -77,7 +84,7 @@ export class HttpTransport implements McpClient {
   private async initialize(): Promise<void> {
     const init = await this.request("initialize", {
       protocolVersion: PROTOCOL_VERSION,
-      capabilities: {},
+      capabilities: clientCapabilities(),
       clientInfo: { name: CLIENT_NAME, version: CLIENT_VERSION },
     });
     this.instructions = parseInstructions(init);
@@ -91,8 +98,19 @@ export class HttpTransport implements McpClient {
     return this.tools;
   }
 
-  async callTool(name: string, args: unknown): Promise<unknown> {
-    return callToolVia((method, params) => this.request(method, params), { name, args });
+  async callTool(name: string, args: unknown, options?: McpCallToolOptions): Promise<unknown> {
+    return callToolVia((method, params) => this.request(method, params, options?.signal), {
+      name,
+      args,
+    });
+  }
+
+  async listPrompts(): Promise<McpPromptInfo[]> {
+    return listPromptsVia((method, params) => this.request(method, params));
+  }
+
+  async getPrompt(name: string, args: Record<string, string>): Promise<unknown> {
+    return getPromptVia((method, params) => this.request(method, params), { name, args });
   }
 
   async listResources(): Promise<McpResourceInfo[]> {
@@ -127,9 +145,10 @@ export class HttpTransport implements McpClient {
     this.closed = true;
   }
 
-  private async request(method: string, params: unknown): Promise<unknown> {
+  private async request(method: string, params: unknown, signal?: AbortSignal): Promise<unknown> {
     if (this.closed) throw new Error(`MCP http \`${this.serverName}\` closed before \`${method}\``);
-    const message = await this.send(method, params, true);
+    if (signal?.aborted) throw new AbortError();
+    const message = await this.send(method, params, true, signal);
     if (message.error) {
       throw new McpRpcError(method, message.error);
     }
@@ -140,6 +159,7 @@ export class HttpTransport implements McpClient {
     method: string,
     params: unknown,
     allowRetry: boolean,
+    signal?: AbortSignal,
   ): Promise<JsonRpcResponse> {
     const id = this.nextId++;
     let res: Response;
@@ -148,7 +168,7 @@ export class HttpTransport implements McpClient {
         method: "POST",
         headers: this.requestHeaders(),
         body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        signal: mcpRequestSignal(signal),
       });
     } catch (e) {
       this.trackOutcome(e instanceof Error ? e : new Error(String(e)));
@@ -157,7 +177,7 @@ export class HttpTransport implements McpClient {
     const newSession = res.headers.get("Mcp-Session-Id");
     if (newSession) this.sessionId = newSession;
     if (res.status === UNAUTHORIZED) {
-      return this.onUnauthorized(method, params, allowRetry, res);
+      return this.onUnauthorized(method, params, allowRetry, res, signal);
     }
     if (!res.ok) {
       const text = await safeReadText(res);
@@ -193,6 +213,7 @@ export class HttpTransport implements McpClient {
     params: unknown,
     allowRetry: boolean,
     res: Response,
+    signal?: AbortSignal,
   ): Promise<JsonRpcResponse> {
     const challenge = res.headers.get("WWW-Authenticate") || "";
     if (
@@ -203,7 +224,7 @@ export class HttpTransport implements McpClient {
       const refreshed = await refreshWithLock(this.serverName);
       if (refreshed.kind === "header") {
         this.headers = { ...this.headers, Authorization: refreshed.value };
-        return this.send(method, params, false);
+        return this.send(method, params, false, signal);
       }
     }
     const parsed = parseWwwAuthenticate(challenge);
@@ -222,6 +243,10 @@ export class HttpTransport implements McpClient {
     };
     if (this.sessionId) headers["Mcp-Session-Id"] = this.sessionId;
     return headers;
+  }
+
+  announce(method: string, params: unknown): void {
+    void this.notify(method, params).catch(() => {});
   }
 
   private async notify(method: string, params: unknown): Promise<void> {

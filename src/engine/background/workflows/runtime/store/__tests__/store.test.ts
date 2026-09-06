@@ -3,21 +3,21 @@ import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  getWorkflowSnapshotsDir,
   readWorkflowSnapshot,
   type WorkflowSnapshot,
+  workflowSnapshotsDir,
 } from "@/engine/background/workflows/runtime/history/snapshot.ts";
 import { emitQueue } from "@/engine/queue/emit.ts";
-import { computeWorkflowProgress } from "../progress.ts";
+import { tallyWorkflowProgress } from "../progress.ts";
 import {
   buildWorkflowResumeCall,
-  completeWorkflowTask,
+  enrollWorkflowTask,
   failWorkflowTask,
+  finalizeWorkflowTask,
   getWorkflowTask,
   killWorkflowTask,
-  listActiveWorkflowAgentProviders,
+  listActiveWorkflowAgentAllocations,
   pauseWorkflowTask,
-  registerWorkflowTask,
   removeWorkflowTask,
   resetWorkflowTasksForTests,
   retryWorkflowAgent,
@@ -26,12 +26,12 @@ import {
   truncateWorkflowResult,
   updateWorkflowTask,
 } from "../store.ts";
-import type { LocalWorkflowTaskState, WorkflowAgentProgress } from "../types.ts";
+import type { WorkflowAgentStatus, WorkflowTaskLifecycle } from "../types.ts";
 
 function makeRunningWorkflowTask(
   id: string,
-  overrides: Partial<Omit<LocalWorkflowTaskState, "id">> = {},
-): LocalWorkflowTaskState {
+  overrides: Partial<Omit<WorkflowTaskLifecycle, "id">> = {},
+): WorkflowTaskLifecycle {
   return {
     id,
     type: "local_workflow",
@@ -55,8 +55,8 @@ function makeRunningWorkflowTask(
 }
 
 function agentEntry(
-  overrides: Partial<WorkflowAgentProgress> & Pick<WorkflowAgentProgress, "index" | "state">,
-): WorkflowAgentProgress {
+  overrides: Partial<WorkflowAgentStatus> & Pick<WorkflowAgentStatus, "index" | "state">,
+): WorkflowAgentStatus {
   return {
     type: "workflow_agent",
     label: `agent-${overrides.index}`,
@@ -121,7 +121,7 @@ describe("workflow task store eviction and timers", () => {
 
   it("cancels the pending eviction timer when a completed task is removed", async () => {
     setWorkflowEvictionDelayForTests(10);
-    const task: LocalWorkflowTaskState = {
+    const task: WorkflowTaskLifecycle = {
       id: "task-1",
       type: "local_workflow",
       status: "running",
@@ -141,8 +141,8 @@ describe("workflow task store eviction and timers", () => {
       abortController: new AbortController(),
     };
 
-    registerWorkflowTask(task);
-    completeWorkflowTask("task-1", "result", "/tmp/out");
+    enrollWorkflowTask(task);
+    finalizeWorkflowTask("task-1", "result", "/tmp/out");
 
     expect(getWorkflowTask("task-1")?.status).toBe("completed");
 
@@ -151,7 +151,7 @@ describe("workflow task store eviction and timers", () => {
     // Re-register a fresh terminal task under the SAME id with no new timer. If the
     // remove had NOT cancelled the timer, it would fire at 10ms and evict this
     // terminal task; it surviving past 20ms proves the timer was cancelled.
-    registerWorkflowTask({ ...task, status: "completed" });
+    enrollWorkflowTask({ ...task, status: "completed" });
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(getWorkflowTask("task-1")?.status).toBe("completed");
   });
@@ -164,12 +164,12 @@ describe("workflow task snapshot persistence", () => {
   afterEach(async () => {
     resetWorkflowTasksForTests();
     emitQueue._resetForTests();
-    await rm(getWorkflowSnapshotsDir(cwd, sessionId), { recursive: true, force: true });
+    await rm(workflowSnapshotsDir(cwd, sessionId), { recursive: true, force: true });
   });
 
   it("replaces a paused snapshot with killed after the second stop action", async () => {
     const runId = "run-pause-then-kill";
-    registerWorkflowTask(
+    enrollWorkflowTask(
       makeRunningWorkflowTask("wf-pause-then-kill", {
         cwd,
         sessionId,
@@ -203,7 +203,7 @@ describe("killWorkflowTask autoTurn / stoppedByUser", () => {
   }
 
   it("a model-initiated stop (no second argument) is not attributed to the user, and still wakes an idle turn", () => {
-    registerWorkflowTask(makeRunningWorkflowTask("wf-model-stop"));
+    enrollWorkflowTask(makeRunningWorkflowTask("wf-model-stop"));
 
     killWorkflowTask("wf-model-stop");
 
@@ -217,7 +217,7 @@ describe("killWorkflowTask autoTurn / stoppedByUser", () => {
   });
 
   it("a user-initiated stop is silent: no notification, no wake", () => {
-    registerWorkflowTask(makeRunningWorkflowTask("wf-user-stop"));
+    enrollWorkflowTask(makeRunningWorkflowTask("wf-user-stop"));
 
     killWorkflowTask("wf-user-stop", true);
 
@@ -236,7 +236,7 @@ describe("workflow completion notification sections", () => {
   });
 
   it("failed run includes failure lines and resume guidance with runId + scriptPath", () => {
-    registerWorkflowTask(
+    enrollWorkflowTask(
       makeRunningWorkflowTask("wf-fail", {
         scriptPath: "/tmp/workflows/demo.js",
         workflowRunId: "wf_abc123",
@@ -271,7 +271,7 @@ describe("workflow completion notification sections", () => {
   });
 
   it("successful run includes result location, diagnostics, and agent counts", () => {
-    registerWorkflowTask(
+    enrollWorkflowTask(
       makeRunningWorkflowTask("wf-ok", {
         scriptPath: "/tmp/workflows/ok.js",
         workflowRunId: "wf_ok99",
@@ -310,7 +310,7 @@ describe("workflow completion notification sections", () => {
       }),
     );
 
-    completeWorkflowTask("wf-ok", { answer: 42 }, "/tmp/out-ok");
+    finalizeWorkflowTask("wf-ok", { answer: 42 }, "/tmp/out-ok");
 
     const text = notificationTextFor("wf-ok");
     expect(text).toBeDefined();
@@ -332,7 +332,7 @@ describe("workflow completion notification sections", () => {
   });
 
   it("killed run surfaces recovery guidance without a result section", () => {
-    registerWorkflowTask(
+    enrollWorkflowTask(
       makeRunningWorkflowTask("wf-kill", {
         scriptPath: "/tmp/workflows/stop.js",
         workflowRunId: "wf_stop1",
@@ -393,7 +393,7 @@ describe("skipWorkflowAgent / retryWorkflowAgent", () => {
 
   it("aborts the targeted agent's controller with the skip reason and reports success", () => {
     const task = makeRunningWorkflowTask("wf-skip", { agentControllers: new Map() });
-    registerWorkflowTask(task);
+    enrollWorkflowTask(task);
     const controller = new AbortController();
     task.agentControllers?.set("workflow-run-1-0", controller);
 
@@ -406,7 +406,7 @@ describe("skipWorkflowAgent / retryWorkflowAgent", () => {
 
   it("aborts the targeted agent's controller with the retry reason and reports success", () => {
     const task = makeRunningWorkflowTask("wf-retry", { agentControllers: new Map() });
-    registerWorkflowTask(task);
+    enrollWorkflowTask(task);
     const controller = new AbortController();
     task.agentControllers?.set("workflow-run-1-1", controller);
 
@@ -419,22 +419,22 @@ describe("skipWorkflowAgent / retryWorkflowAgent", () => {
 
   it("returns false for an unknown agent id, and false once the workflow is no longer running", () => {
     const task = makeRunningWorkflowTask("wf-done", { agentControllers: new Map() });
-    registerWorkflowTask(task);
+    enrollWorkflowTask(task);
 
     expect(skipWorkflowAgent("no-such-agent")).toBe(false);
 
     const controller = new AbortController();
     task.agentControllers?.set("workflow-run-2-0", controller);
-    completeWorkflowTask("wf-done", "result", "/tmp/out");
+    finalizeWorkflowTask("wf-done", "result", "/tmp/out");
 
     expect(retryWorkflowAgent("workflow-run-2-0")).toBe(false);
     expect(controller.signal.aborted).toBe(false);
   });
 });
 
-describe("computeWorkflowProgress", () => {
+describe("tallyWorkflowProgress", () => {
   it("a stop-aborted agent yields failedCount 0, stoppedCount 1, complete true; a genuine error still counts failed", () => {
-    const progressStopped = computeWorkflowProgress(
+    const progressStopped = tallyWorkflowProgress(
       [
         {
           type: "workflow_agent",
@@ -452,7 +452,7 @@ describe("computeWorkflowProgress", () => {
     expect(progressStopped.stoppedCount).toBe(1);
     expect(progressStopped.complete).toBe(true);
 
-    const progressError = computeWorkflowProgress(
+    const progressError = tallyWorkflowProgress(
       [
         {
           type: "workflow_agent",
@@ -471,37 +471,49 @@ describe("computeWorkflowProgress", () => {
   });
 });
 
-describe("listActiveWorkflowAgentProviders", () => {
+describe("listActiveWorkflowAgentAllocations", () => {
   afterEach(() => {
     resetWorkflowTasksForTests();
   });
 
-  it("collects distinct providers of in-flight stage agents in running workflows", () => {
-    registerWorkflowTask(
+  it("collects distinct (provider, model) routes of in-flight stage agents in running workflows", () => {
+    enrollWorkflowTask(
       makeRunningWorkflowTask("wf-a", {
         workflowProgress: [
           agentEntry({ index: 0, provider: "codex", state: "start" }),
           agentEntry({ index: 1, provider: "codex", state: "start" }),
-          agentEntry({ index: 2, provider: "glm", state: "done" }),
+          agentEntry({ index: 2, provider: "codex", model: "gpt-5.6-luna", state: "start" }),
+          agentEntry({
+            index: 4,
+            route: { provider: "anthropic", model: "claude-opus-4-8" },
+            provider: "anthropic",
+            model: "Claude Opus 4.8",
+            state: "start",
+          }),
+          agentEntry({ index: 3, provider: "glm", state: "done" }),
           { type: "workflow_log", message: "noise" },
         ],
       }),
     );
-    expect(listActiveWorkflowAgentProviders()).toEqual(["codex"]);
+    expect(listActiveWorkflowAgentAllocations()).toEqual([
+      { provider: "codex" },
+      { provider: "codex", model: "gpt-5.6-luna" },
+      { provider: "anthropic", model: "claude-opus-4-8" },
+    ]);
   });
 
   it("ignores non-running workflows and entries without a provider", () => {
-    registerWorkflowTask(
+    enrollWorkflowTask(
       makeRunningWorkflowTask("wf-b", {
         status: "completed",
         workflowProgress: [agentEntry({ index: 0, provider: "codex", state: "start" })],
       }),
     );
-    registerWorkflowTask(
+    enrollWorkflowTask(
       makeRunningWorkflowTask("wf-c", {
         workflowProgress: [agentEntry({ index: 0, state: "start" })],
       }),
     );
-    expect(listActiveWorkflowAgentProviders()).toEqual([]);
+    expect(listActiveWorkflowAgentAllocations()).toEqual([]);
   });
 });

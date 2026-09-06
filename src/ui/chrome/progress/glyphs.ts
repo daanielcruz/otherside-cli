@@ -1,13 +1,10 @@
-import type { Color as InkColor } from "@/ink";
-import { Color, Glyph } from "@/ui/theme/theme.ts";
+import { Color, type ColorValue, Glyph } from "@/ui/theme/theme.ts";
 
-export const BULLET_IDLE = Glyph.bulletHollow;
-export const BULLET_VIEWED = Glyph.bullet;
+const BULLET_VIEWED = Glyph.bullet;
 export const TICK = Glyph.check;
 export const CROSS = "✘";
 export const PAUSE_GLYPH = "☰";
-export const CIRCLE_DOTTED = "◌";
-export const SPINNER_BULLET = Glyph.bulletFilled;
+const CIRCLE_DOTTED = "◌";
 
 export type AgentDisplayStatus =
   | "queued"
@@ -19,7 +16,7 @@ export type AgentDisplayStatus =
 
 export function agentStatusGlyph(status: AgentDisplayStatus): {
   glyph: string;
-  color: InkColor | undefined;
+  color: ColorValue | undefined;
 } {
   if (status === "done") return { glyph: TICK, color: Color.success };
   if (status === "failed") return { glyph: CROSS, color: Color.error };
@@ -29,12 +26,12 @@ export function agentStatusGlyph(status: AgentDisplayStatus): {
   return { glyph: CIRCLE_DOTTED, color: Color.subtle };
 }
 
-export const PANEL_STATUSES = ["idle", "done", "paused", "stopped", "failed"] as const;
-export type PanelStatus = (typeof PANEL_STATUSES)[number];
+const PANEL_STATUSES = ["idle", "done", "paused", "stopped", "failed"] as const;
+type PanelStatus = (typeof PANEL_STATUSES)[number];
 
 // "stopped" mirrors the transcript's warning-colored "was stopped" notice so
 // a user-initiated kill never reads as a failure across the two surfaces.
-const PANEL_STATUS_COLOR: Record<PanelStatus, InkColor> = {
+const PANEL_STATUS_COLOR: Record<PanelStatus, ColorValue> = {
   idle: Color.muted,
   done: Color.success,
   paused: Color.warning,
@@ -42,7 +39,7 @@ const PANEL_STATUS_COLOR: Record<PanelStatus, InkColor> = {
   failed: Color.error,
 };
 
-export function panelStatusColor(status: PanelStatus): InkColor {
+export function panelStatusColor(status: PanelStatus): ColorValue {
   return PANEL_STATUS_COLOR[status];
 }
 

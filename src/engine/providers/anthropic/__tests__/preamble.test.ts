@@ -34,6 +34,27 @@ describe("billing header cc_prev_req", () => {
     expect(header.endsWith("cc_is_subagent=true;")).toBe(true);
     expect(header).not.toContain("cc_prev_req");
   });
+
+  test("a stored value that is not a request id is left out of the chain", () => {
+    for (const stored of [
+      "",
+      "011CceFg6SjrwZ8jcYi97EmG",
+      "req_",
+      "msg_011CceFg6SjrwZ8jcYi97EmG",
+      "req_011CceFg6Sjrw Z8jcYi97EmG",
+      `req_${"a".repeat(37)}`,
+    ]) {
+      expect(systemBillingHeader("hello world", stored)).not.toContain("cc_prev_req");
+      expect(subagentBillingHeader("hello world", stored)).not.toContain("cc_prev_req");
+    }
+  });
+
+  test("a request id at the length limit still chains", () => {
+    const stored = `req_${"a".repeat(36)}`;
+    expect(systemBillingHeader("hello world", stored).endsWith(`cc_prev_req=${stored};`)).toBe(
+      true,
+    );
+  });
 });
 
 describe("system openers", () => {

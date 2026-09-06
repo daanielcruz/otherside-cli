@@ -1,8 +1,8 @@
 import { loadConfigSync, updateConfig } from "@/kernel/config/config.ts";
 import type { HookEvent } from "@/kernel/hooks/events.ts";
-import type { HookEntry } from "@/kernel/hooks/exec.ts";
 import { handlersFromHookMap, registerHookEntryProvider } from "@/kernel/hooks/handler.ts";
 import type { HookHandler } from "@/kernel/hooks/index.ts";
+import type { HookEntry } from "@/kernel/std/types/hook-entry.ts";
 import { createPluginId, isPluginId, type PluginId, parsePluginId } from "./identity.ts";
 import { findPluginInstallationByPath } from "./installations.ts";
 import type { LoadedPlugin } from "./loader.ts";

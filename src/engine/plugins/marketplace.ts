@@ -1,77 +1,28 @@
-import {
-  cpSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  realpathSync,
-  renameSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { configRoot } from "@/kernel/std/fs/paths.ts";
-import { atomicWriteFileSync } from "@/kernel/std/fs/secure-fs.ts";
-import { cloneRepo } from "@/kernel/std/proc/git.ts";
-import { getTrackedCwd } from "@/kernel/std/state/cwd-state.ts";
-import { createPluginId, type InstallationId, normalizeProjectPath } from "./identity.ts";
-import type { InstallResult } from "./install.ts";
-import {
-  activeInstallPath,
-  cachePathForPlugin,
-  formatPluginLookupFailure,
-  listPluginInstallations,
-  lookupPluginInstallation,
-  type PluginInstallScope,
-  recordPluginInstallation,
-  restorePluginInstallation,
-} from "./installations.ts";
+import { cloneRepo, cloneRepoSync } from "@/kernel/std/proc/git.ts";
+import { listPluginInstallations } from "./installations.ts";
 import { loadPluginFromDirectory } from "./loader.ts";
+import {
+  cloneTargetFor,
+  detectSourceType,
+  type MarketplaceManifest,
+  type MarketplacePluginEntry,
+  parseMarketplaceManifest,
+  resolveFileSource,
+} from "./marketplace-manifest.ts";
 import {
   addKnownMarketplace,
   getKnownMarketplace,
   type KnownMarketplace,
   listAvailableMarketplaces,
-  type MarketplaceSourceType,
   OFFICIAL_MARKETPLACE_NAME,
   OFFICIAL_MARKETPLACE_SOURCE,
 } from "./marketplaces-store.ts";
-import { get as getRegisteredPlugin } from "./registry.ts";
-import {
-  beginInstallation,
-  finishInstallation,
-  getSnapshot,
-  replaceDiskState,
-  replaceSnapshot,
-  updateInstallation,
-} from "./state.ts";
+import { enrichWithCatalogStats, resetOfficialCatalogStateForTests } from "./official-catalog.ts";
 
 export { OFFICIAL_MARKETPLACE_NAME, OFFICIAL_MARKETPLACE_SOURCE };
-
-export type PluginSource =
-  | string
-  | { source: "github"; repo: string; ref?: string; subdir?: string }
-  | { source: "git" | "url"; url: string; ref?: string; subdir?: string }
-  | { source: "git-subdir"; url: string; path: string; ref?: string }
-  | { source: "file"; path: string };
-
-export interface MarketplacePluginEntry {
-  name: string;
-  description?: string;
-  category?: string;
-  tags?: string[];
-  installCount?: number;
-  communityManaged?: boolean;
-  source: PluginSource;
-  strict?: boolean;
-}
-
-export interface MarketplaceManifest {
-  name: string;
-  owner?: { name?: string; email?: string; url?: string };
-  plugins: MarketplacePluginEntry[];
-  metadata?: { pluginRoot?: string; version?: string; description?: string };
-}
 
 export interface AddMarketplaceResult {
   ok: boolean;
@@ -81,54 +32,9 @@ export interface AddMarketplaceResult {
   error?: string;
 }
 
-const GITHUB_REPO_RE = /^[a-zA-Z0-9][a-zA-Z0-9_.-]*\/[a-zA-Z0-9][a-zA-Z0-9_.-]*$/;
-const SAFE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/;
 const MANIFEST_PATHS = [".claude-plugin/marketplace.json", "marketplace.json"];
 const OFFICIAL_MARKETPLACE_SPARSE_PATHS = [".claude-plugin", "plugins", "external_plugins"];
-
-function isSafeName(value: string): boolean {
-  return SAFE_NAME_RE.test(value) && value !== "." && value !== "..";
-}
-
-function stringField(record: Record<string, unknown>, key: string): string | undefined {
-  return typeof record[key] === "string" ? record[key] : undefined;
-}
-
-function parsePluginSource(raw: unknown): PluginSource | null {
-  if (typeof raw === "string") return raw;
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
-  const source = raw as Record<string, unknown>;
-  const kind = source.source;
-  const ref = stringField(source, "ref");
-  if (kind === "github" && typeof source.repo === "string") {
-    return {
-      source: "github",
-      repo: source.repo,
-      ...(ref ? { ref } : {}),
-      ...(typeof source.subdir === "string" ? { subdir: source.subdir } : {}),
-    };
-  }
-  if ((kind === "git" || kind === "url") && typeof source.url === "string") {
-    return {
-      source: kind,
-      url: source.url,
-      ...(ref ? { ref } : {}),
-      ...(typeof source.subdir === "string" ? { subdir: source.subdir } : {}),
-    };
-  }
-  if (kind === "git-subdir" && typeof source.url === "string" && typeof source.path === "string") {
-    return {
-      source: "git-subdir",
-      url: source.url,
-      path: source.path,
-      ...(ref ? { ref } : {}),
-    };
-  }
-  if (kind === "file" && typeof source.path === "string") {
-    return { source: "file", path: source.path };
-  }
-  return null;
-}
+const ADD_CLONE_TIMEOUT_MS = 120_000;
 
 export function marketplacesCacheDir(): string {
   const dir = join(configRoot(), "plugins", "marketplaces");
@@ -136,12 +42,8 @@ export function marketplacesCacheDir(): string {
   return dir;
 }
 
-function cacheDirFor(name: string): string {
+export function cacheDirFor(name: string): string {
   return join(marketplacesCacheDir(), name);
-}
-
-function githubUrl(repo: string): string {
-  return repo.startsWith("https://") ? repo : `https://github.com/${repo}.git`;
 }
 
 function isOfficialMarketplaceSource(source: string): boolean {
@@ -150,13 +52,6 @@ function isOfficialMarketplaceSource(source: string): boolean {
     normalized === OFFICIAL_MARKETPLACE_SOURCE ||
     normalized === `https://github.com/${OFFICIAL_MARKETPLACE_SOURCE}`
   );
-}
-
-function cloneTargetFor(source: string): { url?: string } {
-  const type = detectSourceType(source);
-  if (type === "github") return { url: githubUrl(source) };
-  if (type === "git") return { url: source };
-  return {};
 }
 
 function readManifestAt(dir: string): MarketplaceManifest | null {
@@ -170,66 +65,6 @@ function readManifestAt(dir: string): MarketplaceManifest | null {
     }
   }
   return null;
-}
-
-export function parseMarketplaceManifest(raw: unknown): MarketplaceManifest | null {
-  if (typeof raw !== "object" || raw === null) return null;
-  const obj = raw as Record<string, unknown>;
-  if (typeof obj.name !== "string" || !isSafeName(obj.name)) return null;
-  if (!Array.isArray(obj.plugins)) return null;
-  const plugins: MarketplacePluginEntry[] = [];
-  for (const entry of obj.plugins) {
-    if (typeof entry !== "object" || entry === null) continue;
-    const e = entry as Record<string, unknown>;
-    if (typeof e.name !== "string" || !isSafeName(e.name)) continue;
-    const source = parsePluginSource(e.source);
-    if (!source) continue;
-    const item: MarketplacePluginEntry = {
-      name: e.name,
-      source,
-    };
-    if (typeof e.description === "string") item.description = e.description;
-    if (typeof e.category === "string") item.category = e.category;
-    if (typeof e.installCount === "number") item.installCount = e.installCount;
-    if (typeof e.communityManaged === "boolean") item.communityManaged = e.communityManaged;
-    if (Array.isArray(e.tags)) {
-      item.tags = e.tags.filter((t): t is string => typeof t === "string");
-    }
-    if (typeof e.strict === "boolean") item.strict = e.strict;
-    plugins.push(item);
-  }
-  const result: MarketplaceManifest = { name: obj.name, plugins };
-  if (typeof obj.owner === "object" && obj.owner !== null && !Array.isArray(obj.owner)) {
-    const rawOwner = obj.owner as Record<string, unknown>;
-    const owner = {
-      ...(typeof rawOwner.name === "string" ? { name: rawOwner.name } : {}),
-      ...(typeof rawOwner.email === "string" ? { email: rawOwner.email } : {}),
-      ...(typeof rawOwner.url === "string" ? { url: rawOwner.url } : {}),
-    };
-    if (Object.keys(owner).length > 0) result.owner = owner;
-  }
-  if (typeof obj.metadata === "object" && obj.metadata !== null && !Array.isArray(obj.metadata)) {
-    const rawMetadata = obj.metadata as Record<string, unknown>;
-    const metadata = {
-      ...(typeof rawMetadata.pluginRoot === "string" ? { pluginRoot: rawMetadata.pluginRoot } : {}),
-      ...(typeof rawMetadata.version === "string" ? { version: rawMetadata.version } : {}),
-      ...(typeof rawMetadata.description === "string"
-        ? { description: rawMetadata.description }
-        : {}),
-    };
-    if (Object.keys(metadata).length > 0) result.metadata = metadata;
-  }
-  return result;
-}
-
-export function detectSourceType(source: string): MarketplaceSourceType {
-  if (/^https?:\/\//i.test(source) || /^git@/i.test(source) || /\.git$/i.test(source)) {
-    return "git";
-  }
-  if (GITHUB_REPO_RE.test(source)) {
-    return "github";
-  }
-  return "file";
 }
 
 export function fetchMarketplace(known: KnownMarketplace): {
@@ -250,7 +85,7 @@ export function fetchMarketplace(known: KnownMarketplace): {
     return { manifest: null, error: `cannot resolve git source: ${known.source}` };
   }
   const dest = cacheDirFor(known.name);
-  const res = cloneRepo(
+  const res = cloneRepoSync(
     target.url,
     dest,
     known.name === OFFICIAL_MARKETPLACE_NAME
@@ -263,7 +98,10 @@ export function fetchMarketplace(known: KnownMarketplace): {
   return { manifest };
 }
 
-export function addMarketplace(rawSource: string): AddMarketplaceResult {
+export async function addMarketplace(
+  rawSource: string,
+  onProgress?: (message: string) => void,
+): Promise<AddMarketplaceResult> {
   const type = detectSourceType(rawSource);
   let manifest: MarketplaceManifest | null = null;
   let installLocation = "";
@@ -278,11 +116,21 @@ export function addMarketplace(rawSource: string): AddMarketplaceResult {
     const target = cloneTargetFor(rawSource);
     if (!target.url) return { ok: false, error: `cannot resolve git source: ${rawSource}` };
     const temp = mkdtempSync(join(marketplacesCacheDir(), ".marketplace-"));
-    const res = cloneRepo(target.url, temp);
+    // A source already on the roster is being refreshed, not fetched for the first
+    // time; the progress line names which of the two the wait is for.
+    const seconds = ADD_CLONE_TIMEOUT_MS / 1000;
+    const onRoster = listAvailableMarketplaces().some((entry) => entry.source === rawSource);
+    onProgress?.(
+      onRoster
+        ? `Refreshing marketplace cache (timeout: ${seconds}s)…`
+        : `Cloning repository (timeout: ${seconds}s): ${target.url}`,
+    );
+    const res = await cloneRepo(target.url, temp, { timeoutMs: ADD_CLONE_TIMEOUT_MS });
     if (!res.ok) {
       rmSync(temp, { recursive: true, force: true });
       return { ok: false, error: res.error ?? "git clone failed" };
     }
+    onProgress?.("Clone complete, validating marketplace…");
     manifest = readManifestAt(temp);
     if (!manifest) {
       rmSync(temp, { recursive: true, force: true });
@@ -328,20 +176,20 @@ export function getCachedManifest(name: string): MarketplaceManifest | null {
 /**
  * List plugins from a marketplace checkout manifest.
  *
- * The official checkout is cloned on demand. Install counts are a separate
- * overlay from the plugin-stats catalog and never supply Discover entries.
- * The catalog's `marketplace_entry` remains opaque.
+ * The official checkout is cloned on demand. Install counts and last-updated
+ * stamps are a separate overlay from the plugin-stats catalog and never
+ * supply Discover entries. The catalog's `marketplace_entry` remains opaque.
  */
 export function listMarketplacePlugins(name: string): MarketplacePluginEntry[] {
   if (name === OFFICIAL_MARKETPLACE_NAME) ensureOfficialMarketplaceCheckout();
   const cached = getCachedManifest(name)?.plugins ?? [];
-  return cached.length > 0 ? enrichWithInstallCounts(name, cached) : [];
+  return cached.length > 0 ? enrichWithCatalogStats(name, cached) : [];
 }
 
 // ── Official marketplace checkout bootstrap ─────────────────────────────────
 //
 // Fixed-pointer clone of the official plugins marketplace repo. Discover
-// reads entries from this checkout. The plugin-stats catalog is counts-only.
+// reads entries from this checkout. The plugin-stats catalog is stats-only.
 
 let officialCheckoutCloneFailed = false;
 
@@ -388,223 +236,15 @@ export function hasOfficialMarketplaceCheckout(): boolean {
   return getCachedManifest(OFFICIAL_MARKETPLACE_NAME) !== null;
 }
 
-// ── Official plugin catalog (install counts ONLY) ───────────────────────────
-//
-// Install-count catalog mechanism:
-// fetch-with-cache of plugin-details.json (24h TTL). Counts overlay ONLY on
-// entries where marketplaceName === official. The catalog is never a Discover
-// entry source; its `marketplace_entry` data is opaque.
-
-export const PLUGIN_CATALOG_VERSION = 1;
-export const PLUGIN_CATALOG_CACHE_FILE = "plugin-catalog-cache.json";
-/** Public stats URL for unique_installs. */
-export const PLUGIN_CATALOG_URL =
-  "https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/plugin-stats/plugin-details.json";
-export const PLUGIN_CATALOG_TTL_MS = 24 * 60 * 60 * 1000;
-
-interface OfficialCatalogPlugin {
-  unique_installs?: number | null;
-  /** Opaque catalog field — unused for Discover entry sourcing. */
-  marketplace_entry?: Record<string, unknown>;
-}
-
-interface OfficialCatalogFile {
-  version: number;
-  generated_at?: string | undefined;
-  marketplace_sha?: string | undefined;
-  marketplace?: string | undefined;
-  plugins: Record<string, OfficialCatalogPlugin>;
-}
-
-interface CachedCatalogFile {
-  version: number;
-  fetchedAt: string;
-  catalog: OfficialCatalogFile;
-}
-
-let memoryCatalog: OfficialCatalogFile | null = null;
-let catalogFetchPromise: Promise<OfficialCatalogFile | null> | undefined;
-
-function pluginCatalogCachePath(): string {
-  return join(configRoot(), "plugins", PLUGIN_CATALOG_CACHE_FILE);
-}
-
-function isOfficialCatalog(value: unknown): value is OfficialCatalogFile {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const obj = value as Record<string, unknown>;
-  return typeof obj.plugins === "object" && obj.plugins !== null && !Array.isArray(obj.plugins);
-}
-
-function loadDiskCatalogCache(): OfficialCatalogFile | null {
-  const path = pluginCatalogCachePath();
-  if (!existsSync(path)) return null;
-  try {
-    const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<CachedCatalogFile>;
-    if (parsed.version !== PLUGIN_CATALOG_VERSION || !isOfficialCatalog(parsed.catalog))
-      return null;
-    const fetchedAt = new Date(parsed.fetchedAt ?? "").getTime();
-    if (Number.isNaN(fetchedAt) || Date.now() - fetchedAt > PLUGIN_CATALOG_TTL_MS) return null;
-    return parsed.catalog;
-  } catch {
-    return null;
-  }
-}
-
-function saveDiskCatalogCache(catalog: OfficialCatalogFile): void {
-  try {
-    const path = pluginCatalogCachePath();
-    mkdirSync(dirname(path), { recursive: true });
-    const payload: CachedCatalogFile = {
-      version: PLUGIN_CATALOG_VERSION,
-      fetchedAt: new Date().toISOString(),
-      catalog,
-    };
-    atomicWriteFileSync(path, `${JSON.stringify(payload)}\n`, 0o600);
-  } catch {
-    // Best-effort cache.
-  }
-}
-
-/** Resolve the live install-counts catalog synchronously: in-memory → fresh disk → empty. */
-export function getOfficialCatalogSync(): OfficialCatalogFile {
-  if (memoryCatalog) return memoryCatalog;
-  const disk = loadDiskCatalogCache();
-  if (disk) {
-    memoryCatalog = disk;
-    return disk;
-  }
-  return { version: PLUGIN_CATALOG_VERSION, plugins: {} };
-}
-
-/** Install-count map keyed by `plugin@marketplace`. */
-export function getInstallCountsSync(): Map<string, number> {
-  const catalog = getOfficialCatalogSync();
-  const counts = new Map<string, number>();
-  for (const [pluginId, entry] of Object.entries(catalog.plugins)) {
-    if (typeof entry.unique_installs === "number") counts.set(pluginId, entry.unique_installs);
-  }
-  return counts;
-}
-
-/**
- * Overlay install counts onto official-marketplace entries only
- * (marketplaceName === OFFICIAL_MARKETPLACE_NAME).
- * Fresher catalog counts win over any value already on the entry.
- */
-function enrichWithInstallCounts(
-  marketplace: string,
-  plugins: MarketplacePluginEntry[],
-): MarketplacePluginEntry[] {
-  if (marketplace !== OFFICIAL_MARKETPLACE_NAME) return plugins;
-  const counts = getInstallCountsSync();
-  return plugins.map((plugin) => {
-    const entry = { ...plugin };
-    delete entry.installCount;
-    const count = counts.get(`${plugin.name}@${marketplace}`);
-    return count === undefined ? entry : { ...entry, installCount: count };
-  });
-}
-
-/**
- * Best-effort network refresh of the install-counts catalog. Concurrent callers
- * share one promise. Failures preserve the current cache. Does not supply
- * Discover entries — counts only.
- */
-export async function refreshOfficialCatalog(options?: {
-  fetchImpl?: typeof fetch;
-}): Promise<OfficialCatalogFile | null> {
-  if (catalogFetchPromise) return catalogFetchPromise;
-  const disk = loadDiskCatalogCache();
-  if (disk) {
-    memoryCatalog = disk;
-    return disk;
-  }
-  const fetchImpl = options?.fetchImpl ?? globalThis.fetch;
-  catalogFetchPromise = (async () => {
-    try {
-      const response = await fetchImpl(PLUGIN_CATALOG_URL, {
-        signal: AbortSignal.timeout(10_000),
-      });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const body = (await response.json()) as {
-        generated_at?: string;
-        marketplace_sha?: string;
-        plugins?: Record<string, Record<string, unknown>>;
-      };
-      if (!body.plugins || typeof body.plugins !== "object") {
-        throw new Error("Invalid plugin catalog response");
-      }
-      const plugins: Record<string, OfficialCatalogPlugin> = {};
-      for (const [pluginId, value] of Object.entries(body.plugins)) {
-        if (!pluginId.endsWith(`@${OFFICIAL_MARKETPLACE_NAME}`)) continue;
-        const unique =
-          typeof value.unique_installs === "number" ? value.unique_installs : undefined;
-        // marketplace_entry is retained for cache fidelity but is opaque to Discover.
-        const marketplaceEntry =
-          value.marketplace_entry && typeof value.marketplace_entry === "object"
-            ? (value.marketplace_entry as Record<string, unknown>)
-            : undefined;
-        plugins[pluginId] = {
-          ...(unique !== undefined ? { unique_installs: unique } : {}),
-          ...(marketplaceEntry ? { marketplace_entry: marketplaceEntry } : {}),
-        };
-      }
-      const catalog: OfficialCatalogFile = {
-        version: PLUGIN_CATALOG_VERSION,
-        generated_at: typeof body.generated_at === "string" ? body.generated_at : undefined,
-        marketplace_sha:
-          typeof body.marketplace_sha === "string" ? body.marketplace_sha : undefined,
-        marketplace: OFFICIAL_MARKETPLACE_NAME,
-        plugins,
-      };
-      memoryCatalog = catalog;
-      saveDiskCatalogCache(catalog);
-      return catalog;
-    } catch {
-      catalogFetchPromise = undefined;
-      return null;
-    }
-  })();
-  return catalogFetchPromise;
-}
-
-/** Test helper: drop memory + force next load from disk; reset checkout failure latch. */
+/** Test helper: drop catalog memory + force next load from disk; reset checkout failure latch. */
 export function _resetOfficialCatalogForTesting(): void {
-  memoryCatalog = null;
-  catalogFetchPromise = undefined;
+  resetOfficialCatalogStateForTests();
   officialCheckoutCloneFailed = false;
 }
 
 /** Test helper: prevent a checkout bootstrap attempt. */
 export function _markOfficialCheckoutUnavailableForTesting(): void {
   officialCheckoutCloneFailed = true;
-}
-
-function canonicalPath(path: string): string {
-  try {
-    return realpathSync(path);
-  } catch {
-    return resolve(path);
-  }
-}
-
-function isWithinRoot(root: string, target: string): boolean {
-  const rel = relative(canonicalPath(root), canonicalPath(target));
-  return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
-}
-
-function resolveFileSource(
-  path: string,
-  marketplaceDir: string,
-  manifest: MarketplaceManifest,
-): string | null {
-  if (isAbsolute(path)) return null;
-  const pluginRoot = manifest.metadata?.pluginRoot;
-  if (pluginRoot && isAbsolute(pluginRoot)) return null;
-  const base = pluginRoot ? resolve(marketplaceDir, pluginRoot) : resolve(marketplaceDir);
-  if (!isWithinRoot(marketplaceDir, base)) return null;
-  const target = resolve(base, path);
-  return isWithinRoot(base, target) ? target : null;
 }
 
 function countAvailablePluginUpdates(
@@ -632,284 +272,4 @@ function countAvailablePluginUpdates(
       bumped += 1;
   }
   return bumped;
-}
-
-function materializePluginSource(
-  source: PluginSource,
-  dest: string,
-  marketplaceDir: string,
-  manifest: MarketplaceManifest,
-): { ok: boolean; error?: string } {
-  if (existsSync(dest)) rmSync(dest, { recursive: true, force: true });
-  if (typeof source === "string" || (typeof source === "object" && source.source === "file")) {
-    const rawPath = typeof source === "string" ? source : source.path;
-    const type = typeof source === "string" ? detectSourceType(source) : "file";
-    if (type === "file") {
-      const resolved = resolveFileSource(rawPath, marketplaceDir, manifest);
-      if (!resolved) return { ok: false, error: `source path escapes marketplace: ${rawPath}` };
-      if (!existsSync(resolved)) return { ok: false, error: `source path not found: ${resolved}` };
-      cpSync(resolved, dest, { recursive: true });
-      return { ok: true };
-    }
-    const target = cloneTargetFor(rawPath);
-    if (!target.url) return { ok: false, error: `cannot resolve source: ${rawPath}` };
-    const res = cloneRepo(target.url, dest);
-    return res.ok ? { ok: true } : { ok: false, error: res.error ?? "git clone failed" };
-  }
-  const rawUrl = source.source === "github" ? source.repo : source.url;
-  const url =
-    source.source === "github" || GITHUB_REPO_RE.test(rawUrl) ? githubUrl(rawUrl) : rawUrl;
-  const ref = source.ref;
-  const subdir = source.source === "git-subdir" ? source.path : source.subdir;
-  if (subdir) {
-    const temp = `${dest}.tmp`;
-    const res = cloneRepo(url, temp, ref ? { ref } : {});
-    if (!res.ok) return { ok: false, error: res.error ?? "git clone failed" };
-    const sub = resolve(temp, subdir);
-    if (!isWithinRoot(temp, sub) || sub === resolve(temp) || !existsSync(sub)) {
-      rmSync(temp, { recursive: true, force: true });
-      return { ok: false, error: `subdir not found: ${subdir}` };
-    }
-    renameSync(sub, dest);
-    rmSync(temp, { recursive: true, force: true });
-    return { ok: true };
-  }
-  const res = cloneRepo(url, dest, ref ? { ref } : {});
-  return res.ok ? { ok: true } : { ok: false, error: res.error ?? "git clone failed" };
-}
-
-function validateInstalledPlugin(
-  dest: string,
-  entry: MarketplacePluginEntry,
-  marketplaceName: string,
-): InstallResult | null {
-  if (loadPluginFromDirectory(dest, marketplaceName, { requireManifest: true })) return null;
-  const nestedManifest = join(dest, ".claude-plugin", "plugin.json");
-  const flatManifest = join(dest, "plugin.json");
-  if (entry.strict !== false || existsSync(nestedManifest) || existsSync(flatManifest)) {
-    rmSync(dest, { recursive: true, force: true });
-    return { success: false, message: `plugin ${entry.name} has an invalid or missing manifest` };
-  }
-  mkdirSync(join(dest, ".claude-plugin"), { recursive: true });
-  writeFileSync(
-    nestedManifest,
-    `${JSON.stringify({ name: entry.name, description: entry.description }, null, 2)}\n`,
-  );
-  if (loadPluginFromDirectory(dest, marketplaceName, { requireManifest: true })) return null;
-  rmSync(dest, { recursive: true, force: true });
-  return { success: false, message: `plugin ${entry.name} could not be loaded` };
-}
-
-function installationForTarget(
-  target: string,
-  requestedScope: PluginInstallScope | undefined,
-): ReturnType<typeof lookupPluginInstallation> {
-  return lookupPluginInstallation(target, {
-    cwd: getTrackedCwd(),
-    ...(requestedScope === undefined ? {} : { scope: requestedScope }),
-  });
-}
-
-export function updateMarketplacePlugin(
-  target: string,
-  requestedScope?: PluginInstallScope,
-  exactInstallationId?: InstallationId,
-): InstallResult {
-  const result = exactInstallationId
-    ? lookupPluginInstallation(exactInstallationId, {
-        cwd: getTrackedCwd(),
-        ...(requestedScope === undefined ? {} : { scope: requestedScope }),
-      })
-    : installationForTarget(target, requestedScope);
-  if (!result.ok) return { success: false, message: formatPluginLookupFailure(result) };
-  const installation = result.installation;
-  return installMarketplacePlugin(
-    installation.marketplace,
-    installation.pluginName,
-    installation.scope,
-    installation.installationId,
-  );
-}
-
-export function findMarketplacePlugin(pluginName: string): {
-  marketplace: string;
-  entry: MarketplacePluginEntry;
-} | null {
-  const matches: { marketplace: string; entry: MarketplacePluginEntry }[] = [];
-  for (const marketplace of listAvailableMarketplaces()) {
-    const entry = listMarketplacePlugins(marketplace.name).find(
-      (plugin) => plugin.name === pluginName,
-    );
-    if (entry) matches.push({ marketplace: marketplace.name, entry });
-  }
-  return matches.length === 1 ? matches[0]! : null;
-}
-
-export function installMarketplacePlugin(
-  marketplaceName: string,
-  pluginName: string,
-  scope: PluginInstallScope = "user",
-  exactInstallationId?: InstallationId,
-): InstallResult {
-  const known = getKnownMarketplace(marketplaceName);
-  if (!known) return { success: false, message: `marketplace not found: ${marketplaceName}` };
-  let manifest = getCachedManifest(marketplaceName);
-  if (!manifest && marketplaceName === OFFICIAL_MARKETPLACE_NAME) {
-    manifest = fetchMarketplace(known).manifest;
-  }
-  if (!manifest) {
-    return { success: false, message: `marketplace manifest not available: ${marketplaceName}` };
-  }
-  const entry = manifest.plugins.find((plugin) => plugin.name === pluginName);
-  if (!entry) {
-    return {
-      success: false,
-      message: `plugin ${pluginName} not in marketplace ${marketplaceName}`,
-    };
-  }
-
-  const pluginId = createPluginId(pluginName, marketplaceName);
-  const currentProjectPath = scope === "user" ? undefined : normalizeProjectPath(getTrackedCwd());
-  const previous = exactInstallationId
-    ? listPluginInstallations().find((item) => item.installationId === exactInstallationId)
-    : listPluginInstallations().find(
-        (item) =>
-          item.identity === pluginId &&
-          item.scope === scope &&
-          (scope === "user" || item.projectPath === currentProjectPath),
-      );
-  if (
-    exactInstallationId &&
-    (!previous || previous.identity !== pluginId || previous.scope !== scope)
-  ) {
-    return {
-      success: false,
-      message: `Plugin installation ${exactInstallationId} was not found.`,
-    };
-  }
-  const existingInstallation = listPluginInstallations().find((item) => item.identity === pluginId);
-  if (!exactInstallationId && existingInstallation) {
-    return {
-      success: false,
-      message: `Plugin '${pluginId}' is already installed. Use '/plugins' to manage existing plugins.`,
-    };
-  }
-  const installationTarget = { type: "plugin" as const, id: pluginId, name: pluginName };
-  const stateBefore = getSnapshot();
-  beginInstallation(installationTarget);
-  updateInstallation({ ...installationTarget, status: "installing" });
-  const complete = (result: InstallResult): InstallResult => {
-    if (!result.success) {
-      replaceSnapshot(stateBefore);
-      return result;
-    }
-    finishInstallation({ ...installationTarget, status: "installed" });
-    replaceDiskState({ installations: listPluginInstallations() });
-    return result;
-  };
-  const marketplaceDir =
-    known.sourceType === "file" ? known.installLocation : cacheDirFor(marketplaceName);
-  let stagingRoot = "";
-  let staged = "";
-  let backup = "";
-  let destination = "";
-  let swapped = false;
-  let cacheCreated = false;
-  let createdCachePath = "";
-  let installation: ReturnType<typeof recordPluginInstallation> | undefined;
-  try {
-    const sourceVersion = "0.0.0";
-    mkdirSync(join(configRoot(), "plugins"), { recursive: true });
-    const sourceStagingRoot = mkdtempSync(join(configRoot(), "plugins", ".plugin-install-"));
-    stagingRoot = sourceStagingRoot;
-    staged = join(stagingRoot, "payload");
-    const materialized = materializePluginSource(entry.source, staged, marketplaceDir, manifest);
-    if (!materialized.ok) {
-      return complete({ success: false, message: materialized.error ?? "install failed" });
-    }
-    const validationError = validateInstalledPlugin(staged, entry, marketplaceName);
-    if (validationError) return complete(validationError);
-    const stagedPlugin = loadPluginFromDirectory(staged, marketplaceName, {
-      requireManifest: true,
-    });
-    if (!stagedPlugin) {
-      return complete({ success: false, message: `plugin ${pluginName} could not be loaded` });
-    }
-    const version = stagedPlugin.manifest.version || sourceVersion;
-    destination = activeInstallPath(
-      pluginName,
-      scope,
-      marketplaceName,
-      version,
-      currentProjectPath,
-    );
-    mkdirSync(dirname(destination), { recursive: true });
-    backup = join(stagingRoot, "previous");
-    const cachePath = cachePathForPlugin(marketplaceName, pluginName, version);
-    if (!existsSync(cachePath)) {
-      mkdirSync(dirname(cachePath), { recursive: true });
-      cpSync(staged, cachePath, { recursive: true });
-      cacheCreated = true;
-      createdCachePath = cachePath;
-    }
-    if (previous && resolve(previous.installPath) === destination) {
-      if (!existsSync(destination))
-        throw new Error(`previous plugin payload is missing: ${previous.installPath}`);
-      if (getRegisteredPlugin(pluginId))
-        throw new Error("plugin version is already active; reload before replacing it");
-      renameSync(destination, backup);
-    } else if (previous) {
-      if (existsSync(destination)) {
-        if (getRegisteredPlugin(pluginId))
-          throw new Error(`installation destination is occupied: ${destination}`);
-        renameSync(destination, backup);
-      }
-      if (!existsSync(previous.installPath))
-        throw new Error(`previous plugin payload is missing: ${previous.installPath}`);
-    } else if (existsSync(destination)) {
-      renameSync(destination, backup);
-    }
-    renameSync(staged, destination);
-    swapped = true;
-    const loaded = loadPluginFromDirectory(destination, pluginId, {
-      requireManifest: true,
-      reportErrors: true,
-    });
-    if (!loaded) throw new Error(`plugin ${pluginName} could not be loaded after swap`);
-    installation = recordPluginInstallation({
-      pluginId,
-      scope,
-      ...(currentProjectPath === undefined ? {} : { projectPath: currentProjectPath }),
-      version,
-      installPath: destination,
-      cachePath,
-    });
-    const result = complete({
-      success: true,
-      message: previous
-        ? `Updated ${installation.identity}. Run /reload to apply.`
-        : `Installed ${installation.identity}. Run /reload to apply.`,
-      pluginName,
-      identity: installation.identity,
-      version,
-    });
-    if (backup && existsSync(backup)) rmSync(backup, { recursive: true, force: true });
-    return result;
-  } catch (error) {
-    if (installation) restorePluginInstallation(installation.installationId, previous);
-    if (swapped && existsSync(destination)) rmSync(destination, { recursive: true, force: true });
-    if (backup && existsSync(backup)) {
-      const restorePath = previous?.installPath ?? destination;
-      mkdirSync(dirname(restorePath), { recursive: true });
-      renameSync(backup, restorePath);
-    }
-    if (cacheCreated && createdCachePath)
-      rmSync(createdCachePath, { recursive: true, force: true });
-    return complete({
-      success: false,
-      message: `install failed: ${error instanceof Error ? error.message : String(error)}`,
-    });
-  } finally {
-    if (stagingRoot) rmSync(stagingRoot, { recursive: true, force: true });
-  }
 }

@@ -3,9 +3,9 @@ import { readdirSync, statSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { appendDiagnosticLine, diagnosticPath, isStreamEnabled } from "@/devtools/diagnostics.ts";
 import {
-  setWatchdogFiredHook,
-  setWatchdogFiredLateHook,
-  type WatchdogFiredEvent,
+  type ByteSilenceEvent,
+  setByteSilenceListener,
+  setDelayedByteSilenceListener,
 } from "@/kernel/std/stream/idle-timeout.ts";
 
 const SENTINEL = "OTHERSIDE_STREAM_DEBUG_V1";
@@ -21,7 +21,10 @@ const SCRUB_PATTERNS: Array<{ re: RegExp; sub: string }> = [
   { re: /\b\d{3}\.\d{3}\.\d{3}-\d{2}\b/g, sub: "[cpf]" },
   { re: /sk-[A-Za-z0-9_-]{20,}/g, sub: "[apikey]" },
   { re: /ya29\.[A-Za-z0-9_-]+/g, sub: "[ya29]" },
-  { re: /eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+/g, sub: "[jwt]" },
+  {
+    re: /eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+/g,
+    sub: "[jwt]",
+  },
 ];
 
 export function isStreamDebugCaptureEnabled(): boolean {
@@ -161,16 +164,16 @@ function baseRecord(ctx: StreamCloseContext, kind: string): BaseRecord {
 
 export function recordIdleTimeout(
   ctx: StreamCloseContext,
-  event: WatchdogFiredEvent & { lastChunkAgeMs?: number },
+  event: ByteSilenceEvent & { lastChunkAgeMs?: number },
 ): void {
   if (!isStreamDebugCaptureEnabled()) return;
   const path = resolveLogPath(ctx.provider, ctx.sessionId);
   writeLine(path, {
     ...baseRecord(ctx, "idle_timeout"),
-    timeoutMs: event.idleMs,
-    lateMs: event.lateMs,
-    bytesTotal: event.bytesTotal,
-    readableErrored: event.readableErrored,
+    timeoutMs: event.limitMs,
+    lateMs: event.delayedByMs,
+    bytesTotal: event.bytesSeen,
+    readableErrored: event.outputClosed,
     lastChunkAgeMs: event.lastChunkAgeMs ?? null,
   });
 }
@@ -208,13 +211,13 @@ export function setWatchdogContextProvider(fn: (() => StreamCloseContext | null)
 }
 
 export function installWatchdogCaptureHooks(): void {
-  setWatchdogFiredHook((event) => {
+  setByteSilenceListener((event) => {
     if (!isStreamDebugCaptureEnabled()) return;
     const ctx = watchdogContextProvider?.();
     if (!ctx) return;
     recordIdleTimeout(ctx, event);
   });
-  setWatchdogFiredLateHook(() => {});
+  setDelayedByteSilenceListener(() => {});
 }
 
 export interface DebugCaptureSummary {

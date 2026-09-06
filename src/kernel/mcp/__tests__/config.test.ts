@@ -5,11 +5,12 @@ import { join } from "node:path";
 import {
   approveProjectMcpServer,
   disableMcpServer,
-  getProjectMcpServerStatus,
-  isMcpServerAllowedByPolicy,
   isMcpServerDenied,
+  isMcpServerPermittedByPolicy,
   loadEffectiveMcpConfigWithSources,
   loadEnabledMcpConfig,
+  loadFlagMcpServers,
+  readProjectMcpServerStatus,
   rejectProjectMcpServer,
 } from "@/kernel/mcp/config.ts";
 import { getRuntimeKind, setRuntimeKind } from "@/kernel/std/proc/runtime-mode.ts";
@@ -50,6 +51,7 @@ beforeEach(() => {
 
 afterEach(() => {
   delete process.env.OTHERSIDE_CONFIG_DIR;
+  delete process.env.OTHERSIDE_CLI_MCP_CONFIGS;
   rmSync(TMP, { recursive: true, force: true });
   setRuntimeKind(originalRuntimeKind);
   setYoloMode(originalYoloMode);
@@ -75,7 +77,7 @@ describe("project MCP server trust", () => {
     await rejectProjectMcpServer(CWD, "blocked");
 
     expect(await enabledServerNames()).toEqual(["allowed"]);
-    expect(await getProjectMcpServerStatus(CWD, "blocked")).toBe("rejected");
+    expect(await readProjectMcpServerStatus(CWD, "blocked")).toBe("rejected");
     expect(JSON.parse(readFileSync(LOCAL_SETTINGS, "utf8"))).toMatchObject({
       disabledMcpjsonServers: ["blocked"],
     });
@@ -89,13 +91,13 @@ describe("project MCP server trust", () => {
     });
     writeProjectMcp(["evil"]);
 
-    expect(await getProjectMcpServerStatus(CWD, "evil")).toBe("rejected");
+    expect(await readProjectMcpServerStatus(CWD, "evil")).toBe("rejected");
     expect(await enabledServerNames()).toEqual([]);
   });
 
   test("excludes an undecided server until it is accepted", async () => {
     writeProjectMcp(["pending"]);
-    expect(await getProjectMcpServerStatus(CWD, "pending")).toBe("pending");
+    expect(await readProjectMcpServerStatus(CWD, "pending")).toBe("pending");
     expect(await enabledServerNames()).toEqual([]);
 
     await approveProjectMcpServer(CWD, "pending");
@@ -116,7 +118,7 @@ describe("project MCP server trust", () => {
     writeProjectMcp(["pending"]);
     setRuntimeKind("print");
 
-    expect(await getProjectMcpServerStatus(CWD, "pending")).toBe("approved");
+    expect(await readProjectMcpServerStatus(CWD, "pending")).toBe("approved");
     expect(await enabledServerNames()).toEqual(["pending"]);
   });
 
@@ -125,7 +127,7 @@ describe("project MCP server trust", () => {
     writeProjectMcp(["blocked"]);
     setRuntimeKind("print");
 
-    expect(await getProjectMcpServerStatus(CWD, "blocked")).toBe("rejected");
+    expect(await readProjectMcpServerStatus(CWD, "blocked")).toBe("rejected");
     expect(await enabledServerNames()).toEqual([]);
   });
 
@@ -133,7 +135,7 @@ describe("project MCP server trust", () => {
     writeProjectMcp(["pending"]);
     setRuntimeKind("interactive");
 
-    expect(await getProjectMcpServerStatus(CWD, "pending")).toBe("pending");
+    expect(await readProjectMcpServerStatus(CWD, "pending")).toBe("pending");
     expect(await enabledServerNames()).toEqual([]);
   });
 
@@ -142,7 +144,7 @@ describe("project MCP server trust", () => {
     setRuntimeKind("interactive");
     setYoloMode(true);
 
-    expect(await getProjectMcpServerStatus(CWD, "probe")).toBe("approved");
+    expect(await readProjectMcpServerStatus(CWD, "probe")).toBe("approved");
     expect(await enabledServerNames()).toEqual(["probe"]);
   });
 
@@ -152,7 +154,7 @@ describe("project MCP server trust", () => {
     setRuntimeKind("interactive");
     setYoloMode(true);
 
-    expect(await getProjectMcpServerStatus(CWD, "blocked")).toBe("rejected");
+    expect(await readProjectMcpServerStatus(CWD, "blocked")).toBe("rejected");
     expect(await enabledServerNames()).toEqual([]);
   });
 
@@ -161,7 +163,7 @@ describe("project MCP server trust", () => {
     setRuntimeKind("interactive");
     setYoloMode(false);
 
-    expect(await getProjectMcpServerStatus(CWD, "pending")).toBe("pending");
+    expect(await readProjectMcpServerStatus(CWD, "pending")).toBe("pending");
     expect(await enabledServerNames()).toEqual([]);
   });
 });
@@ -180,7 +182,7 @@ describe("local MCP scope", () => {
 
     // No project trust decision was ever recorded for this server — it must
     // still be enabled, unlike a project-scope (.mcp.json) server would be.
-    expect(await getProjectMcpServerStatus(CWD, "local-only")).toBe("pending");
+    expect(await readProjectMcpServerStatus(CWD, "local-only")).toBe("pending");
     expect(await enabledServerNames()).toEqual(["local-only"]);
   });
 
@@ -222,7 +224,7 @@ describe("enterprise MCP policy allow/deny (managed-settings.json)", () => {
     writeProjectMcp(["evil", "good"]);
 
     // Project trust alone would approve both; the policy denylist still wins.
-    expect(await getProjectMcpServerStatus(CWD, "evil")).toBe("approved");
+    expect(await readProjectMcpServerStatus(CWD, "evil")).toBe("approved");
     expect(await enabledServerNames()).toEqual(["good"]);
     expect(isMcpServerDenied(CWD, "evil")).toBe(true);
   });
@@ -288,7 +290,7 @@ describe("enterprise MCP policy allow/deny (managed-settings.json)", () => {
       deniedMcpServers: [{ serverName: "evil" }],
     });
 
-    expect(isMcpServerAllowedByPolicy(CWD, "evil")).toBe(false);
+    expect(isMcpServerPermittedByPolicy(CWD, "evil")).toBe(false);
     expect(isMcpServerDenied(CWD, "evil")).toBe(true);
   });
 
@@ -302,7 +304,7 @@ describe("enterprise MCP policy allow/deny (managed-settings.json)", () => {
     writeJson(PROJECT_SETTINGS, { enableAllProjectMcpServers: true });
     writeProjectMcp(["evil"]);
 
-    expect(await getProjectMcpServerStatus(CWD, "evil")).toBe("approved");
+    expect(await readProjectMcpServerStatus(CWD, "evil")).toBe("approved");
     expect(await enabledServerNames()).toEqual([]);
   });
 
@@ -312,8 +314,45 @@ describe("enterprise MCP policy allow/deny (managed-settings.json)", () => {
     // is unaffected.
     writeProjectMcp(["pending"]);
 
-    expect(await getProjectMcpServerStatus(CWD, "pending")).toBe("pending");
+    expect(await readProjectMcpServerStatus(CWD, "pending")).toBe("pending");
     expect(await enabledServerNames()).toEqual([]);
-    expect(isMcpServerAllowedByPolicy(CWD, "pending")).toBe(true);
+    expect(isMcpServerPermittedByPolicy(CWD, "pending")).toBe(true);
+  });
+});
+
+describe("--mcp-config flag servers", () => {
+  test("returns nothing when the flag env is unset", () => {
+    expect(loadFlagMcpServers(CWD)).toEqual({});
+  });
+
+  test("parses an inline JSON entry", () => {
+    process.env.OTHERSIDE_CLI_MCP_CONFIGS = JSON.stringify([
+      JSON.stringify({ mcpServers: { probe: { type: "stdio", command: "example", args: [] } } }),
+    ]);
+
+    expect(Object.keys(loadFlagMcpServers(CWD))).toEqual(["probe"]);
+  });
+
+  test("parses a file entry resolved against the cwd", () => {
+    writeJson(join(CWD, "mcp-config.json"), {
+      mcpServers: { fromFile: { type: "stdio", command: "example", args: [] } },
+    });
+    process.env.OTHERSIDE_CLI_MCP_CONFIGS = JSON.stringify(["mcp-config.json"]);
+
+    expect(Object.keys(loadFlagMcpServers(CWD))).toEqual(["fromFile"]);
+  });
+
+  test("returns nothing when the outer env value is not a JSON array", () => {
+    process.env.OTHERSIDE_CLI_MCP_CONFIGS = "{not-an-array";
+
+    expect(loadFlagMcpServers(CWD)).toEqual({});
+  });
+
+  test("throws when an entry declares an invalid server", () => {
+    process.env.OTHERSIDE_CLI_MCP_CONFIGS = JSON.stringify([
+      JSON.stringify({ mcpServers: { broken: { type: "stdio" } } }),
+    ]);
+
+    expect(() => loadFlagMcpServers(CWD)).toThrow();
   });
 });

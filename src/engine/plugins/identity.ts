@@ -95,7 +95,7 @@ function realpathSyncSafe(path: string): string | undefined {
   }
 }
 
-export function normalizeProjectPath(projectPath: string | undefined): string | undefined {
+export function canonicalProjectPath(projectPath: string | undefined): string | undefined {
   if (projectPath === undefined) return undefined;
   if (
     typeof projectPath !== "string" ||
@@ -115,7 +115,7 @@ export function createInstallationId(
   const parsed = parsePluginId(pluginId);
   if (!parsed) throw new PluginIdentityError(`Invalid plugin id: ${JSON.stringify(pluginId)}`);
   if (!SCOPE_SET.has(scope)) throw new PluginIdentityError(`Invalid plugin scope: ${scope}`);
-  const normalizedProjectPath = normalizeProjectPath(projectPath);
+  const normalizedProjectPath = canonicalProjectPath(projectPath);
   if (scope === "user" && normalizedProjectPath !== undefined) {
     throw new PluginIdentityError("User-scope installations cannot have a project path");
   }
@@ -137,7 +137,7 @@ export function parseInstallationId(value: unknown): ParsedInstallationId | unde
   const parsedPlugin = parsePluginId(pluginId);
   if (!parsedPlugin || !SCOPE_SET.has(scope)) return undefined;
   try {
-    const normalizedProjectPath = normalizeProjectPath(projectPath || undefined);
+    const normalizedProjectPath = canonicalProjectPath(projectPath || undefined);
     if (scope === "user" && normalizedProjectPath !== undefined) return undefined;
     if ((scope === "project" || scope === "local") && normalizedProjectPath === undefined) {
       return undefined;

@@ -1,25 +1,25 @@
 export type {
   PermissionBehavior,
   PermissionRule,
-  PermissionRuleSource,
   PermissionRuleValue,
+  RuleSourceScope,
   SettingsPermissionsBlock,
 } from "@/kernel/permissions/types.ts";
 export {
   PERMISSION_RULE_SOURCES,
+  parseRuleValueText,
   permissionDirectoryGlob,
-  permissionRuleValueFromString,
-  permissionRuleValueToString,
   READ_ONLY_PERMISSION_SOURCES,
+  serializeRuleValue,
 } from "@/kernel/permissions/types.ts";
 
 import {
+  allowRuleCoversDangerousFind,
   containsUnsafeRedirect,
-  findAllowRuleWouldCoverDangerousFind,
   isCompoundForGuard,
   looksLikeXargsCarrier,
-  stripAllLeadingEnvVars,
   stripHeredocBody,
+  stripLeadingEnvAssignments,
   stripLeadingSafeEnvVars,
   stripSafeWrappers,
 } from "@/kernel/permissions/bash-matcher.ts";
@@ -29,7 +29,7 @@ import type { PermissionBehavior, PermissionRule } from "@/kernel/permissions/ty
 // `cliArg` and `toolsNarrowing` rules are scoped overrides that must not be
 // widened via tool-alias expansion — only first-class rule sources get
 // alias matching.
-function ruleSourceAllowsAliasExpansion(rule: PermissionRule): boolean {
+function sourceSupportsAliasExpansion(rule: PermissionRule): boolean {
   return rule.source !== "cliArg" && rule.source !== "toolsNarrowing";
 }
 
@@ -64,7 +64,7 @@ export class RuleStore {
   ): PermissionBehavior | null {
     const matchesAny = (r: PermissionRule): boolean => {
       if (ruleMatches(r, toolName, input)) return true;
-      if (!ruleSourceAllowsAliasExpansion(r)) return false;
+      if (!sourceSupportsAliasExpansion(r)) return false;
       return aliasNames.some((n) => ruleMatches(r, n, input));
     };
     if (this.rules.some((r) => r.ruleBehavior === "deny" && matchesAny(r))) return "deny";
@@ -90,9 +90,7 @@ export class RuleStore {
     const obj = input as Record<string, unknown>;
     for (const r of this.rules) {
       if (r.ruleBehavior !== behavior) continue;
-      const namesToCheck = ruleSourceAllowsAliasExpansion(r)
-        ? [toolName, ...aliasNames]
-        : [toolName];
+      const namesToCheck = sourceSupportsAliasExpansion(r) ? [toolName, ...aliasNames] : [toolName];
       if (!namesToCheck.some((n) => toolNameMatchesRule(r.ruleValue.toolName, n, true))) continue;
       const parsed = parseInputParamRuleContent(r.ruleValue.ruleContent);
       if (!parsed) continue;
@@ -128,7 +126,7 @@ export function ruleMatches(rule: PermissionRule, toolName: string, input: strin
   if (toolName === "Bash") {
     if (rule.ruleBehavior === "allow") {
       if (isCompoundForGuard(input)) return false;
-      if (findAllowRuleWouldCoverDangerousFind(input)) return false;
+      if (allowRuleCoversDangerousFind(input)) return false;
       if (containsUnsafeRedirect(input)) return false;
     }
     const normalized = normalizeBashCommand(input, rule.ruleBehavior);
@@ -178,7 +176,7 @@ function normalizeBashCommand(command: string, behavior: PermissionBehavior): st
   const stripped =
     behavior === "allow"
       ? stripSafeWrappers(stripLeadingSafeEnvVars(tokens))
-      : stripAllLeadingEnvVars(tokens);
+      : stripLeadingEnvAssignments(tokens);
   const xargs = looksLikeXargsCarrier(stripped);
   return (xargs ? xargs.remainder : stripped).join(" ");
 }
@@ -195,7 +193,7 @@ export function permissionPatternMatches(pattern: string, toolName: string, inpu
   if (
     toolName === "Bash" &&
     (isCompoundBashCommand(input) ||
-      findAllowRuleWouldCoverDangerousFind(input) ||
+      allowRuleCoversDangerousFind(input) ||
       containsUnsafeRedirect(input))
   )
     return false;
@@ -346,7 +344,7 @@ function webFetchPermissionTarget(input: unknown): string {
   return `input:${String(input)}`;
 }
 
-function normalizeDomainRuleContent(content: string): string {
+function normalizeDomainPattern(content: string): string {
   if (!content.startsWith("domain:")) return content;
   return `domain:${content
     .slice(7)
@@ -361,7 +359,7 @@ function escapeDomainPattern(pattern: string): string {
     .join("[^.:]*");
 }
 
-function domainWildcardMatches(pattern: string, target: string): boolean {
+function matchesDomainWildcard(pattern: string, target: string): boolean {
   if (!pattern.startsWith("domain:") || !target.startsWith("domain:")) return false;
   if (pattern === "domain:*") return true;
   const regexSource = pattern.startsWith("domain:*.")
@@ -379,10 +377,10 @@ function webFetchRuleContentMatches(ruleContent: string, input: string): boolean
   // Permission content is compared as generated only; legacy full-URL rules
   // intentionally receive no compatibility fallback.
   if (ruleContent === target) return true;
-  const normalizedRule = normalizeDomainRuleContent(ruleContent);
-  const normalizedTarget = normalizeDomainRuleContent(target);
+  const normalizedRule = normalizeDomainPattern(ruleContent);
+  const normalizedTarget = normalizeDomainPattern(target);
   return normalizedRule.includes("*")
-    ? domainWildcardMatches(normalizedRule, normalizedTarget)
+    ? matchesDomainWildcard(normalizedRule, normalizedTarget)
     : normalizedRule === normalizedTarget;
 }
 

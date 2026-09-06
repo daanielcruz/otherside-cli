@@ -2,8 +2,8 @@ import { readdirSync, statSync } from "node:fs";
 import { join, parse as parsePath, resolve, sep } from "node:path";
 import {
   DANGEROUS_FILES,
-  getDangerousDirectories,
-  normalizeCaseForComparison,
+  foldPathCase,
+  listProtectedDirectories,
 } from "@/engine/sandbox/path-normalize.ts";
 
 const DEFAULT_MAX_DEPTH = 3;
@@ -19,7 +19,7 @@ export function linuxGetMandatoryDenyPaths(options: DenyPathsOptions = {}): stri
   const cwd = options.cwd ?? process.cwd();
   const maxDepth = options.maxDepth ?? DEFAULT_MAX_DEPTH;
   const allowGitConfig = options.allowGitConfig === true;
-  const dangerousDirs = getDangerousDirectories();
+  const dangerousDirs = listProtectedDirectories();
   const denyPaths: string[] = [];
   for (const f of DANGEROUS_FILES) denyPaths.push(resolve(cwd, f));
   for (const d of dangerousDirs) denyPaths.push(resolve(cwd, d));
@@ -49,8 +49,8 @@ interface CollectArgs {
 }
 
 function collectNested(args: CollectArgs): void {
-  const dangerousFileSet = new Set(DANGEROUS_FILES.map(normalizeCaseForComparison));
-  const dangerousDirSet = new Set(args.dangerousDirs.map(normalizeCaseForComparison));
+  const dangerousFileSet = new Set(DANGEROUS_FILES.map(foldPathCase));
+  const dangerousDirSet = new Set(args.dangerousDirs.map(foldPathCase));
   walk(args.cwd, 0, args, dangerousFileSet, dangerousDirSet);
 }
 
@@ -73,7 +73,7 @@ function walk(
     return;
   }
   for (const entry of entries) {
-    const normalizedName = normalizeCaseForComparison(entry.name);
+    const normalizedName = foldPathCase(entry.name);
     const fullPath = join(dir, entry.name);
     if (entry.isFile && dangerousFileSet.has(normalizedName)) {
       args.denyPaths.push(fullPath);

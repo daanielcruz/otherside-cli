@@ -2,7 +2,7 @@ import type { MemberExpression, NewExpression } from "acorn";
 import { parse } from "acorn";
 import * as walk from "acorn-walk";
 
-export function usesNonDeterministicApi(scriptBody: string): boolean {
+export function callsNonDeterministicApi(scriptBody: string): boolean {
   let found = false;
   try {
     const ast = parse(scriptBody, {

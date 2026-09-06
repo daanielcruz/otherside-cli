@@ -9,9 +9,7 @@ beforeEach(() => {
 describe("PRIORITY_ORDER owner lock", () => {
   test("T01 priority order matches canonical lock", () => {
     expect(PRIORITY_ORDER).toEqual([
-      "interrupt_agent_workflow",
       "interrupt_bash",
-      "user_message",
       "urgent_output",
       "deferred_output",
       "idle_prompt",
@@ -113,14 +111,14 @@ describe("awaiter does NOT short-circuit before boundary", () => {
 describe("cancel(predicate, reason)", () => {
   test("T07 cancel only removes matching; background-owned survives /clear", () => {
     emitQueue.emit({
-      class: "user_message",
+      class: "idle_prompt",
       target: "llm_request",
-      payload: { kind: "queued_message", queuedMessageId: "q1" },
+      payload: { kind: "user_interrupt_message", text: "wake" },
     });
     emitQueue.emit({
-      class: "interrupt_agent_workflow",
+      class: "interrupt_bash",
       target: "both",
-      payload: { kind: "queued_message", queuedMessageId: "q2" },
+      payload: { kind: "tool_result_interrupt", toolUseId: "t1", content: "x" },
     });
     emitQueue.emit({
       class: "deferred_output",
@@ -128,12 +126,12 @@ describe("cancel(predicate, reason)", () => {
       payload: { kind: "tool_result", toolUseId: "a1", content: "x" },
     });
     const cancelled = emitQueue.cancel(
-      (item) => item.class === "user_message" || item.class === "interrupt_agent_workflow",
+      (item) => item.class === "idle_prompt" || item.class === "interrupt_bash",
       "slash_clear",
     );
     expect(cancelled.cancelledIds.length).toBe(2);
-    expect(emitQueue.peek({ class: "user_message" }).length).toBe(0);
-    expect(emitQueue.peek({ class: "interrupt_agent_workflow" }).length).toBe(0);
+    expect(emitQueue.peek({ class: "idle_prompt" }).length).toBe(0);
+    expect(emitQueue.peek({ class: "interrupt_bash" }).length).toBe(0);
     expect(emitQueue.peek({ class: "deferred_output" }).length).toBe(1);
   });
 });

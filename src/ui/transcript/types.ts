@@ -5,4 +5,6 @@ export type {
   TranscriptEntry,
   TranscriptImage,
   TranscriptKind,
+  TranscriptUpdate,
+  TranscriptWrite,
 } from "@/engine/session/record/types.ts";

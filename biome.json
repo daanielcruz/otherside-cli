@@ -76,7 +76,6 @@
               "level": "error",
               "options": {
                 "paths": {
-                  "@/ink": "src/design is browser-side; do not consume ink.",
                   "@/ui": "src/design must not depend on ui; lifecycle goes via SlashContext."
                 }
               }

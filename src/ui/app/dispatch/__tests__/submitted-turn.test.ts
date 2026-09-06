@@ -13,7 +13,6 @@ function makeDeps(turnGuard: TurnGuard, flushDeferredPersistence: () => Promise<
     runtimeConfig: {},
     transcript: [],
     mainLastContext: {},
-    btwMode: false,
     turnGuard,
     turnLifecycle: { beginTurn: () => {}, endTurn: () => {} },
     recordProviderUsage: () => {},

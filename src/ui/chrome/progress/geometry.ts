@@ -1,4 +1,4 @@
-import { stringWidth } from "@/kernel/std/text/string-width.ts";
+import { stringWidth } from "@/terminal-runtime";
 import { Glyph } from "@/ui/theme/theme.ts";
 
 const PREFIX_GUTTER_WIDTH = 2;

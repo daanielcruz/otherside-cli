@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { getMaxToolUseConcurrency } from "@/kernel/config/tool-use-concurrency.ts";
+import { maxConcurrentToolUses } from "@/kernel/config/tool-use-concurrency.ts";
 
 const ENV_KEYS = ["OTHERSIDE_MAX_TOOL_USE_CONCURRENCY"] as const;
 
@@ -19,21 +19,21 @@ afterEach(() => {
   }
 });
 
-describe("getMaxToolUseConcurrency", () => {
+describe("maxConcurrentToolUses", () => {
   test("defaults to 10", () => {
-    expect(getMaxToolUseConcurrency()).toBe(10);
+    expect(maxConcurrentToolUses()).toBe(10);
   });
 
   test("uses the primary override", () => {
     process.env.OTHERSIDE_MAX_TOOL_USE_CONCURRENCY = "4";
-    expect(getMaxToolUseConcurrency()).toBe(4);
+    expect(maxConcurrentToolUses()).toBe(4);
   });
 
   test("clamps values below one", () => {
     process.env.OTHERSIDE_MAX_TOOL_USE_CONCURRENCY = "0";
-    expect(getMaxToolUseConcurrency()).toBe(1);
+    expect(maxConcurrentToolUses()).toBe(1);
 
     process.env.OTHERSIDE_MAX_TOOL_USE_CONCURRENCY = "-3";
-    expect(getMaxToolUseConcurrency()).toBe(1);
+    expect(maxConcurrentToolUses()).toBe(1);
   });
 });

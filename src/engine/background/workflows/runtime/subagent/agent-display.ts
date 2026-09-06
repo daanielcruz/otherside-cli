@@ -10,7 +10,7 @@ function safeJsonPreview(value: unknown): string {
   }
 }
 
-export function truncateWorkflowPreview(value: unknown): string | undefined {
+export function trimWorkflowPreview(value: unknown): string | undefined {
   if (value === null || value === undefined) return undefined;
   const raw = typeof value === "string" ? value : safeJsonPreview(value);
   const text = raw.trim();

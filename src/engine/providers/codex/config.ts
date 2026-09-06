@@ -5,10 +5,8 @@ import { Auth, beginLogin as codexBeginLogin } from "@/engine/providers/codex/au
 import { fingerprint } from "@/engine/providers/codex/fingerprint.ts";
 import { MODELS } from "@/engine/providers/codex/models.ts";
 import { codexPromptAdapter } from "@/engine/providers/codex/prompt-adapter.ts";
-import {
-  translateRequestCodex as translateRequest,
-  translateResponseCodex as translateResponse,
-} from "@/engine/providers/codex/translate.ts";
+import { translateResponseCodex as translateResponse } from "@/engine/providers/codex/stream.ts";
+import { translateRequestCodex as translateRequest } from "@/engine/providers/codex/translate.ts";
 import { stream as codexStream } from "@/engine/providers/codex/transport/index.ts";
 import {
   advanceWindow,
@@ -19,9 +17,10 @@ import {
   isCodexWsConnectionLimitMessage,
   WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE,
   WEBSOCKET_CONNECTION_LIMIT_REACHED_MESSAGE,
-} from "@/engine/providers/codex/transport/ws.ts";
+} from "@/engine/providers/codex/transport/ws-router.ts";
 import { searchCodex } from "@/engine/tools/codex.ts";
 import { classifyProviderError } from "@/engine/transport/_infra/classify/classify.ts";
+import { providerDisplayName } from "@/kernel/std/types/provider-ids.ts";
 
 function bodyCarriesConnectionLimit(body: string): boolean {
   if (isCodexWsConnectionLimitMessage(body)) return true;
@@ -49,7 +48,7 @@ const PROVIDER: ApiProvider<"codex-responses"> = {
   id: "codex",
   api: "codex-responses",
   sourceId: "builtin",
-  label: "Codex",
+  label: providerDisplayName("codex"),
   shortKey: "codex",
 };
 
@@ -71,12 +70,11 @@ export const config: ProviderConfig<"codex-responses"> = {
   contentIdleTimeoutMs: 600_000,
   featureFlags: {
     fastMode: true,
-    effortSuffix: true,
     thinkingSuffix: true,
     supportsImages: true,
     reasoningHeadlines: true,
   },
-  defaultModelId: "gpt-5.6-sol",
+  defaultModelId: "gpt-6-astra",
   fallbackEfforts: {
     levels: ["low", "medium", "high", "xhigh"],
     default: "xhigh",

@@ -9,12 +9,12 @@ import type { DrainedQueuedMessage, ForkEventSink } from "@/kernel/std/types/eve
 import type { ContentBlock, Message } from "@/kernel/std/types/message.ts";
 import type { PermissionMode } from "@/kernel/std/types/permission-mode.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
+import type { RequestedForkRoute } from "./route-override.ts";
 
 export interface SubagentInvocation {
   subagentType: string;
   prompt: string;
   description?: string;
-  name?: string | undefined;
   runInBackground?: boolean;
   parentToolCallId?: string | undefined;
   forkId?: string | undefined;
@@ -37,7 +37,6 @@ export interface SubagentResult {
   output: string;
   isError: boolean;
   structured?: unknown;
-  stalled?: boolean;
   stopReason?: string;
   outputTokens?: number;
   durationMs?: number;
@@ -46,6 +45,10 @@ export interface SubagentResult {
   worktreeBranch?: string;
   worktreeDeleted?: boolean;
   worktreeWarning?: string;
+  // Spawn-time gaps in the agent's own definition (a declared skill that is not
+  // loaded, an inline MCP server that would not connect). The run proceeds
+  // without them, so they ride out on the caller's tool result.
+  setupWarnings?: readonly string[];
 }
 
 export type SidechainRecord = Extract<
@@ -81,11 +84,13 @@ export interface ForkSpec {
   extraDeclarations?: ProviderToolDeclaration[] | undefined;
   scopedTools?: readonly ToolHandler[] | undefined;
   skillMessages?: Message[] | undefined;
+  // Definition gaps found while building the spec; the run reports them on its
+  // SubagentResult so the caller's tool result carries them.
+  setupWarnings?: readonly string[] | undefined;
   agentHooks?: ParsedHooks | null | undefined;
   allowedAgentTypes?: string[] | undefined;
   allowNestedAgents?: boolean | undefined;
   outputSchema?: Record<string, unknown> | undefined;
-  stallMs?: number | undefined;
   isolation?: "worktree" | undefined;
   worktreeKey?: string | undefined;
   // A pre-created worktree the caller owns end-to-end: the fork runs inside it
@@ -130,4 +135,7 @@ export interface ForkInvocation {
   name?: string | undefined;
   permissionMode?: PermissionMode | undefined;
   isolation?: "worktree" | undefined;
+  // Requested route as a {provider, model} pair. Absent inherits the session
+  // route; a differing pair needs the "Multi-model fork" setting plus approval.
+  route?: RequestedForkRoute | undefined;
 }

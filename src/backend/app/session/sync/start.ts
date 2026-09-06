@@ -1,5 +1,11 @@
-import { listPeers, loadPeer } from "@/backend/app/peers.ts";
-import { registerEnvironment, shareSessionKey } from "@/backend/shared/api.ts";
+import {
+  listPeers,
+  loadPeer,
+  registerDeviceEnvironment,
+  removeLocalPeerFile,
+  retireRemotePairings,
+} from "@/backend/app/peers.ts";
+import { shareSessionKey } from "@/backend/shared/api.ts";
 import {
   clearAuth,
   decodeUserId,
@@ -7,7 +13,7 @@ import {
   isRefreshRejected,
   loadFreshAuth,
 } from "@/backend/shared/auth.ts";
-import { type Device, deviceFingerprint } from "@/backend/shared/device.ts";
+import type { Device } from "@/backend/shared/device.ts";
 import { b64uDecode, unwrapEnvBroadcast, wrapSessionKey } from "@/backend/shared/e2ee.ts";
 import {
   type BroadcastFrame,
@@ -17,16 +23,19 @@ import {
 import {
   authFailureStatus,
   ensureSessionKey,
+  hasRemoteDeletionMarker,
   isHttpError,
-  loadSyncedIndex,
-  persistSyncedIndex,
-  postSessionEvent,
+  loadSyncedAnchor,
+  persistRemoteDeletionMarker,
+  persistSyncedAnchor,
   probeAuth,
   type RatchetCacheEntry,
+  SESSION_DELETED_CODE,
+  SESSION_NOT_FOUND_CODE,
   sendEncryptedEvent,
 } from "@/backend/shared/session-crypto.ts";
 import {
-  type BackgroundTaskStatus,
+  type BackgroundTaskState,
   listBackgroundTasks,
   subscribeBackgroundTaskCompletion,
   subscribeBackgroundTasks,
@@ -40,6 +49,7 @@ import {
   recordBootstrapFailure,
   resetBootstrapFailures,
 } from "./bootstrap.ts";
+import { adoptSyncCursor, EMPTY_SYNC_CURSOR, resumeIndexFor } from "./cursor.ts";
 import {
   bgCompletionStatus,
   clearActiveEmitters,
@@ -50,14 +60,13 @@ import { emitQueueReset } from "./queue-drain.ts";
 import { decodeEnvEntries } from "./rails/broadcast.ts";
 import { createBroadcasters } from "./rails/broadcasters.ts";
 import {
-  applyIncomingRow,
   type CancelQueuedMessageHandler,
   type IncomingSyncState,
   type OutgoingSyncResult,
   type QueuedMessageHandler,
   syncIncomingEvents,
   syncOutgoingEvents,
-} from "./rails/cdc.ts";
+} from "./rails/durable.ts";
 import { sendHeartbeat } from "./rails/heartbeat.ts";
 import {
   deleteSessionRow,
@@ -98,6 +107,11 @@ export async function startSync(
 ): Promise<SyncHandle | null> {
   if (listPeers().length === 0) return null;
   if (isRemoteSyncSuspended()) return null;
+  if (hasRemoteDeletionMarker(session.id)) {
+    setSessionRegistered(false);
+    setSyncStatus("disconnected");
+    return null;
+  }
 
   setSyncStatus("connecting");
 
@@ -119,6 +133,7 @@ export async function startSync(
 
   let accessToken = auth.accessToken;
   let sessionUnauthorized = false;
+  let sessionClosed = false;
   const suspendRemote = (status: 401 | 403): void => {
     sessionUnauthorized = true;
     markRemoteUnauthorized(status);
@@ -127,11 +142,7 @@ export async function startSync(
   setActiveSyncSessionId(session.id);
 
   try {
-    await registerEnvironment({
-      device_label: device.name,
-      fingerprint_hash: deviceFingerprint(),
-      kind: "cli",
-    });
+    device = await registerDeviceEnvironment(device);
     resetBootstrapFailures();
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -164,11 +175,9 @@ export async function startSync(
   const broadcasters = createBroadcasters(() => channel, device, session, broker);
 
   const bootstrapSessionOnBackend = async (): Promise<void> => {
-    // Capture whether the backend still holds this session BEFORE the upsert
-    // recreates it. A row we have synced history against that is now gone means
-    // an unpair/account-switch purged the backend copy, so the whole transcript
-    // must re-upload — probing after the upsert would always see the new row.
-    const hadSyncedHistory = (loadSyncedIndex(session.id) ?? 0) > 0;
+    // Probe before upsert so a missing remote incarnation can reseed from the
+    // canonical local transcript instead of treating prior progress as current.
+    const hadSyncedHistory = loadSyncedAnchor(session.id) !== null;
     const priorRowExists = hadSyncedHistory
       ? await remoteSessionExists(session.id, accessToken)
       : true;
@@ -186,8 +195,8 @@ export async function startSync(
     // Only rewind on a definite "row is gone" — never on an unknown (null)
     // probe, which would needlessly re-upload the full history.
     if (priorRowExists === false) {
-      persistSyncedIndex(session.id, 0);
-      lastSyncedIndex = 0;
+      persistSyncedAnchor(session.id, null);
+      lastSyncedCursor = EMPTY_SYNC_CURSOR;
     }
 
     const peers = listPeers();
@@ -220,19 +229,12 @@ export async function startSync(
       }
     }
 
-    try {
-      await postSessionEvent(accessToken, {
-        session_id: session.id,
-        user_id: userId,
-        type: "session_start",
-        payload: {},
-      });
-    } catch {}
-
+    await sendEvent("session_start", "{}");
     sendTasksUpdate();
   };
 
   const applyPresenceBroadcast = async (raw: unknown): Promise<void> => {
+    if (sessionClosed) return;
     const env = decodeEnvEntries(raw);
     if (!env) return;
     const entry = env.entries.find((e) => e.device_id === device.id);
@@ -267,7 +269,10 @@ export async function startSync(
     if (frame.event === REVOKE_EVENT) {
       const revoked = frame.payload as { cli_device_id?: string };
       if (revoked.cli_device_id === device.id) {
-        clearAuth();
+        // App-side revoke removes the pairing, never the sign-in: the same
+        // login serves the design relay. Drop local peer/identity state only.
+        for (const peer of listPeers()) removeLocalPeerFile(peer.deviceId);
+        retireRemotePairings();
         setSyncStatus("disconnected");
         notifyRemoteInvalidated();
       }
@@ -288,10 +293,9 @@ export async function startSync(
         }
         return accessToken;
       },
-      private: true,
       onBroadcast: handleEnvBroadcast,
       onReconnect: () => {
-        if (!channel) return;
+        if (!channel || sessionClosed) return;
         broadcasters.presence(true);
         void broadcasters.availableModels().catch(() => {});
         broadcasters.sessionLive("upsert");
@@ -318,10 +322,7 @@ export async function startSync(
     hasRegistered ? broadcasters.agentProgress(plaintext) : Promise.resolve(),
   );
 
-  let lastSyncedIndex = Math.min(
-    loadSyncedIndex(session.id) ?? session.records.length,
-    session.records.length,
-  );
+  let lastSyncedCursor = adoptSyncCursor(session);
   let outgoingSyncActive = false;
   const incomingState: IncomingSyncState = {
     cursorTs: null,
@@ -330,8 +331,11 @@ export async function startSync(
     watermark: new Map(),
   };
 
-  let cdcChannel: RealtimeChannel | null = null;
-  let cdcStopped = false;
+  let eventsChannel: RealtimeChannel | null = null;
+  let eventsStopped = false;
+  let syncInterval: Timer | null = null;
+  let heartbeatInterval: Timer | null = null;
+  let quotaInterval: Timer | null = null;
   void subscribeChannel({
     topic: `session:${session.id}:events`,
     accessToken: async () => {
@@ -342,42 +346,47 @@ export async function startSync(
       }
       return accessToken;
     },
-    private: true,
-    postgresChanges: [
-      {
-        event: "INSERT",
-        schema: "app",
-        table: "session_events",
-        filter: `session_id=eq.${session.id}`,
-      },
-    ],
-    onPostgresChange: (change) => {
-      applyIncomingRow(change.record, {
-        device,
-        session,
-        sessionKey,
-        broker,
-        state: incomingState,
-        onIncomingMessage: opts?.onIncomingMessage,
-        onQueuedMessage: opts?.onQueuedMessage,
-        onCancelQueuedMessage: opts?.onCancelQueuedMessage,
-      });
-    },
     onReconnect: () => {
       void runSyncTick();
     },
   })
     .then((ch) => {
-      if (cdcStopped) {
+      if (eventsStopped) {
         ch.close();
         return;
       }
-      cdcChannel = ch;
+      eventsChannel = ch;
     })
     .catch(() => {});
 
+  const prepareRemoteReseed = (): void => {
+    persistSyncedAnchor(session.id, null);
+    lastSyncedCursor = EMPTY_SYNC_CURSOR;
+    hasRegistered = false;
+    setSessionRegistered(false);
+    setSyncStatus("connecting");
+  };
+
+  const stopDeletedRemote = (): void => {
+    persistRemoteDeletionMarker(session.id);
+    sessionClosed = true;
+    hasRegistered = false;
+    setSessionRegistered(false);
+    clearActiveEmitters();
+    setActiveSyncSessionId(null);
+    setSyncStatus("disconnected");
+    if (syncInterval) clearInterval(syncInterval);
+    if (heartbeatInterval) clearInterval(heartbeatInterval);
+    if (quotaInterval) clearInterval(quotaInterval);
+    eventsStopped = true;
+    if (eventsChannel) {
+      eventsChannel.close();
+      eventsChannel = null;
+    }
+  };
+
   const pushOutgoing = (): void => {
-    if (outgoingSyncActive) return;
+    if (sessionClosed || outgoingSyncActive) return;
     outgoingSyncActive = true;
     void pushOutgoingWithBackoff().finally(() => {
       outgoingSyncActive = false;
@@ -395,21 +404,24 @@ export async function startSync(
           accessToken,
           sessionKey,
           ratchet: outgoingRatchet,
-          fromIndex: lastSyncedIndex,
+          fromIndex: resumeIndexFor(session, lastSyncedCursor),
+          cursor: lastSyncedCursor,
         });
       } catch {
         return;
       }
-      lastSyncedIndex = Math.max(lastSyncedIndex, result.idx);
-      persistSyncedIndex(session.id, lastSyncedIndex);
+      lastSyncedCursor = result.cursor;
 
       if (result.rejected) {
-        // The sessions row vanished or changed hands mid-flight (e.g. purged
-        // after an account switch, or soft-deleted from the companion). Drop
-        // back to unregistered so the next tick re-runs the bootstrap, which
-        // re-creates the row and rewinds the cursor when the server side is
-        // empty. Status drops with it — "active" would lie until then.
         recordBootstrapFailure(`syncOutgoingEvents: rejected (${result.rejected})`);
+        if (result.rejected === SESSION_DELETED_CODE) {
+          stopDeletedRemote();
+          return;
+        }
+        if (result.rejected === SESSION_NOT_FOUND_CODE) {
+          prepareRemoteReseed();
+          return;
+        }
         hasRegistered = false;
         setSessionRegistered(false);
         setSyncStatus("connecting");
@@ -425,7 +437,7 @@ export async function startSync(
       }
       await sleep(AUTH_BACKOFF_MS[attempt] ?? AUTH_BACKOFF_MAX_MS);
       attempt += 1;
-      const forced = await forceRefreshAuth();
+      const forced = await forceRefreshAuth(accessToken);
       if (!forced) {
         suspendRemote(result.authStatus);
         return;
@@ -434,13 +446,39 @@ export async function startSync(
     }
   };
 
+  let lastSyncedTitle = getSessionTitle();
+  let pendingTitle: string | null = null;
+  let titleSyncActive = false;
+
+  const queueCurrentTitle = (): void => {
+    const title = getSessionTitle();
+    pendingTitle = title && title !== lastSyncedTitle ? title : null;
+  };
+
+  const flushPendingTitle = async (): Promise<void> => {
+    if (titleSyncActive || !hasRegistered || !pendingTitle) return;
+    titleSyncActive = true;
+    try {
+      while (hasRegistered && pendingTitle) {
+        const title = pendingTitle;
+        if (!(await setSessionTitle(title))) return;
+        lastSyncedTitle = title;
+        queueCurrentTitle();
+      }
+    } finally {
+      titleSyncActive = false;
+    }
+  };
+
   let queueResetSent = false;
   const tryBootstrap = (): void => {
-    if (hasRegistered) return;
+    if (sessionClosed || hasRegistered) return;
     hasRegistered = true;
     void bootstrapSessionOnBackend()
       .then(() => {
         setSyncStatus("active");
+        queueCurrentTitle();
+        void flushPendingTitle();
         // First registration of this process: the local queue is empty by
         // definition, so tell paired clients to drop stale ledger entries.
         // Re-registrations (auth refresh) must NOT reset a live queue.
@@ -451,6 +489,13 @@ export async function startSync(
         pushOutgoing();
       })
       .catch(async (err) => {
+        if (
+          isHttpError(err) &&
+          (err.httpStatus === 410 || err.errorCode === SESSION_DELETED_CODE)
+        ) {
+          stopDeletedRemote();
+          return;
+        }
         hasRegistered = false;
         setSessionRegistered(false);
         setSyncStatus("connecting");
@@ -473,6 +518,7 @@ export async function startSync(
   tryBootstrap();
 
   const runSyncTick = async (): Promise<void> => {
+    if (sessionClosed) return;
     const fresh = await loadFreshAuth();
     if (!fresh) return;
     accessToken = fresh.accessToken;
@@ -499,16 +545,26 @@ export async function startSync(
       onQueuedMessage: opts?.onQueuedMessage,
       onCancelQueuedMessage: opts?.onCancelQueuedMessage,
     });
+    if (inStatus === 404) {
+      prepareRemoteReseed();
+      return;
+    }
+    if (inStatus === 410) {
+      stopDeletedRemote();
+      return;
+    }
     if (inStatus !== null) {
       suspendRemote(inStatus);
       return;
     }
+    queueCurrentTitle();
+    void flushPendingTitle();
     pushOutgoing();
   };
 
-  const syncInterval = setInterval(() => {
-    if (sessionUnauthorized) {
-      clearInterval(syncInterval);
+  syncInterval = setInterval(() => {
+    if (sessionUnauthorized || sessionClosed) {
+      if (syncInterval) clearInterval(syncInterval);
       return;
     }
     void runSyncTick().catch(() => {});
@@ -529,7 +585,7 @@ export async function startSync(
         call_id: task.parentToolCallId,
         agent: task.agentName,
         description: task.description ?? "",
-        status: bgCompletionStatus(task.status as BackgroundTaskStatus),
+        status: bgCompletionStatus(task.status as BackgroundTaskState),
       }),
     ).catch(() => {});
   });
@@ -543,18 +599,14 @@ export async function startSync(
     }, 100);
   });
 
-  // The title is generated a turn or two in, and loaded async on resume — both
-  // land in the store after bootstrap, so mirror it to the backend on change.
-  let lastSyncedTitle = getSessionTitle();
   const unsubscribeTitle = sessionTitleStore.subscribe(() => {
-    const title = getSessionTitle();
-    if (!hasRegistered || !title || title === lastSyncedTitle) return;
-    lastSyncedTitle = title;
-    void setSessionTitle(title).catch(() => {});
+    queueCurrentTitle();
+    void flushPendingTitle();
   });
 
   let lastBrokerState = broker.read();
   const unsubscribeBroker = broker.subscribe((brokerState) => {
+    if (sessionClosed) return;
     if (
       brokerState.provider === lastBrokerState.provider &&
       brokerState.model === lastBrokerState.model &&
@@ -577,9 +629,9 @@ export async function startSync(
   });
 
   const live = channel;
-  const heartbeatInterval = setInterval(() => {
-    if (sessionUnauthorized) {
-      clearInterval(heartbeatInterval);
+  heartbeatInterval = setInterval(() => {
+    if (sessionUnauthorized || sessionClosed) {
+      if (heartbeatInterval) clearInterval(heartbeatInterval);
       return;
     }
     if (hasRegistered) {
@@ -590,9 +642,9 @@ export async function startSync(
 
   // Provider quota polls live usage APIs, so it runs on a slower cadence than
   // the session heartbeat to avoid hammering those endpoints.
-  const quotaInterval = setInterval(() => {
-    if (sessionUnauthorized) {
-      clearInterval(quotaInterval);
+  quotaInterval = setInterval(() => {
+    if (sessionUnauthorized || sessionClosed) {
+      if (quotaInterval) clearInterval(quotaInterval);
       return;
     }
     void broadcasters.providerQuota().catch(() => {});
@@ -600,7 +652,7 @@ export async function startSync(
 
   return {
     stop() {
-      if (lastSyncedIndex < session.records.length) {
+      if (resumeIndexFor(session, lastSyncedCursor) < session.records.length) {
         pushOutgoing();
       }
       clearActiveEmitters();
@@ -609,26 +661,28 @@ export async function startSync(
       if (tasksTimeout) clearTimeout(tasksTimeout);
       unsubscribeTitle();
       unsubscribeBroker();
-      clearInterval(heartbeatInterval);
-      clearInterval(quotaInterval);
-      clearInterval(syncInterval);
-      if (hasRegistered && !hasMessages(session)) {
-        void deleteSessionRow(session.id, accessToken).catch(() => {});
-      } else {
-        void setSessionStatus("disconnected").catch(() => {});
+      if (heartbeatInterval) clearInterval(heartbeatInterval);
+      if (quotaInterval) clearInterval(quotaInterval);
+      if (syncInterval) clearInterval(syncInterval);
+      if (!sessionClosed) {
+        if (hasRegistered && !hasMessages(session)) {
+          void deleteSessionRow(session.id, accessToken).catch(() => {});
+        } else {
+          void setSessionStatus("disconnected").catch(() => {});
+        }
+        if (!hasRegistered) {
+          try {
+            broadcasters.sessionLive("end");
+          } catch {}
+        }
       }
       setActiveSyncSessionId(null);
       setSyncStatus("disconnected");
-      if (!hasRegistered) {
-        try {
-          broadcasters.sessionLive("end");
-        } catch {}
-      }
       try {
         broadcasters.presence(false);
       } catch {}
-      cdcStopped = true;
-      if (cdcChannel) cdcChannel.close();
+      eventsStopped = true;
+      if (eventsChannel) eventsChannel.close();
       live.close();
     },
   };

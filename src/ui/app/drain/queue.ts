@@ -14,7 +14,7 @@ import {
 } from "@/store/index.ts";
 import { createPasteStore } from "@/store/paste-store/index.ts";
 import { expandToContentBlocks } from "@/ui/input/paste/references.ts";
-import { isUltracodeChoice } from "@/ui/panels/effort/ultracode";
+import { isUltracodeChoice } from "@/ui/panels/effort/ultracode-choice.ts";
 
 export interface QueueHelpersDeps {
   pasteStoreRef: { current: ReturnType<typeof createPasteStore> };
@@ -79,6 +79,16 @@ export function createQueueHelpers(deps: QueueHelpersDeps): QueueHelpers {
     if (current.length === 0) return null;
     const joined = current.map((m) => m.text).join("\n");
     queueActions.clear();
+    // The restored text now lives only in the prompt buffer; each entry's
+    // durable queued record must be consumed or resume/rewind would
+    // re-deliver input the user took back to edit or discard.
+    for (const msg of current) {
+      void appendRecord(session, {
+        type: "injection_dequeued",
+        ts: nowIso(),
+        text: msg.expanded,
+      }).catch(() => {});
+    }
     return joined;
   };
 
@@ -86,9 +96,8 @@ export function createQueueHelpers(deps: QueueHelpersDeps): QueueHelpers {
     if (change.kind === "set_model") {
       compactTerminalRef.current = false;
       broker.dispatch({
-        kind: "set_provider",
-        provider: change.provider,
-        model: change.model,
+        kind: "set_route",
+        route: { provider: change.provider, model: change.model },
         ...(change.fastMode !== undefined ? { fastMode: change.fastMode } : {}),
       });
       if (change.persistDefault) {
@@ -104,9 +113,10 @@ export function createQueueHelpers(deps: QueueHelpersDeps): QueueHelpers {
     } else if (change.kind === "set_ultracode") {
       const desired = runtimeConfigRef.current.ultracodeEffort ?? "high";
       const stateNow = broker.read();
-      const choices = effortLevelsForModel(stateNow.model, stateNow.provider).filter(
-        isUltracodeChoice,
-      );
+      const choices = effortLevelsForModel({
+        provider: stateNow.provider,
+        model: stateNow.model,
+      }).filter(isUltracodeChoice);
       if (change.enabled && choices.length > 0 && !choices.some((choice) => choice === desired)) {
         overlayStack.open("ultracode-effort");
       } else {

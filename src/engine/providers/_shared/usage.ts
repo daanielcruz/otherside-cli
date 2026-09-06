@@ -23,6 +23,10 @@ export function usageEvent(
     : null;
 }
 
+/**
+ * Anthropic's own API reports the fresh and cached halves of the prompt
+ * disjointly, so context arithmetic adds them.
+ */
 export function usageFromAnthropic(value: unknown): ProviderEvent | null {
   const obj = objectValue(value);
   if (!obj) return null;
@@ -35,6 +39,26 @@ export function usageFromAnthropic(value: unknown): ProviderEvent | null {
   );
 }
 
+/**
+ * Anthropic-shaped endpoints that report `input_tokens` as the whole prompt,
+ * with the cached counters naming a subset of it. Reduced to the fresh
+ * remainder here so the context total stays the prompt size instead of
+ * counting the cached prefix twice on every hit.
+ */
+export function usageFromAnthropicPromptTotal(value: unknown): ProviderEvent | null {
+  const obj = objectValue(value);
+  if (!obj) return null;
+  const cacheCreation = numberValue(obj.cache_creation_input_tokens);
+  const cacheRead = numberValue(obj.cache_read_input_tokens);
+  return usageEvent(
+    freshInputTokens(numberValue(obj.input_tokens), (cacheCreation ?? 0) + (cacheRead ?? 0)),
+    numberValue(obj.output_tokens),
+    undefined,
+    cacheCreation,
+    cacheRead,
+  );
+}
+
 export function usageFromOpenAi(value: unknown): ProviderEvent | null {
   const obj = objectValue(value);
   if (!obj) return null;
@@ -43,13 +67,8 @@ export function usageFromOpenAi(value: unknown): ProviderEvent | null {
   const cachedTop = numberValue(obj.cached_input_tokens);
   const cachedNested = numberValue(inputDetails?.cached_tokens);
   const cached = cachedTop !== undefined ? cachedTop : cachedNested;
-  const totalInput = numberValue(obj.input_tokens ?? obj.prompt_tokens);
-  const freshInput =
-    totalInput !== undefined && cached !== undefined
-      ? Math.max(0, totalInput - cached)
-      : totalInput;
   return usageEvent(
-    freshInput,
+    freshInputTokens(numberValue(obj.input_tokens ?? obj.prompt_tokens), cached),
     numberValue(obj.output_tokens ?? obj.completion_tokens),
     numberValue(outputDetails?.reasoning_tokens),
     undefined,
@@ -62,16 +81,27 @@ export function usageFromGemini(value: unknown): ProviderEvent | null {
   if (!obj) return null;
   const prompt = numberValue(obj.promptTokenCount);
   const cached = numberValue(obj.cachedContentTokenCount);
-  const input =
-    prompt !== undefined && cached !== undefined ? Math.max(0, prompt - cached) : prompt;
   const cacheRead = prompt !== undefined ? (cached ?? 0) : cached;
   return usageEvent(
-    input,
+    freshInputTokens(prompt, cached),
     numberValue(obj.candidatesTokenCount),
     numberValue(obj.thoughtTokenCount ?? obj.thoughtsTokenCount),
     undefined,
     cacheRead,
   );
+}
+
+/**
+ * The share of a reported prompt total the upstream did not read from cache.
+ * Absent counters leave the total alone: an endpoint that reports no cache
+ * figure has nothing to remove.
+ */
+function freshInputTokens(
+  total: number | undefined,
+  cached: number | undefined,
+): number | undefined {
+  if (total === undefined || cached === undefined) return total;
+  return Math.max(0, total - cached);
 }
 
 function objectValue(value: unknown): Record<string, unknown> | null {

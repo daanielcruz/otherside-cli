@@ -1,17 +1,20 @@
 import { shareKeyWithWeb } from "@/backend/design/attach.ts";
 import { mintDesignOpenToken } from "@/backend/design/open-token.ts";
 import {
-  designSessionAlive,
   designWebUrl,
   endProjectSessions,
   ensureDesignProject,
   patchProjectVersion,
+  refreshDesignSessionLease,
   registerDesignSession,
   setDesignSessionStatus,
-  touchDesignSession,
 } from "@/backend/design/wire.ts";
-import { listSessionEvents, registerEnvironment } from "@/backend/shared/api.ts";
-import { currentUserEmail, currentUserId, loadFreshAuth } from "@/backend/shared/auth.ts";
+import {
+  listSessionEvents,
+  registerEnvironment,
+  type SessionEventCursor,
+} from "@/backend/shared/api.ts";
+import { currentUserId, loadFreshAuth } from "@/backend/shared/auth.ts";
 import { deviceFingerprint, ensureDevice } from "@/backend/shared/device.ts";
 import { b64uEncode } from "@/backend/shared/e2ee.ts";
 import { oauthLogin } from "@/backend/shared/oauth.ts";
@@ -30,7 +33,12 @@ import { createInboundState, handleRelayRow } from "@/design/relay/inbound.ts";
 import { createOutbound } from "@/design/relay/outbound.ts";
 import { createTokenRefresher } from "@/design/relay/token-refresh.ts";
 import { createDesignSnapshot } from "@/design/snapshot.ts";
-import { markAttached, markLinkExpired, setSpawnLink } from "@/design/spawn-registry.ts";
+import {
+  markAttached,
+  markLinkExpired,
+  markUnreachable,
+  setSpawnLink,
+} from "@/design/spawn-registry.ts";
 import { loadDesignSnapshot, saveDesignSnapshot } from "@/design/storage.ts";
 import type {
   DesignSnapshot,
@@ -43,6 +51,11 @@ import type { Session } from "@/engine/session/index.ts";
 import type { Broker } from "@/store/app-store/broker.ts";
 
 const DESIGN_HEARTBEAT_INTERVAL_MS = 20_000;
+const DESIGN_EVENT_PAGE_SIZE = 100;
+const EMPTY_EVENT_CURSOR: SessionEventCursor = {
+  ts: "1970-01-01T00:00:00.000Z",
+  id: "00000000-0000-0000-0000-000000000000",
+};
 
 export interface StartRelayArgs {
   spawnId: string;
@@ -92,7 +105,7 @@ export async function startDesignRelay(args: StartRelayArgs): Promise<StartRelay
 
   const sessionHash = crypto.randomUUID();
   const brokerState = args.broker.read();
-  await registerDesignSession({
+  const { instanceId } = await registerDesignSession({
     accessToken: auth.accessToken,
     userId,
     environmentId: envId,
@@ -106,14 +119,13 @@ export async function startDesignRelay(args: StartRelayArgs): Promise<StartRelay
   // so a fresh open token can be re-minted for the SAME session while the
   // pairing link sits unused — no relay teardown when the token TTL passes.
   const cliPubB64 = b64uEncode(device.pub);
-  const accountEmail = currentUserEmail() ?? undefined;
   const mintLink = async (): Promise<{ url: string; expiresAt: string }> => {
     const open = await mintDesignOpenToken({
       session_id: sessionHash,
       cli_environment_id: envId,
     });
     return {
-      url: designWebUrl(open.token, cliPubB64, accountEmail),
+      url: designWebUrl(open.token, cliPubB64),
       expiresAt: open.expires_at,
     };
   };
@@ -219,30 +231,44 @@ export async function startDesignRelay(args: StartRelayArgs): Promise<StartRelay
 
   await outbound.postBootstrap(b64uEncode(device.pub));
 
-  // Cortex has no CDC: "events.appended" is a durable notify with no body, so
-  // inbound work is a poll of the events endpoint. Rows re-read across polls
-  // are dropped by the inbound counter/dedupe state; only one poll runs at a
-  // time and a notify landing mid-poll queues exactly one follow-up.
+  let eventCursor = EMPTY_EVENT_CURSOR;
   let pollActive = false;
   let pollQueued = false;
+  let pollTerminated = false;
   const pollEvents = async (): Promise<void> => {
+    if (pollTerminated) return;
     if (pollActive) {
       pollQueued = true;
       return;
     }
     pollActive = true;
     try {
-      const rows = await listSessionEvents(sessionHash, 50);
-      for (const row of [...rows].reverse()) {
-        await handleRelayRow(row as unknown as Record<string, unknown>, {
-          state: inboundState,
-          sessionHash,
-          sessionKey,
-          selfDeviceId: envId,
-          methodTable,
-          ctx,
-          onAttach,
+      for (;;) {
+        const rows = await listSessionEvents(sessionHash, {
+          limit: DESIGN_EVENT_PAGE_SIZE,
+          after: eventCursor,
         });
+        if (rows.length === 0) return;
+        if (rows.some((row) => row.instance_id !== instanceId)) {
+          pollTerminated = true;
+          markUnreachable(args.spawnId, "session incarnation changed");
+          return;
+        }
+        const latest = rows[rows.length - 1];
+        if (!latest) return;
+        eventCursor = { ts: latest.ts, id: latest.id };
+        for (const row of rows) {
+          await handleRelayRow(row as unknown as Record<string, unknown>, {
+            state: inboundState,
+            sessionHash,
+            sessionKey,
+            selfDeviceId: envId,
+            methodTable,
+            ctx,
+            onAttach,
+          });
+        }
+        if (rows.length < DESIGN_EVENT_PAGE_SIZE) return;
       }
     } catch (err) {
       process.stderr.write(
@@ -266,7 +292,6 @@ export async function startDesignRelay(args: StartRelayArgs): Promise<StartRelay
   const channel: RealtimeChannel = await subscribeChannel({
     topic: `session:${sessionHash}:events`,
     accessToken: channelToken,
-    private: true,
     onReconnect: () => {
       void pollEvents();
     },
@@ -295,30 +320,24 @@ export async function startDesignRelay(args: StartRelayArgs): Promise<StartRelay
   });
   const stopDurablePoll = startDurablePoll(pollEvents);
 
-  // The backend sweep flips a session to disconnected after 2min without an
-  // updated_at bump and hard-deletes it 30min later, which kills the realtime
-  // topic authorization. Keep the row alive for the whole relay lifetime and
-  // re-register it if a sweep already removed it (self-heal, mobile pattern).
   const heartbeat = setInterval(() => {
     void (async () => {
-      const freshAuth = await loadFreshAuth();
-      const token = freshAuth?.accessToken ?? auth.accessToken;
-      const alive = await designSessionAlive({ accessToken: token, sessionHash });
-      if (alive) {
-        await touchDesignSession({ accessToken: token, sessionHash });
-        return;
+      try {
+        const freshAuth = await loadFreshAuth();
+        const token = freshAuth?.accessToken ?? auth.accessToken;
+        const lease = await refreshDesignSessionLease({ accessToken: token, sessionHash });
+        if (lease === "terminal") {
+          pollTerminated = true;
+          stopDurablePoll();
+          clearInterval(heartbeat);
+          markUnreachable(args.spawnId, "session ended");
+          return;
+        }
+      } catch (error) {
+        process.stderr.write(
+          `design relay: heartbeat failed: ${error instanceof Error ? error.message : String(error)}\n`,
+        );
       }
-      const state = args.broker.read();
-      await registerDesignSession({
-        accessToken: token,
-        userId,
-        environmentId: envId,
-        sessionHash,
-        designProjectId,
-        provider: state.provider,
-        model: state.model,
-        permissionMode: appPermissionMode(state.permissionMode),
-      }).catch(() => {});
     })();
   }, DESIGN_HEARTBEAT_INTERVAL_MS);
 

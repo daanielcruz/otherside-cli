@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { EventEmitter } from "node:events";
 import { type WebSocket as WsClient } from "ws";
-import { getSocketPoolForTest } from "../ws.ts";
+import { getSocketPoolForTest } from "../ws-socket-pool.ts";
 
 describe("Codex WebSocket Pool", () => {
   it("identity-safe eviction does not evict successor socket", () => {

@@ -21,8 +21,9 @@ mock.module("@/engine/background/subagents/fork/spawn.ts", () => ({
   dispatchFork,
 }));
 
-const { FORK_GLYPH, formatForkSuccessFeedback, hasConversationTurn, spawnForkFromDirective } =
-  await import("../spawn-from-directive.ts");
+const { formatForkSuccessFeedback, hasConversationTurn, launchForkFromDirective } = await import(
+  "../spawn-from-directive.ts"
+);
 
 afterEach(() => {
   clearTasks();
@@ -63,16 +64,16 @@ describe("hasConversationTurn", () => {
   });
 });
 
-describe("spawnForkFromDirective", () => {
+describe("launchForkFromDirective", () => {
   test("returns null when there is no conversation turn", () => {
-    expect(spawnForkFromDirective("do work", baseCtx([]))).toBeNull();
-    expect(spawnForkFromDirective("do work", baseCtx([assistantMsg("only")]))).toBeNull();
+    expect(launchForkFromDirective("do work", baseCtx([]))).toBeNull();
+    expect(launchForkFromDirective("do work", baseCtx([assistantMsg("only")]))).toBeNull();
     expect(listTasks()).toHaveLength(0);
     expect(dispatchFork).toHaveBeenCalledTimes(0);
   });
 
   test("registers a detached background task and returns name + agentId", async () => {
-    const result = spawnForkFromDirective("Audit the login path", baseCtx([userMsg("hello")]));
+    const result = launchForkFromDirective("Audit the login path", baseCtx([userMsg("hello")]));
     expect(result).not.toBeNull();
     expect(result!.name).toBe("audit-the-login");
     expect(result!.agentId.length).toBeGreaterThan(4);
@@ -83,7 +84,11 @@ describe("spawnForkFromDirective", () => {
     expect(task?.agentName).toBe("audit-the-login");
     expect(task?.description).toBe("Audit the login path");
     expect(formatForkSuccessFeedback(result!)).toBe(
-      `${FORK_GLYPH} forked ${result!.name} (${result!.agentId.slice(-4)})`,
+      [
+        `forked into a background agent · ${result!.name} (${result!.agentId.slice(-4)})`,
+        "it carries this conversation up to now and is already working · nothing here changes",
+        "track it in the agents panel (↓ to manage) · its result lands here as a notification when it completes",
+      ].join("\n"),
     );
     await Bun.sleep(20);
     expect(dispatchFork).toHaveBeenCalled();
@@ -106,7 +111,7 @@ describe("spawnForkFromDirective", () => {
           );
         }),
     );
-    const result = spawnForkFromDirective("Audit cancellation", baseCtx([userMsg("hello")]));
+    const result = launchForkFromDirective("Audit cancellation", baseCtx([userMsg("hello")]));
     expect(result).not.toBeNull();
     await Bun.sleep(0);
     const task = getTask(result!.agentId);
@@ -128,8 +133,12 @@ describe("spawnForkFromDirective", () => {
 
 describe("formatForkSuccessFeedback", () => {
   test("matches glyph + name + last four id chars", () => {
-    expect(formatForkSuccessFeedback({ name: "review-the-auth", agentId: "a1234wxyz" })).toBe(
-      `${FORK_GLYPH} forked review-the-auth (wxyz)`,
+    const feedback = formatForkSuccessFeedback({ name: "review-the-auth", agentId: "a1234wxyz" });
+    expect(feedback).toContain("forked into a background agent · review-the-auth (wxyz)");
+    expect(feedback).toContain(
+      "it carries this conversation up to now and is already working · nothing here changes",
     );
+    expect(feedback).toContain("agents panel (↓ to manage)");
+    expect(feedback).not.toContain("task list (ctrl+t)");
   });
 });

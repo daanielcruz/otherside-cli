@@ -3,6 +3,19 @@ import { envFor, HOOK_EVENT_VALUES, type HookEvent, SESSION_END_REASON_VALUES } 
 
 describe("HOOK_EVENT_VALUES SoT", () => {
   const NEW_EVENTS: HookEvent[] = [
+    "postToolUseFailure",
+    "postToolBatch",
+    "userPromptExpansion",
+    "stopFailure",
+    "permissionRequest",
+    "teammateIdle",
+    "elicitation",
+    "elicitationResult",
+    "configChange",
+    "instructionsLoaded",
+    "cwdChanged",
+    "directoryAdded",
+    "messageDisplay",
     "sessionStart",
     "sessionEnd",
     "subagentStart",

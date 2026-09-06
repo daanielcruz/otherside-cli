@@ -1,26 +1,29 @@
-import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { basename, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import type { HookEvent } from "@/kernel/hooks/events.ts";
-import { HOOK_EVENT_VALUES } from "@/kernel/hooks/events.ts";
-import type { HookEntry } from "@/kernel/hooks/exec.ts";
+import { readdirSync } from "node:fs";
+import { basename, join, resolve } from "node:path";
 import { configRoot } from "@/kernel/std/fs/paths.ts";
 import { getTrackedCwd } from "@/kernel/std/state/cwd-state.ts";
 import {
+  collectMdFiles,
+  collectMdPath,
+  collectSkillEntries,
+  collectSkillPath,
+  existsAt,
+  isDirectory,
+  isFile,
+  readJsonFile,
+} from "./component-files.ts";
+import { type HooksSettings, loadHooks } from "./hooks-normalize.ts";
+import {
+  canonicalProjectPath,
   createPluginId,
   isPluginId,
-  normalizeProjectPath,
   type PluginId,
   parsePluginId,
 } from "./identity.ts";
 import { findPluginInstallationByPath, listPluginInstallations } from "./installations.ts";
-import {
-  type CommandMetadata,
-  isNonCommandHookType,
-  type PluginManifest,
-  parseManifest,
-} from "./manifest.ts";
+import { type CommandMetadata, type PluginManifest, parseManifest } from "./manifest.ts";
 
-export type HooksSettings = Partial<Record<HookEvent, HookEntry[]>>;
+export type { HooksSettings } from "./hooks-normalize.ts";
 
 export interface LoadedPlugin {
   name: string;
@@ -31,6 +34,12 @@ export interface LoadedPlugin {
   agentsPath?: string;
   skillsPath?: string;
   workflowsPath?: string;
+  outputStylesPath?: string;
+  /** Style directories the manifest named beyond the plugin's own. */
+  outputStylesPaths?: string[];
+  themesPath?: string;
+  /** Palette directories the manifest named beyond the plugin's own. */
+  themesPaths?: string[];
   hooksConfig?: HooksSettings;
 }
 
@@ -75,322 +84,6 @@ export interface PluginLoadResult {
   errors: PluginLoadError[];
 }
 
-function canonicalPath(path: string): string {
-  try {
-    return realpathSync(path);
-  } catch {
-    return resolve(path);
-  }
-}
-
-function isWithinRoot(root: string, target: string): boolean {
-  const relativeTarget = relative(canonicalPath(root), canonicalPath(target));
-  return (
-    relativeTarget === "" ||
-    (relativeTarget !== ".." &&
-      !relativeTarget.startsWith(`..${sep}`) &&
-      !isAbsolute(relativeTarget))
-  );
-}
-
-function isFile(p: string): boolean {
-  try {
-    return statSync(p).isFile();
-  } catch {
-    return false;
-  }
-}
-
-function isDirectory(p: string): boolean {
-  try {
-    return statSync(p).isDirectory();
-  } catch {
-    return false;
-  }
-}
-
-function existsAt(p: string): boolean {
-  try {
-    statSync(p);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function readJsonFile(p: string): unknown {
-  const raw = readFileSync(p, "utf8");
-  return JSON.parse(raw);
-}
-
-function resolveManifestPath(pluginDir: string): string | null {
-  const nested = join(pluginDir, ".claude-plugin", "plugin.json");
-  if (isFile(nested)) return nested;
-  const flat = join(pluginDir, "plugin.json");
-  if (isFile(flat)) return flat;
-  return null;
-}
-
-function collectMdFiles(
-  dir: string,
-  root: string,
-): { name: string; path: string; content: string }[] {
-  if (!isDirectory(dir)) return [];
-  const results: { name: string; path: string; content: string }[] = [];
-  let entries: string[];
-  try {
-    entries = readdirSync(dir);
-  } catch {
-    return results;
-  }
-  for (const entry of entries) {
-    if (!entry.endsWith(".md")) continue;
-    const filePath = join(dir, entry);
-    if (!isWithinRoot(root, filePath)) continue;
-    if (!isFile(filePath)) continue;
-    try {
-      const content = readFileSync(filePath, "utf8");
-      const name = entry.replace(/\.md$/, "");
-      results.push({ name, path: filePath, content });
-    } catch {}
-  }
-  return results;
-}
-
-function collectMdPath(
-  path: string,
-  root: string,
-): { name: string; path: string; content: string }[] {
-  const target = resolve(root, path);
-  if (!isWithinRoot(root, target)) return [];
-  if (isDirectory(target)) return collectMdFiles(target, root);
-  if (!isFile(target) || extname(target).toLowerCase() !== ".md") return [];
-  try {
-    return [
-      {
-        name: basename(target, extname(target)),
-        path: target,
-        content: readFileSync(target, "utf8"),
-      },
-    ];
-  } catch {
-    return [];
-  }
-}
-
-function collectSkillEntries(dir: string, root: string): ResolvedSkill[] {
-  if (!isDirectory(dir)) return [];
-  const results: ResolvedSkill[] = [];
-  let entries: string[];
-  try {
-    entries = readdirSync(dir);
-  } catch {
-    return results;
-  }
-  for (const entry of entries) {
-    const entryPath = join(dir, entry);
-    if (!isWithinRoot(root, entryPath)) continue;
-    let stat: ReturnType<typeof statSync>;
-    try {
-      stat = statSync(entryPath);
-    } catch {
-      continue;
-    }
-    if (stat.isDirectory()) {
-      const skillFile = join(entryPath, "SKILL.md");
-      if (!isWithinRoot(root, skillFile)) continue;
-      try {
-        const content = readFileSync(skillFile, "utf8");
-        results.push({ name: entry, path: skillFile, content });
-      } catch {}
-    } else if (stat.isFile() && entry.endsWith(".md")) {
-      try {
-        const content = readFileSync(entryPath, "utf8");
-        results.push({ name: entry.replace(/\.md$/, ""), path: entryPath, content });
-      } catch {}
-    }
-  }
-  return results;
-}
-
-function collectSkillPath(path: string, root: string): ResolvedSkill[] {
-  const target = resolve(root, path);
-  if (!isWithinRoot(root, target)) return [];
-  if (isDirectory(target)) {
-    const skillFile = join(target, "SKILL.md");
-    if (isFile(skillFile)) {
-      try {
-        return [
-          { name: basename(target), path: skillFile, content: readFileSync(skillFile, "utf8") },
-        ];
-      } catch {
-        return [];
-      }
-    }
-    return collectSkillEntries(target, root);
-  }
-  return collectMdPath(target, root).map((entry) => ({
-    name: entry.name,
-    path: entry.path,
-    content: entry.content,
-  }));
-}
-
-function getNormalizedEventKey(eventKey: string): HookEvent | null {
-  if (typeof eventKey !== "string") return null;
-  const validEvents: ReadonlySet<string> = new Set(HOOK_EVENT_VALUES);
-  if (validEvents.has(eventKey)) {
-    return eventKey as HookEvent;
-  }
-  if (eventKey === "notification") {
-    return "Notification";
-  }
-  const normalized = eventKey.charAt(0).toLowerCase() + eventKey.slice(1);
-  if (validEvents.has(normalized)) {
-    return normalized as HookEvent;
-  }
-  return null;
-}
-
-type RawHookCommand = {
-  type?: string;
-  command?: string;
-  args?: unknown[];
-  prompt?: string;
-  timeout?: number;
-  timeoutMs?: number;
-};
-
-function normalizeHookEntry(
-  entry: RawHookCommand,
-  matcher: string,
-  pluginRoot: string,
-): HookEntry | null {
-  const type = entry.type;
-  if (isNonCommandHookType(type)) {
-    return null;
-  }
-
-  let timeoutMs: number | undefined;
-  if (typeof entry.timeoutMs === "number") {
-    timeoutMs = entry.timeoutMs;
-  } else if (typeof entry.timeout === "number") {
-    timeoutMs = entry.timeout * 1000;
-  }
-
-  if (type === "prompt") {
-    if (typeof entry.prompt !== "string") return null;
-    return {
-      type: "prompt",
-      matcher,
-      prompt: entry.prompt,
-      ...(timeoutMs !== undefined ? { timeoutMs } : {}),
-    };
-  }
-
-  if (typeof entry.command !== "string") return null;
-  let finalCommand = entry.command;
-  if (Array.isArray(entry.args)) {
-    finalCommand = [entry.command, ...entry.args].join(" ");
-  }
-
-  return {
-    type: "command",
-    matcher,
-    command: finalCommand,
-    pluginRoot,
-    ...(timeoutMs !== undefined ? { timeoutMs } : {}),
-  };
-}
-
-export function normalizePluginHooks(raw: unknown, pluginRoot: string): HooksSettings {
-  if (typeof raw === "string") {
-    const targetPath = resolve(pluginRoot, raw);
-    if (!isWithinRoot(pluginRoot, targetPath)) {
-      return {};
-    }
-    if (!isFile(targetPath)) {
-      return {};
-    }
-    try {
-      const fileContent = readFileSync(targetPath, "utf8");
-      let parsed = JSON.parse(fileContent);
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        if (
-          "hooks" in parsed &&
-          parsed.hooks &&
-          typeof parsed.hooks === "object" &&
-          !Array.isArray(parsed.hooks)
-        ) {
-          parsed = parsed.hooks;
-        }
-      }
-      return normalizePluginHooks(parsed, pluginRoot);
-    } catch {
-      return {};
-    }
-  }
-
-  if (Array.isArray(raw)) {
-    const merged: HooksSettings = {};
-    for (const item of raw) {
-      const itemSettings = normalizePluginHooks(item, pluginRoot);
-      for (const [evt, entries] of Object.entries(itemSettings)) {
-        const eventKey = evt as HookEvent;
-        if (entries) {
-          if (!merged[eventKey]) {
-            merged[eventKey] = [];
-          }
-          merged[eventKey]!.push(...entries);
-        }
-      }
-    }
-    return merged;
-  }
-
-  if (typeof raw === "object" && raw !== null) {
-    const settings: HooksSettings = {};
-    for (const [eventKey, entries] of Object.entries(raw)) {
-      const normalizedEvent = getNormalizedEventKey(eventKey);
-      if (!normalizedEvent) continue;
-
-      if (!Array.isArray(entries)) continue;
-
-      const normalizedEntries: HookEntry[] = [];
-      for (const entry of entries) {
-        if (!entry || typeof entry !== "object") continue;
-
-        if ("hooks" in entry && Array.isArray(entry.hooks)) {
-          const outerMatcher = typeof entry.matcher === "string" ? entry.matcher : "*";
-          for (const inner of entry.hooks) {
-            if (!inner || typeof inner !== "object") continue;
-            const normalized = normalizeHookEntry(inner, outerMatcher, pluginRoot);
-            if (normalized) {
-              normalizedEntries.push(normalized);
-            }
-          }
-        } else {
-          const matcher = typeof entry.matcher === "string" ? entry.matcher : "*";
-          const normalized = normalizeHookEntry(entry, matcher, pluginRoot);
-          if (normalized) {
-            normalizedEntries.push(normalized);
-          }
-        }
-      }
-
-      if (normalizedEntries.length > 0) {
-        if (!settings[normalizedEvent]) {
-          settings[normalizedEvent] = [];
-        }
-        settings[normalizedEvent]!.push(...normalizedEntries);
-      }
-    }
-    return settings;
-  }
-
-  return {};
-}
-
 function pluginIdForSource(name: string, source: string): PluginId | undefined {
   if (isPluginId(source)) return source;
   const marketplace = source.trim() && !source.includes("/") ? source : "local";
@@ -418,56 +111,6 @@ function loadError(
   };
 }
 
-function loadHooks(manifest: PluginManifest, hooksDir: string, root: string): HooksSettings | null {
-  let hooksJsonSettings: HooksSettings | null = null;
-  const hooksJsonPath = join(hooksDir, "hooks.json");
-  const hasHooksJson = isWithinRoot(root, hooksJsonPath) && isFile(hooksJsonPath);
-  if (hasHooksJson) {
-    try {
-      const raw = readJsonFile(hooksJsonPath);
-      let parsed = raw;
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        if (
-          "hooks" in parsed &&
-          parsed.hooks &&
-          typeof parsed.hooks === "object" &&
-          !Array.isArray(parsed.hooks)
-        ) {
-          parsed = parsed.hooks;
-        }
-      }
-      hooksJsonSettings = normalizePluginHooks(parsed, root);
-    } catch {}
-  }
-
-  let manifestSettings: HooksSettings | null = null;
-  const hasManifestHooks = manifest.hooks !== undefined;
-  if (hasManifestHooks) {
-    manifestSettings = normalizePluginHooks(manifest.hooks, root);
-  }
-
-  if (!hasHooksJson && !hasManifestHooks) {
-    return null;
-  }
-
-  const merged: HooksSettings = {};
-  const allEvents = new Set<HookEvent>([
-    ...(hooksJsonSettings ? (Object.keys(hooksJsonSettings) as HookEvent[]) : []),
-    ...(manifestSettings ? (Object.keys(manifestSettings) as HookEvent[]) : []),
-  ]);
-
-  for (const event of allEvents) {
-    const list1 = hooksJsonSettings?.[event] ?? [];
-    const list2 = manifestSettings?.[event] ?? [];
-    const combined = [...list1, ...list2];
-    if (combined.length > 0) {
-      merged[event] = combined;
-    }
-  }
-
-  return merged;
-}
-
 class PluginManifestLoadError extends Error {
   readonly code: string;
 
@@ -476,6 +119,14 @@ class PluginManifestLoadError extends Error {
     this.name = "PluginManifestLoadError";
     this.code = code;
   }
+}
+
+function resolveManifestPath(pluginDir: string): string | null {
+  const nested = join(pluginDir, ".claude-plugin", "plugin.json");
+  if (isFile(nested)) return nested;
+  const flat = join(pluginDir, "plugin.json");
+  if (isFile(flat)) return flat;
+  return null;
 }
 
 export function loadPluginFromDirectory(
@@ -500,6 +151,8 @@ export function loadPluginFromDirectory(
       "skills",
       "hooks",
       "workflows",
+      "output-styles",
+      "themes",
       ".mcp.json",
     ].some((entry) => existsAt(join(root, entry)));
     const fallbackName = basename(root);
@@ -534,6 +187,8 @@ export function loadPluginFromDirectory(
   const agentsPath = join(root, "agents");
   const skillsPath = join(root, "skills");
   const workflowsPath = join(root, "workflows");
+  const outputStylesPath = join(root, "output-styles");
+  const themesPath = join(root, "themes");
   const hooksDir = join(root, "hooks");
 
   const installation = findPluginInstallationByPath(root);
@@ -560,12 +215,41 @@ export function loadPluginFromDirectory(
     plugin.workflowsPath = workflowsPath;
   }
 
+  if (isDirectory(outputStylesPath)) {
+    plugin.outputStylesPath = outputStylesPath;
+  }
+
+  if (isDirectory(themesPath)) {
+    plugin.themesPath = themesPath;
+  }
+
+  // A manifest may name directories outside the default layout. One it names
+  // that is not there is dropped rather than carried as a path that will fail.
+  const declaredStyles = manifestPaths(manifest.outputStyles, root);
+  if (declaredStyles.length > 0) plugin.outputStylesPaths = declaredStyles;
+  const declaredThemes = manifestPaths(manifest.experimental?.themes ?? manifest.themes, root);
+  if (declaredThemes.length > 0) plugin.themesPaths = declaredThemes;
+
   const hooksConfig = loadHooks(manifest, hooksDir, root);
   if (hooksConfig !== null) {
     plugin.hooksConfig = hooksConfig;
   }
 
   return plugin;
+}
+
+/**
+ * The paths a manifest field names, resolved against the plugin. A directory or a
+ * single file both count — a plugin shipping one style should not have to make a
+ * directory to hold it. Anything missing, or pointing outside the plugin, is
+ * dropped rather than carried as a path that fails on use.
+ */
+function manifestPaths(spec: string | string[] | undefined, root: string): string[] {
+  if (spec === undefined) return [];
+  const declared = Array.isArray(spec) ? spec : [spec];
+  return declared
+    .map((entry) => resolve(root, entry))
+    .filter((path) => path.startsWith(root) && (isDirectory(path) || isFile(path)));
 }
 
 export function resolvePluginComponents(plugin: LoadedPlugin): ResolvedPlugin {
@@ -666,7 +350,7 @@ export function loadPluginsFromDirectories(
 ): PluginLoadResult {
   const candidates = new Map<PluginId, PluginCandidate>();
   const errors: PluginLoadError[] = [];
-  const currentProjectPath = normalizeProjectPath(options?.cwd ?? getTrackedCwd());
+  const currentProjectPath = canonicalProjectPath(options?.cwd ?? getTrackedCwd());
   const managedRoot = resolve(configRoot(), "plugins", "installed");
 
   function addCandidate(plugin: LoadedPlugin, rank: number, pluginId?: PluginId): void {

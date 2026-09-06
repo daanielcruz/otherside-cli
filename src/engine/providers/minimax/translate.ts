@@ -1,10 +1,11 @@
 import { parseModelId } from "@/engine/model/catalog.ts";
 import {
-  buildKimiMessages,
+  buildCompatMessages,
+  compatResponseTranslator,
   tagLastToolCache,
-  translateResponseKimi,
   userIdMetadata,
 } from "@/engine/providers/_shared/anthropic-compat-wire.ts";
+import { usageFromAnthropic } from "@/engine/providers/_shared/usage.ts";
 import type { Message } from "@/kernel/std/types/message.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 
@@ -22,7 +23,7 @@ export function translateRequestMinimax(
   tools: unknown[],
 ): unknown {
   const parsed = parseModelId(ctx.model);
-  const { system, out } = buildKimiMessages(messages, ctx.provider);
+  const { system, out } = buildCompatMessages(messages, ctx.provider);
 
   const body: Record<string, unknown> = {
     model: parsed.base,
@@ -36,4 +37,10 @@ export function translateRequestMinimax(
   return body;
 }
 
-export const translateResponseMinimax = translateResponseKimi;
+// Disjoint prompt counters, as Anthropic's own API reports them: requests that
+// read more from cache than they send fresh show cache_read is not a subset of
+// input_tokens here.
+export const translateResponseMinimax = compatResponseTranslator({
+  usage: usageFromAnthropic,
+  endpointLabel: "minimax/anthropic/messages",
+});

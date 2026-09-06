@@ -1,11 +1,11 @@
 import {
-  isQuotaStatus,
   type QuotaStatus,
   type RateLimitWindow,
   type RawUtilization,
   setUsageLimits,
   type UsageLimitState,
 } from "@/engine/session/usage/limits.ts";
+import { isQuotaStatus } from "@/engine/session/usage/routing-usage-normalize.ts";
 
 const WINDOW_HEADERS: readonly [RateLimitWindow, string][] = [
   ["five_hour", "5h"],
@@ -43,10 +43,10 @@ export function ingestAnthropicHeaders(headers: Headers): void {
   );
   if (!hasHeaders) return;
 
-  setUsageLimits(extractRawUtilization(headers), computeLimits(headers));
+  setUsageLimits(parseRawUtilization(headers), computeLimits(headers));
 }
 
-function extractRawUtilization(headers: Headers): RawUtilization {
+function parseRawUtilization(headers: Headers): RawUtilization {
   const next: RawUtilization = {};
   for (const [window, abbrev] of WINDOW_HEADERS) {
     const utilization = parseNumber(
@@ -72,11 +72,11 @@ function computeLimits(headers: Headers): UsageLimitState {
   const overageResetsAt = parseNumber(headers.get("anthropic-ratelimit-unified-overage-reset"));
   const overageDisabledReason =
     headers.get("anthropic-ratelimit-unified-overage-disabled-reason") ?? undefined;
-  const isUsingOverage =
+  const isOverageActive =
     status === "rejected" && (overageStatus === "allowed" || overageStatus === "allowed_warning");
 
   if (status === "allowed" || status === "allowed_warning") {
-    const earlyWarning = getEarlyWarningFromHeaders(headers, unifiedRateLimitFallbackAvailable);
+    const earlyWarning = earlyWarningFromHeaders(headers, unifiedRateLimitFallbackAvailable);
     if (earlyWarning) return mergeOverageState(earlyWarning, overageStatus, overageResetsAt);
     return {
       status: "allowed",
@@ -86,7 +86,7 @@ function computeLimits(headers: Headers): UsageLimitState {
       ...(overageStatus !== undefined ? { overageStatus } : {}),
       ...(overageResetsAt !== undefined ? { overageResetsAt } : {}),
       ...(overageDisabledReason !== undefined ? { overageDisabledReason } : {}),
-      isUsingOverage: false,
+      isOverageActive: false,
     };
   }
 
@@ -98,7 +98,7 @@ function computeLimits(headers: Headers): UsageLimitState {
     ...(overageStatus !== undefined ? { overageStatus } : {}),
     ...(overageResetsAt !== undefined ? { overageResetsAt } : {}),
     ...(overageDisabledReason !== undefined ? { overageDisabledReason } : {}),
-    isUsingOverage,
+    isOverageActive,
   };
 }
 
@@ -114,7 +114,7 @@ function mergeOverageState(
   };
 }
 
-function getEarlyWarningFromHeaders(
+function earlyWarningFromHeaders(
   headers: Headers,
   unifiedRateLimitFallbackAvailable: boolean,
 ): UsageLimitState | null {
@@ -133,20 +133,20 @@ function getEarlyWarningFromHeaders(
       ...(resetsAt !== undefined ? { resetsAt } : {}),
       rateLimitType,
       ...(utilization !== undefined ? { utilization } : {}),
-      isUsingOverage: false,
+      isOverageActive: false,
       surpassedThreshold,
     };
   }
 
   for (const config of EARLY_WARNING_CONFIGS) {
-    const warning = getTimeRelativeEarlyWarning(headers, config, unifiedRateLimitFallbackAvailable);
+    const warning = timeRelativeEarlyWarning(headers, config, unifiedRateLimitFallbackAvailable);
     if (warning) return warning;
   }
 
   return null;
 }
 
-function getTimeRelativeEarlyWarning(
+function timeRelativeEarlyWarning(
   headers: Headers,
   config: (typeof EARLY_WARNING_CONFIGS)[number],
   unifiedRateLimitFallbackAvailable: boolean,
@@ -169,7 +169,7 @@ function getTimeRelativeEarlyWarning(
     resetsAt,
     rateLimitType: config.rateLimitType,
     utilization,
-    isUsingOverage: false,
+    isOverageActive: false,
   };
 }
 

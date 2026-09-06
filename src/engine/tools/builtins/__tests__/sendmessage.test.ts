@@ -8,8 +8,18 @@ import {
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 import { SendMessage } from "../sendmessage.ts";
 
-const resumeForkWithMessageMock = mock(() =>
-  Promise.resolve({ delivered: false, code: "not_resumable", reason: "not resumable" }),
+type ResumeResult =
+  | { delivered: true; agentId: string; resumed: boolean; warning?: string }
+  | { delivered: false; code: string; reason: string };
+
+const resumeForkWithMessageMock = mock(
+  (
+    _to: string,
+    _prompt: string,
+    _ctx?: RequestContext,
+    _route?: { provider: string; model: string },
+  ): Promise<ResumeResult> =>
+    Promise.resolve({ delivered: false, code: "not_resumable", reason: "not resumable" }),
 );
 
 mock.module("@/engine/background/subagents/lifecycle.ts", () => ({
@@ -72,15 +82,14 @@ describe("SendMessage tool", () => {
     );
   });
 
-  test("fork ctx (agentId set) sending to its own id or unique alias -> refusal", async () => {
+  test("fork ctx (agentId set) sending to its own id -> refusal", async () => {
     const ctx: RequestContext = {
       sessionId: "session-main",
       agentId: "fork-1",
     } as unknown as RequestContext;
 
-    registerAgent("fork-1", "my-unique-alias");
+    registerAgent("fork-1");
 
-    // sending to own id
     const callId = {
       id: "call-3",
       name: "SendMessage",
@@ -91,44 +100,30 @@ describe("SendMessage tool", () => {
     expect(String(resultId.content)).toContain(
       "SendMessage cannot target the caller itself — this agent already sees this turn",
     );
-
-    // sending to own alias
-    const callAlias = {
-      id: "call-4",
-      name: "SendMessage",
-      input: { to: "my-unique-alias", message: "hello" },
-    };
-    const resultAlias = await SendMessage.run(callAlias, ctx);
-    expect(resultAlias.is_error).toBe(true);
-    expect(String(resultAlias.content)).toContain(
-      "SendMessage cannot target the caller itself — this agent already sees this turn",
-    );
   });
 
-  test("ambiguous recipient returns ambiguous_recipient and NO resume attempt", async () => {
+  // Addressing is id-only: a label that is not an id never routes to a running
+  // agent — delivery falls through to the resume path, which reports the
+  // unknown recipient with the registered ids.
+  test("a name-style label is not an address — the id is required", async () => {
     const ctx: RequestContext = {
       sessionId: "session-main",
       agentId: "fork-caller",
     } as unknown as RequestContext;
 
-    registerAgent("fork-1", "shared-name");
-    registerAgent("fork-2", "shared-name");
+    registerAgent("fork-1");
 
     const call = {
       id: "call-5",
       name: "SendMessage",
-      input: { to: "shared-name", message: "hello" },
+      input: { to: "some-agent-name", message: "hello" },
     };
 
     const result = await SendMessage.run(call, ctx);
-    expect(result.is_error).toBeUndefined(); // ok format returns JSON content with delivered: false
+    expect(result.is_error).toBeUndefined();
     const parsed = JSON.parse(String(result.content)) as Record<string, unknown>;
     expect(parsed.delivered).toBe(false);
-    expect(parsed.code).toBe("ambiguous_recipient");
-    expect(parsed.reason).toContain("claimed by 2 running agents");
-
-    // Assert resumeForkWithMessage was NOT called
-    expect(resumeForkWithMessageMock).toHaveBeenCalledTimes(0);
+    expect(resumeForkWithMessageMock).toHaveBeenCalledTimes(1);
   });
 
   test("delivered messages carry the correct from field", async () => {
@@ -137,13 +132,13 @@ describe("SendMessage tool", () => {
       agentId: undefined,
     } as unknown as RequestContext;
 
-    registerAgent("fork-target", "target-alias");
+    registerAgent("fork-target");
 
     // Main to fork
     const call1 = {
       id: "call-6",
       name: "SendMessage",
-      input: { to: "target-alias", message: "from main" },
+      input: { to: "fork-target", message: "from main" },
     };
     const res1 = await SendMessage.run(call1, ctxMain);
     expect(JSON.parse(String(res1.content)).delivered).toBe(true);
@@ -152,42 +147,108 @@ describe("SendMessage tool", () => {
     expect(msg?.message).toBe("from main");
     expect(msg?.from).toBe("main");
 
-    // Fork (with unique alias) to another fork
-    const ctxForkWithAlias: RequestContext = {
-      sessionId: "session-main",
-      agentId: "fork-sender-1",
-    } as unknown as RequestContext;
-    registerAgent("fork-sender-1", "sender-alias-1");
-
-    const call2 = {
-      id: "call-7",
-      name: "SendMessage",
-      input: { to: "target-alias", message: "from fork with alias" },
-    };
-    const res2 = await SendMessage.run(call2, ctxForkWithAlias);
-    expect(JSON.parse(String(res2.content)).delivered).toBe(true);
-
-    msg = dequeue("fork-target");
-    expect(msg?.message).toBe("from fork with alias");
-    expect(msg?.from).toBe("sender-alias-1");
-
-    // Fork (without unique alias) to another fork
-    const ctxForkNoAlias: RequestContext = {
+    // Fork to another fork: the sender is named by its id.
+    const ctxFork: RequestContext = {
       sessionId: "session-main",
       agentId: "fork-sender-2",
     } as unknown as RequestContext;
-    registerAgent("fork-sender-2"); // no alias
+    registerAgent("fork-sender-2");
 
     const call3 = {
       id: "call-8",
       name: "SendMessage",
-      input: { to: "target-alias", message: "from fork no alias" },
+      input: { to: "fork-target", message: "from fork" },
     };
-    const res3 = await SendMessage.run(call3, ctxForkNoAlias);
+    const res3 = await SendMessage.run(call3, ctxFork);
     expect(JSON.parse(String(res3.content)).delivered).toBe(true);
 
     msg = dequeue("fork-target");
-    expect(msg?.message).toBe("from fork no alias");
+    expect(msg?.message).toBe("from fork");
     expect(msg?.from).toBe("fork-sender-2");
+  });
+
+  test("a routing pair skips the inbox fast path and rides the resume call", async () => {
+    const ctx: RequestContext = {
+      sessionId: "session-main",
+      agentId: undefined,
+    } as unknown as RequestContext;
+    registerAgent("fork-routed");
+    resumeForkWithMessageMock.mockImplementationOnce(() =>
+      Promise.resolve({ delivered: true, agentId: "fork-routed", resumed: true }),
+    );
+
+    const result = await SendMessage.run(
+      {
+        id: "call-routing",
+        name: "SendMessage",
+        input: {
+          to: "fork-routed",
+          message: "switch and continue",
+          routing: { provider: "codex", model: "gpt-5.5" },
+        },
+      },
+      ctx,
+    );
+
+    expect(result.is_error).toBeUndefined();
+    expect(resumeForkWithMessageMock).toHaveBeenCalledTimes(1);
+    expect(resumeForkWithMessageMock.mock.calls[0]?.[3]).toEqual({
+      provider: "codex",
+      model: "gpt-5.5",
+    });
+    // The inbox was never used, so nothing is sitting in the target's queue.
+    expect(dequeue("fork-routed")).toBeNull();
+  });
+
+  test("a same-model routing no-op returns its warning in the tool result", async () => {
+    const ctx: RequestContext = {
+      sessionId: "session-main",
+      agentId: undefined,
+    } as unknown as RequestContext;
+    registerAgent("fork-noop");
+    const warning =
+      "routing ignored: agent fork-noop already runs codex/gpt-5.5. Omit `routing` unless the agent must move to a different provider/model.";
+    resumeForkWithMessageMock.mockImplementationOnce(() =>
+      Promise.resolve({ delivered: true, agentId: "fork-noop", resumed: false, warning }),
+    );
+
+    const result = await SendMessage.run(
+      {
+        id: "call-noop",
+        name: "SendMessage",
+        input: {
+          to: "fork-noop",
+          message: "keep going",
+          routing: { provider: "codex", model: "gpt-5.5" },
+        },
+      },
+      ctx,
+    );
+
+    const parsed = JSON.parse(String(result.content)) as Record<string, unknown>;
+    expect(parsed.delivered).toBe(true);
+    expect(parsed.warning).toBe(warning);
+  });
+
+  test("a half-filled routing field is rejected before any delivery", async () => {
+    const ctx: RequestContext = {
+      sessionId: "session-main",
+      agentId: undefined,
+    } as unknown as RequestContext;
+    registerAgent("fork-partial");
+
+    const result = await SendMessage.run(
+      {
+        id: "call-partial",
+        name: "SendMessage",
+        input: { to: "fork-partial", message: "hi", routing: { model: "gpt-5.5" } },
+      },
+      ctx,
+    );
+
+    expect(result.is_error).toBe(true);
+    expect(String(result.content)).toContain("{provider, model} pair");
+    expect(resumeForkWithMessageMock).toHaveBeenCalledTimes(0);
+    expect(dequeue("fork-partial")).toBeNull();
   });
 });

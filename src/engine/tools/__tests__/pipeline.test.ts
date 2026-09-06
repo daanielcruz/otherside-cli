@@ -43,6 +43,7 @@ function context(permissionModeIsFixed: boolean): RequestContext {
         effort: null,
         fastMode: false,
         permissionMode: "accept-edits",
+        orchestrationMode: "disabled" as const,
       }),
       dispatch: () => {},
     } as BrokerHandle,

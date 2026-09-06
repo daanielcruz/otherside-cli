@@ -3,10 +3,12 @@ import type { SlashContext, SlashResult } from "@/commands/types.ts";
 import { pathIsDirectory, relocateSession } from "@/engine/session/relocate-cwd.ts";
 import { askGroup } from "@/kernel/channels/ask.ts";
 import { isPathTrusted, setPathTrusted } from "@/kernel/config/project-trust.ts";
-import { cdRuleRefusalMessage, checkCdPermission } from "@/kernel/permissions/cd.ts";
+import { resolveConfig } from "@/kernel/config/resolver.ts";
+import { fireConfiguredHooks } from "@/kernel/hooks/handler.ts";
+import { cdRuleDenialMessage, evaluateCdPermission } from "@/kernel/permissions/cd.ts";
 import { expandPath } from "@/kernel/std/fs/expand-path.ts";
 
-export type ValidateCdTargetResult =
+export type CdTargetValidation =
   | { result: "ok"; directory: string }
   | { result: "same"; directory: string }
   | { result: "not_found"; path: string }
@@ -14,13 +16,13 @@ export type ValidateCdTargetResult =
   | {
       result: "blocked_by_rule";
       directory: string;
-      check: Exclude<ReturnType<typeof checkCdPermission>, { result: "allowed" }>;
+      check: Exclude<ReturnType<typeof evaluateCdPermission>, { result: "allowed" }>;
     };
 
 export async function validateCdTarget(
   inputPath: string,
   baseCwd: string,
-): Promise<ValidateCdTargetResult> {
+): Promise<CdTargetValidation> {
   const targetPath = expandPath(inputPath, baseCwd);
   const checked = await pathIsDirectory(targetPath);
   if (!checked.ok) {
@@ -46,7 +48,7 @@ export async function validateCdTarget(
     return { result: "same", directory: canonicalPath };
   }
 
-  const permissionResult = checkCdPermission(
+  const permissionResult = evaluateCdPermission(
     { requestedPath: targetPath, canonicalPath },
     { baseCwd },
   );
@@ -108,7 +110,7 @@ export async function handleCd(
     case "same":
       return feedbackResult(cmd, `Already in ${target.directory}.`);
     case "blocked_by_rule":
-      return feedbackResult(cmd, cdRuleRefusalMessage(target.directory, target.check));
+      return feedbackResult(cmd, cdRuleDenialMessage(target.directory, target.check));
   }
 
   const finalPath = target.directory;
@@ -123,6 +125,15 @@ export async function handleCd(
 
   try {
     const { modelMessage } = await relocateSession(ctx.session, finalPath, "cd_command");
+    await fireConfiguredHooks(ctx.config ?? resolveConfig(baseCwd), "cwdChanged", {
+      kind: "cwdChanged",
+      ctx: {
+        oldCwd: baseCwd,
+        newCwd: finalPath,
+        sessionId: ctx.session.id,
+        cwd: finalPath,
+      },
+    });
     try {
       ctx.agent.pushInjection(modelMessage);
     } catch {

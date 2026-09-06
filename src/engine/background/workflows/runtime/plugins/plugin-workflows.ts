@@ -17,13 +17,13 @@ export async function getPluginWorkflows(options?: {
 
   for (const { pluginId, plugin } of entries) {
     if (!options?.entries && !pluginsRegistry.isRuntimeEnabled(pluginId)) continue;
-    collected.push(...(await loadPluginWorkflowsFromDir(pluginId, plugin, seenPaths)));
+    collected.push(...(await loadPluginWorkflowsFromDirectory(pluginId, plugin, seenPaths)));
   }
 
   return collected;
 }
 
-async function loadPluginWorkflowsFromDir(
+async function loadPluginWorkflowsFromDirectory(
   pluginId: string,
   plugin: ReturnType<typeof pluginsRegistry.list>[number]["plugin"],
   seenPaths: Set<string>,

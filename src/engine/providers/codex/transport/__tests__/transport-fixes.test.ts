@@ -7,7 +7,8 @@ import { saveFor } from "@/kernel/storage/credentials.ts";
 import { streamHttp } from "../http.ts";
 import { stream } from "../index.ts";
 import { getTransport, snapshotForTest } from "../state.ts";
-import { CodexWsClosedBeforeCompletionError, CodexWsHandshakeError } from "../ws.ts";
+import { CodexWsClosedBeforeCompletionError } from "../ws-router.ts";
+import { CodexWsHandshakeError } from "../ws-socket-pool.ts";
 
 let configDir: string;
 const originalFetch = global.fetch;
@@ -95,7 +96,7 @@ describe("Codex Transport Fixes", () => {
     shouldFailWsStream = true;
     wsStreamErrorToThrow = new Error("codex ws stream: socket error");
     await expect(async () => {
-      for await (const _ of stream(ctx, {})) {
+      for await (const _ of stream(ctx, {}, ctx.abortSignal!)) {
       }
     }).toThrow("codex ws stream: socket error");
     expect(getTransport(sessionId)).toBe("ws");
@@ -103,7 +104,7 @@ describe("Codex Transport Fixes", () => {
 
     wsStreamErrorToThrow = new CodexWsClosedBeforeCompletionError(1006, "abnormal");
     await expect(async () => {
-      for await (const _ of stream(ctx, {})) {
+      for await (const _ of stream(ctx, {}, ctx.abortSignal!)) {
       }
     }).toThrow("codex ws closed before completion");
     expect(getTransport(sessionId)).toBe("ws");
@@ -111,7 +112,7 @@ describe("Codex Transport Fixes", () => {
 
     wsStreamErrorToThrow = new Error("codex ws stream: socket error");
     await expect(async () => {
-      for await (const _ of stream(ctx, {})) {
+      for await (const _ of stream(ctx, {}, ctx.abortSignal!)) {
       }
     }).toThrow("codex ws stream: socket error");
     expect(getTransport(sessionId)).toBe("http");
@@ -217,7 +218,7 @@ describe("Codex Transport Fixes", () => {
     });
 
     const chunks: Uint8Array[] = [];
-    for await (const chunk of stream(ctx, {})) {
+    for await (const chunk of stream(ctx, {}, ctx.abortSignal!)) {
       chunks.push(chunk);
     }
     expect(streamWsCallCount).toBe(2);

@@ -4,7 +4,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { loadConfigSync, updateConfig } from "@/kernel/config/config.ts";
 import { configRoot } from "@/kernel/std/fs/paths.ts";
 import { getTrackedCwd } from "@/kernel/std/state/cwd-state.ts";
-import { normalizeProjectPath } from "./identity.ts";
+import { canonicalProjectPath } from "./identity.ts";
 import {
   activeInstallPath,
   cachePathForPlugin,
@@ -56,7 +56,7 @@ function installPayload(
   scope: PluginInstallScope,
   cwd: string,
 ): InstallResult {
-  const projectPath = scope === "user" ? undefined : normalizeProjectPath(cwd);
+  const projectPath = scope === "user" ? undefined : canonicalProjectPath(cwd);
   const cachePath = cachePathForPlugin(marketplace, pluginName, version);
   const destination = activeInstallPath(pluginName, scope, marketplace, version, projectPath);
   const pluginId = `${pluginName}@${marketplace}`;
@@ -122,7 +122,7 @@ function installPayload(
     clearPluginPayloadOrphanMarker(destination);
     const result = complete({
       success: true,
-      message: `Installed ${installation.identity}. Run /reload to apply.`,
+      message: `Installed ${installation.identity}. Run /reload to activate.`,
       pluginName,
       identity: installation.identity,
       version,

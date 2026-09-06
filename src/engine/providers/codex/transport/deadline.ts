@@ -1,7 +1,4 @@
-import {
-  getStreamIdleTimeoutMs,
-  StreamIdleTimeoutError,
-} from "@/kernel/std/stream/idle-timeout.ts";
+import { byteSilenceLimitMs, StreamSilenceError } from "@/kernel/std/stream/idle-timeout.ts";
 
 export interface CodexStreamDeadline {
   readonly signal: AbortSignal;
@@ -9,14 +6,14 @@ export interface CodexStreamDeadline {
   arm(): void;
   dispose(): void;
   timedOut(): boolean;
-  timeoutError(): StreamIdleTimeoutError;
+  timeoutError(): StreamSilenceError;
 }
 
 export function createCodexStreamDeadline(
   parentSignal?: AbortSignal,
-  onTimeout?: (err: StreamIdleTimeoutError) => void,
+  onTimeout?: (err: StreamSilenceError) => void,
 ): CodexStreamDeadline {
-  const timeoutMs = getStreamIdleTimeoutMs();
+  const timeoutMs = byteSilenceLimitMs();
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | null = null;
   let didTimeOut = false;
@@ -27,7 +24,7 @@ export function createCodexStreamDeadline(
     timer = null;
   };
 
-  const timeoutError = (): StreamIdleTimeoutError => new StreamIdleTimeoutError(timeoutMs);
+  const timeoutError = (): StreamSilenceError => new StreamSilenceError(timeoutMs);
 
   const abort = (reason: unknown): void => {
     if (controller.signal.aborted) return;

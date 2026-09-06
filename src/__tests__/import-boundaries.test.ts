@@ -124,6 +124,29 @@ describe("import boundaries", () => {
     expect(offenders).toEqual([]);
   });
 
+  it("keeps kernel/std a leaf of the kernel", () => {
+    const stdRoot = "kernel/std/";
+    const offenders = allSourceFiles()
+      .filter((file) => repoPath(file).startsWith(stdRoot))
+      .flatMap((file) =>
+        importsIn(file)
+          .map(({ line, specifier }) => ({
+            line,
+            specifier,
+            target: sourceImportTarget(file, specifier),
+          }))
+          .filter(({ specifier, target }) => {
+            if (specifier.startsWith("@/kernel/")) {
+              return !specifier.startsWith("@/kernel/std");
+            }
+            if (target === null) return false;
+            return target.startsWith("kernel/") && !target.startsWith(stdRoot);
+          })
+          .map(({ line, specifier }) => `${repoPath(file)}:${line} imports ${specifier}`),
+      );
+    expect(offenders).toEqual([]);
+  });
+
   it("keeps store free of ui imports", () => {
     const offenders = importOffenders("store", (specifier) => specifier.startsWith("@/ui"));
     expect(offenders).toEqual([]);
@@ -188,18 +211,70 @@ describe("import boundaries", () => {
     expect(looseFiles).toEqual([]);
   });
 
-  it("routes render-layer imports through the @/ink barrel", () => {
-    const allowlist = new Set(["global.d.ts"]);
+  it("routes render-layer imports through the @/terminal-runtime barrel", () => {
+    // The view tier (src/ui) composes render primitives at module level — the same
+    // shape the pi-tui string model uses, where a component imports the text, focus,
+    // and component modules it renders with. Only layers outside the render + view
+    // tiers must reach the render layer through the barrel surface.
     const offenders = allSourceFiles()
       .filter((file) => !repoPath(file).startsWith("terminal-runtime/"))
+      .filter((file) => !repoPath(file).startsWith("ui/"))
       .flatMap((file) =>
         importsIn(file)
           .filter(({ specifier }) => specifier.startsWith("@/terminal-runtime/"))
-          .filter(() => !allowlist.has(repoPath(file)))
           .map(
             ({ line, specifier }) =>
-              `${repoPath(file)}:${line} imports ${specifier} — import the render layer through @/ink (terminal-runtime/index.ts barrel)`,
+              `${repoPath(file)}:${line} imports ${specifier} — import the render layer through the @/terminal-runtime barrel`,
           ),
+      );
+    expect(offenders).toEqual([]);
+  });
+
+  it("keeps render dependencies inside terminal-runtime", () => {
+    const renderPackages = [
+      "@alcalzone/ansi-tokenize",
+      "ansi-escapes",
+      "ansi-styles",
+      "bidi-js",
+      "chalk",
+      "cli-truncate",
+      "emoji-regex",
+      "get-east-asian-width",
+      "slice-ansi",
+      "widest-line",
+      "wrap-ansi",
+    ] as const;
+    const offenders = allSourceFiles()
+      .filter((file) => !repoPath(file).startsWith("terminal-runtime/"))
+      // Tests reconstruct expected styled output straight from a render package as an
+      // independent oracle; production code stays behind the barrel's style helpers.
+      .filter((file) => !repoPath(file).includes("/__tests__/"))
+      .flatMap((file) =>
+        importsIn(file)
+          .filter(({ specifier }) =>
+            renderPackages.some(
+              (packageName) => specifier === packageName || specifier.startsWith(`${packageName}/`),
+            ),
+          )
+          .map(({ line, specifier }) => `${repoPath(file)}:${line} imports ${specifier}`),
+      );
+    expect(offenders).toEqual([]);
+  });
+
+  it("keeps the Yoga vendor behind its geometry adapter", () => {
+    const adapter = "terminal-runtime/geometry/yoga-adapter.ts";
+    const vendorRoot = "terminal-runtime/geometry/vendor/yoga-layout/";
+    const offenders = allSourceFiles()
+      .filter((file) => repoPath(file) !== adapter && !repoPath(file).startsWith(vendorRoot))
+      .flatMap((file) =>
+        importsIn(file)
+          .map(({ line, specifier }) => ({
+            line,
+            specifier,
+            target: sourceImportTarget(file, specifier),
+          }))
+          .filter(({ target }) => target?.startsWith(vendorRoot))
+          .map(({ line, specifier }) => `${repoPath(file)}:${line} imports ${specifier}`),
       );
     expect(offenders).toEqual([]);
   });

@@ -14,9 +14,9 @@ import { getSandboxSettings, resetSandboxState } from "@/engine/sandbox/manager.
 import { sessionPathForCwd } from "@/engine/session/paths.ts";
 import { Session } from "@/engine/session/record/state.ts";
 import {
+  moveSessionTranscript,
   pathIsDirectory,
   relocateSession,
-  relocateSessionTranscript,
 } from "@/engine/session/relocate-cwd.ts";
 import { canonicalizeCwd } from "@/kernel/std/fs/paths.ts";
 import { getTrackedCwd, setTrackedCwd } from "@/kernel/std/state/cwd-state.ts";
@@ -64,7 +64,7 @@ describe("session cwd relocation", () => {
     mkdirSync(oldSessionDir);
     writeFileSync(join(oldSessionDir, "artifact.txt"), "artifact");
 
-    expect(await relocateSessionTranscript(session, destination)).toBe(true);
+    expect(await moveSessionTranscript(session, destination)).toBe(true);
     expect(session.storageCwd).toBe(destination);
     expect(existsSync(oldPath)).toBe(false);
     expect(readFileSync(newPath, "utf8")).toContain("session_meta");

@@ -1,21 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { PROVIDER_ID_VALUES } from "@/kernel/config/provider-ids.ts";
+import { PROVIDER_ID_VALUES } from "@/kernel/std/types/provider-ids.ts";
 import {
   clearRoutingUsage,
   clearUsageLimits,
-  EPOCHLESS_ROUTING_TTL_MS,
   getCurrentWarning,
   getProviderScopeEntries,
   getRoutingUsage,
   getRoutingUsageSnapshot,
   getUsageLimitSnapshot,
-  isRoutingUsageExpired,
-  normalizeEpochMs,
-  normalizeUtilizationPct,
   replaceProviderQuotaObservations,
-  routingUsageFromUsageLimits,
-  setAllocatedProvidersSource,
   setExtraUsageWarning,
+  setProviderAllocationsSource,
   setProviderQuotaObservation,
   setRoutingUsage,
   setUsageLimits,
@@ -26,6 +21,13 @@ import {
   warningForProvider,
   worstProviderWarning,
 } from "../usage/limits.ts";
+import {
+  EPOCHLESS_ROUTING_TTL_MS,
+  isRoutingUsageExpired,
+  normalizeEpochMs,
+  normalizeUtilizationPct,
+  routingUsageFromUsageLimits,
+} from "../usage/routing-usage-normalize.ts";
 
 afterEach(() => {
   clearRoutingUsage();
@@ -117,7 +119,7 @@ describe("routingUsageFromUsageLimits", () => {
     return {
       status: "allowed",
       unifiedRateLimitFallbackAvailable: false,
-      isUsingOverage: false,
+      isOverageActive: false,
       ...partial,
     };
   }
@@ -269,7 +271,7 @@ describe("pure reads + sweepExpiredRoutingUsage", () => {
       {
         status: "rejected",
         unifiedRateLimitFallbackAvailable: false,
-        isUsingOverage: false,
+        isOverageActive: false,
         rateLimitType: "five_hour",
         resetsAt: pastSeconds,
       },
@@ -303,6 +305,18 @@ describe("worstProviderWarning", () => {
     expect(worstProviderWarning()).toEqual({ message: "glm reached", severity: "error" });
   });
 
+  it("prefers the highest-utilization warning at the same severity", () => {
+    setProviderQuotaObservation("codex", {
+      warning: { message: "codex 71%", severity: "warning" },
+      routing: { trackingStatus: "tracked", utilizationPct: 71 },
+    });
+    setProviderQuotaObservation("glm", {
+      warning: { message: "glm 95%", severity: "warning" },
+      routing: { trackingStatus: "tracked", utilizationPct: 95 },
+    });
+    expect(worstProviderWarning()).toEqual({ message: "glm 95%", severity: "warning" });
+  });
+
   it("skips a provider whose routing entry has expired", () => {
     setExtraUsageWarning("codex", { message: "codex 80%", severity: "warning" });
     setExtraUsageWarning("glm", { message: "glm 96%", severity: "error" });
@@ -322,7 +336,7 @@ describe("worstProviderWarning", () => {
       {
         status: "rejected",
         unifiedRateLimitFallbackAvailable: false,
-        isUsingOverage: false,
+        isOverageActive: false,
         rateLimitType: "five_hour",
         resetsAt: futureSeconds,
       },
@@ -339,12 +353,12 @@ describe("worstProviderWarning allocation scoping", () => {
   });
 
   afterEach(() => {
-    setAllocatedProvidersSource(null);
+    setProviderAllocationsSource(null);
   });
 
   it("suppresses warnings for providers outside the live allocation set", () => {
     setExtraUsageWarning("codex", { message: "codex reached", severity: "error" });
-    setAllocatedProvidersSource(() => ["glm"]);
+    setProviderAllocationsSource(() => [{ provider: "glm" }]);
     // Codex quota was observed (e.g. /usage tab) but nothing allocates codex.
     expect(worstProviderWarning()).toBeNull();
   });
@@ -352,10 +366,10 @@ describe("worstProviderWarning allocation scoping", () => {
   it("surfaces warnings for the active provider and running delegated agents", () => {
     setExtraUsageWarning("codex", { message: "codex reached", severity: "error" });
     setExtraUsageWarning("glm", { message: "glm 80%", severity: "warning" });
-    setAllocatedProvidersSource(() => ["glm"]);
+    setProviderAllocationsSource(() => [{ provider: "glm" }]);
     expect(worstProviderWarning()).toEqual({ message: "glm 80%", severity: "warning" });
     // A running codex-pinned agent joins the allocation → codex may surface.
-    setAllocatedProvidersSource(() => ["glm", "codex"]);
+    setProviderAllocationsSource(() => [{ provider: "glm" }, { provider: "codex" }]);
     expect(worstProviderWarning()).toEqual({ message: "codex reached", severity: "error" });
   });
 
@@ -366,14 +380,14 @@ describe("worstProviderWarning allocation scoping", () => {
       {
         status: "rejected",
         unifiedRateLimitFallbackAvailable: false,
-        isUsingOverage: false,
+        isOverageActive: false,
         rateLimitType: "five_hour",
         resetsAt: futureSeconds,
       },
     );
-    setAllocatedProvidersSource(() => ["codex"]);
+    setProviderAllocationsSource(() => [{ provider: "codex" }]);
     expect(worstProviderWarning()).toBeNull();
-    setAllocatedProvidersSource(() => ["anthropic"]);
+    setProviderAllocationsSource(() => [{ provider: "anthropic" }]);
     expect(worstProviderWarning()?.severity).toBe("error");
   });
 
@@ -384,7 +398,7 @@ describe("worstProviderWarning allocation scoping", () => {
 
   it("full-roster reads (warningForProvider) stay unscoped for explicit surfaces", () => {
     setExtraUsageWarning("codex", { message: "codex reached", severity: "error" });
-    setAllocatedProvidersSource(() => ["glm"]);
+    setProviderAllocationsSource(() => [{ provider: "glm" }]);
     expect(warningForProvider("codex")?.message).toBe("codex reached");
   });
 });

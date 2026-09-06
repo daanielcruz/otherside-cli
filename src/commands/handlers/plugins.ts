@@ -11,12 +11,12 @@ import {
   formatPluginLookupFailure,
   lookupPluginInstallation,
 } from "@/engine/plugins/installations.ts";
+import { type AddMarketplaceResult, addMarketplace } from "@/engine/plugins/marketplace.ts";
 import {
-  addMarketplace,
   findMarketplacePlugin,
   installMarketplacePlugin,
   updateMarketplacePlugin,
-} from "@/engine/plugins/marketplace.ts";
+} from "@/engine/plugins/marketplace-install.ts";
 import {
   getKnownMarketplace,
   listAvailableMarketplaces,
@@ -53,7 +53,7 @@ function requestedScope(parts: readonly string[]): {
   return { ...(scope === undefined ? {} : { scope }), args: remaining };
 }
 
-function marketplaceUpdateFeedback(result: ReturnType<typeof addMarketplace>): string {
+function marketplaceUpdateFeedback(result: AddMarketplaceResult): string {
   if (!result.ok) return `Marketplace update failed: ${result.error ?? "unknown error"}`;
   const bumped = result.bumped ?? 0;
   return `Updated marketplace ${result.name}: ${result.count ?? 0} plugins, ${bumped} plugin${bumped === 1 ? "" : "s"} bumped.`;
@@ -106,7 +106,7 @@ export async function handleMarketplace(args: string): Promise<SlashResult> {
   }
   if (action === "add") {
     if (!target) return { kind: "instant", feedback: "Usage: /marketplace add <source>" };
-    const result = addMarketplace(target);
+    const result = await addMarketplace(target);
     return {
       kind: "instant",
       feedback: result.ok
@@ -132,7 +132,8 @@ export async function handleMarketplace(args: string): Promise<SlashResult> {
     if (entries.length === 0) {
       return { kind: "instant", feedback: "No marketplaces configured." };
     }
-    const results = entries.map((entry) => addMarketplace(entry.source));
+    const results: AddMarketplaceResult[] = [];
+    for (const entry of entries) results.push(await addMarketplace(entry.source));
     if (selected) return { kind: "instant", feedback: marketplaceUpdateFeedback(results[0]!) };
     const succeeded = results.filter((result) => result.ok);
     const bumped = succeeded.reduce((total, result) => total + (result.bumped ?? 0), 0);
@@ -196,26 +197,10 @@ export async function handlePlugins(args: string): Promise<SlashResult> {
           feedback: "Usage: /plugin install <plugin@marketplace> [--scope scope]",
         };
       }
-      const separator = installTarget.lastIndexOf("@");
-      const marketplaceMatch = separator < 1 ? findMarketplacePlugin(installTarget) : null;
-      const res =
-        separator > 0
-          ? installMarketplacePlugin(
-              installTarget.slice(separator + 1),
-              installTarget.slice(0, separator),
-              parsed.scope,
-            )
-          : marketplaceMatch
-            ? installMarketplacePlugin(
-                marketplaceMatch.marketplace,
-                marketplaceMatch.entry.name,
-                parsed.scope,
-              )
-            : installPlugin(
-                parsed.args.join(" "),
-                parsed.scope === undefined ? {} : { scope: parsed.scope },
-              );
-      return { kind: "instant", feedback: res.message };
+      return {
+        kind: "instant",
+        feedback: installRequested(installTarget, parsed.args, parsed.scope).message,
+      };
     }
     case "update": {
       const parsed = requestedScope(parts.slice(1));
@@ -255,4 +240,23 @@ export async function handlePlugins(args: string): Promise<SlashResult> {
     default:
       return { kind: "instant", feedback: `Unknown command: /plugins ${sub}` };
   }
+}
+
+/**
+ * Installing whatever the reader named: a plugin written `name@marketplace`, a
+ * bare name a marketplace claims, or a path. Named first, claimed second — a
+ * reader who wrote the marketplace out meant that one.
+ */
+function installRequested(
+  target: string,
+  args: readonly string[],
+  scope: InstallScope | undefined,
+): { message: string } {
+  const separator = target.lastIndexOf("@");
+  if (separator > 0) {
+    return installMarketplacePlugin(target.slice(separator + 1), target.slice(0, separator), scope);
+  }
+  const claimed = findMarketplacePlugin(target);
+  if (claimed) return installMarketplacePlugin(claimed.marketplace, claimed.entry.name, scope);
+  return installPlugin(args.join(" "), scope === undefined ? {} : { scope });
 }

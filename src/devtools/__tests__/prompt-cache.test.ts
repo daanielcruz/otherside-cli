@@ -7,7 +7,7 @@ import {
   resetPromptCacheDiagnosticsForTests,
   setPromptCacheDiagnosticSinkForTests,
 } from "@/devtools/prompt-cache.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 
 const ENV_KEY = "OTHERSIDE_PROMPT_CACHE_DIAG";

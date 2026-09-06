@@ -1,26 +1,5 @@
-import { getProviderConfig } from "@/engine/contract/registry.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
-import { getShortTimeZone } from "@/kernel/std/intl.ts";
-
-export function formatResetTime(unixSeconds: number): string | null {
-  if (!Number.isFinite(unixSeconds)) return null;
-  const ms = unixSeconds * 1000;
-  if (ms <= Date.now()) return null;
-  const date = new Date(ms);
-  const now = new Date();
-  const minutes = date.getMinutes();
-  const timeZone = getShortTimeZone(date);
-  const hoursUntilReset = (ms - now.getTime()) / 3_600_000;
-  if (hoursUntilReset > 24) return withTimezone(formatLongReset(date, now, minutes), timeZone);
-  return withTimezone(
-    date.toLocaleTimeString("en-US", {
-      hour: "numeric",
-      minute: minutes === 0 ? undefined : "2-digit",
-      hour12: true,
-    }),
-    timeZone,
-  );
-}
+import { formatResetTime } from "@/kernel/std/intl.ts";
+import { type ProviderId, providerDisplayName } from "@/kernel/std/types/provider-ids.ts";
 
 export function resetSuffixFromUnix(unixSeconds: number | undefined): string {
   if (unixSeconds === undefined) return "";
@@ -54,24 +33,6 @@ export function hitMessage(label: string, resetsAt: number | string | null): str
 
 export function approachingMessage(label: string, resetsAt: number | string | null): string {
   return `Approaching ${label}${resetSuffixFromAny(resetsAt)}`;
-}
-
-function formatLongReset(date: Date, now: Date, minutes: number): string {
-  const dateText = date.toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: date.getFullYear() !== now.getFullYear() ? "numeric" : undefined,
-  });
-  const timeText = date.toLocaleTimeString("en-US", {
-    hour: "numeric",
-    minute: minutes === 0 ? undefined : "2-digit",
-    hour12: true,
-  });
-  return `${dateText} at ${timeText}`;
-}
-
-function withTimezone(value: string, timeZone: string): string {
-  return `${value.replace(/ ([AP]M)/i, (_match, ampm: string) => ampm.toLowerCase())} (${timeZone})`;
 }
 
 /** Percent text that preserves a meaningful decimal (99.9) instead of flooring/rounding to an integer. */
@@ -133,8 +94,8 @@ function mapWindowOrFamilyLabel(label: string): string {
     .trim();
   const lc = text.toLowerCase();
 
-  // Codex wire keys: primary/secondary are never UI text. Product is weekly-only.
-  if (lc === "primary" || lc === "secondary") return "weekly";
+  if (lc === "primary") return "usage";
+  if (lc === "secondary") return "secondary usage";
 
   // Exact / near-exact window ids.
   if (
@@ -216,11 +177,7 @@ export function formatQuotaWarningMessage(
   windowOrFamily: string,
   resetsAt: number | string | null | undefined,
 ): string {
-  const providerLabel = getProviderConfig(provider)?.provider.label ?? provider;
-  let mappedType = mapWindowOrFamilyLabel(windowOrFamily);
-  // Codex product surface is weekly-only; never expose session/primary/secondary.
-  if (provider === "codex" && (mappedType === "session" || mappedType === "daily")) {
-    mappedType = "weekly";
-  }
+  const providerLabel = providerDisplayName(provider);
+  const mappedType = mapWindowOrFamilyLabel(windowOrFamily);
   return `[${providerLabel}] ${formatQuotaPercent(pct)}% ${capitalizeWindowLabel(mappedType)} · resets ${shortResetOrUnknown(resetsAt)}`;
 }

@@ -2,7 +2,7 @@ import type { RetryDecision } from "@/engine/contract/types.ts";
 import { resolveProviderError } from "@/engine/providers/_shared/provider-error.ts";
 import { ProviderHttpError } from "@/engine/providers/_shared/retry.ts";
 import { classifyProviderError } from "@/engine/transport/_infra/classify/classify.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 
 interface RateLimitErrorShape {

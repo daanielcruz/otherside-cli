@@ -58,17 +58,18 @@ export function parseGlmUsagePayload(value: unknown): PlanQuotaData | null {
 function assertSuccessfulPayload(value: unknown): void {
   const root = objectValue(value);
   const code = numberValue(root?.code);
-  const failed = root?.success === false || (code !== null && code !== 200);
+  const failed = root?.success === false || (code !== null && code !== 0 && code !== 200);
   if (!failed) return;
   const msg = nullableString(root?.msg) ?? "unknown error";
   throw new Error(`glm usage ${code ?? "error"}: ${truncateEllipsis(msg, 240)}`);
 }
 
 function limitToWindow(obj: Record<string, unknown>): PlanQuotaWindow | null {
-  const percentage = numberValue(obj.percentage);
-  if (percentage === null) return null;
+  if (!nullableString(obj.type)) return null;
+  const utilization = limitUtilization(obj);
+  if (utilization === null) return null;
   const limit: AnthropicRateLimitUsage = {
-    utilization: clampPercent(percentage),
+    utilization,
     resetsAt: resetIso(obj.nextResetTime),
   };
   return {
@@ -104,6 +105,15 @@ function planLevel(data: Record<string, unknown>): string | null {
   const level = nullableString(data.level);
   if (!level) return null;
   return `GLM Coding ${level.charAt(0).toUpperCase()}${level.slice(1).toLowerCase()}`;
+}
+
+function limitUtilization(obj: Record<string, unknown>): number | null {
+  const percentage = numberValue(obj.percentage);
+  if (percentage !== null) return FULL_PERCENT - clampPercent(percentage);
+  const remaining = numberValue(obj.remaining);
+  const total = numberValue(obj.number);
+  if (remaining === null || total === null || total <= 0) return null;
+  return FULL_PERCENT - clampPercent((remaining / total) * FULL_PERCENT);
 }
 
 function clampPercent(value: number): number {

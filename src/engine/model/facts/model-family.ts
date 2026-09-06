@@ -18,32 +18,31 @@ export function isSonnetModel(base: string): boolean {
   return base.includes("sonnet");
 }
 
-// Wire beta allowlist (first-party): haiku denied; sonnet-5 /
-// opus-4-8 / fable-5 carry mid-conversation-system-2026-04-07 on agentic mains.
-const MID_CONVERSATION_SYSTEM_BETA_SUPPORTED: ReadonlySet<string> = new Set([
-  "claude-opus-4-8",
-  "claude-fable-5",
-  "claude-sonnet-5",
-]);
-
-// System-block mid-conversation path stays narrower than the beta: only opus-4-8
-// and fable-5 assemble mid-system blocks; sonnet-5 keeps user-message injections
-// (sonnet also stays off the mid-system wording latch).
-const MID_CONVERSATION_SYSTEM_SUPPORTED: ReadonlySet<string> = new Set([
-  "claude-opus-4-8",
-  "claude-fable-5",
-]);
-
+// Denylist gate for mid-conversation-system-2026-04-07: the API rejects
+// mid-conversation `role:"system"` on haiku ("role 'system' is not supported
+// on this model"), so haiku keeps reminders in user blocks and omits the beta.
+// Every other first-party model carries the beta and promotes. The unwrap set
+// below stays narrower on purpose.
 export function modelSupportsMidConversationSystemBeta(base: string): boolean {
-  return MID_CONVERSATION_SYSTEM_BETA_SUPPORTED.has(base);
+  return !isHaikuModel(base);
 }
+
+// Unwrap set for promoted reminders: opus-5, opus-4-8, and fable-5 receive
+// mid-system content without the reminder wrapper (and take the mid-system
+// wording latch); every other model promotes keeping the wrapper.
+const MID_CONVERSATION_SYSTEM_SUPPORTED: ReadonlySet<string> = new Set([
+  "claude-opus-5",
+  "claude-opus-4-8",
+  "claude-fable-5",
+  "claude-fable-5-1",
+]);
 
 export function modelSupportsMidConversationSystem(base: string): boolean {
   return MID_CONVERSATION_SYSTEM_SUPPORTED.has(base);
 }
 
 // The main turn carries context_management on every first-party model: opus-4-8, fable-5, sonnet-5, and haiku-4-5. Haiku main turns include thinking, so their thinking-clearance logic applies. Family-5 prefixes cover future dated variants the same way family-4 prefixes do.
-export function modelSupportsContextManagement(base: string): boolean {
+export function modelHasContextManagement(base: string): boolean {
   return (
     isFableModel(base) ||
     base.includes("claude-opus-4") ||

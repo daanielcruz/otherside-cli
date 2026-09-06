@@ -12,6 +12,7 @@ import {
   translateResponseGrok as translateResponse,
 } from "@/engine/providers/xai/translate.ts";
 import { classifyProviderError } from "@/engine/transport/_infra/classify/classify.ts";
+import { providerDisplayName } from "@/kernel/std/types/provider-ids.ts";
 
 // xAI's chat proxy is the OpenAI Responses protocol, so grok rides the
 // `codex-responses` Api tag. There is no runtime dispatch on the Api literal —
@@ -21,9 +22,13 @@ const PROVIDER: ApiProvider<"codex-responses"> = {
   id: "xai",
   api: "codex-responses",
   sourceId: "builtin",
-  label: "xAI",
+  label: providerDisplayName("xai"),
   shortKey: "xai",
 };
+
+// Soft 429s on this surface settle or become hard limits quickly; two attempts
+// (one retry) is the local budget — not the shared DEFAULT_MAX_ATTEMPTS=10.
+const XAI_RATE_LIMIT_MAX_ATTEMPTS = 2;
 
 // A replayed encrypted-reasoning blob whose chain was broken (provider switch)
 // is rejected by the chat proxy. xAI rides the same Responses protocol as codex,
@@ -50,17 +55,18 @@ export const config: ProviderConfig<"codex-responses"> = {
   translateRequest,
   translateResponse,
   stream: xaiStream,
-  // Reasoning turns can stay event-silent for a while and the HTTP stream has no
-  // transport keep-alive, so raise the content-idle deadline as the backstop.
-  contentIdleTimeoutMs: 600_000,
+  // Grok reasoning stretches emit tiny summaries with >10min gaps between
+  // parsed events while the proxy keeps bytes flowing, so the content deadline
+  // stays generous; the default-on byte watchdog (300s) still catches a dead
+  // socket independently.
+  contentIdleTimeoutMs: 1_800_000,
   featureFlags: {
     fastMode: false,
-    effortSuffix: true,
     thinkingSuffix: true,
-    supportsImages: true,
+    supportsImages: false,
   },
-  defaultModelId: "grok-4.5",
-  fallbackEfforts: { levels: ["low", "medium", "high"], default: "high" },
+  defaultModelId: "grok-4.6",
+  fallbackEfforts: { levels: ["low", "medium", "high", "xhigh"], default: "high" },
   // WebSearch is served by the hosted web_search tool the translator injects, so
   // keep it out of the client catalog (no local DuckDuckGo fallback for xai).
   deferredOverrides: {
@@ -77,11 +83,25 @@ export const config: ProviderConfig<"codex-responses"> = {
     ) {
       return { kind: "retry", delayMs: 0, reason: "dropped stale encrypted reasoning" };
     }
-    return classifyProviderError(err, {
+    const decision = classifyProviderError(err, {
       attempt: attempt ?? 1,
       provider: ctx.provider,
       model: ctx.model,
     });
+    if (
+      decision.kind === "retry" &&
+      decision.status === 429 &&
+      (attempt ?? 1) >= XAI_RATE_LIMIT_MAX_ATTEMPTS
+    ) {
+      return {
+        kind: "fail",
+        reason: decision.reason,
+        userMessage: decision.reason,
+        status: decision.status,
+        message: decision.message,
+      };
+    }
+    return decision;
   },
   usageDetails: { sourceLabel: "SuperGrok OAuth" },
   beginLogin: { kind: "oauth_pkce", begin: xaiBeginLogin },

@@ -1,6 +1,6 @@
 import type { Device } from "@/backend/shared/device.ts";
 import { appPermissionMode } from "@/backend/shared/permission-mode.ts";
-import { isProviderId, type ProviderId } from "@/kernel/config/provider-ids.ts";
+import { isProviderId, type ProviderId } from "@/kernel/std/types/provider-ids.ts";
 import type { Broker, Session } from "@/kernel/std/types/session.ts";
 import {
   type CredentialsBundle,
@@ -82,7 +82,7 @@ export function sessionLivePayload(args: {
 } {
   const { device, session, broker, sessionSyncStatus } = args;
   const brokerState = broker.read();
-  const modelEntry = findCatalogModel(brokerState.model, brokerState.provider);
+  const modelEntry = findCatalogModel({ provider: brokerState.provider, model: brokerState.model });
   return {
     id: session.id,
     environment_id: device.id,

@@ -1,10 +1,9 @@
 import { findModel } from "@/engine/model/catalog.ts";
 import * as providers from "@/engine/providers/registry.ts";
 import { currentLocalISODate } from "@/engine/queue/runtime/turn-prompts.ts";
-import { pruneContentReplacementStateForSession } from "@/engine/session/compact/content-replacement-prune.ts";
 import {
-  getModelAutoCompactThreshold,
-  maxOutputTokensForModel,
+  modelAutoCompactTrigger,
+  providerCompactOutputLimit,
 } from "@/engine/session/compact/index.ts";
 import { clearLastUsage } from "@/engine/session/compact/last-usage.ts";
 import {
@@ -15,13 +14,19 @@ import {
 } from "@/engine/session/compact/rehydration.ts";
 import { summarizeConversation } from "@/engine/session/compact/summary.ts";
 import { estimateTokens } from "@/engine/session/compact/token-count.ts";
-import { appendRecord, nowIso, sessionPathForCwd } from "@/engine/session/index.ts";
+import { pruneToolOutputArchiveForSession } from "@/engine/session/compact/tool-output-archive-prune.ts";
+import {
+  appendRecord,
+  nowIso,
+  restampSessionTitles,
+  sessionPathForCwd,
+} from "@/engine/session/index.ts";
 import { MAIN_SCOPE, readSetClearExcept } from "@/engine/tools/builtins/read/state.ts";
 import { assembleProviderTurn } from "@/engine/translator/index.ts";
 import { makeQueue } from "@/harness/composer/queue.ts";
 import {
-  formatCompactSummary,
-  getCompactUserSummaryMessage,
+  compactSummaryUserMessage,
+  renderCompactSummary,
 } from "@/harness/routines/compact/index.ts";
 import { fireConfiguredHooks } from "@/kernel/hooks/handler.ts";
 import { AsyncStream } from "@/kernel/std/stream/async.ts";
@@ -154,7 +159,7 @@ async function applyCompactSummary(
   result: CompactSummary,
   opts: ForceCompactOptions | undefined,
 ): Promise<ForceCompactResult> {
-  const formatted = formatCompactSummary(result.summary);
+  const formatted = renderCompactSummary(result.summary);
   if (!formatted || formatted === "Summary:" || formatted.length < 50) {
     const errorMsg = "Compaction failed: generated summary is empty or too short.";
     opts?.onCompactDone?.({
@@ -166,7 +171,7 @@ async function applyCompactSummary(
     });
     throw new Error(errorMsg);
   }
-  const summaryMessage = getCompactUserSummaryMessage(result.summary, {
+  const summaryMessage = compactSummaryUserMessage(result.summary, {
     transcriptPath: run.transcriptPath,
   });
   const compactBrokerState = deps.agentDeps.broker.read();
@@ -188,6 +193,7 @@ async function applyCompactSummary(
   await appendRecord(deps.agentDeps.session, {
     type: "compaction_mark",
     ts: nowIso(),
+    uuid: crypto.randomUUID(),
     summary_ref: result.summary,
     provider: compactBrokerState.provider,
     model: compactBrokerState.model,
@@ -196,6 +202,9 @@ async function applyCompactSummary(
     trigger: "manual",
     ...(preservedImages.length > 0 ? { preservedImages } : {}),
   });
+  void restampSessionTitles(
+    sessionPathForCwd(deps.agentDeps.session.storageCwd, deps.agentDeps.session.id),
+  ).catch(() => {});
 
   deps.agentDeps.session.messages.splice(0, deps.agentDeps.session.messages.length, ...newMessages);
   clearLastUsage();
@@ -204,7 +213,7 @@ async function applyCompactSummary(
     restoredFiles.map((file) => file.path),
   );
   deps.clearNestedMemory?.();
-  pruneContentReplacementStateForSession(deps.agentDeps.session);
+  pruneToolOutputArchiveForSession(deps.agentDeps.session);
   deps.injections.drain();
   const compactBoundaryIdx = deps.agentDeps.session.records.findLastIndex(
     (r) => r.type === "compaction_mark",
@@ -246,11 +255,11 @@ export async function* forceCompactOnOverflow(
 ): AsyncIterable<AgentEvent> {
   if (deps.agentDeps.session.messages.length === 0) return;
   const state = deps.agentDeps.broker.read();
-  const model = findModel(state.model);
+  const model = findModel({ provider: state.provider, model: state.model });
   const window = model ? resolveCompactWindow(model) : 0;
-  const maxOutput = maxOutputTokensForModel(state.model);
+  const maxOutput = providerCompactOutputLimit({ provider: state.provider, model: state.model });
   const threshold = model
-    ? getModelAutoCompactThreshold({
+    ? modelAutoCompactTrigger({
         model,
         window,
         maxOutputTokens: maxOutput,

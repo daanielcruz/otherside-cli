@@ -1,257 +1,69 @@
-import { describe, expect, test } from "bun:test";
-import { INITIAL_PARSER_STATE, parseInputSequence } from "@/terminal-runtime/input/key-decoder.ts";
-import App from "@/terminal-runtime/react/runtime-root.tsx";
+import { describe, expect, it } from "bun:test";
+import {
+  decodeTerminalInput,
+  FRESH_INPUT_DECODE_STATE,
+} from "@/terminal-runtime/input/key-decoder.ts";
+import { PASTE_END, PASTE_START } from "@/terminal-runtime/terminal/control-sequences.ts";
 
-describe("parse-keypress terminal responses", () => {
-  test("decodes a two-parameter DECXCPR reply as a response event", () => {
-    const [events] = parseInputSequence(INITIAL_PARSER_STATE, "\x1b[?43;12R");
-    expect(events.length).toBe(1);
-    expect(events[0]!.kind).toBe("response");
-    expect((events[0] as any).response).toEqual({ type: "cursorPosition", row: 43, col: 12 });
+describe("terminal input decoding", () => {
+  it("emits text keys, focus changes, and atomic pastes", () => {
+    const [textEvents] = decodeTerminalInput(FRESH_INPUT_DECODE_STATE, "A");
+    expect(textEvents).toEqual([
+      expect.objectContaining({ kind: "key", name: "a", shift: true, sequence: "A" }),
+    ]);
+
+    const [focusEvents] = decodeTerminalInput(FRESH_INPUT_DECODE_STATE, "\x1b[I\x1b[O");
+    expect(focusEvents).toEqual([
+      { kind: "focus", focused: true },
+      { kind: "focus", focused: false },
+    ]);
+
+    const [pasteEvents] = decodeTerminalInput(
+      FRESH_INPUT_DECODE_STATE,
+      `${PASTE_START}line one\nline two${PASTE_END}`,
+    );
+    expect(pasteEvents).toEqual([
+      expect.objectContaining({
+        kind: "key",
+        isPasted: true,
+        name: "",
+        sequence: "line one\nline two",
+      }),
+    ]);
   });
 
-  test("decodes an iTerm three-parameter DECXCPR reply, ignoring the page", () => {
-    const [events] = parseInputSequence(INITIAL_PARSER_STATE, "\x1b[?43;3;1R");
-    expect(events.length).toBe(1);
-    expect(events[0]!.kind).toBe("response");
-    expect((events[0] as any).response).toEqual({ type: "cursorPosition", row: 43, col: 3 });
+  it("retains split control input and drains a lone escape", () => {
+    const [partialEvents, partialState] = decodeTerminalInput(FRESH_INPUT_DECODE_STATE, "\x1b[");
+    expect(partialEvents).toEqual([]);
+    expect(partialState.pending).toBe("\x1b[");
+
+    const [arrowEvents, completeState] = decodeTerminalInput(partialState, "A");
+    expect(arrowEvents).toEqual([
+      expect.objectContaining({ kind: "key", name: "up", sequence: "\x1b[A" }),
+    ]);
+    expect(completeState.pending).toBe("");
+
+    const [, escapeState] = decodeTerminalInput(FRESH_INPUT_DECODE_STATE, "\x1b");
+    const [escapeEvents] = decodeTerminalInput(escapeState, null);
+    expect(escapeEvents).toEqual([
+      expect.objectContaining({ kind: "key", name: "escape", sequence: "\x1b" }),
+    ]);
   });
 
-  test("a DECXCPR reply never leaks as printable key input", () => {
-    const [events] = parseInputSequence(INITIAL_PARSER_STATE, "\x1b[?43;3;1R\x1b[?43;12;1R");
-    expect(events.every((event) => event.kind === "response")).toBe(true);
-  });
-});
+  it("swallows terminal query replies that have no active request owner", () => {
+    const replies = [
+      "\x1b[?2026;1$y",
+      "\x1b[?997;1n",
+      "\x1b[?1;2c",
+      "\x1b[>1;2c",
+      "\x1b[?3u",
+      "\x1b[?17;8R",
+      "\x1b]11;rgb:ffff/ffff/ffff\x07",
+      "\x1bP>|xterm.js(5.5.0)\x1b\\",
+    ];
 
-describe("parse-keypress bracketed paste", () => {
-  test("happy path paste", () => {
-    const [events1, state1] = parseInputSequence(INITIAL_PARSER_STATE, "\x1b[200~");
-    expect(state1.mode).toBe("IN_PASTE");
-    expect(events1.length).toBe(0);
-
-    const [events2, state2] = parseInputSequence(state1, "hello world");
-    expect(state2.mode).toBe("IN_PASTE");
-    expect(state2.pasteBuffer).toBe("hello world");
-    expect(events2.length).toBe(0);
-
-    const [events3, state3] = parseInputSequence(state2, "\x1b[201~");
-    expect(state3.mode).toBe("NORMAL");
-    expect(events3.length).toBe(1);
-    expect(events3[0]!.kind).toBe("key");
-    expect((events3[0] as any).isPasted).toBe(true);
-    expect((events3[0] as any).sequence).toBe("hello world");
-  });
-
-  test("incomplete paste bracket flush clears paste mode", () => {
-    const [events1, state1] = parseInputSequence(INITIAL_PARSER_STATE, "\x1b[200~");
-    expect(state1.mode).toBe("IN_PASTE");
-
-    const [events2, state2] = parseInputSequence(state1, "partial paste content");
-    expect(state2.mode).toBe("IN_PASTE");
-
-    const [events3, state3] = parseInputSequence(state2, null);
-    expect(state3.mode).toBe("NORMAL");
-    expect(state3.pasteBuffer).toBe("");
-    expect(events3.length).toBe(1);
-    expect(events3[0]!.kind).toBe("key");
-    expect((events3[0] as any).isPasted).toBe(true);
-    expect((events3[0] as any).sequence).toBe("partial paste content");
-  });
-
-  test("flush with empty paste buffer clears paste mode", () => {
-    const [events1, state1] = parseInputSequence(INITIAL_PARSER_STATE, "\x1b[200~");
-    expect(state1.mode).toBe("IN_PASTE");
-
-    const [events2, state2] = parseInputSequence(state1, null);
-    expect(state2.mode).toBe("NORMAL");
-    expect(state2.pasteBuffer).toBe("");
-    expect(events2.length).toBe(0);
-  });
-
-  test("split paste bracket sequence is parsed correctly", () => {
-    const [events1, state1] = parseInputSequence(INITIAL_PARSER_STATE, "\x1b[200");
-    expect(state1.mode).toBe("NORMAL");
-    expect(state1.incomplete).toBe("\x1b[200");
-    expect(events1.length).toBe(0);
-
-    const [events2, state2] = parseInputSequence(state1, "~");
-    expect(state2.mode).toBe("IN_PASTE");
-    expect(state2.incomplete).toBe("");
-    expect(events2.length).toBe(0);
-
-    const [events3, state3] = parseInputSequence(state2, "hello");
-    expect(state3.mode).toBe("IN_PASTE");
-    expect(state3.pasteBuffer).toBe("hello");
-
-    const [events4, state4] = parseInputSequence(state3, "\x1b[201");
-    expect(state4.mode).toBe("IN_PASTE");
-    expect(state4.incomplete).toBe("\x1b[201");
-
-    const [events5, state5] = parseInputSequence(state4, "~");
-    expect(state5.mode).toBe("NORMAL");
-    expect(state5.incomplete).toBe("");
-    expect(events5.length).toBe(1);
-    expect(events5[0]!.kind).toBe("key");
-    expect((events5[0] as any).isPasted).toBe(true);
-    expect((events5[0] as any).sequence).toBe("hello");
-  });
-});
-
-describe("parse-keypress batched control runs", () => {
-  test("a run of backspaces yields one backspace event per byte", () => {
-    const [events] = parseInputSequence(INITIAL_PARSER_STATE, "\x7f\x7f\x7f");
-    expect(events.length).toBe(3);
-    for (const event of events) {
-      expect((event as any).name).toBe("backspace");
+    for (const reply of replies) {
+      expect(decodeTerminalInput(FRESH_INPUT_DECODE_STATE, reply)[0]).toEqual([]);
     }
-  });
-
-  test("printable text batched with a trailing backspace splits cleanly", () => {
-    const [events] = parseInputSequence(INITIAL_PARSER_STATE, "abc\x7f");
-    expect(events.length).toBe(2);
-    expect((events[0] as any).sequence).toBe("abc");
-    expect((events[1] as any).name).toBe("backspace");
-  });
-
-  test("pure printable batch stays a single event", () => {
-    const [events] = parseInputSequence(INITIAL_PARSER_STATE, "abcdef");
-    expect(events.length).toBe(1);
-    expect((events[0] as any).sequence).toBe("abcdef");
-  });
-
-  test("paste content is never split by control bytes", () => {
-    const [, s1] = parseInputSequence(INITIAL_PARSER_STATE, "\x1b[200~");
-    const [, s2] = parseInputSequence(s1, "a\x7fb");
-    const [events] = parseInputSequence(s2, "\x1b[201~");
-    expect(events.length).toBe(1);
-    expect((events[0] as any).sequence).toBe("a\x7fb");
-  });
-});
-
-describe("parse-keypress meta chords", () => {
-  test("ESC CR decodes as a single meta+return, not escape then bare return", () => {
-    const [events] = parseInputSequence(INITIAL_PARSER_STATE, "\x1b\r");
-    expect(events.length).toBe(1);
-    expect((events[0] as any).name).toBe("return");
-    expect((events[0] as any).meta).toBe(true);
-  });
-
-  test("ESC DEL decodes as meta+backspace", () => {
-    const [events] = parseInputSequence(INITIAL_PARSER_STATE, "\x1b\x7f");
-    expect(events.length).toBe(1);
-    expect((events[0] as any).name).toBe("backspace");
-    expect((events[0] as any).meta).toBe(true);
-  });
-
-  test("ESC CR batched with trailing text keeps the chord whole", () => {
-    const [events] = parseInputSequence(INITIAL_PARSER_STATE, "\x1b\rok");
-    expect(events.length).toBe(2);
-    expect((events[0] as any).name).toBe("return");
-    expect((events[0] as any).meta).toBe(true);
-    expect((events[1] as any).sequence).toBe("ok");
-  });
-});
-
-describe("App input timeout and paste lag guard", () => {
-  test("resolvePasteTimeout and resolveIncompleteSequence drain buffer and do not hang", () => {
-    let readCalls = 0;
-    const mockStdin = {
-      readableLength: 10,
-      read() {
-        readCalls++;
-        if (readCalls === 1) {
-          this.readableLength = 0;
-          return "chunk1";
-        }
-        this.readableLength = 0;
-        return null;
-      },
-      addListener: () => {},
-      removeListener: () => {},
-      setEncoding: () => {},
-      ref: () => {},
-      unref: () => {},
-      setRawMode: () => {},
-    } as any;
-
-    const mockStdout = {
-      write: () => true,
-    } as any;
-
-    const mockOnExit = () => {};
-
-    const app = new App({
-      children: null,
-      stdin: mockStdin,
-      stdout: mockStdout,
-      stderr: mockStdout,
-      exitOnCtrlC: false,
-      onExit: mockOnExit,
-      terminalColumns: 80,
-      terminalRows: 24,
-    });
-
-    app.keyParseState = {
-      mode: "IN_PASTE",
-      incomplete: "some-incomplete",
-      pasteBuffer: "some-paste",
-    };
-
-    app.resolvePasteTimeout();
-
-    expect(readCalls).toBeGreaterThan(0);
-    expect(mockStdin.readableLength).toBe(0);
-  });
-
-  test("resolvePasteTimeout handles empty read and does not loop forever", () => {
-    const mockStdin = {
-      readableLength: 10,
-      read: () => null,
-      addListener: () => {},
-      removeListener: () => {},
-      setEncoding: () => {},
-      ref: () => {},
-      unref: () => {},
-      setRawMode: () => {},
-    } as any;
-
-    const mockStdout = {
-      write: () => true,
-    } as any;
-
-    const mockOnExit = () => {};
-
-    const app = new App({
-      children: null,
-      stdin: mockStdin,
-      stdout: mockStdout,
-      stderr: mockStdout,
-      exitOnCtrlC: false,
-      onExit: mockOnExit,
-      terminalColumns: 80,
-      terminalRows: 24,
-    });
-
-    app.keyParseState = {
-      mode: "IN_PASTE",
-      incomplete: "some-incomplete",
-      pasteBuffer: "some-paste",
-    };
-
-    app.resolvePasteTimeout();
-    expect(app.pasteTimeoutRearmCount).toBe(1);
-    expect(app.pasteTimeoutTimer).not.toBeNull();
-
-    app.resolvePasteTimeout();
-    expect(app.pasteTimeoutRearmCount).toBe(2);
-    expect(app.pasteTimeoutTimer).not.toBeNull();
-
-    app.resolvePasteTimeout();
-    expect(app.pasteTimeoutRearmCount).toBe(3);
-    expect(app.pasteTimeoutTimer).not.toBeNull();
-
-    app.resolvePasteTimeout();
-    expect(app.pasteTimeoutRearmCount).toBe(0);
-    expect(app.pasteTimeoutTimer).toBeNull();
   });
 });

@@ -1,15 +1,22 @@
-import { afterEach, beforeAll, describe, expect, it, mock } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, mock } from "bun:test";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { LoadedPlugin } from "@/engine/plugins/loader.ts";
 import * as plugins from "@/engine/plugins/registry.ts";
 import { registerAllProviders } from "@/engine/providers/bootstrap.ts";
+import { formatGoalStatusBar } from "@/engine/queue/runtime.ts";
+import {
+  _resetGoalsForTesting,
+  getActiveGoal,
+  restoreGoalFromRecords,
+} from "@/engine/queue/state.ts";
+import { loadSessionForResume, Session, sessionPathForCwd } from "@/engine/session/index.ts";
 import { activePlanFilePath } from "@/engine/tools/plan-gate.ts";
 import type { UserConfig } from "@/kernel/config/config.ts";
 import {
   _resetAutoMemorySessionForTesting,
-  isAutoMemoryEnabled,
+  isSessionMemoryEnabled,
 } from "@/kernel/storage/memory/session-toggle.ts";
 import { dispatch, listCompletions, looksLikeCommand, lookup } from "../dispatch.ts";
 import { commandHint } from "../hints.ts";
@@ -108,6 +115,81 @@ describe("slash command hints", () => {
   });
 });
 
+describe("goal command persistence", () => {
+  let base: string;
+  let previousConfigDir: string | undefined;
+
+  beforeEach(() => {
+    base = mkdtempSync(join(tmpdir(), "goal-persistence-"));
+    previousConfigDir = process.env.OTHERSIDE_CONFIG_DIR;
+    process.env.OTHERSIDE_CONFIG_DIR = join(base, "config");
+    _resetGoalsForTesting();
+  });
+
+  afterEach(() => {
+    _resetGoalsForTesting();
+    if (previousConfigDir === undefined) delete process.env.OTHERSIDE_CONFIG_DIR;
+    else process.env.OTHERSIDE_CONFIG_DIR = previousConfigDir;
+    rmSync(base, { recursive: true, force: true });
+  });
+
+  it("writes an unmet goal status attachment to the transcript", async () => {
+    const session = new Session("goal-write-session", base);
+
+    await dispatch("/goal tests pass", { session } as SlashContext);
+
+    const lines = readFileSync(sessionPathForCwd(base, session.id), "utf8").trim().split("\n");
+    expect(lines).toHaveLength(1);
+    const written = JSON.parse(lines[0]!) as Record<string, unknown>;
+    expect(written.type).toBe("attachment");
+    expect(written.attachment).toEqual({
+      type: "goal_status",
+      condition: "tests pass",
+      met: false,
+      sentinel: true,
+    });
+  });
+
+  it("restores the goal badge after reconstructing the session from disk", async () => {
+    const session = new Session("goal-resume-session", base);
+    await dispatch("/goal release is ready", { session } as SlashContext);
+    _resetGoalsForTesting();
+
+    const { records } = await loadSessionForResume(session.id, base);
+    const restored = restoreGoalFromRecords(session.id, records);
+
+    expect(getActiveGoal(session.id)).toBe(restored);
+    expect(restored?.condition).toBe("release is ready");
+    const setAt = restored!.setAt;
+    expect(formatGoalStatusBar(restored!, setAt)).toBe("◎ /goal active");
+    expect(formatGoalStatusBar(restored!, setAt + 3_000)).toBe("◎ /goal active (3s)");
+    expect(formatGoalStatusBar(restored!, setAt + 5 * 60_000)).toBe("◎ /goal active (5m)");
+    expect(formatGoalStatusBar(restored!, setAt + 90 * 60_000)).toBe("◎ /goal active (1h)");
+  });
+
+  it("writes a terminal marker when the goal is cleared", async () => {
+    const session = new Session("goal-clear-session", base);
+    const context = { session } as SlashContext;
+    await dispatch("/goal tests pass", context);
+    await dispatch("/goal clear", context);
+    _resetGoalsForTesting();
+
+    const { records } = await loadSessionForResume(session.id, base);
+    const latest = records.at(-1);
+
+    expect(latest).toMatchObject({
+      type: "attachment",
+      attachment: {
+        type: "goal_status",
+        condition: "tests pass",
+        met: true,
+        sentinel: true,
+      },
+    });
+    expect(restoreGoalFromRecords(session.id, records)).toBeUndefined();
+  });
+});
+
 describe("config toggles via slash", () => {
   afterEach(() => {
     useMock = false;
@@ -132,15 +214,28 @@ describe("config toggles via slash", () => {
 
   it("accepts exact modes, cycles with no arg, and shares one persisted field", async () => {
     useMock = true;
+    // The session broker is the mode SoT; the config write only seeds new sessions.
+    const sessionCtx = (initialMode: string): SlashContext => {
+      let mode = initialMode;
+      return {
+        broker: {
+          read: () => ({ orchestrationMode: mode }),
+          dispatch: (event: { kind: string; mode?: string }) => {
+            if (event.kind === "set_orchestration_mode" && event.mode) mode = event.mode;
+          },
+        },
+      } as unknown as SlashContext;
+    };
+
     lastUpdatedConfig = null;
-    const disabled = { config: { orchestrationMode: "disabled" } } as unknown as SlashContext;
+    const disabled = sessionCtx("disabled");
     expect((await dispatch("/multiprovider default", disabled)).feedback).toBe(
       "Multiprovider set to default",
     );
     expectLastUpdatedConfig({ orchestrationMode: "default" });
 
     lastUpdatedConfig = null;
-    const defaultMode = { config: { orchestrationMode: "default" } } as unknown as SlashContext;
+    const defaultMode = sessionCtx("default");
     expect((await dispatch("/multiprovider", defaultMode)).feedback).toBe(
       "Multiprovider set to feudalism",
     );
@@ -307,17 +402,17 @@ describe("toggle-memory via dispatch", () => {
 
   it("flips the session override and reports the new state", async () => {
     const dummyCtx = {} as SlashContext;
-    const initial = isAutoMemoryEnabled();
+    const initial = isSessionMemoryEnabled();
 
     const flipped = await dispatch("/toggle-memory", dummyCtx);
     expect(flipped.kind).toBe("toggle");
-    expect(isAutoMemoryEnabled()).toBe(!initial);
+    expect(isSessionMemoryEnabled()).toBe(!initial);
     expect(flipped.feedback).toBe(
       !initial ? "Auto memory enabled for this session" : "Auto memory disabled for this session",
     );
 
     const restored = await dispatch("/toggle-memory", dummyCtx);
-    expect(isAutoMemoryEnabled()).toBe(initial);
+    expect(isSessionMemoryEnabled()).toBe(initial);
     expect(restored.feedback).toBe(
       initial ? "Auto memory enabled for this session" : "Auto memory disabled for this session",
     );
@@ -381,7 +476,7 @@ describe("plugin commands via dispatch", () => {
     expect(result.feedback).toBeUndefined();
     expect(opened).toEqual(["plugins"]);
     expect(peekPendingPluginCommandResult()).toBe(
-      "Disabled plugin demo-plugin@test. Run /reload to apply.",
+      "Disabled plugin demo-plugin@test. Run /reload to activate.",
     );
     expect(plugins.isEnabled("demo-plugin")).toBe(false);
     expect(plugins.isRuntimeEnabled("demo-plugin")).toBe(true);
@@ -405,7 +500,7 @@ describe("plugin commands via dispatch", () => {
     } as unknown as SlashContext);
     expect(result.kind).toBe("panel");
     expect(consumePendingPluginCommandResult()).toBe(
-      "Disabled plugin canonical@market. Run /reload to apply.",
+      "Disabled plugin canonical@market. Run /reload to activate.",
     );
   });
 

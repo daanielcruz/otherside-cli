@@ -22,7 +22,7 @@ mock.module("@/engine/providers/antigravity/fingerprint.ts", () => ({
   ...realFingerprintModule,
   backendHost: () => "https://daily-cloudcode-pa.googleapis.com",
   userAgent: () =>
-    "antigravity/cli/1.1.0 (aidev_client; os_type=darwin; arch=arm64; auth_method=consumer)",
+    "antigravity/cli/1.1.13 (aidev_client; os_type=darwin; arch=arm64; auth_method=consumer)",
 }));
 
 import {
@@ -35,10 +35,38 @@ import { providerRouteability } from "@/engine/session/usage/provider-routeabili
 import {
   applyAntigravityQuotaWarning,
   fetchAntigravityUsage,
+  parseGoogleOneCredits,
   parseQuotaSummary,
 } from "../usage.ts";
 
 const originalFetch = global.fetch;
+
+const QUOTA_SUMMARY_PAYLOAD = {
+  groups: [
+    {
+      displayName: "Gemini Quota",
+      buckets: [
+        {
+          displayName: "daily",
+          remainingFraction: 0.8,
+          resetTime: "2026-07-03T01:29:59Z",
+        },
+      ],
+    },
+  ],
+};
+
+const ELIGIBILITY_PAYLOAD = {
+  paidTier: {
+    availableCredits: [
+      {
+        creditType: "GOOGLE_ONE_AI",
+        creditAmount: "123",
+        minimumCreditAmountForUsage: "1",
+      },
+    ],
+  },
+};
 
 describe("antigravity usage", () => {
   let fetchCalls: Array<{ url: string; init: RequestInit | undefined }> = [];
@@ -49,25 +77,10 @@ describe("antigravity usage", () => {
     fetchCalls = [];
     global.fetch = mock((url: string | URL | Request, init?: RequestInit) => {
       fetchCalls.push({ url: String(url), init });
-      return Promise.resolve(
-        new Response(
-          JSON.stringify({
-            groups: [
-              {
-                displayName: "Gemini Quota",
-                buckets: [
-                  {
-                    displayName: "daily",
-                    remainingFraction: 0.8,
-                    resetTime: "2026-07-03T01:29:59Z",
-                  },
-                ],
-              },
-            ],
-          }),
-          { status: 200 },
-        ),
-      );
+      const payload = String(url).includes("loadCodeAssist")
+        ? ELIGIBILITY_PAYLOAD
+        : QUOTA_SUMMARY_PAYLOAD;
+      return Promise.resolve(new Response(JSON.stringify(payload), { status: 200 }));
     }) as unknown as typeof fetch;
   });
 
@@ -85,9 +98,9 @@ describe("antigravity usage", () => {
   it("POST retrieveUserQuotaSummary with project, UA, and auth headers", async () => {
     const result = await fetchAntigravityUsage();
     expect(result).not.toBeNull();
-    expect(fetchCalls.length).toBe(1);
+    expect(fetchCalls.length).toBe(2);
 
-    const call = fetchCalls[0]!;
+    const call = fetchCalls.find((c) => c.url.includes("retrieveUserQuotaSummary"))!;
     expect(call.url).toBe(
       "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
     );
@@ -100,9 +113,75 @@ describe("antigravity usage", () => {
     expect(headers).toBeDefined();
     expect(headers.Authorization).toBe("Bearer mock-access-token");
     expect(headers["User-Agent"]).toBe(
-      "antigravity/cli/1.1.0 (aidev_client; os_type=darwin; arch=arm64; auth_method=consumer)",
+      "antigravity/cli/1.1.13 (aidev_client; os_type=darwin; arch=arm64; auth_method=consumer)",
     );
-    expect(headers["User-Agent"]).toMatch(/1\.1\.0/);
+    expect(headers["User-Agent"]).toMatch(/1\.1\.13/);
+  });
+
+  it("POST loadCodeAssist eligibility check and surfaces the credit balance", async () => {
+    const result = await fetchAntigravityUsage();
+    expect(result?.creditBalance).toBe(123);
+
+    const call = fetchCalls.find((c) => c.url.includes("loadCodeAssist"))!;
+    expect(call.url).toBe("https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist");
+    expect(call.init?.method).toBe("POST");
+    expect(JSON.parse(call.init?.body as string)).toEqual({
+      metadata: { ideType: "ANTIGRAVITY" },
+      mode: "FULL_ELIGIBILITY_CHECK",
+    });
+    const headers = call.init?.headers as Record<string, string>;
+    expect(headers.Authorization).toBe("Bearer mock-access-token");
+  });
+
+  it("keeps the quota summary when the credit fetch fails", async () => {
+    global.fetch = mock((url: string | URL | Request, init?: RequestInit) => {
+      fetchCalls.push({ url: String(url), init });
+      if (String(url).includes("loadCodeAssist")) {
+        return Promise.resolve(new Response("boom", { status: 500 }));
+      }
+      return Promise.resolve(new Response(JSON.stringify(QUOTA_SUMMARY_PAYLOAD), { status: 200 }));
+    }) as unknown as typeof fetch;
+
+    const result = await fetchAntigravityUsage();
+    expect(result).not.toBeNull();
+    expect(result?.groups.length).toBe(1);
+    expect(result?.creditBalance).toBeNull();
+  });
+
+  describe("parseGoogleOneCredits (explicit row or unknown, never zero)", () => {
+    it("reads an explicit GOOGLE_ONE_AI decimal-string amount", () => {
+      expect(parseGoogleOneCredits(ELIGIBILITY_PAYLOAD)).toBe(123);
+    });
+
+    it('explicit "0" is a known-exhausted balance, not unknown', () => {
+      expect(
+        parseGoogleOneCredits({
+          paidTier: { availableCredits: [{ creditType: "GOOGLE_ONE_AI", creditAmount: "0" }] },
+        }),
+      ).toBe(0);
+    });
+
+    it("missing paidTier, matching row, or valid amount stays unknown", () => {
+      expect(parseGoogleOneCredits(null)).toBeNull();
+      expect(parseGoogleOneCredits({})).toBeNull();
+      expect(parseGoogleOneCredits({ paidTier: {} })).toBeNull();
+      expect(parseGoogleOneCredits({ paidTier: { availableCredits: [] } })).toBeNull();
+      expect(
+        parseGoogleOneCredits({
+          paidTier: { availableCredits: [{ creditType: "OTHER", creditAmount: "9" }] },
+        }),
+      ).toBeNull();
+      expect(
+        parseGoogleOneCredits({
+          paidTier: { availableCredits: [{ creditType: "GOOGLE_ONE_AI", creditAmount: "abc" }] },
+        }),
+      ).toBeNull();
+      expect(
+        parseGoogleOneCredits({
+          paidTier: { availableCredits: [{ creditType: "GOOGLE_ONE_AI" }] },
+        }),
+      ).toBeNull();
+    });
   });
 
   it("truncates non-2xx HTTP errors", async () => {

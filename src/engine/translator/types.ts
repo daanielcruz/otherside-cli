@@ -2,8 +2,8 @@ import type { ProviderPromptAdapter } from "@/engine/contract/prompt-adapter.ts"
 import type { DeferredOverrides } from "@/engine/tools/deferred-overrides.ts";
 import type { ComposedHarness, InjectionQueue } from "@/harness/composer/injections.ts";
 import type { UserConfig } from "@/kernel/config/config.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
 import type { Message } from "@/kernel/std/types/message.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 
 export interface ProviderToolDeclaration {

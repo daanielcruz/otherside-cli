@@ -29,38 +29,19 @@ export const DESIGN_SKILLS: Record<string, string> = {
 - Respect prefers-reduced-motion: don't force aggressive motion on a viewer who opted out — fall back to a calm or static state.`,
 
   document: `document:
-- Author the body as one continuous column the browser paginates at print time: wrap the whole document in a single <main class="doc"> whose first element is the h1 — never a masthead or eyebrow. If pasted source opens with a header or banner line, drop it. Target a print sheet (Letter or A4).
-- The Save/Export-to-PDF button calls window.print(); there is no rasterization — the PDF IS the print CSS. Everything below is the load-bearing mechanism; keep it intact.
-- Structure the body inside a spacer table so every printed page gets a top and bottom margin even though @page margin is 0:
-    <main class="doc">
-      <table class="doc-frame" role="presentation">
-        <thead><tr><td class="hdr-space"></td></tr></thead>
-        <tbody><tr><td> ...entire document body as static HTML... </td></tr></tbody>
-        <tfoot><tr><td class="ftr-space"></td></tr></tfoot>
-      </table>
-    </main>
-  The thead/tfoot repeat on every printed page, so their spacer cells ARE the per-page top/bottom margin. The whole body goes in the single tbody>tr>td cell; spacer cells stay empty.
-- Base CSS: body { margin:0; background: <the sheet color — #fff unless the design calls for a tinted sheet> }. .doc { box-sizing:border-box; max-width:8.5in; margin:0 auto; background:inherit; padding:48px clamp(24px,5vw,0.75in) 96px } — border-box + 8.5in + 0.75in padding = a 7in column on screen matching the sheet; keep .doc's background identical to body (a different one paints a visible gutter on wide windows) and add no box-shadow or border. .doc-frame { width:100%; border-collapse:collapse } and .doc-frame td { padding:0 }. Hide print-only chrome on screen: .running-hdr,.running-ftr,.hdr-space,.ftr-space { display:none }. Headings text-wrap:balance; body p/li text-wrap:pretty.
-- @page { size:letter; margin:0 } — the 0 is load-bearing: any nonzero @page margin re-opens the slot Chrome stamps its own date/URL/page-count into. Change size freely (letter/A4); keep margin 0 and supply margins as padding.
-- @media print block:
-    html { -webkit-print-color-adjust:exact; print-color-adjust:exact }
-    html, body { margin:0; padding:0; height:auto !important }
-    .doc { max-width:none !important; margin:0 !important; padding:0 0.75in !important; box-shadow:none !important; border:none !important }
-  Full-bleed background: when the sheet background is anything other than white, set that SAME color on html, body AND .doc (screen and print) — a tinted .doc over a white body leaves white bands at the page edges and between printed pages. The spacer cells (.hdr-space/.ftr-space) inherit the table background; give .doc-frame the sheet color too so the top/bottom margin bands print tinted, not white.
-    .hdr-space, .ftr-space { display:table-cell; height:0.75in !important }
-    h1,h2,h3,h4,h5,h6 { break-after:avoid }
-    figure, pre, blockquote, img, svg, tr { break-inside:avoid }
-    p, li { orphans:3; widows:3 }
-    .screen-only { display:none !important }
-  CRITICAL height reset: the preview is pinned to one viewport tall on screen, so any full-height container (html/body above, plus every 100vh/100dvh/min-height:100vh wrapper YOU add for on-screen centering) must be reset to height:auto here — otherwise the whole multi-page flow is trapped inside a single printed page and the PDF comes out as one crammed sheet. Add each block container you create (cards, callouts, stat tiles, multi-column groups) to the break-inside:avoid list so it stays whole across a page boundary; mark on-screen-only chrome (toolbars, download buttons) class="screen-only".
-- Running header/footer OFF by default — the body's own h1 already names the document. Only add them when asked or when the type calls for it (a long formal report, a brief needing a classification mark on every page): small muted uppercase type, no rule, position:fixed inside the 0.75in spacer band (.running-hdr top:0; padding:0.35in 0.75in 0 — .running-ftr bottom:0; padding:0 0.75in 0.35in), title left, short context right, footer different from header, never a "Page" label.
-- Page numbers OFF by default (they only render via @page margin boxes, which need a nonzero @page margin that re-opens Chrome's own header slot). Only when explicitly asked: switch to @page { size:letter; margin:0.6in; @bottom-right { content: counter(page) " of " counter(pages); font:10px sans-serif; color:#999 } }, move the .doc print padding to 0, and tell the user to untick "Headers and footers" in the print dialog.
-- Typography: 14-16px body, line-height 1.55-1.7, clear hierarchy, restrained palette, 12pt floor for print. Tables get a header row and hairline borders; figures and code blocks each carry a short caption. Links resolve to body ink at print. Keep body copy in real, editable elements so the user can retype directly.`,
+- Decide the pagination shape before building:
+  - FLOWING (default for reports, memos, letters, papers, guides): one continuous text flow that the browser paginates at print time.
+  - EXPLICIT pages (one-page résumé, poster, certificate, fixed multi-page layout): one <section class="page"> child per printed page.
+- Mount the host shell: put the document inside a single <doc-page size="letter" margin="0.75in"> (size="a4" when metric paper is right; orientation="landscape" when needed; width/height only when the user names a custom sheet). The host owns the desk background, white sheet card, repeating header/footer slots, and @page geometry — do NOT hand-write @page rules, body desk backgrounds, or a spacer-table print frame.
+- FLOWING shape: write normal static HTML inside <doc-page>; open with the h1 as the first content (no masthead/eyebrow). Optional repeating chrome: <header slot="header">…</header> / <footer slot="footer">…</footer> only when the type needs them (long formal report, classification mark) — small muted uppercase type, title left, short context right, never a "Page" label.
+- EXPLICIT shape: each direct child <section class="page"> is one full sheet; design each page to fill the named page box without overflow.
+- Fixed canvas scaled onto paper (poster/infographic onto letter): use content-width / content-height on <doc-page> so the host scales the authored artboard onto the printable area.
+- PDF export is window.print() — the print CSS IS the PDF. Prefer print-safe type (14–16px body, line-height 1.55–1.7, 12pt floor), real editable text elements, headered tables with hairline borders, captions on figures/code, and links that resolve to body ink at print. Use break-inside:avoid on cards/figures/tables you need whole; mark screen-only chrome class="screen-only".`,
 
   presentation: `presentation:
 - Ask for the talk's length in minutes and the intended aesthetic if they aren't given. Target a fixed design canvas (e.g. 1920x1080).
-- Author the deck as a single <deck-stage> element with one <section data-label="…"> per slide. The host shows one slide at a time and paginates it (arrow / PageUp-Down / Space / Home / End / digit keys, R to restart, plus a dot pager), and contain-fits the whole stage — declare the aspect with <meta name="design-fixed-size" content="1920,1080"> or width/height attributes on <deck-stage>, so it letterboxes cleanly at any pane size.
-- The stage absolutely positions and sizes every slide for you: do NOT set position/inset/width/height on the <section> elements — just give each its own background and content. Inactive slides stay mounted, so any video/form state survives navigation. For entrance animations, make the visible end-state the base style and animate from hidden gated on the [data-deck-active] attribute the host sets on the current slide, so print and reduced-motion still show content.
+- Ship the whole deck as ONE .os.html file: one <deck-stage> that contains every slide as a direct child <section data-label="…">. Never split slides into separate files or separate stages — the host paginates the light-DOM sections of that single stage (arrow / PageUp-Down / Space / Home / End / digit keys, R to restart, plus a dot pager) and contain-fits the stage. Declare the aspect with <meta name="design-fixed-size" content="1920,1080"> or width/height attributes on <deck-stage> so it letterboxes cleanly at any pane size.
+- The stage absolutely positions and sizes every slide for you. Forbidden on <section> selectors (and on rules that match those sections): position, top/right/bottom/left/inset, margin that repositions the slide. Prefer filling the slide with width/height 100% (or 100% via host geometry) plus flex/grid for inner layout — background, color, and padding only on the section itself. Inactive slides stay mounted, so any video/form state survives navigation. For entrance animations, make the visible end-state the base style and animate from hidden gated on the [data-deck-active] attribute the host sets on the current slide, so print and reduced-motion still show content.
 - Outline the full title sequence first as a storytelling pass — the titles alone should carry the narrative. Commit to one grammatical title style and steer clear of the AI tells (verdict titles, "it's not X, it's Y", manufactured suspense, punchlines).
 - Set a type and spacing scale up front and reuse it everywhere; hold to one or two background colors and one or two type pairings; keep section dividers identical and repeated elements in fixed positions.
 - Anchor content with align-items:flex-start and leave deliberate open space in the bottom third — resist the web reflex to center everything vertically.
@@ -69,7 +50,8 @@ export const DESIGN_SKILLS: Record<string, string> = {
 - Write entrance animations so the visible end-state is the base style and the motion runs from hidden, gated on reduced-motion, so print and reduced-motion still show everything.`,
 
   wireframe: `wireframe:
-- Go for breadth over polish: produce several (3-5) genuinely distinct structural approaches — different layouts, flows, or interaction models, never reskins of one idea — each as its own screen so they sit side-by-side on the canvas for comparison.
+- Go for breadth over polish: produce several (3-5) genuinely distinct structural approaches — different layouts, flows, or interaction models, never reskins of one idea.
+- Lay options as a vertical stack of turns in one .os.html (or one section per turn): newest exploration at the top; tag every option with a stable id the user can cite in chat (e.g. 1a, 1b, 2a). Cross-link later turns back to earlier ids when refining.
 - Keep fidelity deliberately low — black-and-white with at most a single accent, simple boxes and lines standing in for components, greeked or generic placeholder copy instead of finished words, system or sketchy hand-drawn-but-readable type — so attention stays on structure and flow, not surface.
 - Storyboard a journey as a sequence of separate screens showing each step or state, not a single isolated screen.
 - Label each approach clearly so every option is identifiable when the user weighs them against each other.
@@ -93,4 +75,75 @@ export const DESIGN_SKILLS: Record<string, string> = {
 - Present the system as specimen pages — one section per foundation (type ramp, color swatches with roles, spacing scale) and one per component family, each shown in its real states (default/hover/disabled).
 - Declare every token as a CSS custom property on :root so pages built on the system inherit it directly, and expose the key ones through window.DESIGN_TOKENS for host editor tweaks.
 - Provide reusable component and layout patterns (headers, cards, grids, section starters) styled exclusively through the tokens so brand alignment survives reuse.`,
+
+  resume: `resume:
+- Ship a print-ready CV as one continuous .os.html reading column. Use the document host shell: a single <doc-page size="letter" margin="0.75in"> (or size="a4") with either flowing content or one <section class="page"> when the brief is strictly one sheet. Do not invent a different print frame or hand-write @page rules.
+- Open with name, target role, and contact. Add a short summary only when it earns the real estate. Standard sections: work history, education, skills; projects or publications only when they carry weight for the brief.
+- Work history is newest-first: employer, title, dates, and a few outcome-led bullets with numbers when available. Group skills; do not spray tool names.
+- Keep type calm and print-safe (about 10–12pt body). Avoid multi-column games unless the layout is print-proven. Skip ornamental sidebars unless the user wants a designed variant.
+- Missing facts stay missing — ask rather than invent employers, dates, or metrics.`,
+
+  research: `research:
+- Treat the brief as an investigation, not a design-first exercise. Call web_search and web_fetch until the claim set is grounded; do not design the report from memory alone.
+- Breadth before synthesis: several distinct searches (a practical floor is four; keep going while new angles appear), each aimed at a concrete sub-question. Prefer primary material (specs, standards bodies, filings, vendor docs, peer-reviewed work) over secondary recaps. Reconcile conflicting numbers in the prose instead of averaging them away.
+- Track claim → URL → as-of date while researching. In the artifact, link substantive statements, stamp time-sensitive figures, and mark inference separately from sourced fact.
+- Default artifact: one self-contained .os.html report — open with the takeaways, then evidence-backed sections, then a linked bibliography. Editorial typography, selective pull-quotes, charts only when the data needs them. If PDF export is likely, inherit the document print rules.
+- End the search when returns go circular. Thin or contested evidence must be labeled as such.`,
+
+  object3d: `object3d:
+- Deliver a single .os.html that mounts the host viewer <three-d-stage> and a module that only builds the model. Do not reimplement the camera chrome, lighting, or exporters — the stage owns orbit/zoom/pan, studio light, ground contact shadow, auto-frame, and OBJ+MTL / GLB download.
+- Put a closed import map in <head> pinned to three@0.184.0 for three, OrbitControls, OBJExporter, and GLTFExporter only (the stage loads those modules through the map). No second three copy, no extra addons.
+- Page skeleton: full-viewport body, one <three-d-stage name="…"> (optional background / autorotate attrs), then a type=module script that awaits customElements.whenDefined("three-d-stage"), then stage.ready, builds a named THREE.Group, and calls stage.setObject(group).
+- Build from composed primitives (box, cylinder, sphere, torus, lathe, extrude) before raw BufferGeometry. Share a small MeshStandardMaterial set (a few materials total) with intentional roughness/metalness. Prefer form and material color over textures — texture detail does not round-trip through OBJ. NAME every mesh and material so exports stay usable.
+- Units are meters, y-up, origin-centered, resting on the lowest y. Nudge coplanar faces slightly to avoid z-fighting. Smooth curves need enough radial segments on visible features.
+- If the user asks for FBX/USDZ/STEP, say the stage exports OBJ+MTL and GLB only.
+- Review via canvas screenshots after module reloads; judge silhouette and material separation first.`,
+
+  email: `email:
+- Build one client-resilient HTML mail as .os.html: nested tables for structure, styles inline, content column near 600px, fonts with safe fallbacks. Do not depend on flex/grid for the primary frame.
+- Inbox-first hierarchy: scannable open, one clear primary action, controls large enough for touch. Favor opaque backgrounds and explicit text colors — translucent stacks break in many clients.
+- Marketing mail may include logo header, body blocks, and a quiet legal/unsubscribe footer; transactional mail stays minimal.
+- Images declare width, height, and alt. Critical content must not live only in CSS backgrounds. Assume no script and a narrow CSS subset (Gmail/Outlook class of clients).
+- Output should paste cleanly into a mail platform; no authoring comments in the rendered body.`,
+
+  flier: `flier:
+- One fixed sheet with a single job: communicate the message at a glance. Hierarchy is headline → supporting line → essentials (time/place/action) → secondary detail.
+- Mount the host shell as exactly one explicit page: <doc-page size="letter" margin="0.5in"><section class="page" id="flier">…</section></doc-page> (size/margin may change for A4/square when asked). The host owns the page box and print geometry — do NOT hand-write @page rules or a multi-page flow.
+- Composition is bold: large type, real empty space, one dominant visual. Refuse long website-style section stacks. Print-safe contrast and type (body at least ~12pt), margins that survive trim.
+- For events and promos, the date or call-to-action must land in the first look.`,
+
+  brochure: `brochure:
+- Mount the host shell as a landscape print piece: exactly one <doc-page size="letter" orientation="landscape"> with two explicit children <section class="page"> — first Outside (back / flap / cover in fold order), second Inside (three interior panels). The host owns the sheet, desk, and print geometry — do NOT hand-write @page rules or fake multi-page flows.
+- Each page is a three-column panel grid matching letter-landscape stock. Keep load-bearing type off the fold gutters. Sequence copy for how the piece opens, not only left-to-right on the flat.
+- Optional dashed fold guides at the 1/3 and 2/3 verticals (export-hideable via a design control when useful). Short blocks, one shared visual system, print-ready contrast.`,
+
+  website: `website:
+- Marketing or product landing as responsive .os.html screen(s): hero, supporting sections, footer. Web UI conventions apply; load interface craft for fidelity.
+- Above the fold: value proposition and primary action. Section rhythm is deliberate — avoid repeated identical card grids.
+- One depth mechanism, a decisive type pair, a hue-led palette. Mobile layout and ≥44px targets are required.
+- Keep interactive demos front-end local unless the user asks for multi-screen app state (then prototype).`,
+
+  social: `social:
+- Fixed artboards sized to the platform (square post, vertical story, landscape link card, etc.). One idea per frame; type must read on a phone.
+- Carousels are a sequence under one system that advances the story. Leave safe margins where platform chrome eats the edge.
+- Use provided brand marks; otherwise invent a small system and hold it. No micro type, no cluttered widget piles.
+- For imagery the user should supply or replace, mount <image-slot> with a stable unique id and a specific placeholder. Choose shape="rect"|"rounded"|"circle"|"pill" or radius; the host owns file picking, drag-and-drop, replacement, and reload persistence. Size the slot through its container unless the artboard requires fixed dimensions.
+- Each frame is its own .os.html artboard; set design-fixed-size when it helps the host frame the canvas.`,
+
+  dataviz: `dataviz:
+- Start from the question the graphic must answer, then pick a form that fits (bar, line, area, scatter, heatmap, small multiples). Do not costume weak data as decorative charts.
+- Prefer direct labels; always show units, provenance, and date. Position/length beat hue for encoding; keep palettes colorblind-safe; call out the outliers that matter.
+- Ship as .os.html: graphic plus a short written takeaway. Draw with SVG or light CSS/JS unless complexity forces a library.
+- Placeholder numbers must be labeled as such — request real data before treating the piece as final.`,
+
+  pairing: `pairing:
+- Output specimen boards that compare color and type systems, not full marketing pages. Present a few named options (side by side or as separate screens), each with swatches (hex/oklch), display/text samples at several sizes, and a tiny applied snippet.
+- Contrast the options deliberately so a direction is choosable (e.g. warm editorial vs cool technical).
+- Sample words should relate to the brief; skip filler sections that do not help judgment.`,
+
+  diagram: `diagram:
+- Render systems, flows, architecture, org, or journeys as clear HTML/SVG diagrams. Labels first; nodes consistent; edge direction unambiguous.
+- Prefer orthogonal flows (left→right or top→bottom). Cluster related nodes. Use line style sparingly (solid primary, dashed secondary). Split overcrowded graphs into layers.
+- One visual system for fills, strokes, type, and spacing. Deliver a single .os.html artboard for capture or print.
+- If entities or relations are unknown, ask before inventing a large topology.`,
 };

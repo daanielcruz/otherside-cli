@@ -1,120 +1,131 @@
-import { listProviderConfigs } from "@/engine/contract/registry.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
+import { getProviderConfig } from "@/engine/contract/registry.ts";
+import type { ProviderId, ProviderModelRoute } from "@/kernel/std/types/provider-ids.ts";
 
-export const MAX_OUTPUT_TOKENS_FOR_SUMMARY = 20_000;
-export const AUTO_COMPACT_BUFFER_TOKENS = 13_000;
-export const MANUAL_COMPACT_BUFFER_TOKENS = 3_000;
+export const COMPACT_SUMMARY_TOKEN_RESERVE = 20_000;
+export const AUTO_COMPACT_TOKEN_HEADROOM = 13_000;
+export const BLOCKING_COMPACT_TOKEN_HEADROOM = 3_000;
 
-export const MIN_AUTO_COMPACT_WINDOW = 100_000;
-export const MAX_AUTO_COMPACT_WINDOW = 1_000_000;
+export const COMPACT_WINDOW_MINIMUM = 100_000;
+export const COMPACT_WINDOW_MAXIMUM = 1_000_000;
 
-export const RAPID_REFILL_TURN_THRESHOLD = 3;
-export const MAX_CONSECUTIVE_RAPID_REFILLS = 3;
-export const AUTOCOMPACT_RAPID_REFILL_ERROR_MESSAGE = `Autocompact is thrashing: the context refilled to the limit within ${RAPID_REFILL_TURN_THRESHOLD} turns of the previous compact, ${MAX_CONSECUTIVE_RAPID_REFILLS} times in a row. A file being read or a tool output is likely too large for the context window. Try reading in smaller chunks, or use a tool that returns a summary.`;
+export const RAPID_REFILL_TURN_SPAN = 3;
+export const RAPID_REFILL_STREAK_LIMIT = 3;
+export const RAPID_REFILL_FAILURE_TEXT = `Autocompact is thrashing: the context refilled to the limit within ${RAPID_REFILL_TURN_SPAN} turns of the previous compact, ${RAPID_REFILL_STREAK_LIMIT} times in a row. A file being read or a tool output is likely too large for the context window. Try reading in smaller chunks, or use a tool that returns a summary.`;
 
-export function maxOutputTokensForModel(model: string): number {
-  for (const config of listProviderConfigs()) {
-    for (const entry of config.models ?? []) {
-      if (entry.id === model && entry.maxTokens > 0) return entry.maxTokens;
-    }
-  }
-  return MAX_OUTPUT_TOKENS_FOR_SUMMARY;
+export function providerCompactOutputLimit(route: ProviderModelRoute): number {
+  const registeredModel = getProviderConfig(route.provider)?.models?.find(
+    ({ id }) => id === route.model,
+  );
+  const declaredLimit = registeredModel?.maxTokens;
+  return declaredLimit !== undefined && declaredLimit > 0
+    ? declaredLimit
+    : COMPACT_SUMMARY_TOKEN_RESERVE;
 }
 
-export function parseTokenShorthand(raw: string): number | "auto" | undefined {
-  const text = raw.trim().toLowerCase();
-  if (text === "auto") return "auto";
-  let value: number;
-  if (text.endsWith("m")) {
-    value = Number.parseFloat(text) * 1_000_000;
-  } else if (text.endsWith("k")) {
-    value = Number.parseFloat(text) * 1_000;
-  } else {
-    const parsed = Number.parseInt(text, 10);
-    value = parsed >= 100 && parsed <= 1000 ? parsed * 1000 : parsed;
-  }
-  if (
-    !Number.isFinite(value) ||
-    value < MIN_AUTO_COMPACT_WINDOW ||
-    value > MAX_AUTO_COMPACT_WINDOW
-  ) {
-    return undefined;
-  }
-  return Math.round(value);
+function applyBareNumberScale(value: number): number {
+  const usesThousands = value >= 100 && value <= 1000;
+  return usesThousands ? value * 1_000 : value;
 }
 
-export type AutoCompactWindowSource = "env" | "settings" | "auto";
+export function readCompactWindowValue(input: string): number | "auto" | undefined {
+  const normalized = input.trim().toLowerCase();
+  if (normalized === "auto") return "auto";
 
-export interface AutoCompactWindowResult {
+  const suffix = normalized.at(-1);
+  const multiplier = suffix === "m" ? 1_000_000 : suffix === "k" ? 1_000 : undefined;
+  const parsed = multiplier
+    ? Number.parseFloat(normalized) * multiplier
+    : applyBareNumberScale(Number.parseInt(normalized, 10));
+  const withinPolicyRange =
+    Number.isFinite(parsed) && parsed >= COMPACT_WINDOW_MINIMUM && parsed <= COMPACT_WINDOW_MAXIMUM;
+  return withinPolicyRange ? Math.round(parsed) : undefined;
+}
+
+export type CompactWindowSource = "env" | "settings" | "auto";
+
+export interface ResolvedCompactWindow {
   window: number;
   configured: number;
-  source: AutoCompactWindowSource;
+  source: CompactWindowSource;
 }
 
-export function resolveAutoCompactWindow(
-  modelWindow: number,
-  settingsWindow?: number,
-): AutoCompactWindowResult {
-  const envRaw = process.env.OTHERSIDE_AUTO_COMPACT_WINDOW;
-  if (envRaw) {
-    const parsed = parseTokenShorthand(envRaw);
-    if (parsed !== undefined && parsed !== "auto") {
-      const configured = Math.max(MIN_AUTO_COMPACT_WINDOW, parsed);
-      return { window: Math.min(modelWindow, configured), configured, source: "env" };
-    }
-  }
-  if (settingsWindow !== undefined) {
+export function configuredCompactWindow(
+  modelCapacity: number,
+  savedWindow?: number,
+): ResolvedCompactWindow {
+  const envValue = process.env.OTHERSIDE_AUTO_COMPACT_WINDOW;
+  const requestedByEnv = envValue ? readCompactWindowValue(envValue) : undefined;
+  if (typeof requestedByEnv === "number") {
+    const configured = Math.max(COMPACT_WINDOW_MINIMUM, requestedByEnv);
     return {
-      window: Math.min(modelWindow, settingsWindow),
-      configured: settingsWindow,
+      window: Math.min(modelCapacity, configured),
+      configured,
+      source: "env",
+    };
+  }
+
+  if (savedWindow !== undefined) {
+    return {
+      window: Math.min(modelCapacity, savedWindow),
+      configured: savedWindow,
       source: "settings",
     };
   }
-  return { window: modelWindow, configured: modelWindow, source: "auto" };
+
+  return { window: modelCapacity, configured: modelCapacity, source: "auto" };
 }
 
-export function getEffectiveContextWindowSize(
-  contextWindow: number,
-  maxOutputTokens = MAX_OUTPUT_TOKENS_FOR_SUMMARY,
+export function availableCompactTokens(
+  windowSize: number,
+  outputAllowance = COMPACT_SUMMARY_TOKEN_RESERVE,
 ): number {
-  const reserved = Math.min(maxOutputTokens, MAX_OUTPUT_TOKENS_FOR_SUMMARY);
-  return contextWindow - reserved;
+  return windowSize - Math.min(outputAllowance, COMPACT_SUMMARY_TOKEN_RESERVE);
 }
 
-function bufferEnvOverride(): number | null {
-  const envOverride = process.env.OTHERSIDE_AUTOCOMPACT_BUFFER_TOKENS;
-  if (!envOverride) return null;
-  const parsed = Number.parseInt(envOverride, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+function positiveIntegerEnv(name: string): number | undefined {
+  const raw = process.env[name];
+  if (!raw) return undefined;
+  const value = Number.parseInt(raw, 10);
+  return Number.isFinite(value) && value > 0 ? value : undefined;
 }
 
-function percentEnvOverride(): number | null {
-  const envOverride = process.env.OTHERSIDE_AUTOCOMPACT_PCT_OVERRIDE;
-  if (!envOverride) return null;
-  const parsed = Number.parseFloat(envOverride);
-  return Number.isNaN(parsed) || parsed <= 0 || parsed > 100 ? null : parsed;
+function validPercentageEnv(name: string): number | undefined {
+  const raw = process.env[name];
+  if (!raw) return undefined;
+  const value = Number.parseFloat(raw);
+  return Number.isNaN(value) || value <= 0 || value > 100 ? undefined : value;
 }
 
-function baseAutoCompactThreshold(contextWindow: number, maxOutputTokens: number): number {
-  const effective = getEffectiveContextWindowSize(contextWindow, maxOutputTokens);
-  const bufferEnv = bufferEnvOverride();
-  if (bufferEnv !== null) return effective - bufferEnv;
-  return effective - AUTO_COMPACT_BUFFER_TOKENS;
+interface CompactThresholdOverrides {
+  headroom: number | undefined;
+  percentage: number | undefined;
 }
 
-export function getAutoCompactThreshold(
-  contextWindow: number,
-  maxOutputTokens: number = MAX_OUTPUT_TOKENS_FOR_SUMMARY,
+function readThresholdOverrides(): CompactThresholdOverrides {
+  return {
+    headroom: positiveIntegerEnv("OTHERSIDE_AUTOCOMPACT_BUFFER_TOKENS"),
+    percentage: validPercentageEnv("OTHERSIDE_AUTOCOMPACT_PCT_OVERRIDE"),
+  };
+}
+
+function thresholdFromBudget(usableTokens: number, overrides: CompactThresholdOverrides): number {
+  const headroom = overrides.headroom ?? AUTO_COMPACT_TOKEN_HEADROOM;
+  const triggerAfterHeadroom = usableTokens - headroom;
+  if (overrides.percentage === undefined) return triggerAfterHeadroom;
+  const triggerAtShare = Math.floor(usableTokens * (overrides.percentage / 100));
+  return Math.min(triggerAfterHeadroom, triggerAtShare);
+}
+
+export function autoCompactTrigger(
+  windowSize: number,
+  outputAllowance: number = COMPACT_SUMMARY_TOKEN_RESERVE,
   _provider?: ProviderId,
 ): number {
-  const base = baseAutoCompactThreshold(contextWindow, maxOutputTokens);
-  const percentOverride = percentEnvOverride();
-  if (percentOverride === null) return base;
-  const effective = getEffectiveContextWindowSize(contextWindow, maxOutputTokens);
-  return Math.min(Math.floor(effective * (percentOverride / 100)), base);
+  const usableTokens = availableCompactTokens(windowSize, outputAllowance);
+  return thresholdFromBudget(usableTokens, readThresholdOverrides());
 }
 
-export interface ModelAutoCompactThresholdInput {
+export interface ModelCompactTriggerRequest {
   model: {
     contextWindow: number;
     autoCompactTokenLimit?: number;
@@ -124,19 +135,24 @@ export interface ModelAutoCompactThresholdInput {
   provider?: ProviderId;
 }
 
-export function getModelAutoCompactThreshold(input: ModelAutoCompactThresholdInput): number {
-  const window = input.window ?? input.model.contextWindow;
-  const fallback = getAutoCompactThreshold(window, input.maxOutputTokens, input.provider);
-  const modelLimit = input.model.autoCompactTokenLimit;
-  if (modelLimit === undefined) return fallback;
-  const hasExplicitOverride =
-    window !== input.model.contextWindow ||
-    bufferEnvOverride() !== null ||
-    percentEnvOverride() !== null;
-  return hasExplicitOverride ? Math.min(modelLimit, fallback) : modelLimit;
+export function modelAutoCompactTrigger(request: ModelCompactTriggerRequest): number {
+  const resolvedWindow = request.window ?? request.model.contextWindow;
+  const overrides = readThresholdOverrides();
+  const policyTrigger = thresholdFromBudget(
+    availableCompactTokens(resolvedWindow, request.maxOutputTokens),
+    overrides,
+  );
+  const declaredTrigger = request.model.autoCompactTokenLimit;
+  if (declaredTrigger === undefined) return policyTrigger;
+
+  const policyWasExplicit =
+    resolvedWindow !== request.model.contextWindow ||
+    overrides.headroom !== undefined ||
+    overrides.percentage !== undefined;
+  return policyWasExplicit ? Math.min(declaredTrigger, policyTrigger) : declaredTrigger;
 }
 
-export interface ModelBlockingLimitInput {
+export interface ModelBlockingCeilingRequest {
   model: {
     contextWindow: number;
     autoCompactTokenLimit?: number;
@@ -145,30 +161,26 @@ export interface ModelBlockingLimitInput {
   maxOutputTokens?: number;
 }
 
-// The hard pre-send ceiling: unlike the auto-compact threshold (which leaves
-// room to summarize before the window fills), this is the point past which a
-// request cannot be sent at all. Same window arithmetic as the threshold
-// above, with the smaller manual-compact buffer instead of the auto-compact one.
-export function getModelBlockingLimit(input: ModelBlockingLimitInput): number {
-  const window = input.window ?? input.model.contextWindow;
-  return (
-    getEffectiveContextWindowSize(window, input.maxOutputTokens) - MANUAL_COMPACT_BUFFER_TOKENS
-  );
+export function modelBlockingCeiling(request: ModelBlockingCeilingRequest): number {
+  const resolvedWindow = request.window ?? request.model.contextWindow;
+  const usableTokens = availableCompactTokens(resolvedWindow, request.maxOutputTokens);
+  return usableTokens - BLOCKING_COMPACT_TOKEN_HEADROOM;
 }
 
-export function computeCompactMargin(
-  contextWindow: number,
-  maxOutputTokens = MAX_OUTPUT_TOKENS_FOR_SUMMARY,
+export function compactTriggerMargin(
+  windowSize: number,
+  outputAllowance = COMPACT_SUMMARY_TOKEN_RESERVE,
   provider?: ProviderId,
 ): number {
-  return contextWindow - getAutoCompactThreshold(contextWindow, maxOutputTokens, provider);
+  return windowSize - autoCompactTrigger(windowSize, outputAllowance, provider);
 }
 
-export function shouldCompact(
-  usedTokens: number,
-  contextWindow: number,
-  maxOutputTokens = MAX_OUTPUT_TOKENS_FOR_SUMMARY,
+export function contextAtCompactTrigger(
+  consumedTokens: number,
+  windowSize: number,
+  outputAllowance = COMPACT_SUMMARY_TOKEN_RESERVE,
   provider?: ProviderId,
 ): boolean {
-  return usedTokens >= getAutoCompactThreshold(contextWindow, maxOutputTokens, provider);
+  const trigger = autoCompactTrigger(windowSize, outputAllowance, provider);
+  return consumedTokens >= trigger;
 }

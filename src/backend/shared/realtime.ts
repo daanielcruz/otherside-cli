@@ -13,29 +13,10 @@ export interface RealtimeChannel {
   close(): void;
 }
 
-/** @deprecated Cortex has no postgres CDC — use socket events + HTTP history. */
-export interface PostgresChangeSpec {
-  event: "INSERT" | "UPDATE" | "DELETE" | "*";
-  schema: string;
-  table: string;
-  filter?: string;
-}
-
-/** @deprecated */
-export interface PostgresChange {
-  table: string;
-  type: string;
-  record: Record<string, unknown>;
-}
-
 export interface SubscribeOptions {
   topic: string;
   accessToken?: string | (() => Promise<string>);
-  private?: boolean;
   onBroadcast?: (frame: BroadcastFrame) => void;
-  /** Invoked when durable events land (cortex emits events.appended). */
-  onPostgresChange?: (change: PostgresChange) => void;
-  postgresChanges?: PostgresChangeSpec[];
   onError?: (err: Error) => void;
   onReconnect?: () => void;
 }

@@ -1,5 +1,6 @@
-import type { Key } from "@/ink";
 import { errorMessage } from "@/kernel/std/errno.ts";
+import type { Key } from "@/terminal-runtime";
+import { printableText } from "@/ui/chrome/key-input.ts";
 
 type ResumeKey = Partial<Key>;
 
@@ -23,15 +24,6 @@ export type ResumeKeyAction =
   | { type: "resume" }
   | { type: "close" }
   | { type: "none" };
-
-export function printableInput(input: string): string {
-  let out = "";
-  for (const ch of input) {
-    const code = ch.codePointAt(0) ?? 0;
-    if (code >= 0x20 && code !== 0x7f) out += ch;
-  }
-  return out;
-}
 
 export interface ResumeKeyContext {
   selectedIndex: number;
@@ -90,7 +82,7 @@ function listKeyAction(input: string, key: ResumeKey, context: ResumeKeyContext)
   if (key.ctrl || key.meta) return { type: "none" };
   if (input === " ") return { type: "preview" };
   if (input === "/") return { type: "enter-search", seed: "" };
-  const typed = printableInput(input);
+  const typed = printableText(input);
   if (typed.length > 0 && typed.trim().length > 0) return { type: "enter-search", seed: typed };
   return { type: "none" };
 }
@@ -107,7 +99,7 @@ function searchKeyAction(
   if (key.upArrow || key.return || key.downArrow) return { type: "back-to-list" };
   if (key.backspace || key.delete) return { type: "search-delete" };
   if (key.ctrl || key.meta) return { type: "none" };
-  const typed = printableInput(input);
+  const typed = printableText(input);
   if (typed.length > 0) return { type: "search-append", text: typed };
   return { type: "none" };
 }
@@ -127,7 +119,7 @@ function renameKeyAction(input: string, key: ResumeKey): ResumeKeyAction {
   if (key.return) return { type: "rename-save" };
   if (key.backspace || key.delete) return { type: "rename-delete" };
   if (key.ctrl || key.meta) return { type: "none" };
-  const typed = printableInput(input);
+  const typed = printableText(input);
   if (typed.length > 0) return { type: "rename-append", text: typed };
   return { type: "none" };
 }

@@ -1,4 +1,4 @@
-import { askSideQuestion, type SideQuestionRetry } from "@/engine/queue/runtime/side-question.ts";
+import { askSideQuestion } from "@/engine/queue/runtime/side-question.ts";
 import { type Session } from "@/engine/session/index.ts";
 import { createRecordProviderUsage } from "@/engine/session/usage/record-provider-usage.ts";
 import type { UserConfig } from "@/kernel/config/config.ts";
@@ -6,11 +6,13 @@ import type { RequestContext } from "@/kernel/std/types/request.ts";
 import type { Broker } from "@/store/app-store/broker.ts";
 import {
   answeredBtwHistory,
-  clearBtwTurns,
   completeBtwTurn,
+  setBtwTurnRetry,
   startBtwTurn,
 } from "@/store/btw-store/index.ts";
-import { dispatch } from "@/store/index.ts";
+
+/** Prior side-question turns threaded into a follow-up question, most recent first. */
+const THREADED_HISTORY_LIMIT = 5;
 
 export interface BtwControllerDeps {
   btwAbortRef: { current: AbortController | null };
@@ -24,8 +26,8 @@ export interface BtwControllerDeps {
 
 export interface BtwController {
   runBtwTurn: (question: string) => Promise<void>;
-  enterBtwMode: (question: string) => void;
-  exitBtwMode: () => void;
+  /** Aborts an in-flight answer; answered history stays for the process lifetime. */
+  abortPending: () => void;
 }
 
 export function createBtwController(deps: BtwControllerDeps): BtwController {
@@ -62,7 +64,7 @@ export function createBtwController(deps: BtwControllerDeps): BtwController {
       cwd: session.cwd,
       abortSignal: controller.signal,
     };
-    const history = answeredBtwHistory();
+    const history = answeredBtwHistory().slice(-THREADED_HISTORY_LIMIT);
     try {
       const result = await askSideQuestion({
         question: trimmed,
@@ -73,7 +75,15 @@ export function createBtwController(deps: BtwControllerDeps): BtwController {
         history,
         signal: controller.signal,
         syntheticSessionId,
-        onRetry: (_event: SideQuestionRetry) => {},
+        onRetry: (event) => {
+          if (controller.signal.aborted) return;
+          setBtwTurnRetry(turn.id, {
+            attempt: event.attempt,
+            maxAttempts: event.maxAttempts,
+            retryAt: Date.now() + event.delayMs,
+            reason: event.reason,
+          });
+        },
         onUsage: (usage) => {
           recordProviderUsage(
             state.provider,
@@ -132,18 +142,10 @@ export function createBtwController(deps: BtwControllerDeps): BtwController {
     }
   };
 
-  const enterBtwMode = (question: string): void => {
-    dispatch({ type: "view/setBtwMode", active: true });
-    void runBtwTurn(question);
-  };
-
-  const exitBtwMode = (): void => {
+  const abortPending = (): void => {
     btwAbortRef.current?.abort();
     btwAbortRef.current = null;
-    btwSessionIdRef.current = null;
-    clearBtwTurns();
-    dispatch({ type: "view/setBtwMode", active: false });
   };
 
-  return { runBtwTurn, enterBtwMode, exitBtwMode };
+  return { runBtwTurn, abortPending };
 }

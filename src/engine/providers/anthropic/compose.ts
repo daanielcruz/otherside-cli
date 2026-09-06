@@ -1,5 +1,10 @@
 import { CACHE_CONTROL_1H, CACHE_CONTROL_1H_GLOBAL } from "@/engine/transport/cache/index.ts";
-import type { ComposedHarness, SystemTextBlock } from "@/harness/composer/injections.ts";
+import type {
+  ComposedHarness,
+  MidSystemPromotion,
+  SystemTextBlock,
+} from "@/harness/composer/injections.ts";
+import { stripSystemReminderWrapper } from "@/harness/composer/reminder-wrapper.ts";
 import {
   type ContentBlock,
   lastAssistantRequestId,
@@ -18,6 +23,9 @@ const BUNDLE_CLOSE = "</system-reminder>\n";
 
 // User-context content contains top-level headings (# claudeMd, # currentDate, # gitStatus, etc). Inject it raw to avoid a redundant `# user-context` taxonomy header.
 const USER_CONTEXT_BUNDLE_KEY = "user-context";
+
+// The only Anthropic server tool-result block named in this client today.
+const SERVER_TOOL_RESULT_TYPES = new Set(["web_search_tool_result"]);
 
 function bundleEntryText(block: SystemTextBlock): string {
   const inner = stripSystemReminderWrapper(block.text);
@@ -77,8 +85,28 @@ export function composeAnthropicMessages(harness: ComposedHarness, messages: Mes
   const standaloneBlocks = harness.userPrepend.filter((b) => b.standalone);
   const bundledBlocks = harness.userPrepend.filter((b) => !b.standalone);
   const userPrependBundle = bundleUserPrependBlocks(bundledBlocks);
+  // The promoted harness reminders travel as ONE system message after the
+  // first user turn, every reminder joined into a single text block; the
+  // composer already resolved the wrapper per model.
+  const midJoined = (harness.midSystemBlocks ?? [])
+    .map((b) => b.text)
+    .filter((text) => text.length > 0)
+    .join("\n\n");
+  const midSystemMessage: Message | undefined =
+    midJoined.length > 0
+      ? { role: "system", content: [{ type: "text", text: midJoined }] }
+      : undefined;
+  let insertedMidSystemMessage = false;
   for (const msg of messages) {
     const stripped = stripUserCacheControl(msg);
+    // The API only accepts a mid-conversation system message after a user or
+    // an assistant ending in a server tool result. Inspect `out`, rather than
+    // the source history, so earlier transformations determine the position.
+    const promoted = promoteReminderMessage(msg, harness.midSystemPromotion, out[out.length - 1]);
+    if (promoted) {
+      out.push(promoted);
+      continue;
+    }
     if (!prependedFirstUser && msg.role === "user") {
       const prependBlocks: ContentBlock[] = [];
       for (const block of standaloneBlocks) {
@@ -108,26 +136,54 @@ export function composeAnthropicMessages(harness: ComposedHarness, messages: Mes
     } else {
       out.push(stripped);
     }
-  }
-  applyLastUserCacheControl(out, "1h");
-  const midSystemBlocks = harness.midSystemBlocks ?? [];
-  if (midSystemBlocks.length > 0) {
-    const midJoined = midSystemBlocks.map((b) => stripSystemReminderWrapper(b.text)).join("\n\n");
-    if (midJoined) {
-      const firstUserIndex = out.findIndex((m) => m.role === "user");
-      const midSystemMessage: Message = {
-        role: "system",
-        content: [{ type: "text", text: midJoined }],
-      };
-      if (firstUserIndex >= 0) out.splice(firstUserIndex + 1, 0, midSystemMessage);
-      else out.push(midSystemMessage);
+    if (!insertedMidSystemMessage && midSystemMessage && msg.role === "user") {
+      out.push(midSystemMessage);
+      insertedMidSystemMessage = true;
     }
   }
+  if (midSystemMessage && !insertedMidSystemMessage) out.push(midSystemMessage);
+  // The trailing breakpoint lands on whatever conversation message is last —
+  // on the opening request that is the promoted system message.
+  applyTrailingConversationCacheControl(out, "1h");
   return out;
 }
 
-function stripSystemReminderWrapper(text: string): string {
-  return text.replace(/^<system-reminder>\n?/, "").replace(/\n?<\/system-reminder>$/, "");
+// A text-only user message carrying a harness reminder marker can become a
+// mid-conversation system message in place. The unwrap set drops the reminder
+// envelope, but promotion is valid only at an API-accepted final position.
+function promoteReminderMessage(
+  msg: Message,
+  promotion: MidSystemPromotion,
+  previous: Message | undefined,
+): Message | null {
+  if (
+    promotion === "off" ||
+    msg.role !== "user" ||
+    msg.content.length === 0 ||
+    !canPrecedeMidConversationSystem(previous)
+  ) {
+    return null;
+  }
+  const textBlocks: Extract<ContentBlock, { type: "text" }>[] = [];
+  for (const block of msg.content) {
+    if (block.type !== "text") return null;
+    textBlocks.push(block);
+  }
+  if (!textBlocks.some((block) => block.reminder_type !== undefined)) return null;
+  const text = textBlocks
+    .map((block) =>
+      promotion === "unwrapped" ? stripSystemReminderWrapper(block.text) : block.text,
+    )
+    .join("\n\n");
+  return { role: "system", content: [{ type: "text", text }] };
+}
+
+function canPrecedeMidConversationSystem(message: Message | undefined): boolean {
+  if (!message) return false;
+  if (message.role === "user") return true;
+  if (message.role !== "assistant") return false;
+  const last = message.content[message.content.length - 1];
+  return last !== undefined && SERVER_TOOL_RESULT_TYPES.has(last.type);
 }
 
 function dropCacheControl(b: ContentBlock): ContentBlock {
@@ -154,9 +210,11 @@ function withCacheControl(block: ContentBlock, ttl: "1h" | "5m"): ContentBlock {
   return block;
 }
 
-function applyLastUserCacheControl(messages: Message[], ttl: "1h" | "5m" = "1h"): void {
+// User and promoted system messages both carry the trailing breakpoint;
+// assistant tails never do.
+function applyTrailingConversationCacheControl(messages: Message[], ttl: "1h" | "5m" = "1h"): void {
   const last = messages[messages.length - 1];
-  if (!last || last.role !== "user") return;
+  if (!last || (last.role !== "user" && last.role !== "system")) return;
   const idx = last.content.length - 1;
   const block = last.content[idx];
   if (!block) return;
@@ -166,7 +224,8 @@ function applyLastUserCacheControl(messages: Message[], ttl: "1h" | "5m" = "1h")
 export function applyTrailingCacheControl(messages: Message[]): Message[] {
   if (messages.length === 0) return messages;
   const last = messages[messages.length - 1];
-  if (!last || last.role !== "user") return messages;
+  // User and promoted system tails both carry the breakpoint; assistant never.
+  if (!last || (last.role !== "user" && last.role !== "system")) return messages;
   const idx = last.content.length - 1;
   const block = last.content[idx];
   if (!block) return messages;

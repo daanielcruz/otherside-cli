@@ -1,5 +1,13 @@
 export type BtwTurnStatus = "pending" | "answered" | "error" | "cancelled";
 
+/** Backoff surfaced while the side question retries an API error. */
+export interface BtwTurnRetry {
+  attempt: number;
+  maxAttempts: number;
+  retryAt: number;
+  reason: string;
+}
+
 export interface BtwTurn {
   id: string;
   question: string;
@@ -7,6 +15,7 @@ export interface BtwTurn {
   synthetic: boolean;
   status: BtwTurnStatus;
   error?: string;
+  retry?: BtwTurnRetry;
   startedAt: number;
   endedAt?: number;
 }
@@ -56,7 +65,16 @@ export function completeBtwTurn(
   id: string,
   patch: { response: string | null; synthetic: boolean; status: BtwTurnStatus; error?: string },
 ): void {
-  store.turns = store.turns.map((t) => (t.id === id ? { ...t, ...patch, endedAt: Date.now() } : t));
+  store.turns = store.turns.map((t) => {
+    if (t.id !== id) return t;
+    const { retry: _dropped, ...rest } = t;
+    return { ...rest, ...patch, endedAt: Date.now() };
+  });
+  notify();
+}
+
+export function setBtwTurnRetry(id: string, retry: BtwTurnRetry): void {
+  store.turns = store.turns.map((t) => (t.id === id ? { ...t, retry } : t));
   notify();
 }
 
@@ -75,10 +93,4 @@ export function subscribeBtwTurns(fn: () => void): () => void {
   return () => {
     subscribers.delete(fn);
   };
-}
-
-export function resetBtwStoreForTests(): void {
-  store.turns = [];
-  seq = 0;
-  subscribers.clear();
 }

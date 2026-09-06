@@ -1,6 +1,5 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { publish } from "@/engine/background/tasks/bus.ts";
 import { parseMcpServerSpec } from "@/kernel/mcp/config.ts";
 import type { McpServerSpec } from "@/kernel/mcp/index.ts";
 import { errorMessage } from "@/kernel/std/errno.ts";
@@ -147,8 +146,6 @@ function errorText(error: unknown): string {
   return errorMessage(error);
 }
 
-export function publishLoadFailures(failures: AgentLoadFailure[]): void {
-  for (const failure of failures) {
-    publish("error", `Failed to parse agent file ${failure.path}: ${failure.error}`);
-  }
+export function agentLoadFailureText(failure: AgentLoadFailure): string {
+  return `Failed to parse agent file ${failure.path}: ${failure.error}`;
 }

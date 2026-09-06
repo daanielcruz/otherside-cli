@@ -13,7 +13,9 @@ import {
   keepOnlyClients,
   mcpServerStatuses,
 } from "@/kernel/mcp/client/registry.ts";
-import { loadEnabledMcpConfig } from "@/kernel/mcp/config.ts";
+import { notifyMcpServerUsed } from "@/kernel/mcp/client/use-listener.ts";
+import { loadEnabledMcpConfig, loadFlagMcpServers } from "@/kernel/mcp/config.ts";
+import { formatMcpToolLabel, type McpCallIdentity } from "@/kernel/mcp/protocol/tool-label.ts";
 import {
   type McpClient,
   type McpJsonConfig,
@@ -22,6 +24,7 @@ import {
   UnauthorizedError,
 } from "@/kernel/mcp/protocol/types.ts";
 import { parseWireToolName, wireToolName } from "@/kernel/mcp/protocol/wire-name.ts";
+import { isAbortError } from "@/kernel/std/stream/abort.ts";
 import type { ToolHandler, ToolRenderHooks } from "@/kernel/std/tool-contract.ts";
 import type { ToolCall, ToolResult } from "@/kernel/std/types/message.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
@@ -140,11 +143,24 @@ export async function loadNamespacedMcpRuntime(options: {
 }
 
 async function safeLoadConfig(cwd: string): Promise<McpJsonConfig> {
+  let config: McpJsonConfig;
   try {
-    return await loadEnabledMcpConfig(cwd);
+    config = await loadEnabledMcpConfig(cwd);
   } catch {
-    return { mcpServers: {} };
+    config = { mcpServers: {} };
   }
+  // Fold in --mcp-config flag servers (local scope, trust-exempt) so the
+  // interactive path honors them like the print path does. A malformed entry
+  // drops only the flag servers; the project chain already loaded stays intact.
+  try {
+    const flagServers = loadFlagMcpServers(cwd);
+    if (Object.keys(flagServers).length > 0) {
+      config = { ...config, mcpServers: { ...config.mcpServers, ...flagServers } };
+    }
+  } catch {
+    // Flag servers unavailable; keep the project-chain config unchanged.
+  }
+  return config;
 }
 
 type CollectedServer =
@@ -235,7 +251,7 @@ export async function probeMcpConnectivity(
 function makeHandler(options: { serverName: string; tool: McpToolInfo }): ToolHandler {
   const { serverName, tool } = options;
   const name = wireToolName(serverName, tool.name);
-  const description = mcpToolDescription(serverName, tool);
+  const description = mcpToolDescription(tool);
   return {
     schema: { name, description, inputSchema: tool.inputSchema },
     render: makeMcpRenderHooks(serverName, tool),
@@ -246,6 +262,7 @@ function makeHandler(options: { serverName: string; tool: McpToolInfo }): ToolHa
         toolName: call.name,
         args: call.input ?? {},
         persistCtx: { cwd: ctx.cwd, sessionId: ctx.sessionId },
+        ...(ctx.abortSignal ? { signal: ctx.abortSignal } : {}),
       });
     },
   };
@@ -261,14 +278,22 @@ function makeClientBoundHandler(options: {
   return {
     schema: {
       name,
-      description: mcpToolDescription(serverName, tool),
+      description: mcpToolDescription(tool),
       inputSchema: tool.inputSchema,
     },
     render: makeMcpRenderHooks(serverName, tool),
     isConcurrencySafe: tool.readOnlyHint === true,
     async run(call: ToolCall, ctx: RequestContext): Promise<ToolResult> {
       try {
-        const result = await client.callTool(tool.name, call.input ?? {});
+        if (ctx.abortSignal?.aborted) {
+          return { tool_use_id: call.id, content: "Interrupted by user", is_error: true };
+        }
+        const result = await client.callTool(
+          tool.name,
+          call.input ?? {},
+          ctx.abortSignal ? { signal: ctx.abortSignal } : undefined,
+        );
+        notifyMcpServerUsed(serverName);
         const { content, isError } = marshalMcpContent(result, {
           cwd: ctx.cwd,
           sessionId: ctx.sessionId,
@@ -279,6 +304,9 @@ function makeClientBoundHandler(options: {
         if (isError) return { tool_use_id: call.id, content, is_error: true };
         return { tool_use_id: call.id, content };
       } catch (error) {
+        if (isAbortError(error) || ctx.abortSignal?.aborted) {
+          return { tool_use_id: call.id, content: "Interrupted by user", is_error: true };
+        }
         return {
           tool_use_id: call.id,
           content: error instanceof Error ? error.message : String(error),
@@ -289,21 +317,56 @@ function makeClientBoundHandler(options: {
   };
 }
 
-function mcpToolDescription(serverName: string, tool: McpToolInfo): string {
-  return tool.description.length > 0
-    ? `MCP server \`${serverName}\`: ${tool.description}`
-    : `MCP tool \`${tool.name}\` from server \`${serverName}\`.`;
+// Wire cap for an MCP tool's schema description (2048 chars, surrogate-safe
+// slice, "… [truncated]" marker). The tool's own description goes out
+// verbatim below the cap — server attribution lives in the wire name, never
+// prepended here — and an empty description stays empty.
+const MCP_TOOL_DESCRIPTION_MAX_CHARS = 2048;
+
+export function mcpToolDescription(tool: Pick<McpToolInfo, "description">): string {
+  const description = tool.description;
+  if (description.length <= MCP_TOOL_DESCRIPTION_MAX_CHARS) return description;
+  let head = description.slice(0, MCP_TOOL_DESCRIPTION_MAX_CHARS);
+  const last = head.charCodeAt(head.length - 1);
+  if (last >= 0xd800 && last <= 0xdbff) head = head.slice(0, -1);
+  return `${head}… [truncated]`;
 }
 
 export function makeMcpRenderHooks(
   serverName: string,
   tool: Pick<McpToolInfo, "name" | "title" | "description">,
 ): ToolRenderHooks {
+  const identity = mcpCallIdentityOf(serverName, tool);
   return {
-    userFacingName: () => `${serverName} - ${tool.name} (MCP)`,
+    userFacingLabel: () => formatMcpToolLabel(identity),
+    // The tool's own description, unprefixed — the permission prompt shows it
+    // under the header line; the server attribution already lives in the label.
+    userFacingDescription: () => tool.description,
     summarizeArgs: (input) => mcpArgsSummary(input),
     formatResult: (text) => text.replace(MCP_IMAGE_PLACEHOLDER_RE, "[Image]"),
   };
+}
+
+/**
+ * Identity by wire name for every tool this process has built a handler for.
+ * Keyed on the wire name because that is all a recorded call carries. Entries
+ * outlive their server on purpose: a server that drops mid-session should not
+ * take the naming of the calls it already served with it.
+ */
+const identityByWireName = new Map<string, McpCallIdentity>();
+
+function mcpCallIdentityOf(
+  serverName: string,
+  tool: Pick<McpToolInfo, "name" | "title">,
+): McpCallIdentity {
+  const identity: McpCallIdentity = { server: serverName, tool: tool.title || tool.name };
+  identityByWireName.set(wireToolName(serverName, tool.name), identity);
+  return identity;
+}
+
+/** The identity to record with a call, or null when no server here declared it. */
+export function mcpCallIdentity(wireName: string): McpCallIdentity | null {
+  return identityByWireName.get(wireName) ?? null;
 }
 
 const MCP_IMAGE_PLACEHOLDER_RE = /\[image:[^\]]*\]/g;

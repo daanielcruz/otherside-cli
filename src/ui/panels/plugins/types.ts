@@ -1,4 +1,4 @@
-import type { MarketplacePluginEntry } from "@/engine/plugins/marketplace.ts";
+import type { MarketplacePluginEntry } from "@/engine/plugins/marketplace-manifest.ts";
 
 export interface PluginsOverlayProps {
   onClose?: () => void;
@@ -14,11 +14,10 @@ export type DiscoverViewMode = "list" | "details";
 export interface DiscoverItem {
   marketplace: string;
   entry: MarketplacePluginEntry;
-}
-
-export interface PluginSubtitleCounts {
-  discover: number;
-  installed: number;
-  marketplaces: number;
-  selected: number;
+  /**
+   * Already installed from this marketplace. Discover drops those rows — it only
+   * proposes what is not here yet — while a marketplace browse keeps them, ticked
+   * and inert, so the catalogue reads complete.
+   */
+  installed: boolean;
 }

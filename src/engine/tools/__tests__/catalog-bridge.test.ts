@@ -48,6 +48,13 @@ const CONNECTED_MCP_CLIENT: McpClient = {
   serverInstructions() {
     return null;
   },
+  async listPrompts() {
+    return [];
+  },
+  async getPrompt() {
+    return { messages: [] };
+  },
+  announce(): void {},
   isClosed() {
     return false;
   },
@@ -89,7 +96,7 @@ describe("tool catalog ↔ handler bridge (gates #3)", () => {
       delete process.env.CLAUDE_CODE_ENABLE_TASKS;
       for (const name of planningTools) expect(deferredToolNames()).toContain(name);
 
-      // A truthy value keeps them (parity: only an explicit falsy disables).
+      // A truthy value keeps them (only an explicit falsy disables).
       process.env.CLAUDE_CODE_ENABLE_TASKS = "1";
       for (const name of planningTools) expect(deferredToolNames()).toContain(name);
 
@@ -105,15 +112,16 @@ describe("tool catalog ↔ handler bridge (gates #3)", () => {
     }
   });
 
-  it("exposes ScheduleWakeup in the deferred order with a handler", () => {
-    const names = deferredToolNames();
-    expect(BASE_TOOL_NAMES).not.toContain("ScheduleWakeup");
-    expect(names).toContain("ScheduleWakeup");
+  it("exposes ScheduleWakeup in the base order with a handler", () => {
+    expect(BASE_TOOL_NAMES).toContain("ScheduleWakeup");
+    expect(deferredToolNames()).not.toContain("ScheduleWakeup");
     expect(builtinHandlerNames.has("ScheduleWakeup")).toBe(true);
-    expect(allSchemaNames.indexOf("ScheduleWakeup")).toBe(
-      allSchemaNames.indexOf("ReadMcpResourceTool") + 1,
+    expect(BASE_TOOL_NAMES.indexOf("ScheduleWakeup")).toBe(
+      BASE_TOOL_NAMES.indexOf("ReportFindings") + 1,
     );
-    expect(names.indexOf("ScheduleWakeup")).toBeLessThan(names.indexOf("SendMessage"));
+    expect(BASE_TOOL_NAMES.indexOf("ScheduleWakeup")).toBeLessThan(
+      BASE_TOOL_NAMES.indexOf("Skill"),
+    );
   });
 
   it("gates all MCP resource tools on a connected resources-capable server", async () => {

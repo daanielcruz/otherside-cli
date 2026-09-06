@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { loadConfigSync, type SettingsSandboxConfig } from "@/kernel/config/config.ts";
-import { containsExcludedCommand } from "./excluded.ts";
+import { hasExcludedSubcommand } from "./excluded.ts";
 import {
   cleanupBwrapMountPoints,
   getLinuxDependencyStatus,
@@ -13,9 +13,9 @@ import { annotateLinuxSandboxStderr } from "./linux/violation-hints.ts";
 import { type ReadConfig, type WriteConfig, wrapCommandWithSandboxMacOS } from "./macos.ts";
 import { startSandboxMonitor, takeViolationsForLogTag } from "./monitor.ts";
 import { getDefaultWritePaths } from "./path-normalize.ts";
-import { scrubBareGitRepoFiles } from "./scrub.ts";
+import { scrubOrphanGitMetadata } from "./scrub.ts";
 import { getSandboxTmpdir } from "./tmpdir.ts";
-import { detectWorktreeMainRepoPath } from "./worktree.ts";
+import { locateWorktreeMainRepo } from "./worktree.ts";
 
 export type SandboxSettings = Required<
   Pick<SettingsSandboxConfig, "enabled" | "allowUnsandboxedCommands" | "autoAllowBashIfSandboxed">
@@ -64,6 +64,21 @@ function readSandboxFromSettingsFile(): SettingsSandboxConfig | undefined {
   }
 }
 
+/**
+ * A key the override sets, else the one the base set, else absent.
+ *
+ * Absent and set-to-undefined are different: a key nobody set must not appear,
+ * because the merged object is read with `in` as often as by value.
+ */
+function pick<K extends keyof SandboxSettings & keyof SettingsSandboxConfig>(
+  key: K,
+  base: SandboxSettings,
+  override: SettingsSandboxConfig,
+): Partial<SandboxSettings> {
+  const chosen = override[key] ?? base[key];
+  return chosen === undefined ? {} : ({ [key]: chosen } as Partial<SandboxSettings>);
+}
+
 function mergeSandboxSettings(
   base: SandboxSettings,
   override: SettingsSandboxConfig,
@@ -73,51 +88,15 @@ function mergeSandboxSettings(
     allowUnsandboxedCommands: override.allowUnsandboxedCommands ?? base.allowUnsandboxedCommands,
     autoAllowBashIfSandboxed: override.autoAllowBashIfSandboxed ?? base.autoAllowBashIfSandboxed,
     excludedCommands: override.excludedCommands ?? base.excludedCommands,
-    ...(override.filesystem
-      ? { filesystem: override.filesystem }
-      : base.filesystem
-        ? { filesystem: base.filesystem }
-        : {}),
-    ...(override.network
-      ? { network: override.network }
-      : base.network
-        ? { network: base.network }
-        : {}),
-    ...(override.allowPty !== undefined
-      ? { allowPty: override.allowPty }
-      : base.allowPty !== undefined
-        ? { allowPty: base.allowPty }
-        : {}),
-    ...(override.failIfUnavailable !== undefined
-      ? { failIfUnavailable: override.failIfUnavailable }
-      : base.failIfUnavailable !== undefined
-        ? { failIfUnavailable: base.failIfUnavailable }
-        : {}),
-    ...(override.enableWeakerNetworkIsolation !== undefined
-      ? { enableWeakerNetworkIsolation: override.enableWeakerNetworkIsolation }
-      : base.enableWeakerNetworkIsolation !== undefined
-        ? { enableWeakerNetworkIsolation: base.enableWeakerNetworkIsolation }
-        : {}),
-    ...(override.ignoreViolations
-      ? { ignoreViolations: override.ignoreViolations }
-      : base.ignoreViolations
-        ? { ignoreViolations: base.ignoreViolations }
-        : {}),
-    ...(override.bwrapPath
-      ? { bwrapPath: override.bwrapPath }
-      : base.bwrapPath
-        ? { bwrapPath: base.bwrapPath }
-        : {}),
-    ...(override.enableWeakerNestedSandbox !== undefined
-      ? { enableWeakerNestedSandbox: override.enableWeakerNestedSandbox }
-      : base.enableWeakerNestedSandbox !== undefined
-        ? { enableWeakerNestedSandbox: base.enableWeakerNestedSandbox }
-        : {}),
-    ...(override.mandatoryDenySearchDepth !== undefined
-      ? { mandatoryDenySearchDepth: override.mandatoryDenySearchDepth }
-      : base.mandatoryDenySearchDepth !== undefined
-        ? { mandatoryDenySearchDepth: base.mandatoryDenySearchDepth }
-        : {}),
+    ...pick("filesystem", base, override),
+    ...pick("network", base, override),
+    ...pick("allowPty", base, override),
+    ...pick("failIfUnavailable", base, override),
+    ...pick("enableWeakerNetworkIsolation", base, override),
+    ...pick("ignoreViolations", base, override),
+    ...pick("bwrapPath", base, override),
+    ...pick("enableWeakerNestedSandbox", base, override),
+    ...pick("mandatoryDenySearchDepth", base, override),
   };
 }
 
@@ -167,11 +146,11 @@ export function isSandboxingEnabled(): boolean {
   return isSandboxAvailable();
 }
 
-export function areUnsandboxedCommandsAllowed(): boolean {
+export function unsandboxedCommandsPermitted(): boolean {
   return getSandboxSettings().allowUnsandboxedCommands;
 }
 
-export function isAutoAllowBashIfSandboxedEnabled(): boolean {
+export function sandboxAutoAllowBashEnabled(): boolean {
   return getSandboxSettings().autoAllowBashIfSandboxed;
 }
 
@@ -188,7 +167,7 @@ function buildWriteConfig(settings: SandboxSettings): WriteConfig | undefined {
   const fs = settings.filesystem;
   const allowList = fs?.allowWrite;
   const sandboxTmp = getSandboxTmpdir();
-  const worktreeMain = detectWorktreeMainRepoPath();
+  const worktreeMain = locateWorktreeMainRepo();
   if (!allowList) {
     const defaults = [
       ...getDefaultWritePaths(),
@@ -212,10 +191,10 @@ export interface ShouldSandboxInput {
 
 export function shouldUseSandbox(input: ShouldSandboxInput): boolean {
   if (!isSandboxingEnabled()) return false;
-  if (input.dangerouslyDisableSandbox && areUnsandboxedCommandsAllowed()) return false;
+  if (input.dangerouslyDisableSandbox && unsandboxedCommandsPermitted()) return false;
   if (!input.command) return false;
   const settings = getSandboxSettings();
-  return !containsExcludedCommand(input.command, settings.excludedCommands);
+  return !hasExcludedSubcommand(input.command, settings.excludedCommands);
 }
 
 export interface WrapResult {
@@ -300,7 +279,7 @@ function buildWriteConfigLinux(settings: SandboxSettings): LinuxWriteConfig | un
   const fs = settings.filesystem;
   const allowList = fs?.allowWrite;
   const sandboxTmp = getSandboxTmpdir();
-  const worktreeMain = detectWorktreeMainRepoPath();
+  const worktreeMain = locateWorktreeMainRepo();
   if (!allowList) {
     const defaults = [
       ...getDefaultWritePaths(),
@@ -317,7 +296,7 @@ function buildWriteConfigLinux(settings: SandboxSettings): LinuxWriteConfig | un
   };
 }
 
-export function annotateStderrWithSandboxFailures(stderr: string, logTag: string | null): string {
+export function annotateStderrWithSandboxDenials(stderr: string, logTag: string | null): string {
   if (!logTag) return stderr;
   if (process.platform === "linux" && logTag === "linux-sandbox") {
     return annotateLinuxSandboxStderr(stderr);
@@ -349,7 +328,7 @@ export function ensureSandboxMonitor(): void {
 }
 
 export function cleanupAfterCommand(commandStartTimeMs: number): string[] {
-  const scrubbed = scrubBareGitRepoFiles(process.cwd(), commandStartTimeMs);
+  const scrubbed = scrubOrphanGitMetadata(process.cwd(), commandStartTimeMs);
   if (process.platform === "linux") cleanupBwrapMountPoints();
   return scrubbed;
 }

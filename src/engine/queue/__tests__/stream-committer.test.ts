@@ -1,6 +1,9 @@
 import { afterAll, describe, expect, it, mock } from "bun:test";
 import * as accountIdentityModule from "@/engine/providers/_shared/account-identity.ts";
+import { bootstrapLlmApiRegistry } from "@/engine/providers/bootstrap.ts";
 import * as sessionModule from "@/engine/session/index.ts";
+
+bootstrapLlmApiRegistry();
 
 const appendedRecords: unknown[] = [];
 const originalSession: Record<string | symbol, unknown> = {};
@@ -32,6 +35,8 @@ afterAll(() => {
 });
 
 import type { TranscriptEntry } from "@/engine/session/record/types.ts";
+import { makeMacrotaskBatch } from "@/kernel/std/perf/macrotask-batch.ts";
+import type { TurnEvent } from "../turn/observer.ts";
 import { createStreamCommitter, type StreamCommitterDeps } from "../turn/stream-committer.ts";
 import { makeTuiTurnObserver, type TuiTurnObserverDeps } from "../turn/tui-observer.ts";
 
@@ -68,6 +73,7 @@ function makeObserver(overrides: Partial<TuiTurnObserverDeps> = {}) {
     setStreamingCommittedLen: () => {},
     setStreamingId: () => {},
     setTranscript: () => {},
+    transcriptBatch: makeMacrotaskBatch(),
     setProgressInputTokens: () => {},
     setProgressStartedAt: () => {},
     setTasksExpanded: () => {},
@@ -159,16 +165,44 @@ describe("stream committer live text", () => {
 
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({ kind: "assistant", text: "hello world" });
-    expect(published).toEqual(["hello "]);
+    expect(published).toEqual(["hello ", ""]);
     await sleep(150);
-    expect(published).toEqual(["hello "]);
+    expect(published).toEqual(["hello ", ""]);
   });
 
-  it("flushes pending message_stop text before clearing the live stream", () => {
+  it("coalesces overlapping settles into one record and transcript entry", async () => {
+    appendedRecords.length = 0;
+    let transcript: readonly TranscriptEntry[] = [];
+    const committer = makeCommitter({
+      setTranscript: (value) => {
+        transcript = typeof value === "function" ? value(transcript) : value;
+      },
+    });
+    committer.addText("one answer");
+
+    const [first, second] = await Promise.all([
+      committer.flushAssistant(),
+      committer.flushAssistant(),
+    ]);
+
+    expect(second).toEqual(first);
+    expect(transcript.filter((entry) => entry.kind === "assistant")).toHaveLength(1);
+    expect(
+      appendedRecords.filter(
+        (record) => (record as { type?: string }).type === "assistant_message",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("flushes pending message_stop text without releasing the live handoff", () => {
     const published: string[] = [];
+    const streamingIds: Array<string | null> = [];
     const handle = makeObserver({
       setStreamingText: (value) => {
         if (typeof value === "string") published.push(value);
+      },
+      setStreamingId: (value) => {
+        if (typeof value !== "function") streamingIds.push(value);
       },
     });
 
@@ -176,7 +210,9 @@ describe("stream committer live text", () => {
     handle.observer.text_delta?.({ kind: "text_delta", text: "world" });
     handle.observer.message_stop?.({ kind: "message_stop", stop_reason: "end_turn" });
 
-    expect(published).toEqual(["hello ", "hello world", ""]);
+    expect(published).toEqual(["hello ", "hello world"]);
+    expect(streamingIds).toEqual([]);
+    expect(handle.snapshot().acc).toBe("hello world");
   });
 });
 
@@ -476,5 +512,44 @@ describe("stream committer stream_reset", () => {
     expect(entries.length).toBe(1);
     expect(entries[0]).toMatchObject({ kind: "assistant", text: "fresh full answer" });
     expect((entries[0] as { continuation?: boolean }).continuation).toBeUndefined();
+  });
+});
+
+describe("compact outcome and the context readings", () => {
+  const compactDone = (mode: "summary" | "failed"): TurnEvent<"compact_done"> => ({
+    kind: "compact_done",
+    mode,
+    droppedMessages: 0,
+    truncatedMessages: 0,
+    preTokens: 480_000,
+    durationMs: 1200,
+    ...(mode === "failed" ? { error: "fetch failed" } : { summary: "a summary" }),
+  });
+
+  it("leaves the token totals alone when a compaction fails", async () => {
+    const totals: unknown[] = [];
+    const contexts: unknown[] = [];
+    const handle = makeObserver({
+      setMainTokenTotals: (value) => totals.push(value),
+      setMainLastContext: (value) => contexts.push(value),
+    });
+    await handle.observer.compact_done?.(compactDone("failed"));
+    // The conversation still holds everything it held, so reporting an empty
+    // context for it would understate what the next request carries.
+    expect(totals).toEqual([]);
+    expect(contexts).toEqual([]);
+  });
+
+  it("restates the totals and the context once a compaction lands", async () => {
+    const totals: unknown[] = [];
+    const contexts: unknown[] = [];
+    const handle = makeObserver({
+      setMainTokenTotals: (value) => totals.push(value),
+      setMainLastContext: (value) => contexts.push(value),
+    });
+    await handle.observer.compact_done?.(compactDone("summary"));
+    expect(totals.length).toBe(1);
+    expect(totals[0]).toMatchObject({ inputTokens: 0, outputTokens: 0 });
+    expect(contexts.length).toBe(1);
   });
 });

@@ -12,7 +12,7 @@ import { truncateEllipsis } from "@/kernel/std/text/text.ts";
 const QUOTA_URL = providerEndpoint(
   "minimax",
   "usage",
-  "https://api.minimax.io/v1/token_plan/remains",
+  "https://www.minimax.io/v1/token_plan/remains",
 );
 const UNLIMITED_WEEKLY_STATUS = 3;
 const FULL_PERCENT = 100;

@@ -3,8 +3,8 @@ import {
   containsGlobChars,
   DANGEROUS_FILES,
   encodeSandboxedCommand,
-  getDangerousDirectories,
   globToRegex,
+  listProtectedDirectories,
   normalizePathForSandbox,
 } from "./path-normalize.ts";
 
@@ -74,7 +74,7 @@ export function macGetMandatoryDenyPatterns(allowGitConfig = false): string[] {
     denyPaths.push(toPosixPath(resolve(cwd, fileName)));
     denyPaths.push(`**/${fileName}`);
   }
-  for (const dirName of getDangerousDirectories()) {
+  for (const dirName of listProtectedDirectories()) {
     denyPaths.push(toPosixPath(resolve(cwd, dirName)));
     denyPaths.push(`**/${dirName}/**`);
   }

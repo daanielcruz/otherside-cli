@@ -33,6 +33,25 @@ describe("formatReloadFeedback", () => {
     );
   });
 
+  it("lists agent files that failed to parse under the counts", () => {
+    expect(
+      formatReloadFeedback({
+        plugins: 0,
+        skills: 0,
+        agents: 1,
+        hooks: 0,
+        mcpServers: 0,
+        lspServers: 0,
+        agentFailures: [
+          "Failed to parse agent file /tmp/agents/broken.md: missing frontmatter fence",
+        ],
+      }),
+    ).toBe(
+      "Reloaded: 0 plugins · 0 skills · 1 agent · 0 hooks · 0 plugin MCP servers · 0 plugin LSP servers\n" +
+        "Failed to parse agent file /tmp/agents/broken.md: missing frontmatter fence",
+    );
+  });
+
   it("uses plural forms for multi-word MCP/LSP labels", () => {
     expect(
       formatReloadFeedback({

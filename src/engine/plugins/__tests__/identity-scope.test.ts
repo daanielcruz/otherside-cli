@@ -11,10 +11,10 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, sep } from "node:path";
 import {
+  canonicalProjectPath,
   createInstallationId,
   createPluginId,
   isInstallationId,
-  normalizeProjectPath,
   parseInstallationId,
 } from "@/engine/plugins/identity.ts";
 import {
@@ -52,7 +52,7 @@ afterEach(() => {
 describe("plugin identity", () => {
   test("normalizes project paths in installation identities", () => {
     const pluginId = createPluginId("formatter", "official");
-    const projectPath = normalizeProjectPath(
+    const projectPath = canonicalProjectPath(
       join(projectDirectory, "..", basename(projectDirectory)),
     );
     const installationId = createInstallationId(pluginId, "project", projectPath);
@@ -61,7 +61,7 @@ describe("plugin identity", () => {
       name: "formatter",
       marketplace: "official",
       scope: "project",
-      projectPath: normalizeProjectPath(projectDirectory)!,
+      projectPath: canonicalProjectPath(projectDirectory)!,
     });
     expect(isInstallationId(installationId)).toBe(true);
   });
@@ -76,11 +76,11 @@ describe("plugin identity", () => {
     const symlinkPath = join(configDirectory, "project-link");
     symlinkSync(projectDirectory, symlinkPath, "dir");
     const linkedProjectPath = join(symlinkPath, "nested-project");
-    const canonicalProjectPath = join(normalizeProjectPath(projectDirectory)!, "nested-project");
+    const canonicalLinkedPath = join(canonicalProjectPath(projectDirectory)!, "nested-project");
 
-    expect(normalizeProjectPath(linkedProjectPath)).toBe(canonicalProjectPath);
+    expect(canonicalProjectPath(linkedProjectPath)).toBe(canonicalLinkedPath);
     expect(createInstallationId("formatter@official", "local", linkedProjectPath)).toBe(
-      createInstallationId("formatter@official", "local", canonicalProjectPath),
+      createInstallationId("formatter@official", "local", canonicalLinkedPath),
     );
   });
 });
@@ -153,7 +153,7 @@ describe("plugin installation paths", () => {
     );
 
     const [installation] = listPluginInstallations();
-    expect(installation?.projectPath).toBe(normalizeProjectPath(projectDirectory));
+    expect(installation?.projectPath).toBe(canonicalProjectPath(projectDirectory));
     expect(installation?.installationId).toBe(
       createInstallationId("formatter@official", "project", projectDirectory),
     );
@@ -162,7 +162,7 @@ describe("plugin installation paths", () => {
         .version,
     ).toBe(3);
     expect(projectPathFromInstallPath(installPath, "project")).toBe(
-      normalizeProjectPath(projectDirectory),
+      canonicalProjectPath(projectDirectory),
     );
   });
 
@@ -308,12 +308,12 @@ describe("plugin installation paths", () => {
 
       expect(lookupPluginInstallation(pluginId)).toMatchObject({
         ok: true,
-        installation: { scope: "project", projectPath: normalizeProjectPath(projectB) },
+        installation: { scope: "project", projectPath: canonicalProjectPath(projectB) },
       });
       expect(lookupPluginInstallation("formatter")).toMatchObject({
         ok: true,
         pluginId,
-        installation: { scope: "project", projectPath: normalizeProjectPath(projectB) },
+        installation: { scope: "project", projectPath: canonicalProjectPath(projectB) },
       });
       const projectBId = createInstallationId(pluginId, "project", projectB);
       expect(lookupPluginInstallation(projectBId)).toMatchObject({

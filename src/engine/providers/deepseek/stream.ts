@@ -18,6 +18,7 @@ import type { RequestContext } from "@/kernel/std/types/request.ts";
 export const deepseekStream: StreamFn = async function* deepseekStreamFn(
   ctx: RequestContext,
   body: unknown,
+  signal: AbortSignal,
 ): AsyncIterable<Uint8Array> {
   const apiKey = await currentDeepseekApiKey();
   const fp = deepseekFingerprint(ctx);
@@ -35,7 +36,7 @@ export const deepseekStream: StreamFn = async function* deepseekStreamFn(
     method: "POST",
     headers,
     body: JSON.stringify(body),
-    ...(ctx.abortSignal ? { signal: ctx.abortSignal } : {}),
+    signal,
     ...connectionInit(ctx),
   });
 

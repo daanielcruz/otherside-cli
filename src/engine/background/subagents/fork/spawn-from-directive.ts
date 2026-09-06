@@ -17,7 +17,7 @@ import type { Message } from "@/kernel/std/types/message.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 import { deriveForkName, forkDescriptionFromDirective } from "./derive-name.ts";
 import { dispatchFork } from "./spawn.ts";
-import { isMainAgentContext } from "./spawn-depth.ts";
+import { isRootAgentRun } from "./spawn-depth.ts";
 
 export interface SpawnForkFromDirectiveResult {
   agentId: string;
@@ -35,12 +35,12 @@ export function hasConversationTurn(messages: readonly Message[]): boolean {
  * Returns null when the host has no conversation turn to inherit.
  * The run is fire-and-forget: the caller gets `{ name, agentId }` immediately.
  */
-export function spawnForkFromDirective(
+export function launchForkFromDirective(
   directive: string,
   ctx: RequestContext,
   permissionResolver?: PermissionResolver,
 ): SpawnForkFromDirectiveResult | null {
-  if (!isMainAgentContext(ctx)) return null;
+  if (!isRootAgentRun(ctx)) return null;
   const parent = ctx.parentMessages ?? [];
   if (!hasConversationTurn(parent)) return null;
 
@@ -52,8 +52,7 @@ export function spawnForkFromDirective(
     agentId: "fork",
     description,
     prompt: directive,
-    provider: ctx.provider,
-    model: ctx.model,
+    route: { provider: ctx.provider, model: ctx.model },
     cwd: ctx.originalCwd ?? ctx.cwd,
     sessionId: ctx.sessionId,
     isBackgrounded: true,
@@ -125,5 +124,9 @@ export function spawnForkFromDirective(
 }
 
 export function formatForkSuccessFeedback(result: SpawnForkFromDirectiveResult): string {
-  return `${FORK_GLYPH} forked ${result.name} (${result.agentId.slice(-4)})`;
+  return [
+    `forked into a background agent · ${result.name} (${result.agentId.slice(-4)})`,
+    "it carries this conversation up to now and is already working · nothing here changes",
+    "track it in the agents panel (↓ to manage) · its result lands here as a notification when it completes",
+  ].join("\n");
 }

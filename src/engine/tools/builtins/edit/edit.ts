@@ -1,6 +1,16 @@
 import { statSync } from "node:fs";
 import { basename, isAbsolute } from "node:path";
 import { createPatch } from "diff";
+import {
+  isNetworkSharePath,
+  NETWORK_SHARE_PATH_ERROR,
+} from "@/engine/tools/builtins/path-guards.ts";
+import {
+  readScopeKey,
+  readSetContains,
+  readState,
+  updateReadState,
+} from "@/engine/tools/builtins/read/state.ts";
 import type { ToolArgSegment, ToolHandler } from "@/engine/tools/contract.ts";
 import { filePathSegment } from "@/engine/tools/contract.ts";
 import EditSchema from "@/harness/tools/Edit/tool.json" with { type: "json" };
@@ -13,8 +23,6 @@ import {
   recordFileMutationResult,
   snapshotBeforeFileMutation,
 } from "@/kernel/storage/file-history.ts";
-import { isNetworkSharePath, NETWORK_SHARE_PATH_ERROR } from "../path-guards.ts";
-import { readScopeKey, readSetContains, readState, updateReadState } from "../read/state.ts";
 import { normalizeEditStrings } from "./string-normalize.ts";
 
 interface EditInput {
@@ -28,7 +36,7 @@ function err(toolUseId: string, msg: string): ToolResult {
   return { tool_use_id: toolUseId, content: msg, is_error: true };
 }
 
-function countOccurrences(haystack: string, needle: string): number {
+function countCharMatches(haystack: string, needle: string): number {
   if (needle.length === 0) return 0;
   let count = 0;
   let idx = 0;
@@ -55,18 +63,18 @@ function isReplaceAll(value: unknown): boolean {
   return value === true || value === "true";
 }
 
-export function getEditToolDescription(opts: { lean?: boolean } = {}): string {
+export function editToolDescription(opts: { lean?: boolean } = {}): string {
   return opts.lean ? EditSchema.description.lean : EditSchema.description.full;
 }
 
 export const Edit: ToolHandler = {
   schema: {
     name: EditSchema.name,
-    description: getEditToolDescription({ lean: true }),
+    description: editToolDescription({ lean: true }),
     inputSchema: EditSchema.inputSchema,
   },
   render: {
-    userFacingName(input) {
+    userFacingLabel(input) {
       const obj = (input ?? {}) as Record<string, unknown>;
       if (typeof obj.old_string === "string" && obj.old_string === "") return "Create";
       return "Update";
@@ -142,7 +150,7 @@ export const Edit: ToolHandler = {
       newString,
     });
 
-    const matches = countOccurrences(contents, matchOld);
+    const matches = countCharMatches(contents, matchOld);
     if (matches === 0) {
       return err(
         call.id,
@@ -177,7 +185,7 @@ export const Edit: ToolHandler = {
     if (priorMode != null) chmodIfPosix(filePath, priorMode);
     recordFileMutationResult(ctx, filePath);
 
-    updateReadState(scope, filePath, updated);
+    updateReadState(scope, filePath, finalContent);
 
     const fileName = basename(filePath);
     const diff = createPatch(fileName, contents, updated, "", "", { context: 3 });

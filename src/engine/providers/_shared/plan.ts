@@ -1,4 +1,4 @@
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 import { loadFor, saveFor } from "@/kernel/storage/credentials.ts";
 
 const PLAN_PROVIDERS = ["glm", "minimax"] as const;

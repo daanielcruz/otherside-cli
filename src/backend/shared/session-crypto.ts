@@ -24,14 +24,25 @@ export interface RatchetCacheEntry {
 interface SessionKeyData {
   key_b64: string;
   counter: number;
+  remote_deleted?: boolean;
+  // The last record this device delivered, named by its transcript uuid. A uuid
+  // survives the record array being rebuilt or trimmed on resume, which a
+  // position does not: a position silently addresses a different record once
+  // the array in front of it changes length.
+  last_synced_uuid?: string | null;
+  // Counters already minted for a batch, named record by record so a serial
+  // retry that resumes mid-batch still finds its own counter.
+  pending_claim?: { uuids: (string | null)[]; counters: number[] };
+  // Position-addressed cursor and claim. Read once by migrateSyncCursor while
+  // the array still has the shape they were written against, then dropped.
   last_synced_index?: number;
-  // Legacy single-record claim shape; migrated to pending_counters on next claim.
   pending_counter?: { index: number; counter: number };
   pending_counters?: { start_index: number; counters: number[] };
 }
 
 export interface HttpError extends Error {
   httpStatus: number;
+  errorCode?: string;
 }
 
 export type DeliveryResult =
@@ -41,33 +52,28 @@ export type DeliveryResult =
   | { kind: "auth"; status: 401 | 403 }
   | { kind: "retryable" };
 
-// PostgREST reports both unique (23505) and foreign-key (23503) violations as
-// HTTP 409. Only a unique violation on (session_id, sender_device_id, counter)
-// means the row already landed — anything else (e.g. the sessions row is
-// missing, or owned
-// by another account after an account switch) must never pass as a delivered
-// duplicate, or the synced index advances over events that never inserted.
-const UNIQUE_VIOLATION = "23505";
-// With RLS enabled the missing/foreign sessions row usually surfaces BEFORE
-// the FK: the insert with-check fails as 403 + 42501 (live-probed). That 403
-// is a row-level refusal, not a dead token — it must classify as rejected so
-// the sync re-bootstraps instead of suspending the pairing as unauthorized.
-const RLS_VIOLATION = "42501";
+const DUPLICATE_EVENT_CODE = "replay_detected";
+const ROW_FORBIDDEN_CODE = "forbidden";
+export const SESSION_NOT_FOUND_CODE = "not_found";
+export const SESSION_DELETED_CODE = "session_deleted";
 
 async function responseCode(response: Response): Promise<string> {
   try {
     const body = (await response.json()) as { code?: string; error_code?: string };
     if (typeof body.code === "string" && body.code.length > 0) return body.code;
     if (typeof body.error_code === "string" && body.error_code.length > 0) {
-      // Map cortex codes onto legacy PostgREST codes expected by callers.
-      if (body.error_code === "conflict" || body.error_code === "replay_detected") return "23505";
-      if (body.error_code === "forbidden") return "42501";
       return body.error_code;
     }
     return "";
   } catch {
     return "";
   }
+}
+
+async function missingSessionCode(response: Response): Promise<string | null> {
+  if (response.status !== 404 && response.status !== 410) return null;
+  const code = await responseCode(response);
+  return code || (response.status === 410 ? SESSION_DELETED_CODE : SESSION_NOT_FOUND_CODE);
 }
 
 const counterCache = new Map<string, SessionKeyData>();
@@ -87,7 +93,7 @@ function readOrCreateSessionKeyData(sessionId: string): SessionKeyData {
     } catch {}
   }
   if (!data) {
-    data = { key_b64: b64uEncode(generateSessionKey()), counter: 0, last_synced_index: 0 };
+    data = { key_b64: b64uEncode(generateSessionKey()), counter: 0, last_synced_uuid: null };
     mkdirSecure(dirname(path), 0o700);
     writeFileSecure(path, JSON.stringify(data, null, 2), 0o600);
   }
@@ -131,40 +137,57 @@ export function encryptSessionMetadata(args: {
   });
 }
 
-function pendingClaim(data: SessionKeyData): { start_index: number; counters: number[] } | null {
-  if (data.pending_counters) return data.pending_counters;
-  if (data.pending_counter) {
-    return { start_index: data.pending_counter.index, counters: [data.pending_counter.counter] };
+/**
+ * Where a batch's first record sits inside the pending claim, or null when the
+ * claim cannot be aligned to it.
+ *
+ * Alignment reads the first record that carries a name and subtracts its
+ * position in the batch. An unnamed record has no identity to match on, but
+ * its offset from a named sibling in the same batch does — so only a batch
+ * with no named record at all is unmatchable. Such a batch is never matched on
+ * shape alone: two of them are indistinguishable, and reusing counters that
+ * were already accepted would make the resend read as a replay and drop those
+ * rows rather than deliver them.
+ */
+function claimAlignment(
+  pending: { uuids: (string | null)[] },
+  uuids: (string | null)[],
+): number | null {
+  for (let i = 0; i < uuids.length; i++) {
+    const uuid = uuids[i];
+    if (uuid === null || uuid === undefined) continue;
+    const found = pending.uuids.indexOf(uuid);
+    return found >= i ? found - i : null;
   }
   return null;
 }
 
 // A record keeps its first allocated counter across retries, so an ambiguous
 // failure (rows inserted but response lost) replays as the exact same rows and
-// resolves as a 409 duplicate instead of inserting a second copy. A request
-// fully covered by the pending claim never rewrites it — a partial serial
-// retry inside a claimed batch must not drop claims for its later records.
-export function claimOutgoingCounters(
-  sessionId: string,
-  startIndex: number,
-  count: number,
-): number[] {
+// the broker answers replay_detected instead of inserting a second copy.
+// Counters are unique per session and sending device, so a fresh counter is
+// always a new row and never deduplicates — reusing the claim is what makes a
+// retry safe. The claim names each record, so a serial retry that resumes in
+// the middle of a batch still finds its own counter.
+export function claimOutgoingCounters(sessionId: string, uuids: (string | null)[]): number[] {
   const data = readOrCreateSessionKeyData(sessionId);
-  const pending = pendingClaim(data);
+  const pending = data.pending_claim;
+  const offset = pending ? claimAlignment(pending, uuids) : null;
   const counters: number[] = [];
-  if (pending) {
-    const offset = startIndex - pending.start_index;
-    if (offset >= 0 && offset < pending.counters.length) {
-      counters.push(...pending.counters.slice(offset, offset + count));
-    }
-    if (counters.length >= count) return counters;
+  if (pending && offset !== null) {
+    counters.push(...pending.counters.slice(offset, offset + uuids.length));
+    if (counters.length >= uuids.length) return counters;
   }
-  while (counters.length < count) {
+  while (counters.length < uuids.length) {
     data.counter += 1;
     counters.push(data.counter);
   }
-  data.pending_counters = { start_index: startIndex, counters };
-  delete data.pending_counter;
+  // A claim holding no name could never be aligned again, so it is not kept.
+  if (uuids.some((uuid) => uuid !== null && uuid !== undefined)) {
+    data.pending_claim = { uuids, counters };
+  } else {
+    delete data.pending_claim;
+  }
   writeFileSecure(sessionKeyPath(sessionId), JSON.stringify(data, null, 2), 0o600);
   return counters;
 }
@@ -204,8 +227,11 @@ export function ratchetKeyFor(
   return key;
 }
 
-export function httpError(status: number, detail: string): HttpError {
-  return Object.assign(new Error(`HTTP ${status} - ${detail}`), { httpStatus: status });
+export function httpError(status: number, detail: string, errorCode?: string): HttpError {
+  return Object.assign(new Error(`HTTP ${status} - ${detail}`), {
+    httpStatus: status,
+    ...(errorCode ? { errorCode } : {}),
+  });
 }
 
 export function isHttpError(err: unknown): err is HttpError {
@@ -251,22 +277,8 @@ export async function postSessionEvent(
     });
   } catch (err) {
     if (err instanceof CortexApiError) {
-      const status =
-        err.code === "conflict" || err.code === "replay_detected"
-          ? 409
-          : err.code === "unauthorized"
-            ? 401
-            : err.code === "forbidden"
-              ? 403
-              : err.httpStatus || 500;
-      const code =
-        err.code === "conflict" || err.code === "replay_detected"
-          ? "23505"
-          : err.code === "forbidden"
-            ? "42501"
-            : err.code;
-      return new Response(JSON.stringify({ message: err.message, code, error_code: err.code }), {
-        status,
+      return new Response(JSON.stringify({ message: err.message, error_code: err.code }), {
+        status: err.httpStatus || 500,
         headers: { "content-type": "application/json" },
       });
     }
@@ -309,25 +321,24 @@ export async function sendEncryptedEvent(deps: {
   }
   if (response.status === 409) {
     const code = await responseCode(response);
-    if (code === UNIQUE_VIOLATION) return { kind: "duplicate" };
+    if (code === DUPLICATE_EVENT_CODE) return { kind: "duplicate" };
     return { kind: "rejected", detail: code || "conflict" };
   }
   if (response.status === 403) {
     const code = await responseCode(response);
-    if (code === RLS_VIOLATION) return { kind: "rejected", detail: code };
+    if (code === ROW_FORBIDDEN_CODE) return { kind: "rejected", detail: code };
     return { kind: "auth", status: 403 };
   }
+  const missingCode = await missingSessionCode(response);
+  if (missingCode) return { kind: "rejected", detail: missingCode };
   if (response.status === 401) {
     return { kind: "auth", status: 401 };
   }
   return { kind: "retryable" };
 }
 
-// PostgREST array inserts are atomic: 201 means every row landed, 409 means
-// the whole batch was rejected because at least one row already exists. The
-// backend's counter guard is a partial unique index (counter is not null),
-// which on_conflict cannot target, so `resolution=ignore-duplicates` is not
-// an option — the caller resolves a conflict by re-sending row by row.
+// Batch inserts are atomic. A duplicate counter rejects the batch, so the
+// caller resends rows individually to advance past already-delivered events.
 export type BatchDeliveryResult =
   | { kind: "delivered" }
   | { kind: "conflict" }
@@ -370,14 +381,16 @@ export async function sendEncryptedEventBatch(deps: {
   }
   if (response.status === 409) {
     const code = await responseCode(response);
-    if (code === UNIQUE_VIOLATION) return { kind: "conflict" };
+    if (code === DUPLICATE_EVENT_CODE) return { kind: "conflict" };
     return { kind: "rejected", detail: code || "conflict" };
   }
   if (response.status === 403) {
     const code = await responseCode(response);
-    if (code === RLS_VIOLATION) return { kind: "rejected", detail: code };
+    if (code === ROW_FORBIDDEN_CODE) return { kind: "rejected", detail: code };
     return { kind: "auth", status: 403 };
   }
+  const missingCode = await missingSessionCode(response);
+  if (missingCode) return { kind: "rejected", detail: missingCode };
   if (response.status === 401) {
     return { kind: "auth", status: 401 };
   }
@@ -401,15 +414,89 @@ export async function probeAuth(accessToken: string): Promise<boolean | null> {
   }
 }
 
-export function loadSyncedIndex(sessionId: string): number | null {
-  const data = readOrCreateSessionKeyData(sessionId);
-  return data.last_synced_index ?? null;
+/** The uuid of the last record delivered to the broker, or null for none. */
+export function loadSyncedAnchor(sessionId: string): string | null {
+  return readOrCreateSessionKeyData(sessionId).last_synced_uuid ?? null;
 }
 
-export function persistSyncedIndex(sessionId: string, index: number): void {
+export function persistSyncedAnchor(sessionId: string, uuid: string | null): void {
   const data = readOrCreateSessionKeyData(sessionId);
-  if (data.last_synced_index !== index) {
-    data.last_synced_index = index;
-    writeFileSecure(sessionKeyPath(sessionId), JSON.stringify(data, null, 2), 0o600);
+  if ((data.last_synced_uuid ?? null) === uuid) return;
+  data.last_synced_uuid = uuid;
+  writeFileSecure(sessionKeyPath(sessionId), JSON.stringify(data, null, 2), 0o600);
+}
+
+/**
+ * Convert a position-addressed cursor and claim to the uuids they named.
+ *
+ * **Precondition, and it cannot be checked here: `uuidAt` must address the same
+ * record array those positions were written against.** A position carries no
+ * evidence of the array it came from, so converting it against a different one
+ * yields an anchor naming the wrong record — and a wrong anchor resolves
+ * cleanly, which is the silent failure this cursor exists to prevent.
+ *
+ * The obligation therefore falls on the caller. While the record set is built
+ * by replaying the transcript, adopting the cursor at session start satisfies
+ * it. **Once the record set is built from aggregates rather than replayed,
+ * that no longer holds and the legacy field must be DROPPED rather than
+ * converted** — a full resend costs duplicate rows on the companion, where a
+ * mis-converted anchor costs records it never receives at all.
+ *
+ * `uuidAt` answers with the uuid of the record at one position, or null when
+ * that record carries none. Runs at most once per session: the positions leave
+ * the file on the same write, so a later array has nothing left to misread.
+ */
+export function migrateSyncCursor(
+  sessionId: string,
+  uuidAt: (index: number) => string | null,
+  options: { positionsResolve?: boolean } = {},
+): void {
+  const positionsResolve = options.positionsResolve ?? true;
+  const data = readOrCreateSessionKeyData(sessionId);
+  const legacyClaim =
+    data.pending_counters ??
+    (data.pending_counter
+      ? { start_index: data.pending_counter.index, counters: [data.pending_counter.counter] }
+      : null);
+  if (data.last_synced_index === undefined && legacyClaim === null) return;
+
+  // Positions that no longer resolve are dropped unconverted, leaving no anchor
+  // at all. That resends the session, which costs duplicate rows; converting one
+  // against an array it was not measured against yields an anchor naming the
+  // wrong record, and that resolves cleanly while costing records outright.
+  if (
+    positionsResolve &&
+    data.last_synced_index !== undefined &&
+    data.last_synced_uuid === undefined
+  ) {
+    // The cursor counts records consumed, so the record it named sits one back.
+    // Non-syncable lines carry no uuid, so walk back to the nearest that does:
+    // resuming just after it can only re-offer lines the encoder skips anyway.
+    let anchor: string | null = null;
+    for (let i = data.last_synced_index - 1; i >= 0 && anchor === null; i--) {
+      anchor = uuidAt(i);
+    }
+    data.last_synced_uuid = anchor;
   }
+  if (positionsResolve && legacyClaim !== null && data.pending_claim === undefined) {
+    data.pending_claim = {
+      uuids: legacyClaim.counters.map((_, i) => uuidAt(legacyClaim.start_index + i)),
+      counters: legacyClaim.counters,
+    };
+  }
+  delete data.last_synced_index;
+  delete data.pending_counter;
+  delete data.pending_counters;
+  writeFileSecure(sessionKeyPath(sessionId), JSON.stringify(data, null, 2), 0o600);
+}
+
+export function hasRemoteDeletionMarker(sessionId: string): boolean {
+  return readOrCreateSessionKeyData(sessionId).remote_deleted === true;
+}
+
+export function persistRemoteDeletionMarker(sessionId: string): void {
+  const data = readOrCreateSessionKeyData(sessionId);
+  if (data.remote_deleted === true) return;
+  data.remote_deleted = true;
+  writeFileSecure(sessionKeyPath(sessionId), JSON.stringify(data, null, 2), 0o600);
 }

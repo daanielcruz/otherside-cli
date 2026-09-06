@@ -1,13 +1,12 @@
 import { findModel } from "@/engine/model/catalog.ts";
 import {
-  getEffectiveContextWindowSize,
-  getModelAutoCompactThreshold,
-  MANUAL_COMPACT_BUFFER_TOKENS,
-  maxOutputTokensForModel,
+  modelAutoCompactTrigger,
+  modelBlockingCeiling,
+  providerCompactOutputLimit,
 } from "@/engine/session/compact/index.ts";
 import {
+  estimateConversationTokens,
   getAuthoritativeUsage,
-  roughTokenCountEstimationForMessages,
   totalInputTokensFromUsage,
 } from "@/engine/session/compact/token-count.ts";
 import {
@@ -33,16 +32,16 @@ function computePrefixOverflowTokens(deps: CompactOrchestrationDeps): number | n
   const usage = getAuthoritativeUsage(deps.agentDeps.session.messages, lastUsage);
   if (!usage) return null;
   const totalInputTokens = totalInputTokensFromUsage(usage);
-  const messagesEstimate = roughTokenCountEstimationForMessages(deps.agentDeps.session.messages);
+  const messagesEstimate = estimateConversationTokens(deps.agentDeps.session.messages);
   return Math.max(0, totalInputTokens - messagesEstimate);
 }
 
 export function checkContextOverflow(deps: CompactOrchestrationDeps): ContextOverflow | null {
   const state = deps.agentDeps.broker.read();
-  const model = findModel(state.model);
+  const model = findModel({ provider: state.provider, model: state.model });
   if (!model) return null;
   const window = resolveCompactWindow(model);
-  const maxOutput = maxOutputTokensForModel(state.model);
+  const maxOutput = providerCompactOutputLimit({ provider: state.provider, model: state.model });
   const lastUsage = deps.agentDeps.getLastUsage?.() ?? null;
   const used = computeUsedContextTokens(
     deps.agentDeps.session.messages,
@@ -50,10 +49,10 @@ export function checkContextOverflow(deps: CompactOrchestrationDeps): ContextOve
     state.provider,
     state.model,
   );
-  const hardCap = getEffectiveContextWindowSize(window, maxOutput) - MANUAL_COMPACT_BUFFER_TOKENS;
+  const hardCap = modelBlockingCeiling({ model, window, maxOutputTokens: maxOutput });
   if (used <= hardCap) return null;
   const prefixTokens = computePrefixOverflowTokens(deps);
-  const threshold = getModelAutoCompactThreshold({
+  const threshold = modelAutoCompactTrigger({
     model,
     window,
     maxOutputTokens: maxOutput,

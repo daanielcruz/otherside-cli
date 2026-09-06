@@ -1,11 +1,11 @@
 import { describe, expect, it } from "bun:test";
-import type { SetStateAction } from "react";
+import type { StateUpdate } from "@/kernel/std/types/state.ts";
 import { createAgentTranscriptHelpers } from "@/ui/app/agent-transcript.ts";
 import type { TranscriptEntry } from "@/ui/transcript/types";
 
 function makeHelpers(initial: TranscriptEntry[]) {
   const captured = { current: initial as readonly TranscriptEntry[] };
-  const setTranscript = (v: SetStateAction<readonly TranscriptEntry[]>): void => {
+  const setTranscript = (v: StateUpdate<readonly TranscriptEntry[]>): void => {
     captured.current = typeof v === "function" ? v(captured.current) : v;
   };
   const helpers = createAgentTranscriptHelpers({
@@ -77,11 +77,12 @@ describe("createAgentTranscriptHelpers", () => {
           text: JSON.stringify({ description: "do thing", subagent_type: "explore" }),
         },
       ]);
-      helpers.setAgentBackgrounded("X", "claude-opus-4-8");
+      helpers.setAgentBackgrounded("X", { provider: "anthropic", model: "claude-opus-4-8" });
       const entry = captured.current[0];
       expect(entry?.id).toBe("b_X");
       expect(entry?.isBackgrounded).toBe(true);
       expect(entry?.agentModel).toBe("claude-opus-4-8");
+      expect(entry?.agentProvider).toBe("anthropic");
       expect(JSON.parse(entry?.text ?? "{}")).toEqual({
         status: "backgrounded",
         subagent_type: "explore",
@@ -111,6 +112,47 @@ describe("createAgentTranscriptHelpers", () => {
       const before = captured.current;
       helpers.setAgentBackgrounded("X");
       expect(captured.current).toBe(before);
+    });
+
+    it("carries the call's explicit route pin when no resolved route exists yet", () => {
+      const { helpers, captured } = makeHelpers([
+        {
+          id: "t_X",
+          kind: "tool",
+          title: "Agent",
+          text: JSON.stringify({
+            description: "recon",
+            subagent_type: "explore",
+            provider: "xai",
+            model: "grok-4.5",
+          }),
+        },
+      ]);
+      helpers.setAgentBackgrounded("X");
+      const entry = captured.current[0];
+      expect(entry?.id).toBe("b_X");
+      expect(entry?.agentModel).toBe("grok-4.5");
+      expect(entry?.agentProvider).toBe("xai");
+    });
+
+    it("prefers the resolved route over the call's pin", () => {
+      const { helpers, captured } = makeHelpers([
+        {
+          id: "t_X",
+          kind: "tool",
+          title: "Agent",
+          text: JSON.stringify({
+            description: "recon",
+            subagent_type: "explore",
+            provider: "xai",
+            model: "grok-4.5",
+          }),
+        },
+      ]);
+      helpers.setAgentBackgrounded("X", { provider: "anthropic", model: "claude-opus-4-8" });
+      const entry = captured.current[0];
+      expect(entry?.agentModel).toBe("claude-opus-4-8");
+      expect(entry?.agentProvider).toBe("anthropic");
     });
   });
 });

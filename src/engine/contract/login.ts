@@ -1,4 +1,4 @@
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 import { deleteFor } from "@/kernel/storage/credentials.ts";
 
 export type ValidationIntent = "verify" | "change_auth" | "cancel";

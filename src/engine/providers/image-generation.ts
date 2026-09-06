@@ -1,10 +1,10 @@
+import type { ImageMediaType } from "@/kernel/std/types/image.ts";
 import type {
   ImageGeneratorProviderId,
   ImageGeneratorSelection,
   ProviderId,
-} from "@/kernel/config/provider-ids.ts";
-import { isImageGeneratorProviderId } from "@/kernel/config/provider-ids.ts";
-import type { ImageMediaType } from "@/kernel/std/types/image.ts";
+} from "@/kernel/std/types/provider-ids.ts";
+import { isImageGeneratorProviderId } from "@/kernel/std/types/provider-ids.ts";
 
 export type ImageSize = "1024x1024" | "1024x1536" | "1536x1024";
 

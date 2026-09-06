@@ -14,7 +14,7 @@ import {
   ReadMcpResourceTool,
 } from "./mcp/mcp_resources.ts";
 import { ToolSearch } from "./mcp/toolsearch.ts";
-import { WaitForMcpServersTool } from "./mcp/wait_for_mcp_servers.ts";
+import { MISSING_MCP_TOOLS_WAITER } from "./mcp/wait_for_mcp_servers.ts";
 import { EnterPlanMode, ExitPlanMode } from "./plan.ts";
 import { Read } from "./read/read.ts";
 import { ReportFindings } from "./report-findings.ts";
@@ -22,7 +22,8 @@ import { ScheduleWakeup } from "./schedule-wakeup.ts";
 import { SendMessage } from "./sendmessage.ts";
 import { Skill } from "./skill.ts";
 import { StructuredOutput } from "./structuredoutput.ts";
-import { TaskCreate, TaskGet, TaskList, TaskOutput, TaskStop, TaskUpdate } from "./task/task.ts";
+import { TaskCreate, TaskGet, TaskList, TaskUpdate } from "./task/task.ts";
+import { TaskOutput, TaskStop } from "./task/task-control.ts";
 import { WebFetch } from "./web/webfetch.ts";
 import { WebSearch } from "./web/websearch.ts";
 import { Workflow } from "./workflow.ts";
@@ -62,7 +63,7 @@ export const BUILTINS: ToolHandler[] = [
   ListMcpResourcesTool,
   ReadMcpResourceDirTool,
   ReadMcpResourceTool,
-  WaitForMcpServersTool,
+  MISSING_MCP_TOOLS_WAITER,
   StructuredOutput,
   ScheduleWakeup,
   GenerateImage,

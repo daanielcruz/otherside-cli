@@ -4,10 +4,10 @@ import {
   startShellTask,
 } from "@/engine/background/tasks/background.ts";
 import {
-  registerWorkflowTask,
+  enrollWorkflowTask,
   resetWorkflowTasksForTests,
 } from "@/engine/background/workflows/runtime/store/store.ts";
-import type { LocalWorkflowTaskState } from "@/engine/background/workflows/runtime/store/types.ts";
+import type { WorkflowTaskLifecycle } from "@/engine/background/workflows/runtime/store/types.ts";
 import type { Provider } from "@/engine/contract/types.ts";
 import { registerAllProviders } from "@/engine/providers/bootstrap.ts";
 import * as providers from "@/engine/providers/registry.ts";
@@ -20,26 +20,23 @@ import type { AgentEvent } from "@/kernel/std/types/events.ts";
 
 registerAllProviders();
 
-const encoder = new TextEncoder();
-const decoder = new TextDecoder();
-
 function makeProvider(responses: readonly string[]): { provider: Provider; calls: () => number } {
   let calls = 0;
   const provider: Provider = {
     ...providers.get("xai"),
     id: "xai",
-    stream: async function* () {
+    startStreamAttempt: () => {
       const response = responses[calls];
       calls += 1;
       if (response === undefined) throw new Error(`unexpected provider call ${calls}`);
-      yield encoder.encode(response);
-    },
-    translateResponse: async function* (raw) {
-      let text = "";
-      for await (const chunk of raw) text += decoder.decode(chunk);
-      yield { kind: "message_start", id: `msg-${calls}` };
-      yield { kind: "text_delta", text };
-      yield { kind: "message_stop", stop_reason: "stop" };
+      return {
+        events: (async function* () {
+          yield { kind: "message_start", id: `msg-${calls}` };
+          yield { kind: "text_delta", text: response };
+          yield { kind: "message_stop", stop_reason: "stop" };
+        })(),
+        abort: () => {},
+      };
     },
   };
   return { provider, calls: () => calls };
@@ -86,7 +83,7 @@ function makeHost(sessionId: string): TurnLoopHost {
   };
 }
 
-function makeRunningWorkflow(id: string, sessionId: string): LocalWorkflowTaskState {
+function makeRunningWorkflow(id: string, sessionId: string): WorkflowTaskLifecycle {
   return {
     id,
     type: "local_workflow",
@@ -136,7 +133,7 @@ describe("goal background workflow parking", () => {
     const fake = makeProvider(["The workflow is still running."]);
     providers.register(fake.provider);
     setActiveGoal(sessionId, "workflow completes");
-    registerWorkflowTask(makeRunningWorkflow("workflow-1", sessionId));
+    enrollWorkflowTask(makeRunningWorkflow("workflow-1", sessionId));
 
     const events = await collectEvents(makeHost(sessionId));
 
@@ -215,7 +212,7 @@ describe("goal background workflow parking", () => {
     ]);
     providers.register(fake.provider);
     setActiveGoal(sessionId, "no work remains");
-    registerWorkflowTask(makeRunningWorkflow("workflow-2", "session-2"));
+    enrollWorkflowTask(makeRunningWorkflow("workflow-2", "session-2"));
 
     const events = await collectEvents(makeHost(sessionId));
 

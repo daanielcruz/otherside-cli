@@ -9,14 +9,14 @@ import {
 } from "@/engine/translator/index.ts";
 import { streamWithRetry } from "@/engine/transport/_infra/classify/retry.ts";
 import type { ComposedHarness, InjectionQueue } from "@/harness/composer/injections.ts";
-import { getCompactPrompt } from "@/harness/routines/compact/index.ts";
+import { buildCompactSummaryPrompt } from "@/harness/routines/compact/index.ts";
 import { resolveConfig } from "@/kernel/config/resolver.ts";
 import type { ProviderEvent } from "@/kernel/std/types/events.ts";
 import type { Message } from "@/kernel/std/types/message.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 import { groupByApiRound, trimHeadGroupsByCount } from "./grouping.ts";
 import { MICRO_COMPACT_CLEARED_MESSAGE } from "./micro.ts";
-import { roughTokenCountEstimationForMessages } from "./token-count.ts";
+import { estimateConversationTokens } from "./token-count.ts";
 
 export class EmptyCompactSummaryError extends Error {
   constructor() {
@@ -72,7 +72,7 @@ export function appendCompactDirective(messages: Message[], directive: string): 
 }
 
 function emptyHarness(): ComposedHarness {
-  return { layers: [], combined: "", systemBlocks: [], userPrepend: [] };
+  return { layers: [], combined: "", systemBlocks: [], userPrepend: [], midSystemPromotion: "off" };
 }
 
 function resolveSummaryHarness(
@@ -201,11 +201,11 @@ async function summarizeConversationAttempt(
   // Keep the conversation envelope (thinking/effort/agentic) so the summary
   // request reuses the same cached prefix as a normal turn. The compact
   // request sends thinking enabled+summarized — never disableThinking.
-  const compactPrompt = getCompactPrompt(customInstructions);
+  const compactPrompt = buildCompactSummaryPrompt(customInstructions);
   const harness = resolveSummaryHarness(ctx, messages, harnessOverride);
 
-  const preTokens = roughTokenCountEstimationForMessages(messages);
-  let working = stripImagesFromMessages(messages);
+  const preTokens = estimateConversationTokens(messages);
+  let working = dropImageBlocksFromMessages(messages);
   let dropped = 0;
   let lastTokenGap: number | undefined;
 
@@ -255,7 +255,7 @@ async function summarizeConversationAttempt(
       }
       return { summary: text, droppedMessages: dropped, preTokens };
     } catch (err) {
-      const isPtl = isPromptTooLongError(err);
+      const isPtl = isContextOverflowError(err);
       const retryable = isPtl || isRetryableStreamError(err);
       if (!retryable || attempt >= MAX_PTL_RETRIES) {
         throw err;
@@ -271,7 +271,7 @@ async function summarizeConversationAttempt(
         let acc = 0;
         groupsToDrop = 0;
         for (const g of groups) {
-          acc += roughTokenCountEstimationForMessages(g);
+          acc += estimateConversationTokens(g);
           groupsToDrop += 1;
           if (acc >= tokenGap) break;
         }
@@ -362,12 +362,12 @@ function clearOldestToolResultsInSingleRound(messages: Message[]): Message[] | n
   return touched ? next : null;
 }
 
-function isPromptTooLongError(err: unknown): boolean {
+function isContextOverflowError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err ?? "");
   return PTL_PATTERNS.some((p) => p.test(msg));
 }
 
-function stripImagesFromMessages(messages: Message[]): Message[] {
+function dropImageBlocksFromMessages(messages: Message[]): Message[] {
   return messages.map((m) => {
     if (!Array.isArray(m.content)) return m;
     const next = m.content.map((b) => {

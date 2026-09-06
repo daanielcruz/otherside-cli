@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 import { createConcurrencyGate, workflowConcurrencyLimit } from "../concurrency.ts";
 
 const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));

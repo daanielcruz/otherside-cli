@@ -12,12 +12,13 @@ import {
 } from "@/engine/providers/kimi/translate.ts";
 import { searchKimi } from "@/engine/tools/kimi.ts";
 import { classifyProviderError } from "@/engine/transport/_infra/classify/classify.ts";
+import { providerDisplayName } from "@/kernel/std/types/provider-ids.ts";
 
 const PROVIDER: ApiProvider<"anthropic-messages"> = {
   id: "kimi",
   api: "anthropic-messages",
   sourceId: "builtin",
-  label: "Kimi",
+  label: providerDisplayName("kimi"),
   shortKey: "kimi",
 };
 
@@ -29,7 +30,7 @@ export const MODELS: readonly ModelEntry[] = [
     contextWindow: 1_000_000,
     autoCompactTokenLimit: 967_000,
     provider: "kimi",
-    efforts: ["max"],
+    efforts: ["high", "max"],
     defaultEffort: "max",
   },
   {
@@ -63,7 +64,6 @@ export const config: ProviderConfig<"anthropic-messages"> = {
   stream: kimiStream,
   featureFlags: {
     fastMode: false,
-    effortSuffix: false,
     thinkingSuffix: false,
     supportsImages: true,
   },

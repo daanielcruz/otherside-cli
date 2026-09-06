@@ -29,6 +29,7 @@ interface MockEntry {
 }
 
 const mockFs = new Map<string, MockEntry>();
+const fileReads: Array<{ path: string; position: number; length: number }> = [];
 
 function normalize(p: string): string {
   return resolve(p);
@@ -252,6 +253,7 @@ mock.module("node:fs/promises", () => ({
     return {
       read: async (buffer: Buffer, offset: number, length: number, position: number | null) => {
         const start = position ?? 0;
+        fileReads.push({ path: norm, position: start, length });
         const fileBuffer = Buffer.from(entry.content, "utf8");
         const bytesRead = fileBuffer.copy(
           buffer,
@@ -300,6 +302,8 @@ import {
 const SESSION_ID = "resume-full-history-test";
 const TS = "2026-06-23T00:00:00.000Z";
 const BIG_PRECOMPACT_TEXT = 5 * 1024 * 1024 + 1024;
+/** Wider than the transcript scan buffer, so the line spans several reads. */
+const MULTI_CHUNK_TEXT = 2 * 1024 * 1024 + 7;
 
 let base: string;
 let savedConfigDir: string | undefined;
@@ -337,6 +341,7 @@ afterAll(() => {
 
 beforeEach(() => {
   mockFs.clear();
+  fileReads.length = 0;
   base = mkdtempMock("otherside-resume-reader-");
   savedConfigDir = process.env.OTHERSIDE_CONFIG_DIR;
   savedEphemeralDir = process.env.OTHERSIDE_EPHEMERAL_SESSIONS_DIR;
@@ -860,6 +865,33 @@ describe("loadSessionForResume", () => {
     expect(userUuids).toEqual(["root", "active-one", "active-two"]);
   });
 
+  it("paces collections through the large-transcript envelope pass", async () => {
+    const cwd = join(base, "repo");
+    const path = sessionPathForCwd(cwd, SESSION_ID);
+    mkdirMock(dirname(path), { recursive: true });
+    const lines = [
+      nativeConfigLine(cwd),
+      nativeUserLine("root", null, `root ${"x".repeat(BIG_PRECOMPACT_TEXT)}`),
+      nativeUserLine("mid", "root", `mid ${"x".repeat(BIG_PRECOMPACT_TEXT)}`),
+      nativeUserLine("leaf", "mid", "leaf"),
+    ];
+    writeFileMock(path, lines.join("\n") + "\n");
+
+    const originalGc = Bun.gc;
+    let collections = 0;
+    Bun.gc = ((sync: boolean) => {
+      collections += 1;
+      return originalGc(sync);
+    }) as typeof Bun.gc;
+    try {
+      await loadSessionForResume(SESSION_ID, cwd);
+    } finally {
+      Bun.gc = originalGc;
+    }
+
+    expect(collections).toBeGreaterThan(0);
+  });
+
   it("loads the full large transcript when active-segment skipping is disabled", async () => {
     process.env.OTHERSIDE_DISABLE_PRECOMPACT_SKIP = "yes";
     const cwd = join(base, "repo");
@@ -1057,6 +1089,135 @@ describe("loadSessionForResume", () => {
     expect(restored.model).toBe("gpt-5.5");
     expect(restored.fastMode).toBe(true);
     expect(restored.ultracode).toBe(true);
+  });
+
+  it("gives the model every turn when the transcript never compacted", async () => {
+    // Nothing compacted, so the whole conversation is still the live one: cutting it
+    // would resume from a shorter history than the session actually has.
+    process.env.OTHERSIDE_RESUME_TAIL_ENTRIES = "2";
+    const cwd = join(base, "repo");
+    const path = sessionPathForCwd(cwd, SESSION_ID);
+    mkdirMock(dirname(path), { recursive: true });
+    writeFileMock(
+      path,
+      serializeFixtureRecords(cwd, [
+        sessionMetaRecord(),
+        {
+          type: "user_message",
+          ts: TS,
+          uuid: "head-user",
+          content: `head history ${"x".repeat(BIG_PRECOMPACT_TEXT)}`,
+        },
+        {
+          type: "assistant_message",
+          ts: TS,
+          uuid: "head-assistant",
+          content: "head answer",
+          provider: "codex",
+          model: "gpt-5.5",
+        },
+        {
+          type: "usage",
+          ts: TS,
+          provider: "codex",
+          model: "gpt-5.5",
+          session_id: SESSION_ID,
+          request_count: 1,
+          input_tokens: 4242,
+          output_tokens: 17,
+          thought_tokens: 0,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+        },
+        {
+          type: "user_message",
+          ts: TS,
+          uuid: "tail-user",
+          // Spans several scan buffers: the tail is re-read by byte range, so a
+          // wrong span would truncate or corrupt this line.
+          content: `tail question ${"y".repeat(MULTI_CHUNK_TEXT)}`,
+        },
+        {
+          type: "assistant_message",
+          ts: TS,
+          uuid: "tail-assistant",
+          content: "tail answer",
+        },
+      ]).join("\n") + "\n",
+    );
+
+    const loaded = await loadSessionForResume(SESSION_ID, cwd);
+
+    const modelText = sessionRecordsToMessages(loaded.modelRecords).flatMap((message) =>
+      message.content.map((block) => (block.type === "text" ? block.text : "")),
+    );
+    expect(modelText.some((text) => text.includes("head history"))).toBe(true);
+    expect(modelText.some((text) => text.includes("head answer"))).toBe(true);
+    expect(modelText.some((text) => text.includes("tail answer"))).toBe(true);
+    // The multi-chunk tail line survives the ranged re-read byte for byte.
+    const tailQuestion = modelText.find((text) => text.startsWith("tail question "));
+    expect(tailQuestion).toBe(`tail question ${"y".repeat(MULTI_CHUNK_TEXT)}`);
+
+    expect(loaded.records.some((record) => record.type === "session_meta")).toBe(true);
+    expect(loaded.usageRecords.some((record) => record.input_tokens === 4242)).toBe(true);
+    // What the reader shows stays windowed whatever the model was handed.
+    expect(loaded.tailRecords.map((record) => record.type)).toEqual([
+      "user_message",
+      "assistant_message",
+    ]);
+    expect(loaded.chainHead).toBe("tail-assistant");
+  });
+
+  it("single-scans and tail-caps a large picker preview without a boundary", async () => {
+    process.env.OTHERSIDE_RESUME_TAIL_ENTRIES = "2";
+    const cwd = join(base, "repo");
+    const path = sessionPathForCwd(cwd, SESSION_ID);
+    mkdirMock(dirname(path), { recursive: true });
+    writeFileMock(
+      path,
+      serializeFixtureRecords(cwd, [
+        sessionMetaRecord(),
+        {
+          type: "user_message",
+          ts: TS,
+          uuid: "head-user",
+          content: `head history ${"x".repeat(BIG_PRECOMPACT_TEXT)}`,
+        },
+        {
+          type: "assistant_message",
+          ts: TS,
+          uuid: "head-assistant",
+          content: "head answer",
+        },
+        {
+          type: "user_message",
+          ts: TS,
+          uuid: "tail-user",
+          content: "tail question",
+        },
+        {
+          type: "assistant_message",
+          ts: TS,
+          uuid: "tail-assistant",
+          content: "tail answer",
+        },
+      ]).join("\n") + "\n",
+    );
+
+    const previewRecords = recordsFromLines(await readActiveChainLines(SESSION_ID));
+
+    expect(
+      previewRecords.flatMap((record) =>
+        record.type === "user_message" || record.type === "assistant_message"
+          ? [record.content]
+          : [],
+      ),
+    ).toEqual(["tail question", "tail answer"]);
+    expect(
+      fileReads.filter(
+        (read) => read.path === normalize(path) && read.position === 0 && read.length === 1_048_576,
+      ),
+    ).toHaveLength(1);
   });
 
   it("reports a missing direct resume id", async () => {

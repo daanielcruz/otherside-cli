@@ -16,7 +16,7 @@ afterEach(() => {
   delete process.env.OTHERSIDE_CLI_SYSTEM_PROMPT;
   delete process.env.OTHERSIDE_CLI_APPEND_SYSTEM_PROMPT;
   delete process.env.OTHERSIDE_CLI_MAX_BUDGET_USD;
-  delete process.env.OTHERSIDE_CLI_FALLBACK_MODEL;
+  delete process.env.OTHERSIDE_CLI_FALLBACK_ROUTE;
   delete process.env.OTHERSIDE_CLI_MCP_CONFIGS;
   delete process.env.OTHERSIDE_CLI_AGENTS_JSON;
   delete process.env.OTHERSIDE_CLI_JSON_SCHEMA;
@@ -37,6 +37,26 @@ describe("--plugin-dir", () => {
   it("leaves the env unset when no --plugin-dir is passed", () => {
     parseArgs(["bun", "cli", "-p", "hi"]);
     expect(process.env.OTHERSIDE_FLAG_PLUGIN_DIRS).toBeUndefined();
+  });
+});
+
+describe("thinking display flag", () => {
+  it("accepts summarized and omitted in print and interactive modes", () => {
+    const summarized = parseArgs(["bun", "cli", "-p", "hi", "--thinking-display", "summarized"]);
+    if (summarized.kind !== "print") throw new Error("expected print");
+    expect(summarized.thinkingDisplay).toBe("summarized");
+    expect(summarized.prompt).toBe("hi");
+
+    const omitted = parseArgs(["bun", "cli", "--resume", "session", "--thinking-display=omitted"]);
+    if (omitted.kind !== "interactive") throw new Error("expected interactive");
+    expect(omitted.thinkingDisplay).toBe("omitted");
+  });
+
+  it("rejects an invalid thinking display mode", () => {
+    const mode = parseArgs(["bun", "cli", "-p", "hi", "--thinking-display", "raw"]);
+    expect(mode.kind).toBe("error");
+    if (mode.kind !== "error") throw new Error("expected error");
+    expect(mode.message).toContain("invalid --thinking-display");
   });
 });
 
@@ -297,9 +317,15 @@ describe("print-mode positional prompt", () => {
     });
     const mode = parseArgs(["bun", "cli", "-p", "hi", "--fallback-model", "known-fallback-model"]);
     if (mode.kind !== "print") throw new Error("expected print");
-    expect(mode.fallbackModel).toBe("known-fallback-model");
+    expect(mode.fallbackRoute).toEqual({
+      provider: "anthropic",
+      model: "known-fallback-model",
+    });
     expect(mode.prompt).toBe("hi");
-    expect(process.env.OTHERSIDE_CLI_FALLBACK_MODEL).toBe("known-fallback-model");
+    expect(JSON.parse(process.env.OTHERSIDE_CLI_FALLBACK_ROUTE ?? "null")).toEqual({
+      provider: "anthropic",
+      model: "known-fallback-model",
+    });
   });
 
   it("rejects an unknown --fallback-model", () => {

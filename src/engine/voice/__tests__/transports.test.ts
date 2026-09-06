@@ -3,6 +3,7 @@ import { EventEmitter } from "node:events";
 import * as realHttp2Module from "node:http2";
 import * as realWeriftModule from "werift";
 import * as realWsModule from "ws";
+import { CLAUDE_CODE_VERSION } from "@/engine/contract/wire-version.ts";
 import * as realAnthropicAuthModule from "@/engine/providers/anthropic/auth.ts";
 import * as realAntigravityAuthModule from "@/engine/providers/antigravity/auth.ts";
 import { userAgent as antigravityUserAgent } from "@/engine/providers/antigravity/fingerprint.ts";
@@ -307,7 +308,7 @@ describe("voice provider transports", () => {
     );
     expect(socket.headers).toEqual({
       Authorization: "Bearer anthropic-access",
-      "User-Agent": "claude-cli/2.1.211 (external, cli)",
+      "User-Agent": `claude-cli/${CLAUDE_CODE_VERSION} (external, cli)`,
       "x-app": "cli",
       "anthropic-client-platform": anthropicPlatform,
     });
@@ -335,12 +336,12 @@ describe("voice provider transports", () => {
   it("waits for xAI transcript.created and completes audio.done", async () => {
     const observed = callbacks();
     let connected = false;
-    const connection = connectXaiVoice(observed.callbacks, undefined, { language: "vi" }).then(
-      (value) => {
-        connected = true;
-        return value;
-      },
-    );
+    const connection = connectXaiVoice(observed.callbacks, undefined, {
+      language: "vi",
+    }).then((value) => {
+      connected = true;
+      return value;
+    });
     const socket = await waitForSocket();
     await Promise.resolve();
     expect(connected).toBe(false);
@@ -383,7 +384,11 @@ describe("voice provider transports", () => {
     socket.emit("message", JSON.stringify({ type: "transcript.partial", text: "first" }));
     socket.emit(
       "message",
-      JSON.stringify({ type: "transcript.partial", text: "first phrase", speech_final: true }),
+      JSON.stringify({
+        type: "transcript.partial",
+        text: "first phrase",
+        speech_final: true,
+      }),
     );
     // Pause; second utterance restarts partial text from scratch.
     socket.emit("message", JSON.stringify({ type: "transcript.partial", text: "second" }));
@@ -391,7 +396,11 @@ describe("voice provider transports", () => {
     // Chunk-final delta locks into the preview prefix without committing.
     socket.emit(
       "message",
-      JSON.stringify({ type: "transcript.partial", text: "second thought", is_final: true }),
+      JSON.stringify({
+        type: "transcript.partial",
+        text: "second thought",
+        is_final: true,
+      }),
     );
     socket.emit("message", JSON.stringify({ type: "transcript.partial", text: "here" }));
     expect(observed.interim).toEqual([
@@ -471,7 +480,9 @@ describe("voice provider transports", () => {
       return Promise.resolve(new Response("{}", { status: 200 }));
     }) as unknown as typeof fetch;
 
-    const transcriber = await connectCodexVoice(observed.callbacks, undefined, { language: "pt" });
+    const transcriber = await connectCodexVoice(observed.callbacks, undefined, {
+      language: "pt",
+    });
     transcriber.send(Buffer.from([1, 2, 3, 4]));
     transcriber.cancel();
     await expect(transcriber.finish()).resolves.toBe("");
@@ -484,12 +495,16 @@ describe("voice provider transports", () => {
     expect(sockets.at(-1)?.url).toContain("language=en");
     resetFakes();
 
-    await connectAnthropicVoice(callbacks().callbacks, undefined, { language: "auto" });
+    await connectAnthropicVoice(callbacks().callbacks, undefined, {
+      language: "auto",
+    });
     expect(sockets.at(-1)?.url).toContain("language=en");
     expect(sockets.at(-1)?.url).not.toContain("language=auto");
     resetFakes();
 
-    const autoConnection = connectXaiVoice(callbacks().callbacks, undefined, { language: "auto" });
+    const autoConnection = connectXaiVoice(callbacks().callbacks, undefined, {
+      language: "auto",
+    });
     const autoSocket = await waitForSocket();
     autoSocket.emit("message", JSON.stringify({ type: "transcript.created" }));
     await autoConnection;

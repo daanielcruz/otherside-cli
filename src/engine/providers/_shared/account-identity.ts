@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 import type { CredentialsBundle } from "@/kernel/storage/credentials.ts";
 import { credentialsPath } from "@/kernel/storage/credentials.ts";
 

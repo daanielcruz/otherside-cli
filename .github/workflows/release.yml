@@ -26,8 +26,7 @@ jobs:
           - target: darwin-x64
             runs-on: macos-14
             bun-target: bun-darwin-x64
-            # canary 1.4.0 ships no downloadable x64 compile baseline yet.
-            bun-version: 1.3.14
+            bun-version: canary
           - target: linux-x64
             runs-on: ubuntu-latest
             bun-target: bun-linux-x64

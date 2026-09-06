@@ -18,6 +18,7 @@ import type { RequestContext } from "@/kernel/std/types/request.ts";
 export const minimaxStream: StreamFn = async function* minimaxStreamFn(
   ctx: RequestContext,
   body: unknown,
+  signal: AbortSignal,
 ): AsyncIterable<Uint8Array> {
   const apiKey = await currentMinimaxApiKey();
   const fp = minimaxFingerprint(ctx);
@@ -35,7 +36,7 @@ export const minimaxStream: StreamFn = async function* minimaxStreamFn(
     method: "POST",
     headers,
     body: JSON.stringify(body),
-    ...(ctx.abortSignal ? { signal: ctx.abortSignal } : {}),
+    signal,
     ...connectionInit(ctx),
   });
 

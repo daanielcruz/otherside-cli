@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runWithAgentContext } from "@/engine/agents/agent-context.ts";
+import { withSpawnedAgentScope } from "@/engine/agents/agent-context.ts";
 import { clear as clearInboxes } from "@/engine/agents/inbox.ts";
 import { register as registerAgent } from "@/engine/agents/registry.ts";
 import {
@@ -94,7 +94,7 @@ describe("durable fork resume", () => {
 
     const release = registerRunningFork(
       forkId,
-      durable.name,
+      durable.name ?? durable.agentId,
       {
         ...resolved.profile.spec,
         prompt: "Resume-time prompt.",
@@ -214,7 +214,7 @@ describe("durable fork resume", () => {
         shouldAvoidPermissionPrompts: true,
       };
       const outsideWrite = () =>
-        runWithAgentContext(agentContext, () =>
+        withSpawnedAgentScope(agentContext, () =>
           resolvePermission(permissionDeps, {
             id: "durable-inherited-mode-write",
             name: "Write",

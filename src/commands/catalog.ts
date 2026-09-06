@@ -1,3 +1,4 @@
+import { userMayInvokeSkill } from "@/engine/skills/overrides.ts";
 import { get as getSkill } from "@/engine/skills/registry.ts";
 import { commandHint } from "./hints.ts";
 
@@ -24,7 +25,7 @@ const LATE_SKILL_ORDER = ["pr-security-review", "deep-security-review", "grill-m
 
 function skillCommand(name: string): SlashCommand | null {
   const skill = getSkill(name);
-  if (!skill?.userInvocable) return null;
+  if (!skill?.userInvocable || !userMayInvokeSkill(skill)) return null;
   return {
     name: skill.name,
     kind: "skill",
@@ -105,7 +106,7 @@ export function buildCatalog(): SlashCommand[] {
     {
       name: "btw",
       kind: "instant",
-      description: "answer a side question without disturbing the main thread",
+      description: "Ask a quick side question without interrupting the main conversation",
       argumentHint: "<question>",
       aliases: ["sidequest"],
     },
@@ -224,6 +225,16 @@ export function buildCatalog(): SlashCommand[] {
       name: "reload",
       kind: "instant",
       description: "reload all skills, agents, plugins, and MCP servers without restarting",
+    },
+    {
+      name: "keybindings",
+      kind: "instant",
+      description: "edit key bindings in $EDITOR",
+    },
+    {
+      name: "add-dir",
+      kind: "instant",
+      description: "add a working directory the session may reach",
     },
     {
       name: "tasks",

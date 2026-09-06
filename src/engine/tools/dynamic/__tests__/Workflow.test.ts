@@ -39,7 +39,7 @@ describe("buildWorkflowDescription", () => {
     expect(properties.resumeFromRunId.description).toContain("Stop the prior run first (TaskStop)");
   });
 
-  it("appends advisory guidance and a pre-launch warning in every orchestration mode", () => {
+  it("appends configured-size guidance in every orchestration mode", () => {
     for (const [guideline, limit] of [
       ["small", 5],
       ["medium", 15],
@@ -48,18 +48,27 @@ describe("buildWorkflowDescription", () => {
       for (const mode of ["disabled", "default", "feudalism"] as const) {
         const description = buildWorkflowDescription("codex", mode, guideline);
         expect(description).toContain(
-          `The user configured the ${guideline} workflow size guideline in /config. Keep workflows under ${limit} agents.`,
+          `A workflow size guideline is configured for this session: ${guideline} — keep workflows under ${limit} agents.`,
         );
-        expect(description).toContain("This is advisory, not a runtime limit");
-        expect(description).toContain("warn the user before launching a larger workflow");
+        expect(description).toContain("This is a guideline, not a hard limit");
       }
     }
   });
 
-  it("adds nothing for unrestricted, absent, or invalid guidelines", () => {
+  it("renders the default medium guidance when the guideline is absent or invalid", () => {
+    for (const value of [undefined, "invalid"]) {
+      const guidance = workflowSizeGuidelineGuidance(value);
+      expect(guidance).toContain(
+        "This session has the default workflow size guideline: medium — keep workflows under 15 agents.",
+      );
+      expect(guidance).toContain(
+        'The user can raise or remove it with "Dynamic workflow size" in /config.',
+      );
+    }
+  });
+
+  it("adds nothing for an unrestricted guideline", () => {
     expect(workflowSizeGuidelineGuidance("unrestricted")).toBe("");
-    expect(workflowSizeGuidelineGuidance(undefined)).toBe("");
-    expect(workflowSizeGuidelineGuidance("invalid")).toBe("");
   });
 
   it("adds literal provider/model guidance without tier fields in Default mode", () => {

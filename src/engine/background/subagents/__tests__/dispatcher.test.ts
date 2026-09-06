@@ -56,6 +56,16 @@ class FakeMcpClient implements McpClient {
     return null;
   }
 
+  async listPrompts() {
+    return [];
+  }
+
+  async getPrompt() {
+    return { messages: [] };
+  }
+
+  announce(): void {}
+
   isClosed(): boolean {
     return this.closed;
   }
@@ -91,10 +101,15 @@ function registerProvider(eventsByTurn: ProviderEvent[][], captures: RequestCapt
       captures.push({ messages, tools });
       return { request: captures.length };
     },
-    stream: async function* () {},
-    translateResponse: async function* () {
-      for (const event of eventsByTurn[streamIndex] ?? []) yield event;
+    startStreamAttempt: () => {
+      const events = eventsByTurn[streamIndex] ?? [];
       streamIndex += 1;
+      return {
+        events: (async function* () {
+          for (const event of events) yield event;
+        })(),
+        abort: () => {},
+      };
     },
     recoverableError: () => ({ kind: "fail", reason: "test" }),
   } as unknown as Provider;

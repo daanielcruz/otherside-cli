@@ -11,12 +11,13 @@ import {
   translateResponseDeepseek as translateResponse,
 } from "@/engine/providers/deepseek/translate.ts";
 import { classifyProviderError } from "@/engine/transport/_infra/classify/classify.ts";
+import { providerDisplayName } from "@/kernel/std/types/provider-ids.ts";
 
 const PROVIDER: ApiProvider<"anthropic-messages"> = {
   id: "deepseek",
   api: "anthropic-messages",
   sourceId: "builtin",
-  label: "DeepSeek",
+  label: providerDisplayName("deepseek"),
   shortKey: "deepseek",
 };
 
@@ -52,7 +53,6 @@ export const config: ProviderConfig<"anthropic-messages"> = {
   stream: deepseekStream,
   featureFlags: {
     fastMode: false,
-    effortSuffix: true,
     thinkingSuffix: true,
     supportsImages: false,
   },
@@ -69,4 +69,11 @@ export const config: ProviderConfig<"anthropic-messages"> = {
   usageDetails: { sourceLabel: "API key" },
   beginLogin: { kind: "api_key" },
   composeMessages: composeFlatMessages,
+  // DeepSeek emits `: keep-alive` SSE comments during content silence, so the
+  // byte watchdog owns dead-socket detection. Content idle then means a wedged
+  // model and must fail terminal rather than reconnect into the same silence.
+  streamEmitsKeepalive: true,
+  // Long reasoning can stay event-silent while keep-alives still flow; raise the
+  // content-idle backstop so healthy think phases are not false-stalled.
+  contentIdleTimeoutMs: 600_000,
 };

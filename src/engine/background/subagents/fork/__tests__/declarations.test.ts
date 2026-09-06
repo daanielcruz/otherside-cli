@@ -7,14 +7,17 @@ import { registerAllBuiltins } from "@/engine/tools/register-builtins.ts";
 import {
   clearAssembledTurn,
   providerToolDeclarations,
+  sanitizeMessages,
   setAssembledTurn,
 } from "@/engine/translator/index.ts";
 import type { ComposedHarness } from "@/harness/composer/injections.ts";
-import { DEFAULT_CONFIG, type WorkflowSizeGuideline } from "@/kernel/config/config.ts";
-import type { OrchestrationMode } from "@/kernel/config/orchestration-mode.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
+import { DEFAULT_CONFIG, type WorkflowSizeClass } from "@/kernel/config/config.ts";
+import type { Message } from "@/kernel/std/types/message.ts";
+import type { OrchestrationMode } from "@/kernel/std/types/orchestration-mode.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
-import { buildSubagentBaseDeclarations, withStructuredOutputDeclaration } from "../loop-runner.ts";
+import { appendForkDeferredToolsReminder } from "../compose.ts";
+import { buildSubagentBaseDeclarations, withStructuredOutputDeclaration } from "../declarations.ts";
 import { buildForkMessages } from "../messages.ts";
 import { resolveAllowSetForFork, resolveWorkflowAgentProfile } from "../profile.ts";
 import type { ForkSpec } from "../types.ts";
@@ -24,6 +27,7 @@ const ANTHROPIC_NAMED = [
   "Bash",
   "Edit",
   "Read",
+  "ReportFindings",
   "Skill",
   "ToolSearch",
   "DeferredToolPlaceholder",
@@ -63,7 +67,7 @@ function context(
   sessions.add(sessionId);
   return {
     provider,
-    model: provider === "anthropic" ? "claude-opus-4-8" : "gpt-5.4",
+    model: provider === "anthropic" ? "claude-opus-5" : "gpt-5.4",
     effort: null,
     permissionMode: "default",
     orchestrationMode,
@@ -100,7 +104,7 @@ function wildcardAgentDef(): SubagentDef {
 
 function seedParent(
   ctx: RequestContext,
-  workflowSizeGuideline?: WorkflowSizeGuideline,
+  workflowSizeGuideline?: WorkflowSizeClass,
 ): ReturnType<typeof providerToolDeclarations> {
   const parentTools = providerToolDeclarations(
     providers.get(ctx.provider),
@@ -204,8 +208,8 @@ describe("subagent wire declarations", () => {
       },
       {
         mode: "feudalism" as const,
-        present: ["tier"],
-        absent: ["provider", "model"],
+        present: ["tier", "provider", "model"],
+        absent: [],
       },
     ];
 
@@ -224,6 +228,16 @@ describe("subagent wire declarations", () => {
         expect(model?.description).toContain("current provider");
         expect(model?.description).not.toContain("ANOTHER provider");
         expect(model?.description).not.toContain("provider together with model");
+      }
+
+      // Feudalism admits the route pair for forks while its ranks stay the only
+      // way to reach a model, so neither field may name one.
+      if (mode === "feudalism") {
+        for (const field of ["provider", "model"]) {
+          const schema = properties[field] as { description?: string } | undefined;
+          expect(schema?.description).toContain("fork");
+          expect(schema?.description).not.toMatch(/claude-|gpt-|grok|gemini|kimi/i);
+        }
       }
     }
   });
@@ -312,7 +326,9 @@ describe("subagent wire declarations", () => {
     const agent = declarations.find((declaration) => declaration.name === "Agent");
 
     expect(workflow).toBe(parentWorkflow);
-    expect(workflow?.description).toContain("small workflow size guideline");
+    expect(workflow?.description).toContain(
+      "A workflow size guideline is configured for this session: small",
+    );
     expect(agent).toBe(parentAgent);
     expect(agent?.description).not.toContain("workflow size guideline");
   });
@@ -326,5 +342,100 @@ describe("subagent wire declarations", () => {
       ANTHROPIC_FORK.filter((name) => name !== "DeferredToolPlaceholder"),
     );
     expect(declarations.some((declaration) => declaration.name.startsWith("Task"))).toBe(false);
+  });
+
+  // Live failure regression: the parent session loaded EnterPlanMode via
+  // ToolSearch (a tool_reference landed in its transcript), then spawned a
+  // context-inheriting fork. EnterPlanMode is fork-disallowed, so the fork
+  // never declares it — the outgoing fork request body must therefore not
+  // carry the inherited tool_reference or the provider rejects it at
+  // pre-flight ("Tool reference 'EnterPlanMode' not found in available tools").
+  test("inherited fork request drops tool references to tools the fork does not declare", () => {
+    const ctx = context("anthropic", "fork-undeclared-reference");
+    seedParent(ctx);
+    announceDeferredTool("EnterPlanMode");
+    announceDeferredTool("EnterWorktree");
+
+    const { declarations } = buildSubagentBaseDeclarations(spec(ctx, true), ctx);
+    const declaredNames = new Set(declarations.map((declaration) => declaration.name));
+    expect(declaredNames.has("EnterPlanMode")).toBe(false);
+
+    const inherited: Message[] = [
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "search-1", name: "ToolSearch", input: {} }],
+      },
+      {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "search-1",
+            content: [
+              { type: "tool_reference", tool_name: "EnterPlanMode" },
+              { type: "tool_reference", tool_name: "EnterWorktree" },
+            ],
+          },
+        ],
+      },
+    ];
+    // Same sanitize call the fork loop makes for the outgoing request body.
+    const outgoing = sanitizeMessages(inherited, {
+      preserveToolReferences: true,
+      declaredToolNames: declaredNames,
+    });
+    const referenced = outgoing.flatMap((message) =>
+      message.content.flatMap((block) =>
+        block.type === "tool_result" && Array.isArray(block.content)
+          ? block.content.filter((part) => part.type === "tool_reference")
+          : [],
+      ),
+    );
+    for (const reference of referenced) {
+      expect(declaredNames.has(reference.tool_name)).toBe(true);
+    }
+    expect(referenced.some((reference) => reference.tool_name === "EnterPlanMode")).toBe(false);
+  });
+});
+
+describe("fork deferred-tools announcement", () => {
+  test("promotes the announcement as a system message after the opening user turn on anthropic", () => {
+    const ctx = context("anthropic", "reminder-promoted");
+    const forkSpec = spec(ctx);
+    const { declarations } = buildSubagentBaseDeclarations(forkSpec, ctx);
+    const fork: Message[] = [
+      { role: "system", content: [{ type: "text", text: "agent system" }] },
+      { role: "user", content: [{ type: "text", text: "do the task" }] },
+    ];
+    appendForkDeferredToolsReminder(fork, ctx, forkSpec, declarations);
+    expect(fork.map((m) => m.role)).toEqual(["system", "user", "system"]);
+    const block = fork[2]!.content[0]!;
+    expect(block.type).toBe("text");
+    const text = block.type === "text" ? block.text : "";
+    // opus-5 sits in the unwrap set: bare content, no reminder envelope.
+    expect(text.startsWith("The following deferred tools are now available")).toBe(true);
+    expect(text).not.toContain("<system-reminder>");
+    // Announced names exclude the declared roster.
+    for (const declaration of declarations) {
+      expect(text).not.toContain(`\n${declaration.name}\n`);
+    }
+    expect(text).toContain("WebFetch");
+  });
+
+  test("keeps the announcement as a user block on providers without promotion", () => {
+    const ctx = context("codex", "reminder-user-block");
+    const forkSpec = spec(ctx);
+    const { declarations } = buildSubagentBaseDeclarations(forkSpec, ctx);
+    const fork: Message[] = [
+      { role: "system", content: [{ type: "text", text: "agent system" }] },
+      { role: "user", content: [{ type: "text", text: "do the task" }] },
+    ];
+    appendForkDeferredToolsReminder(fork, ctx, forkSpec, declarations);
+    expect(fork.map((m) => m.role)).toEqual(["system", "user"]);
+    const blocks = fork[1]!.content;
+    expect(blocks).toHaveLength(2);
+    const tail = blocks[1]!;
+    expect(tail.type === "text" && tail.text.startsWith("<system-reminder>")).toBe(true);
+    expect(tail.type === "text" && tail.text).toContain("deferred tools");
   });
 });

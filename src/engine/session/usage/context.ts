@@ -8,8 +8,8 @@ import { providerContextWarning } from "@/engine/session/usage/provider.ts";
 import { list as listSkills } from "@/engine/skills/registry.ts";
 import { renderMemorySection } from "@/harness/core/memory-section.ts";
 import { renderSkillsReminder } from "@/harness/reminders/reminders.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
 import type { ContentBlock, Message } from "@/kernel/std/types/message.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 import { collectMemoryFiles } from "@/kernel/storage/memory/loader.ts";
 
 export type ContextCategoryColor =
@@ -81,7 +81,7 @@ interface MessageTokenBreakdown {
 
 export function getContextBreakdown(input: ContextBreakdownInput): ContextUsageData {
   const { provider, model: modelId, messages, serverInputTokens } = input;
-  const model = findModel(modelId, provider);
+  const model = findModel({ provider, model: modelId });
   const window = model?.contextWindow ?? 0;
   const tokens = countContextBreakdown(messages);
   const harness = harnessBaselineBreakdown(provider, modelId);

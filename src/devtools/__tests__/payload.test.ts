@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { recordPayloadDiagnostic } from "@/devtools/payload.ts";
-import { type DispatchEntry, settleDispatch } from "@/engine/queue/runtime/turn/tool-dispatch.ts";
+import { type DispatchEntry, settleDispatch } from "@/engine/queue/runtime/turn/dispatch-settle.ts";
 import type { TurnLoopHost } from "@/engine/queue/runtime/turn/types.ts";
 import { makeQueue } from "@/harness/composer/queue.ts";
 import { AsyncStream } from "@/kernel/std/stream/async.ts";

@@ -1,6 +1,12 @@
 import { usageFetchSignal } from "@/engine/providers/_shared/usage-fetch.ts";
-import { currentTokens, resolveProjectId } from "@/engine/providers/antigravity/auth.ts";
-import { backendHost, userAgent } from "@/engine/providers/antigravity/fingerprint.ts";
+import {
+  CODE_ASSIST_METADATA,
+  codeAssistHeaders,
+  currentTokens,
+  LOAD_CODE_ASSIST_PATH,
+  resolveProjectId,
+} from "@/engine/providers/antigravity/auth.ts";
+import { backendHost } from "@/engine/providers/antigravity/fingerprint.ts";
 import { refreshProviderQuota } from "@/engine/providers/quota-refresh.ts";
 import {
   applyScopedQuotaWarnings,
@@ -11,6 +17,8 @@ import { truncateEllipsis } from "@/kernel/std/text/text.ts";
 import { isRecord } from "@/kernel/std/value-guards.ts";
 
 const RETRIEVE_QUOTA_SUMMARY_PATH = "/v1internal:retrieveUserQuotaSummary";
+const FULL_ELIGIBILITY_CHECK_MODE = "FULL_ELIGIBILITY_CHECK";
+const GOOGLE_ONE_CREDIT_TYPE = "GOOGLE_ONE_AI";
 const PERCENT = 100;
 
 export interface AntigravityQuotaBucket {
@@ -29,27 +37,77 @@ export interface AntigravityQuotaGroup {
 
 export interface AntigravityUsage {
   groups: AntigravityQuotaGroup[];
+  /**
+   * Google One AI credit balance. A number (including 0 = known exhausted)
+   * exists only when the eligibility response carried an explicit
+   * GOOGLE_ONE_AI row with a valid amount; anything missing or malformed is
+   * absent/null (unknown), never zero. Display-only: credits do not gate
+   * routing.
+   */
+  creditBalance?: number | null;
 }
 
 export async function fetchAntigravityUsage(): Promise<AntigravityUsage | null> {
   const tokens = await currentTokens();
   const project = await resolveProjectId(tokens);
-  const resp = await fetch(`${backendHost()}${RETRIEVE_QUOTA_SUMMARY_PATH}`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${tokens.accessToken}`,
-      "User-Agent": userAgent(),
-      "Content-Type": "application/json",
-      "Accept-Encoding": "gzip",
-    },
-    body: JSON.stringify({ project }),
-    signal: usageFetchSignal(),
-  });
+  const [resp, creditBalance] = await Promise.all([
+    fetch(`${backendHost()}${RETRIEVE_QUOTA_SUMMARY_PATH}`, {
+      method: "POST",
+      headers: codeAssistHeaders(tokens.accessToken),
+      body: JSON.stringify({ project }),
+      signal: usageFetchSignal(),
+    }),
+    fetchGoogleOneCredits(tokens.accessToken),
+  ]);
   if (!resp.ok) {
     const text = await resp.text().catch(() => "");
     throw new Error(`HTTP ${resp.status}: ${truncateEllipsis(text, 240)}`);
   }
-  return parseQuotaSummary(await resp.json());
+  const summary = parseQuotaSummary(await resp.json());
+  if (!summary) return creditBalance === null ? null : { groups: [], creditBalance };
+  return { ...summary, creditBalance };
+}
+
+/**
+ * Credit-balance failures never fail the quota summary: any transport or
+ * shape problem resolves to null (unknown balance).
+ */
+async function fetchGoogleOneCredits(accessToken: string): Promise<number | null> {
+  try {
+    const resp = await fetch(`${backendHost()}${LOAD_CODE_ASSIST_PATH}`, {
+      method: "POST",
+      headers: codeAssistHeaders(accessToken),
+      body: JSON.stringify({ metadata: CODE_ASSIST_METADATA, mode: FULL_ELIGIBILITY_CHECK_MODE }),
+      signal: usageFetchSignal(),
+    });
+    if (!resp.ok) return null;
+    return parseGoogleOneCredits(await resp.json());
+  } catch {
+    return null;
+  }
+}
+
+export function parseGoogleOneCredits(value: unknown): number | null {
+  if (!isRecord(value) || !isRecord(value.paidTier)) return null;
+  const rows = value.paidTier.availableCredits;
+  if (!Array.isArray(rows)) return null;
+  for (const raw of rows) {
+    if (!isRecord(raw)) continue;
+    if (raw.creditType !== GOOGLE_ONE_CREDIT_TYPE) continue;
+    return creditAmount(raw.creditAmount);
+  }
+  return null;
+}
+
+// int64 wire amounts arrive as canonical protobuf-JSON decimal strings.
+function creditAmount(value: unknown): number | null {
+  const parsed =
+    typeof value === "number"
+      ? value
+      : typeof value === "string" && /^\d+$/.test(value.trim())
+        ? Number(value)
+        : Number.NaN;
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
 }
 
 export function parseQuotaSummary(value: unknown): AntigravityUsage | null {

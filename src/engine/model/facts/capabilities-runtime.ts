@@ -6,7 +6,7 @@ import {
   visionParserModel,
 } from "@/engine/model/facts/capabilities.ts";
 import * as registry from "@/engine/providers/registry.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 
 export function canSendNatively(provider: ProviderId, model?: string): boolean {
   if (!isVisionCapable(provider, model)) {
@@ -20,7 +20,7 @@ export function canSendNatively(provider: ProviderId, model?: string): boolean {
 }
 
 export function canSendPdfNatively(provider: ProviderId, model: string): boolean {
-  const catalogModel = findModel(model, provider);
+  const catalogModel = findModel({ provider, model });
   if (catalogModel) return catalogModel.supportsPdf === true;
   const models = getProviderConfig(provider)?.legacyModels;
   const entries = typeof models === "function" ? models() : (models ?? []);

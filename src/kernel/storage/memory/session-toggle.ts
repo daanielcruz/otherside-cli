@@ -10,12 +10,12 @@ function readBaseAutoMemoryEnabled(): boolean {
 
 let sessionOverride: boolean | null = null;
 
-export function isAutoMemoryEnabled(): boolean {
+export function isSessionMemoryEnabled(): boolean {
   if (sessionOverride !== null) return sessionOverride;
   return readBaseAutoMemoryEnabled();
 }
 
-export function setAutoMemorySessionEnabled(enabled: boolean | null): void {
+export function setSessionMemoryEnabled(enabled: boolean | null): void {
   sessionOverride = enabled;
 }
 

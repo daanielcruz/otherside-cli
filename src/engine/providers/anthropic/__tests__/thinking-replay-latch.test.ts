@@ -105,6 +105,17 @@ describe("anthropic thinking replay rejection recovery", () => {
     expect(first?.reason).toBe("dropped stale thinking replay");
   });
 
+  it("recognizes the invalid-signature rejection from a cross-provider replay", () => {
+    const c = ctx("anthropic-latch-signature");
+    const first = config.recoverableError?.(
+      thinkingRejection("messages.51.content.0: Invalid `signature` in `thinking` block"),
+      c,
+      1,
+    );
+    expect(first?.kind).toBe("retry");
+    expect(first?.reason).toBe("dropped stale thinking replay");
+  });
+
   it("does NOT treat an unrelated 400 as a thinking replay rejection", () => {
     const c = ctx("anthropic-latch-3");
     const result = config.recoverableError?.(

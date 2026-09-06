@@ -1,9 +1,8 @@
-import { existsSync } from "node:fs";
 import { platform as osPlatform, release as osRelease, type as osType } from "node:os";
-import { join } from "node:path";
 import { findModel } from "@/engine/model/catalog.ts";
 import { knowledgeCutoffFor } from "@/engine/model/facts/knowledge-cutoff.ts";
 import { scratchpadDirFor } from "@/harness/routines/scratchpad.ts";
+import { findGitRoot } from "@/kernel/std/fs/git-root.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 
 // The generic guidance every subagent carries, folded into its single cached
@@ -49,8 +48,8 @@ The scratchpad directory is session-specific, isolated from the user's project, 
  */
 export function buildSubagentEnvTail(ctx: RequestContext): string {
   const cwd = ctx.cwd;
-  const isGitRepo = existsSync(join(cwd, ".git"));
-  const model = findModel(ctx.model, ctx.provider);
+  const isGitRepo = findGitRoot(cwd) !== null;
+  const model = findModel({ provider: ctx.provider, model: ctx.model });
   const modelLine = model
     ? `You are powered by the model named ${model.displayName}. The exact model ID is ${ctx.model}.`
     : `You are powered by the model ${ctx.model}.`;

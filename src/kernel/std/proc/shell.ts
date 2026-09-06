@@ -101,14 +101,14 @@ function readEmbeddedSearchOptIn(): boolean {
   return v === "1" || v === "true" || v === "yes" || v === "on";
 }
 
-export function hasEmbeddedSearchTools(): boolean {
+export function shellHasEmbeddedSearchTools(): boolean {
   return readEmbeddedSearchOptIn();
 }
 
 const DISABLE_EXTGLOB_BASH = "shopt -u extglob 2>/dev/null || true";
 const DISABLE_EXTGLOB_ZSH = "setopt NO_EXTENDED_GLOB 2>/dev/null || true";
 
-export function getDisableExtglobCommand(shellPath: string): string | null {
+export function extglobDisableCommand(shellPath: string): string | null {
   if (shellPath.includes("bash")) return DISABLE_EXTGLOB_BASH;
   if (shellPath.includes("zsh")) return DISABLE_EXTGLOB_ZSH;
   return null;

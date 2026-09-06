@@ -1,7 +1,6 @@
 import type { SlashCommand } from "@/commands/catalog.ts";
 import type { SlashContext, SlashResult } from "@/commands/types.ts";
 import { isWorkflowEnabled } from "@/engine/background/workflows/runtime/gate.ts";
-import { getProviderConfig } from "@/engine/contract/registry.ts";
 import {
   defaultEffortForModel,
   effortLevelDescription,
@@ -9,11 +8,8 @@ import {
   modelDisplayWithContext,
 } from "@/engine/model/catalog.ts";
 import { DEFAULT_CONFIG, updateConfig } from "@/kernel/config/config.ts";
-import { EFFORT_LEVEL_VALUES, type EffortLevel } from "@/kernel/std/types/effort.ts";
-
-function isEffortArg(value: string): value is EffortLevel {
-  return (EFFORT_LEVEL_VALUES as readonly string[]).includes(value);
-}
+import { type EffortLevel, isEffortLevel } from "@/kernel/std/types/effort.ts";
+import { providerDisplayName } from "@/kernel/std/types/provider-ids.ts";
 
 export function setEffortFeedback(level: EffortLevel): string {
   const description = effortLevelDescription(level);
@@ -34,13 +30,13 @@ export function handleEffort(cmd: SlashCommand, args: string, ctx: SlashContext)
     };
   }
   const state = ctx.broker.read();
-  const levels = effortLevelsForModel(state.model, state.provider);
+  const levels = effortLevelsForModel({ provider: state.provider, model: state.model });
   if (normalized === "current" || normalized === "status") {
     if (levels.length === 0) {
       return {
         kind: "panel",
         command: cmd,
-        feedback: `Effort controls are not available for ${getProviderConfig(state.provider)?.provider.label ?? state.provider} ${modelDisplayWithContext(state.model, state.provider)}.`,
+        feedback: `Effort controls are not available for ${providerDisplayName(state.provider)} ${modelDisplayWithContext({ provider: state.provider, model: state.model })}.`,
       };
     }
     return {
@@ -54,13 +50,13 @@ export function handleEffort(cmd: SlashCommand, args: string, ctx: SlashContext)
       return {
         kind: "panel",
         command: cmd,
-        feedback: `Effort controls are not available for ${getProviderConfig(state.provider)?.provider.label ?? state.provider}.`,
+        feedback: `Effort controls are not available for ${providerDisplayName(state.provider)}.`,
       };
     }
     void updateConfig((current) => {
       delete current.effortLevel;
     });
-    const effort = defaultEffortForModel(state.model, state.provider);
+    const effort = defaultEffortForModel({ provider: state.provider, model: state.model });
     return {
       kind: "panel",
       command: cmd,
@@ -90,7 +86,7 @@ export function handleEffort(cmd: SlashCommand, args: string, ctx: SlashContext)
       pendingChange: { kind: "set_ultracode", enabled: true },
     };
   }
-  if (!isEffortArg(normalized)) {
+  if (!isEffortLevel(normalized)) {
     return {
       kind: "panel",
       command: cmd,
@@ -102,7 +98,7 @@ export function handleEffort(cmd: SlashCommand, args: string, ctx: SlashContext)
     return {
       kind: "panel",
       command: cmd,
-      feedback: `Effort level ${normalized} is not available for ${getProviderConfig(state.provider)?.provider.label ?? state.provider} ${modelDisplayWithContext(state.model, state.provider)}. Available: ${available}.`,
+      feedback: `Effort level ${normalized} is not available for ${providerDisplayName(state.provider)} ${modelDisplayWithContext({ provider: state.provider, model: state.model })}. Available: ${available}.`,
     };
   }
   void updateConfig((current) => {

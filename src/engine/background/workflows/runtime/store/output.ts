@@ -1,8 +1,8 @@
-import type { LocalWorkflowTaskState } from "@/engine/background/workflows/runtime/store/types.ts";
+import type { WorkflowTaskLifecycle } from "@/engine/background/workflows/runtime/store/types.ts";
 import type { WorkflowTaskStatus } from "@/kernel/channels/workflow-tasks.ts";
 
 export function formatWorkflowTaskOutput(
-  task: LocalWorkflowTaskState,
+  task: WorkflowTaskLifecycle,
   overrides: { status?: WorkflowTaskStatus; result?: unknown; error?: string } = {},
 ): string {
   const status = overrides.status ?? task.status;
@@ -36,7 +36,7 @@ export function formatWorkflowTaskOutput(
   return lines.join("\n");
 }
 
-function summaryFor(task: LocalWorkflowTaskState, status: WorkflowTaskStatus): string | null {
+function summaryFor(task: WorkflowTaskLifecycle, status: WorkflowTaskStatus): string | null {
   const name = task.title ?? task.workflowName;
   switch (status) {
     case "completed":

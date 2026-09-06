@@ -9,7 +9,7 @@ import {
 } from "@/engine/session/usage/provider.ts";
 import type { ContextUsageSnapshot } from "@/engine/session/usage/snapshot.ts";
 import { usageRecordFromDelta } from "@/engine/session/usage/store.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 
 export interface RecordProviderUsageDeps {
   session: Session;

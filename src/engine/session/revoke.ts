@@ -6,7 +6,7 @@ import {
   KEPT_TAIL_MAX_BYTES,
 } from "./infra.ts";
 import { sessionPathForCwd } from "./paths.ts";
-import { isChainParticipant, type Session } from "./record/index.ts";
+import { isTranscriptLinked, type Session } from "./record/index.ts";
 import { rewriteSession } from "./rewrite.ts";
 import { findAnchorLine, readRange, spliceTailStreaming } from "./transcript/truncate.ts";
 
@@ -41,7 +41,7 @@ function restoreChainHeadFromRecords(s: Session, revokedUuid: string | null): vo
   if (revokedUuid === null || s.chain.headUuid !== revokedUuid) return;
   for (let i = s.records.length - 1; i >= 0; i--) {
     const rec = s.records[i];
-    if (!rec || !isChainParticipant(rec.type)) continue;
+    if (!rec || !isTranscriptLinked(rec.type)) continue;
     if ("uuid" in rec && typeof rec.uuid === "string") s.chain.headUuid = rec.uuid;
     return;
   }

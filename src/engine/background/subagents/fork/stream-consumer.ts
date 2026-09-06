@@ -1,20 +1,16 @@
 import type { UsageSnapshot } from "@/engine/session/compact/token-count.ts";
 import { nowIso } from "@/engine/session/record/index.ts";
 import { AbortError } from "@/kernel/std/stream/abort.ts";
-import { isContentProgressEvent } from "@/kernel/std/stream/content-idle-timeout.ts";
 import type { ForkEventSink, ProviderEvent } from "@/kernel/std/types/events.ts";
 import type { ToolCall } from "@/kernel/std/types/message.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 import { iterateWithAbortSignal } from "./abort.ts";
-import { MAX_FORK_STALL_RETRIES } from "./constants.ts";
 import type { SidechainRecord, SubagentResult } from "./types.ts";
 
 export type ForkStreamOutcome =
-  | { kind: "retry"; consecutiveStalls: number }
-  | { kind: "finished"; result: SubagentResult; consecutiveStalls: number }
+  | { kind: "finished"; result: SubagentResult }
   | {
       kind: "ready";
-      consecutiveStalls: number;
       text: string;
       thinking: string;
       thinkingSignature: string;
@@ -26,24 +22,14 @@ export type ForkStreamOutcome =
 
 export async function consumeForkStream(args: {
   stream: AsyncIterable<ProviderEvent>;
-  streamSignal: AbortSignal;
+  streamSignal?: AbortSignal | undefined;
   ctx: RequestContext;
   forkId: string;
   parentRef: { parentToolCallId?: string };
   emit: (event: Parameters<ForkEventSink>[0]) => void;
   streamToolInputFor?: ReadonlySet<string> | undefined;
   finish: (event: Parameters<ForkEventSink>[0], result: SubagentResult) => Promise<SubagentResult>;
-  armStallTimer: (label: string) => void;
-  isStalled: () => boolean;
-  stallMs: number;
-  getLastStallLabel: () => string;
-  getLastStallArmAt: () => number;
-  consecutiveStalls: number;
-  maxStallRetries?: number;
-  turn: number;
-  runStart: number;
   appendSidechainRecord: (record: SidechainRecord) => void;
-  resetStall: () => void;
 }): Promise<ForkStreamOutcome> {
   let text = "";
   let thinking = "";
@@ -60,12 +46,13 @@ export async function consumeForkStream(args: {
     cacheReadInputTokens: 0,
   };
 
+  const events =
+    args.streamSignal === undefined
+      ? args.stream
+      : iterateWithAbortSignal(args.stream, args.streamSignal);
   try {
-    for await (const ev of iterateWithAbortSignal(args.stream, args.streamSignal)) {
+    for await (const ev of events) {
       if (args.ctx.abortSignal?.aborted) throw new AbortError();
-      if (isContentProgressEvent(ev)) {
-        args.armStallTimer(`event:${ev.kind}`);
-      }
       if (ev.kind === "text_delta") {
         text += ev.text;
         args.emit({
@@ -94,7 +81,9 @@ export async function consumeForkStream(args: {
         }
       } else if (ev.kind === "tool_call_complete") {
         streamedToolNames.delete(ev.id);
-        toolCalls.push({ id: ev.id, name: ev.name, input: ev.input });
+        if (!ev.serverHandled) {
+          toolCalls.push({ id: ev.id, name: ev.name, input: ev.input });
+        }
       } else if (ev.kind === "message_stop") {
         stopReason = ev.stop_reason;
         if (ev.refusal !== undefined) refusalExplanation = ev.refusal;
@@ -130,7 +119,6 @@ export async function consumeForkStream(args: {
       } else if (ev.kind === "error") {
         return {
           kind: "finished",
-          consecutiveStalls: args.consecutiveStalls,
           result: await args.finish(
             {
               kind: "fork_complete",
@@ -146,7 +134,6 @@ export async function consumeForkStream(args: {
     }
     return {
       kind: "ready",
-      consecutiveStalls: 0,
       text,
       thinking,
       thinkingSignature,
@@ -216,7 +203,6 @@ async function finishQuotaExhausted(
   };
   return {
     kind: "finished",
-    consecutiveStalls: args.consecutiveStalls,
     result: await args.finish(
       { kind: "fork_complete", forkId: args.forkId, output, isError: true, ...args.parentRef },
       { output, isError: true, quotaExhausted },
@@ -231,9 +217,6 @@ async function handleStreamError(
   if (args.ctx.abortSignal?.aborted) {
     throw new AbortError();
   }
-  if (args.isStalled()) {
-    return handleStall(args);
-  }
   const msg = err instanceof Error ? err.message : String(err);
   const output = `fork error: ${msg}`;
   args.appendSidechainRecord({
@@ -245,47 +228,9 @@ async function handleStreamError(
   });
   return {
     kind: "finished",
-    consecutiveStalls: args.consecutiveStalls,
     result: await args.finish(
       { kind: "fork_complete", forkId: args.forkId, output, isError: true, ...args.parentRef },
       { output, isError: true },
-    ),
-  };
-}
-
-async function handleStall(
-  args: Parameters<typeof consumeForkStream>[0],
-): Promise<ForkStreamOutcome> {
-  const lastStallArmAt = args.getLastStallArmAt();
-  const lastStallLabel = args.getLastStallLabel();
-  const sinceLastActivity = Date.now() - lastStallArmAt;
-  const consecutiveStalls = args.consecutiveStalls + 1;
-  const maxStallRetries = args.maxStallRetries ?? MAX_FORK_STALL_RETRIES;
-  if (consecutiveStalls <= maxStallRetries) {
-    args.appendSidechainRecord({
-      type: "assistant_message",
-      ts: nowIso(),
-      content: `stream stalled — no events for ${args.stallMs}ms after "${lastStallLabel}"; re-sending the request (attempt ${consecutiveStalls}/${maxStallRetries}, turn ${args.turn})`,
-      provider: args.ctx.provider,
-      model: args.ctx.model,
-    });
-    args.resetStall();
-    return { kind: "retry", consecutiveStalls };
-  }
-  const output = `stalled — no progress for ${args.stallMs}ms`;
-  args.appendSidechainRecord({
-    type: "assistant_message",
-    ts: nowIso(),
-    content: `${output} (turn ${args.turn}; last activity "${lastStallLabel}" ${sinceLastActivity}ms ago; ${maxStallRetries} retries exhausted)`,
-    provider: args.ctx.provider,
-    model: args.ctx.model,
-  });
-  return {
-    kind: "finished",
-    consecutiveStalls,
-    result: await args.finish(
-      { kind: "fork_complete", forkId: args.forkId, output, isError: true, ...args.parentRef },
-      { output, isError: true, stalled: true, durationMs: Date.now() - args.runStart },
     ),
   };
 }

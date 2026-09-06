@@ -4,8 +4,9 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { buildMethodTable, invoke } from "@/design/bridge/dispatch.ts";
 import { RPC_INVALID_PARAMS } from "@/design/bridge/envelope.ts";
-import { DesignDeleteCapability } from "@/design/capabilities/design-delete.ts";
-import { DesignFileDeleteCapability } from "@/design/capabilities/design-file-delete.ts";
+import { DesignDeleteCapability } from "@/design/capabilities/delete.ts";
+import { DesignFileDeleteCapability } from "@/design/capabilities/file-delete.ts";
+import { resumableDesignId } from "@/design/launcher.ts";
 import { setDesignPushHook } from "@/design/push-hook.ts";
 import {
   designProjectDir,
@@ -126,6 +127,49 @@ describe("design/storage", () => {
     expect(list[0]?.designId).toBe("design-1");
     expect(list[0]?.title).toBe("Artifact Title");
     expect(list[0]?.path).toBe("index.html");
+  });
+
+  test("restores only the latest active session association", () => {
+    saveDesignSnapshot(cwd, {
+      designId: "design-1",
+      messages: [],
+      files: [],
+      artifacts: [],
+      viewState: { activeFileTab: null, openFiles: [], activeChatId: null },
+      designSystem: { designSystemId: "default", isDefault: true },
+      status: "completed",
+      updatedAt: new Date().toISOString(),
+    });
+    const active = {
+      type: "attachment" as const,
+      ts: "2026-07-21T00:00:00.000Z",
+      attachment: { type: "design_session", designId: "design-1", active: true },
+    };
+    const inactive = {
+      ...active,
+      ts: "2026-07-21T00:01:00.000Z",
+      attachment: { ...active.attachment, active: false },
+    };
+
+    expect(resumableDesignId([active], cwd)).toBe("design-1");
+    expect(resumableDesignId([active, inactive], cwd)).toBeNull();
+    expect(
+      resumableDesignId(
+        [
+          {
+            ...active,
+            attachment: { ...active.attachment, designId: "missing-design" },
+          },
+        ],
+        cwd,
+      ),
+    ).toBeNull();
+    expect(
+      resumableDesignId(
+        [{ ...active, attachment: { ...active.attachment, designId: "../escape" } }],
+        cwd,
+      ),
+    ).toBeNull();
   });
 
   test("deletes one file and repairs snapshot view state", async () => {

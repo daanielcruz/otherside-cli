@@ -6,6 +6,7 @@ import {
 } from "@/engine/providers/_shared/provider-error.ts";
 import { getRetryDelay, ProviderHttpError } from "@/engine/providers/_shared/retry.ts";
 import { classifyProviderError } from "@/engine/transport/_infra/classify/classify.ts";
+import { StreamSilenceError } from "@/kernel/std/stream/idle-timeout.ts";
 
 const GLM_CONCURRENT_LIMIT =
   '{"type":"error","error":{"type":"rate_limit_error","code":"1302","message":"[1302][Rate limit reached for requests]"}}';
@@ -167,6 +168,32 @@ describe("provider error classification", () => {
       retryable: false,
     });
   });
+
+  it("classifies a silent stream as retryable network, never unknown", () => {
+    const result = resolveProviderError({
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      error: new StreamSilenceError(300_000),
+    });
+
+    expect(result).toMatchObject({
+      class: "network",
+      retryable: true,
+      provider: "codex",
+      model: "gpt-5.6-sol",
+    });
+  });
+
+  it("classifies a wrapped silent stream through the error cause chain", () => {
+    const wrapped = new Error("stream attempt failed", {
+      cause: new StreamSilenceError(35_000),
+    });
+
+    expect(resolveProviderError({ provider: "codex", error: wrapped })).toMatchObject({
+      class: "network",
+      retryable: true,
+    });
+  });
 });
 
 describe("provider code tables", () => {
@@ -195,6 +222,8 @@ describe("provider code tables", () => {
     "1310",
     "1311",
     "1313",
+    "1314",
+    "1315",
     "1316",
     "1317",
     "1318",
@@ -372,7 +401,19 @@ describe("provider wire fixtures", () => {
     expect(result.detail).toContain("active limit: primary");
     expect(result.detail).toContain("limit type: weekly");
     expect(result.detail).toContain("Upgrade for more usage");
-    expect(result.detail).toContain("resets at 2030-01-01T00:00:00.000Z");
+    expect(result.detail).not.toContain("T00:00:00.000Z");
+    expect(result.detail).toMatch(/— resets \w{3} \d{1,2}, 20\d\d at \d{1,2}(:\d{2})?(am|pm) \(/);
+  });
+
+  it("renders near-future resets as short local times instead of ISO stamps", () => {
+    const resetsAtSeconds = Math.floor((Date.now() + 2 * 3_600_000) / 1000);
+    const result = resolveProviderError({
+      provider: "codex",
+      status: 429,
+      body: `{"error":{"type":"usage_limit_reached","message":"Usage limit reached","resets_at":${resetsAtSeconds}}}`,
+    });
+    expect(result.detail).not.toMatch(/\d{4}-\d{2}-\d{2}T/);
+    expect(result.detail).toMatch(/— resets \d{1,2}(:\d{2})?(am|pm) \(/);
   });
 
   // Documented OpenAI-style envelopes; the coding endpoint's accepted envelope is a local contract.
@@ -418,6 +459,43 @@ describe("provider wire fixtures", () => {
       class: "overloaded",
       retryable: true,
     });
+  });
+
+  it("maps xAI credit, free-usage, and policy denials from inference responses", () => {
+    expect(
+      resolveProviderError({
+        provider: "xai",
+        status: 402,
+        body: '{"error":{"message":"Payment required"}}',
+      }),
+    ).toMatchObject({ class: "quota_exhausted", retryable: false });
+    expect(
+      resolveProviderError({
+        provider: "xai",
+        status: 403,
+        body: '{"error":{"message":"You have run out of credits"}}',
+      }),
+    ).toMatchObject({ class: "quota_exhausted", retryable: false });
+    expect(
+      resolveProviderError({
+        provider: "xai",
+        status: 429,
+        body: JSON.stringify({
+          error: {
+            code: "subscription:free-usage-exhausted",
+            message: "Free usage exhausted",
+          },
+        }),
+      }),
+    ).toMatchObject({ class: "quota_exhausted", retryable: false });
+
+    expect(
+      resolveProviderError({
+        provider: "xai",
+        status: 403,
+        body: '{"error":{"message":"Content violates usage guidelines."}}',
+      }),
+    ).toMatchObject({ class: "invalid_request", retryable: false });
   });
 
   it("keeps xAI policy terminal and status-less service errors retryable", () => {

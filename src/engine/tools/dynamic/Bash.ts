@@ -1,13 +1,13 @@
 import { getSandboxSettings } from "@/engine/sandbox/manager.ts";
 import {
-  getDefaultBashTimeoutMs,
+  defaultShellTimeoutMs,
   getMaxBashTimeoutMs,
 } from "@/engine/tools/_infra/command-analysis/timeouts.ts";
 import type { ToolSchema } from "@/engine/tools/contract.ts";
 import { buildBashDescription } from "@/harness/tools/Bash/description.ts";
 import tool from "@/harness/tools/Bash/tool.json" with { type: "json" };
 
-const DEFAULT_TIMEOUT_MS = getDefaultBashTimeoutMs();
+const DEFAULT_TIMEOUT_MS = defaultShellTimeoutMs();
 const MAX_TIMEOUT_MS = getMaxBashTimeoutMs();
 const MS_PER_MINUTE = 60_000;
 
@@ -41,7 +41,7 @@ function patchSchemaTokens<T>(node: T): T {
 
 const inputSchema = patchSchemaTokens(tool.inputSchema);
 
-function shouldIncludeGitInstructions(): boolean {
+function includeGitInstructions(): boolean {
   return process.env.OTHERSIDE_DISABLE_GIT_INSTRUCTIONS !== "1";
 }
 
@@ -49,7 +49,7 @@ export function getBashPrompt(opts: { lean?: boolean } = {}): string {
   return buildBashDescription({
     ...(opts.lean !== undefined ? { lean: opts.lean } : {}),
     sandbox: getSandboxSettings(),
-    includeGit: shouldIncludeGitInstructions(),
+    includeGit: includeGitInstructions(),
     defaultTimeoutMs: DEFAULT_TIMEOUT_MS,
     maxTimeoutMs: MAX_TIMEOUT_MS,
   });

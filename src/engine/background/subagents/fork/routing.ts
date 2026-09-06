@@ -15,19 +15,23 @@ import {
 import { exhaustedProviderLaunchError, resolveModelPin } from "@/engine/model/facts/model-pin.ts";
 import { isTierName, type TierName } from "@/engine/model/tier/names.ts";
 import {
-  isProviderUsableNow,
   isQuotaDisplacedCandidate,
   quotaDisplacedBeforeTopNSelection,
+} from "@/engine/model/tier/quota-displacement.ts";
+import {
   resolveTierRankDetailed,
   resolveTierTopNWithCascadeDetailed,
   type TierCandidateDetail,
   tierModelCandidateNow,
   tierRosterSize,
-  usableActiveProviderForTierResolution,
 } from "@/engine/model/tier/resolver.ts";
+import {
+  isProviderUsableNow,
+  usableActiveProviderForTierResolution,
+} from "@/engine/model/tier/usability.ts";
 import * as providers from "@/engine/providers/registry.ts";
-import type { OrchestrationMode } from "@/kernel/config/orchestration-mode.ts";
-import { isProviderId, type ProviderId } from "@/kernel/config/provider-ids.ts";
+import type { OrchestrationMode } from "@/kernel/std/types/orchestration-mode.ts";
+import { isProviderId, type ProviderId } from "@/kernel/std/types/provider-ids.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 import { clampNestedPinnedModel, clampNestedTier, type TierClamp } from "./tier-ceiling.ts";
 import type { SubagentInvocation, SubagentResult } from "./types.ts";
@@ -48,6 +52,15 @@ function modeOf(ctx: RequestContext): OrchestrationMode {
   return ctx.orchestrationMode ?? "disabled";
 }
 
+/**
+ * A launch that inherits its parent's route must clear the same quota gate a pinned
+ * one does — the provider does not care that the model id was never restated.
+ * Returns the refusal to show, or null when the route can take the launch.
+ */
+export function inheritedRouteRefusal(ctx: RequestContext): string | null {
+  return exhaustedProviderLaunchError(ctx.provider, ctx.provider, ctx.model, modeOf(ctx));
+}
+
 function withTierClampNotice(result: ToolRoutingResult, clamp: TierClamp): ToolRoutingResult {
   if (!result.ok) return result;
   return {
@@ -64,7 +77,7 @@ function clampRequestedModel(
   model: string,
 ): TierClamp | undefined {
   if (modeOf(ctx) !== "feudalism") return undefined;
-  return clampNestedPinnedModel(ctx, provider, findModel(model, provider)?.id ?? model);
+  return clampNestedPinnedModel(ctx, provider, findModel({ provider, model })?.id ?? model);
 }
 
 export function quotaRerouteForInvocation(
@@ -323,9 +336,9 @@ function resolveSubagentRouting(
     };
     if (
       next.effort !== null &&
-      !effortLevelsForModel(next.model, next.provider).includes(next.effort)
+      !effortLevelsForModel({ provider: next.provider, model: next.model }).includes(next.effort)
     ) {
-      next.effort = defaultEffortForModel(next.model, next.provider);
+      next.effort = defaultEffortForModel({ provider: next.provider, model: next.model });
     }
     return { ok: true, ctx: next };
   }
@@ -390,7 +403,7 @@ export function resolveToolModelOverride(
 ): { ok: true; ctx: RequestContext } | { ok: false; error: string } {
   if (!override || override.length === 0) return { ok: true, ctx };
   const provider = providers.get(ctx.provider);
-  const entry = findModel(override, ctx.provider);
+  const entry = findModel({ provider: ctx.provider, model: override });
   const inCatalog = entry !== undefined && entry.provider === ctx.provider;
   const custom = provider.allowsCustomModel();
   const model = inCatalog && entry !== undefined ? entry.id : override;
@@ -404,8 +417,11 @@ export function resolveToolModelOverride(
   const quotaError = exhaustedProviderLaunchError(ctx.provider, ctx.provider, model, modeOf(ctx));
   if (quotaError !== null) return { ok: false, error: quotaError };
   const next: RequestContext = { ...ctx, model };
-  if (next.effort !== null && !effortLevelsForModel(model, ctx.provider).includes(next.effort)) {
-    next.effort = defaultEffortForModel(model, ctx.provider);
+  if (
+    next.effort !== null &&
+    !effortLevelsForModel({ provider: ctx.provider, model }).includes(next.effort)
+  ) {
+    next.effort = defaultEffortForModel({ provider: ctx.provider, model });
   }
   return { ok: true, ctx: next };
 }

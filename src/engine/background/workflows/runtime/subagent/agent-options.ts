@@ -1,7 +1,7 @@
 import { cloneWorkflowBoundaryValue } from "@/engine/background/workflows/runtime/sandbox/clone.ts";
 import { TIER_NAMES } from "@/engine/model/tier/names.ts";
-import type { OrchestrationMode } from "@/kernel/config/orchestration-mode.ts";
 import { EFFORT_LEVEL_VALUES, type EffortLevel } from "@/kernel/std/types/effort.ts";
+import type { OrchestrationMode } from "@/kernel/std/types/orchestration-mode.ts";
 import { trimmedStringOrUndefined } from "@/kernel/std/value-guards.ts";
 
 export interface ParsedAgentInput {

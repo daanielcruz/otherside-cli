@@ -32,12 +32,15 @@ describe("canSendNatively", () => {
   it("returns false for hybrid parser providers because they do not receive image blocks directly", () => {
     expect(canSendNatively("minimax", "minimax-m3")).toBe(false);
     expect(canSendNatively("minimax", "minimax-m2.7")).toBe(false);
+    expect(canSendNatively("xai", "grok-4.6")).toBe(false);
+    expect(canSendNatively("xai", "grok-composer-2.5-fast")).toBe(false);
   });
 });
 
 describe("resolveParserModel", () => {
   it("returns the hybrid vision parser model when defined", () => {
     expect(resolveParserModel("minimax")).toBe("minimax-m3");
+    expect(resolveParserModel("xai")).toBe("grok-4.6");
   });
 
   it("falls back to the provider default model id for non-hybrid providers", () => {
@@ -55,6 +58,7 @@ describe("resolveParserModel", () => {
 describe("autoRoutesNonVision", () => {
   it("returns true for hybrid providers", () => {
     expect(autoRoutesNonVision("minimax")).toBe(true);
+    expect(autoRoutesNonVision("xai")).toBe(true);
   });
 
   it("returns false for vision and none providers", () => {
@@ -75,5 +79,6 @@ describe("visionCapableProviderIds", () => {
     expect(ids).not.toContain("openai");
     expect(ids).toContain("glm");
     expect(ids).not.toContain("minimax");
+    expect(ids).not.toContain("xai");
   });
 });

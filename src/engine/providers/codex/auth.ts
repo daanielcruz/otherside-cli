@@ -30,6 +30,27 @@ interface RefreshResponse {
   refresh_token?: string;
 }
 
+class RefreshExchangeError extends Error {
+  constructor(
+    readonly status: number,
+    readonly responseText: string,
+  ) {
+    super(`codex refresh ${status}: ${responseText}`);
+  }
+}
+
+function tokensChanged(current: CodexTokens, prior: CodexTokens): boolean {
+  return current.accessToken !== prior.accessToken || current.refreshToken !== prior.refreshToken;
+}
+
+function isRotatedRefreshTokenError(err: unknown): err is RefreshExchangeError {
+  return (
+    err instanceof RefreshExchangeError &&
+    err.status === 400 &&
+    /\b(?:invalid_grant|refresh_token_reused)\b/i.test(err.responseText)
+  );
+}
+
 function decodeJwtPayload(jwt: string): Record<string, unknown> | null {
   const parts = jwt.split(".");
   if (parts.length < 2) return null;
@@ -139,7 +160,7 @@ async function refreshOauth(refreshToken: string): Promise<RefreshResponse> {
   });
   if (!resp.ok) {
     const t = await resp.text().catch(() => "");
-    throw new Error(`codex refresh ${resp.status}: ${t}`);
+    throw new RefreshExchangeError(resp.status, t);
   }
   return (await resp.json()) as RefreshResponse;
 }
@@ -241,6 +262,9 @@ async function executeRefresh(
         throw new Error("not logged in — run `otherside login --provider codex`");
       }
     }
+    // A token pair written by another flow won the rotation race. Use it instead
+    // of spending the single-use refresh token the caller originally observed.
+    if (prior && tokensChanged(tokens, prior)) return tokens;
     if (!opts?.force && tokens.expiresAt - REFRESH_SAFETY_MARGIN_MS > Date.now()) {
       return tokens;
     }
@@ -250,6 +274,13 @@ async function executeRefresh(
       await saveFor("codex", next);
       return next;
     } catch (err) {
+      // ChatGPT reports a spent rotating refresh token as either standard
+      // invalid_grant or refresh_token_reused. Another process may have
+      // persisted its winning pair after our initial storage read; use it once.
+      if (isRotatedRefreshTokenError(err)) {
+        const reloaded = await loadFor("codex");
+        if (reloaded && tokensChanged(reloaded, tokens)) return reloaded;
+      }
       if (!opts?.force && tokens.expiresAt > Date.now()) {
         return tokens;
       }
@@ -269,8 +300,8 @@ function runRefresh(prior?: CodexTokens, opts?: { force?: boolean }): Promise<Co
 
 // Server-driven 401 recovery: the token looked valid locally but the server
 // rejected it, so the expiry margin must not short-circuit the refresh.
-export function forceRefreshTokens(): Promise<CodexTokens> {
-  return runRefresh(undefined, { force: true });
+export function forceRefreshTokens(prior?: CodexTokens): Promise<CodexTokens> {
+  return runRefresh(prior, { force: true });
 }
 
 export const Auth: AuthStrategy = buildOauthAuthStrategy<CodexTokens>({

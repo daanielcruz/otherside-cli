@@ -7,7 +7,12 @@ import {
   incrementGoalIterations,
   setGoalLastReason,
 } from "@/engine/queue/state.ts";
-import { appendRecord, nowIso, type Session } from "@/engine/session/index.ts";
+import {
+  appendRecord,
+  goalStatusAttachment,
+  nowIso,
+  type Session,
+} from "@/engine/session/index.ts";
 import { sanitizeMessages } from "@/engine/translator/index.ts";
 import { streamWithRetry } from "@/engine/transport/_infra/classify/retry.ts";
 import type { ComposedHarness } from "@/harness/composer/injections.ts";
@@ -57,6 +62,7 @@ export async function runPromptClassifier(
     combined: STOP_CONDITION_SYSTEM_PROMPT,
     systemBlocks: [{ text: STOP_CONDITION_SYSTEM_PROMPT }],
     userPrepend: [],
+    midSystemPromotion: "off",
   };
   const conversation: Message[] = [
     ...deps.session.messages,
@@ -127,15 +133,13 @@ export async function* evaluateGoal(
   }
   if (verdict.ok) {
     clearActiveGoal(deps.session.id);
-    appendRecord(deps.session, {
+    await appendRecord(deps.session, {
       type: "attachment",
       ts: nowIso(),
-      attachment: {
-        type: "goal_status",
-        condition: goal.condition,
+      attachment: goalStatusAttachment(goal.condition, {
         met: true,
         iteration,
-      },
+      }),
     }).catch(() => {});
     yield { kind: "goal_met", condition: goal.condition, iteration };
     return { met: true, iteration };
@@ -144,33 +148,29 @@ export async function* evaluateGoal(
   const reason = verdict.reason;
   if (verdict.impossible === true) {
     clearActiveGoal(deps.session.id);
-    appendRecord(deps.session, {
+    await appendRecord(deps.session, {
       type: "attachment",
       ts: nowIso(),
-      attachment: {
-        type: "goal_status",
-        condition: goal.condition,
+      attachment: goalStatusAttachment(goal.condition, {
         met: false,
         failed: true,
         reason,
         iteration,
-      },
+      }),
     }).catch(() => {});
     yield { kind: "goal_not_met", condition: goal.condition, iteration, reason };
     return { met: false, failed: true, reason, iteration };
   }
 
   setGoalLastReason(deps.session.id, reason);
-  appendRecord(deps.session, {
+  await appendRecord(deps.session, {
     type: "attachment",
     ts: nowIso(),
-    attachment: {
-      type: "goal_status",
-      condition: goal.condition,
+    attachment: goalStatusAttachment(goal.condition, {
       met: false,
       reason,
       iteration,
-    },
+    }),
   }).catch(() => {});
   yield { kind: "goal_not_met", condition: goal.condition, iteration, reason };
   return { met: false, reason, iteration };

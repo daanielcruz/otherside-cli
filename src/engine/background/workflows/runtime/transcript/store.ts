@@ -1,7 +1,7 @@
 import { summarizeToolInput } from "@/engine/background/workflows/runtime/transcript/summarize.ts";
 import type {
   AgentTranscript,
-  AgentTranscriptToolCall,
+  AgentTranscriptToolUseEntry,
 } from "@/engine/background/workflows/runtime/transcript/types.ts";
 import StructuredOutputSchema from "@/harness/tools/StructuredOutput/tool.json" with {
   type: "json",
@@ -10,7 +10,7 @@ import StructuredOutputSchema from "@/harness/tools/StructuredOutput/tool.json" 
 interface MutableTranscript {
   agentId: string;
   prompt: string;
-  toolCalls: AgentTranscriptToolCall[];
+  toolCalls: AgentTranscriptToolUseEntry[];
   streamedText: string;
   structuredText: string;
   finalText: string;

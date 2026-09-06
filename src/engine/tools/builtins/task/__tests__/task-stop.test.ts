@@ -6,11 +6,11 @@ import * as bgTasks from "@/engine/background/tasks/background.ts";
 import * as bgControllers from "@/engine/background/tasks/background-controllers.ts";
 import { clearAll as clearPlanningTasks, create } from "@/engine/background/tasks/index.ts";
 import {
+  enrollWorkflowTask,
   getWorkflowTask,
-  registerWorkflowTask,
   resetWorkflowTasksForTests,
 } from "@/engine/background/workflows/runtime/store/store.ts";
-import type { LocalWorkflowTaskState } from "@/engine/background/workflows/runtime/store/types.ts";
+import type { WorkflowTaskLifecycle } from "@/engine/background/workflows/runtime/store/types.ts";
 import { emitQueue } from "@/engine/queue/emit.ts";
 import {
   type BackgroundShell,
@@ -18,7 +18,7 @@ import {
   SHELLS,
 } from "@/engine/tools/builtins/background.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
-import { TaskOutput, TaskStop } from "../task.ts";
+import { TaskOutput, TaskStop } from "../task-control.ts";
 
 function makeCtx(overrides: Partial<RequestContext> = {}): RequestContext {
   return {
@@ -32,7 +32,7 @@ function makeCtx(overrides: Partial<RequestContext> = {}): RequestContext {
   };
 }
 
-function makeRunningWorkflowTask(id: string, cwd: string): LocalWorkflowTaskState {
+function makeRunningWorkflowTask(id: string, cwd: string): WorkflowTaskLifecycle {
   return {
     id,
     type: "local_workflow",
@@ -81,7 +81,7 @@ describe("runtime task control tools", () => {
   });
 
   test("a model-invoked TaskStop does not mark the workflow stoppedByUser, and the notification still wakes an idle turn", async () => {
-    registerWorkflowTask(makeRunningWorkflowTask("wf-taskstop", tempCwd));
+    enrollWorkflowTask(makeRunningWorkflowTask("wf-taskstop", tempCwd));
 
     const result = await TaskStop.run(
       { id: "call-1", name: "TaskStop", input: { task_id: "wf-taskstop" } },

@@ -113,9 +113,8 @@ describe("exhaustion resolution: explicit signal wins, 100% gate is the fallback
     expect(getRoutingUsage("codex")?.balanceStatus).toBe("exhausted");
     const warning = warningForProvider("codex");
     expect(warning?.severity).toBe("error");
-    expect(warning?.message).toContain(" Weekly · ");
+    expect(warning?.message).toContain(" Session · ");
     expect(warning?.message).not.toContain("primary");
-    expect(warning?.message).not.toContain("session");
     expect(warning?.message).toContain("resets");
   });
 
@@ -145,40 +144,38 @@ describe("exhaustion resolution: explicit signal wins, 100% gate is the fallback
   });
 });
 
-describe("applyCodexQuotaWarning explicit wire signal", () => {
-  it("rateLimitReachedType marks exhaustion below 100% and names the spent window", () => {
+describe("applyCodexQuotaWarning explicit account signals", () => {
+  it("a workspace reason marks account-wide exhaustion below 100%", () => {
     applyCodexQuotaWarning({
       primary: { utilization: 87, windowMinutes: 300, resetsAt: null },
       secondary: { utilization: 40, windowMinutes: 10080, resetsAt: null },
-      rateLimitReachedType: "primary_window",
+      rateLimitReachedType: "workspace_member_credits_depleted",
     });
     expect(getRoutingUsage("codex")?.balanceStatus).toBe("exhausted");
-    const warning = warningForProvider("codex");
-    expect(warning?.severity).toBe("error");
-    expect(warning?.message).toBe("[Codex] 87% Weekly · resets unknown");
+    expect(warningForProvider("codex")?.severity).toBe("error");
   });
 
-  it("a null rateLimitReachedType is an explicit not-reached that beats 100%", () => {
+  it("explicit null does not override a raw 100% window", () => {
     applyCodexQuotaWarning({
       primary: { utilization: 100, windowMinutes: 300, resetsAt: null },
       secondary: { utilization: 10, windowMinutes: 10080, resetsAt: null },
       rateLimitReachedType: null,
     });
-    expect(getRoutingUsage("codex")?.balanceStatus).toBe("available");
-    expect(warningForProvider("codex")?.severity).toBe("warning");
+    expect(getRoutingUsage("codex")?.balanceStatus).toBe("exhausted");
+    expect(warningForProvider("codex")?.severity).toBe("error");
   });
 
-  it("recovery on the next refresh re-admits codex immediately", () => {
+  it("the next observation without an account reason re-admits below 100%", () => {
     applyCodexQuotaWarning({
       primary: { utilization: 99, windowMinutes: 300, resetsAt: null },
-      rateLimitReachedType: "primary_window",
+      rateLimitReachedType: "workspace_member_credits_depleted",
     });
     expect(getRoutingUsage("codex")?.balanceStatus).toBe("exhausted");
     applyCodexQuotaWarning({
       primary: { utilization: 3, windowMinutes: 300, resetsAt: null },
       rateLimitReachedType: null,
     });
-    expect(getRoutingUsage("codex")?.balanceStatus).toBe("available");
+    expect(getRoutingUsage("codex")?.balanceStatus).toBe("unknown");
     expect(warningForProvider("codex")).toBeNull();
   });
 });

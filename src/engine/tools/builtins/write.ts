@@ -108,7 +108,7 @@ export const Write: ToolHandler = {
     }
 
     recordFileMutationResult(ctx, filePath);
-    updateReadState(scope, filePath, content);
+    updateReadState(scope, filePath, finalContent);
 
     const numLines = content.length === 0 ? 0 : content.split("\n").length;
     const fileName = basename(filePath);

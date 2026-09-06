@@ -3,7 +3,6 @@ import { startOAuthFlow } from "@/kernel/mcp/oauth/flow.ts";
 import type { McpServerConfig, RemoteServerConfig } from "@/kernel/mcp/protocol/types.ts";
 import { parseWireToolName, wireToolName } from "@/kernel/mcp/protocol/wire-name.ts";
 import { hasManualAuthHeader } from "@/kernel/mcp/transport/headers.ts";
-import { publish as notify } from "@/kernel/std/notifications.ts";
 import type { ToolHandler } from "@/kernel/std/tool-contract.ts";
 
 const AUTHENTICATE_TOOL_KIND = "authenticate";
@@ -96,21 +95,15 @@ export function createMcpAuthToolPair(
       }
       try {
         const result = await startOAuthFlow({ serverName, baseUrl: url });
+        // Outcomes reach the model through the complete_authentication result
+        // that awaits this promise; nothing else reports them.
         const done = result.done.then(async (outcome) => {
-          if (outcome.kind !== "saved") {
-            notify("error", `MCP "${serverName}" auth failed: ${outcome.reason ?? "unknown"}`);
-            return outcome;
-          }
+          if (outcome.kind !== "saved") return outcome;
           try {
             await refreshAuthenticatedServer({ serverName, config, cwd: _ctx.cwd });
-            notify("success", `MCP "${serverName}" authorized — tools refreshed`);
             return outcome;
           } catch (error) {
             const reason = error instanceof Error ? error.message : String(error);
-            notify(
-              "error",
-              `MCP "${serverName}" authorized, but tools could not refresh: ${reason}`,
-            );
             return { kind: "refresh-failed", reason: `tools could not refresh: ${reason}` };
           }
         });

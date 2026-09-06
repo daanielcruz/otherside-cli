@@ -34,7 +34,7 @@ export interface SplitToken {
   text: string;
 }
 
-export function splitCommandWithOperators(command: string): SplitToken[] {
+export function splitCommandOnOperators(command: string): SplitToken[] {
   const tokens: SplitToken[] = [];
   let current = "";
   let i = 0;
@@ -89,7 +89,7 @@ function flushPart(tokens: SplitToken[], buffer: string): void {
 }
 
 export function splitCommandParts(command: string): string[] {
-  const tokens = splitCommandWithOperators(command);
+  const tokens = splitCommandOnOperators(command);
   const parts: string[] = [];
   for (let i = 0; i < tokens.length; i++) {
     const tok = tokens[i];
@@ -122,7 +122,7 @@ export function extractBaseCommand(part: string): string {
   return trimmed.split(/\s+/)[0] ?? "";
 }
 
-export function extractBashCommentLabel(command: string): string | undefined {
+export function bashCommentLabel(command: string): string | undefined {
   const nl = command.indexOf("\n");
   const firstLine = (nl === -1 ? command : command.slice(0, nl)).trim();
   if (!firstLine.startsWith("#") || firstLine.startsWith("#!")) return undefined;
@@ -133,7 +133,7 @@ export function extractBashCommentLabel(command: string): string | undefined {
 export function isSilentCommand(command: string): boolean {
   let tokens: SplitToken[];
   try {
-    tokens = splitCommandWithOperators(command);
+    tokens = splitCommandOnOperators(command);
   } catch {
     return false;
   }
@@ -245,7 +245,7 @@ function heuristicallyExtractLastBaseCommand(command: string): string {
   return extractBaseCommand(lastCommand);
 }
 
-function extractGitSubcommand(command: string): string | undefined {
+function parseGitSubcommand(command: string): string | undefined {
   const parts = splitCommandParts(command);
   const last = parts[parts.length - 1];
   if (!last) return undefined;
@@ -263,10 +263,10 @@ function extractGitSubcommand(command: string): string | undefined {
   return undefined;
 }
 
-export function interpretCommandResult(command: string, exitCode: number): InterpretedResult {
+export function classifyCommandOutcome(command: string, exitCode: number): InterpretedResult {
   const base = heuristicallyExtractLastBaseCommand(command);
   if (base === "git") {
-    const subcommand = extractGitSubcommand(command);
+    const subcommand = parseGitSubcommand(command);
     if (subcommand === "diff" || subcommand === "grep") {
       return {
         isError: exitCode >= 2,

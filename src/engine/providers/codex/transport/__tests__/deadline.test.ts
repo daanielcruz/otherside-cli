@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { StreamIdleTimeoutError } from "@/kernel/std/stream/idle-timeout.ts";
+import { StreamSilenceError } from "@/kernel/std/stream/idle-timeout.ts";
 import { createCodexStreamDeadline, throwIfCodexDeadlineTimedOut } from "../deadline.ts";
 
 const ENV_KEY = "OTHERSIDE_STREAM_IDLE_TIMEOUT_MS";
@@ -20,7 +20,7 @@ describe("Codex stream deadline", () => {
       await wait(20);
       expect(deadline.timedOut()).toBe(true);
       expect(deadline.signal.aborted).toBe(true);
-      expect(() => throwIfCodexDeadlineTimedOut(deadline)).toThrow(StreamIdleTimeoutError);
+      expect(() => throwIfCodexDeadlineTimedOut(deadline)).toThrow(StreamSilenceError);
     } finally {
       deadline.dispose();
     }

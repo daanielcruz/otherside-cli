@@ -2,7 +2,6 @@ import { success } from "@/design/bridge/envelope.ts";
 import type { DesignCapability } from "@/design/types.ts";
 import { listProviderConfigs } from "@/engine/contract/registry.ts";
 import { availableModelsForProvider } from "@/engine/model/catalog.ts";
-import { publish } from "@/kernel/std/notifications.ts";
 
 type ProviderConfigEntry = ReturnType<typeof listProviderConfigs>[number];
 
@@ -14,13 +13,9 @@ export async function providers(currentProviderId: string) {
     if (config.auth) {
       try {
         ok = (await config.auth.load()) !== null;
-      } catch (error) {
-        publish(
-          "error",
-          `meta.list: credential probe failed for ${config.provider.id}: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
+      } catch {
+        // A probe that throws is answered the same way as one that finds no
+        // credential: the provider is reported unauthenticated in the response.
         ok = false;
       }
     }

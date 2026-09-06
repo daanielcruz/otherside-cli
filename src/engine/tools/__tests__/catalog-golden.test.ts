@@ -57,6 +57,13 @@ const RESOURCE_CAPABLE_MCP_CLIENT: McpClient = {
   serverInstructions() {
     return null;
   },
+  async listPrompts() {
+    return [];
+  },
+  async getPrompt() {
+    return { messages: [] };
+  },
+  announce(): void {},
   isClosed() {
     return false;
   },

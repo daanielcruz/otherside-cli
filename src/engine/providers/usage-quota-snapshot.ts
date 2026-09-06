@@ -1,21 +1,9 @@
-import { getProviderConfig, listProviderConfigs } from "@/engine/contract/registry.ts";
-import {
-  applyAnthropicUsageLimits,
-  fetchAnthropicUsage,
-} from "@/engine/providers/anthropic/usage.ts";
-import {
-  applyAntigravityQuotaWarning,
-  fetchAntigravityUsage,
-} from "@/engine/providers/antigravity/usage.ts";
-import { applyCodexQuotaWarning, fetchCodexUsage } from "@/engine/providers/codex/usage.ts";
-import { applyGlmQuotaWarning, fetchGlmUsage } from "@/engine/providers/glm/usage.ts";
-import {
-  applyKimiQuotaWarning,
-  fetchKimiUsage,
-  type KimiUsageRow,
-} from "@/engine/providers/kimi/usage.ts";
-import { applyMinimaxQuotaWarning, fetchMinimaxUsage } from "@/engine/providers/minimax/usage.ts";
-import { applyXaiQuotaWarning, fetchXaiUsage } from "@/engine/providers/xai/usage.ts";
+import { listProviderConfigs } from "@/engine/contract/registry.ts";
+import type { AnthropicUsage } from "@/engine/providers/anthropic/usage.ts";
+import type { AntigravityUsage } from "@/engine/providers/antigravity/usage.ts";
+import type { CodexUsage } from "@/engine/providers/codex/usage.ts";
+import type { KimiUsage, KimiUsageRow } from "@/engine/providers/kimi/usage.ts";
+import { providerUsagePayload } from "@/engine/providers/quota-refresh.ts";
 import { latestContextUsageSnapshotFromSessionRecords } from "@/engine/session/state.ts";
 import { warningForProvider } from "@/engine/session/usage/limits.ts";
 import type { PlanQuotaData } from "@/engine/session/usage/plan-quota.ts";
@@ -29,7 +17,7 @@ import {
   allTimeUsageByProviderAsync,
   usageByProviderFromRecords,
 } from "@/engine/session/usage/store.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
+import { type ProviderId, providerDisplayName } from "@/kernel/std/types/provider-ids.ts";
 import { hasCredential, loadAll, type ProviderSlug } from "@/kernel/storage/credentials.ts";
 import {
   type ProviderQuota,
@@ -52,14 +40,15 @@ function barFrom(label: string, limit: RateLimit, subtext: string | null = null)
   return { label, utilization, resetsAt: limit.resetsAt ?? null, subtext };
 }
 
-// Every collector routes its freshly fetched payload through the provider's
-// apply* helper BEFORE building bars, so the SoT (warning + routing
-// eligibility) and the returned bars derive from the same observation — a
-// snapshot never pairs fresh bars with a stale cached warning.
+// Every collector reads through the shared cooldown-gated refresh
+// (providerUsagePayload), which applies the payload into the SoT (warning +
+// routing eligibility) atomically with caching it — so the returned bars and
+// the warning read below always derive from the same observation, and the
+// companion's poll can never hit a provider's usage API more often than the
+// refresh cooldown allows.
 
 async function anthropicBars(): Promise<QuotaBar[]> {
-  const data = await fetchAnthropicUsage();
-  applyAnthropicUsageLimits(data);
+  const data = await providerUsagePayload<AnthropicUsage>("anthropic");
   if (!data) return [];
   return [
     barFrom("Current session", data.fiveHour),
@@ -69,8 +58,7 @@ async function anthropicBars(): Promise<QuotaBar[]> {
 }
 
 async function codexBars(): Promise<QuotaBar[]> {
-  const data = await fetchCodexUsage();
-  applyCodexQuotaWarning(data);
+  const data = await providerUsagePayload<CodexUsage>("codex");
   if (!data) return [];
   const spark = data.additional?.find((limit) =>
     `${limit.id ?? ""} ${limit.label}`.toLowerCase().includes("spark"),
@@ -83,10 +71,7 @@ async function codexBars(): Promise<QuotaBar[]> {
 }
 
 async function antigravityBars(): Promise<QuotaBar[]> {
-  const data = await fetchAntigravityUsage();
-  // Applying Antigravity quota no longer depends on a model: both families
-  // are grouped and stored atomically from this single fetch.
-  applyAntigravityQuotaWarning(data);
+  const data = await providerUsagePayload<AntigravityUsage>("antigravity");
   if (!data) return [];
   const bars: QuotaBar[] = [];
   for (const group of data.groups) {
@@ -115,8 +100,7 @@ function kimiBar(row: KimiUsageRow): QuotaBar {
 }
 
 async function kimiBars(): Promise<QuotaBar[]> {
-  const data = await fetchKimiUsage();
-  applyKimiQuotaWarning(data);
+  const data = await providerUsagePayload<KimiUsage>("kimi");
   if (!data) return [];
   return [data.summary, ...data.limits]
     .filter((row): row is KimiUsageRow => row !== undefined)
@@ -138,21 +122,9 @@ const QUOTA_COLLECTORS: Partial<Record<ProviderId, () => Promise<QuotaBar[]>>> =
   codex: codexBars,
   antigravity: antigravityBars,
   kimi: kimiBars,
-  glm: async () => {
-    const data = await fetchGlmUsage();
-    applyGlmQuotaWarning(data);
-    return planQuotaBars(data);
-  },
-  minimax: async () => {
-    const data = await fetchMinimaxUsage();
-    applyMinimaxQuotaWarning(data);
-    return planQuotaBars(data);
-  },
-  xai: async () => {
-    const data = await fetchXaiUsage();
-    applyXaiQuotaWarning(data);
-    return planQuotaBars(data);
-  },
+  glm: async () => planQuotaBars(await providerUsagePayload<PlanQuotaData>("glm")),
+  minimax: async () => planQuotaBars(await providerUsagePayload<PlanQuotaData>("minimax")),
+  xai: async () => planQuotaBars(await providerUsagePayload<PlanQuotaData>("xai")),
 };
 
 function usageProviderIds(): ProviderId[] {
@@ -215,7 +187,7 @@ export async function fetchUsageSnapshot(currentUsage: UsageByProvider): Promise
       const bars = await barsFor(id, eligible);
       return {
         id,
-        name: getProviderConfig(id)?.provider.label ?? id,
+        name: providerDisplayName(id),
         eligible,
         currentTokens: totalProviderTokens(currentUsage[id] ?? emptyProviderUsage()),
         allTimeTokens: totalProviderTokens(allTime[id] ?? emptyProviderUsage()),

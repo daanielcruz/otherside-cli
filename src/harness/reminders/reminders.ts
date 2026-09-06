@@ -1,4 +1,4 @@
-import { stringWidth } from "@/kernel/std/text/string-width.ts";
+import { stringWidth } from "@/terminal-runtime";
 
 const SKILL_LISTING_CHAR_BUDGET = 8_000;
 const SKILL_LISTING_MAX_DESC_CHARS = 1_536;
@@ -71,6 +71,8 @@ export function renderSkillsReminder(skills: readonly SkillListingEntry[]): stri
   return `<system-reminder>\nThe following skills are available for use with the Skill tool:\n\n${lines.join("\n")}\n</system-reminder>\n`;
 }
 
+// Reminder renders own the `<system-reminder>` envelope; this is the one
+// inverse for consumers that re-wrap or deliver the content bare.
 export function renderUserContextInner(
   vars: { currentDate?: string; memory?: string } = {},
 ): string {

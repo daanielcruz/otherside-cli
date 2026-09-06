@@ -174,7 +174,7 @@ export function translateRequestAntigravity(
   tools: unknown[],
   extras: AntigravityBodyExtras = {},
 ): unknown {
-  const spec = resolveAntigravityModel(ctx.model);
+  const spec = resolveAntigravityModel(ctx.model, ctx.effort);
   const ids = turnIds(ctx.sessionId, ctx.agentOwnerId);
   const built = buildGeminiRequest({
     ctx,

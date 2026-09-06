@@ -1,6 +1,6 @@
 import { sep } from "node:path";
 
-export type PermissionRuleSource =
+export type RuleSourceScope =
   | "userSettings"
   | "projectSettings"
   | "localSettings"
@@ -19,7 +19,7 @@ export interface PermissionRuleValue {
 }
 
 export interface PermissionRule {
-  source: PermissionRuleSource;
+  source: RuleSourceScope;
   ruleBehavior: PermissionBehavior;
   ruleValue: PermissionRuleValue;
 }
@@ -31,7 +31,7 @@ export type SettingsPermissionsBlock = {
   additionalDirectories?: string[];
 };
 
-export const PERMISSION_RULE_SOURCES: PermissionRuleSource[] = [
+export const PERMISSION_RULE_SOURCES: RuleSourceScope[] = [
   "userSettings",
   "projectSettings",
   "localSettings",
@@ -43,7 +43,7 @@ export const PERMISSION_RULE_SOURCES: PermissionRuleSource[] = [
   "toolsNarrowing",
 ];
 
-export const READ_ONLY_PERMISSION_SOURCES: ReadonlySet<PermissionRuleSource> = new Set([
+export const READ_ONLY_PERMISSION_SOURCES: ReadonlySet<RuleSourceScope> = new Set([
   "flagSettings",
   "policySettings",
   "command",
@@ -99,11 +99,11 @@ const LEGACY_TOOL_NAME_ALIASES: Record<string, string> = {
   Task: "Agent",
 };
 
-function normalizeLegacyToolName(name: string): string {
+function normalizeAliasedToolName(name: string): string {
   return LEGACY_TOOL_NAME_ALIASES[name] ?? name;
 }
 
-export function permissionRuleValueFromString(s: string): PermissionRuleValue | null {
+export function parseRuleValueText(s: string): PermissionRuleValue | null {
   const trimmed = s.trim();
   if (trimmed.length === 0) return null;
   const openIdx = findFirstUnescaped(trimmed, "(");
@@ -114,9 +114,9 @@ export function permissionRuleValueFromString(s: string): PermissionRuleValue | 
       // parenthesized rule (e.g. "Bash(echo *)junk"). Preserve the entire
       // string as the tool name rather than silently dropping the trailing
       // content: the matching unescaped close must be the final character.
-      return { toolName: normalizeLegacyToolName(trimmed) };
+      return { toolName: normalizeAliasedToolName(trimmed) };
     }
-    const toolName = normalizeLegacyToolName(trimmed.slice(0, openIdx).trim());
+    const toolName = normalizeAliasedToolName(trimmed.slice(0, openIdx).trim());
     if (toolName.length === 0) return null;
     const raw = trimmed.slice(openIdx + 1, closeIdx);
     const ruleContent = unescapeRuleContent(raw.trim());
@@ -131,15 +131,15 @@ export function permissionRuleValueFromString(s: string): PermissionRuleValue | 
       : { toolName, ruleContent };
   }
   const idx = trimmed.indexOf(":");
-  if (idx < 0) return { toolName: normalizeLegacyToolName(trimmed) };
-  const toolName = normalizeLegacyToolName(trimmed.slice(0, idx).trim());
+  if (idx < 0) return { toolName: normalizeAliasedToolName(trimmed) };
+  const toolName = normalizeAliasedToolName(trimmed.slice(0, idx).trim());
   const ruleContent = trimmed.slice(idx + 1).trim();
   if (toolName.length === 0) return null;
   if (ruleContent.length === 0) return { toolName };
   return { toolName, ruleContent };
 }
 
-export function permissionRuleValueToString(v: PermissionRuleValue): string {
+export function serializeRuleValue(v: PermissionRuleValue): string {
   return v.ruleContent ? `${v.toolName}(${escapeRuleContent(v.ruleContent)})` : v.toolName;
 }
 
@@ -154,13 +154,13 @@ export type PermissionUpdate =
   | {
       type: "addRules";
       rules: PermissionRule[];
-      destination: PermissionRuleSource;
+      destination: RuleSourceScope;
     }
   | {
       type: "removeRules";
       rules: PermissionRule[];
-      source: PermissionRuleSource;
+      source: RuleSourceScope;
     }
   | { type: "setMode"; mode: "default" | "accept-edits" | "plan" | "yolo" }
-  | { type: "addDirectories"; dirs: string[]; destination?: PermissionRuleSource }
-  | { type: "removeDirectories"; dirs: string[]; destination?: PermissionRuleSource };
+  | { type: "addDirectories"; dirs: string[]; destination?: RuleSourceScope }
+  | { type: "removeDirectories"; dirs: string[]; destination?: RuleSourceScope };

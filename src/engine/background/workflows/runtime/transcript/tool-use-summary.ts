@@ -17,7 +17,7 @@ function readField(input: unknown, key: string): string {
   return typeof value === "string" ? value : "";
 }
 
-function countOccurrences(haystack: string, needle: string): number {
+function countCharMatches(haystack: string, needle: string): number {
   let count = 0;
   let index = haystack.indexOf(needle);
   while (index !== -1) {
@@ -41,7 +41,7 @@ function fallbackSummary(script: string): string {
     headline.length > SUMMARY_MAX_LENGTH
       ? `${headline.slice(0, SUMMARY_MAX_LENGTH - 1)}${ELLIPSIS}`
       : headline;
-  const lineCount = countOccurrences(script, "\n") + 1;
+  const lineCount = countCharMatches(script, "\n") + 1;
   const extra = formatExtraLines(lineCount - 1);
   return extra ? `${clipped} ${extra}` : clipped;
 }
@@ -55,7 +55,7 @@ function summarizeScript(script: string): string {
   }
 }
 
-export function getWorkflowToolUseSummary(
+export function workflowToolUseSummary(
   input: unknown,
   options: WorkflowSummaryOptions = {},
 ): string {

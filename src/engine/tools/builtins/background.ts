@@ -6,12 +6,14 @@ import {
   startShellTask,
 } from "@/engine/background/tasks/background.ts";
 import {
-  getMaxTaskOutputLength,
-  getTaskOutputPath,
   getTaskSpillPath,
+  resolveTaskLogPath,
+  taskResultArchiveBanner,
+  taskResultCharacterBudget,
 } from "@/engine/background/tasks/output-files.ts";
 import { startPressureReap } from "@/engine/background/tasks/pressure-reap.ts";
-import { startStallWatchdog } from "@/engine/background/tasks/stall-watchdog.ts";
+import { watchForInteractiveWait } from "@/engine/background/tasks/stall-watchdog.ts";
+import { startSubagentShellCap } from "@/engine/background/tasks/subagent-shell-cap.ts";
 import { SpillBuffer } from "@/engine/tools/_infra/spill-buffer.ts";
 import {
   BACKGROUND_OUTPUT_LIMIT_NOTICE,
@@ -48,6 +50,7 @@ export interface BackgroundShell {
   stopOutput?: () => void;
   stopWatchdog?: () => void;
   stopPressureReap?: () => void;
+  stopSubagentCap?: () => void;
   terminate?: () => void;
 }
 
@@ -88,6 +91,7 @@ export function disposeShellStreams(shell: BackgroundShell): void {
   shell.stopOutput?.();
   shell.stopWatchdog?.();
   shell.stopPressureReap?.();
+  shell.stopSubagentCap?.();
   shell.stdout.buffer.dispose();
   shell.stderr.buffer.dispose();
 }
@@ -154,8 +158,11 @@ export function spawnBackground(input: SpawnBackgroundInput): { id: string } | {
     ...(input.sessionId !== undefined ? { sessionId: input.sessionId } : {}),
     startedAt: shell.startedAt,
   });
-  const stopStallWatchdog = startStallWatchdog({ taskId: id, toolUseId: input.parentToolCallId });
-  shell.stopWatchdog = stopStallWatchdog;
+  const stopInteractiveWaitWatch = watchForInteractiveWait({
+    taskId: id,
+    toolUseId: input.parentToolCallId,
+  });
+  shell.stopWatchdog = stopInteractiveWaitWatch;
   shell.stopPressureReap = startPressureReap({
     taskId: id,
     ownerId: input.ownerId,
@@ -163,7 +170,14 @@ export function spawnBackground(input: SpawnBackgroundInput): { id: string } | {
       killBackground(id);
     },
   });
-  const log = makeTaskLogAppender(getTaskOutputPath(id));
+  shell.stopSubagentCap = startSubagentShellCap({
+    taskId: id,
+    ownerId: input.ownerId,
+    kill: () => {
+      killBackground(id);
+    },
+  });
+  const log = makeTaskLogAppender(resolveTaskLogPath(id));
   let outputOpen = true;
   let terminationRequested = false;
   let outputClosed = false;
@@ -203,10 +217,12 @@ export function spawnBackground(input: SpawnBackgroundInput): { id: string } | {
     childExited: child.exited,
   });
   void child.exited.then(async (code) => {
-    stopStallWatchdog();
+    stopInteractiveWaitWatch();
     delete shell.stopWatchdog;
     shell.stopPressureReap?.();
     delete shell.stopPressureReap;
+    shell.stopSubagentCap?.();
+    delete shell.stopSubagentCap;
     await Promise.allSettled([stdoutDrain, stderrDrain]);
     stopOutput();
     shell.status = "exited";
@@ -223,23 +239,21 @@ export function spawnBackground(input: SpawnBackgroundInput): { id: string } | {
   return { id };
 }
 
-// Stores at most the TaskOutput display cap on the task record, pre-shaped
-// exactly as formatTaskOutput would emit, so the read path returns identical
-// bytes without the store ever holding the full output. The full text already
-// streams to the task .log during the run — the header points there. The
-// in-memory tails (256k each) always cover the cap (≤160k), so nothing is
-// read back from the spill files.
+// Task records retain only the model-facing suffix. The complete stream stays
+// in the .log file, while each in-memory stream tail is larger than the maximum
+// result-message budget.
 function boundedCompletionContent(shell: BackgroundShell): string {
   const totalLength = shell.stdout.buffer.length + shell.stderr.buffer.length;
-  const maxLen = getMaxTaskOutputLength();
-  if (totalLength <= maxLen) {
+  const characterBudget = taskResultCharacterBudget();
+  if (totalLength <= characterBudget) {
     return shell.stdout.buffer.snapshot() + shell.stderr.buffer.snapshot();
   }
-  const header = `[Truncated. Full output: ${getTaskOutputPath(shell.id)}]\n\n`;
-  const tail = (shell.stdout.buffer.memoryTail() + shell.stderr.buffer.memoryTail()).slice(
-    -(maxLen - header.length),
-  );
-  return `${header}${tail}`;
+
+  const archiveBanner = taskResultArchiveBanner(shell.id);
+  const retainedSuffix = (
+    shell.stdout.buffer.memoryTail() + shell.stderr.buffer.memoryTail()
+  ).slice(archiveBanner.length - characterBudget);
+  return archiveBanner.concat(retainedSuffix);
 }
 
 export interface BashSummary {

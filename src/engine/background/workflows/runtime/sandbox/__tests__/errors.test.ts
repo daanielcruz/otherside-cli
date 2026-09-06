@@ -1,14 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import {
-  buildVmSafeError,
   shortErrorStack,
+  toSandboxError,
   WORKFLOW_SCRIPT_FILENAME,
   wrapSyncForVm,
 } from "@/engine/background/workflows/runtime/sandbox/errors.ts";
 
-describe("buildVmSafeError", () => {
+describe("toSandboxError", () => {
   test("returns a null-prototype carrier, not a host Error instance", () => {
-    const safe = buildVmSafeError(new Error("boom"));
+    const safe = toSandboxError(new Error("boom"));
     expect(Object.getPrototypeOf(safe)).toBeNull();
     expect(safe).not.toBeInstanceOf(Error);
     expect(safe.name).toBe("Error");
@@ -18,7 +18,7 @@ describe("buildVmSafeError", () => {
   });
 
   test("carries no prototype for plain string/object inputs either", () => {
-    const safe = buildVmSafeError("plain failure");
+    const safe = toSandboxError("plain failure");
     expect(Object.getPrototypeOf(safe)).toBeNull();
     expect(safe.message).toBe("plain failure");
   });

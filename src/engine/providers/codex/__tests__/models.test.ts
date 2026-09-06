@@ -5,6 +5,21 @@ describe("Codex static model catalog", () => {
   it("matches the manually captured offline catalog", () => {
     expect(MODELS).toEqual([
       {
+        id: "gpt-6-astra",
+        displayName: "GPT-6 Astra",
+        contextWindow: 872_000,
+        autoCompactTokenLimit: 784_800,
+        provider: "codex",
+        supportsPdf: true,
+        efforts: ["low", "medium", "high", "xhigh", "max"],
+        defaultEffort: "medium",
+        augment: {
+          useResponsesLite: true,
+          serviceTiers: ["priority"],
+          defaultVerbosity: "low",
+        },
+      },
+      {
         id: "gpt-5.6-sol",
         displayName: "GPT-5.6 Sol",
         contextWindow: 372_000,

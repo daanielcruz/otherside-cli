@@ -1,8 +1,6 @@
 import { usageFetchSignal } from "@/engine/providers/_shared/usage-fetch.ts";
 import {
   defaultLimits,
-  normalizeEpochMs,
-  normalizeUtilizationPct,
   type RateLimitWindow,
   type RawUtilization,
   setUsageLimits,
@@ -12,6 +10,10 @@ import {
   applyScopedQuotaWarnings,
   type ScopedQuotaCandidate,
 } from "@/engine/session/usage/quota-warning.ts";
+import {
+  normalizeEpochMs,
+  normalizeUtilizationPct,
+} from "@/engine/session/usage/routing-usage-normalize.ts";
 import { truncateEllipsis } from "@/kernel/std/text/text.ts";
 import { type AnthropicTokens, loadFor } from "@/kernel/storage/credentials.ts";
 import { API_USAGE_URL, OAUTH_BETA, uaClaudeCode } from "./_infra/fingerprint.ts";
@@ -22,16 +24,27 @@ export interface AnthropicRateLimitUsage {
   resetsAt: string | null;
 }
 
-export interface AnthropicExtraUsage {
+interface AnthropicExtraUsage {
   isEnabled: boolean;
   monthlyLimit: number | null;
   usedCredits: number | null;
   utilization: number | null;
+  currency?: string | null | undefined;
+  disabledReason?: string | null | undefined;
+}
+
+interface AnthropicModelScopedUsage extends AnthropicRateLimitUsage {
+  displayName: string;
 }
 
 export interface AnthropicUsage {
   fiveHour?: AnthropicRateLimitUsage | null | undefined;
   sevenDay?: AnthropicRateLimitUsage | null | undefined;
+  sevenDayOauthApps?: AnthropicRateLimitUsage | null | undefined;
+  sevenDayOpus?: AnthropicRateLimitUsage | null | undefined;
+  sevenDaySonnet?: AnthropicRateLimitUsage | null | undefined;
+  cinderCove?: AnthropicRateLimitUsage | null | undefined;
+  modelScoped?: AnthropicModelScopedUsage[] | undefined;
   sevenDayFable?: AnthropicRateLimitUsage | null | undefined;
   extraUsage?: AnthropicExtraUsage | null | undefined;
 }
@@ -71,7 +84,7 @@ export async function fetchAnthropicUsage(): Promise<AnthropicUsage | null> {
 }
 
 export function applyAnthropicUsageLimits(usage: AnthropicUsage | null): void {
-  if (!usage) return;
+  if (usage === null) return;
   const raw: RawUtilization = {};
   const candidates: AnthropicRoutingCandidate[] = [];
   for (const [window, key] of ANTHROPIC_USAGE_WINDOWS) {
@@ -163,18 +176,34 @@ function anthropicWindowLabel(window: RateLimitWindow): string {
 }
 
 function hasProfileScope(tokens: AnthropicTokens): boolean {
-  if (!tokens.scopes || tokens.scopes.length === 0) return true;
-  return tokens.scopes.includes("user:profile");
+  return (
+    tokens.scopes?.includes("user:inference") === true && tokens.scopes.includes("user:profile")
+  );
 }
 
 const FABLE_DISPLAY_NAME = "fable";
 
-// The usage endpoint exposes per-window buckets ONLY through the `limits` array
-// now (session / weekly_all / weekly_scoped); the old flat top-level fields are
-// deprecated and return null. We surface three windows: session, the all-models
-// week, and the Fable-scoped week.
+const FLAT_USAGE_WINDOWS = [
+  ["five_hour", "fiveHour"],
+  ["seven_day", "sevenDay"],
+  ["seven_day_oauth_apps", "sevenDayOauthApps"],
+  ["seven_day_opus", "sevenDayOpus"],
+  ["seven_day_sonnet", "sevenDaySonnet"],
+  ["cinder_cove", "cinderCove"],
+] as const satisfies readonly (readonly [string, keyof AnthropicUsage])[];
+
+// Claude Code's current response contract retains the named top-level windows
+// and adds a `limits` array for session/weekly and server-supplied model scopes.
+// Prefer limits[] for overlapping session/week rows, while preserving the
+// named windows and every valid weekly_scoped row for explicit usage surfaces.
 export function parseAnthropicUsage(data: Record<string, unknown>): AnthropicUsage {
   const usage: AnthropicUsage = { extraUsage: parseExtraUsage(data.extra_usage) };
+  for (const [wireKey, usageKey] of FLAT_USAGE_WINDOWS) {
+    if (!(wireKey in data)) continue;
+    usage[usageKey] = parseRateLimitUsage(data[wireKey]);
+  }
+
+  const modelScoped: AnthropicModelScopedUsage[] = [];
   const limits = Array.isArray(data.limits) ? (data.limits as unknown[]) : [];
   for (const entry of limits) {
     if (!entry || typeof entry !== "object") continue;
@@ -183,27 +212,51 @@ export function parseAnthropicUsage(data: Record<string, unknown>): AnthropicUsa
     if (!limit) continue;
     if (row.kind === "session") usage.fiveHour = limit;
     else if (row.kind === "weekly_all") usage.sevenDay = limit;
-    else if (row.kind === "weekly_scoped" && scopedModelName(row) === FABLE_DISPLAY_NAME) {
-      usage.sevenDayFable = limit;
+    else if (row.kind === "weekly_scoped") {
+      const displayName = scopedModelDisplayName(row);
+      if (!displayName) continue;
+      modelScoped.push({ displayName, ...limit });
+      if (displayName.toLowerCase() === FABLE_DISPLAY_NAME) usage.sevenDayFable = limit;
     }
   }
+  if (modelScoped.length > 0) usage.modelScoped = modelScoped;
   return usage;
 }
 
-function parseLimitEntry(row: Record<string, unknown>): AnthropicRateLimitUsage | null {
-  const utilization = nullableNumber(row.percent);
-  const resetsAt = nullableString(row.resets_at);
+function parseRateLimitUsage(value: unknown): AnthropicRateLimitUsage | null {
+  if (!value || typeof value !== "object") return null;
+  const input = value as Record<string, unknown>;
+  const utilization = nullableNumber(input.utilization);
+  const resetsAt = usageResetIso(input.resets_at);
   if (utilization === null && resetsAt === null) return null;
   return { utilization, resetsAt };
 }
 
-function scopedModelName(row: Record<string, unknown>): string | null {
+function parseLimitEntry(row: Record<string, unknown>): AnthropicRateLimitUsage | null {
+  const utilization = nullableNumber(row.percent);
+  const resetsAt = usageResetIso(row.resets_at);
+  if (utilization === null && resetsAt === null) return null;
+  return { utilization, resetsAt };
+}
+
+function usageResetIso(value: unknown): string | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    try {
+      return new Date(value * 1000).toISOString();
+    } catch {
+      return null;
+    }
+  }
+  return nullableString(value);
+}
+
+function scopedModelDisplayName(row: Record<string, unknown>): string | null {
   const scope = row.scope;
   if (!scope || typeof scope !== "object") return null;
   const model = (scope as Record<string, unknown>).model;
   if (!model || typeof model !== "object") return null;
   const name = (model as Record<string, unknown>).display_name;
-  return typeof name === "string" ? name.trim().toLowerCase() : null;
+  return typeof name === "string" && name.trim() ? name.trim() : null;
 }
 
 function parseExtraUsage(value: unknown): AnthropicExtraUsage | null | undefined {
@@ -216,6 +269,10 @@ function parseExtraUsage(value: unknown): AnthropicExtraUsage | null | undefined
     monthlyLimit: nullableNumber(input.monthly_limit),
     usedCredits: nullableNumber(input.used_credits),
     utilization: nullableNumber(input.utilization),
+    ...(input.currency !== undefined ? { currency: nullableString(input.currency) } : {}),
+    ...(input.disabled_reason !== undefined
+      ? { disabledReason: nullableString(input.disabled_reason) }
+      : {}),
   };
 }
 
@@ -233,7 +290,7 @@ function usageLimitStateFromCandidate(candidate: AnthropicRoutingCandidate): Usa
     rateLimitType: candidate.window,
     utilization: candidate.utilizationRatio,
     ...(candidate.resetsAtSeconds !== undefined ? { resetsAt: candidate.resetsAtSeconds } : {}),
-    isUsingOverage: false,
+    isOverageActive: false,
   };
 }
 

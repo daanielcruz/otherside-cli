@@ -3,24 +3,24 @@ import { join, parse } from "node:path";
 import { PermissionResults } from "@/kernel/channels/permission.ts";
 import { containsUnsafeRedirect, isCompoundForGuard } from "@/kernel/permissions/bash-matcher.ts";
 import {
+  parseRuleValueText,
   permissionDirectoryGlob,
   permissionInputForCall,
   permissionKeyForCall,
   permissionPatternMatches,
-  permissionRuleValueFromString,
-  permissionRuleValueToString,
   RuleStore,
   ruleMatches,
+  serializeRuleValue,
 } from "@/kernel/permissions/index.ts";
 import { splitBashSubcommands } from "@/kernel/permissions/sensitive-paths.ts";
 import type {
   PermissionBehavior,
   PermissionRule,
-  PermissionRuleSource,
+  RuleSourceScope,
 } from "@/kernel/permissions/types.ts";
 
 function rule(
-  source: PermissionRuleSource,
+  source: RuleSourceScope,
   ruleBehavior: PermissionBehavior,
   toolName: string,
   ruleContent?: string,
@@ -270,23 +270,23 @@ describe("MCP permission rules", () => {
   });
 });
 
-describe("permissionRuleValueFromString — mcp__server(*) whole-server wildcard (MCP-WILDCARD-RULE-DROPPED regression)", () => {
+describe("parseRuleValueText — mcp__server(*) whole-server wildcard (MCP-WILDCARD-RULE-DROPPED regression)", () => {
   // Unlike the `rule()` test helper (which sets ruleValue.toolName verbatim),
   // these tests parse the raw settings.json string form via
-  // permissionRuleValueFromString, exactly as the real settings loader does,
+  // parseRuleValueText, exactly as the real settings loader does,
   // so a regression in parsing (not just in matching) would be caught.
   function ruleFromString(
-    source: PermissionRuleSource,
+    source: RuleSourceScope,
     ruleBehavior: PermissionBehavior,
     raw: string,
   ): PermissionRule {
-    const ruleValue = permissionRuleValueFromString(raw);
+    const ruleValue = parseRuleValueText(raw);
     if (!ruleValue) throw new Error(`expected ${raw} to parse`);
     return { source, ruleBehavior, ruleValue };
   }
 
   test("parses to a bare whole-tool rule value with no ruleContent", () => {
-    expect(permissionRuleValueFromString("mcp__untrusted(*)")).toEqual({
+    expect(parseRuleValueText("mcp__untrusted(*)")).toEqual({
       toolName: "mcp__untrusted",
     });
   });
@@ -403,15 +403,15 @@ describe("permissionPatternMatches — session patterns reject the same escapes"
   });
 });
 
-describe("permissionRuleValueFromString — malformed parenthesized rules (PERM-003 regression)", () => {
+describe("parseRuleValueText — malformed parenthesized rules (PERM-003 regression)", () => {
   test("trailing text after the closing paren is preserved as the whole tool name", () => {
-    expect(permissionRuleValueFromString("Bash(echo *)junk")).toEqual({
+    expect(parseRuleValueText("Bash(echo *)junk")).toEqual({
       toolName: "Bash(echo *)junk",
     });
   });
 
   test("a well-formed parenthesized rule still parses normally", () => {
-    expect(permissionRuleValueFromString("Bash(echo *)")).toEqual({
+    expect(parseRuleValueText("Bash(echo *)")).toEqual({
       toolName: "Bash",
       ruleContent: "echo *",
     });
@@ -440,20 +440,20 @@ describe("permissionRuleValueFromString — malformed parenthesized rules (PERM-
   });
 });
 
-describe("permissionRuleValueToString/FromString — trailing backslash content round-trips (RULE-CONTENT-BACKSLASH-ESCAPE-003 regression)", () => {
+describe("serializeRuleValue/FromString — trailing backslash content round-trips (RULE-CONTENT-BACKSLASH-ESCAPE-003 regression)", () => {
   test("a rule content ending in a single backslash round-trips through serialization", () => {
     const original = { toolName: "Bash", ruleContent: "echo test\\" };
-    const serialized = permissionRuleValueToString(original);
+    const serialized = serializeRuleValue(original);
     // The trailing backslash must be doubled so it can never be mistaken for
     // an escape of the closing paren delimiter.
     expect(serialized).toBe("Bash(echo test\\\\)");
-    expect(permissionRuleValueFromString(serialized)).toEqual(original);
+    expect(parseRuleValueText(serialized)).toEqual(original);
   });
 
   test("a rule content containing a drive-style path with a trailing backslash round-trips", () => {
     const original = { toolName: "Bash", ruleContent: "echo C:\\" };
-    const serialized = permissionRuleValueToString(original);
-    const parsed = permissionRuleValueFromString(serialized);
+    const serialized = serializeRuleValue(original);
+    const parsed = parseRuleValueText(serialized);
     // Regression: previously this mis-split at the literal ":" into a bogus
     // toolName/content pair instead of preserving the rule.
     expect(parsed).toEqual(original);
@@ -461,20 +461,20 @@ describe("permissionRuleValueToString/FromString — trailing backslash content 
 
   test("a rule content with a literal escaped backslash followed by a paren still round-trips", () => {
     const original = { toolName: "Bash", ruleContent: "echo test\\\\" };
-    const serialized = permissionRuleValueToString(original);
-    expect(permissionRuleValueFromString(serialized)).toEqual(original);
+    const serialized = serializeRuleValue(original);
+    expect(parseRuleValueText(serialized)).toEqual(original);
   });
 
   test("content mixing backslashes and parens round-trips", () => {
     const original = { toolName: "Bash", ruleContent: 'python -c "print(1)"' };
-    const serialized = permissionRuleValueToString(original);
+    const serialized = serializeRuleValue(original);
     expect(serialized).toBe('Bash(python -c "print\\(1\\)")');
-    expect(permissionRuleValueFromString(serialized)).toEqual(original);
+    expect(parseRuleValueText(serialized)).toEqual(original);
   });
 
   test("an always-allow grant persisted for a command ending in a backslash still allows on reload, and explicit deny/ask still takes precedence", () => {
-    const persistedAllow = permissionRuleValueFromString(
-      permissionRuleValueToString({ toolName: "Bash", ruleContent: "echo test\\" }),
+    const persistedAllow = parseRuleValueText(
+      serializeRuleValue({ toolName: "Bash", ruleContent: "echo test\\" }),
     );
     expect(persistedAllow).toEqual({ toolName: "Bash", ruleContent: "echo test\\" });
 
@@ -517,21 +517,21 @@ describe("permissionRuleValueToString/FromString — trailing backslash content 
   });
 });
 
-describe("permissionRuleValueFromString — legacy Task rules normalize to Agent (PERM-004 regression)", () => {
+describe("parseRuleValueText — legacy Task rules normalize to Agent (PERM-004 regression)", () => {
   test("Task(Explore) parses with the canonical Agent tool name", () => {
-    expect(permissionRuleValueFromString("Task(Explore)")).toEqual({
+    expect(parseRuleValueText("Task(Explore)")).toEqual({
       toolName: "Agent",
       ruleContent: "Explore",
     });
   });
 
   test("a bare Task rule (no parens or content) also normalizes to Agent", () => {
-    expect(permissionRuleValueFromString("Task")).toEqual({ toolName: "Agent" });
+    expect(parseRuleValueText("Task")).toEqual({ toolName: "Agent" });
   });
 
   test("a deny rule persisted as Task(Explore) denies invoking Agent with subagent_type Explore", () => {
     const store = new RuleStore();
-    const legacyDeny = permissionRuleValueFromString("Task(Explore)");
+    const legacyDeny = parseRuleValueText("Task(Explore)");
     expect(legacyDeny).toEqual({ toolName: "Agent", ruleContent: "Explore" });
     store.add({ source: "userSettings", ruleBehavior: "deny", ruleValue: legacyDeny! });
     // The rule was authored against the legacy "Task" name but must still
@@ -543,13 +543,13 @@ describe("permissionRuleValueFromString — legacy Task rules normalize to Agent
   test("explicit deny/ask precedence over allow still holds for a normalized legacy rule", () => {
     const denyStore = new RuleStore();
     denyStore.add(rule("session", "allow", "Agent", "Explore"));
-    const legacyDeny = permissionRuleValueFromString("Task(Explore)");
+    const legacyDeny = parseRuleValueText("Task(Explore)");
     denyStore.add({ source: "projectSettings", ruleBehavior: "deny", ruleValue: legacyDeny! });
     expect(denyStore.match("Agent", "Explore")).toBe("deny");
 
     const askStore = new RuleStore();
     askStore.add(rule("session", "allow", "Agent", "Explore"));
-    const legacyAsk = permissionRuleValueFromString("Task(Explore)");
+    const legacyAsk = parseRuleValueText("Task(Explore)");
     askStore.add({ source: "userSettings", ruleBehavior: "ask", ruleValue: legacyAsk! });
     expect(askStore.match("Agent", "Explore")).toBe("ask");
   });

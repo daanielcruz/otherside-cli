@@ -1,39 +1,44 @@
-import { roughTokenCountEstimationForMessages } from "@/engine/session/compact/token-count.ts";
+import { estimateConversationTokens } from "@/engine/session/compact/token-count.ts";
 import type { Message } from "@/kernel/std/types/message.ts";
 
-export function tokensForGroup(group: Message[]): number {
-  return roughTokenCountEstimationForMessages(group);
+export function countGroupTokens(messages: Message[]): number {
+  return estimateConversationTokens(messages);
 }
 
-export function peelStepCount(
-  groupTokens: number[],
-  summarizeGroupCount: number,
-  tokenGap: number,
+function halfOfSummaryGroups(groupCount: number): number {
+  return Math.max(1, Math.floor(groupCount / 2));
+}
+
+function tailTokenTotals(tokenCounts: number[], groupCount: number): number[] {
+  const tail = Array.from(
+    { length: Math.max(0, groupCount) },
+    (_, offset) => tokenCounts[groupCount - offset - 1] ?? 0,
+  );
+  let total = 0;
+  return tail.map((tokens) => {
+    total += tokens;
+    return total;
+  });
+}
+
+export function peelAdvanceForGap(tokenCounts: number[], groupCount: number, gap: number): number {
+  const totals = tailTokenTotals(tokenCounts, groupCount);
+  const reachedGapAt = totals.findIndex((total) => total >= gap);
+  const advance = reachedGapAt === -1 ? totals.length : reachedGapAt + 1;
+  const leavesOneGroup = advance >= groupCount - 1;
+  return leavesOneGroup ? halfOfSummaryGroups(groupCount) : advance;
+}
+
+export function nextPeelAdvance(
+  gap: number | undefined,
+  tokenCounts: number[],
+  groupCount: number,
 ): number {
-  let acc = 0;
-  let steps = 0;
-  for (let i = summarizeGroupCount - 1; i >= 0; i--) {
-    acc += groupTokens[i] ?? 0;
-    steps++;
-    if (acc >= tokenGap) break;
-  }
-  if (steps >= summarizeGroupCount - 1) {
-    return Math.max(1, Math.floor(summarizeGroupCount / 2));
-  }
-  return steps;
+  return gap === undefined ? 1 : peelAdvanceForGap(tokenCounts, groupCount, gap);
 }
 
-export function computePeelStep(
-  tokenGap: number | undefined,
-  groupTokens: number[],
-  summarizeGroupCount: number,
-): number {
-  if (tokenGap === undefined) return 1;
-  return peelStepCount(groupTokens, summarizeGroupCount, tokenGap);
-}
-
-export function zeroAssistantUsage(message: Message): Message {
-  if (message.role !== "assistant" || !message.usage) return message;
+export function scrubCarriedAssistantUsage(message: Message): Message {
+  if (message.role !== "assistant" || message.usage === undefined) return message;
   return {
     ...message,
     usage: {

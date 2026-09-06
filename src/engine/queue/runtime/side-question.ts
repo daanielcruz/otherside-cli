@@ -13,8 +13,8 @@ import {
 } from "@/engine/transport/_infra/classify/retry.ts";
 import { makeQueue } from "@/harness/composer/queue.ts";
 import type { UserConfig } from "@/kernel/config/config.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
 import type { ContentBlock, Message } from "@/kernel/std/types/message.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 
 export interface SideQuestionUsage {
@@ -41,7 +41,7 @@ export interface SideQuestionHistoryEntry {
   response: string;
 }
 
-export interface AskSideQuestionParams {
+export interface SideQuestionInvocation {
   question: string;
   ctx: RequestContext;
   parentSessionId: string;
@@ -111,7 +111,7 @@ interface SideQuestionRequest {
   tools: ProviderToolDeclaration[];
 }
 
-export async function askSideQuestion(params: AskSideQuestionParams): Promise<SideQuestionResult> {
+export async function askSideQuestion(params: SideQuestionInvocation): Promise<SideQuestionResult> {
   const {
     question,
     ctx,
@@ -129,6 +129,7 @@ export async function askSideQuestion(params: AskSideQuestionParams): Promise<Si
     ...ctx,
     abortSignal: signal,
     sessionId: syntheticSessionId ?? ctx.sessionId,
+    cacheRole: "side-question",
   };
 
   const conversation = sideQuestionConversation({

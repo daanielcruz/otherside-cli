@@ -1,3 +1,4 @@
+import { fireConfiguredHooks } from "@/kernel/hooks/handler.ts";
 import type { ToolCall } from "@/kernel/std/types/message.ts";
 import { loadNestedMemoryForPath } from "@/kernel/storage/memory/nested.ts";
 import type { AgentDeps } from "./turn/types.ts";
@@ -32,5 +33,18 @@ export function collectNestedMemoryForTool(
     if (store.loadedPaths.has(nested.path)) continue;
     store.loadedPaths.add(nested.path);
     store.byPath.set(nested.path, nested.content);
+    queueMicrotask(() => {
+      void fireConfiguredHooks(deps.config, "instructionsLoaded", {
+        kind: "instructionsLoaded",
+        ctx: {
+          filePath: nested.path,
+          memoryType: "Project",
+          loadReason: "nested_traversal",
+          triggerFilePath: candidate,
+          sessionId: deps.session.id,
+          cwd,
+        },
+      }).catch(() => {});
+    });
   }
 }

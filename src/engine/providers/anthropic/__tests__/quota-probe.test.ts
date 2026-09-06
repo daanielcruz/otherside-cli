@@ -1,10 +1,10 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import { buildResumedSession } from "@/boot/startup-session.ts";
 import { auxiliaryModelFor } from "@/engine/model/tier/tiers.ts";
 import * as authModule from "@/engine/providers/anthropic/auth.ts";
 import { DEFAULT_CONFIG } from "@/kernel/config/config.ts";
 import type { AnthropicTokens } from "@/kernel/storage/credentials.ts";
 import * as credentialsModule from "@/kernel/storage/credentials.ts";
-import { buildResumedSession } from "@/main.ts";
 import { anthropicWireModelId } from "../_infra/fingerprint.ts";
 import { anthropicUserIdMetadata } from "../metadata.ts";
 import { probeQuotaStatus } from "../quota-probe.ts";
@@ -186,6 +186,7 @@ describe("quota-probe", () => {
     await buildResumedSession({
       effectiveResumeId: null,
       resumeRecords: [],
+      resumeRecordsArePartial: false,
       resumeUsageRecords: [],
       chainHead: null,
       isResume: false,
@@ -209,6 +210,7 @@ describe("quota-probe", () => {
     await buildResumedSession({
       effectiveResumeId: null,
       resumeRecords: [],
+      resumeRecordsArePartial: false,
       resumeUsageRecords: [],
       chainHead: null,
       isResume: false,

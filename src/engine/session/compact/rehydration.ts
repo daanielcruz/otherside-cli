@@ -1,10 +1,11 @@
 import { readFileSync } from "node:fs";
 import { basename, extname } from "node:path";
 import { listRunning as bgListRunning } from "@/engine/background/tasks/background.ts";
-import { roughTokenCountEstimationForFileType } from "@/engine/session/compact/token-count.ts";
+import { estimateFileTokens } from "@/engine/session/compact/token-count.ts";
 import { formatNumberedLines } from "@/engine/tools/builtins/read/read.ts";
 import { MAIN_SCOPE, readSetEntries } from "@/engine/tools/builtins/read/state.ts";
 import type { ContentBlock } from "@/kernel/std/types/message.ts";
+import { isPreservedImageBlock, type PreservedImageEntry } from "./preserved-image-ledger.ts";
 
 const POST_COMPACT_MAX_FILES = 5;
 const POST_COMPACT_MAX_TOKENS_PER_FILE = 5_000;
@@ -17,7 +18,7 @@ export const POST_COMPACT_MAX_IMAGES = 5;
 
 const MEMORY_FILE_BASENAMES = new Set(["OTHERSIDE.md"]);
 
-function shouldExcludeFromPostCompactRestore(path: string): boolean {
+function isExcludedFromCompactRestore(path: string): boolean {
   return MEMORY_FILE_BASENAMES.has(basename(path));
 }
 
@@ -43,7 +44,7 @@ export function collectImageBlocks(messages: { content: ContentBlock[] }[]): Con
 
 export function buildPostCompactRehydration(
   permissionMode: string,
-  preservedImages: ContentBlock[] = [],
+  preservedImages: PreservedImageEntry[] = [],
 ): PostCompactRehydration {
   const blocks: ContentBlock[] = [];
   const recent = recentFilesRehydration();
@@ -56,10 +57,12 @@ export function buildPostCompactRehydration(
       text: "<plan-mode>active — propose changes via ExitPlanMode before editing files.</plan-mode>",
     });
   }
+  // Unresolved references never reach the model: only full image blocks pass.
+  const fullImages = preservedImages.filter(isPreservedImageBlock);
   const keptImages =
-    preservedImages.length > POST_COMPACT_MAX_IMAGES
-      ? preservedImages.slice(-POST_COMPACT_MAX_IMAGES)
-      : preservedImages;
+    fullImages.length > POST_COMPACT_MAX_IMAGES
+      ? fullImages.slice(-POST_COMPACT_MAX_IMAGES)
+      : fullImages;
   if (keptImages.length > 0) {
     blocks.push({
       type: "text",
@@ -79,7 +82,7 @@ function recentFilesRehydration(): { block: ContentBlock; restoredFiles: Restore
   }
   if (entries.length === 0) return null;
   const sorted = entries
-    .filter((entry) => !shouldExcludeFromPostCompactRestore(entry.path))
+    .filter((entry) => !isExcludedFromCompactRestore(entry.path))
     .sort((a, b) => b.mtime - a.mtime)
     .slice(0, POST_COMPACT_MAX_FILES);
   if (sorted.length === 0) return null;
@@ -89,7 +92,7 @@ function recentFilesRehydration(): { block: ContentBlock; restoredFiles: Restore
   for (const entry of sorted) {
     const body = readEntryBody(entry.path, tokenBudget);
     const fileExtension = extname(entry.path).slice(1).toLowerCase();
-    tokenBudget -= roughTokenCountEstimationForFileType(body, fileExtension);
+    tokenBudget -= estimateFileTokens(body, fileExtension);
     sections.push(`<file path="${entry.path}">\n${body}\n</file>`);
     restoredFiles.push({ path: entry.path, numLines: countLines(entry.path) });
     if (tokenBudget <= 0) break;
@@ -116,7 +119,7 @@ function readEntryBody(path: string, tokenBudget: number): string {
     const raw = readFileSync(path, "utf8");
     const fileExtension = extname(path).slice(1).toLowerCase();
     const tokenCap = Math.min(POST_COMPACT_MAX_TOKENS_PER_FILE, tokenBudget);
-    const estimatedTokens = roughTokenCountEstimationForFileType(raw, fileExtension);
+    const estimatedTokens = estimateFileTokens(raw, fileExtension);
     if (estimatedTokens <= tokenCap) return formatNumberedLines(raw).output;
     const charCap = Math.max(0, Math.round((raw.length * tokenCap) / estimatedTokens));
     const sliced = formatNumberedLines(raw.slice(0, charCap)).output;

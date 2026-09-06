@@ -5,7 +5,7 @@ import {
   tokenize,
   undoAnsiCodes,
 } from "@alcalzone/ansi-tokenize";
-import { stringWidth } from "@/terminal-runtime/text/cell-width.js";
+import { paintCellWidth } from "@/terminal-runtime/text/cell-width.js";
 
 function isTerminalCode(code: AnsiCode): boolean {
   return code.code === code.endCode;
@@ -23,7 +23,7 @@ export default function truncateAnsiString(str: string, start: number, end?: num
   let include = false;
 
   for (const token of tokens) {
-    const width = token.type === "char" ? stringWidth(token.value) : 0;
+    const width = token.type === "char" ? paintCellWidth(token.value) : 0;
 
     if (end !== undefined && position >= end) {
       if (token.type === "ansi" || width > 0 || !include) break;

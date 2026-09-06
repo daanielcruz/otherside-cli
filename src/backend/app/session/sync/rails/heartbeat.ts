@@ -1,8 +1,15 @@
+import {
+  getSessionRow,
+  patchSessionRow,
+  sessionModelFields,
+} from "@/backend/app/session/sync/session-api.ts";
+import {
+  getActiveSyncSessionId,
+  registerRemoteSession,
+} from "@/backend/app/session/sync/session-status.ts";
 import { loadFreshAuth } from "@/backend/shared/auth.ts";
 import type { Device } from "@/backend/shared/device.ts";
 import type { Broker, Session } from "@/kernel/std/types/session.ts";
-import { getSessionRow, patchSessionRow, sessionModelFields } from "../session-api.ts";
-import { getActiveSyncSessionId, registerRemoteSession } from "../session-status.ts";
 
 export async function sendHeartbeat(
   device: Device,

@@ -1,20 +1,12 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
-import * as authModule from "@/engine/providers/xai/auth.ts";
-
-const realAuthModule = { ...authModule };
-
-mock.module("@/engine/providers/xai/auth.ts", () => ({
-  ...realAuthModule,
-  currentTokens: async () => ({
-    accessToken: "xai-access",
-    refreshToken: "xai-refresh",
-    expiresAt: Date.now() + 60_000,
-  }),
-}));
-
+import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { saveFor } from "@/kernel/storage/credentials.ts";
 import { generateImage } from "../image.ts";
 
 const originalFetch = global.fetch;
+let configDir: string;
 
 function jsonResponse(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
@@ -24,16 +16,21 @@ function jsonResponse(value: unknown, status = 200): Response {
 }
 
 describe("xai image generation", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    configDir = mkdtempSync(join(tmpdir(), "xai-image-test-"));
+    process.env.OTHERSIDE_CONFIG_DIR = configDir;
+    await saveFor("xai", {
+      accessToken: "xai-access",
+      refreshToken: "xai-refresh",
+      expiresAt: Date.now() + 10 * 60_000,
+    });
     global.fetch = originalFetch;
   });
 
   afterEach(() => {
     global.fetch = originalFetch;
-  });
-
-  afterAll(() => {
-    mock.module("@/engine/providers/xai/auth.ts", () => realAuthModule);
+    delete process.env.OTHERSIDE_CONFIG_DIR;
+    rmSync(configDir, { recursive: true, force: true });
   });
 
   it("generates an image through the Imagine API", async () => {
@@ -52,7 +49,7 @@ describe("xai image generation", () => {
     expect(capturedInit?.method).toBe("POST");
     expect(capturedInit?.headers).toMatchObject({
       Authorization: "Bearer xai-access",
-      "User-Agent": "xai-grok-build/0.2.91",
+      "User-Agent": "xai-grok-build/0.2.102",
       Accept: "application/json",
     });
     expect(JSON.parse(String(capturedInit?.body))).toEqual({
@@ -135,6 +132,35 @@ describe("xai image generation", () => {
       }),
     ).rejects.toThrow("Grok image generation supports at most 3 image references");
     expect(requested).toBe(false);
+  });
+
+  it("refreshes once and retries an unauthorized image request", async () => {
+    let requests = 0;
+    let refreshCalls = 0;
+    let lastAuthorization = "";
+    global.fetch = mock((url: string | URL | Request, init?: RequestInit) => {
+      if (String(url).includes("/oauth2/token")) {
+        refreshCalls++;
+        return Promise.resolve(
+          jsonResponse({
+            access_token: "refreshed-access",
+            refresh_token: "refreshed-refresh",
+            expires_in: 3600,
+          }),
+        );
+      }
+      requests++;
+      lastAuthorization = (init?.headers as Record<string, string>).Authorization ?? "";
+      if (requests === 1) return Promise.resolve(new Response("expired", { status: 401 }));
+      return Promise.resolve(jsonResponse({ data: [{ b64_json: "refreshed-jpeg" }] }));
+    }) as unknown as typeof fetch;
+
+    const result = await generateImage({ prompt: "refresh me" });
+
+    expect(result.base64).toBe("refreshed-jpeg");
+    expect(requests).toBe(2);
+    expect(refreshCalls).toBe(1);
+    expect(lastAuthorization).toBe("Bearer refreshed-access");
   });
 
   it("reports missing image data and authentication failures", async () => {

@@ -1,7 +1,6 @@
-import { existsSync } from "node:fs";
 import { platform as osPlatform, release as osRelease, type as osType } from "node:os";
-import { join } from "node:path";
 import type { CategorizedLayer, LayerContext } from "@/harness/composer/types.ts";
+import { findGitRoot } from "@/kernel/std/fs/git-root.ts";
 import { getTrackedCwd } from "@/kernel/std/state/cwd-state.ts";
 
 interface EnvInfo {
@@ -23,7 +22,7 @@ function detectEnvInfo(): EnvInfo {
   const cwd = getTrackedCwd();
   const detected = {
     workspaceDir: cwd,
-    isGitRepo: existsSync(join(cwd, ".git")),
+    isGitRepo: findGitRoot(cwd) !== null,
     platform: osPlatform(),
     osVersion: `${osType()} ${osRelease()}`,
   };

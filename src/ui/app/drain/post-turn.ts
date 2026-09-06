@@ -1,9 +1,9 @@
-import type { SetStateAction } from "react";
+import type { StateSetter } from "@/kernel/std/types/state.ts";
 import { getQueueMessages, queueActions } from "@/store/index.ts";
 import type { TranscriptEntry } from "@/ui/transcript/types";
 
 export interface PostTurnDrainDeps {
-  setTranscript: (value: SetStateAction<readonly TranscriptEntry[]>) => void;
+  setTranscript: StateSetter<readonly TranscriptEntry[]>;
 }
 
 export interface TurnContinuation {

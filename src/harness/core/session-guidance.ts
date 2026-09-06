@@ -17,8 +17,10 @@ const FORK_BULLET =
 
 function buildSessionGuidance(lean: boolean, sonnet: boolean): string {
   const bullets = [BANG_COMMAND_BULLET];
-  if (!lean) bullets.push(sonnet ? FORK_BULLET : AGENT_DELEGATION_BULLET);
-  if (!lean && !sonnet) bullets.push(EXPLORE_BULLET);
+  if (!lean) {
+    bullets.push(AGENT_DELEGATION_BULLET, EXPLORE_BULLET);
+    if (sonnet) bullets.push(FORK_BULLET);
+  }
   bullets.push(SKILL_BULLET);
   return ["# Session-specific guidance", ...bullets.map((b) => ` - ${b}`)].join("\n");
 }

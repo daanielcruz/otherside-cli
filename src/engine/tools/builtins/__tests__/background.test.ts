@@ -6,11 +6,12 @@ import {
   SHELL_OUTPUT_TAIL_CAP,
   subscribeCompletion,
 } from "@/engine/background/tasks/background.ts";
-import { getTaskOutputPath } from "@/engine/background/tasks/output-files.ts";
+import { resolveTaskLogPath } from "@/engine/background/tasks/output-files.ts";
 import { SpillBuffer } from "@/engine/tools/_infra/spill-buffer.ts";
 import {
   type BackgroundShell,
   disposeShellStreams,
+  killBackground,
   killShellsForOwner,
   newShellStreams,
   pollBackground,
@@ -76,6 +77,43 @@ function registerShell(id: string): BackgroundShell {
   SHELLS.set(id, shell);
   return shell;
 }
+
+describe("background shell watchdog lifecycle", () => {
+  it("stops watchdogs when shell streams are disposed", () => {
+    const shell = registerShell("dispose-watchdog");
+    let stops = 0;
+    shell.stopWatchdog = () => {
+      stops += 1;
+    };
+
+    disposeShellStreams(shell);
+
+    expect(stops).toBe(1);
+  });
+
+  it("stops the agent shell cap when shell streams are disposed", () => {
+    const shell = registerShell("dispose-subagent-cap");
+    let stops = 0;
+    shell.stopSubagentCap = () => {
+      stops += 1;
+    };
+
+    disposeShellStreams(shell);
+
+    expect(stops).toBe(1);
+  });
+
+  it("stops watchdogs when a background shell is killed", () => {
+    const shell = registerShell("kill-watchdog");
+    let stops = 0;
+    shell.stopWatchdog = () => {
+      stops += 1;
+    };
+
+    expect(killBackground(shell.id)).toEqual({ ok: true });
+    expect(stops).toBe(2);
+  });
+});
 
 describe("background output limiter", () => {
   it("shares one UTF-8 byte budget across streams and rejects after the boundary", () => {
@@ -166,6 +204,7 @@ describe("spawnBackground completion", () => {
       if ("error" in spawned) return;
       taskId = spawned.id;
       shellIds.push(taskId);
+      expect(SHELLS.get(taskId)?.stopWatchdog).toBeFunction();
 
       resolveExit(0);
       await Promise.resolve();
@@ -173,7 +212,8 @@ describe("spawnBackground completion", () => {
       stdoutController?.close();
 
       expect(await completed).toContain("late tail");
-      expect(readFileSync(getTaskOutputPath(taskId), "utf8")).toContain("late tail");
+      expect(SHELLS.get(taskId)?.stopWatchdog).toBeUndefined();
+      expect(readFileSync(resolveTaskLogPath(taskId), "utf8")).toContain("late tail");
     } finally {
       unsubscribe();
       spawnSpy.mockRestore();

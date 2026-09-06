@@ -1,4 +1,3 @@
-import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import type { Agent } from "@/engine/queue/index.ts";
 import type { TurnGuard } from "@/engine/queue/runtime/turn/guard.ts";
 import type { TurnLifecycle } from "@/engine/queue/runtime/turn/lifecycle.ts";
@@ -8,16 +7,17 @@ import type { RecordProviderUsageFn } from "@/engine/session/usage/record-provid
 import type { ContextUsageSnapshot } from "@/engine/session/usage/snapshot.ts";
 import type { ErrorActionId, ErrorMeta } from "@/engine/transport/error-meta.ts";
 import type { UserConfig } from "@/kernel/config/config.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
+import type { MacrotaskBatch } from "@/kernel/std/perf/macrotask-batch.ts";
 import type { AutoClearDispatch } from "@/kernel/std/state/auto-clear-dispatch.ts";
 import type { ContentBlock } from "@/kernel/std/types/message.ts";
 import type { PasteStore } from "@/kernel/std/types/paste.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
+import type { MutableRef, StateSetter } from "@/kernel/std/types/state.ts";
 import type { Broker } from "@/store/app-store/broker.ts";
 import type { AgentTranscriptHelpers } from "@/ui/app/agent-transcript.ts";
 import type { createApplySlashResult } from "@/ui/app/dispatch/slash-result.ts";
 import type { createPendingInputDrainer } from "@/ui/app/drain/pending-input-drainer.ts";
 import type { createPostTurnDrain } from "@/ui/app/drain/post-turn.ts";
-import type { createPromptHistoryNav } from "@/ui/app/drain/prompt-history-nav.ts";
 import type { UsageSetters } from "@/ui/app/usage-setters.ts";
 import type { TranscriptSetters } from "@/ui/transcript/stream/setters.ts";
 import type { TranscriptEntry } from "@/ui/transcript/types";
@@ -31,7 +31,6 @@ export interface DispatchLoopDeps {
   runtimeConfig: UserConfig;
   transcript: readonly TranscriptEntry[];
   mainLastContext: ContextUsageSnapshot;
-  btwMode: boolean;
   turnGuard: TurnGuard;
   turnLifecycle: TurnLifecycle;
   autoResumeDispatch: AutoClearDispatch;
@@ -42,7 +41,6 @@ export interface DispatchLoopDeps {
   enterBtwMode: (question: string) => void;
   recordProviderUsage: RecordProviderUsageFn;
   slashLifecycle: { onSessionFinalize: (handler: () => void | Promise<void>) => void };
-  promptHistoryNav: ReturnType<typeof createPromptHistoryNav>;
   pushQueued: (text: string) => void;
   pendingInputDrainer: ReturnType<typeof createPendingInputDrainer>;
   postTurnDrain: ReturnType<typeof createPostTurnDrain>;
@@ -52,6 +50,7 @@ export interface DispatchLoopDeps {
   beginThinkingStatus: () => void;
   endThinkingStatus: () => void;
   resetThinkingStatus: () => void;
+  transcriptBatch: MacrotaskBatch;
   setTranscript: TranscriptSetters["setTranscript"];
   setStreamingId: TranscriptSetters["setStreamingId"];
   setStreamingText: TranscriptSetters["setStreamingText"];
@@ -60,19 +59,19 @@ export interface DispatchLoopDeps {
   setCodexUsage: UsageSetters["setCodexUsage"];
   setMainTokenTotals: UsageSetters["setMainTokenTotals"];
   setMainLastContext: UsageSetters["setMainLastContext"];
-  setProgressInputTokens: Dispatch<SetStateAction<number>>;
-  setProgressStartedAt: Dispatch<SetStateAction<number | null>>;
-  setTasksExpanded: Dispatch<SetStateAction<boolean>>;
-  setContextWarningSuppressed: Dispatch<SetStateAction<boolean>>;
+  setProgressInputTokens: StateSetter<number>;
+  setProgressStartedAt: StateSetter<number | null>;
+  setTasksExpanded: StateSetter<boolean>;
+  setContextWarningSuppressed: StateSetter<boolean>;
   setConfigInitialTab: (tab: "details" | "config" | undefined) => void;
-  setLoginInitialProvider: Dispatch<SetStateAction<ProviderId | undefined>>;
+  setLoginInitialProvider: StateSetter<ProviderId | undefined>;
   showErrorPanel: (meta: ErrorMeta) => void;
   handleQuotaExhausted: (resetEpochMs: number | null) => void;
   showUnsupportedImageInput: (providerId: ProviderId) => void;
   flushDeferredPersistence: () => Promise<void>;
   clearExitPending: () => void;
-  promptHistoryIndexRef: MutableRefObject<number | null>;
-  pasteStoreRef: MutableRefObject<PasteStore>;
+  promptHistoryIndexRef: MutableRef<number | null>;
+  pasteStoreRef: MutableRef<PasteStore>;
 }
 
 export interface DispatchLoop {

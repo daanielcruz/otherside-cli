@@ -96,6 +96,27 @@ async function exchangeCode(
   return tokens;
 }
 
+class RefreshExchangeError extends Error {
+  constructor(
+    readonly status: number,
+    readonly responseText: string,
+  ) {
+    super(`refresh exchange failed: HTTP ${status}: ${responseText}`);
+  }
+}
+
+function tokensChanged(current: AnthropicTokens, prior: AnthropicTokens): boolean {
+  return current.accessToken !== prior.accessToken || current.refreshToken !== prior.refreshToken;
+}
+
+function isInvalidGrantError(err: unknown): err is RefreshExchangeError {
+  return (
+    err instanceof RefreshExchangeError &&
+    err.status === 400 &&
+    /\binvalid_grant\b/i.test(err.responseText)
+  );
+}
+
 async function refreshTokens(refreshToken: string): Promise<AnthropicTokens> {
   const resp = await postJson(OAUTH_TOKEN_URL, {
     grant_type: "refresh_token",
@@ -105,7 +126,7 @@ async function refreshTokens(refreshToken: string): Promise<AnthropicTokens> {
   });
   if (!resp.ok) {
     const text = await resp.text().catch(() => "");
-    throw new Error(`refresh exchange failed: HTTP ${resp.status}: ${text}`);
+    throw new RefreshExchangeError(resp.status, text);
   }
   const fresh = tokensFromResponse((await resp.json()) as TokenResponse);
   // A refresh must never change the account identity: when the grant response
@@ -121,6 +142,44 @@ async function refreshTokens(refreshToken: string): Promise<AnthropicTokens> {
   if (organizationName) tokens.organizationName = organizationName;
   await saveFor("anthropic", tokens);
   return tokens;
+}
+
+let activeRefreshPromise: Promise<AnthropicTokens> | null = null;
+
+async function executeRefresh(
+  prior: AnthropicTokens | undefined,
+  opts?: { force?: boolean },
+): Promise<AnthropicTokens> {
+  try {
+    const stored = await loadFor("anthropic");
+    if (!stored) {
+      throw new Error("no anthropic credentials — run `otherside login --provider anthropic`");
+    }
+    // A token pair written by another flow won the rotation race. Use it instead
+    // of spending the single-use refresh token the caller originally observed.
+    if (prior && tokensChanged(stored, prior)) return stored;
+    if (!opts?.force && stored.expiresAt - REFRESH_SAFETY_MARGIN_MS > Date.now()) return stored;
+
+    try {
+      return await refreshTokens(stored.refreshToken);
+    } catch (err) {
+      // Refresh tokens are single-use. A different process can win the race
+      // after our storage read, making this exchange fail with invalid_grant.
+      // Reload once and continue with the winner's persisted token pair.
+      if (isInvalidGrantError(err)) {
+        const reloaded = await loadFor("anthropic");
+        if (reloaded && tokensChanged(reloaded, stored)) return reloaded;
+      }
+      throw err;
+    }
+  } finally {
+    activeRefreshPromise = null;
+  }
+}
+
+function runRefresh(prior?: AnthropicTokens, opts?: { force?: boolean }): Promise<AnthropicTokens> {
+  if (!activeRefreshPromise) activeRefreshPromise = executeRefresh(prior, opts);
+  return activeRefreshPromise;
 }
 
 export async function login(): Promise<AnthropicTokens> {
@@ -165,16 +224,27 @@ export async function loginManual(pasted: string): Promise<AnthropicTokens> {
 
 export const Auth: AuthStrategy = buildOauthAuthStrategy<AnthropicTokens>({
   providerId: "anthropic",
-  refresh: (tokens) => refreshTokens(tokens.refreshToken),
+  refresh: (tokens) => runRefresh(tokens),
 });
 
-export async function authorizationHeader(): Promise<string> {
+export async function currentTokens(): Promise<AnthropicTokens> {
   let tokens = await loadFor("anthropic");
   if (!tokens) {
     throw new Error("no anthropic credentials — run `otherside login --provider anthropic`");
   }
   if (tokens.expiresAt - REFRESH_SAFETY_MARGIN_MS <= Date.now()) {
-    tokens = await refreshTokens(tokens.refreshToken);
+    tokens = await runRefresh(tokens);
   }
+  return tokens;
+}
+
+// Server-driven 401 recovery: the token looked valid locally but the server
+// rejected it, so the expiry margin must not short-circuit the refresh.
+export function forceRefreshTokens(prior?: AnthropicTokens): Promise<AnthropicTokens> {
+  return runRefresh(prior, { force: true });
+}
+
+export async function authorizationHeader(): Promise<string> {
+  const tokens = await currentTokens();
   return `Bearer ${tokens.accessToken}`;
 }

@@ -4,7 +4,7 @@ import {
   parseModelId,
 } from "@/engine/model/catalog.ts";
 import {
-  modelSupportsContextManagement as anthropicModelSupportsContextManagement,
+  modelHasContextManagement as anthropicModelSupportsContextManagement,
   isHaikuModel,
 } from "@/engine/model/facts/model-family.ts";
 import {
@@ -12,22 +12,25 @@ import {
   sameAccountFingerprint,
 } from "@/engine/providers/_shared/account-identity.ts";
 import { isAnthropicFamily } from "@/engine/providers/_shared/families.ts";
-import { parseJsonWithPartialRecovery } from "@/engine/providers/_shared/partial-json.ts";
 import { streamErrorToHttpError } from "@/engine/providers/_shared/retry.ts";
+import { parseJsonWithPartialRecovery } from "@/engine/providers/_shared/streaming-json-repair.ts";
 import { thinkingProvenance } from "@/engine/providers/_shared/thinking-provenance.ts";
 import {
   ensureNonEmptyErrorContent,
   sanitizeToolResultContent,
 } from "@/engine/providers/_shared/tool-result.ts";
 import { usageFromAnthropic } from "@/engine/providers/_shared/usage.ts";
-import { anthropicWireModelId } from "@/engine/providers/anthropic/_infra/fingerprint.ts";
+import {
+  anthropicWireModelId,
+  requestQualifiesForExtendedCacheTtl,
+} from "@/engine/providers/anthropic/_infra/fingerprint.ts";
 import {
   anthropicEnvelopeDefaults,
   maxOutputTokensForModel as anthropicMaxOutputTokensForModel,
+  applyAnthropicThinkingDisplay,
 } from "@/engine/providers/anthropic/envelope.ts";
 import { anthropicUserIdMetadata } from "@/engine/providers/anthropic/metadata.ts";
 import { isThinkingReplayRejected } from "@/engine/providers/anthropic/reasoning-state.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
 import { parseSse } from "@/kernel/std/stream/sse.ts";
 import type { EffortLevel } from "@/kernel/std/types/effort.ts";
 import type { ProviderEvent } from "@/kernel/std/types/events.ts";
@@ -36,6 +39,7 @@ import {
   type Message,
   PDF_UNAVAILABLE_PLACEHOLDER,
 } from "@/kernel/std/types/message.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 
 interface AnthropicBlock {
@@ -223,14 +227,52 @@ function stripCacheControlFromBlocks(blocks: AnthropicBlock[]): AnthropicBlock[]
   return blocks.map(({ cache_control: _, ...rest }) => rest as AnthropicBlock);
 }
 
+// Requests without the extended-cache-ttl beta must not carry ttl in the body;
+// other cache_control fields (type, scope) stay untouched.
+function dropExtendedCacheTtlFromBlocks(blocks: AnthropicBlock[]): AnthropicBlock[] {
+  return blocks.map((block) => {
+    const cc = block.cache_control;
+    if (!cc || typeof cc !== "object" || !("ttl" in cc)) return block;
+    const { ttl: _, ...rest } = cc as Record<string, unknown>;
+    return { ...block, cache_control: rest };
+  });
+}
+
 function toWireSystemMessage(
   msg: AnthropicMessage,
 ): AnthropicMessage | { role: AnthropicMessage["role"]; content: string } {
   if (msg.role !== "system") return msg;
+  // The trailing cache breakpoint keeps its block shape; only breakpoint-free
+  // system messages flatten to string content.
+  if (msg.content.some((block) => block.cache_control !== undefined)) return msg;
   const text = msg.content
     .map((block) => (typeof block.text === "string" ? block.text : ""))
     .join("\n");
   return { role: msg.role, content: text };
+}
+
+// A side question reuses the parent conversation as a shared cache prefix and
+// never writes a cache entry for its own suffix: the question message carries
+// no breakpoint, and a plain ephemeral anchor sits on the message right before
+// it (the end of the shared prefix).
+function anchorCacheOnSharedPrefix(messages: AnthropicMessage[]): AnthropicMessage[] {
+  const out = messages.map((msg) => ({
+    ...msg,
+    content: msg.content.map((block) => {
+      if (block.cache_control === undefined) return block;
+      const { cache_control: _dropped, ...rest } = block;
+      return rest;
+    }),
+  }));
+  const anchor = out[out.length - 2];
+  const block = anchor?.content[anchor.content.length - 1];
+  if (anchor && block) {
+    anchor.content[anchor.content.length - 1] = {
+      ...block,
+      cache_control: { type: "ephemeral" },
+    };
+  }
+  return out;
 }
 
 export function translateRequestAnthropic(
@@ -242,23 +284,24 @@ export function translateRequestAnthropic(
   const { system, out } = buildAnthropicMessages(messages, ctx);
   const envelope = anthropicEnvelopeDefaults();
   const isTitle = ctx.cacheRole === "title";
+  const extendedCacheTtl = requestQualifiesForExtendedCacheTtl(ctx);
 
-  const wireSystem = isTitle && system ? stripCacheControlFromBlocks(system) : system;
-  const wireOut = (
-    isTitle
-      ? out.map((msg) => ({
-          ...msg,
-          content: stripCacheControlFromBlocks(msg.content),
-        }))
-      : out
-  ).map(toWireSystemMessage);
+  const scrubCacheControl = (blocks: AnthropicBlock[]): AnthropicBlock[] => {
+    if (isTitle) return stripCacheControlFromBlocks(blocks);
+    if (!extendedCacheTtl) return dropExtendedCacheTtlFromBlocks(blocks);
+    return blocks;
+  };
+  const wireSystem = system ? scrubCacheControl(system) : system;
+  let conversation = out.map((msg) => ({ ...msg, content: scrubCacheControl(msg.content) }));
+  if (ctx.cacheRole === "side-question") conversation = anchorCacheOnSharedPrefix(conversation);
+  const wireOut = conversation.map(toWireSystemMessage);
 
   const body: Record<string, unknown> = {
     model: anthropicWireModelId(parsed.base, ctx.agentic !== false && !ctx.parentThreadId),
     messages: wireOut,
   };
   if (wireSystem && wireSystem.length > 0) body.system = wireSystem;
-  if (tools && tools.length > 0) body.tools = tools;
+  if (tools && tools.length > 0) body.tools = withEagerInputStreaming(tools, ctx.provider);
   body.metadata = { user_id: anthropicUserIdMetadata(ctx.sessionId) };
 
   Object.assign(body, envelope);
@@ -269,11 +312,28 @@ export function translateRequestAnthropic(
     ctx.provider,
     ctx.effort,
     ctx.disableThinking === true,
-    ctx.suppressThinkingSummary === true,
     ctx.agentic !== false,
   );
+  if (ctx.showThinkingSummaries === false || ctx.suppressThinkingSummary === true) {
+    applyAnthropicThinkingDisplay(body, "omitted");
+  }
   if (!anthropicModelSupportsContextManagement(parsed.base)) delete body.context_management;
   return body;
+}
+
+const DEFERRED_PLACEHOLDER_NAME = "DeferredToolPlaceholder";
+
+// Every real tool declaration streams its input eagerly; the deferred
+// placeholder is the single carve-out. The field is rejected off
+// api.anthropic.com, so reusing translators never inherit it.
+function withEagerInputStreaming(tools: unknown[], target: ProviderId): unknown[] {
+  if (target !== "anthropic") return tools;
+  return tools.map((tool) => {
+    if (typeof tool !== "object" || tool === null || Array.isArray(tool)) return tool;
+    const record = tool as Record<string, unknown>;
+    if (record.name === DEFERRED_PLACEHOLDER_NAME) return tool;
+    return { ...record, eager_input_streaming: true };
+  });
 }
 
 function applyAnthropicEffortEnvelope(
@@ -282,11 +342,10 @@ function applyAnthropicEffortEnvelope(
   provider: ProviderId,
   effort: EffortLevel | null,
   disableThinking: boolean,
-  suppressThinkingSummary: boolean,
   agentic: boolean,
 ): void {
-  const levels = effortLevelsForModel(model, provider);
-  const selected = disableThinking ? null : (effort ?? defaultEffortForModel(model, provider));
+  const levels = effortLevelsForModel({ provider, model });
+  const selected = disableThinking ? null : (effort ?? defaultEffortForModel({ provider, model }));
   if (selected === null || levels.length === 0 || !levels.some((level) => level === selected)) {
     // Effortless agentic main turns (haiku) still include thinking behavior: the main turn carries an explicit budget (max_tokens - 1) plus context_management and no output_config key.
     if (!disableThinking && agentic && isHaikuModel(model)) {
@@ -298,7 +357,6 @@ function applyAnthropicEffortEnvelope(
       body.thinking = {
         budget_tokens: budget,
         type: "enabled",
-        ...(suppressThinkingSummary ? {} : { display: "summarized" }),
       };
       delete body.output_config;
       return;
@@ -307,15 +365,6 @@ function applyAnthropicEffortEnvelope(
     delete body.context_management;
     stripAnthropicOutputEffort(body);
     return;
-  }
-  // Sub-agents/forks keep reasoning (effort + continuity) but drop the rendered
-  // summary: omit the thinking `display` field so the API streams no summary
-  // text. The main agent keeps display:"summarized" for visible summaries.
-  if (suppressThinkingSummary) {
-    const thinking = body.thinking;
-    if (thinking && typeof thinking === "object" && !Array.isArray(thinking)) {
-      delete (thinking as Record<string, unknown>).display;
-    }
   }
   const output = body.output_config;
   if (output && typeof output === "object" && !Array.isArray(output)) {

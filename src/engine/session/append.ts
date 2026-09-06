@@ -1,6 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { appendFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { preservedImagesForWire } from "./compact/preserved-image-ledger.ts";
 import { spillCompactionSummaryForMemory } from "./compact/summary-spill.ts";
 import { enqueueWrite, offsetIndexForAppend, rawChainFor, recordAppendedLine } from "./infra.ts";
 import { agentTranscriptPathForCwd, sessionPathForCwd } from "./paths.ts";
@@ -53,7 +54,8 @@ export async function appendRawLine(path: string, line: string): Promise<void> {
 }
 
 export async function appendHookEventRecord(s: Session, r: HookEventRecord): Promise<void> {
-  // Hook events live only in memory (s.hookEvents, capped FIFO). They are not persisted to the transcript jsonl because hook lifecycles use a separate in-memory store outside the main transcript. Goal state does not survive resume; the user re-sets /goal if still relevant.
+  // Hook events are capped live diagnostics. Durable goal lifecycle state uses
+  // goal_status attachment records in the session transcript.
   s.pushHookEvent(r);
 }
 
@@ -120,8 +122,12 @@ async function persistRecordAndCommit(s: Session, pending: PendingRecordWrite): 
       typeof pending.recordForPersistence.uuid === "string"
         ? pending.recordForPersistence.uuid
         : null;
+    // Duplicate preserved images become references to their first persisted
+    // slot. The ledger only commits once the line is durable, so a failed
+    // append can never leave a reference pointing at an unwritten mark.
+    const wire = preservedImagesForWire(pending.recordForPersistence, s.preservedImageLedger);
     lines.push({
-      text: `${serializeRecord(pending.recordForPersistence, pendingChain, stamp)}\n`,
+      text: `${serializeRecord(wire.record, pendingChain, stamp)}\n`,
       uuid: recordUuid,
     });
 
@@ -145,6 +151,7 @@ async function persistRecordAndCommit(s: Session, pending: PendingRecordWrite): 
       pending.recordForMemory.type === "compaction_mark" ? pending.recordForMemory : pending.record,
     );
     s.chain.headUuid = pendingChain.headUuid;
+    s.preservedImageLedger = wire.ledger;
   });
 }
 

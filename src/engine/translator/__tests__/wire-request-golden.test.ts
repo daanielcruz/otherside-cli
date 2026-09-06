@@ -143,14 +143,16 @@ const HARNESS_FLAGSHIP: ComposedHarness = {
     { text: "- foo/\n- bar/", bundleKey: "directoryStructure" },
   ],
   midSystemBlocks: [{ text: "mid-conversation note", bundleKey: "context" }],
+  midSystemPromotion: "unwrapped",
 };
 
-// Non-flagship reality: no mid-system splice (supportsMidSystem=false).
+// Non-flagship reality: no mid-system splice (promotion off).
 const HARNESS_PLAIN: ComposedHarness = {
   layers: [],
   combined: "",
   systemBlocks: HARNESS_FLAGSHIP.systemBlocks,
   userPrepend: HARNESS_FLAGSHIP.userPrepend,
+  midSystemPromotion: "off",
 };
 
 function context(overrides: Partial<RequestContext>): RequestContext {

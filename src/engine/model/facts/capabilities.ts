@@ -1,5 +1,5 @@
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
 import type { ContentBlock, Message } from "@/kernel/std/types/message.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 
 export type ProviderVisionKind = "vision" | "hybrid" | "none";
 
@@ -9,7 +9,7 @@ export const PROVIDER_VISION: Record<ProviderId, ProviderVisionKind> = {
   codex: "vision",
   kimi: "vision",
   glm: "vision",
-  xai: "vision",
+  xai: "hybrid",
   minimax: "hybrid",
   deepseek: "none",
   openai: "none",
@@ -21,6 +21,7 @@ const NATIVE_VISION_MODELS: Partial<Record<ProviderId, readonly string[]>> = {
 
 const HYBRID_PARSER_MODELS: Partial<Record<ProviderId, string>> = {
   minimax: "minimax-m3",
+  xai: "grok-4.6",
 };
 
 export function isVisionCapable(provider: ProviderId, model?: string): boolean {

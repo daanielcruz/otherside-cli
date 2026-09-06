@@ -109,6 +109,18 @@ export type ProviderSlug =
 
 type CredentialSlug = ProviderSlug;
 type AnyCredential = CredentialsBundle[keyof CredentialsBundle];
+type CredentialChangeListener = (provider: ProviderSlug) => void;
+
+const credentialChangeListeners = new Set<CredentialChangeListener>();
+
+export function subscribeCredentialChanges(listener: CredentialChangeListener): () => void {
+  credentialChangeListeners.add(listener);
+  return () => credentialChangeListeners.delete(listener);
+}
+
+function notifyCredentialChange(provider: ProviderSlug): void {
+  for (const listener of credentialChangeListeners) listener(provider);
+}
 
 export function hasCredential(bundle: CredentialsBundle | null, slug: ProviderSlug): boolean {
   if (!bundle) return false;
@@ -214,23 +226,28 @@ export async function saveFor<S extends CredentialSlug>(
   const primary = keys[0];
   const aliases = keys.slice(1);
   const writable = all as Record<keyof CredentialsBundle, AnyCredential>;
+  const changed = JSON.stringify(writable[primary]) !== JSON.stringify(value);
   writable[primary] = value;
   for (const alias of aliases) delete writable[alias];
   const tmp = `${path}.tmp.${Date.now()}`;
   await Bun.write(tmp, JSON.stringify(all, null, 2));
   chmodIfPosix(tmp, 0o600);
   renameReplaceSync(tmp, path);
+  if (changed) notifyCredentialChange(slug);
 }
 
 export async function deleteFor(slug: ProviderSlug): Promise<void> {
   const path = credentialsPath();
   mkdirSync(dirname(path), { recursive: true });
   const all = await loadAll();
-  for (const key of storageKeys(slug)) delete all[key];
+  const keys = storageKeys(slug);
+  const changed = keys.some((key) => all[key] !== undefined);
+  for (const key of keys) delete all[key];
   const tmp = `${path}.tmp.${Date.now()}`;
   await Bun.write(tmp, JSON.stringify(all, null, 2));
   chmodIfPosix(tmp, 0o600);
   renameReplaceSync(tmp, path);
+  if (changed) notifyCredentialChange(slug);
 }
 
 function storageKeys(

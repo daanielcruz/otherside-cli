@@ -4,10 +4,8 @@ import { MAX_AGENT_SPAWN_DEPTH } from "./agent-context.ts";
 
 export type AgentKind = "main" | "subagent" | "workflow" | "headless" | "bypass-latch";
 
-// Parity 2.1.211: tools no agent may carry, external-build shape (reference
-// constants module, disallowed-set generator on "external"). Reference
-// members we do not ship (ConnectGitHub, RefreshMcpTools, EndConversation)
-// are omitted.
+// Shipped tools that no agent may carry. Tools not shipped in this build
+// (ConnectGitHub, RefreshMcpTools, EndConversation) are omitted.
 export const ALL_AGENT_DISALLOWED_TOOLS: ReadonlySet<string> = new Set([
   "EnterPlanMode",
   "ExitPlanMode",
@@ -20,26 +18,19 @@ export const ALL_AGENT_DISALLOWED_TOOLS: ReadonlySet<string> = new Set([
 
 export const CUSTOM_AGENT_DISALLOWED_TOOLS: ReadonlySet<string> = new Set(["Workflow"]);
 
-// Parity 2.1.211 async allowlist: from the task family only TaskStop rides
-// along — planning Task tools stay out of async agents. The reference's
-// teammate widening and its experimental Task-tool strip are both behind
-// default-off flags and are not ported. Reference members we do not ship
-// (PowerShell, REPL, Monitor, Artifact) are omitted; MultiEdit/LS are local
-// adaptations of shipped surfaces. Agent is NOT allowlisted: it rides the
-// spawn-depth rule, which the reference applies to every non-main kind.
+// Async allowlist: from the task family only TaskStop rides along — planning
+// Task tools stay out of async agents. Agent is NOT allowlisted: it rides the
+// spawn-depth rule, which applies to every non-main kind. Every name here has to
+// be a tool we actually register — the set filters an incoming pool, so a name
+// nothing answers to is unreachable and only reads as a tool that exists.
 export const ASYNC_AGENT_ALLOWED_TOOLS: ReadonlySet<string> = new Set([
   "Bash",
   "Read",
   "Edit",
   "Write",
-  "MultiEdit",
-  "Glob",
-  "Grep",
-  "LS",
   "NotebookEdit",
   "WebFetch",
   "WebSearch",
-  "TodoWrite",
   "TaskStop",
   "StructuredOutput",
   "ToolSearch",
@@ -49,7 +40,7 @@ export const ASYNC_AGENT_ALLOWED_TOOLS: ReadonlySet<string> = new Set([
   "ExitWorktree",
 ]);
 
-// Parity: the workflow subagent definition additionally disallows the Agent
+// The workflow subagent definition additionally disallows the Agent
 // tool on top of the shared (non-async) filter.
 const WORKFLOW_DISALLOWED_EXTRAS: ReadonlySet<string> = new Set(["Agent"]);
 
@@ -68,9 +59,9 @@ export interface ToolsetCtx {
 export function resolveToolsetFor(kind: AgentKind, ctx: ToolsetCtx): readonly string[] {
   const pool = assembleToolPool(ctx);
   if (kind === "main") return pool;
-  // Parity 2.1.211: workflow workers run the reference's synchronous-agent
-  // filter (full pool minus the all-agent disallow set), so the planning Task
-  // tools flow to them naturally; only async agents get the allowlist cut.
+  // Workflow workers run the standard synchronous-agent filter (full pool
+  // minus the all-agent disallow set), so the planning Task tools flow to
+  // them naturally; only async agents get the allowlist cut.
   const filtered = filterToolsForAgent(pool, {
     isAsync: kind !== "workflow",
     isBuiltInAgent: ctx.isBuiltInAgent ?? true,
@@ -130,8 +121,8 @@ export function filterToolsForAgent(tools: readonly string[], args: FilterArgs):
     }
     if (ALL_AGENT_DISALLOWED_TOOLS.has(name)) continue;
     if (!args.isBuiltInAgent && CUSTOM_AGENT_DISALLOWED_TOOLS.has(name)) continue;
-    // Parity: the spawn-depth rule owns the Agent tool for every non-main
-    // kind — below the ceiling it stays, at the ceiling it drops, async or not.
+    // The spawn-depth rule owns the Agent tool for every non-main kind —
+    // below the ceiling it stays, at the ceiling it drops, async or not.
     if (name === "Agent") {
       if (args.spawnDepth < MAX_AGENT_SPAWN_DEPTH) out.push(name);
       continue;

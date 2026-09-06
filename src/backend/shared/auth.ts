@@ -1,19 +1,36 @@
-import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { CortexApiError, cortexFetch } from "@/backend/shared/cortex.ts";
-import { authPath, ensureRemoteHome, peerPath, peersDir } from "@/backend/shared/paths.ts";
+import { authPath, ensureRemoteHome } from "@/backend/shared/paths.ts";
 import { refreshSocketAuth } from "@/backend/shared/realtime.ts";
-import { writeFileSecure } from "@/kernel/std/fs/secure-fs.ts";
+import { withFileLock } from "@/kernel/std/fs/file-lock.ts";
+import { atomicWriteFileSync } from "@/kernel/std/fs/secure-fs.ts";
 
 const FILE_MODE = 0o600;
 const EXPIRY_LEAD_SECONDS = 600;
 const REFRESH_BACKOFF_MS = 30_000;
+const REFRESH_REQUEST_TIMEOUT_MS = 30_000;
+const REFRESH_LOCK_MAX_WAIT_MS = 40_000;
+const REFRESH_LOCK_STALE_AFTER_MS = 60_000;
+const REFRESH_LOCK_UPDATE_MS = 5_000;
 
 let nextRefreshAttempt = 0;
+let socketAccessToken: string | null = null;
+
+export const AUTH_SCOPES = ["full", "device"] as const;
+export type AuthScope = (typeof AUTH_SCOPES)[number];
+
+const AUTH_SCOPE_SET: ReadonlySet<string> = new Set(AUTH_SCOPES);
 
 export interface RemoteAuth {
   accessToken: string;
   refreshToken: string;
   expiresAt: number;
+}
+
+interface AccessTokenClaims {
+  sub?: string;
+  email?: string;
+  scp?: string;
 }
 
 interface StoredAuth {
@@ -48,17 +65,20 @@ export function loadAuth(): RemoteAuth | null {
   }
 }
 
-export function decodeUserId(accessToken: string): string {
+function decodeAccessTokenClaims(accessToken: string): AccessTokenClaims {
   const parts = accessToken.split(".");
-  if (parts.length < 2) return "";
+  if (parts.length < 2) return {};
   try {
-    const claims = JSON.parse(Buffer.from(parts[1] ?? "", "base64url").toString("utf8")) as {
-      sub?: string;
-    };
-    return claims.sub ?? "";
+    return JSON.parse(
+      Buffer.from(parts[1] ?? "", "base64url").toString("utf8"),
+    ) as AccessTokenClaims;
   } catch {
-    return "";
+    return {};
   }
+}
+
+export function decodeUserId(accessToken: string): string {
+  return decodeAccessTokenClaims(accessToken).sub ?? "";
 }
 
 export function currentUserId(): string | null {
@@ -69,16 +89,7 @@ export function currentUserId(): string | null {
 }
 
 export function decodeUserEmail(accessToken: string): string {
-  const parts = accessToken.split(".");
-  if (parts.length < 2) return "";
-  try {
-    const claims = JSON.parse(Buffer.from(parts[1] ?? "", "base64url").toString("utf8")) as {
-      email?: string;
-    };
-    return claims.email ?? "";
-  } catch {
-    return "";
-  }
+  return decodeAccessTokenClaims(accessToken).email ?? "";
 }
 
 export function currentUserEmail(): string | null {
@@ -88,41 +99,58 @@ export function currentUserEmail(): string | null {
   return email.length > 0 ? email : null;
 }
 
+export function decodeAuthScope(accessToken: string): AuthScope {
+  const scope = decodeAccessTokenClaims(accessToken).scp;
+  return typeof scope === "string" && AUTH_SCOPE_SET.has(scope) ? (scope as AuthScope) : "full";
+}
+
+export function currentAuthScope(): AuthScope | null {
+  const auth = loadAuth();
+  return auth ? decodeAuthScope(auth.accessToken) : null;
+}
+
 export function saveAuth(auth: RemoteAuth): void {
   ensureRemoteHome();
-  writeFileSecure(authPath(), JSON.stringify(toStored(auth), null, 2), FILE_MODE);
+  atomicWriteFileSync(authPath(), JSON.stringify(toStored(auth), null, 2), FILE_MODE);
 }
 
 export function clearAuth(): void {
-  // Best-effort server revoke so refresh CAS family cannot be reused offline.
+  const auth = loadAuth();
+  if (auth) void revokeStoredCredential(auth).catch(() => {});
+  clearLocalAuth();
+}
+
+export async function revokeAndClearAuth(): Promise<void> {
+  const auth = loadAuth();
   try {
-    const raw = existsSync(authPath()) ? readFileSync(authPath(), "utf8") : "";
-    if (raw.trim()) {
-      const stored = JSON.parse(raw) as StoredAuth;
-      if (stored.access_token) {
-        void cortexFetch("/v1/auth/logout", {
-          method: "POST",
-          token: stored.access_token,
-          body: { scope: "local" },
-        }).catch(() => {});
-      }
-    }
+    if (auth) await revokeStoredCredential(auth);
   } catch {
-    /* ignore */
+    // Local sign-out must remain available while the backend is unreachable.
+  } finally {
+    clearLocalAuth();
   }
-  if (existsSync(authPath())) writeFileSecure(authPath(), "", FILE_MODE);
-  try {
-    const dir = peersDir();
-    if (existsSync(dir)) {
-      for (const entry of readdirSync(dir)) {
-        if (entry.endsWith(".json")) {
-          rmSync(peerPath(entry.slice(0, -".json".length)));
-        }
-      }
-    }
-  } catch {
-    /* ignore */
+}
+
+async function revokeStoredCredential(auth: RemoteAuth): Promise<void> {
+  if (decodeAuthScope(auth.accessToken) === "device") {
+    await cortexFetch("/v1/auth/device/revoke", {
+      method: "POST",
+      token: auth.accessToken,
+      body: {},
+    });
+    return;
   }
+  await cortexFetch("/v1/auth/logout", {
+    method: "POST",
+    token: auth.accessToken,
+    body: { scope: "local" },
+  });
+}
+
+function clearLocalAuth(): void {
+  socketAccessToken = null;
+  nextRefreshAttempt = 0;
+  if (existsSync(authPath())) atomicWriteFileSync(authPath(), "", FILE_MODE);
 }
 
 export function isExpired(auth: RemoteAuth, nowSeconds = Math.floor(Date.now() / 1000)): boolean {
@@ -166,11 +194,12 @@ export function isRefreshRejected(): boolean {
   return refreshRejected;
 }
 
-async function requestRefresh(refreshToken: string): Promise<TokenResponse> {
+async function requestRefresh(refreshToken: string, signal: AbortSignal): Promise<TokenResponse> {
   try {
     const data = await cortexFetch<TokenResponse>("/v1/auth/refresh", {
       method: "POST",
       body: { refresh_token: refreshToken },
+      signal,
     });
     refreshRejected = false;
     return data;
@@ -182,27 +211,66 @@ async function requestRefresh(refreshToken: string): Promise<TokenResponse> {
   }
 }
 
+function sameCredentials(left: RemoteAuth, right: RemoteAuth): boolean {
+  return left.accessToken === right.accessToken && left.refreshToken === right.refreshToken;
+}
+
+function adoptAuth(auth: RemoteAuth): RemoteAuth {
+  refreshRejected = false;
+  if (socketAccessToken === auth.accessToken) return auth;
+  socketAccessToken = auth.accessToken;
+  void refreshSocketAuth(auth.accessToken).catch(() => {});
+  return auth;
+}
+
+async function refreshSharedAuth(observed: RemoteAuth, force: boolean): Promise<RemoteAuth | null> {
+  ensureRemoteHome();
+  const lockCompromised = new AbortController();
+  return withFileLock(
+    authPath(),
+    async () => {
+      const latest = loadAuth();
+      if (!latest) return null;
+      if (!sameCredentials(latest, observed)) return adoptAuth(latest);
+      if (!force && !isExpired(latest)) return latest;
+
+      const body = await requestRefresh(
+        latest.refreshToken,
+        AbortSignal.any([lockCompromised.signal, AbortSignal.timeout(REFRESH_REQUEST_TIMEOUT_MS)]),
+      );
+      const decoded = decodeTokenResponse(body);
+      const refreshed: RemoteAuth = {
+        ...decoded,
+        refreshToken: decoded.refreshToken || latest.refreshToken,
+      };
+      const current = loadAuth();
+      if (!current) return null;
+      if (!sameCredentials(current, latest)) return adoptAuth(current);
+
+      saveAuth(refreshed);
+      return adoptAuth(refreshed);
+    },
+    {
+      maxWaitMs: REFRESH_LOCK_MAX_WAIT_MS,
+      onCompromised: () => lockCompromised.abort(),
+      staleAfterMs: REFRESH_LOCK_STALE_AFTER_MS,
+      updateMs: REFRESH_LOCK_UPDATE_MS,
+    },
+  );
+}
+
 export async function refreshAuth(auth: RemoteAuth): Promise<RemoteAuth> {
-  const body = await requestRefresh(auth.refreshToken);
-  const decoded = decodeTokenResponse(body);
-  const refreshed: RemoteAuth = {
-    ...decoded,
-    refreshToken: decoded.refreshToken || auth.refreshToken,
-  };
-  saveAuth(refreshed);
-  void refreshSocketAuth(refreshed.accessToken).catch(() => {});
+  const refreshed = await refreshSharedAuth(auth, true);
+  if (!refreshed) throw new Error("authentication was cleared during refresh");
   return refreshed;
 }
 
 let inFlightRefresh: Promise<RemoteAuth | null> | null = null;
 
-export async function loadFreshAuth(): Promise<RemoteAuth | null> {
-  const auth = loadAuth();
-  if (!auth) return null;
-  if (!isExpired(auth)) return auth;
-  if (Date.now() < nextRefreshAttempt) return null;
+function coordinateRefresh(auth: RemoteAuth, force: boolean): Promise<RemoteAuth | null> {
+  if (Date.now() < nextRefreshAttempt) return Promise.resolve(null);
   if (inFlightRefresh) return inFlightRefresh;
-  inFlightRefresh = refreshAuth(auth)
+  inFlightRefresh = refreshSharedAuth(auth, force)
     .then((refreshed) => {
       nextRefreshAttempt = 0;
       return refreshed;
@@ -217,22 +285,19 @@ export async function loadFreshAuth(): Promise<RemoteAuth | null> {
   return inFlightRefresh;
 }
 
-export async function forceRefreshAuth(): Promise<RemoteAuth | null> {
+export async function loadFreshAuth(): Promise<RemoteAuth | null> {
+  const auth = loadAuth();
+  if (!auth) {
+    socketAccessToken = null;
+    return null;
+  }
+  if (!isExpired(auth)) return adoptAuth(auth);
+  return coordinateRefresh(auth, false);
+}
+
+export async function forceRefreshAuth(rejectedAccessToken?: string): Promise<RemoteAuth | null> {
   const auth = loadAuth();
   if (!auth) return null;
-  if (Date.now() < nextRefreshAttempt) return null;
-  if (inFlightRefresh) return inFlightRefresh;
-  inFlightRefresh = refreshAuth(auth)
-    .then((refreshed) => {
-      nextRefreshAttempt = 0;
-      return refreshed;
-    })
-    .catch(() => {
-      nextRefreshAttempt = Date.now() + REFRESH_BACKOFF_MS;
-      return null;
-    })
-    .finally(() => {
-      inFlightRefresh = null;
-    });
-  return inFlightRefresh;
+  if (rejectedAccessToken && auth.accessToken !== rejectedAccessToken) return adoptAuth(auth);
+  return coordinateRefresh(auth, true);
 }

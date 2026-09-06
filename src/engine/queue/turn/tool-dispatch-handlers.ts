@@ -1,9 +1,13 @@
 import { list as listBackgroundTasks } from "@/engine/background/tasks/background.ts";
 import type { TurnObserver } from "@/engine/queue/turn/observer.ts";
 import { appendRecord, nowIso, type Session } from "@/engine/session/index.ts";
-import type { TranscriptEntry } from "@/engine/session/record/types.ts";
+import { resolveToolCompletion } from "@/engine/session/record/transcript-update.ts";
+import type { TranscriptEntry, TranscriptWrite } from "@/engine/session/record/types.ts";
 import { emitEnvBroadcast } from "@/kernel/channels/session-events.ts";
+import { mcpCallIdentity } from "@/kernel/mcp/index.ts";
+import type { MacrotaskBatch } from "@/kernel/std/perf/macrotask-batch.ts";
 import type { ToolResultMeta } from "@/kernel/std/types/message.ts";
+import type { ProviderModelRoute } from "@/kernel/std/types/provider-ids.ts";
 import type { BrokerHandle } from "@/kernel/std/types/request.ts";
 
 type SetState<T> = (value: T | ((prev: T) => T)) => void;
@@ -26,12 +30,11 @@ export interface ToolDispatchHandlersDeps {
   setSpinnerMode: (mode: "tool-use" | "requesting") => void;
   flushAssistant: (opts?: { allowEmpty?: boolean }) => Promise<TranscriptEntry[]>;
   setStreamingId: SetState<string | null>;
-  setStreamingText: SetState<string>;
-  setStreamingCommittedLen: SetState<number>;
-  setTranscript: SetState<readonly TranscriptEntry[]>;
+  setTranscript: (value: TranscriptWrite) => void;
+  transcriptBatch: MacrotaskBatch;
   setTasksExpanded: SetState<boolean>;
-  setAgentBackgrounded: (callId: string, resolvedModel?: string) => void;
-  agentModelByCallIdRef: Ref<Map<string, string>>;
+  setAgentBackgrounded: (callId: string, route?: ProviderModelRoute) => void;
+  agentModelByCallIdRef: Ref<Map<string, ProviderModelRoute>>;
   activeToolsRef: Ref<number>;
   forkActionRef: Ref<Map<string, { count: number; lastLabel: string; backgrounded: boolean }>>;
   currentAgentCallIdRef: Ref<string | null>;
@@ -57,9 +60,8 @@ export function createToolDispatchHandlers(deps: ToolDispatchHandlersDeps): Tool
     setSpinnerMode,
     flushAssistant,
     setStreamingId,
-    setStreamingText,
-    setStreamingCommittedLen,
     setTranscript,
+    transcriptBatch,
     setTasksExpanded,
     setAgentBackgrounded,
     agentModelByCallIdRef,
@@ -71,6 +73,12 @@ export function createToolDispatchHandlers(deps: ToolDispatchHandlersDeps): Tool
     askAnswerEntry,
     silentToolNames,
   } = deps;
+
+  const settleSpinnerWithTranscript = (shouldRequestModel: boolean): void => {
+    if (!shouldRequestModel) return;
+    transcriptBatch.enqueue(() => setSpinnerMode("requesting"));
+    transcriptBatch.flushNow();
+  };
 
   return {
     tool_dispatch_start: async (ev) => {
@@ -87,18 +95,17 @@ export function createToolDispatchHandlers(deps: ToolDispatchHandlersDeps): Tool
       activeToolsRef.current += 1;
       setSpinnerMode("tool-use");
       const flushed = await flushAssistant();
-      if (flushed.length > 0) {
-        setTranscript((t) => [...t, ...flushed]);
-        setStreamingId(null);
-        setStreamingText("");
-        setStreamingCommittedLen(0);
-      }
+      if (flushed.length > 0) setStreamingId(null);
+      // Captured now because only a live server knows it: the label is rebuilt
+      // from here once the server is gone.
+      const mcpIdentity = mcpCallIdentity(ev.name);
       await appendRecord(session, {
         type: "tool_call",
         ts: nowIso(),
         tool_name: ev.name,
         args: ev.input,
         call_id: ev.id,
+        ...(mcpIdentity ? { mcpIdentity } : {}),
         provider: turnState.provider,
         model: turnState.model,
       });
@@ -140,10 +147,10 @@ export function createToolDispatchHandlers(deps: ToolDispatchHandlersDeps): Tool
           tool: ev.name,
         }),
       );
-      if (activeToolsRef.current === 0) setSpinnerMode("requesting");
+      const shouldRequestModel = activeToolsRef.current === 0;
       const startId = `t_${ev.id}`;
       const completeId = `r_${ev.id}`;
-      const agentModel = ev.name === "Agent" ? agentModelByCallIdRef.current.get(ev.id) : undefined;
+      const agentRoute = ev.name === "Agent" ? agentModelByCallIdRef.current.get(ev.id) : undefined;
       if (ev.name === "Agent") {
         agentModelByCallIdRef.current.delete(ev.id);
         forkActionRef.current.delete(ev.id);
@@ -174,7 +181,7 @@ export function createToolDispatchHandlers(deps: ToolDispatchHandlersDeps): Tool
         result: recordText,
         is_error: ev.isError,
         ...(ev.meta ? { meta: ev.meta } : {}),
-        ...(agentModel ? { agentModel } : {}),
+        ...(agentRoute ? { agentModel: agentRoute.model } : {}),
       });
       if (ev.name === "AskUserQuestion") {
         const askEntry = askAnswerEntry(ev.content, `aq_${ev.id}`, ev.meta);
@@ -192,17 +199,19 @@ export function createToolDispatchHandlers(deps: ToolDispatchHandlersDeps): Tool
             text: displayText,
             isError: ev.isError,
             ...(inputText !== undefined ? { input: inputText } : {}),
-            ...(agentModel ? { agentModel } : {}),
+            ...(agentRoute
+              ? { agentModel: agentRoute.model, agentProvider: agentRoute.provider }
+              : {}),
             ...(ev.meta ? { resultMeta: ev.meta } : {}),
           };
-          // Resolve in place: the entry keeps its transcript position, so a
-          // fast parallel sibling never leapfrogs one still running.
-          if (idx === -1) return [...t, nextEntry];
-          const next = [...t];
-          next[idx] = nextEntry;
-          return next;
+          return resolveToolCompletion(t, {
+            runningId: startId,
+            backgroundedId,
+            resolved: nextEntry,
+          });
         });
       }
+      settleSpinnerWithTranscript(shouldRequestModel);
     },
     tool_dispatch_progress: (ev) => {
       if (ev.progress.kind === "text") {
@@ -220,10 +229,11 @@ export function createToolDispatchHandlers(deps: ToolDispatchHandlersDeps): Tool
       }
     },
     tool_dispatch_backgrounded: (ev) => {
-      const agentModel = ev.name === "Agent" ? agentModelByCallIdRef.current.get(ev.id) : undefined;
+      const agentRoute = ev.name === "Agent" ? agentModelByCallIdRef.current.get(ev.id) : undefined;
       activeToolsRef.current = Math.max(0, activeToolsRef.current - 1);
-      if (activeToolsRef.current === 0) setSpinnerMode("requesting");
-      setAgentBackgrounded(ev.id, agentModel);
+      const shouldRequestModel = activeToolsRef.current === 0;
+      setAgentBackgrounded(ev.id, agentRoute);
+      settleSpinnerWithTranscript(shouldRequestModel);
       if (ev.name === "Agent") agentModelByCallIdRef.current.delete(ev.id);
       forkActionRef.current.delete(ev.id);
       if (currentAgentCallIdRef.current === ev.id) {

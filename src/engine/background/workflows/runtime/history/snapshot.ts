@@ -1,9 +1,9 @@
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type { WorkflowPhaseDescriptor } from "@/engine/background/workflows/runtime/parser/types.ts";
+import type { WorkflowPhaseSpec } from "@/engine/background/workflows/runtime/parser/types.ts";
 import type {
-  LocalWorkflowTaskState,
-  WorkflowProgressEntry,
+  WorkflowProgressItem,
+  WorkflowTaskLifecycle,
 } from "@/engine/background/workflows/runtime/store/types.ts";
 import { sessionsRootForCwd } from "@/engine/session/paths.ts";
 import type { WorkflowTaskStatus } from "@/kernel/channels/workflow-tasks.ts";
@@ -26,19 +26,19 @@ export interface WorkflowSnapshot {
   title?: string | undefined;
   status: WorkflowTaskStatus;
   startTime: number;
-  phases?: WorkflowPhaseDescriptor[] | undefined;
+  phases?: WorkflowPhaseSpec[] | undefined;
   defaultModel?: string | undefined;
-  workflowProgress: WorkflowProgressEntry[];
+  workflowProgress: WorkflowProgressItem[];
   totalTokens: number;
   totalToolCalls: number;
 }
 
-export function getWorkflowSnapshotsDir(cwd: string, sessionId: string): string {
+export function workflowSnapshotsDir(cwd: string, sessionId: string): string {
   return join(sessionsRootForCwd(cwd), sessionId, "workflows");
 }
 
-export function getWorkflowSnapshotPath(cwd: string, sessionId: string, runId: string): string {
-  return join(getWorkflowSnapshotsDir(cwd, sessionId), `${runId}.json`);
+export function workflowSnapshotPath(cwd: string, sessionId: string, runId: string): string {
+  return join(workflowSnapshotsDir(cwd, sessionId), `${runId}.json`);
 }
 
 export async function readWorkflowSnapshot(options: {
@@ -46,7 +46,7 @@ export async function readWorkflowSnapshot(options: {
   sessionId: string;
   runId: string;
 }): Promise<WorkflowSnapshot | null> {
-  const path = getWorkflowSnapshotPath(options.cwd, options.sessionId, options.runId);
+  const path = workflowSnapshotPath(options.cwd, options.sessionId, options.runId);
   try {
     return JSON.parse(await readFile(path, "utf8"));
   } catch {
@@ -58,11 +58,11 @@ export async function persistWorkflowRun(options: {
   cwd: string;
   sessionId: string;
   runId: string;
-  task: LocalWorkflowTaskState;
+  task: WorkflowTaskLifecycle;
 }): Promise<void> {
   const { cwd, sessionId, runId, task } = options;
   try {
-    const path = getWorkflowSnapshotPath(cwd, sessionId, runId);
+    const path = workflowSnapshotPath(cwd, sessionId, runId);
     const durationMs = task.endedAt ? task.endedAt - task.startedAt : Date.now() - task.startedAt;
     const snapshot: WorkflowSnapshot = {
       runId,
@@ -105,7 +105,7 @@ export async function loadWorkflowHistory(
   cwd: string,
   sessionId: string,
 ): Promise<WorkflowSnapshot[]> {
-  const dir = getWorkflowSnapshotsDir(cwd, sessionId);
+  const dir = workflowSnapshotsDir(cwd, sessionId);
   try {
     const entries = await readdir(dir);
     const jsonFiles = entries.filter((name) => name.endsWith(".json"));

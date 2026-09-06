@@ -3,16 +3,16 @@ import {
   wrapSyncForVm,
 } from "@/engine/background/workflows/runtime/sandbox/errors.ts";
 
-export interface WorkflowAbortableTimers {
+export interface WorkflowCancellableTimers {
   setTimeout: (callback: () => void, ms: number) => number;
   clearTimeout: (id: number) => void;
   bindVMInvoke: (invoke: (callback: () => void) => void) => void;
 }
 
-export function createAbortableTimers(
+export function createCancellableTimers(
   signal?: AbortSignal,
   onCallbackError?: (message: string) => void,
-): WorkflowAbortableTimers {
+): WorkflowCancellableTimers {
   const handles = new Map<number, ReturnType<typeof setTimeout>>();
   let sequence = 0;
   let invoke = (callback: () => void): void => callback();

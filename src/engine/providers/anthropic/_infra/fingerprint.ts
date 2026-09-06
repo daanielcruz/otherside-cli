@@ -37,11 +37,6 @@ export const API_MESSAGES_URL = providerEndpoint(
   "messages",
   "https://api.anthropic.com/v1/messages?beta=true",
 );
-export const API_PROFILE_URL = providerEndpoint(
-  "anthropic",
-  "profile",
-  "https://api.anthropic.com/api/oauth/profile",
-);
 export const API_USAGE_URL = providerEndpoint(
   "anthropic",
   "usage",
@@ -67,17 +62,18 @@ export const REFRESH_SCOPES = [
 
 export const UA_AXIOS = "axios/1.13.6";
 
-export const ANTHROPIC_VERSION = "2023-06-01";
+const ANTHROPIC_VERSION = "2023-06-01";
 
-export const CLAUDE_CODE_BETA = "claude-code-20250219";
+const CLAUDE_CODE_BETA = "claude-code-20250219";
 export const OAUTH_BETA = "oauth-2025-04-20";
-export const INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14";
-export const THINKING_TOKEN_COUNT_BETA = "thinking-token-count-2026-05-13";
-export const CONTEXT_MANAGEMENT_BETA = "context-management-2025-06-27";
-export const PROMPT_CACHING_SCOPE_BETA = "prompt-caching-scope-2026-01-05";
-export const MID_CONVERSATION_SYSTEM_BETA = "mid-conversation-system-2026-04-07";
+const INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14";
+export const REDACT_THINKING_BETA = "redact-thinking-2026-02-12";
+const THINKING_TOKEN_COUNT_BETA = "thinking-token-count-2026-05-13";
+const CONTEXT_MANAGEMENT_BETA = "context-management-2025-06-27";
+const PROMPT_CACHING_SCOPE_BETA = "prompt-caching-scope-2026-01-05";
+const MID_CONVERSATION_SYSTEM_BETA = "mid-conversation-system-2026-04-07";
 export const ADVANCED_TOOL_USE_BETA = "advanced-tool-use-2025-11-20";
-export const EFFORT_BETA = "effort-2025-11-24";
+const EFFORT_BETA = "effort-2025-11-24";
 export const EXTENDED_CACHE_TTL_BETA = "extended-cache-ttl-2025-04-11";
 export const STRUCTURED_OUTPUTS_BETA = "structured-outputs-2025-12-15";
 export const FAST_MODE_BETA = "fast-mode-2026-02-01";
@@ -100,6 +96,7 @@ function buildModelBetas(
   structuredOutput: boolean,
   deferredToolLoading: boolean,
   extendedCacheTtl: boolean,
+  redactThinking: boolean,
 ): string[] {
   const haiku = isHaikuModel(base);
   const supportsMidConvSystem = modelSupportsMidConversationSystemBeta(base);
@@ -111,6 +108,7 @@ function buildModelBetas(
   out.push(OAUTH_BETA);
   if (is1m) out.push(BETA_CONTEXT_1M);
   out.push(INTERLEAVED_THINKING_BETA);
+  if (!haiku && redactThinking) out.push(REDACT_THINKING_BETA);
   out.push(THINKING_TOKEN_COUNT_BETA);
   out.push(CONTEXT_MANAGEMENT_BETA);
   out.push(PROMPT_CACHING_SCOPE_BETA);
@@ -214,13 +212,40 @@ function requestUsesStructuredOutput(body: unknown): boolean {
   );
 }
 
+function requestUsesAdaptiveThinking(body: unknown): boolean {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) return false;
+  const thinking = (body as Record<string, unknown>).thinking;
+  return (
+    typeof thinking === "object" &&
+    thinking !== null &&
+    !Array.isArray(thinking) &&
+    (thinking as Record<string, unknown>).type === "adaptive"
+  );
+}
+
+// Extended (1h) cache TTL is negotiated per request: the beta header and the
+// body's cache_control ttl fields must agree, so this single predicate decides
+// both. Subagents, fork children, and non-agentic side queries stay on the
+// default ephemeral cache.
+export function requestQualifiesForExtendedCacheTtl(ctx: RequestContext): boolean {
+  // A side question shares the parent cache prefix without writing its own
+  // entries, so it never carries the extended-ttl beta.
+  if (ctx.cacheRole === "side-question") return false;
+  return (
+    ctx.requestRole === "memory_recall" ||
+    (ctx.agentic !== false && ctx.agentOwnerId === undefined && ctx.isForkChild !== true)
+  );
+}
+
 export function fingerprint(ctx: RequestContext, body?: unknown): WireFingerprint {
   const parsed = parseModelId(ctx.model);
   const agentic = ctx.agentic !== false;
   const fastModeLatched = latchFastModeIf(ctx.fastMode === true);
-  const extendedCacheTtl =
-    ctx.requestRole === "memory_recall" ||
-    (agentic && ctx.agentOwnerId === undefined && ctx.isForkChild !== true);
+  const extendedCacheTtl = requestQualifiesForExtendedCacheTtl(ctx);
+  const redactThinking =
+    requestUsesAdaptiveThinking(body) &&
+    ctx.disableThinking !== true &&
+    (ctx.showThinkingSummaries === false || ctx.suppressThinkingSummary === true);
   const betas = buildModelBetas(
     parsed.base,
     parsed.is1m,
@@ -229,6 +254,7 @@ export function fingerprint(ctx: RequestContext, body?: unknown): WireFingerprin
     ctx.cacheRole === "title" || requestUsesStructuredOutput(body),
     requestUsesDeferredToolLoading(body),
     extendedCacheTtl,
+    redactThinking,
   );
   const userAgent = uaCli();
 
@@ -251,6 +277,10 @@ export function fingerprint(ctx: RequestContext, body?: unknown): WireFingerprin
 
   if (ctx.agentOwnerId !== undefined) {
     extraHeaders["x-claude-code-agent-id"] = subagentWireId(ctx.agentOwnerId);
+  }
+
+  if (ctx.parentAgentOwnerId !== undefined) {
+    extraHeaders["x-claude-code-parent-agent-id"] = subagentWireId(ctx.parentAgentOwnerId);
   }
 
   return {

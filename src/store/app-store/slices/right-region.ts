@@ -1,10 +1,15 @@
 /**
  * Pure right-status-region notice controller.
  *
- * Two lanes:
- * - ephemeralSolo: exactly one visible notice; immediate preempts; priority then FIFO;
- *   remaining time is preserved across preempt/pause.
+ * Two kinds of notice:
+ * - ephemeralSolo: exactly one visible notice at a time across the whole region;
+ *   immediate preempts; priority then FIFO; remaining time survives preempt/pause.
  * - persistentWithCounter: token counter + one highest-priority persistent notice.
+ *
+ * Both carry a lane, which decides WHICH chrome row shows them: `statusline` is the
+ * model/context row and `statusbar` is the mode row. The lane never changes how many
+ * notices are visible — one ephemeral is visible region-wide, on whichever row it
+ * belongs to — so a lane can never cost the chrome an extra row.
  */
 import type { AppAction } from "@/store/app-store/types.ts";
 
@@ -12,12 +17,13 @@ export type NoticePriority = "immediate" | "high" | "medium" | "low";
 
 export type NoticeTone = "muted" | "warning" | "error" | "success" | "primary" | "design";
 
+export type PersistentNoticeLane = "statusline" | "statusbar";
+
 export const DEFAULT_EPHEMERAL_MS = 8_000;
 export const VOICE_ERROR_MS = 10_000;
 export const CLIPBOARD_COPY_NATIVE_MS = 2_000;
 export const CLIPBOARD_COPY_TMUX_MS = 4_000;
 export const CLIPBOARD_COPY_WARNING_MS = 6_000;
-export const QUOTA_RESHOW_COOLDOWN_MS = 120_000;
 export const CLIPBOARD_IMAGE_MS = 8_000;
 export const CLIPBOARD_IMAGE_COOLDOWN_MS = 30_000;
 export const ORCHESTRATION_NOTICE_MS = 8_000;
@@ -34,6 +40,8 @@ const PRIORITY_RANK: Record<NoticePriority, number> = {
 export interface EphemeralNoticeInput {
   readonly key: string;
   readonly text: string;
+  /** Which chrome row shows it. Default `statusline`. */
+  readonly lane?: PersistentNoticeLane;
   readonly tone?: NoticeTone;
   readonly priority?: NoticePriority;
   /** null = manual removal only (voice phases). Default 8000. */
@@ -47,11 +55,14 @@ export interface EphemeralNoticeInput {
   readonly requeueOnPreempt?: boolean;
   readonly bold?: boolean;
   readonly dim?: boolean;
+  /** Trailing hint rendered after the text in the same tone color, dimmed. */
+  readonly dimSuffix?: string;
 }
 
 export interface PersistentNoticeInput {
   readonly key: string;
   readonly text: string;
+  readonly lane?: PersistentNoticeLane;
   readonly tone?: NoticeTone;
   readonly priority?: NoticePriority;
   readonly bold?: boolean;
@@ -63,6 +74,7 @@ export interface PersistentNoticeInput {
 export interface EphemeralNotice {
   readonly key: string;
   readonly text: string;
+  readonly lane: PersistentNoticeLane;
   readonly tone: NoticeTone;
   readonly priority: NoticePriority;
   readonly durationMs: number | null;
@@ -72,6 +84,7 @@ export interface EphemeralNotice {
   readonly requeueOnPreempt: boolean;
   readonly bold: boolean;
   readonly dim: boolean;
+  readonly dimSuffix: string | null;
   readonly sequence: number;
   /** Absolute wall-clock deadline while running; null when paused/preempted/manual. */
   readonly expiresAt: number | null;
@@ -82,6 +95,7 @@ export interface EphemeralNotice {
 export interface PersistentNotice {
   readonly key: string;
   readonly text: string;
+  readonly lane: PersistentNoticeLane;
   readonly tone: NoticeTone;
   readonly priority: NoticePriority;
   readonly bold: boolean;
@@ -91,12 +105,16 @@ export interface PersistentNotice {
   readonly lastPublishedAt: number;
 }
 
+interface NoticeCooldown {
+  readonly at: number;
+}
+
 export interface RightRegionSlice {
   readonly ephemeralCurrent: EphemeralNotice | null;
   readonly ephemeralQueue: readonly EphemeralNotice[];
   readonly persistents: readonly PersistentNotice[];
   readonly counterText: string | null;
-  readonly cooldowns: Readonly<Record<string, number>>;
+  readonly cooldowns: Readonly<Record<string, NoticeCooldown>>;
   readonly nextSequence: number;
   readonly paused: boolean;
   readonly refreshGeneration: number;
@@ -179,6 +197,7 @@ function materializeEphemeral(
   const base: EphemeralNotice = {
     key: input.key,
     text: input.text,
+    lane: input.lane ?? "statusline",
     tone: input.tone ?? "warning",
     priority: input.priority ?? "medium",
     durationMs,
@@ -188,6 +207,7 @@ function materializeEphemeral(
     requeueOnPreempt: input.requeueOnPreempt !== false,
     bold: input.bold === true,
     dim: input.dim === true,
+    dimSuffix: input.dimSuffix ?? null,
     sequence,
     expiresAt: null,
     remainingMs: durationMs,
@@ -196,7 +216,7 @@ function materializeEphemeral(
   return armDeadline(base, now);
 }
 
-function shouldRequeueOnPreempt(notice: EphemeralNotice, incoming: EphemeralNotice): boolean {
+function shouldRequeueAfterPreemption(notice: EphemeralNotice, incoming: EphemeralNotice): boolean {
   if (incoming.invalidates.includes(notice.key)) return false;
   if (notice.priority === "immediate") {
     return notice.requeueOnPreempt;
@@ -231,25 +251,22 @@ function promote(
 }
 
 function cooldownBlocks(
-  cooldowns: Readonly<Record<string, number>>,
-  key: string,
-  cooldownMs: number | undefined,
+  cooldowns: RightRegionSlice["cooldowns"],
+  input: EphemeralNoticeInput,
   now: number,
 ): boolean {
-  if (cooldownMs === undefined || cooldownMs <= 0) return false;
-  const last = cooldowns[key];
-  if (last === undefined) return false;
-  return now - last < cooldownMs;
+  if (input.cooldownMs === undefined || input.cooldownMs <= 0) return false;
+  const last = cooldowns[input.key];
+  return last !== undefined && now - last.at < input.cooldownMs;
 }
 
 function recordCooldown(
-  cooldowns: Readonly<Record<string, number>>,
-  key: string,
-  cooldownMs: number | undefined,
+  cooldowns: RightRegionSlice["cooldowns"],
+  input: EphemeralNoticeInput,
   now: number,
-): Readonly<Record<string, number>> {
-  if (cooldownMs === undefined || cooldownMs <= 0) return cooldowns;
-  return { ...cooldowns, [key]: now };
+): RightRegionSlice["cooldowns"] {
+  if (input.cooldownMs === undefined || input.cooldownMs <= 0) return cooldowns;
+  return { ...cooldowns, [input.key]: { at: now } };
 }
 
 function submitEphemeral(
@@ -257,11 +274,9 @@ function submitEphemeral(
   input: EphemeralNoticeInput,
   now: number,
 ): RightRegionSlice {
-  if (cooldownBlocks(state.cooldowns, input.key, input.cooldownMs, now)) {
-    return state;
-  }
-
   const current = state.ephemeralCurrent;
+  if (cooldownBlocks(state.cooldowns, input, now)) return state;
+
   if (current !== null && current.key === input.key) {
     if (input.fold !== true) return state;
     const folded = materializeEphemeral(input, current.sequence, now, false);
@@ -279,7 +294,7 @@ function submitEphemeral(
     return {
       ...state,
       ephemeralCurrent: nextCurrent,
-      cooldowns: recordCooldown(state.cooldowns, input.key, input.cooldownMs, now),
+      cooldowns: recordCooldown(state.cooldowns, input, now),
     };
   }
 
@@ -293,21 +308,21 @@ function submitEphemeral(
     return {
       ...state,
       ephemeralQueue: queue,
-      cooldowns: recordCooldown(state.cooldowns, input.key, input.cooldownMs, now),
+      cooldowns: recordCooldown(state.cooldowns, input, now),
     };
   }
 
   const sequence = state.nextSequence;
   const withSeq: RightRegionSlice = { ...state, nextSequence: sequence + 1 };
   const incoming = materializeEphemeral(input, sequence, now, false);
-  const cooldowns = recordCooldown(state.cooldowns, input.key, input.cooldownMs, now);
+  const cooldowns = recordCooldown(state.cooldowns, input, now);
 
   if (incoming.priority === "immediate") {
     let queue = withSeq.ephemeralQueue;
     let nextCurrent: EphemeralNotice | null = current;
     if (current !== null) {
       const frozen = freezeRemaining(current, now);
-      if (shouldRequeueOnPreempt(frozen, incoming)) {
+      if (shouldRequeueAfterPreemption(frozen, incoming)) {
         queue = [frozen, ...removeKeyFromQueue(queue, frozen.key)];
       }
       for (const key of incoming.invalidates) {
@@ -354,11 +369,18 @@ function submitEphemeral(
 function removeNotice(state: RightRegionSlice, key: string, now: number): RightRegionSlice {
   const current = state.ephemeralCurrent;
   const queue = removeKeyFromQueue(state.ephemeralQueue, key);
+  const cooldown = state.cooldowns[key];
+  const cooldowns =
+    cooldown === undefined
+      ? state.cooldowns
+      : Object.fromEntries(
+          Object.entries(state.cooldowns).filter(([entryKey]) => entryKey !== key),
+        );
   if (current?.key === key) {
-    return promote({ ...state, ephemeralQueue: queue }, now, null, queue);
+    return promote({ ...state, ephemeralQueue: queue, cooldowns }, now, null, queue);
   }
-  if (queue === state.ephemeralQueue) return state;
-  return { ...state, ephemeralQueue: queue };
+  if (queue === state.ephemeralQueue && cooldown === undefined) return state;
+  return { ...state, ephemeralQueue: queue, cooldowns };
 }
 
 function upsertPersistent(
@@ -372,6 +394,7 @@ function upsertPersistent(
   const next: PersistentNotice = {
     key: input.key,
     text: input.text,
+    lane: input.lane ?? existing?.lane ?? "statusline",
     tone: input.tone ?? "muted",
     priority: input.priority ?? "medium",
     bold: input.bold === true,
@@ -384,6 +407,7 @@ function upsertPersistent(
   if (
     existing &&
     existing.text === next.text &&
+    existing.lane === next.lane &&
     existing.tone === next.tone &&
     existing.priority === next.priority &&
     existing.bold === next.bold &&
@@ -479,20 +503,24 @@ export interface RightRegionSegment {
   readonly tone: NoticeTone;
   readonly bold: boolean;
   readonly dim: boolean;
+  readonly dimSuffix: string | null;
 }
 
 export interface RightRegionView {
-  readonly mode: "empty" | "ephemeral" | "persistent";
-  readonly segments: readonly RightRegionSegment[];
+  /** The transient notice currently on screen, if any. */
+  readonly ephemeral: readonly RightRegionSegment[];
+  /** The lasting readout: highest-priority notice for the lane, then the counter. */
+  readonly persistent: readonly RightRegionSegment[];
   readonly nextDeadlineAt: number | null;
 }
 
 export function selectHighestPersistent(
   persistents: readonly PersistentNotice[],
+  lane: PersistentNoticeLane = "statusline",
 ): PersistentNotice | null {
-  if (persistents.length === 0) return null;
-  // Counter key is not a "warning" — callers filter it if needed.
-  return persistents.reduce((best, item) => (compareNotices(item, best) < 0 ? item : best));
+  const candidates = persistents.filter((notice) => notice.lane === lane);
+  if (candidates.length === 0) return null;
+  return candidates.reduce((best, item) => (compareNotices(item, best) < 0 ? item : best));
 }
 
 export function selectNextDeadlineAt(state: RightRegionSlice, now: number): number | null {
@@ -511,52 +539,51 @@ export function selectNextDeadlineAt(state: RightRegionSlice, now: number): numb
   return next < now ? now : next;
 }
 
-export function selectRightRegionView(state: RightRegionSlice, now: number): RightRegionView {
-  void now;
-  const current = state.ephemeralCurrent;
-  if (current !== null) {
-    return {
-      mode: "ephemeral",
-      segments: [
-        {
-          key: current.key,
-          text: current.text,
-          tone: current.tone,
-          bold: current.bold,
-          dim: current.dim,
-        },
-      ],
-      nextDeadlineAt: selectNextDeadlineAt(state, now),
-    };
-  }
-
-  const segments: RightRegionSegment[] = [];
-  const persistent = selectHighestPersistent(state.persistents);
-  if (persistent !== null) {
-    segments.push({
-      key: persistent.key,
-      text: persistent.text,
-      tone: persistent.tone,
-      bold: persistent.bold,
-      dim: persistent.dim,
+export function selectRightRegionView(
+  state: RightRegionSlice,
+  now: number,
+  lane: PersistentNoticeLane = "statusline",
+): RightRegionView {
+  const visible = state.ephemeralCurrent;
+  const current = visible !== null && visible.lane === lane ? visible : null;
+  const persistent: RightRegionSegment[] = [];
+  const highest = selectHighestPersistent(state.persistents, lane);
+  if (highest !== null) {
+    persistent.push({
+      key: highest.key,
+      text: highest.text,
+      tone: highest.tone,
+      bold: highest.bold,
+      dim: highest.dim,
+      dimSuffix: null,
     });
   }
-  if (state.counterText !== null && state.counterText.length > 0) {
-    segments.push({
+  if (lane === "statusline" && state.counterText !== null && state.counterText.length > 0) {
+    persistent.push({
       key: "tokens",
       text: state.counterText,
       tone: "muted",
       bold: false,
       dim: false,
+      dimSuffix: null,
     });
   }
 
-  if (segments.length === 0) {
-    return { mode: "empty", segments, nextDeadlineAt: selectNextDeadlineAt(state, now) };
-  }
   return {
-    mode: "persistent",
-    segments,
+    ephemeral:
+      current === null
+        ? []
+        : [
+            {
+              key: current.key,
+              text: current.text,
+              tone: current.tone,
+              bold: current.bold,
+              dim: current.dim,
+              dimSuffix: current.dimSuffix,
+            },
+          ],
+    persistent,
     nextDeadlineAt: selectNextDeadlineAt(state, now),
   };
 }

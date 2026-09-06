@@ -14,7 +14,7 @@ import {
   resolveGroup,
 } from "@/kernel/channels/ask.ts";
 import { isPathTrusted, setPathTrusted } from "@/kernel/config/project-trust.ts";
-import { checkCdPermission } from "@/kernel/permissions/cd.ts";
+import { evaluateCdPermission } from "@/kernel/permissions/cd.ts";
 import type { PermissionRule } from "@/kernel/permissions/types.ts";
 import { expandPath } from "@/kernel/std/fs/expand-path.ts";
 import { canonicalizeCwd } from "@/kernel/std/fs/paths.ts";
@@ -201,7 +201,7 @@ describe("validateCdTarget + handleCd", () => {
         ruleValue: { toolName: "Cd" },
       },
     ];
-    const check = checkCdPermission(
+    const check = evaluateCdPermission(
       { requestedPath: dest, canonicalPath: dest },
       { rules, baseCwd: root },
     );

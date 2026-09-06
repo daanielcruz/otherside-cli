@@ -2,7 +2,7 @@ import { recordCodexRawReplayDiagnostic } from "@/devtools/codex-raw-stream.ts";
 import { runWithPermissionResolver } from "@/engine/agents/agent-context.ts";
 import { get as getAgent, type SubagentDef } from "@/engine/agents/registry.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
-import { buildForkedMessages } from "./builder.ts";
+import { assembleForkMessages } from "./builder.ts";
 import { mcpDeclarationsForDef } from "./declarations.ts";
 import { withLiveBrokerEffort } from "./live-effort.ts";
 import { runForkLoopExternal } from "./loop.ts";
@@ -11,13 +11,15 @@ import {
   resolveAllowSetForFork,
   resolveDefaultAllowSetForFork,
 } from "./profile.ts";
+import { authorizeForkSpawnRoute } from "./route-override.ts";
 import {
+  inheritedRouteRefusal,
   quotaRerouteForInvocation,
   resolveSubagentRoutingForDispatch,
   resolveToolTierQuotaReroute,
 } from "./routing.ts";
 import { skillMessagesForDef } from "./skill-messages.ts";
-import { isMainAgentContext, nestedForkUnavailableMessage } from "./spawn-depth.ts";
+import { isRootAgentRun, nestedForkUnavailableMessage } from "./spawn-depth.ts";
 import type {
   ForkInvocation,
   ForkSpec,
@@ -100,7 +102,7 @@ export async function dispatchSubagent(
     };
     const allowSet = resolveAllowSetForFork(def, "subagent", subCtx);
     const extraDeclarations = mcpDeclarationsForDef(def, allowSet);
-    const skillMessages = skillMessagesForDef(def);
+    const { messages: skillMessages, warnings: setupWarnings } = skillMessagesForDef(def);
     recordCodexRawReplayDiagnostic({
       event: "agent_loop_start",
       subagentType: invocation.subagentType,
@@ -110,7 +112,7 @@ export async function dispatchSubagent(
     });
     return runForkLoopExternal({
       ctx: subCtx,
-      name: invocation.name ?? def.name,
+      name: def.name,
       body,
       allowSet,
       prompt: invocation.prompt,
@@ -121,6 +123,7 @@ export async function dispatchSubagent(
       ...(invocation.forkId !== undefined ? { forkId: invocation.forkId } : {}),
       extraDeclarations,
       skillMessages,
+      ...(setupWarnings.length > 0 ? { setupWarnings } : {}),
       agentHooks: def.hooks ?? null,
       allowedAgentTypes,
       allowNestedAgents: true,
@@ -157,9 +160,11 @@ export async function dispatchSubagent(
 }
 
 export async function dispatchSkillFork(args: SkillForkInvocation): Promise<SubagentResult> {
-  if (!isMainAgentContext(args.ctx)) {
+  if (!isRootAgentRun(args.ctx)) {
     return { output: nestedForkUnavailableMessage, isError: true };
   }
+  const refusal = inheritedRouteRefusal(args.ctx);
+  if (refusal !== null) return { output: refusal, isError: true };
   return runWithPermissionResolver(args.permissionResolver, () =>
     runForkLoopExternal({
       ctx: { ...args.ctx, suppressThinkingSummary: true },
@@ -178,7 +183,7 @@ export async function dispatchFork(
   invocation: ForkInvocation,
   ctx: RequestContext,
 ): Promise<SubagentResult> {
-  if (!isMainAgentContext(ctx)) {
+  if (!isRootAgentRun(ctx)) {
     return { output: nestedForkUnavailableMessage, isError: true };
   }
   const parent: readonly import("@/kernel/std/types/message.ts").Message[] =
@@ -190,10 +195,16 @@ export async function dispatchFork(
       isError: true,
     };
   }
+  // The route is settled before anything is spawned, so the quota refusal, the
+  // approval prompt, and the pin all name the route the fork actually runs.
+  const authorized = await authorizeForkSpawnRoute(invocation.route, ctx);
+  if (!authorized.ok) return { output: authorized.error, isError: true };
+  const refusal = inheritedRouteRefusal(authorized.ctx);
+  if (refusal !== null) return { output: refusal, isError: true };
   if (invocation.runInBackground === true) {
     ctx.backgroundController?.signal();
   }
-  return runForkLoopExternal(buildForkSpec(invocation, ctx, parent));
+  return runForkLoopExternal(buildForkSpec(invocation, authorized.ctx, parent));
 }
 
 // Pure spec construction, split out from dispatchFork so the
@@ -204,7 +215,7 @@ export function buildForkSpec(
   ctx: RequestContext,
   parent: readonly import("@/kernel/std/types/message.ts").Message[],
 ): ForkSpec {
-  const initialMessages = buildForkedMessages(invocation.directive, parent);
+  const initialMessages = assembleForkMessages(invocation.directive, parent);
   const forkName = invocation.name && invocation.name.length > 0 ? invocation.name : "fork";
   const forkCtx = withLiveBrokerEffort(ctx);
   return {

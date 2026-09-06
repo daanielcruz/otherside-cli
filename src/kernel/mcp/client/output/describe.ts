@@ -5,46 +5,80 @@ export interface LineMeta {
   maxLen: number;
 }
 
+const DEFAULT_SHAPE_DEPTH = 2;
+const DISPLAYED_MEMBER_LIMIT = 10;
+const BYTES_PER_UNIT = 1024;
+
 export function formatDescription(result: TransformedMcpResult): string {
-  if (result.type === "toolResult") return "Plain text";
-  if (result.type === "structuredContent")
-    return result.schema ? `JSON with schema: ${result.schema}` : "JSON";
-  return result.schema ? `JSON array with schema: ${result.schema}` : "JSON array";
-}
-
-export function inferCompactSchema(value: unknown, depth = 2): string {
-  if (value === null) return "null";
-  if (Array.isArray(value)) {
-    if (value.length === 0) return "[]";
-    return `[${inferCompactSchema(value[0], depth - 1)}]`;
+  switch (result.type) {
+    case "toolResult":
+      return "Plain text";
+    case "structuredContent":
+      return describeJsonFormat("JSON", result.schema);
+    default:
+      return describeJsonFormat("JSON array", result.schema);
   }
-  if (typeof value === "object" && value !== null) {
-    if (depth <= 0) return "{...}";
-    const entries = Object.entries(value).slice(0, 10);
-    const props = entries.map(
-      ([key, entryValue]) => `${key}: ${inferCompactSchema(entryValue, depth - 1)}`,
-    );
-    const suffix = Object.keys(value).length > 10 ? ", ..." : "";
-    return `{${props.join(", ")}${suffix}}`;
+}
+
+function describeJsonFormat(formatKind: string, sampleShape: string | undefined): string {
+  return sampleShape ? `${formatKind} with schema: ${sampleShape}` : formatKind;
+}
+
+export function inferCompactSchema(sample: unknown, remainingDepth = DEFAULT_SHAPE_DEPTH): string {
+  if (sample === null) return "null";
+  if (Array.isArray(sample)) return describeListSample(sample, remainingDepth);
+
+  if (typeof sample !== "object") return typeof sample;
+  if (remainingDepth <= 0) return "{...}";
+
+  return describeObjectSample(sample, remainingDepth);
+}
+
+function describeListSample(sample: unknown[], remainingDepth: number): string {
+  if (sample.length === 0) return "[]";
+  const firstShape = inferCompactSchema(sample[0], remainingDepth - 1);
+  return `[${firstShape}]`;
+}
+
+function describeObjectSample(sample: object, remainingDepth: number): string {
+  const displayedMembers = Object.entries(sample).slice(0, DISPLAYED_MEMBER_LIMIT);
+  const memberDescriptions: string[] = [];
+
+  for (const [propertyName, memberSample] of displayedMembers) {
+    const memberShape = inferCompactSchema(memberSample, remainingDepth - 1);
+    memberDescriptions.push(`${propertyName}: ${memberShape}`);
   }
-  return typeof value;
+
+  const hasHiddenMembers = Object.keys(sample).length > DISPLAYED_MEMBER_LIMIT;
+  const continuation = hasHiddenMembers ? ", ..." : "";
+  return `{${memberDescriptions.join(", ")}${continuation}}`;
 }
 
-export function lineMetaFor(content: string): LineMeta | undefined {
-  const lines = content.endsWith("\n") ? content.slice(0, -1).split("\n") : content.split("\n");
-  if (lines.length <= 1) return { count: lines.length, maxLen: lines[0]?.length ?? 0 };
-  return {
-    count: lines.length,
-    maxLen: lines.reduce((max, line) => Math.max(max, line.length), 0),
-  };
+export function lineMetaFor(content: string): LineMeta {
+  const withoutTerminalBreak = content.endsWith("\n") ? content.slice(0, -1) : content;
+  const segments = withoutTerminalBreak.split("\n");
+  let longestLine = 0;
+
+  for (const segment of segments) {
+    longestLine = Math.max(longestLine, segment.length);
+  }
+
+  return { count: segments.length, maxLen: longestLine };
 }
 
-export function formatFileSize(sizeInBytes: number): string {
-  const kb = sizeInBytes / 1024;
-  if (kb < 1) return `${sizeInBytes} bytes`;
-  if (kb < 1024) return `${kb.toFixed(1).replace(/\.0$/, "")}KB`;
-  const mb = kb / 1024;
-  if (mb < 1024) return `${mb.toFixed(1).replace(/\.0$/, "")}MB`;
-  const gb = mb / 1024;
-  return `${gb.toFixed(1).replace(/\.0$/, "")}GB`;
+export function formatFileSize(size: number): string {
+  const kibibytes = size / BYTES_PER_UNIT;
+  if (kibibytes < 1) return `${size} bytes`;
+  if (kibibytes < BYTES_PER_UNIT) return `${conciseDecimal(kibibytes)}KB`;
+
+  const mebibytes = kibibytes / BYTES_PER_UNIT;
+  if (mebibytes < BYTES_PER_UNIT) return `${conciseDecimal(mebibytes)}MB`;
+
+  const gibibytes = mebibytes / BYTES_PER_UNIT;
+  return `${conciseDecimal(gibibytes)}GB`;
+}
+
+function conciseDecimal(quantity: number): string {
+  const fixed = quantity.toFixed(1);
+  return fixed.endsWith(".0") ? fixed.slice(0, -2) : fixed;
 }

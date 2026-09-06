@@ -1,3 +1,4 @@
+import { accountFingerprint } from "@/engine/providers/_shared/account-identity.ts";
 import {
   type AnthropicUsage,
   applyAnthropicUsageLimits,
@@ -13,6 +14,7 @@ import {
   type CodexUsage,
   fetchCodexUsage,
 } from "@/engine/providers/codex/usage.ts";
+import { fetchDeepseekBalance } from "@/engine/providers/deepseek/usage.ts";
 import { applyGlmQuotaWarning, fetchGlmUsage } from "@/engine/providers/glm/usage.ts";
 import {
   applyKimiQuotaWarning,
@@ -20,13 +22,29 @@ import {
   type KimiUsage,
 } from "@/engine/providers/kimi/usage.ts";
 import { applyMinimaxQuotaWarning, fetchMinimaxUsage } from "@/engine/providers/minimax/usage.ts";
+import {
+  deleteSharedQuotaRecord,
+  readSharedQuotaRecord,
+  writeSharedQuotaError,
+  writeSharedQuotaRecord,
+} from "@/engine/providers/quota-cache.ts";
 import { applyXaiQuotaWarning, fetchXaiUsage } from "@/engine/providers/xai/usage.ts";
+import { clearProviderQuotaObservations } from "@/engine/session/usage/limits.ts";
 import type { PlanQuotaData } from "@/engine/session/usage/plan-quota.ts";
 import { QUOTA_REFRESH_COOLDOWN_MS } from "@/engine/session/usage/quota-warning.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
+import { subscribeCredentialChanges } from "@/kernel/storage/credentials.ts";
 
 /** Failure cooldown is shorter than the success cooldown so a blip can recover sooner. */
 export const QUOTA_FAILURE_RETRY_COOLDOWN_MS = 60_000;
+
+/**
+ * Tightest success window a user-initiated refresh (e.g. `r` in /usage) may
+ * request: within it the last observation is served from cache instead of
+ * hitting the provider's usage API, so refresh spam can never trip a rate
+ * limit.
+ */
+export const QUOTA_MANUAL_REFRESH_MIN_INTERVAL_MS = 30_000;
 
 export interface QuotaRefreshMeta {
   inFlight: boolean;
@@ -36,7 +54,8 @@ export interface QuotaRefreshMeta {
 }
 
 export type QuotaRefreshOutcome =
-  | { ok: true; skipped?: "cooldown" | "unsupported" }
+  | { ok: true; source: "network" | "cache"; data: unknown }
+  | { ok: true; source: "unsupported"; data: null }
   | { ok: false; error: string };
 
 type QuotaRefreshApplyOpts = { modelId?: string | undefined };
@@ -52,11 +71,33 @@ interface ProviderRefreshMeta {
   lastError: string | null;
 }
 
+interface InFlightQuotaRefresh {
+  generation: number;
+  promise: Promise<QuotaRefreshOutcome>;
+}
+
 const metaByProvider = new Map<ProviderId, ProviderRefreshMeta>();
-const inFlightByProvider = new Map<ProviderId, Promise<QuotaRefreshOutcome>>();
+const inFlightByProvider = new Map<ProviderId, InFlightQuotaRefresh>();
+// Last successfully fetched payload per provider; served on cooldown skips so
+// every usage surface (panel tabs, companion snapshot) reads through the one
+// cooldown gate instead of fetching on its own.
+const lastPayloadByProvider = new Map<ProviderId, unknown>();
+const credentialGenerationByProvider = new Map<ProviderId, number>();
+const accountByProvider = new Map<ProviderId, string>();
 const testRefreshers = new Map<ProviderId, QuotaRefresher>();
 
 let nowFn: () => number = () => Date.now();
+
+// A credential write only invalidates usage when the ACCOUNT changed. Fetching usage
+// can itself renew a near-expiry access token and save it, and treating that save as a
+// change would throw away the very result the fetch produced — and the last-known-good
+// display with it. The account fingerprint is stable across token renewal by contract.
+subscribeCredentialChanges((provider) => {
+  const account = accountFingerprint(provider);
+  if (accountByProvider.get(provider) === account) return;
+  accountByProvider.set(provider, account);
+  invalidateProviderQuota(provider);
+});
 
 export function quotaRefreshMeta(provider: ProviderId): QuotaRefreshMeta {
   const meta = metaByProvider.get(provider);
@@ -69,30 +110,58 @@ export function quotaRefreshMeta(provider: ProviderId): QuotaRefreshMeta {
 }
 
 /**
- * Single-flight, cooldown-aware quota refresh. A thrown fetch (including the
- * shared 10s AbortSignal timeout) preserves last-known-good quota state: no
- * apply/clear runs on failure.
+ * Single-flight, cooldown-aware quota refresh — the ONLY path allowed to hit a
+ * provider's usage API. A thrown fetch (including the shared 10s AbortSignal
+ * timeout) preserves last-known-good quota state: no apply/clear runs on
+ * failure. `maxAgeMs` narrows (or widens) this call's success window: a last
+ * success younger than it skips the network and serves the cached payload;
+ * user-initiated refreshes must not pass anything tighter than
+ * QUOTA_MANUAL_REFRESH_MIN_INTERVAL_MS.
  */
 export async function refreshProviderQuota(
   provider: ProviderId,
-  opts: { force?: boolean; modelId?: string } = {},
+  opts: { force?: boolean; maxAgeMs?: number; modelId?: string } = {},
 ): Promise<QuotaRefreshOutcome> {
   const refresher = resolveRefresher(provider);
-  if (!refresher) return { ok: true, skipped: "unsupported" };
+  if (!refresher) return { ok: true, source: "unsupported", data: null };
 
+  // Baseline the account before fetching: the fetch itself may renew and save the
+  // token, and the change event that save fires must compare against who we were
+  // fetching for — not against an empty slot that reads as a switch.
+  if (!accountByProvider.has(provider)) {
+    accountByProvider.set(provider, accountFingerprint(provider));
+  }
+  const generation = credentialGeneration(provider);
   const existing = inFlightByProvider.get(provider);
-  if (existing) return existing;
+  if (existing?.generation === generation) return existing.promise;
 
   if (!opts.force) {
-    const skip = cooldownSkip(provider);
+    const skip = cooldownSkip(provider, opts.maxAgeMs ?? QUOTA_REFRESH_COOLDOWN_MS);
     if (skip) return skip;
   }
 
-  const promise = runRefresh(provider, refresher, opts).finally(() => {
-    inFlightByProvider.delete(provider);
+  const promise = runRefresh(provider, refresher, generation, opts).finally(() => {
+    const current = inFlightByProvider.get(provider);
+    if (current?.promise === promise) inFlightByProvider.delete(provider);
   });
-  inFlightByProvider.set(provider, promise);
+  inFlightByProvider.set(provider, { generation, promise });
   return promise;
+}
+
+/**
+ * Refresh-through-cache read of a provider's usage payload for display
+ * surfaces (/usage tabs, companion snapshot): runs the shared cooldown-gated
+ * refresh and returns the — possibly cached — payload, throwing on a failed
+ * fetch so callers can render an error state. A cooldown skip that predates
+ * any cached payload rethrows the last fetch error.
+ */
+export async function providerUsagePayload<T>(
+  provider: ProviderId,
+  opts: { maxAgeMs?: number } = {},
+): Promise<T | null> {
+  const outcome = await refreshProviderQuota(provider, opts);
+  if (!outcome.ok) throw new Error(outcome.error);
+  return outcome.data as T | null;
 }
 
 export function setQuotaRefresherForTests(
@@ -105,6 +174,9 @@ export function setQuotaRefresherForTests(
 
 export function resetQuotaRefreshMetaForTests(): void {
   metaByProvider.clear();
+  lastPayloadByProvider.clear();
+  credentialGenerationByProvider.clear();
+  accountByProvider.clear();
   nowFn = () => Date.now();
 }
 
@@ -113,45 +185,103 @@ export function setQuotaRefreshNowForTests(now: (() => number) | null): void {
   nowFn = now ?? (() => Date.now());
 }
 
-function cooldownSkip(provider: ProviderId): QuotaRefreshOutcome | null {
+function cooldownSkip(provider: ProviderId, successWindowMs: number): QuotaRefreshOutcome | null {
   const meta = metaByProvider.get(provider);
-  if (!meta) return null;
   const now = nowFn();
-  if (
-    meta.lastSuccessAtEpochMs !== null &&
-    now - meta.lastSuccessAtEpochMs < QUOTA_REFRESH_COOLDOWN_MS
-  ) {
-    return { ok: true, skipped: "cooldown" };
+  if (meta?.lastSuccessAtEpochMs != null && now - meta.lastSuccessAtEpochMs < successWindowMs) {
+    return cachedOutcome(provider);
   }
   if (
-    meta.lastErrorAtEpochMs !== null &&
+    meta?.lastErrorAtEpochMs != null &&
     now - meta.lastErrorAtEpochMs < QUOTA_FAILURE_RETRY_COOLDOWN_MS
   ) {
-    return { ok: true, skipped: "cooldown" };
+    return lastPayloadByProvider.has(provider)
+      ? cachedOutcome(provider)
+      : { ok: false, error: meta.lastError ?? "usage temporarily unavailable" };
+  }
+
+  // No in-process observation fresh enough: adopt a sibling session's shared
+  // record so concurrent CLI sessions don't each poll the usage API.
+  const shared = readSharedQuotaRecord(provider);
+  if (!shared) return null;
+  if (shared.lastSuccessAtEpochMs != null && now - shared.lastSuccessAtEpochMs < successWindowMs) {
+    const ensured = ensureMeta(provider);
+    ensured.lastSuccessAtEpochMs = shared.lastSuccessAtEpochMs;
+    ensured.lastErrorAtEpochMs = shared.lastErrorAtEpochMs;
+    ensured.lastError = shared.lastError;
+    lastPayloadByProvider.set(provider, shared.data);
+    return cachedOutcome(provider);
+  }
+  if (
+    shared.lastErrorAtEpochMs != null &&
+    now - shared.lastErrorAtEpochMs < QUOTA_FAILURE_RETRY_COOLDOWN_MS
+  ) {
+    const ensured = ensureMeta(provider);
+    ensured.lastSuccessAtEpochMs = shared.lastSuccessAtEpochMs;
+    ensured.lastErrorAtEpochMs = shared.lastErrorAtEpochMs;
+    ensured.lastError = shared.lastError;
+    if (shared.data !== null) {
+      lastPayloadByProvider.set(provider, shared.data);
+      return cachedOutcome(provider);
+    }
+    return { ok: false, error: shared.lastError ?? "usage temporarily unavailable" };
   }
   return null;
+}
+
+function cachedOutcome(provider: ProviderId): QuotaRefreshOutcome {
+  return { ok: true, source: "cache", data: lastPayloadByProvider.get(provider) ?? null };
 }
 
 async function runRefresh(
   provider: ProviderId,
   refresher: QuotaRefresher,
+  generation: number,
   opts: { modelId?: string | undefined },
 ): Promise<QuotaRefreshOutcome> {
   try {
     const data = await refresher.fetch();
-    // Stamp success only after the fetch resolves so a failure does not suppress retries.
+    if (credentialGeneration(provider) !== generation) {
+      return { ok: false, error: "credentials changed during usage refresh" };
+    }
     const meta = ensureMeta(provider);
     meta.lastSuccessAtEpochMs = nowFn();
+    meta.lastErrorAtEpochMs = null;
+    meta.lastError = null;
+    lastPayloadByProvider.set(provider, data);
+    writeSharedQuotaRecord(provider, {
+      version: 1,
+      lastSuccessAtEpochMs: meta.lastSuccessAtEpochMs,
+      lastErrorAtEpochMs: null,
+      lastError: null,
+      data,
+    });
     refresher.apply(data, { modelId: opts.modelId });
-    return { ok: true };
+    return { ok: true, source: "network", data };
   } catch (err) {
+    if (credentialGeneration(provider) !== generation) {
+      return { ok: false, error: "credentials changed during usage refresh" };
+    }
     const message = errorMessage(err);
     const meta = ensureMeta(provider);
     meta.lastErrorAtEpochMs = nowFn();
     meta.lastError = message;
-    // Do not apply/clear — last-known-good routing quota must survive transient failures.
+    writeSharedQuotaError(provider, meta.lastErrorAtEpochMs, message);
+    // Do not apply/clear — last-known-good display data survives transient failures.
     return { ok: false, error: message };
   }
+}
+
+function credentialGeneration(provider: ProviderId): number {
+  return credentialGenerationByProvider.get(provider) ?? 0;
+}
+
+export function invalidateProviderQuota(provider: ProviderId): void {
+  credentialGenerationByProvider.set(provider, credentialGeneration(provider) + 1);
+  metaByProvider.delete(provider);
+  lastPayloadByProvider.delete(provider);
+  deleteSharedQuotaRecord(provider);
+  clearProviderQuotaObservations(provider);
 }
 
 function ensureMeta(provider: ProviderId): ProviderRefreshMeta {
@@ -185,6 +315,11 @@ function builtinRefresher(provider: ProviderId): QuotaRefresher | undefined {
       return {
         fetch: () => fetchCodexUsage(),
         apply: (data) => applyCodexQuotaWarning(data as CodexUsage | null),
+      };
+    case "deepseek":
+      return {
+        fetch: () => fetchDeepseekBalance(),
+        apply: (_data) => {},
       };
     case "glm":
       return {

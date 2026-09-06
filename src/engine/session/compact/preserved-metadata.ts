@@ -1,6 +1,6 @@
 import {
-  isChainParticipant,
-  type PreservedMessages,
+  type CompactKeepList,
+  isTranscriptLinked,
   type PreservedSegment,
   type SessionRecord,
 } from "@/engine/session/record/index.ts";
@@ -9,7 +9,7 @@ import type { ContentBlock, Message } from "@/kernel/std/types/message.ts";
 
 export interface CompactPreserveMetadata {
   preservedSegment: PreservedSegment;
-  preservedMessages: PreservedMessages;
+  preservedMessages: CompactKeepList;
 }
 
 export function preserveMetadataForTail(
@@ -25,7 +25,7 @@ export function preserveMetadataForTail(
     if (messageFingerprint(candidate) !== target) continue;
     const uuids: string[] = [];
     for (const record of records.slice(start)) {
-      if (!isChainParticipant(record.type)) continue;
+      if (!isTranscriptLinked(record.type)) continue;
       const uuid = "uuid" in record && typeof record.uuid === "string" ? record.uuid : null;
       if (uuid === null) return null;
       if (uuids.at(-1) !== uuid) uuids.push(uuid);

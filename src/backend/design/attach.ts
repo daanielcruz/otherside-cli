@@ -1,6 +1,6 @@
+import { shareSessionKey } from "@/backend/shared/api.ts";
 import type { Device } from "@/backend/shared/device.ts";
 import { b64uDecode, verifyDesignConfirmToken, wrapSessionKey } from "@/backend/shared/e2ee.ts";
-import { shareSessionKey } from "../shared/api.ts";
 
 export async function shareKeyWithWeb(args: {
   device: Device;

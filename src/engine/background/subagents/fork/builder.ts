@@ -51,7 +51,7 @@ export function danglingToolResultPlaceholders(parentMessages: readonly Message[
   }));
 }
 
-export function buildForkedMessages(
+export function assembleForkMessages(
   directive: string,
   parentMessages: readonly Message[],
 ): Message[] {

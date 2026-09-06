@@ -1,6 +1,7 @@
 import {
   BOUNDARY_POLICY,
   type CancelResult,
+  DELIVERY_BANDS,
   type DrainResult,
   type EmitBoundary,
   type EmitClass,
@@ -8,11 +9,9 @@ import {
   type EmitItemInput,
   PRIORITY_ORDER,
   type PriorityStateSnapshot,
-  type QueuedMessageLookup,
 } from "@/engine/queue/priority.ts";
 import { projectDrain } from "@/engine/queue/projection.ts";
-import { registerQueuedMessagesProvider } from "@/kernel/channels/queued-messages.ts";
-import { loadConfigSync } from "@/kernel/config/config.ts";
+import { resolveConfig } from "@/kernel/config/resolver.ts";
 import type { NotificationCtx } from "@/kernel/hooks/events.ts";
 import { fireConfiguredHooks } from "@/kernel/hooks/handler.ts";
 import { makeStore } from "@/kernel/std/state/make-store.ts";
@@ -25,9 +24,7 @@ interface AwaiterEntry {
 
 function emptySizes(): Record<EmitClass, number> {
   return {
-    interrupt_agent_workflow: 0,
     interrupt_bash: 0,
-    user_message: 0,
     urgent_output: 0,
     deferred_output: 0,
     idle_prompt: 0,
@@ -43,9 +40,7 @@ const initialState: PriorityStateSnapshot = {
 const stateStore = makeStore<PriorityStateSnapshot>(initialState);
 
 const subQueues: Record<EmitClass, EmitItem[]> = {
-  interrupt_agent_workflow: [],
   interrupt_bash: [],
-  user_message: [],
   urgent_output: [],
   deferred_output: [],
   idle_prompt: [],
@@ -73,7 +68,7 @@ type NotificationHookRunner = (ctx: NotificationCtx) => void;
 function defaultNotificationHookRunner(ctx: NotificationCtx): void {
   queueMicrotask(() => {
     try {
-      void fireConfiguredHooks(loadConfigSync(), "Notification", {
+      void fireConfiguredHooks(resolveConfig(process.cwd()), "Notification", {
         kind: "Notification",
         ctx,
       }).catch(() => {});
@@ -85,11 +80,11 @@ let notificationHookRunner: NotificationHookRunner = defaultNotificationHookRunn
 
 let idCounter = 0;
 let turnActive = false;
-let queuedMessageLookup: QueuedMessageLookup = () => undefined;
 
-function nextId(): string {
+/** Identity plus arrival order, so two items of the same millisecond still order. */
+function nextArrival(): { id: string; seq: number } {
   idCounter += 1;
-  return `eq_${Date.now().toString(36)}_${idCounter.toString(36)}`;
+  return { id: `eq_${Date.now().toString(36)}_${idCounter.toString(36)}`, seq: idCounter };
 }
 
 function syncStateSnapshot(): void {
@@ -169,11 +164,20 @@ function planDrain(boundary: EmitBoundary): DrainPlan {
   }
   const picked: EmitItem[] = [];
   const consumedIds = new Set<string>();
-  for (const klass of PRIORITY_ORDER) {
-    const policyTarget = eligibleByClass.get(klass);
-    if (policyTarget === undefined) continue;
-    for (const item of subQueues[klass]) {
-      if (!targetCompatibleWithPolicyEntry(item.target, policyTarget)) continue;
+  for (const band of DELIVERY_BANDS) {
+    // A band is one delivery lane, so what separates its items is when they
+    // arrived, not which class they were filed under.
+    const arrived: EmitItem[] = [];
+    for (const klass of band) {
+      const policyTarget = eligibleByClass.get(klass);
+      if (policyTarget === undefined) continue;
+      for (const item of subQueues[klass]) {
+        if (!targetCompatibleWithPolicyEntry(item.target, policyTarget)) continue;
+        arrived.push(item);
+      }
+    }
+    arrived.sort((a, b) => a.seq - b.seq);
+    for (const item of arrived) {
       picked.push(item);
       consumedIds.add(item.id);
     }
@@ -319,7 +323,7 @@ export const emitQueue = {
   emit(input: EmitItemInput): string {
     const item: EmitItem = {
       ...input,
-      id: nextId(),
+      ...nextArrival(),
       ts: Date.now(),
     };
     enqueue(item);
@@ -419,12 +423,10 @@ export const emitQueue = {
         llmBlocks: [],
         transcriptEntries: [],
         consumedIds: [],
-        removedQueuedMessageIds: [],
         notificationTexts: [],
       };
     }
-    const policy = BOUNDARY_POLICY[boundary];
-    const projected = projectDrain(plan.picked, boundary, policy, queuedMessageLookup);
+    const projected = projectDrain(plan.picked, boundary);
     const awaiterDelivered = tryDeliverToAwaitersForDrain(plan.picked);
     commitDrain(plan.consumedIds);
     const stopHookActive = plan.picked.some((item) => item.stopHookActive === true);
@@ -432,7 +434,6 @@ export const emitQueue = {
       llmBlocks: projected.llmBlocks,
       transcriptEntries: projected.transcriptEntries,
       consumedIds: Array.from(plan.consumedIds).filter((id) => !awaiterDelivered.has(id)),
-      removedQueuedMessageIds: projected.removedQueuedMessageIds,
       notificationTexts: projected.notificationTexts,
       ...(stopHookActive ? { stopHookActive: true } : {}),
     };
@@ -521,10 +522,6 @@ export const emitQueue = {
     };
   },
 
-  setQueuedMessageLookup(lookup: QueuedMessageLookup): void {
-    queuedMessageLookup = lookup;
-  },
-
   getState(): PriorityStateSnapshot {
     return stateStore.getState();
   },
@@ -543,15 +540,9 @@ export const emitQueue = {
     drainListeners.clear();
     turnActive = false;
     idCounter = 0;
-    queuedMessageLookup = () => undefined;
     notificationHookRunner = defaultNotificationHookRunner;
     syncStateSnapshot();
   },
 };
-
-registerQueuedMessagesProvider({
-  setQueuedMessageLookup: (lookup) => emitQueue.setQueuedMessageLookup(lookup as never),
-  subscribeQueueDrain: (fn) => emitQueue.onDrain((result) => fn(result)),
-});
 
 export { BOUNDARY_POLICY, PRIORITY_ORDER } from "@/engine/queue/priority.ts";

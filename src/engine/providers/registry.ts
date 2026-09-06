@@ -1,7 +1,7 @@
 import { buildProvider } from "@/engine/contract/build.ts";
 import { getProviderConfig, listProviderConfigs } from "@/engine/contract/registry.ts";
 import type { Provider } from "@/engine/contract/types.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 
 const fakes = new Map<ProviderId, Provider>();
 

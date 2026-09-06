@@ -9,7 +9,7 @@ import {
 import type { Session } from "@/kernel/std/types/session.ts";
 import type { Broker } from "@/store/app-store/broker.ts";
 import { applyAskResponse } from "../ask-response.ts";
-import { applyIncomingEvent, isSyncableEvent } from "../rails/cdc.ts";
+import { applyIncomingEvent, isSyncableEvent } from "../rails/durable.ts";
 
 beforeEach(() => {
   // Shared duplex channel; clear before each case so earlier suites cannot pollute.
@@ -216,7 +216,7 @@ describe("applyAskResponse", () => {
   });
 });
 
-describe("ask_response through cdc", () => {
+describe("ask_response through durable events", () => {
   const session = { id: "session-1", records: [] } as unknown as Session;
   const broker = { dispatch: () => {} } as unknown as Broker;
 

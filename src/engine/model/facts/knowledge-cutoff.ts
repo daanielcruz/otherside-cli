@@ -5,6 +5,7 @@
 
 const KNOWLEDGE_CUTOFFS: readonly (readonly [prefix: string, cutoff: string])[] = [
   ["claude-fable-5", "January 2026"],
+  ["claude-opus-5", "January 2026"],
   ["claude-opus-4-8", "January 2026"],
   ["claude-opus-4-7", "January 2026"],
   ["claude-opus-4-6", "May 2025"],

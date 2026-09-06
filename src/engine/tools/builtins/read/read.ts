@@ -1,43 +1,18 @@
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join } from "node:path";
 import { isTaskOutputPath, taskIdFromOutputPath } from "@/engine/background/tasks/output-files.ts";
-import { nativeVisionModel } from "@/engine/model/facts/capabilities.ts";
-import { canSendNatively, canSendPdfNatively } from "@/engine/model/facts/capabilities-runtime.ts";
+import { canSendNatively } from "@/engine/model/facts/capabilities-runtime.ts";
 import { readNotebookBlocks } from "@/engine/tools/_infra/notebook-read.ts";
 import {
-  inspectPdf,
-  isPdftoppmAvailable,
-  PDF_INLINE_PAGE_THRESHOLD,
-  PDF_MAX_NATIVE_SIZE,
-  PDF_MAX_PAGES_PER_READ,
-  type PdfPageRange,
-  parsePdfPageRange,
-  renderPdfPages,
-} from "@/engine/tools/_infra/pdf-read.ts";
+  isNetworkSharePath,
+  NETWORK_SHARE_PATH_ERROR,
+} from "@/engine/tools/builtins/path-guards.ts";
 import type { ToolArgSegment, ToolHandler } from "@/engine/tools/contract.ts";
 import { filePathSegment } from "@/engine/tools/contract.ts";
 import ReadSchema from "@/harness/tools/Read/tool.json" with { type: "json" };
-import { loadConfig } from "@/kernel/config/config.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
-import {
-  compressImageToBudget,
-  IMAGE_MAX_HEIGHT,
-  IMAGE_MAX_WIDTH,
-  IMAGE_TARGET_RAW_SIZE,
-  ImageCompressError,
-  MODEL_IMAGE_DIMENSION_OVERRIDES,
-  resizeImageIfTooLarge,
-} from "@/kernel/std/image-resize.ts";
-import { getActivePasteStore } from "@/kernel/std/paste/registry.ts";
-import type { ImageDimensions, ImageMediaType } from "@/kernel/std/types/image.ts";
-import type { ToolCall, ToolResult, ToolResultContentBlock } from "@/kernel/std/types/message.ts";
+import type { ToolCall, ToolResult } from "@/kernel/std/types/message.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
-import {
-  describeImageViaProvider,
-  type LoadedImage,
-  loadImageFromDisk,
-} from "../image/parse-image.ts";
-import { isNetworkSharePath, NETWORK_SHARE_PATH_ERROR } from "../path-guards.ts";
+import { readImageBranch, readPdfBranch } from "./read-media.ts";
 import { readScopeKey, readSetInsert, readState } from "./state.ts";
 
 export function getReadToolDescription(opts: { lean?: boolean } = {}): string {
@@ -48,11 +23,6 @@ const DEFAULT_LIMIT = 2000;
 const MAX_LINE_CHARS = 2000;
 const MAX_FILE_SIZE = 256 * 1024;
 const MAX_OUTPUT_TOKENS = 25000;
-// Read attachments are context payload, not display media: after the standard
-// dimension resize, anything above this budget is recompressed so a single
-// image cannot eat a large slice of the context window.
-const READ_IMAGE_MAX_BYTES = 512_000;
-
 const FILE_UNCHANGED_STUB =
   "File unchanged since last read. The content from the earlier Read tool_result in this conversation is still current — refer to that instead of re-reading.";
 
@@ -204,7 +174,7 @@ export const Read: ToolHandler = {
   },
   isConcurrencySafe: true,
   render: {
-    userFacingName(input) {
+    userFacingLabel(input) {
       const obj = (input ?? {}) as Record<string, unknown>;
       const fp = typeof obj.file_path === "string" ? obj.file_path : "";
       return taskIdFromOutputPath(fp) !== null ? "Read agent output" : "Read";
@@ -460,256 +430,4 @@ function readNotebookBranch(call: ToolCall, ctx: RequestContext, filePath: strin
     ? result.blocks
     : result.blocks.filter((block) => block.type !== "image");
   return { tool_use_id: call.id, content: blocks };
-}
-
-async function readImageBranch(
-  call: ToolCall,
-  ctx: RequestContext,
-  filePath: string,
-): Promise<ToolResult> {
-  const providerSupportsImages = canSendNatively(ctx.provider, ctx.model);
-
-  let limitBytes = 20 * 1024 * 1024;
-  let parserProvider = ctx.provider;
-  if (!providerSupportsImages) {
-    const cfg = await loadConfig();
-    if (!nativeVisionModel(parserProvider) && !canSendNatively(parserProvider)) {
-      if (cfg.imageParserProvider) {
-        parserProvider = cfg.imageParserProvider as ProviderId;
-      }
-    }
-    if (parserProvider === "glm") {
-      limitBytes = 5 * 1024 * 1024;
-    }
-  }
-
-  const image = loadImageFromDisk(filePath, limitBytes);
-  if (typeof image === "string") return err(call.id, image);
-
-  const store = getActivePasteStore();
-  if (store) {
-    store.add({
-      type: "image",
-      content: image.data,
-      mediaType: image.mediaType,
-      sourcePath: filePath,
-    });
-  }
-
-  const imageBytes = statSync(filePath).size;
-
-  if (providerSupportsImages) {
-    let block: ToolResultContentBlock;
-    try {
-      block = toImageBlock(image, ctx, IMAGE_TARGET_RAW_SIZE);
-    } catch (e) {
-      if (e instanceof ImageCompressError) return err(call.id, e.message);
-      throw e;
-    }
-    return {
-      tool_use_id: call.id,
-      content: [block],
-      meta: { kind: "image", bytes: imageBytes },
-    };
-  }
-
-  const result = await describeImageViaProvider(ctx, image, "");
-  if ("error" in result) return err(call.id, result.error);
-
-  return {
-    tool_use_id: call.id,
-    content: result.text,
-    meta: {
-      kind: "image",
-      bytes: imageBytes,
-      visionModel: result.visionModel,
-    },
-  };
-}
-
-interface PreparedImage {
-  data: string;
-  mediaType: ImageMediaType;
-  dimensions?: ImageDimensions;
-}
-
-function toImageBlock(
-  image: LoadedImage,
-  ctx: RequestContext,
-  targetRawSize: number,
-): ToolResultContentBlock {
-  const resized = resizeImageStrict(image, ctx.model, targetRawSize);
-  const prepared = compressToReadBudget(resized);
-  const block: ToolResultContentBlock = {
-    type: "image",
-    source: {
-      type: "base64",
-      media_type: prepared.mediaType,
-      data: prepared.data,
-    },
-  };
-  if ("dimensions" in prepared && prepared.dimensions) block.dimensions = prepared.dimensions;
-  return block;
-}
-
-// Throws ImageCompressError when no encoder path can fit the budget — an
-// over-budget image must surface as a tool error, never enter the context.
-function compressToReadBudget(image: PreparedImage): PreparedImage {
-  const buffer = Buffer.from(image.data, "base64");
-  if (buffer.length <= READ_IMAGE_MAX_BYTES) return image;
-  const compressed = compressImageToBudget(buffer, image.mediaType, READ_IMAGE_MAX_BYTES);
-  return {
-    data: compressed.buffer.toString("base64"),
-    mediaType: compressed.mediaType,
-    ...(image.dimensions ? { dimensions: image.dimensions } : {}),
-  };
-}
-
-function resizeImageStrict(
-  image: LoadedImage,
-  model: string,
-  targetRawSize: number,
-): PreparedImage {
-  const override = MODEL_IMAGE_DIMENSION_OVERRIDES[model];
-  const maxWidth = override?.maxWidth ?? IMAGE_MAX_WIDTH;
-  const maxHeight = override?.maxHeight ?? IMAGE_MAX_HEIGHT;
-  try {
-    const resized = resizeImageIfTooLarge(Buffer.from(image.data, "base64"), image.mediaType, {
-      maxWidth,
-      maxHeight,
-      targetRawSize,
-    });
-    const prepared: PreparedImage = {
-      data: resized.buffer.toString("base64"),
-      mediaType: resized.mediaType,
-    };
-    if (resized.dimensions) {
-      prepared.dimensions = {
-        originalWidth: resized.dimensions.originalWidth,
-        originalHeight: resized.dimensions.originalHeight,
-        displayWidth: resized.dimensions.width,
-        displayHeight: resized.dimensions.height,
-      };
-    }
-    return prepared;
-  } catch {
-    return { data: image.data, mediaType: image.mediaType };
-  }
-}
-
-type PdfRangeValidation = { ok: true; range: PdfPageRange } | { ok: false; error: ToolResult };
-
-function validatePdfRange(toolUseId: string, pages: string): PdfRangeValidation {
-  const range = parsePdfPageRange(pages);
-  if (!range) {
-    return {
-      ok: false,
-      error: err(
-        toolUseId,
-        `Invalid pages parameter: "${pages}". Use formats like "1-5", "3", or "10-20". Pages are 1-indexed.`,
-      ),
-    };
-  }
-  const rangeSize =
-    range.lastPage === Number.POSITIVE_INFINITY
-      ? PDF_MAX_PAGES_PER_READ + 1
-      : range.lastPage - range.firstPage + 1;
-  if (rangeSize > PDF_MAX_PAGES_PER_READ) {
-    return {
-      ok: false,
-      error: err(
-        toolUseId,
-        `Page range "${pages}" exceeds maximum of ${PDF_MAX_PAGES_PER_READ} pages per request. Please use a smaller range.`,
-      ),
-    };
-  }
-  return { ok: true, range };
-}
-
-function readPdfBranch(
-  call: ToolCall,
-  ctx: RequestContext,
-  filePath: string,
-  pages: string | null,
-): ToolResult {
-  const inspected = inspectPdf(filePath);
-  if (!inspected.ok) return err(call.id, inspected.error);
-
-  let range: PdfPageRange | undefined;
-  if (pages) {
-    const validated = validatePdfRange(call.id, pages);
-    if (!validated.ok) return validated.error;
-    range = validated.range;
-    if (range.firstPage > inspected.pageCount || range.lastPage > inspected.pageCount) {
-      return err(
-        call.id,
-        `Page range "${pages}" is outside this PDF's ${inspected.pageCount} pages.`,
-      );
-    }
-  }
-
-  const supportsNativePdf = canSendPdfNatively(ctx.provider, ctx.model);
-  if (!range && inspected.pageCount > PDF_INLINE_PAGE_THRESHOLD) {
-    return err(
-      call.id,
-      `This PDF has ${inspected.pageCount} pages, which is too many to read at once. Use the pages parameter to read specific page ranges (e.g., pages: "1-5"). Maximum ${PDF_MAX_PAGES_PER_READ} pages per request.`,
-    );
-  }
-  if (!range && supportsNativePdf && inspected.bytes > PDF_MAX_NATIVE_SIZE) {
-    return err(call.id, `PDF file exceeds maximum allowed size of ${PDF_MAX_NATIVE_SIZE} bytes.`);
-  }
-  if (!range && supportsNativePdf) {
-    readSetInsert(readScopeKey(ctx), filePath, "");
-    return {
-      tool_use_id: call.id,
-      content: [
-        { type: "text", text: `[PDF] ${filePath} — ${inspected.pageCount} page(s)` },
-        {
-          type: "pdf",
-          source: {
-            type: "base64",
-            media_type: "application/pdf",
-            data: inspected.data.toString("base64"),
-          },
-          filename: basename(filePath),
-          pageCount: inspected.pageCount,
-          bytes: inspected.bytes,
-        },
-      ],
-    };
-  }
-  if (!canSendNatively(ctx.provider, ctx.model)) {
-    return err(
-      call.id,
-      `Reading PDFs requires a vision-capable provider; \`${ctx.provider}\` cannot render PDF pages.`,
-    );
-  }
-  if (!isPdftoppmAvailable()) {
-    return err(
-      call.id,
-      "Reading PDFs requires poppler-utils (pdftoppm). Install with `brew install poppler` on macOS or `apt-get install poppler-utils` on Debian/Ubuntu.",
-    );
-  }
-
-  const rendered = renderPdfPages(filePath, range);
-  if ("error" in rendered) return err(call.id, rendered.error);
-
-  const header = `[PDF] ${filePath} — ${rendered.pages.length} page(s) rendered`;
-  const content: ToolResultContentBlock[] = [{ type: "text", text: header }];
-  for (const page of rendered.pages) {
-    try {
-      content.push(
-        toImageBlock(
-          { data: page.toString("base64"), mediaType: "image/jpeg" },
-          ctx,
-          IMAGE_TARGET_RAW_SIZE,
-        ),
-      );
-    } catch (e) {
-      if (e instanceof ImageCompressError) return err(call.id, e.message);
-      throw e;
-    }
-  }
-  readSetInsert(readScopeKey(ctx), filePath, "");
-  return { tool_use_id: call.id, content };
 }

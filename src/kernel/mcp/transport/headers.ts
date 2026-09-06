@@ -1,13 +1,13 @@
 import { resolveAuthHeader } from "@/kernel/mcp/oauth/credentials.ts";
 import type { RemoteServerConfig } from "@/kernel/mcp/protocol/types.ts";
-import { getClientCapabilitiesHeaders } from "./capabilities.ts";
+import { clientCapabilitiesHeaders } from "./capabilities.ts";
 
 export async function buildHeaders(options: {
   serverName: string;
   config: RemoteServerConfig;
 }): Promise<Record<string, string>> {
   const { serverName, config } = options;
-  const out: Record<string, string> = { ...getClientCapabilitiesHeaders() };
+  const out: Record<string, string> = { ...clientCapabilitiesHeaders() };
   if (config.headers) {
     for (const [key, value] of Object.entries(config.headers)) out[key] = value;
   }

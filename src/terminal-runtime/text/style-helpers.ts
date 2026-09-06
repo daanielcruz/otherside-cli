@@ -1,6 +1,6 @@
 import chalk from "chalk";
-import type { TerminalColor } from "@/terminal-runtime/paint/style-model.js";
 import { type ColorChannel, colorize } from "@/terminal-runtime/text/color-codes.js";
+import type { TerminalColor } from "@/terminal-runtime/text/style-model.js";
 
 export const dim = (str: string): string => chalk.dim(str);
 

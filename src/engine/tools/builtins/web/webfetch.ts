@@ -7,18 +7,12 @@ import type { ToolCall, ToolResult } from "@/kernel/std/types/message.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 
 const MAX_BODY_BYTES = 1_000_000;
-const REQUEST_TIMEOUT_MS = 30_000;
+const REQUEST_TIMEOUT_MS = 60_000;
 const MAX_REDIRECTS = 5;
 const MAX_MARKDOWN_LENGTH = 100_000;
 
-const WEB_FETCH_GATE_SYSTEM_PROMPT = `You are extracting information from a fetched web page for a coding agent. Answer the user's question based ONLY on the page content provided.
-
- - Enforce a strict 125-character maximum for quotes from any source document. Open Source Software is ok as long as we respect the license.
- - Use quotation marks for exact language from articles; any language outside of the quotation should never be word-for-word the same.
- - You are not a lawyer and never comment on the legality of your own prompts and responses.
- - Never produce or reproduce exact song lyrics.
-
-Be concise. Include relevant details, code examples, and documentation excerpts as needed to answer the question.`;
+const WEB_FETCH_GUIDELINES =
+  "Provide a concise response based on the content above. Include relevant details, code examples, and documentation excerpts as needed.";
 
 const REJECTED_CONTENT_TYPE_SUBSTRINGS = [
   "application/octet-stream",
@@ -224,8 +218,8 @@ export const WebFetch: ToolHandler = {
       const gateModel = auxModel === "inherit" ? ctx.model : auxModel;
       const gate = await queryModel(ctx, {
         model: gateModel,
-        systemPrompt: WEB_FETCH_GATE_SYSTEM_PROMPT,
-        userPrompt: `Web page content:\n---\n${gateInput}\n---\n\n${question}`,
+        userPrompt: `Web page content:\n---\n${gateInput}\n---\n\n${question}\n\n${WEB_FETCH_GUIDELINES}`,
+        timeoutMs: REQUEST_TIMEOUT_MS,
       });
       if ("error" in gate) {
         return err(call.id, `WebFetch gate failed: ${gate.error}`);

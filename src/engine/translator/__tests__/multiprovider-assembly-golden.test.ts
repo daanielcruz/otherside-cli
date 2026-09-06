@@ -35,8 +35,11 @@ beforeEach(() => {
   _setMemoryDirOverrideForTesting("/workspace/fixture/memory");
   registerAllBuiltins();
 
-  const baseDir = priorConfigDir || tmpdir();
-  scratchDir = mkdtempSync(join(baseDir, "otherside-b09-scratch-"));
+  // Rooted in the system temp dir, never in an inherited config dir: the suite
+  // shares one process, so a config dir another file set is owned by that file
+  // and can be removed while this one is still inside it — which fails the
+  // chdir below instead of the assertion under test.
+  scratchDir = mkdtempSync(join(tmpdir(), "otherside-b09-scratch-"));
   process.env.OTHERSIDE_CONFIG_DIR = scratchDir;
 
   const fakeCredentials = {
@@ -177,7 +180,7 @@ function makeSnapshotObject(
 
 const ctx: RequestContext = {
   provider: "anthropic",
-  model: "claude-opus-4-8",
+  model: "claude-opus-5",
   effort: "high",
   permissionMode: "default",
   sessionId: "sess-fixture-00000000-0000-0000-0000-000000000000",
@@ -296,7 +299,7 @@ describe("multiprovider assembly goldens", () => {
       expect(harnessText).toContain("Multi-provider orchestration is active in Default mode.");
       expect(harnessText).toContain("# Available models");
       expect(harnessText).toContain("## anthropic");
-      expect(harnessText).toContain("claude-opus-4-8");
+      expect(harnessText).toContain("claude-opus-5");
       expect(harnessText).not.toContain("Match the tier to the task shape");
       expect(harnessText).not.toContain("emperor — the highest reasoning rank");
 
@@ -349,9 +352,17 @@ describe("multiprovider assembly goldens", () => {
       const agentProps = (agentTool!.input_schema as { properties?: Record<string, unknown> })
         .properties;
       const tierSchema = agentProps?.tier as { enum?: string[] } | undefined;
-      expect(agentProps?.provider).toBeUndefined();
       expect(tierSchema?.enum).toEqual(["emperor", "shogun", "daimyo", "samurai"]);
-      expect(agentProps?.model).toBeUndefined();
+
+      // Feudalism admits a literal fork route while keeping its ranks the only
+      // way to name a model: the pair is described without any catalog.
+      const routeDescriptions = [agentProps?.provider, agentProps?.model].map(
+        (prop) => (prop as { description?: string } | undefined)?.description ?? "",
+      );
+      for (const description of routeDescriptions) {
+        expect(description).toContain("fork");
+        expect(description).not.toMatch(/anthropic|codex|xai|kimi|antigravity|claude-|gpt-|grok/i);
+      }
 
       expect(agentTool!.description).toContain("Multi-provider orchestration (ACTIVE — feudalism)");
       expect(agentTool!.description).toContain("emperor — the highest reasoning rank");

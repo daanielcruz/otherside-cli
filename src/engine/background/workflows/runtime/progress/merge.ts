@@ -1,7 +1,7 @@
-import type { WorkflowPhaseDescriptor } from "@/engine/background/workflows/runtime/parser/types.ts";
+import type { WorkflowPhaseSpec } from "@/engine/background/workflows/runtime/parser/types.ts";
 import type {
-  WorkflowAgentProgress,
-  WorkflowProgressEntry,
+  WorkflowAgentStatus,
+  WorkflowProgressItem,
 } from "@/engine/background/workflows/runtime/store/types.ts";
 import type { WorkflowTaskStatus } from "@/kernel/channels/workflow-tasks.ts";
 
@@ -17,7 +17,7 @@ const PAD_CHAR = "0";
 export interface MergedPhase {
   title: string;
   status: "not-started" | "running" | "done" | "failed";
-  agents: WorkflowAgentProgress[];
+  agents: WorkflowAgentStatus[];
   doneCount: number;
   totalCount: number;
   tokens: number;
@@ -30,7 +30,7 @@ interface PhaseInfo {
 }
 
 interface CollectedProgress {
-  agents: WorkflowAgentProgress[];
+  agents: WorkflowAgentStatus[];
   phaseTitles: Map<number, PhaseInfo>;
 }
 
@@ -38,15 +38,15 @@ interface PhaseGroup {
   phaseIndex: number;
   title: string;
   kind?: string;
-  agents: WorkflowAgentProgress[];
+  agents: WorkflowAgentStatus[];
 }
 
 function pluralAgents(count: number): string {
   return count === 1 ? "agent" : "agents";
 }
 
-function collectWorkflowProgress(entries: WorkflowProgressEntry[]): CollectedProgress {
-  const agents = new Map<number, WorkflowAgentProgress>();
+function gatherWorkflowProgress(entries: WorkflowProgressItem[]): CollectedProgress {
+  const agents = new Map<number, WorkflowAgentStatus>();
   const phaseTitles = new Map<number, PhaseInfo>();
   for (const entry of entries) {
     if (entry.type === "workflow_agent") {
@@ -77,7 +77,7 @@ function createPhaseGroup(input: { phaseIndex: number; info?: PhaseInfo }): Phas
 }
 
 function groupAgentsByPhase(input: {
-  agents: WorkflowAgentProgress[];
+  agents: WorkflowAgentStatus[];
   phaseTitles: Map<number, PhaseInfo>;
 }): PhaseGroup[] | null {
   const { agents, phaseTitles } = input;
@@ -107,7 +107,7 @@ function groupAgentsByPhase(input: {
   return [...groups.values()].sort((a, b) => a.phaseIndex - b.phaseIndex);
 }
 
-function buildMergedFromGroup(group: PhaseGroup): MergedPhase {
+function mergeProgressFromGroup(group: PhaseGroup): MergedPhase {
   const doneCount = group.agents.filter((agent) => agent.state === "done").length;
   const errorCount = group.agents.filter(
     (agent) => agent.state === "error" && agent.stopped !== true,
@@ -122,7 +122,11 @@ function buildMergedFromGroup(group: PhaseGroup): MergedPhase {
   let latestProgress = 0;
   for (const agent of group.agents) {
     tokens += agent.tokens ?? 0;
-    if (agent.startedAt < earliestStart) earliestStart = agent.startedAt;
+    // A phase spans the work it actually did, so an agent still waiting for a slot
+    // carries no start time and cannot stretch the duration backwards.
+    if (agent.startedAt !== undefined && agent.startedAt < earliestStart) {
+      earliestStart = agent.startedAt;
+    }
     if (agent.lastProgressAt > latestProgress) latestProgress = agent.lastProgressAt;
   }
   const durationMs = earliestStart < Number.POSITIVE_INFINITY ? latestProgress - earliestStart : 0;
@@ -137,7 +141,7 @@ function buildMergedFromGroup(group: PhaseGroup): MergedPhase {
   };
 }
 
-function buildMergedFromDeclared(title: string): MergedPhase {
+function mergeProgressFromDeclared(title: string): MergedPhase {
   return {
     title,
     status: "not-started",
@@ -153,47 +157,63 @@ function normalizeTitle(title: string): string {
   return title.toLowerCase().trim();
 }
 
-function mergeDeclaredWithProgress(input: {
-  declared: WorkflowPhaseDescriptor[] | undefined;
+function groupLookupKey(title: string): string {
+  return title.toLowerCase().trim();
+}
+
+function mergeDeclaredPhasesWithProgress(input: {
+  declared: WorkflowPhaseSpec[] | undefined;
   groups: PhaseGroup[];
 }): MergedPhase[] {
   const { declared, groups } = input;
+  const candidates = new Map<string, PhaseGroup>();
+  for (const group of groups) {
+    const key = groupLookupKey(group.title);
+    if (!candidates.has(key)) candidates.set(key, group);
+  }
+
   const claimed = new Set<PhaseGroup>();
   const merged: MergedPhase[] = [];
-  function match(title: string): PhaseGroup | undefined {
-    const want = normalizeTitle(title);
-    for (const group of groups) {
+
+  for (const phase of declared ?? []) {
+    const want = groupLookupKey(phase.title);
+    let best: PhaseGroup | undefined;
+    let bestKey = "";
+    for (const [key, group] of candidates) {
       if (claimed.has(group)) continue;
-      const have = normalizeTitle(group.title);
-      if (want === have || have.startsWith(want) || want.startsWith(have)) {
-        claimed.add(group);
-        return group;
+      if (want === key || key.startsWith(want) || want.startsWith(key)) {
+        if (
+          !best ||
+          key.length < bestKey.length ||
+          (key.length === bestKey.length && key < bestKey)
+        ) {
+          best = group;
+          bestKey = key;
+        }
       }
     }
-    return undefined;
+    if (best) claimed.add(best);
+    merged.push(best ? mergeProgressFromGroup(best) : mergeProgressFromDeclared(phase.title));
   }
-  for (const phase of declared ?? []) {
-    const group = match(phase.title);
-    merged.push(group ? buildMergedFromGroup(group) : buildMergedFromDeclared(phase.title));
-  }
+
   for (const group of groups) {
-    if (!claimed.has(group)) merged.push(buildMergedFromGroup(group));
+    if (!claimed.has(group)) merged.push(mergeProgressFromGroup(group));
   }
   return merged;
 }
 
 export function buildMergedPhases(input: {
-  workflowProgress: WorkflowProgressEntry[];
-  phases?: WorkflowPhaseDescriptor[];
+  workflowProgress: WorkflowProgressItem[];
+  phases?: WorkflowPhaseSpec[];
 }): MergedPhase[] {
   const { workflowProgress, phases } = input;
-  const progress = collectWorkflowProgress(workflowProgress);
+  const progress = gatherWorkflowProgress(workflowProgress);
   const groups =
     groupAgentsByPhase({ agents: progress.agents, phaseTitles: progress.phaseTitles }) ?? [];
-  const merged = mergeDeclaredWithProgress({ declared: phases, groups });
+  const merged = mergeDeclaredPhasesWithProgress({ declared: phases, groups });
   if (merged.length === 0 && progress.agents.length > 0) {
     return [
-      buildMergedFromGroup({
+      mergeProgressFromGroup({
         phaseIndex: 0,
         title: SYNTHETIC_PHASE_TITLE,
         agents: progress.agents,
@@ -203,7 +223,7 @@ export function buildMergedPhases(input: {
   return merged;
 }
 
-export function computeWorkflowAgentCounts(input: {
+export function tallyWorkflowAgentCounts(input: {
   phases: MergedPhase[];
   declaredAgentCount: number;
 }): { doneAgents: number; totalAgents: number } {
@@ -228,7 +248,7 @@ function statusSuffix(status: WorkflowTaskStatus): string {
   return "";
 }
 
-function formatElapsedCompact(ms: number): string {
+function formatCompactElapsed(ms: number): string {
   const totalSeconds = Math.max(0, Math.floor(ms / MS_PER_SECOND));
   if (totalSeconds < SECONDS_PER_MINUTE) return `${totalSeconds}s`;
   const totalMinutes = Math.floor(totalSeconds / SECONDS_PER_MINUTE);
@@ -242,7 +262,7 @@ function formatElapsedCompact(ms: number): string {
   return `${Math.floor(totalHours / HOURS_PER_DAY)}d${String(totalHours % HOURS_PER_DAY).padStart(PAD_WIDTH, PAD_CHAR)}h`;
 }
 
-export function buildWorkflowHeader(input: {
+export function renderWorkflowHeader(input: {
   name: string;
   description: string;
   status: WorkflowTaskStatus;
@@ -251,6 +271,6 @@ export function buildWorkflowHeader(input: {
 }): { name: string; subtext: string; stats: string } {
   const { name, description, status, counts, elapsedMs } = input;
   const suffix = statusSuffix(status);
-  const stats = `${counts.doneAgents}/${counts.totalAgents} ${pluralAgents(counts.totalAgents)}${MIDDOT}${formatElapsedCompact(elapsedMs)}${suffix}`;
+  const stats = `${counts.doneAgents}/${counts.totalAgents} ${pluralAgents(counts.totalAgents)}${MIDDOT}${formatCompactElapsed(elapsedMs)}${suffix}`;
   return { name, subtext: description, stats };
 }

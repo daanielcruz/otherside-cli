@@ -48,6 +48,27 @@ interface DeviceLoginHandle {
   result: Promise<XaiTokens>;
 }
 
+class RefreshExchangeError extends Error {
+  constructor(
+    readonly status: number,
+    readonly responseText: string,
+  ) {
+    super(`xai token refresh ${status}: ${responseText}`);
+  }
+}
+
+function tokensChanged(current: XaiTokens, prior: XaiTokens): boolean {
+  return current.accessToken !== prior.accessToken || current.refreshToken !== prior.refreshToken;
+}
+
+function isInvalidGrantError(err: unknown): err is RefreshExchangeError {
+  return (
+    err instanceof RefreshExchangeError &&
+    err.status === 400 &&
+    /\binvalid_grant\b/i.test(err.responseText)
+  );
+}
+
 function decodeJwtPayload(jwt: string): Record<string, unknown> | null {
   const parts = jwt.split(".");
   if (parts.length < 2) return null;
@@ -177,7 +198,7 @@ async function refreshTokens(refreshToken: string): Promise<TokenResponse> {
   });
   if (!resp.ok) {
     const t = await resp.text().catch(() => "");
-    throw new Error(`xai token refresh ${resp.status}: ${t}`);
+    throw new RefreshExchangeError(resp.status, t);
   }
   return (await resp.json()) as TokenResponse;
 }
@@ -207,21 +228,46 @@ function tokensFromResponse(resp: TokenResponse, prior?: XaiTokens): XaiTokens {
 // single HTTP call.
 let refreshInFlight: Promise<XaiTokens> | null = null;
 
-function refreshStoredTokens(): Promise<XaiTokens> {
-  if (refreshInFlight) return refreshInFlight;
-  refreshInFlight = (async () => {
-    const current = await loadFor("xai");
-    if (!current) {
+async function executeRefresh(prior?: XaiTokens, opts?: { force?: boolean }): Promise<XaiTokens> {
+  try {
+    const stored = await loadFor("xai");
+    if (!stored) {
       throw new Error("not logged in — run `otherside login --provider xai`");
     }
-    const refreshed = await refreshTokens(current.refreshToken);
-    const next = tokensFromResponse(refreshed, current);
-    await saveFor("xai", next);
-    return next;
-  })().finally(() => {
+    // A token pair written by another flow won the rotation race. Use it instead
+    // of spending the single-use refresh token the caller originally observed.
+    if (prior && tokensChanged(stored, prior)) return stored;
+    if (!opts?.force && stored.expiresAt - REFRESH_SAFETY_MARGIN_MS > Date.now()) {
+      return stored;
+    }
+    try {
+      const refreshed = await refreshTokens(stored.refreshToken);
+      const next = tokensFromResponse(refreshed, stored);
+      await saveFor("xai", next);
+      return next;
+    } catch (err) {
+      // A different process can win the rotating-refresh race after our initial
+      // storage read. Reload once and continue with its persisted token pair.
+      if (isInvalidGrantError(err)) {
+        const reloaded = await loadFor("xai");
+        if (reloaded && tokensChanged(reloaded, stored)) return reloaded;
+      }
+      throw err;
+    }
+  } finally {
     refreshInFlight = null;
-  });
+  }
+}
+
+function runRefresh(prior?: XaiTokens, opts?: { force?: boolean }): Promise<XaiTokens> {
+  if (!refreshInFlight) refreshInFlight = executeRefresh(prior, opts);
   return refreshInFlight;
+}
+
+// Server-driven 401 recovery: the token looked valid locally but the server
+// rejected it, so the expiry margin must not short-circuit the refresh.
+export function forceRefreshTokens(prior?: XaiTokens): Promise<XaiTokens> {
+  return runRefresh(prior, { force: true });
 }
 
 export async function beginLogin(): Promise<DeviceLoginHandle> {
@@ -247,7 +293,7 @@ export async function login(): Promise<XaiTokens> {
 
 export const Auth: AuthStrategy = buildOauthAuthStrategy<XaiTokens>({
   providerId: "xai",
-  refresh: async () => refreshStoredTokens(),
+  refresh: async (prior) => runRefresh(prior),
 });
 
 export async function currentTokens(): Promise<XaiTokens> {
@@ -256,7 +302,7 @@ export async function currentTokens(): Promise<XaiTokens> {
     throw new Error("not logged in — run `otherside login --provider xai`");
   }
   if (tokens.expiresAt - REFRESH_SAFETY_MARGIN_MS <= Date.now()) {
-    return refreshStoredTokens();
+    return runRefresh(tokens);
   }
   return tokens;
 }

@@ -1,4 +1,3 @@
-import { useSyncExternalStore } from "react";
 import { makeStore, type Store } from "@/kernel/std/state/make-store.ts";
 
 export interface TranscriptLiveState {
@@ -55,19 +54,3 @@ export const transcriptLiveActions = {
     );
   },
 };
-
-export function useTranscriptLive(): TranscriptLiveState {
-  return useSyncExternalStore(
-    transcriptLiveStore.subscribe,
-    transcriptLiveStore.getState,
-    transcriptLiveStore.getState,
-  );
-}
-
-export function useTranscriptLiveSelector<T>(selector: (s: TranscriptLiveState) => T): T {
-  return useSyncExternalStore(
-    transcriptLiveStore.subscribe,
-    () => selector(transcriptLiveStore.getState()),
-    () => selector(transcriptLiveStore.getState()),
-  );
-}

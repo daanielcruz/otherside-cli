@@ -1,10 +1,10 @@
 import { loadEnabledMcpConfig } from "@/kernel/mcp/config.ts";
 import {
-  hasDirectoryReadCapability,
   hasResourcesCapability,
   isMcpSkillsEnabled,
   sanitizeMcpText,
   sanitizeMcpUri,
+  supportsResourceDirectoryRead,
 } from "@/kernel/mcp/protocol/parse.ts";
 import type { McpDirectoryEntry, McpResourceInfo } from "@/kernel/mcp/protocol/types.ts";
 import {
@@ -67,7 +67,7 @@ export type ReadDirectoryResult =
   | { kind: "ok"; resources: McpDirectoryEntry[] }
   | { kind: "controlled-error"; message: string };
 
-/** Claude's MCP wire-name normalization: exact names win, then normalized names. */
+/** MCP wire-name normalization: exact names win, then normalized names. */
 export function normalizeMcpServerName(name: string): string {
   let normalized = name.replace(/[^a-zA-Z0-9_-]/g, "_");
   if (name.startsWith("claude.ai ")) {
@@ -120,7 +120,7 @@ export async function readMcpDirectory(options: {
       message: "Directory listing is not enabled in this build.",
     };
   }
-  if (!hasDirectoryReadCapability(capabilities)) {
+  if (!supportsResourceDirectoryRead(capabilities)) {
     return {
       kind: "controlled-error",
       message: `Server "${serverName}" does not support directory listing.`,

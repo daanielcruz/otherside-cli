@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import type { MutableRefObject } from "react";
 import { notifySubscribers as notifyTaskSubscribers } from "@/engine/background/tasks/index.ts";
 import { setTaskOutputSession } from "@/engine/background/tasks/output-files.ts";
 import type { Agent } from "@/engine/queue/index.ts";
@@ -13,8 +12,10 @@ import type { TranscriptEntry } from "@/engine/session/record/types.ts";
 import type { SessionTitleSink } from "@/engine/session/resume.ts";
 import type { ContextUsageSnapshot } from "@/engine/session/usage/snapshot.ts";
 import { initScratchpadDir } from "@/harness/routines/scratchpad.ts";
+import { setActivePasteStore } from "@/kernel/std/paste/registry.ts";
 import type { PasteStore } from "@/kernel/std/types/paste.ts";
 import type { BrokerHandle } from "@/kernel/std/types/request.ts";
+import type { MutableRef } from "@/kernel/std/types/state.ts";
 
 export interface ClearTranscriptDeps {
   session: Session;
@@ -42,13 +43,13 @@ export interface ClearTranscriptDeps {
   resetRenderSurface: () => void;
   runSessionFinalizers: () => void;
   abortAllForkControllers: () => void;
-  runningRef: MutableRefObject<boolean>;
+  runningRef: MutableRef<boolean>;
   turnGuard: TurnGuard;
-  skillAbortRef: MutableRefObject<AbortController | null>;
-  currentAgentCallIdRef: MutableRefObject<string | null>;
-  generatorActiveRef: MutableRefObject<boolean>;
-  compactTerminalRef: MutableRefObject<boolean>;
-  pasteStoreRef: MutableRefObject<PasteStore>;
+  skillAbortRef: MutableRef<AbortController | null>;
+  currentAgentCallIdRef: MutableRef<string | null>;
+  generatorActiveRef: MutableRef<boolean>;
+  compactTerminalRef: MutableRef<boolean>;
+  pasteStoreRef: MutableRef<PasteStore>;
 }
 
 export type ClearTranscriptFn = () => void;
@@ -113,7 +114,9 @@ export function createClearTranscript(deps: ClearTranscriptDeps): ClearTranscrip
     transcriptBatch.flushNow();
     session.messages.splice(0);
     session.records.splice(0);
-    delete session.contentReplacementState;
+    // The new transcript file cannot reference marks in the old one.
+    session.preservedImageLedger = new Map();
+    delete session.toolOutputArchive;
     cleanupSessionHeapState(session.id, session.storageCwd);
     runSessionFinalizers();
     session.id = randomUUID();
@@ -127,6 +130,12 @@ export function createClearTranscript(deps: ClearTranscriptDeps): ClearTranscrip
     notifyTaskSubscribers();
     initScratchpadDir(session.storageCwd, session.id);
     pasteStoreRef.current = createPasteStore(session.id);
+    // Whoever holds an image (a paste, a media read, a generated picture, a
+    // server's prompt) reaches the store through the registry, while the turn
+    // expands placeholders against this ref. Swapping one without the other
+    // leaves them naming different stores, and every reference minted after the
+    // clear resolves to nothing — the image reads as literal text instead.
+    setActivePasteStore(pasteStoreRef.current);
     session.chain.headUuid = null;
     sessionTitle.reset();
     const brokerNow = broker.read();

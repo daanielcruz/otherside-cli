@@ -10,9 +10,6 @@ import type { ContentBlock } from "@/kernel/std/types/message.ts";
 
 registerAllProviders();
 
-const encoder = new TextEncoder();
-const decoder = new TextDecoder();
-
 function makeHost(
   messages: { role: "user"; content: ContentBlock[] }[],
   pendingUserInputDrainer: TurnLoopHost["pendingUserInputDrainer"] = () => [
@@ -61,39 +58,40 @@ function makeTextOnlyCompletionProvider(requests: string[]): Provider {
   return {
     ...providers.get("codex"),
     id: "codex",
-    stream: async function* (_ctx, body) {
+    startStreamAttempt: (_ctx, body) => {
       calls += 1;
+      const call = calls;
       requests.push(JSON.stringify(body));
-      yield encoder.encode(String(calls));
-    },
-    translateResponse: async function* (raw) {
-      let call = "";
-      for await (const chunk of raw) call += decoder.decode(chunk);
-      yield { kind: "message_start", id: `msg-${call}` };
-      if (call === "1") {
-        yield { kind: "text_delta", text: "TEXT_ONLY_BEFORE_COMPLETION" };
-        emitQueue.emitForCompletion({
-          class: "deferred_output",
-          ownerId: undefined,
-          isSubagentOwned: false,
-          payload: {
-            kind: "task_notification_xml",
-            text: "<task-notification>TEXT_ONLY_COMPLETION</task-notification>",
-            summary: "TEXT_ONLY_COMPLETION",
-          },
-          replayKey: "test:text-only-completion",
-        });
-      } else {
-        yield { kind: "text_delta", text: "TEXT_ONLY_COMPLETION_ACKNOWLEDGED" };
-      }
-      yield {
-        kind: "usage",
-        inputTokens: 1_000,
-        outputTokens: 100,
-        cacheCreationInputTokens: 0,
-        cacheReadInputTokens: 0,
+      return {
+        events: (async function* () {
+          yield { kind: "message_start", id: `msg-${call}` };
+          if (call === 1) {
+            yield { kind: "text_delta", text: "TEXT_ONLY_BEFORE_COMPLETION" };
+            emitQueue.emitForCompletion({
+              class: "deferred_output",
+              ownerId: undefined,
+              isSubagentOwned: false,
+              payload: {
+                kind: "task_notification_xml",
+                text: "<task-notification>TEXT_ONLY_COMPLETION</task-notification>",
+                summary: "TEXT_ONLY_COMPLETION",
+              },
+              replayKey: "test:text-only-completion",
+            });
+          } else {
+            yield { kind: "text_delta", text: "TEXT_ONLY_COMPLETION_ACKNOWLEDGED" };
+          }
+          yield {
+            kind: "usage",
+            inputTokens: 1_000,
+            outputTokens: 100,
+            cacheCreationInputTokens: 0,
+            cacheReadInputTokens: 0,
+          };
+          yield { kind: "message_stop", stop_reason: "stop" };
+        })(),
+        abort: () => {},
       };
-      yield { kind: "message_stop", stop_reason: "stop" };
     },
   };
 }

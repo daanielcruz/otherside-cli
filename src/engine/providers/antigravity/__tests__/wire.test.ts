@@ -34,10 +34,10 @@ const tools = [
   },
 ];
 
-describe("antigravity wire (agy 1.1.0)", () => {
-  it("emits the 1.1.0 User-Agent format", () => {
+describe("antigravity wire", () => {
+  it("emits the installed client User-Agent format", () => {
     expect(userAgent()).toMatch(
-      /^antigravity\/cli\/1\.1\.0 \(aidev_client; os_type=\w+; arch=\w+; auth_method=consumer\)$/,
+      /^antigravity\/cli\/1\.1\.13 \(aidev_client; os_type=\w+; arch=\w+; auth_method=consumer\)$/,
     );
   });
 
@@ -98,11 +98,10 @@ describe("antigravity wire (agy 1.1.0)", () => {
       },
       {
         role: "user",
-        parts: [{ functionResponse: { id: "pdf", name: "Read", response: { output: "" } } }],
-      },
-      {
-        role: "user",
-        parts: [{ inlineData: { mimeType: "application/pdf", data: "cGRm" } }],
+        parts: [
+          { functionResponse: { id: "pdf", name: "Read", response: { output: "" } } },
+          { inlineData: { mimeType: "application/pdf", data: "cGRm" } },
+        ],
       },
     ]);
 

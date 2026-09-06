@@ -12,20 +12,18 @@ import type {
 import { parse } from "acorn";
 import * as walk from "acorn-walk";
 import {
-  buildVmSafeError,
+  toSandboxError,
   WORKFLOW_SCRIPT_FILENAME,
 } from "@/engine/background/workflows/runtime/sandbox/errors.ts";
 
 const WORKFLOW_RESERVED_PREFIX = "__wRg$";
 
-export type WorkflowScriptCompileResult =
-  | { ok: true; vmScript: Script }
-  | { ok: false; error: string };
+export type WorkflowCompileOutcome = { ok: true; vmScript: Script } | { ok: false; error: string };
 
-export function compileWorkflowScript(scriptBody: string): WorkflowScriptCompileResult {
+export function compileWorkflowProgram(scriptBody: string): WorkflowCompileOutcome {
   try {
     Function(`async function _check() {"use strict";\n${scriptBody}\n}`);
-    const instrumented = instrumentWorkflowAwaits(scriptBody);
+    const instrumented = instrumentWorkflowSuspensions(scriptBody);
     return {
       ok: true,
       vmScript: new Script(wrapWorkflowScript(instrumented), {
@@ -37,7 +35,7 @@ export function compileWorkflowScript(scriptBody: string): WorkflowScriptCompile
   }
 }
 
-function instrumentWorkflowAwaits(scriptBody: string): string {
+function instrumentWorkflowSuspensions(scriptBody: string): string {
   const wrapped = `(async () => {"use strict";\n${scriptBody}\n})()`;
   const ast = parse(wrapped, {
     ecmaVersion: "latest",
@@ -182,5 +180,5 @@ function wrapWorkflowScript(scriptBody: string): string {
 
 function formatCompileError(error: unknown): string {
   if (error instanceof Error) return error.message;
-  return String(buildVmSafeError(error).message);
+  return String(toSandboxError(error).message);
 }

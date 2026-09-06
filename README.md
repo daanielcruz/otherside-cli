@@ -2,7 +2,7 @@
 
 <img src="assets/banner.png" alt="otherside cli" width="720">
 
-![status](https://img.shields.io/badge/status-0.9.1--pre-EC4899?style=for-the-badge&labelColor=1a1a2e)
+![status](https://img.shields.io/badge/status-1.0.0-EC4899?style=for-the-badge&labelColor=1a1a2e)
 ![typescript](https://img.shields.io/badge/typescript-5+-51158C?style=for-the-badge&logo=typescript&logoColor=white&labelColor=1a1a2e)
 ![license](https://img.shields.io/badge/license-MIT-51158C?style=for-the-badge&labelColor=1a1a2e)
 
@@ -16,15 +16,9 @@ Terminal coding agent for Anthropic, Codex, Antigravity, xAI, Kimi, DeepSeek, Mi
 <a href="https://apps.apple.com/app/id6769261609"><img src="assets/app-store.svg" alt="App Store" height="40"></a>
 <a href="https://play.google.com/store/apps/details?id=dunamis.otherside"><img src="assets/google-play.svg" alt="Google Play" height="40"></a>
 
-[**Overview**](#overview) · [**Ahead of the curve**](#ahead-of-the-curve) · [**Multiprovider orchestration**](#multiprovider-orchestration) · [**Design**](#design) · [**Features**](#features) · [**Install**](#installation) · [**Build**](#build-from-source) · [**Operation**](#operation) · [**Providers**](#providers) · [**Contributing**](#contributing)
+[**Overview**](#overview) · [**Coming next**](#coming-next) · [**Multiprovider orchestration**](#multiprovider-orchestration) · [**Design**](#design) · [**Features**](#features) · [**Install**](#installation) · [**Build**](#build-from-source) · [**Operation**](#operation) · [**Providers**](#providers) · [**Contributing**](#contributing)
 
 </div>
-
-> [!WARNING]
-> **Pre-release software.** Otherside is under active development. Expect bugs, rough edges, and breaking changes.
-
-> [!IMPORTANT]
-> **Otherside is being rebuilt in Go.** The next generation of this CLI is a ground-up Go implementation, currently in development. This TypeScript client remains the production client until the cutover and keeps receiving maintenance fixes.
 
 ## Overview
 
@@ -34,12 +28,11 @@ With native support for top-tier AI providers and local models, Otherside allows
 
 ## Coming next
 
-- **Go Rebuild**: Rebuilding the entire CLI in Go, focused on native performance, minimal memory (RAM), and CPU use.
 - **Non-verbose mode**: A quieter transcript that keeps tool noise out of the way.
 - **Memory usage improvements**: Lower footprint on long interactive sessions.
 - **Customizable agents panel**: Managing agent definitions from a dedicated panel.
 - **Multiprovider polish and new modes**: Refinements to orchestration plus additional routing modes.
-- **UI polish and bug fixes**: Continuing maintenance of this TypeScript client until the Go transition is complete (see [**Known Bugs**](#known-bugs)).
+- **UI polish**: Continued refinement of the terminal interface and its interactive panels.
 
 ## Multiprovider orchestration
 
@@ -59,7 +52,7 @@ Tier rosters, rank-ordered (rank 1 is the resolver's first choice):
 | Tier | Models |
 |---|---|
 | **emperor** | `claude-fable-5` · `gpt-5.6-sol` · `claude-opus-4-8` |
-| **shogun** | `grok-4.5` · `gpt-5.6-terra` · `claude-sonnet-5` · `glm-5.2` |
+| **shogun** | `grok-4.6` · `gpt-5.6-terra` · `claude-sonnet-5` · `glm-5.2` |
 | **daimyo** | `gpt-5.6-luna` · `gemini-3-flash` · `gemini-3.1-pro-high` · `grok-composer-2.5-fast` · `deepseek-v4-pro` |
 | **samurai** | `gemini-3-flash-low` · `gemini-3-flash-medium` · `glm-5-turbo` · `claude-haiku-4-5` · `deepseek-v4-flash` · `kimi-for-coding` · `minimax-m3` |
 
@@ -158,11 +151,11 @@ irm https://othersidecli.com/install.ps1 | iex
 Pin a release:
 
 ```bash
-OTHERSIDE_VERSION=v0.9.1-pre bash -c "$(curl -fsSL https://othersidecli.com/install.sh)"
+OTHERSIDE_VERSION=v1.0.0 bash -c "$(curl -fsSL https://othersidecli.com/install.sh)"
 ```
 
 ```powershell
-$env:OTHERSIDE_VERSION = "v0.9.1-pre"
+$env:OTHERSIDE_VERSION = "v1.0.0"
 irm https://othersidecli.com/install.ps1 | iex
 ```
 
@@ -188,7 +181,7 @@ First run walks you through provider login.
 
 ## Build from source
 
-Build from source is for contributors or local changes. It requires Bun 1.3.14+ and creates a local binary from your checkout.
+Build from source is for contributors or local changes. It requires Bun 1.4 canary (`bun upgrade --canary`) and creates a local binary from your checkout.
 
 ```bash
 git clone https://github.com/daanielcruz/otherside-cli.git
@@ -268,7 +261,7 @@ otherside --provider openai --model <your-model>
 | Anthropic | `anthropic` | OAuth | `claude-opus-4-8` | Subscription usage and web search. |
 | Codex | `codex` | OAuth | `gpt-5.6-sol` | GPT-5.x models and hosted image generation. |
 | Antigravity | `antigravity` | OAuth | `gemini-3-flash` | Google account path; Gemini, Claude, and GPT-OSS models. |
-| xAI | `xai` | OAuth | `grok-4.5` | Grok models through SuperGrok OAuth. |
+| xAI | `xai` | OAuth | `grok-4.6` | Grok models through SuperGrok OAuth. |
 | Kimi | `kimi` | API key | `kimi-for-coding` | K2.7 Code and usage limits in `/usage`. |
 | DeepSeek | `deepseek` | API key | `deepseek-v4-pro` | V4 Pro and Flash; configurable vision side-channel. |
 | MiniMax | `minimax` | API key | `minimax-m2.7` | M2.7 and M3 models. |
@@ -288,22 +281,10 @@ From the interactive TUI, sign in or out with:
 
 Using `antigravity` through a third-party client may violate Google's Terms of Service.
 
-## Known bugs
-
-Feel free to open issues or send feedback. Key unresolved issues include:
-
-- **Memory buildup**: Certain long-running sessions experience increased memory usage without timely cleanup (totally fixed in Go version).
-- **Parallel forks**: Subagent forks can execute erratically during sessions with high parallel agent counts (being fixed).
-- **UI glitches**: Minor layout issues like panel breakage or erratic scrolling may occur during active LLM streaming (being fixed).
-- **Temporary files**: Excessive temporary files can accumulate over time without being deleted (being fixed).
-- **Plugins market**: The plugin marketplace is not working as expected (being fixed).
-
-Since we are in an accelerated development process, many breakages can be expected. For security details and reporting, see our [**Security Policy**](https://github.com/daanielcruz/otherside-cli/security).
-
 ## Contributing
 
-TypeScript + Bun. PRs welcome.
+TypeScript + Bun. PRs welcome, and so are issues and feedback.
 
-Note that the project is being rebuilt in Go; this TypeScript codebase is in maintenance mode, so bug fixes are the most valuable contributions here.
+See [Build from source](#build-from-source) for setup and local build commands. Requires Bun 1.4 canary.
 
-See [Build from source](#build-from-source) for setup and local build commands. Requires Bun 1.3.14+.
+For security details and reporting, see our [**Security Policy**](https://github.com/daanielcruz/otherside-cli/security).

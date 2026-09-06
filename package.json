@@ -1,6 +1,6 @@
 {
   "name": "otherside",
-  "version": "0.9.1-pre",
+  "version": "1.0.0",
   "description": "Multi-provider coding agent CLI.",
   "type": "module",
   "private": true,
@@ -9,10 +9,10 @@
   },
   "scripts": {
     "dev": "bun run src/main.ts",
-    "build:native": "bun run scripts/build-native-audio.ts",
+    "build:native": "bun run scripts/build-native-audio.ts && bun run scripts/build-native-apple-terminal.ts",
     "build": "bun run build:native && bun build --compile --target=bun-darwin-arm64 --define 'process.env.NODE_ENV=\"production\"' --outfile=dist/otherside src/main.ts && (codesign --remove-signature dist/otherside 2>/dev/null || true) && codesign -s - dist/otherside",
     "build:install": "bun run build && cp dist/otherside $HOME/.local/bin/otherside",
-    "build:win": "bun run scripts/build-native-audio.ts x86_64-pc-windows-msvc && cp vendor/rg/x86_64-pc-windows-msvc/rg.bin src/engine/tools/_infra/embedded/rg.bin && cp vendor/ugrep/x86_64-pc-windows-msvc/ugrep.bin src/engine/tools/_infra/embedded/ugrep.bin && (bun build --compile --target=bun-windows-x64 --define 'process.env.NODE_ENV=\"production\"' --outfile=dist/otherside.exe src/main.ts; r=$?; git checkout -- src/engine/tools/_infra/embedded/rg.bin src/engine/tools/_infra/embedded/ugrep.bin; exit $r)",
+    "build:win": "bun run scripts/build-native-audio.ts x86_64-pc-windows-msvc && bun run scripts/build-native-apple-terminal.ts && cp vendor/rg/x86_64-pc-windows-msvc/rg.bin src/engine/tools/_infra/embedded/rg.bin && cp vendor/ugrep/x86_64-pc-windows-msvc/ugrep.bin src/engine/tools/_infra/embedded/ugrep.bin && (bun build --compile --target=bun-windows-x64 --define 'process.env.NODE_ENV=\"production\"' --outfile=dist/otherside.exe src/main.ts; r=$?; git checkout -- src/engine/tools/_infra/embedded/rg.bin src/engine/tools/_infra/embedded/ugrep.bin; exit $r)",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
     "format": "biome format --write .",
@@ -27,15 +27,11 @@
     "@types/lodash-es": "^4.17.12",
     "@types/pngjs": "^6.0.5",
     "@types/qrcode-terminal": "^0.12.2",
-    "@types/react": "^19.2.14",
-    "@types/react-reconciler": "^0.33.0",
-    "@types/scheduler": "^0.26.0",
     "@types/semver": "^7.7.1",
     "@types/signal-exit": "^3.0.0",
     "@types/stack-utils": "^2.0.3",
     "@types/ws": "^8.18.1",
     "ajv-formats": "^3.0.1",
-    "react-devtools-core": "^7.0.1",
     "typescript": "^5.9.0"
   },
   "engines": {
@@ -75,9 +71,6 @@
     "patch-console": "^2.0.0",
     "pngjs": "^7.0.0",
     "qrcode-terminal": "^0.12.0",
-    "react": "^19.2.5",
-    "react-reconciler": "^0.33.0",
-    "scheduler": "^0.27.0",
     "semver": "^7.8.4",
     "signal-exit": "^4",
     "slice-ansi": "^9.0.0",
@@ -87,12 +80,10 @@
     "supports-hyperlinks": "^4.4.0",
     "terminal-size": "^4.0.1",
     "type-fest": "^5.5.0",
-    "usehooks-ts": "^3.1.1",
     "werift": "0.23.0",
     "widest-line": "^6.0.0",
     "wrap-ansi": "^10.0.0",
     "ws": "^8.20.0",
-    "yoga-layout": "~3.2.1",
     "zod": "^4.4.3"
   }
 }

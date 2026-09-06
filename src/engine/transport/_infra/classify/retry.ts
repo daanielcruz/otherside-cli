@@ -3,6 +3,7 @@ import {
   finishPromptCacheAttempt,
   recordPromptCacheEvent,
 } from "@/devtools/prompt-cache.ts";
+import type { ProviderStreamAttempt, RetryDecision } from "@/engine/contract/types.ts";
 import {
   formatProviderError,
   resolveProviderError,
@@ -15,32 +16,28 @@ import {
 import { markProviderCooldown } from "@/engine/session/usage/provider-health.ts";
 import { classifyProviderError } from "@/engine/transport/_infra/classify/classify.ts";
 import { classifyError } from "@/engine/transport/_infra/classify/error-classifier.ts";
-import { StreamIdleTimeoutError } from "@/kernel/std/stream/idle-timeout.ts";
+import { StreamSilenceError } from "@/kernel/std/stream/idle-timeout.ts";
 import { ProviderHttpError } from "@/kernel/std/types/error-meta.ts";
 import type { ProviderEvent } from "@/kernel/std/types/events.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 
 export interface StreamRunner {
-  stream: (ctx: RequestContext, body: unknown) => AsyncIterable<Uint8Array>;
-  translateResponse: (raw: AsyncIterable<Uint8Array>) => AsyncIterable<ProviderEvent>;
+  startStreamAttempt: (ctx: RequestContext, body: unknown) => ProviderStreamAttempt;
   recoverableError: (err: unknown, ctx: RequestContext, attempt?: number) => RetryDecision;
   getResumeBody?: (ctx: RequestContext, originalBody: unknown) => unknown | null;
 }
-
-export type RetryDecision =
-  | { kind: "retry"; delayMs?: number; reason?: string }
-  | {
-      kind: "fail";
-      reason: string;
-      userMessage?: string;
-      quotaExhausted?: boolean;
-      quotaResetEpochMs?: number | null;
-    };
 
 export { DEFAULT_MAX_ATTEMPTS };
 
 export const DEFAULT_RETRY_BUDGET_MS = 180_000;
 export const SIDE_QUESTION_MAX_ATTEMPTS = 6;
+
+// Silence detection spends its whole deadline observing the quiet stream, so
+// the elapsed budget can drain before the first reconnect ever runs. Silent
+// streams therefore keep a guaranteed retry floor, and reconnect promptly —
+// a dead socket gains nothing from exponential backoff.
+export const STREAM_SILENCE_MIN_ATTEMPTS = 3;
+export const STREAM_SILENCE_RETRY_DELAY_MS = 1_000;
 
 export function retryBudgetExhausted(input: {
   attempts: number;
@@ -48,10 +45,11 @@ export function retryBudgetExhausted(input: {
   elapsedMs: number;
   nextDelayMs: number;
   maxElapsedMs: number;
+  minAttempts?: number;
 }): boolean {
-  return (
-    input.attempts >= input.maxAttempts || input.elapsedMs + input.nextDelayMs > input.maxElapsedMs
-  );
+  if (input.attempts >= input.maxAttempts) return true;
+  if (input.attempts < (input.minAttempts ?? 0)) return false;
+  return input.elapsedMs + input.nextDelayMs > input.maxElapsedMs;
 }
 
 // Shared with tui-observer.ts: what counts as "genuine content" for retry-banner
@@ -84,7 +82,11 @@ export async function* streamWithRetry(
   const maxAttempts = opts?.maxAttempts ?? maxAttemptsFromEnv();
   const baseDelayMs = opts?.baseDelayMs;
   const maxElapsedMs = opts?.maxElapsedMs ?? DEFAULT_RETRY_BUDGET_MS;
-  const startedAt = Date.now();
+  // Anchors the elapsed retry budget. Restamped whenever a failing attempt had
+  // already produced content: the budget exists to stop hopeless thrashing, and
+  // a stream that ran successfully for longer than the budget must not arrive
+  // at its first disconnect with every retry already spent.
+  let retryWindowStartedAt = Date.now();
   const abortSignal = ctx.abortSignal;
   const isBuilder = typeof buildBody === "function";
   let attempts = 0;
@@ -105,26 +107,34 @@ export async function* streamWithRetry(
       attempt: attempts + 1,
       resumed,
     });
+    let streamAttempt: ProviderStreamAttempt | null = null;
+    let streamCompleted = false;
+    let attemptProgressed = false;
     try {
-      const raw = provider.stream(ctx, body);
-      for await (const ev of provider.translateResponse(raw)) {
-        if (isContentEvent(ev)) emittedContent = true;
+      streamAttempt = provider.startStreamAttempt(ctx, body);
+      for await (const ev of streamAttempt.events) {
+        if (isContentEvent(ev)) {
+          emittedContent = true;
+          attemptProgressed = true;
+        }
         if (ev.kind === "message_start" && ev.requestId === undefined && ctx.responseRequestId) {
           ev.requestId = ctx.responseRequestId;
         }
         recordPromptCacheEvent(cacheAttempt, ev);
         yield ev;
       }
+      streamCompleted = true;
       finishPromptCacheAttempt(cacheAttempt, "completed");
       return;
     } catch (err) {
+      streamAttempt?.abort(err);
       finishPromptCacheAttempt(cacheAttempt, abortSignal?.aborted ? "aborted" : "transport_error");
       if (abortSignal?.aborted) throw err;
       // An idle timeout means the connection went quiet, not that it closed:
       // the pool still considers the tunnel healthy and hands it to the retry,
       // which then stalls the same way until the budget drains. Sticky so
       // every remaining attempt of this request bypasses the pool.
-      if (err instanceof StreamIdleTimeoutError) ctx.freshConnection = true;
+      if (err instanceof StreamSilenceError) ctx.freshConnection = true;
       const decision = provider.recoverableError(err, ctx, attempts + 1);
       const effectiveDecision: RetryDecision = decision;
       if (decision.kind === "retry" && emittedContent) {
@@ -147,11 +157,16 @@ export async function* streamWithRetry(
       }
       if (effectiveDecision.kind === "retry") {
         attempts += 1;
-        const delayMs =
-          typeof effectiveDecision.delayMs === "number"
+        const silentStream = err instanceof StreamSilenceError;
+        const delayMs = silentStream
+          ? STREAM_SILENCE_RETRY_DELAY_MS
+          : typeof effectiveDecision.delayMs === "number"
             ? effectiveDecision.delayMs
             : getRetryDelay(attempts, null, DEFAULT_MAX_DELAY_MS, baseDelayMs);
-        const elapsedMs = Date.now() - startedAt;
+        // A failing attempt that made progress proves the route works, so the
+        // retry window restarts instead of charging the streaming time to it.
+        if (attemptProgressed) retryWindowStartedAt = Date.now();
+        const elapsedMs = Date.now() - retryWindowStartedAt;
         if (
           retryBudgetExhausted({
             attempts,
@@ -159,6 +174,7 @@ export async function* streamWithRetry(
             elapsedMs,
             nextDelayMs: delayMs,
             maxElapsedMs,
+            ...(silentStream ? { minAttempts: STREAM_SILENCE_MIN_ATTEMPTS } : {}),
           })
         ) {
           const classified = resolveProviderError({
@@ -213,7 +229,10 @@ export async function* streamWithRetry(
           }
           throw new Error(surfaceMessage, { cause: err });
         }
-        const detail = effectiveDecision as { status?: number; message?: string };
+        const detail = effectiveDecision as {
+          status?: number;
+          message?: string;
+        };
         yield {
           kind: "retry_status",
           attempt: attempts,
@@ -253,7 +272,11 @@ export async function* streamWithRetry(
         };
         const errMsg = err instanceof Error ? err.message : String(err);
         const surfaceMessage = detail.userMessage ?? detail.message ?? errMsg;
-        const detailed = classifyProviderError(err, { attempt: attempts + 1 });
+        const detailed = classifyProviderError(err, {
+          attempt: attempts + 1,
+          provider: ctx.provider,
+          model: ctx.model,
+        });
         const meta = classifyError({
           err,
           decision: detailed,
@@ -302,6 +325,9 @@ export async function* streamWithRetry(
       }
       throw err;
     } finally {
+      if (!streamCompleted) {
+        streamAttempt?.abort(abortSignal?.reason ?? new Error("stream attempt stopped"));
+      }
       if (cacheAttempt && !cacheAttempt.finished) {
         finishPromptCacheAttempt(
           cacheAttempt,

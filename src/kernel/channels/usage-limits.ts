@@ -1,15 +1,15 @@
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
+import type { ProviderId, ProviderModelRoute } from "@/kernel/std/types/provider-ids.ts";
 
 export type RateLimitWindow = "five_hour" | "seven_day" | "seven_day_fable" | "overage";
 export const QUOTA_STATUSES = ["allowed", "allowed_warning", "rejected"] as const;
 export type QuotaStatus = (typeof QUOTA_STATUSES)[number];
 
-export interface RawWindowUtilization {
+export interface WindowUtilizationReading {
   utilization: number;
   resetsAt: number;
 }
 
-export type RawUtilization = Partial<Record<RateLimitWindow, RawWindowUtilization>>;
+export type RawUtilization = Partial<Record<RateLimitWindow, WindowUtilizationReading>>;
 
 export interface UsageLimitState {
   status: QuotaStatus;
@@ -20,7 +20,7 @@ export interface UsageLimitState {
   overageStatus?: QuotaStatus | undefined;
   overageResetsAt?: number | undefined;
   overageDisabledReason?: string | undefined;
-  isUsingOverage: boolean;
+  isOverageActive: boolean;
   surpassedThreshold?: number | undefined;
 }
 
@@ -42,6 +42,14 @@ export interface RoutingUsageState {
   observedAtEpochMs: number;
   balanceStatus: RoutingBalanceStatus;
 }
+
+/**
+ * One live route the session is currently allocating: the main conversation,
+ * a running delegated agent, or a live workflow-stage agent. A concrete model
+ * always travels as ProviderModelRoute; provider-only is an explicit unknown-
+ * model allocation and matches only provider-wide quota scopes.
+ */
+export type ProviderAllocation = ProviderModelRoute | { provider: ProviderId; model?: never };
 
 /**
  * What a quota scope applies to. `global` gates the whole provider; `family`
@@ -98,7 +106,7 @@ export function defaultUsageLimitSnapshot(): UsageLimitSnapshot {
     limits: {
       status: "allowed",
       unifiedRateLimitFallbackAvailable: false,
-      isUsingOverage: false,
+      isOverageActive: false,
     },
     warning: null,
     routing: { byProvider: {}, byProviderScope: {} },

@@ -30,3 +30,12 @@ export function parseWireToolName(name: string): [string, string] | null {
   if (!server || !tool) return null;
   return [server, tool];
 }
+
+// A plugin-owned MCP server keys internally as `plugin:<name>@<marketplace>:<server>`;
+// the marketplace qualifier is identity plumbing, dropped from the shown name.
+export function displayMcpServerName(name: string): string {
+  const parts = name.split(":");
+  if (parts[0] !== "plugin" || parts.length < 3) return name;
+  const pluginName = parts[1]!.split("@")[0]!;
+  return `plugin:${pluginName}:${parts.slice(2).join(":")}`;
+}

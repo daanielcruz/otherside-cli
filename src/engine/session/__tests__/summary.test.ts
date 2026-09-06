@@ -32,22 +32,18 @@ const fakeProvider = {
     if (failure) throw failure;
     return { model: "summary-retry-model" };
   },
-  stream: (_ctx: RequestContext, _body: unknown) => {
+  startStreamAttempt: () => {
     const index = streamCalls;
     streamCalls += 1;
     onStream?.(index);
     const outcome = outcomes[index];
-    return (async function* () {
-      if (outcome instanceof Error) throw outcome;
-      yield new Uint8Array([index]);
-    })();
-  },
-  translateResponse: async function* (raw: AsyncIterable<Uint8Array>) {
-    for await (const chunk of raw) {
-      const outcome = outcomes[chunk[0] ?? -1];
-      if (outcome instanceof Error || outcome === undefined) continue;
-      yield* outcome;
-    }
+    return {
+      events: (async function* () {
+        if (outcome instanceof Error) throw outcome;
+        if (outcome !== undefined) yield* outcome;
+      })(),
+      abort: () => {},
+    };
   },
   recoverableError: (err: unknown) => ({
     kind: "fail",

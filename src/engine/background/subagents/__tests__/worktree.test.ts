@@ -327,6 +327,69 @@ describe("worktree lifecycle logic", () => {
     expect(dirExists).toBe(true);
   });
 
+  // The incident shape: the nested checkout lands on a path the outer repo
+  // GITIGNORES, so the baseline fingerprint (exclude-standard) cannot see it
+  // and only the nested-repo gate stands between the work and deletion.
+  async function setupRepoIgnoringNested(dir: string, ignored: string): Promise<void> {
+    await setupGitRepo(dir);
+    await writeFile(join(dir, ".gitignore"), `/${ignored}/\n`);
+    runGit(dir, ["add", ".gitignore"]);
+    commitGit(dir, "ignore nested checkout dir");
+  }
+
+  test("dirty nested linked worktree of a child repo -> area preserved", async () => {
+    await setupRepoIgnoringNested(tempDir, "child-checkout");
+    const childRepo = join(tempDir, "child-project");
+    await mkdir(childRepo, { recursive: true });
+    await setupGitRepo(childRepo);
+    const wt = await createWorktree(tempDir, "fork_nested_dirty");
+    expect(wt).not.toBeNull();
+    if (!wt) return;
+
+    const nestedPath = join(wt.path, "child-checkout");
+    runGit(childRepo, ["worktree", "add", "--detach", nestedPath]);
+    await writeFile(join(nestedPath, "readme.txt"), "uncommitted nested work");
+
+    const cleanupRes = await wt.cleanup();
+    expect(cleanupRes.deleted).toBe(false);
+    expect(await pathExists(nestedPath)).toBe(true);
+  });
+
+  test("clean nested linked worktree -> area removed and owner metadata pruned", async () => {
+    await setupRepoIgnoringNested(tempDir, "child-checkout");
+    const childRepo = join(tempDir, "child-project");
+    await mkdir(childRepo, { recursive: true });
+    await setupGitRepo(childRepo);
+    const wt = await createWorktree(tempDir, "fork_nested_clean");
+    expect(wt).not.toBeNull();
+    if (!wt) return;
+
+    const nestedPath = join(wt.path, "child-checkout");
+    runGit(childRepo, ["worktree", "add", "--detach", nestedPath]);
+
+    const cleanupRes = await wt.cleanup();
+    expect(cleanupRes.deleted).toBe(true);
+    expect(await pathExists(wt.path)).toBe(false);
+    // The child repo keeps no orphaned admin entry for the deleted checkout.
+    const registered = runGit(childRepo, ["worktree", "list", "--porcelain"]);
+    expect(registered).not.toContain("child-checkout");
+  });
+
+  test("full nested repo owning its object database -> area preserved", async () => {
+    await setupRepoIgnoringNested(tempDir, "scratch-repo");
+    const wt = await createWorktree(tempDir, "fork_nested_full");
+    expect(wt).not.toBeNull();
+    if (!wt) return;
+
+    const nestedPath = join(wt.path, "scratch-repo");
+    await mkdir(nestedPath, { recursive: true });
+    await setupGitRepo(nestedPath);
+
+    const cleanupRes = await wt.cleanup();
+    expect(cleanupRes.deleted).toBe(false);
+    expect(await pathExists(nestedPath)).toBe(true);
+  });
+
   test("agent commits a local change -> preserved", async () => {
     await setupGitRepo(tempDir);
     const wt = await createWorktree(tempDir, "fork_local_commit");

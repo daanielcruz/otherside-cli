@@ -1,6 +1,13 @@
 import { describe, expect, it } from "bun:test";
 import type { RoutingUsageSnapshot } from "@/engine/session/usage/limits.ts";
-import { blockedRoutingRows } from "../data";
+import {
+  beginUsageLoad,
+  blockedRoutingRows,
+  failUsageLoad,
+  initialUsageTab,
+  restartUsageLoad,
+  usageTabIndex,
+} from "../data";
 
 function snapshot(
   byProvider: RoutingUsageSnapshot["byProvider"],
@@ -8,6 +15,48 @@ function snapshot(
 ): RoutingUsageSnapshot {
   return { byProvider, byProviderScope };
 }
+
+describe("usage tab identity", () => {
+  it("opens /usage on the current provider", () => {
+    expect(initialUsageTab("current", "kimi")).toBe("kimi");
+    expect(initialUsageTab("current", "codex")).toBe("codex");
+  });
+
+  it("keeps the selected provider when credential tabs expand or reorder", () => {
+    const selected = initialUsageTab("current", "kimi");
+    expect(usageTabIndex([{ id: "general" }, { id: "kimi" }], selected)).toBe(1);
+    expect(
+      usageTabIndex(
+        [
+          { id: "general" },
+          { id: "anthropic" },
+          { id: "antigravity" },
+          { id: "codex" },
+          { id: "kimi" },
+        ],
+        selected,
+      ),
+    ).toBe(4);
+  });
+});
+
+describe("usage refresh state", () => {
+  const loaded = { status: "loaded" as const, data: { windows: ["weekly"] } };
+
+  it("preserves the last payload while restarting and loading", () => {
+    const idle = restartUsageLoad(loaded);
+    expect(idle).toEqual({ status: "idle", data: loaded.data });
+    expect(beginUsageLoad(idle)).toEqual({ status: "loading", data: loaded.data });
+  });
+
+  it("preserves the last payload when refresh fails", () => {
+    expect(failUsageLoad(loaded, "timeout")).toEqual({
+      status: "error",
+      data: loaded.data,
+      message: "timeout",
+    });
+  });
+});
 
 describe("blockedRoutingRows", () => {
   it("returns no rows when nothing is over threshold", () => {

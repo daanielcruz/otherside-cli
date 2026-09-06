@@ -14,7 +14,7 @@ import type {
 } from "@/engine/queue/runtime/compact/support.ts";
 import { clearLastUsage, getLastUsage, setLastUsage } from "@/engine/session/compact/last-usage.ts";
 import { sessionPathForCwd } from "@/engine/session/paths.ts";
-import { loadSessionForResume } from "@/engine/session/reader.ts";
+import { loadSessionForResume, readActiveChainLines } from "@/engine/session/reader.ts";
 import {
   isCompactionBoundary,
   Session,
@@ -237,6 +237,53 @@ describe("auto compact failure state", () => {
     expect(resumedText).toContain("latest assistant");
   });
 
+  /**
+   * The preserve chain round-trip: the boundary the auto-compact writes names
+   * itself (uuid) and the preserved tail in both metadata forms, and the resume
+   * chain read validates that metadata and relinks anchor → head → tail so the
+   * preserved rows hang off the boundary instead of the replaced history.
+   */
+  it("writes the preserve chain on the boundary and the resume read relinks it", async () => {
+    const bodies: unknown[] = [];
+    providers.register(makeProvider("success", bodies));
+    const { deps, session } = makeDeps("preserve-chain-submission");
+    persistSessionRecords(session);
+
+    const events = await collect(maybeCompact(deps));
+    expect(events.find((event) => event.kind === "compact_done")?.mode).toBe("summary");
+
+    const stored = readFileSync(sessionPathForCwd(session.storageCwd, session.id), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    const boundary = stored.find((line) => line.subtype === "compact_boundary");
+    expect(boundary).toBeDefined();
+    const boundaryUuid = boundary?.uuid;
+    expect(typeof boundaryUuid).toBe("string");
+    const metadata = boundary?.compactMetadata as {
+      preservedSegment?: { headUuid: string; tailUuid: string; anchorUuid: string };
+      preservedMessages?: { uuids: string[]; anchorUuid: string };
+    };
+    // An api round starts at an assistant id, so the preserved group is the
+    // final assistant message alone.
+    expect(metadata.preservedSegment).toEqual({
+      headUuid: "assistant-2",
+      tailUuid: "assistant-2",
+      anchorUuid: boundaryUuid as string,
+    });
+    expect(metadata.preservedMessages).toEqual({
+      uuids: ["assistant-2"],
+      anchorUuid: boundaryUuid as string,
+    });
+
+    const chainLines = (await readActiveChainLines(session.id)).map(
+      (line) => JSON.parse(line) as Record<string, unknown>,
+    );
+    const parentOf = (uuid: string): unknown =>
+      chainLines.find((line) => line.uuid === uuid)?.parentUuid;
+    expect(parentOf("assistant-2")).toBe(boundaryUuid);
+  });
+
   it("keeps explicit compact retryable after repeated invalid summaries", async () => {
     const bodies: unknown[] = [];
     providers.register(makeProvider("short", bodies));
@@ -269,9 +316,9 @@ describe("auto compact failure state", () => {
     deps.clearNestedMemory = () => {
       nestedMemoryClears += 1;
     };
-    session.contentReplacementState = {
-      seenIds: new Set(["existing-call"]),
-      replacements: new Map([["existing-call", "existing replacement"]]),
+    session.toolOutputArchive = {
+      observedCallIds: new Set(["existing-call"]),
+      notices: new Map([["existing-call", "existing replacement"]]),
     };
     injections.push("existing injection");
     setLastUsage({
@@ -313,9 +360,9 @@ describe("auto compact failure state", () => {
     deps.clearNestedMemory = () => {
       nestedMemoryClears += 1;
     };
-    session.contentReplacementState = {
-      seenIds: new Set(["existing-call"]),
-      replacements: new Map([["existing-call", "existing replacement"]]),
+    session.toolOutputArchive = {
+      observedCallIds: new Set(["existing-call"]),
+      notices: new Map([["existing-call", "existing replacement"]]),
     };
     injections.push("existing injection");
     setLastUsage({
@@ -368,6 +415,7 @@ function makeDeps(turnId: string): {
           effort: "high",
           fastMode: false,
           permissionMode: "default",
+          orchestrationMode: "disabled",
           ultracode: false,
         }),
         dispatch: () => {},
@@ -435,13 +483,13 @@ function makeProvider(mode: ProviderMode, bodies: unknown[]): Provider {
       bodies.push(body);
       return body;
     },
-    stream: async function* () {
-      yield new TextEncoder().encode("compact-test");
-    },
-    translateResponse: async function* () {
-      yield { kind: "message_start", id: "compact-message" };
-      for (const event of providerEvents(mode)) yield event;
-    },
+    startStreamAttempt: () => ({
+      events: (async function* () {
+        yield { kind: "message_start", id: "compact-message" };
+        for (const event of providerEvents(mode)) yield event;
+      })(),
+      abort: () => {},
+    }),
   };
 }
 
@@ -509,7 +557,7 @@ function compactSnapshot(
     injections: [...injections],
     usage: getLastUsage(),
     compactState,
-    contentReplacementState: session.contentReplacementState,
+    toolOutputArchive: session.toolOutputArchive,
   });
 }
 

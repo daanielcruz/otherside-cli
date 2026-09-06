@@ -1,4 +1,3 @@
-import { type ReactNode } from "react";
 import { getProviderConfig, listProviderConfigs } from "@/engine/contract/registry.ts";
 import { effortLevelsForModel, modelDisplayWithContext } from "@/engine/model/catalog.ts";
 import {
@@ -8,24 +7,25 @@ import {
 } from "@/engine/model/facts/capabilities-runtime.ts";
 import { imageGeneratorLabel } from "@/engine/providers/image-generation.ts";
 import { voiceProviderLabel } from "@/engine/voice/index.ts";
-import { type Color as InkColor } from "@/ink";
 import {
-  effectiveOrchestrationMode,
-  normalizeWorkflowSizeGuideline,
+  normalizeWorkflowSizeClass,
   type UserConfig,
-  WORKFLOW_SIZE_GUIDELINES,
-  type WorkflowSizeGuideline,
+  WORKFLOW_SIZE_CLASSES,
+  type WorkflowSizeClass,
 } from "@/kernel/config/config.ts";
+import { DEFAULT_EDITOR_MODE, type EditorMode } from "@/kernel/config/editor-mode.ts";
+import { wrapIndex } from "@/kernel/std/math.ts";
 import {
   ORCHESTRATION_MODE_VALUES,
   type OrchestrationMode,
   orchestrationModeLabel,
-} from "@/kernel/config/orchestration-mode.ts";
+} from "@/kernel/std/types/orchestration-mode.ts";
 import {
   isImageGeneratorProviderId,
   isVoiceProviderId,
   type ProviderId,
-} from "@/kernel/config/provider-ids.ts";
+  providerDisplayName,
+} from "@/kernel/std/types/provider-ids.ts";
 import type { PermissionMode } from "@/kernel/std/types/request.ts";
 import {
   type CodexTokens,
@@ -34,7 +34,8 @@ import {
   type OpenAiCustomCreds,
 } from "@/kernel/storage/credentials.ts";
 import type { BrokerState } from "@/store/app-store/broker.ts";
-import { Color } from "@/ui/theme/theme.ts";
+
+import { Color, type ColorValue } from "@/ui/theme/theme.ts";
 
 export type TabId = "details" | "config";
 
@@ -50,11 +51,12 @@ export type RowKind =
   | "imageParserProvider"
   | "imageParserModel"
   | "workflowSizeGuideline"
+  | "outputStyle"
   | "readonly";
 
 export interface SettingsRow {
   label: string;
-  labelSuffix?: ReactNode | undefined;
+  labelSuffix?: string | undefined;
   labelSuffixWidth?: number | undefined;
   value?: string | undefined;
   description?: string | undefined;
@@ -62,13 +64,13 @@ export interface SettingsRow {
   id?: string | undefined;
   active?: boolean | undefined;
   muted?: boolean | undefined;
-  valueColor?: InkColor | undefined;
+  valueColor?: ColorValue | undefined;
 }
 
 export interface ProviderCredentialDisplay {
   value: string;
   muted?: boolean | undefined;
-  valueColor?: InkColor | undefined;
+  valueColor?: ColorValue | undefined;
 }
 
 export function configPatch(previous: UserConfig, next: UserConfig): Partial<UserConfig> {
@@ -113,10 +115,14 @@ export function detailsRows(
     row("Version", version, "readonly"),
     row("cwd", process.cwd(), "readonly"),
     blank(),
-    row("Model", modelDisplayWithContext(state.model), "readonly"),
+    row(
+      "Model",
+      modelDisplayWithContext({ provider: state.provider, model: state.model }),
+      "readonly",
+    ),
     row("Permission mode", permissionLabel(state), "readonly"),
   ];
-  if (effortLevelsForModel(state.model, state.provider).length > 0) {
+  if (effortLevelsForModel({ provider: state.provider, model: state.model }).length > 0) {
     const effortLabel = state.effort ?? "default";
     rows.push(row("Effort", effortLabel, "readonly", { valueColor: effortColor(effortLabel) }));
   }
@@ -127,7 +133,7 @@ export function detailsRows(
       const display = providerCredentialDisplay(provider, credentials);
       const active = provider === state.provider;
       const value = provider === state.provider ? `active · ${display.value}` : display.value;
-      return row(getProviderConfig(provider)?.provider.label ?? provider, value, "readonly", {
+      return row(providerDisplayName(provider), value, "readonly", {
         muted: display.muted,
         valueColor: active ? Color.success : undefined,
       });
@@ -175,23 +181,60 @@ export function configRows(
   cfg: UserConfig,
   credentials: CredentialsBundle | null,
 ): SettingsRow[] {
-  const orchestrationMode = effectiveOrchestrationMode(cfg);
+  const orchestrationMode = state.orchestrationMode;
   const rows: SettingsRow[] = [
+    row("Provider", providerDisplayName(state.provider), "provider"),
     row(
-      "Provider",
-      getProviderConfig(state.provider)?.provider.label ?? state.provider,
-      "provider",
+      "Model",
+      modelDisplayWithContext({ provider: state.provider, model: state.model }),
+      "model",
     ),
-    row("Model", modelDisplayWithContext(state.model), "model"),
-    row("Default permission mode", permissionLabel(state), "permission"),
+    row("Orchestration", orchestrationModeLabel(orchestrationMode), "bool", {
+      id: "multiprovider",
+      description: orchestrationDescription(orchestrationMode),
+    }),
   ];
+  if (orchestrationMode === "feudalism") {
+    rows.push(
+      row("Quota fallback", (cfg.quotaFallback ?? true) ? "enabled" : "disabled", "bool", {
+        id: "quotaFallback",
+        description:
+          (cfg.quotaFallback ?? true)
+            ? "Uses another provider when the preferred provider hits its quota."
+            : "Stops when the preferred provider hits its quota.",
+      }),
+      row("Chain of command", (cfg.chainOfCommand ?? true) ? "enabled" : "disabled", "bool", {
+        id: "chainOfCommand",
+        description:
+          (cfg.chainOfCommand ?? true)
+            ? "Nested agents cannot launch above their own tier."
+            : "Nested agents may request any tier.",
+      }),
+    );
+  }
+  rows.push(
+    row("Multi-model fork", (cfg.multiModelFork ?? false) ? "enabled" : "disabled", "bool", {
+      id: "multiModelFork",
+      description:
+        (cfg.multiModelFork ?? false)
+          ? "Agents may run on another provider/model after you approve the extra cost."
+          : "Agents always inherit this session's provider and model.",
+    }),
+  );
+  rows.push(row("Default permission mode", permissionLabel(state), "permission"));
   if (!canSendNatively(state.provider, state.model) && !autoRoutesNonVision(state.provider)) {
     const parser = cfg.imageParserProvider;
-    const parserLabel = parser ? (getProviderConfig(parser)?.provider.label ?? parser) : "off";
+    const parserLabel = parser ? providerDisplayName(parser) : "off";
     rows.push(row("Image parser provider", parserLabel, "imageParserProvider"));
     if (parser) {
       const modelId = cfg.imageParserModel ?? resolveParserModel(parser);
-      rows.push(row("Image parser model", modelDisplayWithContext(modelId), "imageParserModel"));
+      rows.push(
+        row(
+          "Image parser model",
+          modelDisplayWithContext({ provider: parser, model: modelId }),
+          "imageParserModel",
+        ),
+      );
     }
   }
   rows.push(
@@ -218,6 +261,10 @@ export function configRows(
     row("Show tips", boolText(cfg.showTips ?? true), "bool", {
       id: "showTips",
     }),
+    row("Thinking summaries", boolText(cfg.showThinkingSummaries ?? true), "bool", {
+      id: "showThinkingSummaries",
+    }),
+    row("Verbose output", boolText(cfg.verbose ?? false), "bool", { id: "verbose" }),
   );
   rows.push(
     row("Encourage parallel tasks", (cfg.parallelTasks ?? false) ? "enabled" : "disabled", "bool", {
@@ -227,39 +274,31 @@ export function configRows(
       id: "enableWorkflows",
     }),
     row(
-      "Workflow size guideline",
-      normalizeWorkflowSizeGuideline(cfg.workflowSizeGuideline),
+      "Ultracode keyword trigger",
+      (cfg.workflowKeywordTrigger ?? true) ? "enabled" : "disabled",
+      "bool",
+      {
+        id: "workflowKeywordTrigger",
+        description: "writing the keyword in a prompt opts that turn into orchestration",
+      },
+    ),
+    row(
+      "Dynamic workflow size",
+      normalizeWorkflowSizeClass(cfg.workflowSizeGuideline) ?? "default (medium)",
       "workflowSizeGuideline",
       {
         id: "workflowSizeGuideline",
         description: workflowSizeGuidelineDescription(cfg.workflowSizeGuideline),
       },
     ),
-    row("Orchestration", orchestrationModeLabel(orchestrationMode), "bool", {
-      id: "multiprovider",
-      description: orchestrationDescription(orchestrationMode),
-    }),
   );
-  if (orchestrationMode === "feudalism") {
-    rows.push(
-      row("Quota fallback", (cfg.quotaFallback ?? true) ? "enabled" : "disabled", "bool", {
-        id: "quotaFallback",
-        description:
-          (cfg.quotaFallback ?? true)
-            ? "Uses another provider when the preferred provider hits its quota."
-            : "Stops when the preferred provider hits its quota.",
-      }),
-      row("Chain of command", (cfg.chainOfCommand ?? true) ? "enabled" : "disabled", "bool", {
-        id: "chainOfCommand",
-        description:
-          (cfg.chainOfCommand ?? true)
-            ? "Nested agents cannot launch above their own tier."
-            : "Nested agents may request any tier.",
-      }),
-    );
-  }
+  const editorMode = cfg.editorMode ?? DEFAULT_EDITOR_MODE;
   rows.push(
-    row("Output style", cfg.outputStyle ?? "default", "readonly"),
+    row("Editor mode", editorMode, "bool", {
+      id: "editorMode",
+      description: editorModeDescription(editorMode),
+    }),
+    row("Output style", cfg.outputStyle ?? "default", "outputStyle", { id: "outputStyle" }),
     row("Language", cfg.language?.trim() || "Default (English)", "language"),
   );
   if (getProviderConfig(state.provider)?.featureFlags?.fastMode) {
@@ -314,23 +353,20 @@ export function cycle<T extends string>(items: readonly T[], current: T, directi
   return items[wrapIndex(idx + direction, items.length)] ?? current;
 }
 
-export function wrapIndex(index: number, length: number): number {
-  return ((index % length) + length) % length;
-}
-
-export const WORKFLOW_SIZE_GUIDELINE_OPTIONS: readonly WorkflowSizeGuideline[] =
-  WORKFLOW_SIZE_GUIDELINES;
+export const WORKFLOW_SIZE_CLASS_OPTIONS: readonly WorkflowSizeClass[] = WORKFLOW_SIZE_CLASSES;
 
 export function workflowSizeGuidelineDescription(value: unknown): string {
-  switch (normalizeWorkflowSizeGuideline(value)) {
+  switch (normalizeWorkflowSizeClass(value)) {
     case "small":
       return "Advisory target: keep workflows under 5 agents.";
     case "medium":
       return "Advisory target: keep workflows under 15 agents.";
     case "large":
       return "Advisory target: keep workflows under 50 agents.";
-    default:
+    case "unrestricted":
       return "No advisory workflow-size target.";
+    default:
+      return "Default advisory target: keep workflows under 15 agents.";
   }
 }
 
@@ -338,14 +374,27 @@ export function boolText(value: boolean): string {
   return value ? "true" : "false";
 }
 
+/**
+ * What each editing model gives the prompt. The mode is resolved once when the
+ * prompt is built, so the row says plainly when a change starts applying rather
+ * than leaving the reader to wonder why nothing moved.
+ */
+export function editorModeDescription(mode: EditorMode): string {
+  const editing =
+    mode === "vim"
+      ? "Modal editing in the prompt: normal, insert and visual, with counts, operators and text objects."
+      : "The prompt keeps its readline editing throughout.";
+  return `${editing} Takes effect from the next session.`;
+}
+
 export function orchestrationDescription(mode: OrchestrationMode): string {
   switch (mode) {
     case "disabled":
-      return "Agents use models from the current provider only.";
+      return "Agents use models from the current provider only. Full setup in /orchestration.";
     case "default":
-      return "Agents can select any available provider and model.";
+      return "Agents can select any available provider and model. Full setup in /orchestration.";
     case "feudalism":
-      return "Routes each delegated task through the emperor, shogun, daimyo, or samurai tier roster.";
+      return "Routes each delegated task through the emperor, shogun, daimyo, or samurai tier roster. Full setup in /orchestration.";
   }
 }
 
@@ -367,10 +416,10 @@ export function permissionLabel(state: Readonly<BrokerState>): string {
   return PERMISSION_MODE_SHORT_TITLE[state.permissionMode];
 }
 
-export function effortColor(value: string): InkColor {
+export function effortColor(value: string): ColorValue {
   if (value === "medium") return Color.success;
   if (value === "high") return Color.primary;
-  if (value === "xhigh") return Color.primaryGlow;
+  if (value === "xhigh") return Color.panelAccent;
   if (value === "max") return Color.error;
   if (value === "low") return Color.text;
   return Color.muted;
@@ -393,8 +442,8 @@ export function sortProvidersByAuthKind(ids: readonly ProviderId[]): ProviderId[
     const ra = PROVIDER_AUTH_RANK[a] ?? 99;
     const rb = PROVIDER_AUTH_RANK[b] ?? 99;
     if (ra !== rb) return ra - rb;
-    const aLabel = getProviderConfig(a)?.provider.label ?? a;
-    const bLabel = getProviderConfig(b)?.provider.label ?? b;
+    const aLabel = providerDisplayName(a);
+    const bLabel = providerDisplayName(b);
     return aLabel.localeCompare(bLabel);
   });
 }

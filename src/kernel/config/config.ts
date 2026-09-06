@@ -1,15 +1,7 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import {
-  DEFAULT_ORCHESTRATION_MODE,
-  normalizeOrchestrationMode,
-  type OrchestrationMode,
-} from "@/kernel/config/orchestration-mode.ts";
-import type {
-  ImageGeneratorSelection,
-  ProviderId,
-  VoiceProviderSelection,
-} from "@/kernel/config/provider-ids.ts";
+import type { EditorMode } from "@/kernel/config/editor-mode.ts";
+import { markInternalWrite } from "@/kernel/config/internal-writes.ts";
 import type { ThemeSetting } from "@/kernel/config/theme-names.ts";
 import type { HookEntry, HookEvent } from "@/kernel/hooks/index.ts";
 import { HOOK_EVENT_VALUES } from "@/kernel/hooks/index.ts";
@@ -19,11 +11,30 @@ import { withFileLockSync } from "@/kernel/std/fs/file-lock.ts";
 import { canonicalizeCwd, configRoot } from "@/kernel/std/fs/paths.ts";
 import { atomicWriteFileSync } from "@/kernel/std/fs/secure-fs.ts";
 import type { EffortLevel } from "@/kernel/std/types/effort.ts";
+import {
+  DEFAULT_ORCHESTRATION_MODE,
+  normalizeOrchestrationMode,
+  type OrchestrationMode,
+} from "@/kernel/std/types/orchestration-mode.ts";
+import type {
+  ImageGeneratorSelection,
+  ProviderId,
+  VoiceProviderSelection,
+} from "@/kernel/std/types/provider-ids.ts";
 import type { PermissionMode } from "@/kernel/std/types/request.ts";
 
+interface StatuslineCommon {
+  padding?: number;
+  /**
+   * Hides the built-in vim mode row below the prompt, for a status line that
+   * renders the mode itself and would otherwise say it twice.
+   */
+  hideVimModeIndicator?: boolean;
+}
+
 export type StatuslineConfig =
-  | { type: "native"; padding?: number }
-  | { type: "command"; command: string; padding?: number };
+  | (StatuslineCommon & { type: "native" })
+  | (StatuslineCommon & { type: "command"; command: string });
 
 export interface UsageBucket {
   requestCount: number;
@@ -91,7 +102,7 @@ export function projectConfigKey(dir: string): string {
 
 export type SettingsPermissions = SettingsPermissionsBlock;
 
-export interface SandboxFilesystemConfig {
+export interface SandboxFsPolicy {
   denyRead?: string[];
   allowReadWithinDeny?: string[];
   allowWrite?: string[];
@@ -99,7 +110,7 @@ export interface SandboxFilesystemConfig {
   allowGitConfig?: boolean;
 }
 
-export interface SandboxNetworkConfig {
+export interface SandboxNetPolicy {
   enabled?: boolean;
   allowAllUnixSockets?: boolean;
   allowUnixSockets?: string[];
@@ -117,8 +128,8 @@ export interface SettingsSandboxConfig {
   allowUnsandboxedCommands?: boolean;
   autoAllowBashIfSandboxed?: boolean;
   excludedCommands?: string[];
-  filesystem?: SandboxFilesystemConfig;
-  network?: SandboxNetworkConfig;
+  filesystem?: SandboxFsPolicy;
+  network?: SandboxNetPolicy;
   allowPty?: boolean;
   failIfUnavailable?: boolean;
   enableWeakerNetworkIsolation?: boolean;
@@ -150,11 +161,23 @@ export interface GlobalState {
   setupHookFired?: boolean;
   /** Times the queued-edit prompt hint has been shown; it retires after three. */
   queuedEditHintShowCount?: number;
+  /** Whether the task list stays open once every task is done. */
+  taskListExpanded?: boolean;
 }
 
-export const WORKFLOW_SIZE_GUIDELINES = ["unrestricted", "small", "medium", "large"] as const;
+export const WORKFLOW_SIZE_CLASSES = ["unrestricted", "small", "medium", "large"] as const;
 
-export type WorkflowSizeGuideline = (typeof WORKFLOW_SIZE_GUIDELINES)[number];
+export type WorkflowSizeClass = (typeof WORKFLOW_SIZE_CLASSES)[number];
+
+export const SKILL_STATES = ["on", "name-only", "user-invocable-only", "off"] as const;
+
+export type SkillState = (typeof SKILL_STATES)[number];
+
+export interface UsageStat {
+  usageCount: number;
+  lastUsedAt: number;
+  lastUsedNumStartups?: number;
+}
 
 export interface UserConfig {
   defaultProvider: ProviderId;
@@ -162,12 +185,18 @@ export interface UserConfig {
   defaultMode?: PermissionMode;
   autoCompact?: boolean;
   showTips?: boolean;
+  /** Expands output in the normal transcript; the detailed reader remains session-only. */
+  verbose?: boolean;
+  /** Controls whether Anthropic adaptive thinking summaries are streamed visibly. */
+  showThinkingSummaries?: boolean;
   /** Injects the "# Parallel tasks" system section nudging parallel agent use. */
   parallelTasks?: boolean;
   fastMode?: boolean;
   fastModeByProvider?: Partial<Record<ProviderId, boolean>>;
   outputStyle?: string;
   statusline?: StatuslineConfig;
+  /** Which key-binding model the prompt input runs under. */
+  editorMode?: EditorMode;
   language?: string;
   antigravityGoogleOneAi?: boolean;
   imageGenProvider?: ImageGeneratorSelection;
@@ -180,7 +209,9 @@ export interface UserConfig {
   effortLevel?: EffortLevel;
   ultracode?: boolean;
   enableWorkflows?: boolean;
-  workflowSizeGuideline?: WorkflowSizeGuideline;
+  /** Absent = on: writing "ultracode" in a prompt opts that turn into orchestration. */
+  workflowKeywordTrigger?: boolean;
+  workflowSizeGuideline?: WorkflowSizeClass;
   // Per-source workflow discovery gates. Absent = enabled: on-disk workflow
   // scripts from that scope are resolvable and runnable. Set false to drop a
   // whole source without touching the master `enableWorkflows` tool gate.
@@ -203,7 +234,7 @@ export interface UserConfig {
   /**
    * Enterprise allowlist of MCP servers, policy-scope only (managed-settings.json).
    * If undefined, all (non-denied) servers are allowed. If an empty array, no
-   * servers are allowed. See kernel/mcp/config.ts isMcpServerAllowedByPolicy.
+   * servers are allowed. See kernel/mcp/config.ts isMcpServerPermittedByPolicy.
    */
   allowedMcpServers?: McpServerPolicyEntry[];
   /**
@@ -220,11 +251,24 @@ export interface UserConfig {
    * the canonical `plugin@marketplace` ID; local plugins fall back to their name.
    */
   pluginFavorites?: string[];
+  /**
+   * Per-skill visibility overrides keyed by skill name. Absent = "on".
+   * on: listed and invocable by model and user. name-only: only the name is
+   * advertised to the model; the user may still invoke it. user-invocable-only:
+   * hidden from the model; the user may invoke it. off: hidden from both.
+   */
+  skillStates?: Record<string, SkillState>;
+  /** Per-skill use counters (invocations) keyed by skill name. */
+  skillUsageStats?: Record<string, UsageStat>;
+  /** Per-plugin use counters keyed by plugin identity. */
+  pluginUsageStats?: Record<string, UsageStat>;
   hooks?: Partial<Record<HookEvent, HookEntry[]>>;
   permissions?: SettingsPermissions;
   global?: GlobalState;
   projects?: Record<string, ProjectEntry>;
   theme?: ThemeSetting;
+  /** Absent = on: transcript code is coloured by language, not only by diff side. */
+  syntaxHighlightingDisabled?: boolean;
   sandbox?: SettingsSandboxConfig;
   /** Session EnterWorktree base-ref policy (default fresh). */
   worktree?: WorktreeSettings;
@@ -236,6 +280,10 @@ export interface UserConfig {
   // Absent = enabled: a nested agent cannot launch above its own tier (its
   // requests clamp to the caller's tier). false lifts the ceiling.
   chainOfCommand?: boolean;
+  // Absent = disabled: an agent always inherits the session provider/model.
+  // true lets a spawn or a SendMessage resume pin another provider/model pair,
+  // each such route change gated by a user approval prompt.
+  multiModelFork?: boolean;
   terminalProgressBarEnabled?: boolean;
 }
 
@@ -254,16 +302,16 @@ import {
   isProviderId,
   isVoiceProviderSelection,
   PROVIDER_ID_VALUES,
-} from "@/kernel/config/provider-ids.ts";
+} from "@/kernel/std/types/provider-ids.ts";
 
 export const DEFAULT_CONFIG: UserConfig = {
   defaultProvider: "anthropic",
-  defaultModel: "claude-opus-4-8",
+  defaultModel: "claude-opus-5",
   defaultMode: "accept-edits",
   antigravityGoogleOneAi: true,
   outputStyle: "default",
+  showThinkingSummaries: true,
   orchestrationMode: DEFAULT_ORCHESTRATION_MODE,
-  workflowSizeGuideline: "unrestricted",
 };
 
 export function configPath(): string {
@@ -374,7 +422,6 @@ export function normalizeConfig(
   const cfg = {
     ...DEFAULT_CONFIG,
     ...raw,
-    workflowSizeGuideline: normalizeWorkflowSizeGuideline(raw.workflowSizeGuideline),
   } as UserConfig & {
     statusLine?: unknown;
     yolo?: unknown;
@@ -388,12 +435,17 @@ export function normalizeConfig(
     orchestrationMode?: unknown;
   };
   cfg.orchestrationMode = normalizeOrchestrationMode(raw.orchestrationMode);
+  const workflowSize = normalizeWorkflowSizeClass(raw.workflowSizeGuideline);
+  if (workflowSize === undefined) delete cfg.workflowSizeGuideline;
+  else cfg.workflowSizeGuideline = workflowSize;
   delete (cfg as unknown as Record<string, unknown>).dictationLanguage;
   delete cfg.tierSelectorEnabled;
   delete cfg.orchestratorMode;
   const enabledPlugins = normalizeEnabledPlugins(cfg.enabledPlugins);
   if (enabledPlugins === undefined) delete cfg.enabledPlugins;
   else cfg.enabledPlugins = enabledPlugins;
+  if (typeof cfg.verbose !== "boolean") delete cfg.verbose;
+  if (typeof cfg.showThinkingSummaries !== "boolean") delete cfg.showThinkingSummaries;
   const imageGenProvider = cfg.imageGenProvider;
   if (isImageGeneratorSelection(imageGenProvider)) {
     cfg.imageGenProvider = imageGenProvider;
@@ -409,11 +461,12 @@ export function normalizeConfig(
 
 const PERMISSION_MODES = new Set<PermissionMode>(["default", "accept-edits", "plan", "yolo"]);
 
-export function normalizeWorkflowSizeGuideline(value: unknown): WorkflowSizeGuideline {
-  return typeof value === "string" &&
-    (WORKFLOW_SIZE_GUIDELINES as readonly string[]).includes(value)
-    ? (value as WorkflowSizeGuideline)
-    : "unrestricted";
+// Absent/invalid stays undefined: an unset guideline renders the default
+// (medium) advisory wording, distinct from an explicitly configured value.
+export function normalizeWorkflowSizeClass(value: unknown): WorkflowSizeClass | undefined {
+  return typeof value === "string" && (WORKFLOW_SIZE_CLASSES as readonly string[]).includes(value)
+    ? (value as WorkflowSizeClass)
+    : undefined;
 }
 
 export function normalizeDefaultMode(value: unknown): PermissionMode | undefined {
@@ -445,6 +498,7 @@ export function normalizeFastModeByProvider(
 function writeConfigUnlocked(cfg: UserConfig): void {
   const path = configPath();
   mkdirSync(dirname(path), { recursive: true });
+  markInternalWrite(path);
   atomicWriteFileSync(path, `${JSON.stringify(cfg, null, 2)}\n`, 0o600);
 }
 
@@ -461,16 +515,23 @@ export function normalizeStatuslineConfig(value: unknown): StatuslineConfig | un
   }
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const obj = value as Record<string, unknown>;
-  const padding = normalizePadding(obj.padding);
+  const common = normalizeStatuslineCommon(obj);
   const type = statuslineTypeFrom(obj.type);
   const command = typeof obj.command === "string" ? obj.command.trim() : "";
   if (type === "command" || (!type && command)) {
     if (!command) return undefined;
-    return padding === undefined
-      ? { type: "command", command }
-      : { type: "command", command, padding };
+    return { type: "command", command, ...common };
   }
-  return padding === undefined ? { type: "native" } : { type: "native", padding };
+  return { type: "native", ...common };
+}
+
+/** The fields both statusline shapes carry, kept off each variant's spelling. */
+function normalizeStatuslineCommon(obj: Record<string, unknown>): StatuslineCommon {
+  const padding = normalizePadding(obj.padding);
+  return {
+    ...(padding === undefined ? {} : { padding }),
+    ...(obj.hideVimModeIndicator === true ? { hideVimModeIndicator: true } : {}),
+  };
 }
 
 function normalizePadding(value: unknown): number | undefined {
@@ -483,7 +544,8 @@ const HOOK_EVENTS: ReadonlySet<string> = new Set(HOOK_EVENT_VALUES);
 function normalizeHookEventKey(event: string): HookEvent | null {
   if (HOOK_EVENTS.has(event)) return event as HookEvent;
   if (event === "notification") return "Notification";
-  return null;
+  const normalized = event.charAt(0).toLowerCase() + event.slice(1);
+  return HOOK_EVENTS.has(normalized) ? (normalized as HookEvent) : null;
 }
 
 export function normalizeHooksConfig(
@@ -498,23 +560,55 @@ export function normalizeHooksConfig(
       if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
       const obj = entry as Record<string, unknown>;
       const matcher = typeof obj.matcher === "string" ? obj.matcher.trim() : "*";
-      const timeoutMs =
-        typeof obj.timeoutMs === "number" && Number.isFinite(obj.timeoutMs)
-          ? Math.max(1, Math.floor(obj.timeoutMs))
+      // `timeout` is in SECONDS; absent/invalid leaves the per-event default.
+      const timeout =
+        typeof obj.timeout === "number" && Number.isFinite(obj.timeout) && obj.timeout > 0
+          ? obj.timeout
           : undefined;
       const type = typeof obj.type === "string" ? obj.type : undefined;
-      if (type === "prompt") {
+      if (type === "prompt" || type === "agent") {
         const prompt = typeof obj.prompt === "string" ? obj.prompt.trim() : "";
         if (!prompt) return [];
-        const base: HookEntry = { type: "prompt", matcher, prompt };
-        return timeoutMs === undefined ? [base] : [{ ...base, timeoutMs }];
+        if (type === "prompt") {
+          const base: HookEntry = { type, matcher, prompt };
+          return timeout === undefined ? [base] : [{ ...base, timeout }];
+        }
+        const model =
+          typeof obj.model === "string" && obj.model.trim() ? obj.model.trim() : undefined;
+        return [
+          {
+            type,
+            matcher,
+            prompt,
+            command: prompt,
+            ...(timeout !== undefined ? { timeout } : {}),
+            ...(model !== undefined ? { model } : {}),
+          },
+        ];
+      }
+      if (type === "http") {
+        const url = normalizeHttpHookUrl(obj.url);
+        if (url === null) return [];
+        const headers = normalizeStringRecord(obj.headers);
+        const allowedEnvVars = normalizeStringArray(obj.allowedEnvVars);
+        return [
+          {
+            type,
+            matcher,
+            url,
+            command: url,
+            ...(timeout !== undefined ? { timeout } : {}),
+            ...(headers !== undefined ? { headers } : {}),
+            ...(allowedEnvVars !== undefined ? { allowedEnvVars } : {}),
+          },
+        ];
       }
       const command = typeof obj.command === "string" ? obj.command.trim() : "";
       if (!command) return [];
       const base: HookEntry = {
         matcher,
         command,
-        ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+        ...(timeout !== undefined ? { timeout } : {}),
         // Async Stop-hook flags (stop-hook-rewake.ts): passed through verbatim.
         ...(obj.async === true ? { async: true } : {}),
         ...(obj.asyncRewake === true ? { asyncRewake: true } : {}),
@@ -530,4 +624,28 @@ export function normalizeHooksConfig(
     if (normalized.length > 0) out[normalizedEvent] = normalized;
   }
   return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function normalizeHttpHookUrl(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeStringRecord(value: unknown): Record<string, string> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const entries = Object.entries(value).filter(
+    (entry): entry is [string, string] => typeof entry[1] === "string",
+  );
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
+function normalizeStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const strings = value.filter((item): item is string => typeof item === "string");
+  return strings.length > 0 ? strings : undefined;
 }

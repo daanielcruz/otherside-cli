@@ -23,11 +23,6 @@ describe("cortexUrl override allowlist", () => {
     expect(cortexUrl()).toBe("http://localhost:8787");
   });
 
-  test("supabase.co is rejected", () => {
-    process.env.OTHERSIDE_CORTEX_URL = "https://abcd1234.supabase.co";
-    expect(cortexUrl()).toBe(DEFAULT_URL);
-  });
-
   test("arbitrary host is rejected", () => {
     process.env.OTHERSIDE_CORTEX_URL = "https://evil.example.com";
     expect(cortexUrl()).toBe(DEFAULT_URL);

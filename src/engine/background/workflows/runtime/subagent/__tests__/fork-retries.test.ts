@@ -1,16 +1,52 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import type { SubagentResult } from "@/engine/background/subagents/dispatcher.ts";
 import {
   runForkWithRetries,
+  setWorkflowBackoffSleepForTests,
   type WorkflowForkRequest,
 } from "@/engine/background/workflows/runtime/subagent/fork-retries.ts";
 
 const request = {} as WorkflowForkRequest;
 
+afterEach(() => {
+  setWorkflowBackoffSleepForTests(null);
+});
+
 describe("workflow fork retries", () => {
-  it("stops after the initial attempt plus five stall retries", async () => {
+  it("retries a throttled result once after the throttle backoff", async () => {
+    const signal = new AbortController().signal;
+    const sleeps: Array<{ ms: number; signal: AbortSignal }> = [];
     let attempts = 0;
-    const result: SubagentResult = { output: "stalled", isError: true, stalled: true };
+    setWorkflowBackoffSleepForTests(async (ms, receivedSignal) => {
+      sleeps.push({ ms, signal: receivedSignal });
+    });
+
+    const outcome = await runForkWithRetries(
+      async (): Promise<SubagentResult> => {
+        attempts += 1;
+        return attempts === 1
+          ? { output: "thin response", isError: false, outputTokens: 0, durationMs: 90_001 }
+          : { output: "done", isError: false };
+      },
+      request,
+      signal,
+    );
+
+    expect(attempts).toBe(2);
+    expect(sleeps).toEqual([{ ms: 45_000, signal }]);
+    expect(outcome).toEqual({
+      result: { output: "done", isError: false },
+      attempt: 2,
+      lastAttemptReason: "throttled",
+    });
+  });
+
+  it("returns a terminal provider error without retrying", async () => {
+    let attempts = 0;
+    const result: SubagentResult = {
+      output: "content stream idle 600000ms — aborting (live connection, no model output)",
+      isError: true,
+    };
 
     const outcome = await runForkWithRetries(
       async () => {
@@ -21,29 +57,7 @@ describe("workflow fork retries", () => {
       new AbortController().signal,
     );
 
-    expect(attempts).toBe(6);
-    expect(outcome.attempt).toBe(6);
-    expect(outcome.lastAttemptReason).toBe("stalled");
-    expect(outcome.result).toBe(result);
-  });
-
-  it("returns immediately when a stall retry makes progress", async () => {
-    let attempts = 0;
-
-    const outcome = await runForkWithRetries(
-      async () => {
-        attempts += 1;
-        return attempts === 1
-          ? { output: "stalled", isError: true, stalled: true }
-          : { output: "done", isError: false };
-      },
-      request,
-      new AbortController().signal,
-    );
-
-    expect(attempts).toBe(2);
-    expect(outcome.attempt).toBe(2);
-    expect(outcome.lastAttemptReason).toBe("stalled");
-    expect(outcome.result.output).toBe("done");
+    expect(attempts).toBe(1);
+    expect(outcome).toEqual({ result, attempt: 1 });
   });
 });

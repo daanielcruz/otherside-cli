@@ -1,4 +1,4 @@
-import { isTransientNetworkError, ProviderHttpError } from "@/engine/providers/_shared/retry.ts";
+import { isRetryableNetworkError, ProviderHttpError } from "@/engine/providers/_shared/retry.ts";
 import type {
   ErrorClassifier,
   ErrorClassifierInput,
@@ -108,7 +108,7 @@ export function classifyBaseline(input: ErrorClassifierInput): ErrorMeta {
     };
   }
 
-  if (isTransientNetworkError(err)) {
+  if (isRetryableNetworkError(err)) {
     return {
       ...base,
       errorClass: "network-transient",

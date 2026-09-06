@@ -4,7 +4,7 @@ import {
   isCounterAcceptable,
   syncOutgoingEvents,
   wireToolCallSummary,
-} from "../rails/cdc.ts";
+} from "../rails/durable.ts";
 
 export const __test = {
   applyIncomingEvent,

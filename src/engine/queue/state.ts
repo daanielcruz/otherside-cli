@@ -47,7 +47,16 @@ export function _resetGoalsForTesting(): void {
   goalsBySession.clear();
 }
 
-interface GoalEventRecord {
+interface GoalStateRecord {
+  type: string;
+  kind?: string;
+  payload?: unknown;
+  ts?: string;
+  isSidechain?: boolean;
+  attachment?: unknown;
+}
+
+interface GoalEventRecord extends GoalStateRecord {
   type: "hook_event";
   ts: string;
   kind: string;
@@ -56,66 +65,104 @@ interface GoalEventRecord {
 
 export function restoreGoalFromRecords(
   sessionId: string,
-  records: ReadonlyArray<{
-    type: string;
-    kind?: string;
-    payload?: unknown;
-    ts?: string;
-    isSidechain?: boolean;
-    attachment?: unknown;
-  }>,
-  hookEvents: ReadonlyArray<{ type: string; kind?: string; payload?: unknown; ts?: string }> = [],
+  records: ReadonlyArray<GoalStateRecord>,
+  hookEvents: ReadonlyArray<GoalStateRecord> = [],
 ): ActiveGoal | undefined {
-  const merged = [...records, ...hookEvents] as Array<(typeof records)[number]>;
   let active: ActiveGoal | undefined;
-  let iterations = 0;
-  for (const r of merged) {
-    if ("isSidechain" in r && r.isSidechain === true) continue;
-    if (r.type === "hook_event") {
-      const payload = r.payload as { condition?: unknown; setAt?: unknown } | null;
-      const condition = payload && typeof payload.condition === "string" ? payload.condition : null;
-      if (r.kind === "goal_set" && condition !== null) {
-        const setAt =
-          payload && typeof payload.setAt === "number" ? payload.setAt : Date.parse(r.ts ?? "");
-        active = {
-          condition,
-          iterations: 0,
-          setAt: Number.isFinite(setAt) ? setAt : Date.now(),
-        };
-        iterations = 0;
-      } else if (r.kind === "goal_cleared" || r.kind === "goal_met") {
-        active = undefined;
-        iterations = 0;
-      } else if (r.kind === "goal_not_met") {
-        iterations += 1;
-        const reason =
-          payload && typeof (payload as { reason?: unknown }).reason === "string"
-            ? (payload as { reason: string }).reason
-            : undefined;
-        if (active && reason !== undefined) active.lastReason = reason;
-      }
+  for (const record of goalStateRecords(records, hookEvents)) {
+    if (record.isSidechain === true) continue;
+    if (record.type === "hook_event") {
+      active = goalFromHookEvent(record, active);
       continue;
     }
-    if (r.type === "attachment") {
-      const att = r.attachment as Record<string, unknown> | null;
-      if (!att || att.type !== "goal_status") continue;
-      const condition = typeof att.condition === "string" ? att.condition : null;
-      if (condition === null) continue;
-      if (att.met === true || att.cleared === true) {
-        active = undefined;
-        iterations = 0;
-      }
-      if (att.met === false) {
-        iterations += 1;
-        const reason = typeof att.reason === "string" ? att.reason : undefined;
-        if (active && reason !== undefined) active.lastReason = reason;
-      }
+    if (record.type === "attachment") {
+      active = goalFromAttachment(record, active);
     }
   }
-  if (active === undefined) return undefined;
-  active.iterations = iterations;
+  if (active === undefined) {
+    goalsBySession.delete(sessionId);
+    return undefined;
+  }
   goalsBySession.set(sessionId, active);
   return active;
+}
+
+function goalStateRecords(
+  records: ReadonlyArray<GoalStateRecord>,
+  hookEvents: ReadonlyArray<GoalStateRecord>,
+): GoalStateRecord[] {
+  return [...records, ...hookEvents].filter(
+    (record) => record.type === "hook_event" || record.type === "attachment",
+  );
+}
+
+function goalFromHookEvent(
+  record: GoalStateRecord,
+  active: ActiveGoal | undefined,
+): ActiveGoal | undefined {
+  const payload = objectPayload(record.payload);
+  const condition = typeof payload?.condition === "string" ? payload.condition : null;
+  if (record.kind === "goal_set" && condition !== null) {
+    return {
+      condition,
+      iterations: 0,
+      setAt: timestampFrom(payload?.setAt, record.ts),
+    };
+  }
+  if (record.kind === "goal_cleared" || record.kind === "goal_met") return undefined;
+  if (record.kind !== "goal_not_met" || active === undefined) return active;
+
+  active.iterations = Math.max(
+    active.iterations,
+    restoredIteration(payload?.iteration, active.iterations + 1),
+  );
+  if (typeof payload?.reason === "string") active.lastReason = payload.reason;
+  return active;
+}
+
+function goalFromAttachment(
+  record: GoalStateRecord,
+  active: ActiveGoal | undefined,
+): ActiveGoal | undefined {
+  const attachment = objectPayload(record.attachment);
+  if (attachment?.type !== "goal_status") return active;
+  if (attachment.met === true || attachment.cleared === true || attachment.failed === true) {
+    return undefined;
+  }
+  if (typeof attachment.condition !== "string") return undefined;
+
+  const reason = typeof attachment.reason === "string" ? attachment.reason : undefined;
+  const isSetMarker = reason === undefined && attachment.iteration === undefined;
+  const next =
+    active?.condition === attachment.condition && !isSetMarker
+      ? active
+      : {
+          condition: attachment.condition,
+          iterations: 0,
+          setAt: timestampFrom(undefined, record.ts),
+        };
+  const fallbackIteration = reason === undefined ? next.iterations : next.iterations + 1;
+  next.iterations = Math.max(
+    next.iterations,
+    restoredIteration(attachment.iteration, fallbackIteration),
+  );
+  if (reason !== undefined) next.lastReason = reason;
+  return next;
+}
+
+function objectPayload(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function timestampFrom(value: unknown, fallback: string | undefined): number {
+  const timestamp = typeof value === "number" ? value : Date.parse(fallback ?? "");
+  return Number.isFinite(timestamp) ? timestamp : Date.now();
+}
+
+function restoredIteration(value: unknown, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return fallback;
+  return Math.floor(value);
 }
 
 export function _isGoalEventRecord(r: unknown): r is GoalEventRecord {

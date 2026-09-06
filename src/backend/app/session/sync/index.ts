@@ -15,7 +15,7 @@ export {
   buildAvailableModelsBroadcast,
   buildSessionLiveBroadcast,
 } from "./rails/broadcast.ts";
-export { isSyncableEvent } from "./rails/cdc.ts";
+export { isSyncableEvent } from "./rails/durable.ts";
 export { sendHeartbeat } from "./rails/heartbeat.ts";
 export { buildPresenceBroadcast } from "./rails/presence.ts";
 export { compileAvailableModels } from "./rails/snapshot.ts";

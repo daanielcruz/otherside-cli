@@ -1,12 +1,12 @@
 import { describe, expect, it } from "bun:test";
 import {
-  findAllowRuleWouldCoverDangerousFind,
+  allowRuleCoversDangerousFind,
   stripExecWrappers,
 } from "@/kernel/permissions/bash-matcher.ts";
 
 // This gate refuses an allow-rule that would cover a destructive `find`. Every
 // dangerous case MUST return true; a leak lets a broad rule persist unsafe finds.
-describe("findAllowRuleWouldCoverDangerousFind", () => {
+describe("allowRuleCoversDangerousFind", () => {
   const dangerous = [
     "find . -delete",
     "find . -exec rm {} +",
@@ -48,7 +48,7 @@ describe("findAllowRuleWouldCoverDangerousFind", () => {
     `sh -c "sh -c 'find . -delete'"`,
   ];
   for (const cmd of dangerous) {
-    it(`flags: ${cmd}`, () => expect(findAllowRuleWouldCoverDangerousFind(cmd)).toBe(true));
+    it(`flags: ${cmd}`, () => expect(allowRuleCoversDangerousFind(cmd)).toBe(true));
   }
 
   const safe = [
@@ -68,7 +68,7 @@ describe("findAllowRuleWouldCoverDangerousFind", () => {
     "sh script.sh", // positional script, no -c body to inspect
   ];
   for (const cmd of safe) {
-    it(`allows: ${cmd}`, () => expect(findAllowRuleWouldCoverDangerousFind(cmd)).toBe(false));
+    it(`allows: ${cmd}`, () => expect(allowRuleCoversDangerousFind(cmd)).toBe(false));
   }
 });
 

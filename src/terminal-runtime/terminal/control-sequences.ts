@@ -144,11 +144,15 @@ export function eraseLine(): string {
 
 export const ERASE_LINE = csi(2, "K");
 
+export const ERASE_LINE_TO_END = csi("K");
+
 export function eraseToEndOfScreen(): string {
   return csi("J");
 }
 
-export function eraseToStartOfScreen(): string {
+export const ERASE_DISPLAY_TO_END = csi(0, "J");
+
+export function eraseFromCursorToScreenStart(): string {
   return csi(1, "J");
 }
 
@@ -159,6 +163,10 @@ export function eraseScreen(): string {
 export const ERASE_SCREEN = csi(2, "J");
 
 export const ERASE_SCROLLBACK = csi(3, "J");
+
+export const BEGIN_SYNCHRONIZED_OUTPUT = csi("?2026h");
+
+export const END_SYNCHRONIZED_OUTPUT = csi("?2026l");
 
 export function eraseLines(n: number): string {
   if (n <= 0) return "";

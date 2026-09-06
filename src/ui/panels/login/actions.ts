@@ -186,9 +186,8 @@ export function createOpenAiCustomActions(deps: {
             defaultModel: model,
           };
           broker?.dispatch({
-            kind: "set_provider",
-            provider: "openai",
-            model,
+            kind: "set_route",
+            route: { provider: "openai", model },
             fastMode: fastModeForProvider(config, "openai"),
           });
           onConfigChange?.(next);

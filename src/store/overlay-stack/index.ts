@@ -1,36 +1,60 @@
-import { useSyncExternalStore } from "react";
 import { makeStore, type Store } from "@/kernel/std/state/make-store.ts";
 
-export const OVERLAY_NAMES = [
-  "help",
-  "model",
-  "effort",
-  "agents",
-  "tasks",
-  "bashes",
-  "config",
-  "permissions",
-  "hooks",
-  "diff",
-  "skills",
-  "status",
-  "usage",
-  "stats",
-  "mcp",
-  "login",
-  "logout",
-  "rewind",
-  "resume",
-  "theme",
-  "remote",
-  "design",
-  "workflows",
-  "ultracode-effort",
-  "plugins",
-  "orchestration",
-] as const;
+export const OVERLAY_DEFINITIONS = [
+  { name: "help", ownsDismiss: false },
+  { name: "model", ownsDismiss: false },
+  { name: "effort", ownsDismiss: false },
+  { name: "agents", ownsDismiss: false },
+  { name: "tasks", ownsDismiss: false },
+  { name: "bashes", ownsDismiss: false },
+  { name: "config", ownsDismiss: false },
+  { name: "permissions", ownsDismiss: false },
+  { name: "error", ownsDismiss: true },
+  { name: "quota", ownsDismiss: true },
+  { name: "hooks", ownsDismiss: false },
+  { name: "diff", ownsDismiss: false },
+  { name: "skills", ownsDismiss: false },
+  { name: "status", ownsDismiss: false },
+  { name: "usage", ownsDismiss: false },
+  { name: "stats", ownsDismiss: false },
+  { name: "mcp", ownsDismiss: true },
+  { name: "login", ownsDismiss: false },
+  { name: "logout", ownsDismiss: false },
+  { name: "rewind", ownsDismiss: true },
+  { name: "resume", ownsDismiss: true },
+  { name: "theme", ownsDismiss: false },
+  { name: "remote", ownsDismiss: false },
+  { name: "design", ownsDismiss: false },
+  { name: "workflows", ownsDismiss: false },
+  { name: "ultracode-effort", ownsDismiss: false },
+  { name: "plugins", ownsDismiss: true },
+  { name: "orchestration", ownsDismiss: true },
+  { name: "btw", ownsDismiss: true },
+] as const satisfies readonly {
+  name: string;
+  ownsDismiss: boolean;
+}[];
 
-export type OverlayName = (typeof OVERLAY_NAMES)[number];
+export type OverlayName = (typeof OVERLAY_DEFINITIONS)[number]["name"];
+
+export const OVERLAY_NAMES: readonly OverlayName[] = OVERLAY_DEFINITIONS.map(
+  (definition) => definition.name,
+);
+
+export function isOverlayName(name: string): name is OverlayName {
+  return (OVERLAY_NAMES as readonly string[]).includes(name);
+}
+
+export interface OverlayMetadata {
+  ownsDismiss: boolean;
+}
+
+export const OVERLAY_METADATA: Readonly<Record<OverlayName, OverlayMetadata>> = Object.fromEntries(
+  OVERLAY_DEFINITIONS.map((definition) => [
+    definition.name,
+    { ownsDismiss: definition.ownsDismiss },
+  ]),
+) as Record<OverlayName, OverlayMetadata>;
 export type Overlay = OverlayName | null;
 export type OverlayOpenStack = readonly OverlayName[];
 
@@ -91,28 +115,3 @@ export const overlayStack = {
     });
   },
 };
-
-function selectOpenStack(): readonly OverlayEntry[] {
-  return overlayStore.getState().openStack;
-}
-
-function selectTop(): OverlayEntry | null {
-  const stack = overlayStore.getState().openStack;
-  return stack.length === 0 ? null : (stack[stack.length - 1] ?? null);
-}
-
-export function useOverlayOpenStack(): readonly OverlayEntry[] {
-  return useSyncExternalStore(overlayStore.subscribe, selectOpenStack, selectOpenStack);
-}
-
-export function useTopOverlay(): OverlayEntry | null {
-  return useSyncExternalStore(overlayStore.subscribe, selectTop, selectTop);
-}
-
-export function useOverlaySlice(name: OverlayName): unknown {
-  return useSyncExternalStore(
-    overlayStore.subscribe,
-    () => overlayStore.getState().slices[name],
-    () => overlayStore.getState().slices[name],
-  );
-}

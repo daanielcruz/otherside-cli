@@ -9,37 +9,72 @@ import {
   API_MESSAGES_URL as ANTHROPIC_MESSAGES_URL,
   fingerprint as anthropicFingerprint,
 } from "@/engine/providers/anthropic/_infra/fingerprint.ts";
-import { cacheExtraUsageDisabledReason as anthropicCacheExtraUsageDisabledReason } from "@/engine/providers/anthropic/access.ts";
-import { authorizationHeader as anthropicAuthorizationHeader } from "@/engine/providers/anthropic/auth.ts";
+import { cachedExtraUsageBlockReason as anthropicCacheExtraUsageDisabledReason } from "@/engine/providers/anthropic/access.ts";
+import { currentTokens, forceRefreshTokens } from "@/engine/providers/anthropic/auth.ts";
 import { applyCchAttestation } from "@/engine/providers/anthropic/cch.ts";
 import { ingestAnthropicHeaders } from "@/engine/providers/anthropic/rate-limits.ts";
 import type { StreamFn } from "@/engine/transport/_infra/classify/types.ts";
 import { truncateEllipsis } from "@/kernel/std/text/text.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 
-export const anthropicStream: StreamFn = async function* anthropicStreamFn(
+function requestHeaders(
+  accessToken: string,
+  fp: { userAgent: string; extraHeaders: Record<string, string> },
   ctx: RequestContext,
-  body: unknown,
-): AsyncIterable<Uint8Array> {
-  const auth = await anthropicAuthorizationHeader();
-  const fp = anthropicFingerprint(ctx, body);
-
-  const headers: Record<string, string> = {
-    Authorization: auth,
+): Record<string, string> {
+  return {
+    Authorization: `Bearer ${accessToken}`,
     "Content-Type": "application/json",
     Accept: "application/json",
     "User-Agent": fp.userAgent,
     ...fp.extraHeaders,
     ...connectionHeaders(ctx),
   };
+}
 
-  const resp = await fetch(ANTHROPIC_MESSAGES_URL, {
+function throwUnauthorized(text: string): never {
+  throw new Error(
+    `HTTP 401 from /v1/messages: ${truncateEllipsis(text, 300)} — run \`otherside login --provider anthropic\``,
+  );
+}
+
+export const anthropicStream: StreamFn = async function* anthropicStreamFn(
+  ctx: RequestContext,
+  body: unknown,
+  signal: AbortSignal,
+): AsyncIterable<Uint8Array> {
+  const tokens = await currentTokens();
+  const fp = anthropicFingerprint(ctx, body);
+  const payload = applyCchAttestation(JSON.stringify(body));
+
+  let resp = await fetch(ANTHROPIC_MESSAGES_URL, {
     method: "POST",
-    headers,
-    body: applyCchAttestation(JSON.stringify(body)),
-    ...(ctx.abortSignal ? { signal: ctx.abortSignal } : {}),
+    headers: requestHeaders(tokens.accessToken, fp, ctx),
+    body: payload,
+    signal,
     ...connectionInit(ctx),
   });
+
+  if (resp.status === 401) {
+    // Reload first — another flow may have already refreshed; only hit the
+    // OAuth endpoint when the stored token is the one the server rejected.
+    let newTokens = await currentTokens().catch(() => null);
+    if (!newTokens || newTokens.accessToken === tokens.accessToken) {
+      newTokens = await forceRefreshTokens(tokens).catch(() => null);
+    }
+    if (newTokens && newTokens.accessToken !== tokens.accessToken) {
+      resp = await fetch(ANTHROPIC_MESSAGES_URL, {
+        method: "POST",
+        headers: requestHeaders(newTokens.accessToken, fp, ctx),
+        body: payload,
+        signal,
+        ...connectionInit(ctx),
+      });
+    } else {
+      const text = await resp.text().catch(() => "");
+      throwUnauthorized(text);
+    }
+  }
 
   const overageReason = resp.headers.get("anthropic-ratelimit-unified-overage-disabled-reason");
   void anthropicCacheExtraUsageDisabledReason(overageReason);
@@ -50,9 +85,7 @@ export const anthropicStream: StreamFn = async function* anthropicStreamFn(
 
   if (resp.status === 401) {
     const text = await resp.text().catch(() => "");
-    throw new Error(
-      `HTTP 401 from /v1/messages: ${truncateEllipsis(text, 300)} — run \`otherside login --provider anthropic\``,
-    );
+    throwUnauthorized(text);
   }
   if (!resp.ok) {
     const text = await resp.text().catch(() => "");
@@ -65,7 +98,7 @@ export const anthropicStream: StreamFn = async function* anthropicStreamFn(
       retryAfterMs: parseRetryAfterHeader(retryAfterHeader),
     });
     throw new ProviderHttpError({
-      provider: "/v1/messages",
+      provider: "anthropic",
       status: resp.status,
       body: text,
       retryAfterHeader,

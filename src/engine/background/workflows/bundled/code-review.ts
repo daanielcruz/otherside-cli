@@ -1,4 +1,4 @@
-import type { WorkflowPhaseDescriptor } from "@/engine/background/workflows/runtime/parser/types.ts";
+import type { WorkflowPhaseSpec } from "@/engine/background/workflows/runtime/parser/types.ts";
 import type { WorkflowDefinition } from "@/engine/background/workflows/runtime/registry/types.ts";
 
 const WORKFLOW_NAME = "code-review";
@@ -6,7 +6,7 @@ const WORKFLOW_DESCRIPTION =
   "Workflow-backed code review — one finder agent per review angle, an independent verifier for every candidate, then a ranked, capped findings report.";
 const WORKFLOW_WHEN_TO_USE =
   'Launched by the /code-review skill at high, xhigh, or max effort when workflows are enabled. Pass args as "<level> [target]" — level is high, xhigh, or max; target is an optional PR number, branch, ref range, path, or free-form review instructions (e.g. "only review src/foo.ts", "focus on error handling").';
-const WORKFLOW_PHASES: WorkflowPhaseDescriptor[] = [
+const WORKFLOW_PHASES: WorkflowPhaseSpec[] = [
   { index: 0, title: "Scope", detail: "Pin the diff command, changed files, and conventions" },
   {
     index: 1,

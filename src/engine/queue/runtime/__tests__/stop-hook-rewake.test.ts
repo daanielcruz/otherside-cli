@@ -4,11 +4,11 @@ import {
   _resetAsyncStopHooksForTests,
   ASYNC_REWAKE_FLUSH_TIMEOUT_MS,
   buildStopHookRewakeNotification,
-  flushPendingAsyncRewakeHooks,
+  drainPendingAsyncRewakeHooks,
   isAsyncStopHook,
   launchAsyncStopHook,
 } from "@/engine/queue/runtime/stop-hook-rewake.ts";
-import type { CommandHookEntry } from "@/kernel/hooks/exec.ts";
+import type { CommandHookEntry } from "@/kernel/std/types/hook-entry.ts";
 
 const SESSION = "sess-rewake-test";
 
@@ -90,7 +90,7 @@ describe("launchAsyncStopHook", () => {
       sessionId: SESSION,
     });
     expect(launched).toBe(true);
-    await flushPendingAsyncRewakeHooks();
+    await drainPendingAsyncRewakeHooks();
     const pending = emitQueue.peek({ class: "urgent_output" });
     expect(pending.length).toBe(1);
     const item = pending[0];
@@ -108,7 +108,7 @@ describe("launchAsyncStopHook", () => {
       interactive: true,
       sessionId: SESSION,
     });
-    await flushPendingAsyncRewakeHooks();
+    await drainPendingAsyncRewakeHooks();
     expect(emitQueue.peek().length).toBe(0);
   });
 
@@ -118,7 +118,7 @@ describe("launchAsyncStopHook", () => {
       interactive: true,
       sessionId: SESSION,
     });
-    await flushPendingAsyncRewakeHooks();
+    await drainPendingAsyncRewakeHooks();
     expect(emitQueue.peek().length).toBe(0);
   });
 
@@ -128,7 +128,7 @@ describe("launchAsyncStopHook", () => {
       interactive: true,
       sessionId: SESSION,
     });
-    await flushPendingAsyncRewakeHooks();
+    await drainPendingAsyncRewakeHooks();
     expect(emitQueue.peek().length).toBe(0);
   });
 

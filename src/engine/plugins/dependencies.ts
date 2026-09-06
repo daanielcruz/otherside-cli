@@ -137,7 +137,7 @@ export async function changeEnabledWithDependencies(
     }
     const changed = await plugins.setEnabled(pluginId, false);
     return changed
-      ? { success: true, message: `Disabled plugin ${pluginId}. Run /reload to apply.` }
+      ? { success: true, message: `Disabled plugin ${pluginId}. Run /reload to activate.` }
       : { success: false, message: `Plugin not found: ${target}` };
   }
 
@@ -157,6 +157,6 @@ export async function changeEnabledWithDependencies(
       : "";
   return {
     success: true,
-    message: `Enabled plugin ${pluginId}${suffix}. Run /reload to apply.`,
+    message: `Enabled plugin ${pluginId}${suffix}. Run /reload to activate.`,
   };
 }

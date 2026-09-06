@@ -1,8 +1,10 @@
 import {
-  getAgentContext,
+  currentSpawnedAgentScope,
   MAX_AGENT_SPAWN_DEPTH,
-  runWithAgentContext,
+  withSpawnedAgentScope,
 } from "@/engine/agents/agent-context.ts";
+import { registerRunningFork } from "@/engine/background/subagents/lifecycle.ts";
+import { acquireWorktreeLease, createWorktree } from "@/engine/background/subagents/worktree.ts";
 import {
   cancelTaskTree,
   get as getBackgroundTask,
@@ -10,16 +12,13 @@ import {
   markOwnerNotificationsPromoted,
   taskRunRef,
 } from "@/engine/background/tasks/background.ts";
-import { publish } from "@/engine/background/tasks/bus.ts";
 import { clearScope as clearTaskScope } from "@/engine/background/tasks/index.ts";
 import { emitQueue } from "@/engine/queue/emit.ts";
-import { reconstructForSubagentResume } from "@/engine/tool-result-storage/index.ts";
+import { restoreResumedToolOutputArchive } from "@/engine/tool-output-archive/index.ts";
 import type { McpServerConfig, McpServerSpec } from "@/kernel/mcp/index.ts";
 import { loadNamespacedMcpRuntime } from "@/kernel/mcp/runtime/manager.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 import { getActiveRewindTurn } from "@/kernel/storage/file-history.ts";
-import { registerRunningFork } from "../lifecycle.ts";
-import { acquireWorktreeLease, createWorktree } from "../worktree.ts";
 import { buildWorktreeNotice } from "./builder.ts";
 import { toMcpDeclaration } from "./declarations.ts";
 import { serializeDurableForkSpec, writeDurableForkSpec } from "./durable-spec.ts";
@@ -64,12 +63,13 @@ async function runForkLoop(spec: ForkSpec): Promise<SubagentResult> {
     Object.keys(inlineServers).length > 0
       ? await loadNamespacedMcpRuntime({ namespace, servers: inlineServers })
       : null;
-  for (const failure of inlineMcp?.failures ?? []) {
-    publish(
-      "error",
-      `Agent "${spec.agentId ?? spec.name}": MCP server "${failure.server}" failed to connect: ${failure.error}`,
-    );
-  }
+  const setupWarnings = [
+    ...(spec.setupWarnings ?? []),
+    ...(inlineMcp?.failures ?? []).map(
+      (failure) =>
+        `agent "${spec.agentId ?? spec.name}" declares MCP server "${failure.server}", which failed to connect: ${failure.error}`,
+    ),
+  ];
   const scopedTools = [...(spec.scopedTools ?? []), ...(inlineMcp?.handlers ?? [])];
   const scopedToolHandlers =
     scopedTools.length > 0
@@ -81,12 +81,12 @@ async function runForkLoop(spec: ForkSpec): Promise<SubagentResult> {
   if (spec.allowSet !== null) {
     for (const declaration of inlineDeclarations) spec.allowSet.add(declaration.name);
   }
-  const { cloneContentReplacementState, createContentReplacementState } = await import(
-    "@/engine/tool-result-storage/index.ts"
+  const { copyToolOutputArchive, createToolOutputArchive } = await import(
+    "@/engine/tool-output-archive/index.ts"
   );
-  const resumedReplacementState =
+  const resumedArchive =
     spec.initialMessages !== undefined
-      ? reconstructForSubagentResume(parentCtx.contentReplacementState, spec.initialMessages, [])
+      ? restoreResumedToolOutputArchive(parentCtx.toolOutputArchive, spec.initialMessages, [])
       : undefined;
   // Freeze the spawning turn so this fork's file mutations snapshot under it, not
   // whatever turn is armed on the shared session when they later run.
@@ -95,7 +95,7 @@ async function runForkLoop(spec: ForkSpec): Promise<SubagentResult> {
   // the LIVE broker's yolo/accept-edits win per decision inside permission
   // resolution, never as a spawn-time snapshot. Without a definition mode the
   // child continues under the parent's own override (or the live broker).
-  const parentAls = getAgentContext();
+  const parentAls = currentSpawnedAgentScope();
   const permissionModeOverride = spec.permissionMode ?? parentAls?.permissionModeOverride;
   const ctx: RequestContext = {
     ...parentCtxRest,
@@ -107,17 +107,21 @@ async function runForkLoop(spec: ForkSpec): Promise<SubagentResult> {
     ...(frozenRewindTurn !== undefined ? { rewindTurnId: frozenRewindTurn } : {}),
     subagentLabel: parentCtx.subagentLabel ?? "collab_spawn",
     agentOwnerId: forkId,
+    // A spawner that is itself a subagent stamps the child with its own owner id,
+    // so a nested request carries both its agent id and its parent's. A top-level
+    // spawn (main session, no owner id) leaves this unset and emits no parent id.
+    ...(parentCtx.agentOwnerId !== undefined ? { parentAgentOwnerId: parentCtx.agentOwnerId } : {}),
     isForkChild: parentCtx.isForkChild === true || spec.inheritParentTurn === true,
     parentThreadId: parentCtx.parentThreadId ?? parentCtx.sessionId,
     forkAllowSet: spec.allowSet,
     forkDeferredAllow: spec.deferredAllow,
     ...(scopedToolHandlers ? { scopedToolHandlers } : {}),
     taskHooks: taskHooksFromParsed(spec.agentHooks),
-    contentReplacementState:
-      resumedReplacementState ??
-      (parentCtx.contentReplacementState
-        ? cloneContentReplacementState(parentCtx.contentReplacementState)
-        : createContentReplacementState()),
+    toolOutputArchive:
+      resumedArchive ??
+      (parentCtx.toolOutputArchive
+        ? copyToolOutputArchive(parentCtx.toolOutputArchive)
+        : createToolOutputArchive()),
   };
   const parentAgentId = parentAls?.agentId;
   const agentContext = {
@@ -204,7 +208,7 @@ async function runForkLoop(spec: ForkSpec): Promise<SubagentResult> {
   let result: SubagentResult | undefined;
   try {
     releaseAddress = registerRunningFork(forkId, spec.name, activeSpec, ctx);
-    result = await runWithAgentContext(agentContext, () =>
+    result = await withSpawnedAgentScope(agentContext, () =>
       runForkLoopInContext(activeSpec, forkId, ctx),
     );
     return result;
@@ -220,15 +224,15 @@ async function runForkLoop(spec: ForkSpec): Promise<SubagentResult> {
     }
     releaseAddress();
     releaseNotificationOwner();
+    if (result && setupWarnings.length > 0) {
+      result.setupWarnings = setupWarnings;
+    }
     if (inlineMcp) {
+      // Teardown of the fork's private client lands after the result is settled
+      // and cannot change it, so a failure here is swallowed.
       try {
         await inlineMcp.close();
-      } catch (error) {
-        publish(
-          "error",
-          `Agent "${spec.agentId ?? spec.name}": MCP cleanup failed: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
+      } catch {}
     }
     if (ownsWorktree && worktree) {
       // Release the lease before cleanup so the fail-closed guard doesn't block

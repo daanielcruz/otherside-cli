@@ -22,18 +22,43 @@ import { searchAnthropic } from "@/engine/tools/anthropic.ts";
 import { classifyProviderError } from "@/engine/transport/_infra/classify/classify.ts";
 import { CACHE_CONTROL_1H } from "@/engine/transport/cache/index.ts";
 import type { ContentBlock } from "@/kernel/std/types/message.ts";
+import { providerDisplayName } from "@/kernel/std/types/provider-ids.ts";
 
 const PROVIDER: ApiProvider<"anthropic-messages"> = {
   id: "anthropic",
   api: "anthropic-messages",
   sourceId: "builtin",
-  label: "Anthropic",
+  label: providerDisplayName("anthropic"),
   shortKey: "anthropic",
 };
+
+// Total stream attempts for HTTP 529 / overloaded before failing terminal.
+const ANTHROPIC_OVERLOAD_MAX_ATTEMPTS = 3;
 
 export type AnthropicModelAugment = { cacheBreakpoints?: number };
 
 export const MODELS: readonly CatalogModel<AnthropicModelAugment>[] = [
+  {
+    id: "claude-opus-5",
+    displayName: "Opus 5",
+    contextWindow: 1_000_000,
+    autoCompactTokenLimit: 967_000,
+    provider: "anthropic",
+    supportsPdf: true,
+    supports1m: true,
+    efforts: ["low", "medium", "high", "xhigh", "max"],
+    defaultEffort: "high",
+  },
+  {
+    id: "claude-fable-5-1",
+    displayName: "Fable 5.1",
+    contextWindow: 1_000_000,
+    autoCompactTokenLimit: 967_000,
+    provider: "anthropic",
+    supportsPdf: true,
+    efforts: ["low", "medium", "high", "xhigh", "max"],
+    defaultEffort: "high",
+  },
   {
     id: "claude-fable-5",
     displayName: "Fable 5",
@@ -98,13 +123,15 @@ function modelAvailable(modelId: string): boolean {
 
 // A replayed thinking block whose signature the API can no longer verify
 // (history that crossed a provider or credential switch) is rejected as a 400.
-// Both rejection shapes name the thinking-block constraint directly, so a
-// plain validation error on some other field never suppresses the session.
+// Each rejection shape names the thinking block directly, so a plain validation
+// error on some other field never suppresses the session.
 function carriesThinkingReplayRejection(err: unknown, body: string): boolean {
   if (!(err instanceof ProviderHttpError) || err.status !== 400) return false;
   const message = err instanceof Error ? err.message : "";
   const haystack = `${body}\n${message}`;
-  return /thinking blocks cannot be modified|must start with a thinking block/i.test(haystack);
+  return /thinking blocks cannot be modified|must start with a thinking block|invalid[^\n]{0,24}signature[^\n]{0,24}thinking/i.test(
+    haystack,
+  );
 }
 
 function composeForkSystem(input: ForkSystemInput): ContentBlock[] {
@@ -128,11 +155,10 @@ export const config: ProviderConfig<"anthropic-messages"> = {
   stream: anthropicStream,
   featureFlags: {
     fastMode: false,
-    effortSuffix: true,
     thinkingSuffix: true,
     supportsImages: true,
   },
-  defaultModelId: () => "claude-opus-4-8",
+  defaultModelId: () => "claude-opus-5",
   fallbackEfforts: {
     levels: ["low", "medium", "high", "xhigh", "max"],
     default: "high",
@@ -147,11 +173,27 @@ export const config: ProviderConfig<"anthropic-messages"> = {
     if (carriesThinkingReplayRejection(err, body) && markThinkingReplayRejected(ctx.sessionId)) {
       return { kind: "retry", delayMs: 0, reason: "dropped stale thinking replay" };
     }
-    return classifyProviderError(err, {
+    const decision = classifyProviderError(err, {
       attempt: attempt ?? 1,
       provider: ctx.provider,
       model: ctx.model,
     });
+    // Cap 529/overload fallbacks so a sustained capacity blip fails after a few
+    // tries instead of chewing the full stream retry budget.
+    if (
+      decision.kind === "retry" &&
+      decision.status === 529 &&
+      (attempt ?? 1) >= ANTHROPIC_OVERLOAD_MAX_ATTEMPTS
+    ) {
+      return {
+        kind: "fail",
+        reason: decision.reason,
+        userMessage: decision.reason,
+        status: decision.status,
+        message: decision.message,
+      };
+    }
+    return decision;
   },
   webSearch: searchAnthropic,
   usageDetails: { sourceLabel: "Anthropic OAuth", hasPlanPanel: true },
@@ -166,4 +208,11 @@ export const config: ProviderConfig<"anthropic-messages"> = {
   }),
   modelAvailable,
   streamEmitsKeepalive: true,
+  // The edge sends `event: ping` ~every 25s, so the byte-level transport
+  // watchdog owns dead-stream detection. Fork turns drop the streamed thinking
+  // summary (see translate.ts), so a heavy-reasoning phase emits zero
+  // ProviderEvents for minutes on an otherwise-live socket; raise the
+  // content-idle deadline as the backstop so it never false-stalls a healthy
+  // think before the first content block.
+  contentIdleTimeoutMs: 600_000,
 };

@@ -11,9 +11,8 @@ export type SessionSyncStatus = SessionStatus;
 let sessionSyncStatus: SessionSyncStatus = "idle";
 let activeSyncSessionId: string | null = null;
 // Whether the backend row for the active session exists (bootstrap done).
-// Status/title PATCHes before registration match zero rows under RLS and
-// "succeed" silently — suppressing them keeps the wire honest and lets the
-// register payload carry the freshest local status instead.
+// Status/title PATCHes before registration match zero rows, so suppressing them
+// lets the register payload carry the freshest local status instead.
 let sessionRegistered = false;
 
 export function getActiveSyncSessionId(): string | null {
@@ -64,16 +63,19 @@ export async function setSessionStatus(status: SessionSyncStatus): Promise<void>
 
 // The companion shows this as the session headline; the cwd + branch drop to a
 // subline. Generated or resumed titles reach the backend through here.
-export async function setSessionTitle(title: string): Promise<void> {
+export async function setSessionTitle(title: string): Promise<boolean> {
   const sessionId = activeSyncSessionId;
-  if (!sessionId || !sessionRegistered) return;
+  if (!sessionId || !sessionRegistered) return false;
   const auth = await loadFreshAuth();
-  if (!auth) return;
+  if (!auth) return false;
   try {
-    await patchSessionRow(sessionId, auth.accessToken, {
+    const response = await patchSessionRow(sessionId, auth.accessToken, {
       title: encryptedMetadata(sessionId, ensureDevice(), "title", title),
     });
-  } catch {}
+    return response.ok;
+  } catch {
+    return false;
+  }
 }
 
 subscribeSessionStatus((status) => {

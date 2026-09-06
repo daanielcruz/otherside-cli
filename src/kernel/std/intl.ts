@@ -1,7 +1,7 @@
 let graphemeSegmenter: Intl.Segmenter | null = null;
 let wordSegmenter: Intl.Segmenter | null = null;
 
-export function getGraphemeSegmenter(): Intl.Segmenter {
+export function sharedGraphemeSegmenter(): Intl.Segmenter {
   if (!graphemeSegmenter) {
     graphemeSegmenter = new Intl.Segmenter(undefined, {
       granularity: "grapheme",
@@ -12,7 +12,7 @@ export function getGraphemeSegmenter(): Intl.Segmenter {
 
 export function firstGrapheme(text: string): string {
   if (!text) return "";
-  const segments = getGraphemeSegmenter().segment(text);
+  const segments = sharedGraphemeSegmenter().segment(text);
   const first = segments[Symbol.iterator]().next().value;
   return first?.segment ?? "";
 }
@@ -20,7 +20,7 @@ export function firstGrapheme(text: string): string {
 export function lastGrapheme(text: string): string {
   if (!text) return "";
   let last = "";
-  for (const { segment } of getGraphemeSegmenter().segment(text)) {
+  for (const { segment } of sharedGraphemeSegmenter().segment(text)) {
     last = segment;
   }
   return last;
@@ -35,7 +35,7 @@ export function getWordSegmenter(): Intl.Segmenter {
 
 const rtfCache = new Map<string, Intl.RelativeTimeFormat>();
 
-export function getRelativeTimeFormat(
+export function createRelativeTimeFormat(
   style: "long" | "short" | "narrow",
   numeric: "always" | "auto",
 ): Intl.RelativeTimeFormat {
@@ -69,9 +69,48 @@ export function getShortTimeZone(date = new Date()): string {
   }
 }
 
+/** Human reset text ("2:50pm (GMT-3)"; long form beyond 24h); null for past/invalid times. */
+export function formatResetTime(unixSeconds: number): string | null {
+  if (!Number.isFinite(unixSeconds)) return null;
+  const ms = unixSeconds * 1000;
+  if (ms <= Date.now()) return null;
+  const date = new Date(ms);
+  const now = new Date();
+  const minutes = date.getMinutes();
+  const timeZone = getShortTimeZone(date);
+  const hoursUntilReset = (ms - now.getTime()) / 3_600_000;
+  if (hoursUntilReset > 24) return withTimezone(formatLongReset(date, now, minutes), timeZone);
+  return withTimezone(
+    date.toLocaleTimeString("en-US", {
+      hour: "numeric",
+      minute: minutes === 0 ? undefined : "2-digit",
+      hour12: true,
+    }),
+    timeZone,
+  );
+}
+
+function formatLongReset(date: Date, now: Date, minutes: number): string {
+  const dateText = date.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: date.getFullYear() !== now.getFullYear() ? "numeric" : undefined,
+  });
+  const timeText = date.toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: minutes === 0 ? undefined : "2-digit",
+    hour12: true,
+  });
+  return `${dateText} at ${timeText}`;
+}
+
+function withTimezone(value: string, timeZone: string): string {
+  return `${value.replace(/ ([AP]M)/i, (_match, ampm: string) => ampm.toLowerCase())} (${timeZone})`;
+}
+
 let cachedSystemLocaleLanguage: string | undefined | null = null;
 
-export function getSystemLocaleLanguage(): string | undefined {
+export function systemLocaleLanguage(): string | undefined {
   if (cachedSystemLocaleLanguage === null) {
     try {
       const locale = Intl.DateTimeFormat().resolvedOptions().locale;

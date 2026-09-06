@@ -13,12 +13,13 @@ import {
 import { searchGlm } from "@/engine/tools/glm.ts";
 import { classifyProviderError } from "@/engine/transport/_infra/classify/classify.ts";
 import type { EffortLevel } from "@/kernel/std/types/effort.ts";
+import { providerDisplayName } from "@/kernel/std/types/provider-ids.ts";
 
 const PROVIDER: ApiProvider<"anthropic-messages"> = {
   id: "glm",
   api: "anthropic-messages",
   sourceId: "builtin",
-  label: "Z.AI",
+  label: providerDisplayName("glm"),
   shortKey: "glm",
 };
 
@@ -60,7 +61,6 @@ export const config: ProviderConfig<"anthropic-messages"> = {
   stream: glmStream,
   featureFlags: {
     fastMode: false,
-    effortSuffix: false,
     thinkingSuffix: true,
     supportsImages: true,
   },
@@ -79,4 +79,11 @@ export const config: ProviderConfig<"anthropic-messages"> = {
   beginLogin: { kind: "oauth_pkce", begin: beginLogin },
   composeMessages: composeGlmMessages,
   webSearch: searchGlm,
+  // ZCode's Anthropic surface forwards `event: ping` frames during content
+  // silence, so the byte watchdog owns dead-socket detection. Content idle then
+  // means a wedged model and must fail terminal rather than reconnect.
+  streamEmitsKeepalive: true,
+  // Long reasoning can stay event-silent while pings still flow; raise the
+  // content-idle backstop so healthy think phases are not false-stalled.
+  contentIdleTimeoutMs: 600_000,
 };

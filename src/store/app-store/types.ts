@@ -35,6 +35,10 @@ export type AppAction =
   | { readonly type: "view/bumpLogEpoch" }
   | { readonly type: "view/setRetryStatus"; readonly status: RetryStatusLine | null }
   | { readonly type: "view/setViewingAgent"; readonly id: string | null }
+  | { readonly type: "view/toggleTranscriptScreen" }
+  | { readonly type: "view/exitTranscriptScreen" }
+  | { readonly type: "view/toggleAllTranscriptMessages" }
+  | { readonly type: "view/setVerboseTranscript"; readonly verbose: boolean }
   | { readonly type: "view/setSpinnerMode"; readonly mode: SpinnerMode }
   | { readonly type: "view/setTurnVerb"; readonly verb: string }
   | { readonly type: "view/setThinkingStatus"; readonly status: ThinkingStatus }
@@ -46,7 +50,6 @@ export type AppAction =
   | { readonly type: "view/setPanelFocus"; readonly focus: string | null }
   | { readonly type: "view/setWorkflowDetailTarget"; readonly id: string | null }
   | { readonly type: "view/setWorkflowDetailOpen"; readonly open: boolean }
-  | { readonly type: "view/setBtwMode"; readonly active: boolean }
   | { readonly type: "view/setBgPillFocused"; readonly focused: boolean }
   | { readonly type: "view/setPanelFocused"; readonly focused: boolean }
   | { readonly type: "view/setPanelSelection"; readonly value: number }

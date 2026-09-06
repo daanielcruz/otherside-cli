@@ -1,4 +1,5 @@
 import type { SkillListingEntry } from "@/harness/reminders/reminders.ts";
+import type { OutputStyleRecord } from "@/harness/routines/output-styles/built-in.ts";
 import type { CacheControl } from "@/kernel/std/types/message.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 
@@ -40,10 +41,15 @@ export interface McpInstructionBlock {
 // = one edit here, one line at the resolve site (assemble.ts).
 export interface ResolvedHarnessFacts {
   config: HarnessConfig;
+  /** Resolved active output style; null for default and unknown names. */
+  outputStyle: OutputStyleRecord | null;
   deferredToolExclusions: ReadonlySet<string>;
   emitDeferredReminder: boolean;
   emitAgentListing: boolean;
   injections: InjectionQueue;
+  /** Reminders leave the user turn as system messages (all Anthropic models). */
+  promoteMidSystem: boolean;
+  /** Promoted reminders drop their wrapper; also latches the mid-system wording. */
   supportsMidSystem: boolean;
   lean: boolean;
   modelFamily: "fable" | "sonnet" | "other";
@@ -84,10 +90,17 @@ export interface SystemTextBlock {
 
 export type PhasedSystemBlock = SystemTextBlock & { phase?: "static" | "dynamic" };
 
+// How reminder content travels on this request: kept in the user turn, lifted
+// to a system message with the reminder wrapper, or lifted without it. The
+// provider composer reads it both for the harness blocks and for promoting
+// reminder-only user messages born on later turns.
+export type MidSystemPromotion = "off" | "wrapped" | "unwrapped";
+
 export interface ComposedHarness {
   layers: { name: string; body: string }[];
   combined: string;
   systemBlocks: SystemTextBlock[];
   userPrepend: SystemTextBlock[];
   midSystemBlocks?: SystemTextBlock[];
+  midSystemPromotion: MidSystemPromotion;
 }

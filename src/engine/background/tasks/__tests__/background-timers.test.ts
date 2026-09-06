@@ -1,6 +1,7 @@
-import { describe, expect, spyOn, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import {
   completeTask,
+  removeTask,
   resetEmitThrottleForTests,
   startShellTask,
   startTask,
@@ -8,6 +9,13 @@ import {
 import { startSharedOutputPoller, stopSharedOutputPoller } from "../output-poller.ts";
 
 describe("background task timer lifecycle", () => {
+  // A task left running in the shared store gates unrelated suites
+  // (pressure reap skips while any agent task is running).
+  const startedTasks: string[] = [];
+  afterEach(() => {
+    for (const id of startedTasks.splice(0)) removeTask(id);
+  });
+
   test("unrefs the listener batching timer so it cannot hold the process open", () => {
     // Earlier suite files leave a live 250ms throttle window in module state;
     // inside it emit() takes the pending branch and never arms a new timer.
@@ -27,7 +35,8 @@ describe("background task timer lifecycle", () => {
     }) as unknown as typeof setTimeout);
 
     try {
-      startTask({ parentToolCallId: "call-emit-unref", agentName: "test" });
+      const task = startTask({ parentToolCallId: "call-emit-unref", agentName: "test" });
+      startedTasks.push(task.id);
       expect(unrefCalls).toBe(1);
       scheduled?.();
     } finally {
@@ -41,6 +50,7 @@ describe("background task timer lifecycle", () => {
       command: "sleep 1",
       parentToolCallId: "call-poller-lifecycle",
     });
+    startedTasks.push(task.id);
     let tick: (() => void) | undefined;
     let unrefCalls = 0;
     const timer = {

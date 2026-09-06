@@ -1,14 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { createAbortableTimers } from "@/engine/background/workflows/runtime/sandbox/timers.ts";
+import { createCancellableTimers } from "@/engine/background/workflows/runtime/sandbox/timers.ts";
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-describe("createAbortableTimers", () => {
+describe("createCancellableTimers", () => {
   test("a throwing callback is swallowed and reported instead of escaping to the host", async () => {
     const messages: string[] = [];
-    const timers = createAbortableTimers(undefined, (message) => messages.push(message));
+    const timers = createCancellableTimers(undefined, (message) => messages.push(message));
     timers.bindVMInvoke((callback) => callback());
 
     let uncaught: unknown;
@@ -31,7 +31,7 @@ describe("createAbortableTimers", () => {
 
   test("a non-throwing callback is unaffected", async () => {
     let called = false;
-    const timers = createAbortableTimers();
+    const timers = createCancellableTimers();
     timers.bindVMInvoke((callback) => callback());
     timers.setTimeout(() => {
       called = true;

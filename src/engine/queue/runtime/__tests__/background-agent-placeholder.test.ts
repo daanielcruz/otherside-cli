@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { type DispatchEntry, settleDispatch } from "@/engine/queue/runtime/turn/tool-dispatch.ts";
+import { type DispatchEntry, settleDispatch } from "@/engine/queue/runtime/turn/dispatch-settle.ts";
 import type { TurnLoopHost } from "@/engine/queue/runtime/turn/types.ts";
 import { makeQueue } from "@/harness/composer/queue.ts";
 import { AsyncStream } from "@/kernel/std/stream/async.ts";

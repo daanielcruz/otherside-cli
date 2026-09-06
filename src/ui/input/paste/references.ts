@@ -1,8 +1,10 @@
 import stripAnsi from "strip-ansi";
 import {
+  formatImageRef,
   formatTruncatedRef,
   imageRefMatches,
   parsePasteReferences,
+  type RefMatch,
   textRefMatches,
   truncatedRefMatches,
 } from "@/kernel/std/paste/ref.ts";
@@ -11,6 +13,17 @@ import type { ContentBlock } from "@/kernel/std/types/message.ts";
 import type { PasteStore } from "@/kernel/std/types/paste.ts";
 
 export const PASTE_THRESHOLD = 800;
+const MAX_INLINE_PASTE_LINE_BREAKS = 2;
+const SURROUNDING_TERMINAL_ROWS = 10;
+
+export function shouldCollapsePastedText(text: string, terminalRows: number): boolean {
+  const lineBreaks = text.match(/\n/g)?.length ?? 0;
+  const maxInlineLineBreaks = Math.min(
+    terminalRows - SURROUNDING_TERMINAL_ROWS,
+    MAX_INLINE_PASTE_LINE_BREAKS,
+  );
+  return text.length > PASTE_THRESHOLD || lineBreaks > maxInlineLineBreaks;
+}
 
 // Pasted text is normalized before touching the buffer: NFC keeps offsets
 // aligned with grapheme/width math for decomposed input (e.g. NFD from macOS
@@ -55,6 +68,10 @@ export function refStartingAt(text: string, cursor: number): { start: number; en
   return null;
 }
 
+export function textRefEndingAt(text: string, cursor: number): RefMatch | null {
+  return textRefMatches(text).find((ref) => ref.end === cursor) ?? null;
+}
+
 // References are atomic for word operations too: an offset strictly inside
 // one snaps to the requested edge so a word delete never leaves half a chip.
 export function snapOutOfRef(text: string, offset: number, toward: "start" | "end"): number {
@@ -70,7 +87,7 @@ export function joinWithLeadingSpace(
   placeholder: string,
 ): { next: string; insertedLength: number } {
   const prev = cursor > 0 ? buffer.charAt(cursor - 1) : "";
-  const needsSpace = prev.length > 0 && !/\s/.test(prev);
+  const needsSpace = prev.length > 0 && !/\s/.test(prev) && refEndingAt(buffer, cursor) === null;
   const insert = needsSpace ? ` ${placeholder}` : placeholder;
   return {
     next: buffer.slice(0, cursor) + insert + buffer.slice(cursor),
@@ -116,7 +133,7 @@ export function expandToContentBlocks(text: string, store: Pick<PasteStore, "get
         },
         ...(stored.dimensions ? { dimensions: stored.dimensions as ImageDimensions } : {}),
       });
-      plainText += `[Image #${match.id}]`;
+      plainText += formatImageRef(match.id);
     } else if (match.kind === "text" && stored.type === "text") {
       blocks.push({ type: "text", text: stored.content });
       plainText += stored.content;

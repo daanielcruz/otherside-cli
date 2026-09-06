@@ -6,13 +6,13 @@ import { join } from "node:path";
 import { resolveToolTierOverride } from "@/engine/background/subagents/dispatcher.ts";
 import { DEEP_SECURITY_REVIEW_WORKFLOW } from "@/engine/background/workflows/bundled/deep-security-review.ts";
 import {
-  buildJournalSnapshot,
-  type WorkflowJournalEntry,
-  type WorkflowJournalStartedEntry,
-} from "@/engine/background/workflows/runtime/history/journal.ts";
+  indexWorkflowRecords,
+  type WorkflowDispatchRecord,
+  type WorkflowRunRecord,
+} from "@/engine/background/workflows/runtime/history/run-ledger.ts";
 import { WORKFLOW_AGENT_SKIP_REASON } from "@/engine/background/workflows/runtime/store/types.ts";
 import { defaultTierForAgentType } from "@/engine/model/tier/agent-defaults.ts";
-import { setCredentialsLoaderForTests } from "@/engine/model/tier/resolver.ts";
+import { setCredentialsLoaderForTests } from "@/engine/model/tier/usability.ts";
 import { registerAllProviders } from "@/engine/providers/bootstrap.ts";
 import {
   clearRoutingUsage,
@@ -24,11 +24,11 @@ import {
   markProviderCooldown,
 } from "@/engine/session/usage/provider-health.ts";
 import workflowTool from "@/harness/tools/Workflow/tool.json" with { type: "json" };
-import type { OrchestrationMode } from "@/kernel/config/orchestration-mode.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
+import type { OrchestrationMode } from "@/kernel/std/types/orchestration-mode.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 import type { CredentialsBundle } from "@/kernel/storage/credentials.ts";
-import { computeAgentCacheKey, normalizeAgentCacheOptions } from "../agent-cache-key.ts";
+import { deriveAgentCacheKey, normalizeAgentCacheKeyOptions } from "../agent-cache-key.ts";
 import {
   readAgentOptions,
   renderWorkflowAgentSignature,
@@ -41,6 +41,7 @@ import {
   resolveWorkflowAgentModelContextDetailed,
   setWorkflowForkRunnerForTests,
 } from "../bridge.ts";
+import { setWorkflowBackoffSleepForTests } from "../fork-retries.ts";
 
 registerAllProviders();
 
@@ -95,24 +96,24 @@ function observeProvider(provider: Parameters<typeof setRoutingUsage>[0]): void 
   });
 }
 
-function memoryJournal(seed: WorkflowJournalEntry[] = []): {
-  appended: WorkflowJournalEntry[];
-  journal: {
-    append: (entry: WorkflowJournalEntry) => Promise<void>;
-    results: ReturnType<typeof buildJournalSnapshot>["results"];
-    started: ReturnType<typeof buildJournalSnapshot>["started"];
+function memoryRunLog(seed: WorkflowRunRecord[] = []): {
+  storedRecords: WorkflowRunRecord[];
+  runLog: {
+    persistRecord: (record: WorkflowRunRecord) => Promise<void>;
+    outputsByCacheKey: ReturnType<typeof indexWorkflowRecords>["outputsByCacheKey"];
+    dispatchesByCacheKey: ReturnType<typeof indexWorkflowRecords>["dispatchesByCacheKey"];
   };
 } {
-  const snapshot = buildJournalSnapshot(seed);
-  const appended: WorkflowJournalEntry[] = [];
+  const recoveryIndex = indexWorkflowRecords(seed);
+  const storedRecords: WorkflowRunRecord[] = [];
   return {
-    appended,
-    journal: {
-      append: async (entry) => {
-        appended.push(entry);
+    storedRecords,
+    runLog: {
+      persistRecord: async (record) => {
+        storedRecords.push(record);
       },
-      results: snapshot.results,
-      started: snapshot.started,
+      outputsByCacheKey: recoveryIndex.outputsByCacheKey,
+      dispatchesByCacheKey: recoveryIndex.dispatchesByCacheKey,
     },
   };
 }
@@ -201,14 +202,16 @@ describe("WORKFLOW_AGENT_OPTIONS single source of truth", () => {
   });
 });
 
-describe("normalizeAgentCacheOptions", () => {
+describe("normalizeAgentCacheKeyOptions", () => {
   it("includes tier in workflow agent cache keys", () => {
-    expect(normalizeAgentCacheOptions({ tier: "daimyo" })).toBe(JSON.stringify({ tier: "daimyo" }));
+    expect(normalizeAgentCacheKeyOptions({ tier: "daimyo" })).toBe(
+      JSON.stringify({ tier: "daimyo" }),
+    );
   });
 
   it("includes model in workflow agent cache keys while ignoring tierRank", () => {
-    expect(normalizeAgentCacheOptions({ tier: "daimyo", model: "x", tierRank: 2 })).toBe(
-      normalizeAgentCacheOptions({ tier: "daimyo", model: "x" }),
+    expect(normalizeAgentCacheKeyOptions({ tier: "daimyo", model: "x", tierRank: 2 })).toBe(
+      normalizeAgentCacheKeyOptions({ tier: "daimyo", model: "x" }),
     );
   });
 });
@@ -274,7 +277,7 @@ describe("workflow agent runtime overrides", () => {
   });
 
   it("preserves the longest unchanged prefix in a sequential chain", async () => {
-    const first = memoryJournal();
+    const first = memoryRunLog();
     setWorkflowForkRunnerForTests(async (request) => ({
       output: `cached ${request.prompt}`,
       isError: false,
@@ -286,16 +289,16 @@ describe("workflow agent runtime overrides", () => {
         parentToolCallId: "parent-tool-call",
         runId: "wf-sequential-seed",
         signal: new AbortController().signal,
-        journal: first.journal,
+        runLog: first.runLog,
       });
       await initial.agent("A");
       await initial.agent("B");
       await initial.agent("C");
 
-      const seed = first.appended.filter(
+      const seed = first.storedRecords.filter(
         (entry) => !(entry.type === "result" && entry.result === "cached B"),
       );
-      const resumedJournal = memoryJournal(seed);
+      const resumedRunLog = memoryRunLog(seed);
       const promptsRun: string[] = [];
       setWorkflowForkRunnerForTests(async (request) => {
         promptsRun.push(request.prompt);
@@ -306,7 +309,7 @@ describe("workflow agent runtime overrides", () => {
         parentToolCallId: "parent-tool-call",
         runId: "wf-sequential-resume",
         signal: new AbortController().signal,
-        journal: resumedJournal.journal,
+        runLog: resumedRunLog.runLog,
       });
 
       await expect(resumed.agent("A")).resolves.toBe("cached A");
@@ -318,18 +321,22 @@ describe("workflow agent runtime overrides", () => {
     }
   });
 
-  it("reuses one physical worktree across retries when isolation is worktree", async () => {
-    // The #1 lifecycle guarantee: the owner creates ONE physical worktree and
-    // hands the SAME handle to every retry, so a stall-retry runs against the
-    // original snapshot instead of a worktree rebuilt from (possibly drifted)
-    // source. Reused-path equality across both attempts is the proof.
+  it("reuses one physical worktree across a throttle retry when isolation is worktree", async () => {
+    // The owner creates one physical worktree and hands the same handle to the
+    // throttle retry instead of rebuilding from potentially drifted source.
     const capturedPaths: (string | undefined)[] = [];
     const signal = new AbortController().signal;
     const repoDir = await makeTempGitRepo();
+    setWorkflowBackoffSleepForTests(async () => {});
     setWorkflowForkRunnerForTests(async (request) => {
       capturedPaths.push(request.worktree?.path);
       if (capturedPaths.length === 1) {
-        return { output: "stall", isError: false, stalled: true };
+        return {
+          output: "thin response",
+          isError: false,
+          outputTokens: 0,
+          durationMs: 90_001,
+        };
       }
       return { output: "ok", isError: false };
     });
@@ -352,33 +359,34 @@ describe("workflow agent runtime overrides", () => {
       ).toBe(true);
     } finally {
       setWorkflowForkRunnerForTests(null);
+      setWorkflowBackoffSleepForTests(null);
       await rm(repoDir, { recursive: true, force: true });
     }
   });
 });
 
-describe("workflow journal started records", () => {
-  it("round-trips started entries into the started map", () => {
+describe("workflow run-log dispatch records", () => {
+  it("indexes dispatch records by cache key", () => {
     const key = "v4:abc";
-    const snapshot = buildJournalSnapshot([
+    const snapshot = indexWorkflowRecords([
       { type: "started", key, agentId: "agent-1" },
       { type: "started", key, agentId: "agent-2" },
       { type: "result", key: "v4:other", agentId: "agent-3", result: "ok" },
       { type: "meta", args: { x: 1 } },
     ]);
-    expect(snapshot.started.get(key)?.map((entry) => entry.agentId)).toEqual([
+    expect(snapshot.dispatchesByCacheKey.get(key)?.map((entry) => entry.agentId)).toEqual([
       "agent-1",
       "agent-2",
     ]);
-    expect(snapshot.results.has(key)).toBe(false);
-    expect(snapshot.results.get("v4:other")?.result).toBe("ok");
-    expect(snapshot.meta?.args).toEqual({ x: 1 });
+    expect(snapshot.outputsByCacheKey.has(key)).toBe(false);
+    expect(snapshot.outputsByCacheKey.get("v4:other")?.result).toBe("ok");
+    expect(snapshot.runMetadata?.args).toEqual({ x: 1 });
   });
 
   it("logs a respawn notice on cache miss when the key was previously started", async () => {
     const logs: string[] = [];
-    const keyA = computeAgentCacheKey("A", undefined, "root/agent:0", "", "feudalism");
-    const prior: WorkflowJournalStartedEntry = {
+    const keyA = deriveAgentCacheKey("A", undefined, "root/agent:0", "", "feudalism");
+    const prior: WorkflowDispatchRecord = {
       type: "started",
       key: keyA,
       agentId: "workflow-old-run-1",
@@ -394,10 +402,10 @@ describe("workflow journal started records", () => {
         runId: "wf-respawn-run",
         signal: new AbortController().signal,
         log: (message) => logs.push(message),
-        journal: {
-          append: async () => {},
-          results: new Map(),
-          started: new Map([[keyA, [prior]]]),
+        runLog: {
+          persistRecord: async () => {},
+          outputsByCacheKey: new Map(),
+          dispatchesByCacheKey: new Map([[keyA, [prior]]]),
         },
       });
       await expect(bridge.agent("A")).resolves.toBe("live A");
@@ -422,10 +430,10 @@ describe("workflow journal started records", () => {
         runId: "wf-fresh-run",
         signal: new AbortController().signal,
         log: (message) => logs.push(message),
-        journal: {
-          append: async () => {},
-          results: new Map(),
-          started: new Map(),
+        runLog: {
+          persistRecord: async () => {},
+          outputsByCacheKey: new Map(),
+          dispatchesByCacheKey: new Map(),
         },
       });
       await expect(bridge.agent("fresh")).resolves.toBe("live");
@@ -438,7 +446,7 @@ describe("workflow journal started records", () => {
 
 describe("workflow resume structural replay", () => {
   it("keeps parallel siblings independent when the middle branch misses", async () => {
-    const first = memoryJournal();
+    const first = memoryRunLog();
     setWorkflowForkRunnerForTests(async (request) => ({
       output: `cached ${request.prompt}`,
       isError: false,
@@ -449,14 +457,14 @@ describe("workflow resume structural replay", () => {
         parentToolCallId: "parent",
         runId: "wf-parallel-seed",
         signal: new AbortController().signal,
-        journal: first.journal,
+        runLog: first.runLog,
       });
       await initial.parallel(["A", "B", "C"].map((prompt) => () => initial.agent(prompt)));
 
-      const seed = first.appended.filter(
+      const seed = first.storedRecords.filter(
         (entry) => !(entry.type === "result" && entry.result === "cached B"),
       );
-      const resumedJournal = memoryJournal(seed);
+      const resumedRunLog = memoryRunLog(seed);
       const live: string[] = [];
       setWorkflowForkRunnerForTests(async (request) => {
         live.push(request.prompt);
@@ -467,7 +475,7 @@ describe("workflow resume structural replay", () => {
         parentToolCallId: "parent",
         runId: "wf-parallel-resume",
         signal: new AbortController().signal,
-        journal: resumedJournal.journal,
+        runLog: resumedRunLog.runLog,
       });
 
       await expect(
@@ -481,7 +489,7 @@ describe("workflow resume structural replay", () => {
 
   it("keeps structural keys stable across opposite completion orders", async () => {
     const run = async (delays: Record<string, number>): Promise<Map<string, string>> => {
-      const memory = memoryJournal();
+      const memory = memoryRunLog();
       setWorkflowForkRunnerForTests(async (request) => {
         await Bun.sleep(delays[request.prompt] ?? 0);
         return { output: request.prompt, isError: false };
@@ -491,11 +499,11 @@ describe("workflow resume structural replay", () => {
         parentToolCallId: "parent",
         runId: "wf-order",
         signal: new AbortController().signal,
-        journal: memory.journal,
+        runLog: memory.runLog,
       });
       await bridge.parallel(["A", "B", "C"].map((prompt) => () => bridge.agent(prompt)));
       return new Map(
-        memory.appended
+        memory.storedRecords
           .filter((entry) => entry.type === "result")
           .map((entry) => [String(entry.result), entry.key]),
       );
@@ -518,7 +526,7 @@ describe("workflow resume structural replay", () => {
         (_value: unknown, item: unknown) => bridge.agent(`${item}:s1`),
         (value: unknown) => bridge.agent(`${value}:s2`),
       );
-    const first = memoryJournal();
+    const first = memoryRunLog();
     setWorkflowForkRunnerForTests(async (request) => ({
       output: request.prompt,
       isError: false,
@@ -529,14 +537,14 @@ describe("workflow resume structural replay", () => {
         parentToolCallId: "parent",
         runId: "wf-pipeline-seed",
         signal: new AbortController().signal,
-        journal: first.journal,
+        runLog: first.runLog,
       });
       await execute(initial);
 
-      const seed = first.appended.filter(
+      const seed = first.storedRecords.filter(
         (entry) => !(entry.type === "result" && entry.result === "x:s1"),
       );
-      const resumedJournal = memoryJournal(seed);
+      const resumedRunLog = memoryRunLog(seed);
       const live: string[] = [];
       setWorkflowForkRunnerForTests(async (request) => {
         live.push(request.prompt);
@@ -547,7 +555,7 @@ describe("workflow resume structural replay", () => {
         parentToolCallId: "parent",
         runId: "wf-pipeline-resume",
         signal: new AbortController().signal,
-        journal: resumedJournal.journal,
+        runLog: resumedRunLog.runLog,
       });
 
       await expect(execute(resumed)).resolves.toEqual(["x:s1:s2", "y:s1:s2"]);
@@ -569,7 +577,7 @@ describe("workflow resume structural replay", () => {
             ),
         ),
       );
-    const first = memoryJournal();
+    const first = memoryRunLog();
     setWorkflowForkRunnerForTests(async (request) => ({
       output: request.prompt,
       isError: false,
@@ -580,13 +588,13 @@ describe("workflow resume structural replay", () => {
         parentToolCallId: "parent",
         runId: "wf-nest-pp-seed",
         signal: new AbortController().signal,
-        journal: first.journal,
+        runLog: first.runLog,
       });
       await execute(initial);
-      const seed = first.appended.filter(
+      const seed = first.storedRecords.filter(
         (entry) => !(entry.type === "result" && entry.result === "right:s1"),
       );
-      const resumedJournal = memoryJournal(seed);
+      const resumedRunLog = memoryRunLog(seed);
       const live: string[] = [];
       setWorkflowForkRunnerForTests(async (request) => {
         live.push(request.prompt);
@@ -597,7 +605,7 @@ describe("workflow resume structural replay", () => {
         parentToolCallId: "parent",
         runId: "wf-nest-pp-resume",
         signal: new AbortController().signal,
-        journal: resumedJournal.journal,
+        runLog: resumedRunLog.runLog,
       });
 
       await execute(resumed);
@@ -615,7 +623,7 @@ describe("workflow resume structural replay", () => {
           bridge.parallel(["a", "b"].map((suffix) => () => bridge.agent(`${item}:${suffix}`))),
         (value: unknown, item: unknown) => bridge.agent(`${item}:judge:${JSON.stringify(value)}`),
       );
-    const first = memoryJournal();
+    const first = memoryRunLog();
     setWorkflowForkRunnerForTests(async (request) => ({
       output: request.prompt,
       isError: false,
@@ -626,13 +634,13 @@ describe("workflow resume structural replay", () => {
         parentToolCallId: "parent",
         runId: "wf-nest-ppl-seed",
         signal: new AbortController().signal,
-        journal: first.journal,
+        runLog: first.runLog,
       });
       await execute(initial);
-      const seed = first.appended.filter(
+      const seed = first.storedRecords.filter(
         (entry) => !(entry.type === "result" && entry.result === "right:b"),
       );
-      const resumedJournal = memoryJournal(seed);
+      const resumedRunLog = memoryRunLog(seed);
       const live: string[] = [];
       setWorkflowForkRunnerForTests(async (request) => {
         live.push(request.prompt);
@@ -643,7 +651,7 @@ describe("workflow resume structural replay", () => {
         parentToolCallId: "parent",
         runId: "wf-nest-ppl-resume",
         signal: new AbortController().signal,
-        journal: resumedJournal.journal,
+        runLog: resumedRunLog.runLog,
       });
 
       await execute(resumed);
@@ -655,7 +663,7 @@ describe("workflow resume structural replay", () => {
 
   it("reuses completed siblings after a partially aborted parallel batch", async () => {
     const controller = new AbortController();
-    const first = memoryJournal();
+    const first = memoryRunLog();
     setWorkflowForkRunnerForTests(async (request) => {
       if (request.prompt !== "A") await Bun.sleep(20);
       return { output: `done ${request.prompt}`, isError: false };
@@ -666,17 +674,17 @@ describe("workflow resume structural replay", () => {
         parentToolCallId: "parent",
         runId: "wf-abort-partial",
         signal: controller.signal,
-        journal: first.journal,
+        runLog: first.runLog,
         onAgentEvent: (event) => {
           if (event.state === "done" && event.prompt === "A") controller.abort();
         },
       });
       await initial.parallel(["A", "B", "C"].map((prompt) => () => initial.agent(prompt)));
       expect(
-        first.appended.filter((entry) => entry.type === "result").map((entry) => entry.result),
+        first.storedRecords.filter((entry) => entry.type === "result").map((entry) => entry.result),
       ).toEqual(["done A"]);
 
-      const resumedJournal = memoryJournal(first.appended);
+      const resumedRunLog = memoryRunLog(first.storedRecords);
       const live: string[] = [];
       setWorkflowForkRunnerForTests(async (request) => {
         live.push(request.prompt);
@@ -687,7 +695,7 @@ describe("workflow resume structural replay", () => {
         parentToolCallId: "parent",
         runId: "wf-abort-resume",
         signal: new AbortController().signal,
-        journal: resumedJournal.journal,
+        runLog: resumedRunLog.runLog,
       });
 
       await expect(
@@ -699,14 +707,14 @@ describe("workflow resume structural replay", () => {
     }
   });
 
-  it("does not emit done until the result append resolves", async () => {
-    let releaseAppend: (() => void) | undefined;
-    let resultAppendStarted = false;
+  it("does not emit done until output persistence resolves", async () => {
+    let releaseWrite: (() => void) | undefined;
+    let outputWriteStarted = false;
     const blocked = new Promise<void>((resolve) => {
-      releaseAppend = resolve;
+      releaseWrite = resolve;
     });
     const events: string[] = [];
-    const snapshot = buildJournalSnapshot([]);
+    const snapshot = indexWorkflowRecords([]);
     setWorkflowForkRunnerForTests(async () => ({
       output: "durable",
       isError: false,
@@ -718,20 +726,20 @@ describe("workflow resume structural replay", () => {
         runId: "wf-durable-done",
         signal: new AbortController().signal,
         onAgentEvent: (event) => events.push(event.state),
-        journal: {
-          results: snapshot.results,
-          started: snapshot.started,
-          append: async (entry) => {
+        runLog: {
+          outputsByCacheKey: snapshot.outputsByCacheKey,
+          dispatchesByCacheKey: snapshot.dispatchesByCacheKey,
+          persistRecord: async (entry) => {
             if (entry.type !== "result") return;
-            resultAppendStarted = true;
+            outputWriteStarted = true;
             await blocked;
           },
         },
       });
       const pending = bridge.agent("A");
-      await waitUntil(() => resultAppendStarted);
+      await waitUntil(() => outputWriteStarted);
       expect(events).not.toContain("done");
-      releaseAppend?.();
+      releaseWrite?.();
       await expect(pending).resolves.toBe("durable");
       expect(events.at(-1)).toBe("done");
     } finally {
@@ -740,7 +748,7 @@ describe("workflow resume structural replay", () => {
   });
 
   it("never caches null, terminal errors, or user skips", async () => {
-    const memory = memoryJournal();
+    const memory = memoryRunLog();
     setWorkflowForkRunnerForTests(async (request) => {
       if (request.prompt === "null") return { output: "provider failed", isError: true };
       if (request.prompt === "error") {
@@ -757,7 +765,7 @@ describe("workflow resume structural replay", () => {
         parentToolCallId: "parent",
         runId: "wf-no-null-cache",
         signal: new AbortController().signal,
-        journal: memory.journal,
+        runLog: memory.runLog,
         onAgentController: (agentId, agentController) => {
           if (agentId.endsWith("-3")) agentController?.abort(WORKFLOW_AGENT_SKIP_REASON);
         },
@@ -768,8 +776,8 @@ describe("workflow resume structural replay", () => {
         "StructuredOutputMismatchError",
       );
       await expect(bridge.agent("skip")).resolves.toBeNull();
-      expect(memory.appended.filter((entry) => entry.type === "result")).toEqual([]);
-      expect(memory.appended.filter((entry) => entry.type === "started")).toHaveLength(3);
+      expect(memory.storedRecords.filter((entry) => entry.type === "result")).toEqual([]);
+      expect(memory.storedRecords.filter((entry) => entry.type === "started")).toHaveLength(3);
     } finally {
       setWorkflowForkRunnerForTests(null);
     }
@@ -948,31 +956,31 @@ describe("resolveWorkflowAgentModelContextDetailed", () => {
       tier: "emperor",
     });
     expect(resolved.ok).toBe(true);
-    expect(resolved.ctx.model).toBe("gpt-5.6-sol");
+    expect(resolved.ctx.model).toBe("gpt-6-astra");
     expect(resolved.degradedReasons).toBeDefined();
     expect(resolved.degradedReasons!.length).toBeGreaterThan(0);
   });
 
   it("inherits the caller's own model only when it already belongs to the tier and is usable", () => {
     setCredentialsLoaderForTests(codexAndAnthropicCreds);
-    const context = ctxWith("anthropic", "claude-opus-4-8");
+    const context = ctxWith("anthropic", "claude-opus-5");
     const resolved = resolveWorkflowAgentModelContextDetailed(context, {
       tier: "emperor",
     });
     expect(resolved.ok).toBe(true);
     expect(resolved.ctx.provider).toBe("anthropic");
-    expect(resolved.ctx.model).toBe("claude-opus-4-8");
+    expect(resolved.ctx.model).toBe("claude-opus-5");
     expect(resolved.degradedReasons).toBeUndefined();
   });
 
   it("falls back when the caller's in-tier provider is not usable", () => {
-    const context = ctxWith("anthropic", "claude-opus-4-8");
+    const context = ctxWith("anthropic", "claude-opus-5");
     const resolved = resolveWorkflowAgentModelContextDetailed(context, {
       tier: "emperor",
     });
     expect(resolved.ok).toBe(true);
     expect(resolved.ctx.provider).toBe("codex");
-    expect(resolved.ctx.model).toBe("gpt-5.6-sol");
+    expect(resolved.ctx.model).toBe("gpt-6-astra");
     expect(resolved.degradedReasons).toBeDefined();
   });
 
@@ -981,14 +989,14 @@ describe("resolveWorkflowAgentModelContextDetailed", () => {
     // resolve through the roster (here only codex is credentialed and usage-observed)
     // instead of self.
     observeProvider("codex");
-    const context = ctxWith("anthropic", "claude-opus-4-8");
+    const context = ctxWith("anthropic", "claude-opus-5");
     const resolved = resolveWorkflowAgentModelContextDetailed(context, {
       tier: "emperor",
       diversify: true,
     });
     expect(resolved.ok).toBe(true);
     expect(resolved.ctx.provider).toBe("codex");
-    expect(resolved.ctx.model).toBe("gpt-5.6-sol");
+    expect(resolved.ctx.model).toBe("gpt-6-astra");
   });
 
   it("skips an exhausted-balance active parent and selects the next usable rank", () => {
@@ -1003,13 +1011,13 @@ describe("resolveWorkflowAgentModelContextDetailed", () => {
     });
     expect(resolved.ok).toBe(true);
     expect(resolved.ctx.provider).toBe("antigravity");
-    expect(resolved.ctx.model).toBe("gemini-3-flash-low");
+    expect(resolved.ctx.model).toBe("gemini-3.8-flash-low");
   });
 
   it("skips a cooled-down samurai rank-1 parent and selects the next usable rank", () => {
     setCredentialsLoaderForTests(scoutCreds);
     markProviderCooldown("antigravity", Date.now() + 60_000, "rate_limited");
-    const context = ctxWith("antigravity", "gemini-3-flash-medium");
+    const context = ctxWith("antigravity", "gemini-3.8-flash-medium");
     const resolved = resolveWorkflowAgentModelContextDetailed(context, {
       tier: "samurai",
     });
@@ -1068,7 +1076,7 @@ describe("resolveWorkflowAgentModelContextDetailed", () => {
   it("pins the run's tier pool so it does not flap when a higher-rank provider recovers", () => {
     setCredentialsLoaderForTests(scoutCreds);
     // Caller is on an emperor model, so samurai is a cross-tier resolve (top-N pool).
-    const context = ctxWith("anthropic", "claude-opus-4-8");
+    const context = ctxWith("anthropic", "claude-opus-5");
     // Samurai ranks 1 and 2 (antigravity) are cooled down, so the run's first
     // agent resolves to rank 3.
     markProviderCooldown("antigravity", Date.now() + 60_000, "rate_limited");
@@ -1095,7 +1103,7 @@ describe("resolveWorkflowAgentModelContextDetailed", () => {
 
   it("drops a newly blocked member from a pinned diversify pool", () => {
     setCredentialsLoaderForTests(scoutCreds);
-    const context = ctxWith("anthropic", "claude-opus-4-8");
+    const context = ctxWith("anthropic", "claude-opus-5");
     const first = resolveWorkflowAgentModelContextDetailed(
       context,
       { tier: "samurai", diversify: true },
@@ -1126,14 +1134,14 @@ describe("resolveWorkflowAgentModelContextDetailed", () => {
     expect(resolved.ok).toBe(true);
     if (!resolved.ok) throw new Error(resolved.error);
     expect(resolved.ctx.provider).toBe("antigravity");
-    expect(resolved.ctx.model).toBe("gemini-3-flash-low");
+    expect(resolved.ctx.model).toBe("gemini-3.8-flash-low");
   });
 
   it("direct Agent bare tier skips a cooled-down in-tier parent", () => {
     setCredentialsLoaderForTests(scoutCreds);
     markProviderCooldown("antigravity", Date.now() + 60_000, "rate_limited");
     const resolved = resolveToolTierOverride(
-      ctxWith("antigravity", "gemini-3-flash-medium"),
+      ctxWith("antigravity", "gemini-3.8-flash-medium"),
       "samurai",
     );
     expect(resolved.ok).toBe(true);
@@ -1148,7 +1156,7 @@ describe("resolveWorkflowAgentModelContextDetailed", () => {
     // than compact to rank 2.
     markProviderCooldown("antigravity", Date.now() + 60_000, "rate_limited");
     const resolved = resolveToolTierOverride(
-      ctxWith("antigravity", "gemini-3-flash-medium"),
+      ctxWith("antigravity", "gemini-3.8-flash-medium"),
       "samurai",
       1,
     );
@@ -1160,7 +1168,7 @@ describe("resolveWorkflowAgentModelContextDetailed", () => {
 
   it("Workflow: skips antigravity when exhausted and selects it when available", () => {
     setCredentialsLoaderForTests(scoutCreds);
-    const context = ctxWith("anthropic", "claude-opus-4-8");
+    const context = ctxWith("anthropic", "claude-opus-5");
 
     setRoutingUsage("antigravity", {
       trackingStatus: "tracked",
@@ -1189,7 +1197,7 @@ describe("resolveWorkflowAgentModelContextDetailed", () => {
 
   it("direct Agent: skips antigravity when exhausted and selects it when available", () => {
     setCredentialsLoaderForTests(scoutCreds);
-    const context = ctxWith("anthropic", "claude-opus-4-8");
+    const context = ctxWith("anthropic", "claude-opus-5");
 
     setRoutingUsage("antigravity", {
       trackingStatus: "tracked",
@@ -1288,7 +1296,7 @@ describe("resolveWorkflowAgentModelContextDetailed", () => {
       expect(resolution.provider).not.toBe("anthropic");
       const isDaimyo = [
         "gpt-5.6-luna",
-        "gemini-3-flash",
+        "gemini-3.8-flash",
         "gemini-3.1-pro-high",
         "grok-composer-2.5-fast",
         "deepseek-v4-pro",
@@ -1320,7 +1328,7 @@ describe("resolveWorkflowAgentModelContextDetailed", () => {
     markProviderCooldown("antigravity", Date.now() + 60_000, "rate_limited");
 
     const context = {
-      ...ctxWith("anthropic", "claude-opus-4-8"),
+      ...ctxWith("anthropic", "claude-opus-5"),
       quotaFallbackEnabled: false,
     };
 
@@ -1490,33 +1498,30 @@ describe("bridge error throwing / no fallback on schema/tool errors", () => {
     setWorkflowForkRunnerForTests(null);
   });
 
-  it("still throws on stall abandonment", async () => {
+  it("resolves a fatal content-idle error to null without a workflow retry", async () => {
+    let attempts = 0;
     setWorkflowForkRunnerForTests(async () => {
+      attempts += 1;
       return {
-        output: "agent stalled on all attempts",
+        output:
+          "fork error: content stream idle 600000ms — aborting (live connection, no model output)",
         isError: true,
-        stalled: true,
       };
     });
 
-    const signal = new AbortController().signal;
-    const bridge = await createWorkflowSubagentBridge({
-      ctx: ctx("feudalism"),
-      parentToolCallId: "parent-tool-call",
-      runId: "wf-stall-run",
-      signal,
-    });
-
-    let threw = false;
     try {
-      await bridge.agent("wedged prompt", { label: "stall" });
-    } catch (e) {
-      threw = true;
-      expect((e as Error).message).toContain("stalled");
-    }
-    expect(threw).toBe(true);
+      const bridge = await createWorkflowSubagentBridge({
+        ctx: ctx("feudalism"),
+        parentToolCallId: "parent-tool-call",
+        runId: "wf-content-idle-run",
+        signal: new AbortController().signal,
+      });
 
-    setWorkflowForkRunnerForTests(null);
+      await expect(bridge.agent("wedged prompt", { label: "content idle" })).resolves.toBeNull();
+      expect(attempts).toBe(1);
+    } finally {
+      setWorkflowForkRunnerForTests(null);
+    }
   });
 
   it("treats a manual workflow close as cancellation, not a missing-output error", async () => {

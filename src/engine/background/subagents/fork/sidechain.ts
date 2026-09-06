@@ -1,8 +1,8 @@
-import { getAgentContext } from "@/engine/agents/agent-context.ts";
+import { currentSpawnedAgentScope } from "@/engine/agents/agent-context.ts";
 import type { ForkSpec, SidechainRecord } from "./types.ts";
 
 export function withSidechainMetadata(record: SidechainRecord, spec: ForkSpec): SidechainRecord {
-  const context = getAgentContext();
+  const context = currentSpawnedAgentScope();
   const next: SidechainRecord = { ...record, isSidechain: true };
   if (spec.parentToolCallId !== undefined) next.parentToolCallId = spec.parentToolCallId;
   if (context?.parentAgentId) next.parentAgentId = context.parentAgentId;

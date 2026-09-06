@@ -1,5 +1,5 @@
-import { parseJsonWithPartialRecovery } from "@/engine/providers/_shared/partial-json.ts";
 import { streamErrorToHttpError } from "@/engine/providers/_shared/retry.ts";
+import { parseJsonWithPartialRecovery } from "@/engine/providers/_shared/streaming-json-repair.ts";
 import { usageFromOpenAi } from "@/engine/providers/_shared/usage.ts";
 import { translateRequest } from "@/engine/providers/openai/envelope.ts";
 import { parseSse } from "@/kernel/std/stream/sse.ts";

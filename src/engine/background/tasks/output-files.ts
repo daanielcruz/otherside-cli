@@ -4,168 +4,179 @@ import { tmpdir } from "node:os";
 import { basename, join, normalize, sep } from "node:path";
 import { projectSlug } from "@/kernel/std/fs/paths.ts";
 
-let sessionTaskDir: string | null = null;
-let cleanupRegistered = false;
-let activeSessionId: string | null = null;
+const artifactState = {
+  selectedFolder: null as string | null,
+  cleanupReady: false,
+  selectedSession: null as string | null,
+  taskHomes: new Map<string, string>(),
+};
 
 export function getActiveSessionId(): string | null {
-  return activeSessionId;
+  return artifactState.selectedSession;
 }
 
-function uidSegment(): string {
-  return typeof process.getuid === "function" ? String(process.getuid()) : "u";
+function processOwnerSegment(): string {
+  const readUid = process.getuid;
+  return typeof readUid === "function" ? `${readUid.call(process)}` : "u";
 }
 
-function tmpRoot(): string {
-  return join(tmpdir(), `otherside-${uidSegment()}`);
+function artifactScratchRoot(): string {
+  return join(tmpdir(), `otherside-${processOwnerSegment()}`);
 }
 
-function resolveTaskDir(): string {
-  return sessionTaskDir ?? join(tmpRoot(), "default", `pid-${process.pid}`, "tasks");
+export function taskArtifactDirectory(): string {
+  if (artifactState.selectedFolder !== null) return artifactState.selectedFolder;
+  return join(artifactScratchRoot(), "default", `pid-${process.pid}`, "tasks");
 }
 
-function registerSessionCleanupOnce(): void {
-  if (cleanupRegistered) return;
-  cleanupRegistered = true;
-  const cleanup = (): void => {
-    const dir = sessionTaskDir;
-    if (dir === null) return;
-    if (!dir.startsWith(`${tmpRoot()}${sep}`)) return;
-    try {
-      rmSync(dir, { recursive: true, force: true });
-    } catch {}
-  };
-  process.on("exit", cleanup);
-  process.on("SIGINT", () => {
-    cleanup();
-    process.exit(130);
-  });
-  process.on("SIGTERM", () => {
-    cleanup();
-    process.exit(143);
-  });
+function removeSelectedArtifacts(): void {
+  const folder = artifactState.selectedFolder;
+  if (folder === null || !folder.startsWith(`${artifactScratchRoot()}${sep}`)) return;
+  try {
+    rmSync(folder, { recursive: true, force: true });
+  } catch {}
+}
+
+function exitAfterCleanup(status: number): void {
+  removeSelectedArtifacts();
+  process.exit(status);
+}
+
+function installArtifactCleanup(): void {
+  if (artifactState.cleanupReady) return;
+  artifactState.cleanupReady = true;
+  process.on("exit", removeSelectedArtifacts);
+  process.on("SIGINT", () => exitAfterCleanup(130));
+  process.on("SIGTERM", () => exitAfterCleanup(143));
+}
+
+function filesystemToken(value: string): string {
+  return value.replace(/[^A-Za-z0-9_-]/g, "_");
 }
 
 export function setTaskOutputSession(opts: { sessionId: string; cwd: string }): void {
-  activeSessionId = opts.sessionId;
-  const session = opts.sessionId.replace(/[^A-Za-z0-9_-]/g, "_") || "session";
-  sessionTaskDir = join(tmpRoot(), projectSlug(opts.cwd), session, "tasks");
-  registerSessionCleanupOnce();
+  artifactState.selectedSession = opts.sessionId;
+  const folderSession = filesystemToken(opts.sessionId) || "session";
+  artifactState.selectedFolder = join(
+    artifactScratchRoot(),
+    projectSlug(opts.cwd),
+    folderSession,
+    "tasks",
+  );
+  installArtifactCleanup();
 }
 
-export function getTaskOutputDir(): string {
-  return resolveTaskDir();
-}
-
-function sanitizeTaskFileId(taskId: string): string {
-  return taskId.replace(/[^A-Za-z0-9_-]/g, "_");
-}
-
-// A task's artifacts live on one path for the whole process: the session task
-// dir is rebound mid-flight (/clear, resume), and a task that spans the rebind
-// would otherwise keep appending to the old path while completion
-// notifications and readers resolve the new one. The first resolution for a
-// task id pins its directory; every later writer and reader agrees with it.
-const pinnedTaskDirByTaskId = new Map<string, string>();
-
-function taskDirFor(taskId: string): string {
-  const pinned = pinnedTaskDirByTaskId.get(taskId);
-  if (pinned !== undefined) return pinned;
-  const dir = resolveTaskDir();
-  pinnedTaskDirByTaskId.set(taskId, dir);
-  return dir;
+function rememberTaskFolder(taskId: string): string {
+  const knownFolder = artifactState.taskHomes.get(taskId);
+  if (knownFolder !== undefined) return knownFolder;
+  const assignedFolder = taskArtifactDirectory();
+  artifactState.taskHomes.set(taskId, assignedFolder);
+  return assignedFolder;
 }
 
 export function resetTaskOutputPathPins(): void {
-  pinnedTaskDirByTaskId.clear();
+  artifactState.taskHomes.clear();
 }
 
-export function getTaskOutputPath(taskId: string): string {
-  return join(taskDirFor(taskId), `${sanitizeTaskFileId(taskId)}.log`);
+export function resolveTaskLogPath(taskId: string): string {
+  return join(rememberTaskFolder(taskId), `${filesystemToken(taskId)}.log`);
 }
 
 export type ShellStreamName = "stdout" | "stderr";
 
 export function getTaskSpillPath(opts: { taskId: string; stream: ShellStreamName }): string {
-  return join(taskDirFor(opts.taskId), `${sanitizeTaskFileId(opts.taskId)}.${opts.stream}.spill`);
+  const stem = filesystemToken(opts.taskId);
+  return join(rememberTaskFolder(opts.taskId), `${stem}.${opts.stream}.spill`);
+}
+
+function belongsToFolder(candidate: string, folder: string): boolean {
+  return candidate === folder || candidate.startsWith(`${folder}${sep}`);
 }
 
 export function isTaskOutputPath(p: string): boolean {
-  const normalized = normalize(p);
-  const dirs = new Set(pinnedTaskDirByTaskId.values());
-  dirs.add(resolveTaskDir());
-  for (const dir of dirs) {
-    if (normalized.startsWith(`${dir}${sep}`) || normalized === dir) return true;
+  const candidate = normalize(p);
+  if (belongsToFolder(candidate, taskArtifactDirectory())) return true;
+  for (const folder of artifactState.taskHomes.values()) {
+    if (belongsToFolder(candidate, folder)) return true;
   }
   return false;
 }
 
-const LOG_SUFFIX = ".log";
+const TASK_LOG_EXTENSION = ".log";
 
 export function taskIdFromOutputPath(p: string): string | null {
   if (!isTaskOutputPath(p)) return null;
-  const base = basename(normalize(p));
-  if (!base.endsWith(LOG_SUFFIX)) return null;
-  const id = base.slice(0, -LOG_SUFFIX.length);
-  return id.length > 0 ? id : null;
+  const filename = basename(normalize(p));
+  if (!filename.endsWith(TASK_LOG_EXTENSION)) return null;
+  const taskKey = filename.slice(0, -TASK_LOG_EXTENSION.length);
+  return taskKey === "" ? null : taskKey;
+}
+
+async function prepareTaskFolder(taskId: string): Promise<void> {
+  await mkdir(rememberTaskFolder(taskId), { recursive: true });
 }
 
 export async function writeTaskOutput(taskId: string, content: string): Promise<string> {
-  const path = getTaskOutputPath(taskId);
-  await mkdir(taskDirFor(taskId), { recursive: true });
-  await writeFile(path, content, "utf8");
-  return path;
+  const logFile = resolveTaskLogPath(taskId);
+  await prepareTaskFolder(taskId);
+  await writeFile(logFile, content, "utf8");
+  return logFile;
 }
 
-// Links the task output path to a file that is streamed during the run (the
-// agent's transcript), so the path advertised to the model exists from launch
-// instead of only after completion.
 export async function linkTaskOutput(taskId: string, targetPath: string): Promise<void> {
-  const path = getTaskOutputPath(taskId);
-  await mkdir(taskDirFor(taskId), { recursive: true });
+  const logFile = resolveTaskLogPath(taskId);
+  await prepareTaskFolder(taskId);
   try {
-    await symlink(targetPath, path);
-  } catch (error) {
-    if (errnoCode(error) !== "EEXIST") throw error;
-    await unlink(path);
-    await symlink(targetPath, path);
+    await symlink(targetPath, logFile);
+  } catch (failure) {
+    if (readErrorTag(failure) !== "EEXIST") throw failure;
+    await unlink(logFile);
+    await symlink(targetPath, logFile);
   }
 }
 
 export async function writeTaskOutputIfAbsent(taskId: string, content: string): Promise<void> {
-  const path = getTaskOutputPath(taskId);
-  await mkdir(taskDirFor(taskId), { recursive: true });
+  const logFile = resolveTaskLogPath(taskId);
+  await prepareTaskFolder(taskId);
   try {
-    await writeFile(path, content, { encoding: "utf8", flag: "wx" });
-  } catch (error) {
-    if (errnoCode(error) !== "EEXIST") throw error;
+    await writeFile(logFile, content, { encoding: "utf8", flag: "wx" });
+  } catch (failure) {
+    if (readErrorTag(failure) !== "EEXIST") throw failure;
   }
 }
 
-function errnoCode(error: unknown): string | null {
-  if (typeof error !== "object" || error === null || !("code" in error)) return null;
-  const { code } = error;
-  return typeof code === "string" ? code : null;
+function readErrorTag(failure: unknown): string | null {
+  if (failure === null || typeof failure !== "object" || !("code" in failure)) return null;
+  return typeof failure.code === "string" ? failure.code : null;
 }
 
-const TASK_MAX_OUTPUT_DEFAULT = 32_000;
-const TASK_MAX_OUTPUT_UPPER_LIMIT = 160_000;
+const RESULT_MESSAGE_DEFAULT_CHARS = 32_000;
+const RESULT_MESSAGE_MAX_CHARS = 160_000;
 
-export function getMaxTaskOutputLength(): number {
-  const raw = process.env.TASK_MAX_OUTPUT_LENGTH;
-  if (!raw) return TASK_MAX_OUTPUT_DEFAULT;
-  const parsed = Number.parseInt(raw, 10);
-  if (Number.isNaN(parsed) || parsed <= 0) return TASK_MAX_OUTPUT_DEFAULT;
-  return Math.min(parsed, TASK_MAX_OUTPUT_UPPER_LIMIT);
+export function taskResultCharacterBudget(): number {
+  const rawSetting = process.env.TASK_MAX_OUTPUT_LENGTH;
+  if (!rawSetting) return RESULT_MESSAGE_DEFAULT_CHARS;
+  const numericSetting = Number.parseInt(rawSetting, 10);
+  if (!(numericSetting > 0)) return RESULT_MESSAGE_DEFAULT_CHARS;
+  return numericSetting < RESULT_MESSAGE_MAX_CHARS ? numericSetting : RESULT_MESSAGE_MAX_CHARS;
 }
 
-export function formatTaskOutput(
-  output: string,
-  taskId: string,
-): { content: string; wasTruncated: boolean } {
-  const maxLen = getMaxTaskOutputLength();
-  if (output.length <= maxLen) return { content: output, wasTruncated: false };
-  const header = `[Truncated. Full output: ${getTaskOutputPath(taskId)}]\n\n`;
-  const truncated = output.slice(-(maxLen - header.length));
-  return { content: `${header}${truncated}`, wasTruncated: true };
+export function taskResultArchiveBanner(taskId: string): string {
+  return `[Truncated. Full output: ${resolveTaskLogPath(taskId)}]\n\n`;
+}
+
+export interface TaskResultForModel {
+  textForModel: string;
+  trimmedForMessage: boolean;
+}
+
+export function renderTaskResultForMessage(sourceText: string, taskId: string): TaskResultForModel {
+  const characterBudget = taskResultCharacterBudget();
+  if (sourceText.length <= characterBudget) {
+    return { textForModel: sourceText, trimmedForMessage: false };
+  }
+
+  const archiveBanner = taskResultArchiveBanner(taskId);
+  const retainedSuffix = sourceText.slice(archiveBanner.length - characterBudget);
+  return { textForModel: archiveBanner.concat(retainedSuffix), trimmedForMessage: true };
 }

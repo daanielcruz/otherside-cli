@@ -92,7 +92,7 @@ function matchesRule(rule: ExcludedRule, candidate: string): boolean {
   }
 }
 
-export function stripAllLeadingEnvVars(command: string): string {
+export function stripLeadingEnvAssignments(command: string): string {
   let cur = command.trim();
   while (true) {
     const match = cur.match(ENV_VAR_ASSIGN_RE);
@@ -143,7 +143,7 @@ export function stripSafeWrappers(command: string): string {
   return tokens.slice(i).join(" ").trim();
 }
 
-export function containsExcludedCommand(command: string, excludedPatterns: string[]): boolean {
+export function hasExcludedSubcommand(command: string, excludedPatterns: string[]): boolean {
   if (excludedPatterns.length === 0) return false;
   const rules = excludedPatterns.map(parseExcludedRule);
   let subcommands: string[];
@@ -167,7 +167,7 @@ function matchesAnyRule(sub: string, rules: ExcludedRule[]): boolean {
     const end = candidates.length;
     for (let i = cursor; i < end; i++) {
       const cmd = candidates[i] ?? "";
-      const envStripped = stripAllLeadingEnvVars(cmd);
+      const envStripped = stripLeadingEnvAssignments(cmd);
       if (envStripped.length > 0 && !seen.has(envStripped)) {
         candidates.push(envStripped);
         seen.add(envStripped);

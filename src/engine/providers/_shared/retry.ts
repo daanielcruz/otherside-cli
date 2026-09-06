@@ -1,5 +1,5 @@
 import {
-  isTransientNetworkError,
+  isRetryableNetworkError,
   parseRetryAfterHeader,
   RETRY_AFTER_TOO_LONG_MS,
   resolveProviderError,
@@ -7,7 +7,7 @@ import {
 import { ProviderHttpError, QuotaExhaustedError } from "@/kernel/std/types/error-meta.ts";
 
 export {
-  isTransientNetworkError,
+  isRetryableNetworkError,
   ProviderHttpError,
   parseRetryAfterHeader,
   QuotaExhaustedError,

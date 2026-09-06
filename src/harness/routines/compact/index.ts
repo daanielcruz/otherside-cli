@@ -2,7 +2,7 @@ import DETAILED_ANALYSIS_INSTRUCTION_BASE from "./compact-detailed-analysis.md" 
   type: "text",
 };
 
-const BASE_COMPACT_PROMPT = `Your task is to create a detailed summary of the conversation so far, paying close attention to the user's explicit requests and your previous actions.
+const COMPACT_SUMMARY_PROMPT = `Your task is to create a detailed summary of the conversation so far, paying close attention to the user's explicit requests and your previous actions.
 This summary should be thorough in capturing technical details, code patterns, and architectural decisions that would be essential for continuing development work without losing context.
 
 ${DETAILED_ANALYSIS_INSTRUCTION_BASE}
@@ -86,24 +86,24 @@ When you are using compact - please focus on test output and code changes. Inclu
 </example>
 `;
 
-const NO_TOOLS_TRAILER =
+const NO_TOOLS_PROMPT_TRAILER =
   "\n\nREMINDER: Do NOT call any tools. Respond with plain text only — " +
   "an <analysis> block followed by a <summary> block. " +
   "Tool calls will be rejected and you will fail the task.";
 
-export function getCompactPrompt(customInstructions?: string): string {
+export function buildCompactSummaryPrompt(customInstructions?: string): string {
   // The tool ban lives only in the trailing REMINDER: a leading "CRITICAL"
   // preamble gets misattributed by the summarizer as a user-authored
   // constraint and leaks into the summary's user-message enumeration.
-  let prompt = BASE_COMPACT_PROMPT;
+  let prompt = COMPACT_SUMMARY_PROMPT;
   if (customInstructions && customInstructions.trim() !== "") {
     prompt += `\n\nAdditional Instructions:\n${customInstructions}`;
   }
-  prompt += NO_TOOLS_TRAILER;
+  prompt += NO_TOOLS_PROMPT_TRAILER;
   return prompt;
 }
 
-export function formatCompactSummary(summary: string): string {
+export function renderCompactSummary(summary: string): string {
   let out = summary;
   out = out.replace(/<analysis>[\s\S]*?<\/analysis>/, "");
   const m = out.match(/<summary>([\s\S]*?)<\/summary>/);
@@ -115,7 +115,7 @@ export function formatCompactSummary(summary: string): string {
   return out.trim();
 }
 
-export function getCompactUserSummaryMessage(
+export function compactSummaryUserMessage(
   summary: string,
   opts?: {
     transcriptPath?: string;
@@ -123,7 +123,7 @@ export function getCompactUserSummaryMessage(
     recentMessagesPreserved?: boolean;
   },
 ): string {
-  const formatted = formatCompactSummary(summary);
+  const formatted = renderCompactSummary(summary);
   let base = `This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
 
 ${formatted}`;

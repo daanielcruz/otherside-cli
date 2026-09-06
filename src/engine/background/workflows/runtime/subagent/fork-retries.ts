@@ -1,12 +1,12 @@
 import type { SubagentResult } from "@/engine/background/subagents/dispatcher.ts";
 import { WORKFLOW_DEFAULT_STALL_MS } from "@/engine/background/subagents/fork/constants.ts";
 import type { Worktree } from "@/engine/background/subagents/worktree.ts";
-import { buildVmSafeError } from "@/engine/background/workflows/runtime/sandbox/errors.ts";
+import { toSandboxError } from "@/engine/background/workflows/runtime/sandbox/errors.ts";
+import type { WorkflowAgentAttemptReason } from "@/engine/background/workflows/runtime/store/types.ts";
 import type { ProviderToolDeclaration } from "@/engine/translator/index.ts";
 import type { ForkEventSink } from "@/kernel/std/types/events.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 
-const WORKFLOW_MAX_STALL_RETRIES = 5;
 const WORKFLOW_THROTTLE_BACKOFF_MS = 45000;
 const WORKFLOW_THROTTLE_MIN_OUTPUT_TOKENS = 50;
 const WORKFLOW_THROTTLE_DURATION_FRACTION = 0.5;
@@ -24,8 +24,8 @@ export interface WorkflowForkRequest {
   sink?: ForkEventSink | undefined;
   isolation?: "worktree" | undefined;
   worktreeKey?: string | undefined;
-  // Owner-managed worktree, created once and reused across every retry so the
-  // physical snapshot survives throttle/stall attempts instead of being rebuilt.
+  // Owner-managed worktree, created once and reused across the throttle retry so
+  // the physical snapshot is not rebuilt from potentially drifted source.
   worktree?: Worktree | undefined;
 }
 
@@ -36,7 +36,7 @@ export type WorkflowBackoffSleep = (ms: number, signal: AbortSignal) => Promise<
 const defaultBackoffSleep: WorkflowBackoffSleep = (ms, signal) =>
   new Promise<void>((resolve, reject) => {
     if (signal.aborted) {
-      reject(buildVmSafeError("Workflow was aborted."));
+      reject(toSandboxError("Workflow was aborted."));
       return;
     }
     const timer = setTimeout(() => {
@@ -45,7 +45,7 @@ const defaultBackoffSleep: WorkflowBackoffSleep = (ms, signal) =>
     }, ms);
     const onAbort = (): void => {
       clearTimeout(timer);
-      reject(buildVmSafeError("Workflow was aborted."));
+      reject(toSandboxError("Workflow was aborted."));
     };
     signal.addEventListener("abort", onAbort, { once: true });
   });
@@ -57,7 +57,7 @@ export function setWorkflowBackoffSleepForTests(sleep: WorkflowBackoffSleep | nu
 }
 
 function isThrottledResult(result: SubagentResult): boolean {
-  if (result.stalled === true || result.isError) return false;
+  if (result.isError) return false;
   if (result.structured !== undefined) return false;
   const outputTokens = result.outputTokens ?? Number.POSITIVE_INFINITY;
   if (outputTokens >= WORKFLOW_THROTTLE_MIN_OUTPUT_TOKENS) return false;
@@ -72,33 +72,16 @@ export async function runForkWithRetries(
 ): Promise<{
   result: SubagentResult;
   attempt: number;
-  lastAttemptReason?: "throttled" | "stalled";
+  lastAttemptReason?: WorkflowAgentAttemptReason;
 }> {
+  const result = await runFork(request);
+  if (!isThrottledResult(result)) return { result, attempt: 1 };
+
   const sleep = backoffSleepOverride ?? defaultBackoffSleep;
-  let result = await runFork(request);
-  let attempt = 1;
-  let lastAttemptReason: "throttled" | "stalled" | undefined;
-
-  const throttled = isThrottledResult(result);
-  if (throttled) {
-    await sleep(WORKFLOW_THROTTLE_BACKOFF_MS, signal);
-    result = await runFork(request);
-    attempt += 1;
-    lastAttemptReason = "throttled";
-  }
-
-  for (
-    let stall = 1;
-    result.stalled === true && !throttled && stall <= WORKFLOW_MAX_STALL_RETRIES;
-    stall++
-  ) {
-    if (signal.aborted) throw buildVmSafeError("Workflow was aborted.");
-    result = await runFork(request);
-    attempt += 1;
-    lastAttemptReason = "stalled";
-  }
-
-  return lastAttemptReason !== undefined
-    ? { result, attempt, lastAttemptReason }
-    : { result, attempt };
+  await sleep(WORKFLOW_THROTTLE_BACKOFF_MS, signal);
+  return {
+    result: await runFork(request),
+    attempt: 2,
+    lastAttemptReason: "throttled",
+  };
 }

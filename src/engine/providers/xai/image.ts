@@ -6,7 +6,7 @@ import type {
   ImageSize,
 } from "@/engine/providers/image-generation.ts";
 import { truncateEllipsis } from "@/kernel/std/text/text.ts";
-import { currentTokens } from "./auth.ts";
+import { currentTokens, forceRefreshTokens } from "./auth.ts";
 import { GROK_CLIENT_VERSION } from "./fingerprint.ts";
 
 const IMAGE_MODEL = "grok-imagine-image-quality";
@@ -51,12 +51,11 @@ export async function generateImage(req: ImageGenerationRequest): Promise<ImageG
     }
   }
 
-  let resp: Response;
-  try {
-    resp = await fetch(`${IMAGES_BASE_URL.replace(/\/$/, "")}/${operation}`, {
+  const request = (accessToken: string): Promise<Response> =>
+    fetch(`${IMAGES_BASE_URL.replace(/\/$/, "")}/${operation}`, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${tokens.accessToken}`,
+        Authorization: `Bearer ${accessToken}`,
         "User-Agent": `xai-grok-build/${GROK_CLIENT_VERSION}`,
         "Content-Type": "application/json",
         Accept: "application/json",
@@ -64,6 +63,21 @@ export async function generateImage(req: ImageGenerationRequest): Promise<ImageG
       body: JSON.stringify(body),
       ...(req.abortSignal ? { signal: req.abortSignal } : {}),
     });
+
+  let resp: Response;
+  try {
+    resp = await request(tokens.accessToken);
+    if (resp.status === 401) {
+      // Reload first — another flow may have already refreshed; only hit the
+      // OAuth endpoint when the stored token is the one the server rejected.
+      let newTokens = await currentTokens().catch(() => null);
+      if (!newTokens || newTokens.accessToken === tokens.accessToken) {
+        newTokens = await forceRefreshTokens(tokens).catch(() => null);
+      }
+      if (newTokens && newTokens.accessToken !== tokens.accessToken) {
+        resp = await request(newTokens.accessToken);
+      }
+    }
   } catch (error) {
     if (isAborted(error, req.abortSignal)) throw new Error("image generation aborted");
     throw error;

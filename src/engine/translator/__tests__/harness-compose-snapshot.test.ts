@@ -13,12 +13,14 @@ function sampleContext(): LayerContext {
     sessionId: "sess-fixture",
     cwd: "/tmp/fixture",
     config: DEFAULT_CONFIG,
+    outputStyle: null,
     orchestrationMode: "disabled",
     mcpInstructionBlocks: [],
     injections: makeQueue(),
     deferredToolExclusions: new Set<string>(),
     emitDeferredReminder: true,
     emitAgentListing: true,
+    promoteMidSystem: true,
     supportsMidSystem: true,
     lean: false,
     modelFamily: "other" as const,
@@ -74,23 +76,25 @@ describe("harness compose snapshot", () => {
   });
 
   it("agent-listing renders ctx rows verbatim", () => {
+    // The rig promotes with the unwrap set on, so promoted blocks carry the
+    // reminder content bare — the composer resolved the wrapper.
     const agents = blockText(allBlocks, "Available agent types for the Agent tool:");
     expect(agents).toBe(
-      "<system-reminder>\nAvailable agent types for the Agent tool:\n- Explore: Read-only search agent (Tools: Read, Grep)\n- Plan: Architect agent (Tools: *)\n\nWhen you launch multiple agents for independent work, send them in a single message with multiple tool uses so they run concurrently.\n</system-reminder>",
+      "Available agent types for the Agent tool:\n- Explore: Read-only search agent (Tools: Read, Grep)\n- Plan: Architect agent (Tools: *)\n\nWhen you launch multiple agents for independent work, send them in a single message with multiple tool uses so they run concurrently.",
     );
   });
 
   it("skills reminder renders ctx skill listing", () => {
     const skills = blockText(allBlocks, "The following skills are available");
     expect(skills).toBe(
-      "<system-reminder>\nThe following skills are available for use with the Skill tool:\n\n- verify: Verify a change works.\n- loop: Run a prompt on an interval.\n</system-reminder>",
+      "The following skills are available for use with the Skill tool:\n\n- verify: Verify a change works.\n- loop: Run a prompt on an interval.",
     );
   });
 
   it("deferred-tools reminder merges base + mcp names with exclusions honored", () => {
     const deferred = blockText(allBlocks, "The following deferred tools are now available");
     expect(deferred).toBe(
-      '<system-reminder>\nThe following deferred tools are now available via ToolSearch. Their schemas are NOT loaded — calling them directly will fail with InputValidationError. Use ToolSearch with query "select:<name>[,<name>...]" to load tool schemas before calling them:\nWebFetch\nWebSearch\nmcp__demo__alpha\nmcp__demo__beta\n</system-reminder>',
+      'The following deferred tools are now available via ToolSearch. Their schemas are NOT loaded — calling them directly will fail with InputValidationError. Use ToolSearch with query "select:<name>[,<name>...]" to load tool schemas before calling them:\nWebFetch\nWebSearch\nmcp__demo__alpha\nmcp__demo__beta',
     );
   });
 

@@ -1,12 +1,12 @@
 import type { Script } from "node:vm";
 import {
-  buildWorkflowVmContext,
+  buildWorkflowSandboxScope,
   type WorkflowVmContextOptions,
 } from "@/engine/background/workflows/runtime/runner/context.ts";
 import { cloneWorkflowBoundaryResult } from "@/engine/background/workflows/runtime/sandbox/clone.ts";
 import {
-  buildVmSafeError,
   shortErrorStack,
+  toSandboxError,
 } from "@/engine/background/workflows/runtime/sandbox/errors.ts";
 
 const WORKFLOW_VM_SYNC_TIMEOUT_MS = 30_000;
@@ -26,7 +26,7 @@ export async function runWorkflowVm(
 ): Promise<WorkflowVmRunResult> {
   const startedAt = Date.now();
   const logs: string[] = [];
-  const context = buildWorkflowVmContext({
+  const context = buildWorkflowSandboxScope({
     ...options,
     hooks: {
       ...options.hooks,
@@ -38,14 +38,14 @@ export async function runWorkflowVm(
     },
   });
   try {
-    if (options.signal?.aborted) throw buildVmSafeError("Workflow aborted.");
+    if (options.signal?.aborted) throw toSandboxError("Workflow aborted.");
     const completion = Promise.resolve(
       vmScript.runInContext(context.context, { timeout: WORKFLOW_VM_SYNC_TIMEOUT_MS }),
     );
     const result = await raceWorkflowAbort(completion, options.signal);
     const cloned = cloneWorkflowBoundaryResult(result);
     if (cloned.hasFunction) {
-      throw buildVmSafeError("workflow returned a function; return plain data");
+      throw toSandboxError("workflow returned a function; return plain data");
     }
     return {
       result: cloned.value,
@@ -66,7 +66,7 @@ function raceWorkflowAbort(completion: Promise<unknown>, signal?: AbortSignal): 
   if (!signal) return completion;
   let detach = (): void => {};
   const aborted = new Promise<never>((_, reject) => {
-    const onAbort = (): void => reject(buildVmSafeError("Workflow aborted."));
+    const onAbort = (): void => reject(toSandboxError("Workflow aborted."));
     signal.addEventListener("abort", onAbort, { once: true });
     detach = (): void => signal.removeEventListener("abort", onAbort);
   });

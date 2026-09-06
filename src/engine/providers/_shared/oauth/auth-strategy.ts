@@ -1,5 +1,5 @@
 import type { AuthCredentials, AuthStrategy } from "@/engine/contract/types.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 import { loadFor } from "@/kernel/storage/credentials.ts";
 
 export interface OauthTokenLike {

@@ -1,7 +1,10 @@
 import { join } from "node:path";
 import { getPermissionResolver } from "@/engine/agents/agent-context.ts";
 import { dispatchSkillFork } from "@/engine/background/subagents/dispatcher.ts";
+import { recordPluginUse } from "@/engine/plugins/usage.ts";
+import { modelMayInvokeSkill } from "@/engine/skills/overrides.ts";
 import { availableNames, get as getSkill } from "@/engine/skills/registry.ts";
+import { recordSkillUse } from "@/engine/skills/usage.ts";
 import type { ToolHandler } from "@/engine/tools/contract.ts";
 import {
   MEMORY_CONSOLIDATION_RULE,
@@ -51,6 +54,16 @@ export const Skill: ToolHandler = {
         is_error: true,
       };
     }
+    if (!modelMayInvokeSkill(skill)) {
+      return {
+        tool_use_id: call.id,
+        content: `skill ${skill.name} is not available for model invocation`,
+        is_error: true,
+      };
+    }
+    recordSkillUse(skill.name);
+    if (skill.source === "plugin")
+      recordPluginUse(skill.name.slice(0, skill.name.lastIndexOf(":")));
 
     const userArgs = typeof args.args === "string" ? args.args : "";
     const rendered = renderSkillBody(skill.body);

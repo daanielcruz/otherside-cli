@@ -16,6 +16,7 @@ export function injectQueuedUserInput(args: {
     {
       type: "text",
       text: "<system-reminder>\nAdditional user messages arrived while you were working. Address them, but do not abandon the original task unless a new message clearly redirects or cancels it. After handling any side question, continue the original work.\n</system-reminder>",
+      reminder_type: "queued_input",
     },
   ];
   for (const msg of queuedMessages) {

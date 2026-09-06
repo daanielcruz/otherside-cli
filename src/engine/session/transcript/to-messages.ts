@@ -1,5 +1,6 @@
 import { wrapNotificationForModel } from "@/engine/background/tasks/notification.ts";
 import { buildPostCompactRehydration } from "@/engine/queue/index.ts";
+import { isPreservedImageBlock } from "@/engine/session/compact/preserved-image-ledger.ts";
 import { readCompactionSummaryText } from "@/engine/session/compact/summary-spill.ts";
 import type { AssistantMessageRecord, SessionRecord } from "@/engine/session/record/index.ts";
 import { isCompactionBoundary } from "@/engine/session/record/index.ts";
@@ -13,9 +14,7 @@ import {
   isFoldableToolResult,
   type ToolResultBlock,
 } from "@/engine/session/transcript/tool-result-fold.ts";
-import { getCompactUserSummaryMessage } from "@/harness/routines/compact/index.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
-import { isProviderId } from "@/kernel/config/provider-ids.ts";
+import { compactSummaryUserMessage } from "@/harness/routines/compact/index.ts";
 import type { ImageDimensions, ImageMediaType } from "@/kernel/std/types/image.ts";
 import type {
   ContentBlock,
@@ -24,6 +23,8 @@ import type {
   ToolResultContentBlock,
 } from "@/kernel/std/types/message.ts";
 import { toolResultIsErrorField } from "@/kernel/std/types/message.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
+import { isProviderId } from "@/kernel/std/types/provider-ids.ts";
 
 export function sessionRecordsToMessages(records: SessionRecord[]): Message[] {
   const replacements = new Map<string, string>();
@@ -177,11 +178,13 @@ export function sessionRecordsToMessages(records: SessionRecord[]): Message[] {
         content: [
           {
             type: "text",
-            text: getCompactUserSummaryMessage(readCompactionSummaryText(record.summary_ref)),
+            text: compactSummaryUserMessage(readCompactionSummaryText(record.summary_ref)),
           },
         ],
       });
-      const preserved = Array.isArray(record.preservedImages) ? record.preservedImages : [];
+      const preserved = Array.isArray(record.preservedImages)
+        ? record.preservedImages.filter(isPreservedImageBlock)
+        : [];
       const { blocks: rehydrationBlocks } = buildPostCompactRehydration("default", preserved);
       if (rehydrationBlocks.length > 0) {
         messages.push({ role: "user", content: rehydrationBlocks });

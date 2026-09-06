@@ -6,8 +6,8 @@ import {
 } from "@/engine/model/facts/model-fallback-decision.ts";
 import type { TierCandidateDetail } from "@/engine/model/tier/resolver.ts";
 import { clear, pending } from "@/kernel/channels/ask.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
 import { setRuntimeKind } from "@/kernel/std/proc/runtime-mode.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 
 function candidate(input: {
   rank: number;

@@ -1,6 +1,6 @@
 import type { TierName } from "@/engine/model/tier/names.ts";
 import { tierContainsModel } from "@/engine/model/tier/resolver.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 import { agentSpawnDepth } from "./spawn-depth.ts";
 

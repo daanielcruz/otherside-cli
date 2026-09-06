@@ -1,5 +1,5 @@
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
 import type { EffortLevel } from "@/kernel/std/types/effort.ts";
+import type { ProviderId, ProviderModelRoute } from "@/kernel/std/types/provider-ids.ts";
 
 export interface CatalogModel {
   id: string;
@@ -20,7 +20,7 @@ export interface CatalogProviderConfig {
 
 export interface ModelCatalogProvider {
   catalogModels(): CatalogModel[];
-  findCatalogModel(id: string, provider?: ProviderId): CatalogModel | undefined;
+  findCatalogModel(route: ProviderModelRoute): CatalogModel | undefined;
   catalogProviderConfig(provider: ProviderId): CatalogProviderConfig | undefined;
 }
 
@@ -41,8 +41,8 @@ export function catalogModels(): CatalogModel[] {
   return requireModelCatalogProvider().catalogModels();
 }
 
-export function findCatalogModel(id: string, provider?: ProviderId): CatalogModel | undefined {
-  return requireModelCatalogProvider().findCatalogModel(id, provider);
+export function findCatalogModel(route: ProviderModelRoute): CatalogModel | undefined {
+  return requireModelCatalogProvider().findCatalogModel(route);
 }
 
 export function catalogProviderConfig(provider: ProviderId): CatalogProviderConfig | undefined {

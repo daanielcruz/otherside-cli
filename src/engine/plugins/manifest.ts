@@ -16,13 +16,11 @@ export const HookCommandSchema = z.union([
     command: z.string(),
     args: z.array(z.string()).optional(),
     timeout: z.number().optional(),
-    timeoutMs: z.number().optional(),
   }),
   z.object({
     type: z.literal("prompt"),
     prompt: z.string(),
     timeout: z.number().optional(),
-    timeoutMs: z.number().optional(),
   }),
   z
     .object({
@@ -36,13 +34,13 @@ const HookEntrySchema = z.union([
     type: z.literal("command").optional(),
     matcher: z.string(),
     command: z.string(),
-    timeoutMs: z.number().optional(),
+    timeout: z.number().optional(),
   }),
   z.object({
     type: z.literal("prompt"),
     matcher: z.string(),
     prompt: z.string(),
-    timeoutMs: z.number().optional(),
+    timeout: z.number().optional(),
   }),
   z.object({
     matcher: z.string().optional(),
@@ -138,6 +136,18 @@ const PluginManifestSchema = z.object({
   hooks: z
     .union([z.string(), HooksConfigSchema, z.array(z.union([z.string(), HooksConfigSchema]))])
     .optional(),
+
+  outputStyles: z.union([z.string(), z.array(z.string())]).optional(),
+
+  /**
+   * Palette directories beyond the plugin's own `themes/`. Declared under
+   * `experimental` first; a top-level `themes` is read when that is absent.
+   */
+  experimental: z
+    .object({ themes: z.union([z.string(), z.array(z.string())]).optional() })
+    .optional(),
+
+  themes: z.union([z.string(), z.array(z.string())]).optional(),
 
   mcpServers: McpServersSpecSchema.optional(),
 

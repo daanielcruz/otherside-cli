@@ -1,11 +1,20 @@
 import { formatQuotaWarningMessage } from "@/engine/session/usage/format.ts";
+import {
+  isRoutingUsageExpired,
+  normalizeEpochMs,
+  normalizeRoutingUsageInput,
+  normalizeUtilizationPct,
+  type RoutingUsageInput,
+  routingUsageFromUsageLimits,
+} from "@/engine/session/usage/routing-usage-normalize.ts";
+import { scopeWarnsForAllocations } from "@/engine/session/usage/scope-applicability.ts";
 import { QUOTA_BLOCK_RATIO, QUOTA_WARN_RATIO } from "@/engine/session/usage/thresholds.ts";
 import {
+  type ProviderAllocation,
   QUOTA_STATUSES,
   type QuotaStatus,
   type RateLimitWindow,
   type RawUtilization,
-  type RawWindowUtilization,
   ROUTING_BALANCE_STATUSES,
   ROUTING_TRACKING_STATUSES,
   type RoutingBalanceStatus,
@@ -18,16 +27,15 @@ import {
   type UsageLimitSnapshot,
   type UsageLimitState,
   type UsageWarning,
+  type WindowUtilizationReading,
 } from "@/kernel/channels/usage-limits.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
-
-export { formatResetTime } from "@/engine/session/usage/format.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 
 export type {
+  ProviderAllocation,
   QuotaStatus,
   RateLimitWindow,
   RawUtilization,
-  RawWindowUtilization,
   RoutingBalanceStatus,
   RoutingTrackingStatus,
   RoutingUsageSnapshot,
@@ -37,24 +45,12 @@ export type {
   UsageLimitSnapshot,
   UsageLimitState,
   UsageWarning,
+  WindowUtilizationReading,
 };
 
 export { QUOTA_STATUSES, ROUTING_BALANCE_STATUSES, ROUTING_TRACKING_STATUSES };
 
-export interface RoutingUsageInput {
-  trackingStatus?: RoutingTrackingStatus | undefined;
-  utilizationPct?: number | undefined;
-  utilization?: number | undefined;
-  resetsAtEpochMs?: number | string | null | undefined;
-  resetEpochMs?: number | string | null | undefined;
-  observedAtEpochMs?: number | string | null | undefined;
-  balanceStatus?: RoutingBalanceStatus | undefined;
-}
-
 const WARNING_THRESHOLD = QUOTA_WARN_RATIO;
-const EPOCH_MS_THRESHOLD = 1_000_000_000_000;
-/** Secondary expiry for routing entries whose provider never reported a reset epoch. */
-export const EPOCHLESS_ROUTING_TTL_MS = 30 * 60_000;
 const SWEEP_INTERVAL_MS = 30_000;
 
 /** Scope key used by every provider-only compatibility API (setRoutingUsage, setExtraUsageWarning, ...). */
@@ -79,25 +75,25 @@ const listeners = new Set<() => void>();
 let sweepTimer: ReturnType<typeof setInterval> | undefined;
 
 /**
- * Providers the session is actually allocating right now: the main
- * conversation's active provider plus the providers of currently-running
+ * The (provider, model) routes the session is actually allocating right now:
+ * the main conversation's active route plus the routes of currently-running
  * delegated agents / workflow stages. Passive (auto-shown) warnings are scoped
  * to this set so quota state observed for an idle provider (e.g. by opening a
- * /usage tab or the companion's full-roster poll) never surfaces on its own.
- * Full-roster surfaces the user explicitly opens read warningForProvider
- * directly and stay unscoped. Null (no source registered) keeps the legacy
- * unscoped behavior.
+ * /usage tab or the companion's full-roster poll) never surfaces on its own —
+ * and, within an allocated provider, a family/model scope's warning surfaces
+ * only while a matching model is allocated. Full-roster surfaces the user
+ * explicitly opens read warningForProvider directly and stay unscoped. Null
+ * (no source registered) keeps the legacy unscoped behavior.
  */
-export type AllocatedProvidersSource = () => Iterable<ProviderId>;
-let allocatedProvidersSource: AllocatedProvidersSource | null = null;
+export type ProviderAllocationsSource = () => Iterable<ProviderAllocation>;
+let providerAllocationsSource: ProviderAllocationsSource | null = null;
 
-export function setAllocatedProvidersSource(source: AllocatedProvidersSource | null): void {
-  allocatedProvidersSource = source;
+export function setProviderAllocationsSource(source: ProviderAllocationsSource | null): void {
+  providerAllocationsSource = source;
 }
 
-function allocatedProviderSet(): ReadonlySet<ProviderId> | null {
-  if (allocatedProvidersSource === null) return null;
-  return new Set(allocatedProvidersSource());
+function currentAllocations(): readonly ProviderAllocation[] | null {
+  return providerAllocationsSource === null ? null : [...providerAllocationsSource()];
 }
 
 export function subscribe(fn: () => void): () => void {
@@ -109,19 +105,6 @@ export function subscribe(fn: () => void): () => void {
 
 function emit(): void {
   for (const fn of listeners) fn();
-}
-
-/** True when a routing usage entry should be treated as expired at `atEpochMs`. */
-export function isRoutingUsageExpired(state: RoutingUsageState, atEpochMs = Date.now()): boolean {
-  if (state.resetsAtEpochMs !== undefined && state.resetsAtEpochMs <= atEpochMs) return true;
-  if (
-    state.resetsAtEpochMs === undefined &&
-    state.trackingStatus !== "unknown" &&
-    atEpochMs - state.observedAtEpochMs >= EPOCHLESS_ROUTING_TTL_MS
-  ) {
-    return true;
-  }
-  return false;
 }
 
 /** True when a scope's routing (and therefore its warning) is still live. Scopes with no routing never expire. */
@@ -218,6 +201,7 @@ export function setUsageLimits(
   raw = nextRaw;
   limits = nextLimits;
   observed = true;
+  delete scopesByProvider.anthropic;
 
   putScope("anthropic", {
     scopeKey: GLOBAL_SCOPE_KEY,
@@ -247,9 +231,18 @@ export function clearUsageLimits(): void {
   raw = {};
   limits = defaultLimits();
   observed = false;
-  // Drop every anthropic scope (global + fable + any fetched per-window scope
-  // from applyAnthropicUsageLimits) so no residual warning-only scope survives.
   delete scopesByProvider.anthropic;
+  emit();
+}
+
+/** Clear one provider's complete quota observation after its credential identity changes. */
+export function clearProviderQuotaObservations(provider: ProviderId): void {
+  if (provider === "anthropic") {
+    clearUsageLimits();
+    return;
+  }
+  if (scopesByProvider[provider] === undefined) return;
+  delete scopesByProvider[provider];
   emit();
 }
 
@@ -386,49 +379,65 @@ export interface ProviderScopeObservation {
  * replacement) and stored like any other provider's scope.
  */
 export function warningForProvider(provider: ProviderId): UsageWarning | null {
-  return worstLiveWarningForProvider(provider);
+  return worstLiveWarningEntryForProvider(provider)?.warning ?? null;
 }
 
-function worstLiveWarningForProvider(
+function worstLiveWarningEntryForProvider(
   provider: ProviderId,
+  allocations: readonly ProviderAllocation[] | null = null,
   atEpochMs = Date.now(),
-): UsageWarning | null {
+): ScopedQuotaEntry | null {
   const scopes = scopesByProvider[provider];
   if (!scopes) return null;
-  const warnings: UsageWarning[] = [];
+  let worst: ScopedQuotaEntry | null = null;
   for (const entry of Object.values(scopes)) {
     if (entry === undefined || entry.warning === null) continue;
     if (!isScopeLive(entry, atEpochMs)) continue;
-    warnings.push(entry.warning);
+    if (
+      allocations !== null &&
+      !scopeWarnsForAllocations(provider, entry.applicability, allocations)
+    ) {
+      continue;
+    }
+    worst = worst === null ? entry : worseWarningEntry(worst, entry);
   }
-  if (warnings.length === 0) return null;
-  return warnings.find((warning) => warning.severity === "error") ?? warnings[0] ?? null;
+  return worst;
+}
+
+function worseWarningEntry(left: ScopedQuotaEntry, right: ScopedQuotaEntry): ScopedQuotaEntry {
+  if (left.warning?.severity !== right.warning?.severity) {
+    return right.warning?.severity === "error" ? right : left;
+  }
+  return (right.routing?.utilizationPct ?? -1) > (left.routing?.utilizationPct ?? -1)
+    ? right
+    : left;
 }
 
 /**
- * The single most severe live warning across the providers the session is
- * actually allocating (error beats warning). When an allocated-providers source
- * is registered, only the main session's active provider and the providers of
+ * The single most severe live warning across the (provider, model) routes the
+ * session is actually allocating (error beats warning). When an allocations
+ * source is registered, only the main session's active route and the routes of
  * running delegated agents/workflow stages are considered — quota observed for
- * an idle provider never surfaces passively. Without a source (headless,
- * tests), every observed provider is considered.
+ * an idle provider never surfaces passively, and a family/model scope's
+ * warning surfaces only while a matching model is allocated (provider-wide
+ * scopes reach every allocated model of that provider). Without a source
+ * (headless, tests), every observed provider and scope is considered.
  */
 export function worstProviderWarning(): UsageWarning | null {
-  const allocated = allocatedProviderSet();
-  const warnings: UsageWarning[] = [];
+  const allocations = currentAllocations();
+  let worst: ScopedQuotaEntry | null = null;
   for (const provider of Object.keys(scopesByProvider) as ProviderId[]) {
-    if (allocated !== null && !allocated.has(provider)) continue;
-    const warning = worstLiveWarningForProvider(provider);
-    if (warning) warnings.push(warning);
+    if (allocations !== null && !allocations.some((route) => route.provider === provider)) continue;
+    const entry = worstLiveWarningEntryForProvider(provider, allocations);
+    if (entry !== null) worst = worst === null ? entry : worseWarningEntry(worst, entry);
   }
-  if (warnings.length === 0) return null;
-  return warnings.find((warning) => warning.severity === "error") ?? warnings[0] ?? null;
+  return worst?.warning ?? null;
 }
 
 export function getCurrentWarning(): UsageWarning | null {
   // limits reset fields are unix seconds. Suppress stale header observations
   // until a fresh response rewrites the compatibility scope.
-  const usingOverage = limits.isUsingOverage;
+  const usingOverage = limits.isOverageActive;
   const window = usingOverage ? "overage" : (limits.rateLimitType ?? "unknown");
   const resetsAt = usingOverage ? limits.overageResetsAt : limits.resetsAt;
   if (resetsAt !== undefined && resetsAt * 1000 <= Date.now()) return null;
@@ -593,98 +602,9 @@ function clearProviderRoutingScopes(provider: ProviderId): boolean {
   return changed;
 }
 
-export function normalizeRoutingUsageInput(
-  input: RoutingUsageInput | RoutingUsageState | null | undefined,
-  previous: RoutingUsageState | null = null,
-): RoutingUsageState | null {
-  if (input === null || input === undefined) return null;
-  const trackingStatus = isRoutingTrackingStatus(input.trackingStatus)
-    ? input.trackingStatus
-    : (previous?.trackingStatus ?? "unknown");
-  const balanceStatus = isRoutingBalanceStatus(input.balanceStatus)
-    ? input.balanceStatus
-    : (previous?.balanceStatus ?? "unknown");
-  const utilizationSource =
-    input.utilizationPct !== undefined
-      ? input.utilizationPct
-      : (input as RoutingUsageInput).utilization;
-  const utilizationPct = normalizeUtilizationPct(utilizationSource) ?? previous?.utilizationPct;
-  const observedAtEpochMs =
-    normalizeEpochMs(input.observedAtEpochMs) ?? previous?.observedAtEpochMs ?? Date.now();
-  // Only inherit a still-future reset epoch. A past previous.resetsAtEpochMs would
-  // otherwise resurrect stale expiry and immediately expire (or mis-gate) the new entry.
-  const inputResetsAtEpochMs = normalizeEpochMs(
-    input.resetsAtEpochMs ?? (input as RoutingUsageInput).resetEpochMs,
-  );
-  const previousResetsAtEpochMs = previous?.resetsAtEpochMs;
-  const resetsAtEpochMs =
-    inputResetsAtEpochMs ??
-    (previousResetsAtEpochMs !== undefined && previousResetsAtEpochMs > Date.now()
-      ? previousResetsAtEpochMs
-      : undefined);
-
-  return {
-    trackingStatus,
-    observedAtEpochMs,
-    balanceStatus,
-    ...(utilizationPct !== undefined ? { utilizationPct } : {}),
-    ...(resetsAtEpochMs !== undefined ? { resetsAtEpochMs } : {}),
-  };
-}
-
-export function normalizeUtilizationPct(value: number | undefined | null): number | undefined {
-  if (value === null || value === undefined || !Number.isFinite(value)) return undefined;
-  const normalized = value >= 0 && value <= 1 ? value * 100 : value;
-  return Math.max(0, Math.min(100, normalized));
-}
-
-export function normalizeEpochMs(value: number | string | null | undefined): number | undefined {
-  if (value === null || value === undefined) return undefined;
-  if (typeof value === "string" && value.trim().length === 0) return undefined;
-  const numeric = typeof value === "number" ? value : Number(value);
-  if (Number.isFinite(numeric)) {
-    const epochMs = Math.trunc(Math.abs(numeric) < EPOCH_MS_THRESHOLD ? numeric * 1000 : numeric);
-    return epochMs;
-  }
-  if (typeof value === "string") {
-    const parsed = Date.parse(value);
-    if (Number.isFinite(parsed)) return parsed;
-  }
-  return undefined;
-}
-
-export function routingUsageFromUsageLimits(
-  state: UsageLimitState,
-  observedAtEpochMs = Date.now(),
-): RoutingUsageState | null {
-  const utilizationPct = normalizeUtilizationPct(state.utilization);
-  const resetsAtEpochMs = earliestNormalizedEpochMs(state.resetsAt, state.overageResetsAt);
-  const balanceStatus: RoutingBalanceStatus = state.isUsingOverage
-    ? "available"
-    : state.status === "rejected"
-      ? "exhausted"
-      : "available";
-  const trackingStatus: RoutingTrackingStatus =
-    utilizationPct !== undefined
-      ? "tracked"
-      : state.status === "allowed_warning"
-        ? "partial"
-        : state.status === "rejected"
-          ? "unknown"
-          : "unknown";
-
-  return {
-    trackingStatus,
-    observedAtEpochMs: Math.trunc(observedAtEpochMs),
-    balanceStatus,
-    ...(utilizationPct !== undefined ? { utilizationPct } : {}),
-    ...(resetsAtEpochMs !== undefined ? { resetsAtEpochMs } : {}),
-  };
-}
-
 /** Routing state synthesized from a single raw RateLimitWindow entry (used for the Fable raw-window compatibility scope). */
 function routingFromRawWindow(
-  entry: RawWindowUtilization,
+  entry: WindowUtilizationReading,
   observedAtEpochMs: number,
 ): RoutingUsageState {
   const utilizationPct = normalizeUtilizationPct(entry.utilization);
@@ -698,19 +618,11 @@ function routingFromRawWindow(
   };
 }
 
-function earliestNormalizedEpochMs(...values: (number | undefined)[]): number | undefined {
-  const valid = values
-    .map((value) => normalizeEpochMs(value))
-    .filter((value): value is number => value !== undefined);
-  if (valid.length === 0) return undefined;
-  return Math.min(...valid);
-}
-
 export function defaultLimits(): UsageLimitState {
   return {
     status: "allowed",
     unifiedRateLimitFallbackAvailable: false,
-    isUsingOverage: false,
+    isOverageActive: false,
   };
 }
 
@@ -795,21 +707,6 @@ function writeScopeRouting(
   };
   putScope(provider, entry);
   return true;
-}
-
-const QUOTA_STATUS_SET: ReadonlySet<string> = new Set(QUOTA_STATUSES);
-export function isQuotaStatus(value: unknown): value is QuotaStatus {
-  return typeof value === "string" && QUOTA_STATUS_SET.has(value);
-}
-
-const ROUTING_TRACKING_STATUS_SET: ReadonlySet<string> = new Set(ROUTING_TRACKING_STATUSES);
-function isRoutingTrackingStatus(value: unknown): value is RoutingTrackingStatus {
-  return typeof value === "string" && ROUTING_TRACKING_STATUS_SET.has(value);
-}
-
-const ROUTING_BALANCE_STATUS_SET: ReadonlySet<string> = new Set(ROUTING_BALANCE_STATUSES);
-function isRoutingBalanceStatus(value: unknown): value is RoutingBalanceStatus {
-  return typeof value === "string" && ROUTING_BALANCE_STATUS_SET.has(value);
 }
 
 registerUsageLimitsProvider({

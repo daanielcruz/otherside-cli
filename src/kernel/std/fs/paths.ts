@@ -13,6 +13,16 @@ export function getDisplayPath(filePath: string): string {
   return filePath;
 }
 
+/** `~` and `~/x` as the real home path; anything else is left as written. */
+export function expandHome(filePath: string): string {
+  const home = homedir();
+  if (filePath === "~") return home;
+  if (filePath.startsWith(`~${sep}`) || filePath.startsWith("~/")) {
+    return join(home, filePath.slice(2));
+  }
+  return filePath;
+}
+
 export function configRoot(): string {
   if (process.env.OTHERSIDE_CONFIG_DIR) return process.env.OTHERSIDE_CONFIG_DIR;
   if (isWindows()) {
@@ -40,8 +50,18 @@ export function shellSnapshotsDir(): string {
   return join(configRoot(), "shell-snapshots");
 }
 
+export function customThemesDir(): string {
+  return join(configRoot(), "themes");
+}
+
 export function statsCachePath(): string {
   return join(configRoot(), "usage", "stats-cache.json");
+}
+
+// Computed on every call so OTHERSIDE_CONFIG_DIR overrides (tests, disposable
+// homes) redirect it without a module reload.
+export function quotaCacheRoot(): string {
+  return join(configRoot(), "usage", "quota-cache");
 }
 
 export function sessionRegistryDir(): string {
@@ -50,6 +70,20 @@ export function sessionRegistryDir(): string {
 
 export function fileHistoryRoot(sessionId: string): string {
   return join(configRoot(), "file-history", sessionId);
+}
+
+const UNSAFE_PATH_COMPONENT_RE = /[^A-Za-z0-9._-]/g;
+const LEADING_DOTS_RE = /^\.+/;
+
+/**
+ * Reduce an identifier to one path segment. A name reaching a `join` decides where the
+ * write lands, so separators and traversal are spelled out of it before it can: `..`
+ * would climb out of the directory it was meant to stay in, and a leading dot would
+ * hide the entry from the sweeps that read the directory back.
+ */
+export function pathComponent(name: string): string {
+  const flattened = name.replace(UNSAFE_PATH_COMPONENT_RE, "_").replace(LEADING_DOTS_RE, "");
+  return flattened.length === 0 ? "_" : flattened.slice(0, MAX_SLUG_LENGTH);
 }
 
 const MAX_SLUG_LENGTH = 200;

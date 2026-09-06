@@ -13,7 +13,9 @@ const QUEUED_INPUT_REMINDER =
   "<system-reminder>\nAdditional user messages arrived while you were working. Address them, but do not abandon the original task unless a new message clearly redirects or cancels it. After handling any side question, continue the original work.\n</system-reminder>";
 
 export function queuedInputBlocks(messages: readonly DrainedQueuedMessage[]): ContentBlock[] {
-  const blocks: ContentBlock[] = [{ type: "text", text: QUEUED_INPUT_REMINDER }];
+  const blocks: ContentBlock[] = [
+    { type: "text", text: QUEUED_INPUT_REMINDER, reminder_type: "queued_input" },
+  ];
   for (const msg of messages) {
     for (const block of msg.blocks) blocks.push(block);
   }

@@ -358,11 +358,53 @@ function hasCommandSubstitution(command: string): boolean {
   return false;
 }
 
-// A token that expands at runtime (glob, `$VAR`) is unknowable: it could become
-// a dangerous flag or path we never validated. `$` expands inside double-quotes
-// too, globs only outside all quotes; single-quoted text is literal.
-// `$(`/backtick is handled by hasCommandSubstitution.
-function containsRuntimeExpansion(command: string): boolean {
+// Commands whose glob-expanded operands stay read-only no matter what the
+// pattern matches: every member can only ever READ whatever paths the shell
+// hands it (no write/exec flag can be smuggled in via a filename because the
+// member's flags are still validated by its ALWAYS/GUARDED entry). Plan mode
+// and the read-only auto-allow both lean on this: `ls src/*` or `cat *.json`
+// must flow without a prompt, while a glob under any other command stays
+// unknowable and prompts. Path containment for glob operands is enforced
+// separately by the Bash read-path gate (lexical resolution against the
+// workspace), so an out-of-workspace glob still prompts.
+const GLOB_SAFE_READ_ONLY: ReadonlySet<string> = new Set([
+  "ls",
+  "cat",
+  "head",
+  "tail",
+  "wc",
+  "stat",
+  "grep",
+  "egrep",
+  "fgrep",
+  "diff",
+  "du",
+  "df",
+  "echo",
+  "strings",
+  "hexdump",
+  "od",
+  "nl",
+  "cut",
+  "column",
+  "tr",
+  "tac",
+  "rev",
+  "cmp",
+  "basename",
+  "dirname",
+  "realpath",
+  "readlink",
+  "sha256sum",
+  "sha1sum",
+  "md5sum",
+]);
+
+// `$VAR`-style expansion is unknowable at approval time: it could become a
+// dangerous flag or path we never validated. `$` expands inside double-quotes
+// too; single-quoted text is literal. `$(`/backtick is handled by
+// hasCommandSubstitution.
+function containsDollarExpansion(command: string): boolean {
   let inSingle = false;
   let inDouble = false;
   let escaped = false;
@@ -391,8 +433,36 @@ function containsRuntimeExpansion(command: string): boolean {
       // handled separately by hasCommandSubstitution.
       if (/[A-Za-z_@*#?!${0-9-]/.test(next)) return true;
     }
-    if (inDouble) continue;
-    if (/[?*[\]]/.test(ch ?? "")) return true;
+  }
+  return false;
+}
+
+// Glob characters outside all quotes expand at runtime. That is only
+// acceptable for GLOB_SAFE_READ_ONLY bases (see above); any other command with
+// an unquoted glob stays unclassified and falls back to the prompt.
+function containsGlobExpansion(command: string): boolean {
+  let inSingle = false;
+  let inDouble = false;
+  let escaped = false;
+  for (const ch of command) {
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\" && !inSingle) {
+      escaped = true;
+      continue;
+    }
+    if (ch === "'" && !inDouble) {
+      inSingle = !inSingle;
+      continue;
+    }
+    if (ch === '"' && !inSingle) {
+      inDouble = !inDouble;
+      continue;
+    }
+    if (inSingle || inDouble) continue;
+    if (/[?*[\]]/.test(ch)) return true;
   }
   return false;
 }
@@ -408,13 +478,24 @@ function isSubcommandReadOnly(part: string): boolean {
   return false;
 }
 
+function isGlobSafeSubcommand(part: string): boolean {
+  const tokens = tokenizeSegment(part.trim());
+  const base = unquote(tokens[0] ?? "");
+  return GLOB_SAFE_READ_ONLY.has(base);
+}
+
 export function isReadOnlyBashCommand(command: string): boolean {
   const trimmed = command.trim();
   if (trimmed.length === 0) return false;
   if (hasCommandSubstitution(trimmed)) return false;
-  if (containsRuntimeExpansion(trimmed)) return false;
+  if (containsDollarExpansion(trimmed)) return false;
   if (containsUnsafeRedirect(trimmed)) return false;
   const parts = splitCommandParts(trimmed);
   if (parts.length === 0) return false;
-  return parts.every(isSubcommandReadOnly);
+  if (!parts.every(isSubcommandReadOnly)) return false;
+  // An unquoted glob is tolerated only when EVERY pipeline stage is a
+  // glob-safe reader; a single non-glob-safe stage makes the whole command
+  // unknowable (the expansion could feed it a flag or path never validated).
+  if (containsGlobExpansion(trimmed)) return parts.every(isGlobSafeSubcommand);
+  return true;
 }

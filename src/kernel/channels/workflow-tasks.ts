@@ -1,17 +1,18 @@
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 
 export type WorkflowTaskStatus = "running" | "paused" | "completed" | "failed" | "killed";
 
 export type WorkflowAgentControlReason = "user-skip" | "user-retry";
+export type WorkflowAgentAttemptReason = "throttled";
 
-export interface WorkflowPhaseDescriptor {
+export interface WorkflowPhaseSpec {
   index: number;
   title: string;
   detail?: string;
   model?: string;
 }
 
-export interface AgentTranscriptToolCall {
+export interface AgentTranscriptToolUseEntry {
   name: string;
   summary: string;
 }
@@ -19,11 +20,11 @@ export interface AgentTranscriptToolCall {
 export interface AgentTranscript {
   agentId: string;
   prompt: string;
-  toolCalls: AgentTranscriptToolCall[];
+  toolCalls: AgentTranscriptToolUseEntry[];
   finalText: string;
 }
 
-export interface WorkflowAgentProgress {
+export interface WorkflowAgentStatus {
   type: "workflow_agent";
   index: number;
   label: string;
@@ -33,11 +34,14 @@ export interface WorkflowAgentProgress {
   agentType?: string;
   isolation?: "worktree";
   attempt?: number;
-  lastAttemptReason?: "throttled" | "stalled";
+  lastAttemptReason?: WorkflowAgentAttemptReason;
   cached?: boolean;
   skipped?: boolean;
   state: "start" | "done" | "error";
-  startedAt: number;
+  /** When the agent joined the queue. Set for every agent, waiting or not. */
+  queuedAt?: number;
+  /** When a slot freed and work began. Absent while the agent is still waiting. */
+  startedAt?: number;
   lastProgressAt: number;
   tokens?: number;
   toolCalls?: number;
@@ -48,7 +52,7 @@ export interface WorkflowAgentProgress {
   lastToolSummary?: string;
 }
 
-export interface WorkflowPhaseProgress {
+export interface WorkflowPhaseStatus {
   type: "workflow_phase";
   index: number;
   title: string;
@@ -60,10 +64,7 @@ export interface WorkflowLogProgress {
   message: string;
 }
 
-export type WorkflowProgressEntry =
-  | WorkflowAgentProgress
-  | WorkflowPhaseProgress
-  | WorkflowLogProgress;
+export type WorkflowProgressItem = WorkflowAgentStatus | WorkflowPhaseStatus | WorkflowLogProgress;
 
 export interface WorkflowTaskSnapshot {
   id: string;
@@ -82,8 +83,8 @@ export interface WorkflowTaskSnapshot {
   scriptPath?: string;
   args?: unknown;
   summary?: string;
-  phases?: WorkflowPhaseDescriptor[];
-  workflowProgress: WorkflowProgressEntry[];
+  phases?: WorkflowPhaseSpec[];
+  workflowProgress: WorkflowProgressItem[];
   progressVersion: number;
   agentCount: number;
   totalTokens: number;

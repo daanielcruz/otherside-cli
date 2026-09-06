@@ -11,7 +11,9 @@ import type { SettingScope } from "@/kernel/config/scope.ts";
 export interface SettingDescriptor<K extends keyof UserConfig> {
   readonly key: K;
   readonly scopes: readonly SettingScope[];
-  readonly merge: "override" | "union" | "map-override";
+  // "map-append": a map of arrays; a later scope's entries are appended after
+  // the lower scope's for the same key instead of replacing them.
+  readonly merge: "override" | "union" | "map-override" | "map-append";
   readonly validate?: (value: unknown) => UserConfig[K] | undefined;
 }
 

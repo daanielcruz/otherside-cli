@@ -1,5 +1,5 @@
 import { usageFetchSignal } from "@/engine/providers/_shared/usage-fetch.ts";
-import { currentTokens } from "@/engine/providers/xai/auth.ts";
+import { currentTokens, forceRefreshTokens } from "@/engine/providers/xai/auth.ts";
 import {
   authHeaderValue,
   BASE_URL,
@@ -14,38 +14,46 @@ import {
 } from "@/engine/session/usage/plan-quota.ts";
 import { truncateEllipsis } from "@/kernel/std/text/text.ts";
 
-// Preferred source: GET /v1/billing?format=credits — live SuperGrok period
-// utilization (weekly for unified billing) via creditUsagePercent. Bare
-// /v1/billing is monthly included-credit accounting (used/monthlyLimit). Some
-// accounts return 200 on format=credits with only period metadata and no
-// utilization fields; fall back to bare billing so /usage still renders.
-// Amounts may arrive as bare numbers or `{ val: number }`.
-const CREDITS_BILLING_URL = `${BASE_URL}/billing?format=credits`;
-const MONTHLY_BILLING_URL = `${BASE_URL}/billing`;
+const BILLING_URL = `${BASE_URL}/billing?format=credits`;
 const FULL_PERCENT = 100;
 
 export async function fetchXaiUsage(): Promise<PlanQuotaData | null> {
   const tokens = await currentTokens();
-  const credits = await fetchBillingJson(CREDITS_BILLING_URL, tokens.accessToken);
-  const fromCredits = parseXaiBillingPayload(credits);
-  if (fromCredits) return fromCredits;
+  if (!tokens.accountId) throw new Error("xai billing requires an account identity");
 
-  const monthly = await fetchBillingJson(MONTHLY_BILLING_URL, tokens.accessToken);
-  return parseXaiBillingPayload(monthly);
+  let resp = await fetchBilling(BILLING_URL, tokens.accessToken, tokens.accountId);
+  if (resp.status === 401) {
+    // Reload first — another flow may have already refreshed; only hit the
+    // OAuth endpoint when the stored token is the one the server rejected.
+    let newTokens = await currentTokens().catch(() => null);
+    if (!newTokens || newTokens.accessToken === tokens.accessToken) {
+      newTokens = await forceRefreshTokens(tokens).catch(() => null);
+    }
+    if (newTokens && newTokens.accessToken !== tokens.accessToken && newTokens.accountId) {
+      resp = await fetchBilling(BILLING_URL, newTokens.accessToken, newTokens.accountId);
+    }
+  }
+  return parseXaiBillingPayload(await parseXaiBillingResponse(resp));
 }
 
-async function fetchBillingJson(url: string, accessToken: string): Promise<unknown> {
-  const resp = await fetch(url, {
+function fetchBilling(url: string, accessToken: string, accountId: string): Promise<Response> {
+  return fetch(url, {
     method: "GET",
     headers: {
       Authorization: authHeaderValue(accessToken),
       Accept: "application/json",
+      "X-XAI-Token-Auth": "xai-grok-cli",
+      "x-userid": accountId,
       "x-grok-client-version": GROK_CLIENT_VERSION,
       "x-grok-client-identifier": GROK_CLIENT_IDENTIFIER,
+      "x-grok-client-mode": "headless",
       "User-Agent": userAgent(),
     },
     signal: usageFetchSignal(),
   });
+}
+
+async function parseXaiBillingResponse(resp: Response): Promise<unknown> {
   if (!resp.ok) {
     const text = await resp.text().catch(() => "");
     throw new Error(`HTTP ${resp.status}: ${truncateEllipsis(text, 240)}`);
@@ -61,21 +69,9 @@ export function parseXaiBillingPayload(value: unknown): PlanQuotaData | null {
   const config = objectValue(objectValue(value)?.config);
   if (!config) return null;
 
-  const windows: PlanQuotaWindow[] = [];
   const periodWindow = creditsPeriodWindow(config);
-  if (periodWindow) windows.push(periodWindow);
-
-  const onDemand = onDemandWindow(config);
-  if (onDemand) windows.push(onDemand);
-
-  // Bare / format=full shape: absolute monthly included credits.
-  if (windows.length === 0) {
-    const monthly = monthlyCreditsWindow(config);
-    if (monthly) windows.push(monthly);
-  }
-
-  if (windows.length === 0) return null;
-  return { level: null, windows };
+  if (!periodWindow) return null;
+  return { level: null, windows: [periodWindow] };
 }
 
 function creditsPeriodWindow(config: Record<string, unknown>): PlanQuotaWindow | null {
@@ -100,46 +96,12 @@ function creditsPeriodWindow(config: Record<string, unknown>): PlanQuotaWindow |
   };
 }
 
-function onDemandWindow(config: Record<string, unknown>): PlanQuotaWindow | null {
-  const cap = valNumber(config.onDemandCap);
-  const used = valNumber(config.onDemandUsed);
-  if (cap === null || cap <= 0 || used === null) return null;
-  return {
-    label: "On-demand credits",
-    limit: {
-      utilization: clampPercent((used / cap) * FULL_PERCENT),
-      resetsAt: isoOrNull(config.billingPeriodEnd),
-    },
-    detail: `${formatCount(used)} / ${formatCount(cap)} on-demand`,
-  };
-}
-
-function monthlyCreditsWindow(config: Record<string, unknown>): PlanQuotaWindow | null {
-  const used = valNumber(config.used);
-  const limit = valNumber(config.monthlyLimit);
-  if (limit === null || limit <= 0 || used === null) return null;
-  return {
-    label: "Monthly credits",
-    limit: {
-      utilization: clampPercent((used / limit) * FULL_PERCENT),
-      resetsAt: isoOrNull(config.billingPeriodEnd),
-    },
-    detail: `${formatCount(used)} / ${formatCount(limit)} credits`,
-  };
-}
-
 function periodLabel(periodType: string): string {
   const normalized = periodType.toUpperCase();
   if (normalized.includes("WEEKLY")) return "Weekly limit";
   if (normalized.includes("MONTHLY")) return "Monthly limit";
   if (normalized.includes("DAILY")) return "Daily limit";
   return "Credits";
-}
-
-// Billing amounts ride as `{ val: number }`; tolerate a bare number too.
-function valNumber(value: unknown): number | null {
-  const obj = objectValue(value);
-  return obj ? numberValue(obj.val) : numberValue(value);
 }
 
 function clampPercent(value: number): number {
@@ -156,10 +118,6 @@ function isoOrNull(value: unknown): string | null {
   const ms = Date.parse(value);
   if (Number.isNaN(ms)) return null;
   return new Date(ms).toISOString();
-}
-
-function formatCount(value: number): string {
-  return Math.max(0, Math.floor(value)).toLocaleString("en-US");
 }
 
 function objectValue(value: unknown): Record<string, unknown> | null {

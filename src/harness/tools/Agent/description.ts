@@ -6,9 +6,9 @@ import tool from "@/harness/tools/Agent/tool.json" with { type: "json" };
 import { isAgentAutoBackgroundEnabled } from "@/kernel/config/agent-auto-background.ts";
 
 // Auto-background rewrites the launch-semantics prose at compose time so the
-// static JSON stays byte-identical for the env-disabled path. Two swap targets:
-// the "## Foreground vs background" section (body + offAddendum) and the
-// full-tier usage bullet.
+// static JSON stays byte-identical for the env-disabled path. Swap targets:
+// the "## Foreground vs background" section (body + offAddendum) and the two
+// usage bullets (foreground-vs-background, optional-background).
 const BACKGROUND_SECTION = `## Background execution
 
 Agents always run in the **background**: the tool returns immediately with a task id, and the agent's result arrives later as a completion notification (a user-role message in a later turn). The launch tool result is only a receipt — never treat it as the agent's answer.
@@ -23,10 +23,16 @@ const FOREGROUND_BULLET =
   "- **Foreground vs background**: Use foreground (default) when you need the agent's results before you can proceed — e.g., research agents whose findings inform your next steps. Use background when you have genuinely independent work to do in parallel.";
 const BACKGROUND_BULLET =
   "- **Background execution**: Every agent runs in the background; its result arrives as a completion notification in a later turn. Sequence dependent agents across notification turns; batch independent agents in one message.";
+const OPTIONAL_BACKGROUND_BULLET =
+  "- You can optionally run agents in the background using the run_in_background parameter. When an agent runs in the background, you will be automatically notified when it completes — do NOT sleep, poll, or proactively check on its progress. Continue with other work or respond to the user instead.";
+const ALWAYS_BACKGROUND_BULLET =
+  "- Agents always run in the background. When an agent runs in the background, you will be automatically notified when it completes — do NOT sleep, poll, or proactively check on its progress. Continue with other work or respond to the user instead.";
 
 export function applyBackgroundDefault(text: string): string {
   if (!isAgentAutoBackgroundEnabled()) return text;
-  const out = text.replace(FOREGROUND_BULLET, BACKGROUND_BULLET);
+  const out = text
+    .replace(FOREGROUND_BULLET, BACKGROUND_BULLET)
+    .replace(OPTIONAL_BACKGROUND_BULLET, ALWAYS_BACKGROUND_BULLET);
   const marker = "## Foreground vs background";
   const start = out.indexOf(marker);
   if (start === -1) return out;

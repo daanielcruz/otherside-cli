@@ -2,7 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Auth, beginLogin, currentTokens } from "@/engine/providers/codex/auth.ts";
+import {
+  Auth,
+  beginLogin,
+  currentTokens,
+  forceRefreshTokens,
+} from "@/engine/providers/codex/auth.ts";
 import { CLIENT_ID, ORIGINATOR_HTTP, SCOPE } from "@/engine/providers/codex/fingerprint.ts";
 import { type CodexTokens, loadFor, saveFor } from "@/kernel/storage/credentials.ts";
 
@@ -161,6 +166,32 @@ describe("codex oauth refresh", () => {
     }) as unknown as typeof fetch;
 
     await expect(currentTokens()).rejects.toThrow("codex refresh 500");
+  });
+
+  it("adopts the persisted winner after a rotating refresh token is rejected", async () => {
+    const initialTokens = {
+      accessToken: "stale_access",
+      refreshToken: "stale_refresh",
+      expiresAt: Date.now() + 10 * 60_000,
+    };
+    await saveFor("codex", initialTokens);
+
+    let refreshCalls = 0;
+    global.fetch = mock(async () => {
+      refreshCalls++;
+      await saveFor("codex", {
+        accessToken: "winner_access",
+        refreshToken: "winner_refresh",
+        expiresAt: Date.now() + 60 * 60_000,
+      });
+      return new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 });
+    }) as unknown as typeof fetch;
+
+    const tokens = await forceRefreshTokens(initialTokens);
+
+    expect(refreshCalls).toBe(1);
+    expect(tokens.accessToken).toBe("winner_access");
+    expect(tokens.refreshToken).toBe("winner_refresh");
   });
 
   it("applies the single-flight to the Auth strategy refresh path", async () => {

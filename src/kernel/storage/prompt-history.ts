@@ -7,6 +7,13 @@ import { canonicalizeCwd, configRoot } from "@/kernel/std/fs/paths.ts";
 
 export const MAX_PROMPT_HISTORY_ITEMS = 100;
 
+/**
+ * How far back the reverse-incremental search reaches. It scans a wider window
+ * than the arrow-key walk because it spans every project rather than one, and
+ * it is bounded so a single eager read cannot grow with the whole store.
+ */
+export const MAX_PROMPT_SEARCH_ITEMS = 1000;
+
 const READ_CHUNK_BYTES = 64 * 1024;
 const FLUSH_DEBOUNCE_MS = 50;
 
@@ -102,6 +109,37 @@ export function loadPromptHistoryForCwd(cwd: string, currentSessionId?: string):
     if (reversedCurrent.length + reversedOther.length >= MAX_PROMPT_HISTORY_ITEMS) break;
   }
   return [...reversedOther.reverse(), ...reversedCurrent.reverse()];
+}
+
+/** This session's own prompts, oldest first. */
+export function loadPromptHistoryForSession(sessionId: string): string[] {
+  const reversed: string[] = [];
+  for (const line of readLinesReverseSync(promptHistoryPath())) {
+    const entry = parseLine(line);
+    if (entry === null || entry.sessionId !== sessionId) continue;
+    if (skippedEntryKeys.has(entryKey(entry))) continue;
+    reversed.push(entry.display);
+    if (reversed.length >= MAX_PROMPT_SEARCH_ITEMS) break;
+  }
+  return reversed.reverse();
+}
+
+/**
+ * Every stored prompt, oldest first, regardless of which project typed it. The
+ * reverse-incremental search reads this rather than the current project's
+ * slice, so a prompt written in another checkout stays reachable; the
+ * arrow-key walk keeps the narrower per-project view.
+ */
+export function loadPromptHistoryAllProjects(): string[] {
+  const reversed: string[] = [];
+  for (const line of readLinesReverseSync(promptHistoryPath())) {
+    const entry = parseLine(line);
+    if (entry === null) continue;
+    if (skippedEntryKeys.has(entryKey(entry))) continue;
+    reversed.push(entry.display);
+    if (reversed.length >= MAX_PROMPT_SEARCH_ITEMS) break;
+  }
+  return reversed.reverse();
 }
 
 export interface AppendPromptHistoryInput {

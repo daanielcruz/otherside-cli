@@ -1,7 +1,9 @@
+import { OTHERSIDE_VERSION } from "@/boot/version.ts";
 import { readCompactionSummaryText } from "@/engine/session/compact/summary-spill.ts";
 import { getRuntimeKind } from "@/kernel/std/proc/runtime-mode.ts";
 import type { ContentBlock } from "@/kernel/std/types/message.ts";
 import { toolResultIsErrorField } from "@/kernel/std/types/message.ts";
+import { isProviderId, type ProviderModelRoute } from "@/kernel/std/types/provider-ids.ts";
 import type {
   AssistantMessageRecord,
   AssistantRequestUsage,
@@ -13,8 +15,8 @@ import type {
   SessionStamp,
   UserMessageRecord,
 } from "./schema.ts";
-import { isChainParticipant } from "./schema.ts";
-import { OTHERSIDE_VERSION, type SessionChain } from "./state.ts";
+import { isTranscriptLinked, normalizeRecordRoute } from "./schema.ts";
+import type { SessionChain } from "./state.ts";
 
 interface SerializedLine {
   type: string;
@@ -70,7 +72,7 @@ function upstreamLineFor(
     // gets a real parentUuid chain (first line null, rest threaded) instead of an
     // all-null collapse.
     const parentUuid = chain.headUuid;
-    if (isChainParticipant(r.type)) chain.headUuid = uuid;
+    if (isTranscriptLinked(r.type)) chain.headUuid = uuid;
     const out: SerializedLine = {
       type: "system",
       uuid,
@@ -114,7 +116,11 @@ function upstreamLineFor(
     return out;
   }
   if (r.type === "tool_call") {
-    const out = base(chainSidecar(r));
+    // The identity rides the sidecar, never the tool_use block: that block is a
+    // wire shape and carries only the fields the wire defines.
+    const sidecar = chainSidecar(r);
+    if (r.mcpIdentity) sidecar.mcpIdentity = r.mcpIdentity;
+    const out = base(sidecar);
     out.type = "assistant";
     out.message = assistantMessageShape(r, out.uuid, [
       { type: "tool_use", id: r.call_id, name: r.tool_name, input: r.args ?? {} },
@@ -122,9 +128,9 @@ function upstreamLineFor(
     return out;
   }
   if (r.type === "tool_result") {
+    // chainSidecar dual-writes agentRoute + legacy agentModel/agentProvider.
     const sidecar = chainSidecar(r);
     if (r.meta) sidecar.toolResultMeta = r.meta;
-    if (r.agentModel) sidecar.agentModel = r.agentModel;
     const out = base(sidecar);
     out.type = "user";
     out.toolUseResult = r.toolUseResult ?? r.result;
@@ -184,20 +190,33 @@ function upstreamLineFor(
   return out;
 }
 
+function applyNormalizedRoute(
+  out: OsSidecar,
+  fields: {
+    route?: { provider: string; model: string } | undefined;
+    provider?: string | undefined;
+    model?: string | undefined;
+  },
+): void {
+  const normalized = normalizeRecordRoute(fields);
+  if (normalized.route) out.route = normalized.route;
+  if (normalized.provider) out.provider = normalized.provider;
+  if (normalized.model) out.model = normalized.model;
+}
+
 function configSidecar(r: SessionMetaRecord): OsSidecar {
   const out: OsSidecar = {};
-  if (r.provider) out.provider = r.provider;
-  if (r.model) out.model = r.model;
+  applyNormalizedRoute(out, r);
   if (r.effort) out.effort = r.effort;
   if (r.fastMode !== undefined) out.fastMode = r.fastMode;
   if (r.ultracode !== undefined) out.ultracode = r.ultracode;
+  if (r.remoteEnabled !== undefined) out.remoteEnabled = r.remoteEnabled;
   return out;
 }
 
 function userSidecar(r: UserMessageRecord): OsSidecar {
   const out: OsSidecar = {};
-  if (r.provider) out.provider = r.provider;
-  if (r.model) out.model = r.model;
+  applyNormalizedRoute(out, r);
   if (r.parentToolCallId) out.parentToolCallId = r.parentToolCallId;
   if (r.parentAgentId) out.parentAgentId = r.parentAgentId;
   if (typeof r.agentDepth === "number") out.agentDepth = r.agentDepth;
@@ -210,19 +229,36 @@ function userSidecar(r: UserMessageRecord): OsSidecar {
 }
 
 function chainSidecar(r: {
+  route?: { provider: string; model: string } | undefined;
   provider?: string;
+  model?: string;
   parentToolCallId?: string | undefined;
   parentAgentId?: string | undefined;
   agentDepth?: number | undefined;
+  agentRoute?: { provider: string; model: string } | undefined;
   agentModel?: string | undefined;
 }): OsSidecar {
   const out: OsSidecar = {};
-  if (r.provider) out.provider = r.provider;
+  applyNormalizedRoute(out, r);
   if (r.parentToolCallId) out.parentToolCallId = r.parentToolCallId;
   if (r.parentAgentId) out.parentAgentId = r.parentAgentId;
   if (typeof r.agentDepth === "number") out.agentDepth = r.agentDepth;
-  if (r.agentModel) out.agentModel = r.agentModel;
+  const agentRoute = coerceAgentRoute(r.agentRoute);
+  if (agentRoute) {
+    out.agentRoute = agentRoute;
+    out.agentModel = agentRoute.model;
+    out.agentProvider = agentRoute.provider;
+  } else if (r.agentModel) {
+    out.agentModel = r.agentModel;
+  }
   return out;
+}
+
+function coerceAgentRoute(
+  value: { provider: string; model: string } | undefined,
+): ProviderModelRoute | undefined {
+  if (!value || !isProviderId(value.provider) || value.model.length === 0) return undefined;
+  return { provider: value.provider, model: value.model };
 }
 
 function assistantSidecar(r: AssistantMessageRecord): OsSidecar {
@@ -236,8 +272,7 @@ function assistantSidecar(r: AssistantMessageRecord): OsSidecar {
 
 function compactionSidecar(r: CompactionMarkRecord): OsSidecar {
   const out: OsSidecar = {};
-  if (r.provider) out.provider = r.provider;
-  if (r.model) out.model = r.model;
+  applyNormalizedRoute(out, r);
   const compaction: OsCompactionSidecar = { summaryRef: readCompactionSummaryText(r.summary_ref) };
   if (r.version !== undefined) compaction.version = r.version;
   if (r.trigger !== undefined) compaction.trigger = r.trigger;

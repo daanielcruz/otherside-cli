@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { TIER_NAMES, type TierName } from "@/engine/model/tier/names.ts";
-import { isProviderId, type ProviderId } from "@/kernel/config/provider-ids.ts";
+import { isProviderId, type ProviderId } from "@/kernel/std/types/provider-ids.ts";
 
 export interface RosterEntry {
   provider: ProviderId;

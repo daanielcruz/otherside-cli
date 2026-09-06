@@ -9,12 +9,13 @@ import { openaiPromptAdapter } from "@/engine/providers/openai/prompt-adapter.ts
 import { openaiCompletionsStream } from "@/engine/providers/openai/stream.ts";
 import { translateRequest, translateResponse } from "@/engine/providers/openai/translate.ts";
 import { classifyProviderError } from "@/engine/transport/_infra/classify/classify.ts";
+import { providerDisplayName } from "@/kernel/std/types/provider-ids.ts";
 
 const PROVIDER: ApiProvider<"openai-completions"> = {
   id: "openai",
   api: "openai-completions",
   sourceId: "builtin",
-  label: "OpenAI Custom",
+  label: providerDisplayName("openai"),
   shortKey: "openai",
 };
 
@@ -55,7 +56,6 @@ export const config: ProviderConfig<"openai-completions"> = {
   stream: openaiCompletionsStream,
   featureFlags: {
     fastMode: false,
-    effortSuffix: false,
     thinkingSuffix: false,
     supportsImages: true,
   },

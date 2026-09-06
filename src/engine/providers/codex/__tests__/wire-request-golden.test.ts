@@ -10,7 +10,7 @@ import {
   clearSessionState,
   getSessionState,
 } from "@/engine/providers/codex/transport/state.ts";
-import { buildWsFrame } from "@/engine/providers/codex/transport/ws.ts";
+import { buildWsFrame } from "@/engine/providers/codex/transport/ws-frames.ts";
 import type { Message } from "@/kernel/std/types/message.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 
@@ -180,7 +180,8 @@ describe("codex wire-request-golden", () => {
     expect((res1.frame.client_metadata as Record<string, string>).session_id).toBe(
       "session-fixture",
     );
-    expect(res1.headers.session_id).toBe("session-fixture");
+    expect(res1.headers["session-id"]).toBe("session-fixture");
+    expect(res1.headers["thread-id"]).toBe("thread-fixture");
     expect(res1.body.prompt_cache_key).toBe("session-fixture");
     expect(res1.body.store).toBe(false);
     expect(res1.body.previous_response_id).toBeUndefined();
@@ -277,7 +278,8 @@ describe("codex wire-request-golden", () => {
     expect(Number.isInteger(meta.turn_started_at_unix_ms)).toBe(true);
     expect(meta.workspaces).toBeUndefined();
     expect((res1.frame.client_metadata as Record<string, string>).session_id).toBe(meta.session_id);
-    expect(res1.headers.session_id).toBe(meta.session_id);
+    expect(res1.headers["session-id"]).toBe(meta.session_id);
+    expect(res1.headers["thread-id"]).toBe(meta.thread_id);
     expect(res1.headers["x-codex-parent-thread-id"]).toBe("session-fixture");
     expect(res1.body.prompt_cache_key).toBe("session-fixture:fork:fork-fixture");
     expect(res1.body.store).toBe(false);
@@ -324,18 +326,31 @@ describe("codex wire-request-golden", () => {
       installation_id: "installation-fixture",
       session_id: "prewarm-session-fixture",
       thread_id: "prewarm-thread-fixture",
-      thread_source: "user",
+      agent_name: "/root",
       turn_id: "",
       window_id: "prewarm-thread-fixture:2",
+      window_number: 2,
+      context_window_id: requestMetadata.turnMetadata.context_window_id,
+      request_kind: "prewarm",
+      thread_source: "user",
       sandbox:
         process.platform === "darwin"
           ? "seatbelt"
           : process.platform === "linux"
             ? "landlock"
             : "none",
-      request_kind: "prewarm",
+      sandbox_mode: "workspace-write",
+      auto_review_enabled: false,
+      node_repl_auto_review_required: true,
+      node_repl_disabled: false,
       workspaces: {},
     });
+    expect(requestMetadata.turnMetadata.context_window_id).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+    );
+    expect(requestMetadata.turnMetadata.context_window_id).not.toBe(
+      requestMetadata.turnMetadata.thread_id,
+    );
     expect(requestMetadata.turnMetadata.turn_started_at_unix_ms).toBeUndefined();
   });
 

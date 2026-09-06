@@ -23,34 +23,50 @@ export interface ErrorPanelState {
   rawExpanded: boolean;
 }
 
-export interface ViewSlice {
+export type TranscriptScreen = "prompt" | "detailed";
+
+export interface TranscriptViewState {
+  readonly logEpoch: number;
+  readonly viewingAgentId: string | null;
+  readonly transcriptScreen: TranscriptScreen;
+  readonly showAllTranscriptMessages: boolean;
+  /** Expands tool output in the prompt-screen transcript; seeded from config at boot. */
+  readonly verboseTranscript: boolean;
+}
+
+export interface PanelViewState {
   readonly quotaPanel: true | null;
   readonly errorPanel: ErrorPanelState | null;
   readonly usageWarning: UsageWarning | null;
-  readonly logEpoch: number;
-  readonly retryStatus: RetryStatusLine | null;
-  readonly viewingAgentId: string | null;
-  readonly spinnerMode: SpinnerMode;
-  readonly turnVerb: string;
-  readonly thinkingStatus: ThinkingStatus;
-  readonly remoteSyncStatus: RemoteSyncStatus;
-  readonly pluginStatusNotice: string | null;
-  readonly isTurnRunning: boolean;
-  readonly contextWarningSuppressed: boolean;
-  readonly turnTipIndex: number | null;
   readonly panelFocus: string | null;
   readonly workflowDetailTargetId: string | null;
   readonly workflowDetailOpen: boolean;
-  readonly btwMode: boolean;
   readonly bgPillFocused: boolean;
   readonly panelFocused: boolean;
   readonly panelSelection: number;
   readonly tasksExpanded: boolean;
   readonly bgTasksOpen: boolean;
   readonly configInitialTab: "details" | "config" | undefined;
+}
+
+export interface TurnViewState {
+  readonly retryStatus: RetryStatusLine | null;
+  readonly spinnerMode: SpinnerMode;
+  readonly turnVerb: string;
+  readonly thinkingStatus: ThinkingStatus;
+  readonly isTurnRunning: boolean;
+  readonly contextWarningSuppressed: boolean;
+  readonly turnTipIndex: number | null;
   readonly busy: boolean;
   readonly progressStartedAt: number | null;
 }
+
+export interface RemoteViewState {
+  readonly remoteSyncStatus: RemoteSyncStatus;
+  readonly pluginStatusNotice: string | null;
+}
+
+export type ViewSlice = TranscriptViewState & PanelViewState & TurnViewState & RemoteViewState;
 
 export const initialViewSlice: ViewSlice = {
   quotaPanel: null,
@@ -59,6 +75,9 @@ export const initialViewSlice: ViewSlice = {
   logEpoch: 0,
   retryStatus: null,
   viewingAgentId: null,
+  transcriptScreen: "prompt",
+  showAllTranscriptMessages: false,
+  verboseTranscript: false,
   spinnerMode: "requesting",
   turnVerb: "Thinking",
   thinkingStatus: null,
@@ -70,7 +89,6 @@ export const initialViewSlice: ViewSlice = {
   panelFocus: null,
   workflowDetailTargetId: null,
   workflowDetailOpen: false,
-  btwMode: false,
   bgPillFocused: false,
   panelFocused: false,
   panelSelection: 0,
@@ -123,6 +141,26 @@ export function viewReducer(prev: ViewSlice, action: AppAction): ViewSlice {
       return prev.retryStatus === action.status ? prev : { ...prev, retryStatus: action.status };
     case "view/setViewingAgent":
       return prev.viewingAgentId === action.id ? prev : { ...prev, viewingAgentId: action.id };
+    case "view/toggleTranscriptScreen":
+      return {
+        ...prev,
+        transcriptScreen: prev.transcriptScreen === "detailed" ? "prompt" : "detailed",
+        showAllTranscriptMessages: false,
+      };
+    case "view/exitTranscriptScreen":
+      if (prev.transcriptScreen === "prompt" && !prev.showAllTranscriptMessages) return prev;
+      return {
+        ...prev,
+        transcriptScreen: "prompt",
+        showAllTranscriptMessages: false,
+      };
+    case "view/toggleAllTranscriptMessages":
+      if (prev.transcriptScreen !== "detailed") return prev;
+      return { ...prev, showAllTranscriptMessages: !prev.showAllTranscriptMessages };
+    case "view/setVerboseTranscript":
+      return prev.verboseTranscript === action.verbose
+        ? prev
+        : { ...prev, verboseTranscript: action.verbose };
     case "view/setSpinnerMode":
       return prev.spinnerMode === action.mode ? prev : { ...prev, spinnerMode: action.mode };
     case "view/setTurnVerb":
@@ -159,8 +197,6 @@ export function viewReducer(prev: ViewSlice, action: AppAction): ViewSlice {
       return prev.workflowDetailOpen === action.open
         ? prev
         : { ...prev, workflowDetailOpen: action.open };
-    case "view/setBtwMode":
-      return prev.btwMode === action.active ? prev : { ...prev, btwMode: action.active };
     case "view/setBgPillFocused":
       return prev.bgPillFocused === action.focused
         ? prev

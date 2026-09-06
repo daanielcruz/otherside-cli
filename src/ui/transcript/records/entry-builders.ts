@@ -42,6 +42,7 @@ export function transcriptImagesFromRecord(
     return record.pastedImages.map((img) => ({
       id: img.id,
       mediaType: img.mediaType,
+      ...(img.localPath ? { localPath: img.localPath } : {}),
     }));
   }
   const blocks = Array.isArray(record.inlineImages) ? record.inlineImages : [];
@@ -68,6 +69,21 @@ export function taskNoticeTextFromNotification(content: string): string {
   return summary && summary.length > 0 ? summary : "Background task completed";
 }
 
+type TaskNoticeStatus = "failed" | "killed" | "completed";
+type TaskNoticeKind = "shell" | "workflow" | "agent";
+
+function taskNoticeStatus(status: string | undefined): TaskNoticeStatus {
+  if (status === "failed" || status === "error") return "failed";
+  if (status === "killed") return "killed";
+  return "completed";
+}
+
+function taskNoticeKind(label: string | undefined): TaskNoticeKind {
+  if (label === "Background command") return "shell";
+  if (label === "Dynamic workflow") return "workflow";
+  return "agent";
+}
+
 export function taskNoticeReplayTextFromNotification(content: string): string {
   const summary = taskNoticeTextFromNotification(content);
   // Summary shapes: `Agent "X" finished`, `… failed: <error>`,
@@ -81,23 +97,13 @@ export function taskNoticeReplayTextFromNotification(content: string): string {
   const exitMatch = summary.match(/(?:\(exit code (-?\d+)\)|failed with exit code (-?\d+))/);
   const durationSuffix = summary.match(/ · ((?:\d+\s*(?:ms|h|m|s)\s*)+)$/)?.[1];
   const statusText = content.match(/<status>([^<]+)<\/status>/)?.[1];
-  const status =
-    statusText === "failed" || statusText === "error"
-      ? "failed"
-      : statusText === "killed"
-        ? "killed"
-        : "completed";
+  const status = taskNoticeStatus(statusText);
   const durationTag = Number(content.match(/<duration_ms>(\d+)<\/duration_ms>/)?.[1]);
   const durationMs = Number.isFinite(durationTag)
     ? durationTag
     : parseNoticeDuration(durationSuffix);
   const taskId = content.match(/<task-id>([^<]+)<\/task-id>/)?.[1]?.trim();
-  const taskKind =
-    match?.[1] === "Background command"
-      ? "shell"
-      : match?.[1] === "Dynamic workflow"
-        ? "workflow"
-        : "agent";
+  const taskKind = taskNoticeKind(match?.[1]);
   const exitCodeText = exitMatch?.[1] ?? exitMatch?.[2];
   const exitCode = exitCodeText === undefined ? undefined : Number(exitCodeText);
   const structuredError = decodeTaskNoticeXml(

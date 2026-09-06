@@ -1,8 +1,5 @@
-import { lstatSync, readlinkSync, realpathSync } from "node:fs";
-import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import { getAgentContext } from "@/engine/agents/agent-context.ts";
-import { resolveManagedSessionWorktreePath } from "@/engine/session/worktree.ts";
+import { realpathSync } from "node:fs";
+import { currentSpawnedAgentScope } from "@/engine/agents/agent-context.ts";
 import { isReadOnlyBashCommand } from "@/engine/tools/_infra/command-analysis/read-only.ts";
 import { permissionAbortSignal } from "@/engine/tools/permission-abort-context.ts";
 import type { PermissionDecision } from "@/engine/tools/pipeline.ts";
@@ -11,51 +8,67 @@ import { preToolUseHookPermissionSignal } from "@/engine/tools/pretooluse-hook-p
 import * as registry from "@/engine/tools/registry.ts";
 import type { InjectionQueue } from "@/harness/composer/injections.ts";
 import { ask as askPermission } from "@/kernel/channels/permission.ts";
+import { fireDirectoryAddedHooks, firePermissionRequestHooks } from "@/kernel/hooks/handler.ts";
 import { isMcpAuthToolName } from "@/kernel/mcp/auth/dynamic-tools.ts";
 import { isMcpToolName } from "@/kernel/mcp/index.ts";
 import {
-  containsUnsafeRedirect,
-  stripLeadingSafeEnvVars,
-  stripSafeWrappers,
-  tokenizeRespectingQuotes,
-} from "@/kernel/permissions/bash-matcher.ts";
-import {
+  parseRuleValueText,
   permissionInputForCall,
   permissionKeyForCall,
-  permissionRuleValueFromString,
   permissionTargetFieldFromInput,
   RuleStore,
 } from "@/kernel/permissions/index.ts";
 import {
-  loadAdditionalDirectories,
   loadRules,
   persistAdditionalDirectoryUpdate,
   saveRules,
 } from "@/kernel/permissions/persist.ts";
 import {
-  isAcceptEditsBash,
   isAcceptEditsTool,
-  isSensitiveFilePath,
   isSensitiveWriteApprovable,
-  splitBashSubcommands,
 } from "@/kernel/permissions/sensitive-paths.ts";
 import {
-  type PermissionBehavior,
   type PermissionRule,
   type PermissionUpdate,
-  permissionDirectoryGlob,
-  permissionRuleValueToString,
+  serializeRuleValue,
 } from "@/kernel/permissions/types.ts";
-import { canonicalizeCwd, startsWithDir } from "@/kernel/std/fs/paths.ts";
 import { getRuntimeKind } from "@/kernel/std/proc/runtime-mode.ts";
 import type { ToolCall } from "@/kernel/std/types/message.ts";
 import type { PermissionMode } from "@/kernel/std/types/request.ts";
 import { isRecord } from "@/kernel/std/value-guards.ts";
-import { autoMemDir } from "@/kernel/storage/memory/entrypoint.ts";
 import { previewArgs } from "./args-preview.ts";
 import { recordHeadlessDenial } from "./headless-denials.ts";
+import { type CompoundBashProbes, compoundBashDecision } from "./permission-bash-compounds.ts";
+import {
+  bashCdPathDecision,
+  bashDangerousRmCriticalPathDecision,
+  bashDangerousRmRootVarDecision,
+  bashHasWriteCommand,
+  bashReadPathDecision,
+  bashWritePathDecision,
+} from "./permission-bash-paths.ts";
+import {
+  activeAdditionalWorkingDirectories,
+  bashCommandFromInput,
+  editFilePathFromInput,
+  ensureConfiguredWorkingDirectories,
+  enterWorktreeExternalPath,
+  filePathRepresentations,
+  filesystemReadSessionSuggestions,
+  isAcceptEditsBashInWorkingDirectories,
+  isAutoMemoryEdit,
+  isReadOnlyToolCheck,
+  isWorkspaceEdit,
+  isWorkspaceRead,
+  outsideEditDirectory,
+  readFilePathFromInput,
+  workflowNameFromInput,
+} from "./permission-workspace.ts";
 import type { AgentDeps } from "./turn/types.ts";
 import { canonicalizeWorkingDirectory, resolveWorkingDirectory } from "./working-directories.ts";
+
+export type { CompoundBashProbes };
+export { activeAdditionalWorkingDirectories, compoundBashDecision, isWorkspaceRead };
 
 // Headless (`--print`) has no UI to answer permission prompts. A tool that reaches the interactive ask is auto-denied and recorded, avoiding an indefinite hang from a never-resolving `ask()` call. Accept-edits and yolo grants are already applied before this check, so only genuinely prompt-requiring calls land here.
 async function headlessAutoDeny(
@@ -113,252 +126,6 @@ const PERMISSION_FREE_TOOLS = new Set([
   "WaitForMcpServers",
 ]);
 
-const READ_ONLY_PATH_TOOLS = new Set(["Read"]);
-const initializedWorkingDirectorySessions = new WeakSet<object>();
-const fallbackWorkingDirectories = new WeakMap<object, Set<string>>();
-
-async function ensureConfiguredWorkingDirectories(deps: PermissionResolutionDeps): Promise<void> {
-  const session = deps.agentDeps.session;
-  if (initializedWorkingDirectorySessions.has(session)) return;
-  initializedWorkingDirectorySessions.add(session);
-  const directories = activeAdditionalWorkingDirectories(deps);
-  for (const directory of await loadAdditionalDirectories(session.cwd)) {
-    const canonical = canonicalizeWorkingDirectory(directory, session.cwd);
-    if (canonical !== null) directories.add(canonical);
-  }
-}
-
-function readFilePathFromInput(input: unknown): string | null {
-  if (!input || typeof input !== "object") return null;
-  const value = (input as { file_path?: unknown }).file_path;
-  return typeof value === "string" && value.length > 0 ? value : null;
-}
-
-function workflowNameFromInput(input: unknown): string | null {
-  if (!isRecord(input)) return null;
-  const value = input.name;
-  return typeof value === "string" && value.length > 0 ? value : null;
-}
-
-async function enterWorktreeExternalPath(input: unknown, cwd: string): Promise<boolean> {
-  if (!isRecord(input) || typeof input.path !== "string" || input.path.length === 0) {
-    return false;
-  }
-  return (await resolveManagedSessionWorktreePath(cwd, input.path)) === null;
-}
-
-function expandHome(filePath: string): string {
-  if (filePath === "~") return homedir();
-  if (filePath.startsWith("~/")) return resolve(homedir(), filePath.slice(2));
-  return filePath;
-}
-
-function canonicalizeBestEffort(
-  absolute: string,
-  realpath: (path: string) => string = realpathSync,
-): string {
-  const tail: string[] = [];
-  let current = absolute;
-  while (true) {
-    try {
-      const real = realpath(current);
-      return tail.length > 0 ? join(real, ...tail.reverse()) : real;
-    } catch {
-      const parent = dirname(current);
-      if (parent === current) return absolute;
-      tail.push(basename(current));
-      current = parent;
-    }
-  }
-}
-
-function filePathRepresentations(
-  filePath: string,
-  cwd: string,
-  includeIntermediateSymlinkTargets: boolean,
-): string[] {
-  const expanded = expandHome(filePath);
-  const absolute = isAbsolute(expanded) ? resolve(expanded) : resolve(cwd, expanded);
-  const paths = new Set([filePath, absolute]);
-
-  // A final realpath loses links in a chain (e.g. a -> b -> /etc/passwd). Rule
-  // matching retains each direct target; session suggestions retain only file paths.
-  const ancestors: string[] = [];
-  for (let current = absolute; ; current = dirname(current)) {
-    ancestors.unshift(current);
-    if (dirname(current) === current) break;
-  }
-  for (const [index, path] of ancestors.entries()) {
-    const tail = ancestors.slice(index + 1).map((ancestor) => basename(ancestor));
-    let current = path;
-    for (let depth = 0; depth < 40; depth += 1) {
-      try {
-        if (!lstatSync(current).isSymbolicLink()) break;
-        const target = readlinkSync(current);
-        current = isAbsolute(target) ? target : resolve(dirname(current), target);
-        if (includeIntermediateSymlinkTargets) paths.add(current);
-        paths.add(resolve(current, ...tail));
-      } catch {
-        // A missing or inaccessible component still has its lexical and final
-        // best-effort representations checked below.
-        break;
-      }
-    }
-  }
-  paths.add(canonicalizeBestEffort(absolute));
-  return [...paths];
-}
-
-function filesystemReadSessionSuggestions(
-  filePath: string | null,
-  cwd: string,
-  additionalWorkingDirectories: Iterable<string>,
-): PermissionUpdate[] {
-  if (
-    filePath === null ||
-    pathWithinWorkspace(filePath, cwd, realpathSync, additionalWorkingDirectories)
-  )
-    return [];
-  const directories = new Set(
-    filePathRepresentations(filePath, cwd, false).map((path) => dirname(path)),
-  );
-  return [
-    {
-      type: "addRules",
-      destination: "session",
-      rules: [...directories].map((directory) => ({
-        source: "session",
-        ruleBehavior: "allow",
-        ruleValue: {
-          toolName: "Read",
-          ruleContent: permissionDirectoryGlob(directory),
-        },
-      })),
-    },
-  ];
-}
-
-function pathWithinWorkspace(
-  filePath: string,
-  cwd: string,
-  realpath: (path: string) => string = realpathSync,
-  additionalWorkingDirectories: Iterable<string> = [],
-): boolean {
-  const realCwd = canonicalizeBestEffort(resolve(cwd), realpath);
-  const expanded = expandHome(filePath);
-  const absolute = isAbsolute(expanded) ? expanded : resolve(realCwd, expanded);
-  const canonicalPath = canonicalizeBestEffort(absolute, realpath);
-  for (const workingDirectory of [realCwd, ...additionalWorkingDirectories]) {
-    const canonicalDirectory = canonicalizeBestEffort(resolve(workingDirectory), realpath);
-    if (startsWithDir(canonicalPath, canonicalDirectory)) return true;
-  }
-  return false;
-}
-
-function bashCommandFromInput(input: unknown): string | null {
-  if (!input || typeof input !== "object") return null;
-  const cmd = (input as { command?: unknown }).command;
-  return typeof cmd === "string" ? cmd : null;
-}
-
-function editFilePathFromInput(toolName: string, input: unknown): string | null {
-  if (!isAcceptEditsTool(toolName) || !input || typeof input !== "object") return null;
-  const key = toolName === "NotebookEdit" ? "notebook_path" : "file_path";
-  const value = (input as Record<string, unknown>)[key];
-  return typeof value === "string" && value.length > 0 ? value : null;
-}
-
-function isWorkspaceEdit(
-  toolName: string,
-  input: unknown,
-  cwd: string,
-  additionalWorkingDirectories: Iterable<string>,
-): boolean {
-  const filePath = editFilePathFromInput(toolName, input);
-  return (
-    filePath !== null &&
-    pathWithinWorkspace(filePath, cwd, realpathSync, additionalWorkingDirectories)
-  );
-}
-
-// The CLI's own auto-memory directory lives outside the workspace and under
-// `.otherside` (a sensitive segment), so it would otherwise force a prompt in
-// every mode. Writing there is the memory subsystem doing its job (e.g. /dream),
-// so auto-allow it unless an explicit deny/ask rule intervenes.
-function isAutoMemoryEdit(toolName: string, input: unknown, cwd: string): boolean {
-  const filePath = editFilePathFromInput(toolName, input);
-  if (filePath === null) return false;
-  const expanded = expandHome(filePath);
-  const absolute = isAbsolute(expanded) ? expanded : resolve(canonicalizeCwd(cwd), expanded);
-  return startsWithDir(canonicalizeBestEffort(absolute), canonicalizeBestEffort(autoMemDir(cwd)));
-}
-
-function outsideEditDirectory(
-  toolName: string,
-  input: unknown,
-  cwd: string,
-  additionalWorkingDirectories: Iterable<string>,
-): string | null {
-  const filePath = editFilePathFromInput(toolName, input);
-  if (
-    filePath === null ||
-    pathWithinWorkspace(filePath, cwd, realpathSync, additionalWorkingDirectories)
-  )
-    return null;
-  const expanded = expandHome(filePath);
-  return dirname(isAbsolute(expanded) ? resolve(expanded) : resolve(cwd, expanded));
-}
-
-function isAcceptEditsBashInWorkingDirectories(
-  command: string,
-  cwd: string,
-  additionalWorkingDirectories: Iterable<string>,
-): boolean {
-  if (isAcceptEditsBash(command, cwd)) return true;
-  const tokens = command.match(/'(?:[^']*)'|"(?:[^"$\\`]*)"|[^\s]+/g);
-  if (!tokens) return false;
-  const operands = tokens.slice(1).filter((token) => {
-    const unquoted = token.replace(/^['"]|['"]$/g, "");
-    return !unquoted.startsWith("-") && !/^\d*(?:>|<|&)/.test(unquoted);
-  });
-  if (operands.length === 0) return false;
-  const absoluteOperands = operands.map((token) => token.replace(/^['"]|['"]$/g, ""));
-  if (absoluteOperands.some((operand) => !isAbsolute(expandHome(operand)))) return false;
-  if (
-    absoluteOperands.some(
-      (operand) => !pathWithinWorkspace(operand, cwd, realpathSync, additionalWorkingDirectories),
-    )
-  )
-    return false;
-  for (const workingDirectory of additionalWorkingDirectories) {
-    if (isAcceptEditsBash(command, workingDirectory)) return true;
-  }
-  return false;
-}
-
-function isReadOnlyToolCheck(toolName: string, input: unknown): boolean {
-  if (toolName === "Read") return true;
-  if (toolName === "Bash") {
-    const cmd = bashCommandFromInput(input);
-    return cmd !== null && isReadOnlyBashCommand(cmd);
-  }
-  return false;
-}
-
-export function isWorkspaceRead(
-  toolName: string,
-  input: unknown,
-  cwd: string,
-  realpath: (path: string) => string = realpathSync,
-  additionalWorkingDirectories: Iterable<string> = [],
-): boolean {
-  if (!READ_ONLY_PATH_TOOLS.has(toolName)) return false;
-  const filePath = readFilePathFromInput(input);
-  return (
-    filePath !== null && pathWithinWorkspace(filePath, cwd, realpath, additionalWorkingDirectories)
-  );
-}
-
 export interface PermissionResolutionDeps {
   agentDeps: AgentDeps;
   injections: InjectionQueue;
@@ -373,7 +140,7 @@ export interface PermissionResolutionDeps {
 function currentPermissionMode(deps: PermissionResolutionDeps): PermissionMode {
   const live = deps.agentDeps.broker.read().permissionMode;
   if (live === "yolo" || live === "accept-edits") return live;
-  return getAgentContext()?.permissionModeOverride ?? live;
+  return currentSpawnedAgentScope()?.permissionModeOverride ?? live;
 }
 
 // The set a new session-allow grant is written into. Inside a fork that's the
@@ -382,650 +149,23 @@ function currentPermissionMode(deps: PermissionResolutionDeps): PermissionMode {
 // re-prompting within it) without writing back into the parent's set. On the
 // main turn (no AgentContext) it's the session's own set directly.
 export function activeSessionAllowSet(deps: PermissionResolutionDeps): Set<string> {
-  return getAgentContext()?.sessionAllowedToolPatterns ?? deps.sessionAllowedToolPatterns;
+  return currentSpawnedAgentScope()?.sessionAllowedToolPatterns ?? deps.sessionAllowedToolPatterns;
 }
 
 // The patterns a call is matched against. A fork still honors whatever the
 // parent already granted for the session — `deps.sessionAllowedToolPatterns`
 // is closed over live from the spawning scope, so this also picks up a grant
-// the parent makes *after* the fork started, matching upstream's parent
-// permission-context inheritance. Layered on top (never replacing it) is the
+// the parent makes *after* the fork started. Layered on top (never replacing it) is the
 // fork's own local grants, so an inherited allow can never shadow a grant the
 // fork made for itself, and a fork's own grants still don't leak back into
 // the parent (see `activeSessionAllowSet`, used for writes). Explicit deny/ask
 // rules are matched separately in `resolvePermission` and always take
 // precedence over any allow pattern collected here.
 export function sessionAllowPatternsForMatch(deps: PermissionResolutionDeps): Iterable<string> {
-  const forkLocal = getAgentContext()?.sessionAllowedToolPatterns;
+  const forkLocal = currentSpawnedAgentScope()?.sessionAllowedToolPatterns;
   if (forkLocal === undefined || forkLocal.size === 0) return deps.sessionAllowedToolPatterns;
   if (deps.sessionAllowedToolPatterns.size === 0) return forkLocal;
   return new Set([...deps.sessionAllowedToolPatterns, ...forkLocal]);
-}
-
-export function activeAdditionalWorkingDirectories(deps: PermissionResolutionDeps): Set<string> {
-  const session = deps.agentDeps.session;
-  if (session.additionalWorkingDirectories) return session.additionalWorkingDirectories;
-  const existing = fallbackWorkingDirectories.get(session);
-  if (existing) return existing;
-  const created = new Set<string>();
-  fallbackWorkingDirectories.set(session, created);
-  return created;
-}
-
-const MAX_COMPOUND_BASH_SEGMENTS = 50;
-
-type BashWriteCommand = "mkdir" | "touch" | "rm" | "rmdir" | "mv" | "cp" | "sed";
-
-type BashReadCommand =
-  | "cat"
-  | "column"
-  | "comm"
-  | "cmp"
-  | "cut"
-  | "df"
-  | "diff"
-  | "du"
-  | "file"
-  | "find"
-  | "fold"
-  | "grep"
-  | "egrep"
-  | "fgrep"
-  | "git"
-  | "head"
-  | "hexdump"
-  | "jq"
-  | "ls"
-  | "md5sum"
-  | "nl"
-  | "od"
-  | "paste"
-  | "pr"
-  | "rg"
-  | "rev"
-  | "sed"
-  | "sha1sum"
-  | "sha256sum"
-  | "sort"
-  | "stat"
-  | "strings"
-  | "tac"
-  | "tail"
-  | "tree"
-  | "tr"
-  | "unexpand"
-  | "uniq"
-  | "wc";
-
-const BASH_WRITE_COMMANDS = new Set<BashWriteCommand>([
-  "mkdir",
-  "touch",
-  "rm",
-  "rmdir",
-  "mv",
-  "cp",
-  "sed",
-]);
-
-const BASH_READ_COMMANDS = new Set<BashReadCommand>([
-  "cat",
-  "column",
-  "comm",
-  "cmp",
-  "cut",
-  "df",
-  "diff",
-  "du",
-  "file",
-  "find",
-  "fold",
-  "grep",
-  "egrep",
-  "fgrep",
-  "git",
-  "head",
-  "hexdump",
-  "jq",
-  "ls",
-  "md5sum",
-  "nl",
-  "od",
-  "paste",
-  "pr",
-  "rg",
-  "rev",
-  "sed",
-  "sha1sum",
-  "sha256sum",
-  "sort",
-  "stat",
-  "strings",
-  "tac",
-  "tail",
-  "tree",
-  "tr",
-  "unexpand",
-  "uniq",
-  "wc",
-]);
-
-function positionalArgs(args: string[]): string[] {
-  const paths: string[] = [];
-  let afterDoubleDash = false;
-  for (const arg of args) {
-    if (afterDoubleDash) paths.push(arg);
-    else if (arg === "--") afterDoubleDash = true;
-    else if (!arg.startsWith("-")) paths.push(arg);
-  }
-  return paths;
-}
-
-function sedWritePaths(args: string[]): string[] {
-  const paths: string[] = [];
-  let scriptFound = false;
-  let afterDoubleDash = false;
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (!arg) continue;
-    if (!afterDoubleDash && arg === "--") {
-      afterDoubleDash = true;
-      continue;
-    }
-    if (!afterDoubleDash && arg.startsWith("-")) {
-      if (arg === "-f" || arg === "--file") {
-        const scriptFile = args[i + 1];
-        if (scriptFile) {
-          paths.push(scriptFile);
-          i++;
-        }
-        scriptFound = true;
-      } else if (arg === "-e" || arg === "--expression") {
-        i++;
-        scriptFound = true;
-      } else if (arg.includes("e") || arg.includes("f")) {
-        scriptFound = true;
-      }
-      continue;
-    }
-    if (!scriptFound) scriptFound = true;
-    else paths.push(arg);
-  }
-  return paths;
-}
-
-function patternReadPaths(
-  args: string[],
-  flagsWithArgs: ReadonlySet<string>,
-  defaults: string[] = [],
-): string[] {
-  const paths: string[] = [];
-  let patternFound = false;
-  let afterDoubleDash = false;
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (arg === undefined) continue;
-    if (!afterDoubleDash && arg === "--") {
-      afterDoubleDash = true;
-      continue;
-    }
-    if (!afterDoubleDash && arg.startsWith("-")) {
-      const flag = arg.split("=")[0] ?? arg;
-      if (flag === "-e" || flag === "--regexp" || flag === "-f" || flag === "--file") {
-        patternFound = true;
-      }
-      if (flagsWithArgs.has(flag) && !arg.includes("=")) i++;
-      continue;
-    }
-    if (!patternFound) patternFound = true;
-    else paths.push(arg);
-  }
-  return paths.length > 0 ? paths : defaults;
-}
-
-function findReadPaths(args: string[]): string[] {
-  const paths: string[] = [];
-  const pathFlags = new Set([
-    "-newer",
-    "-anewer",
-    "-cnewer",
-    "-mnewer",
-    "-samefile",
-    "-path",
-    "-wholename",
-    "-ilname",
-    "-lname",
-    "-ipath",
-    "-iwholename",
-  ]);
-  const newerPattern = /^-newer[acmBt][acmtB]$/;
-  let foundNonGlobalFlag = false;
-  let afterDoubleDash = false;
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (!arg) continue;
-    if (afterDoubleDash) {
-      paths.push(arg);
-      continue;
-    }
-    if (arg === "--") {
-      afterDoubleDash = true;
-      continue;
-    }
-    if (arg.startsWith("-")) {
-      if (arg === "-H" || arg === "-L" || arg === "-P") continue;
-      foundNonGlobalFlag = true;
-      if (pathFlags.has(arg) || newerPattern.test(arg)) {
-        const path = args[i + 1];
-        if (path) {
-          paths.push(path);
-          i++;
-        }
-      }
-      continue;
-    }
-    if (!foundNonGlobalFlag) paths.push(arg);
-  }
-  return paths.length > 0 ? paths : ["."];
-}
-
-function trReadPaths(args: string[]): string[] {
-  const hasDelete = args.some(
-    (arg) => arg === "-d" || arg === "--delete" || (arg.startsWith("-") && arg.includes("d")),
-  );
-  return positionalArgs(args).slice(hasDelete ? 1 : 2);
-}
-
-function jqReadPaths(args: string[]): string[] {
-  const flagsWithArgs = new Set([
-    "-e",
-    "--expression",
-    "-f",
-    "--from-file",
-    "--arg",
-    "--argjson",
-    "--slurpfile",
-    "--rawfile",
-    "--args",
-    "--jsonargs",
-    "-L",
-    "--library-path",
-    "--indent",
-    "--tab",
-  ]);
-  return patternReadPaths(args, flagsWithArgs);
-}
-
-function bashReadPaths(segment: string): string[] | null {
-  const tokens = unwrapBashPathWrappers(tokenizeRespectingQuotes(segment.trim()));
-  if (tokens === null) return [];
-  const command = tokens[0];
-  if (!command || !BASH_READ_COMMANDS.has(command as BashReadCommand)) return null;
-  const args = tokens.slice(1);
-  switch (command) {
-    case "find":
-      return findReadPaths(args);
-    case "grep":
-    case "egrep":
-    case "fgrep":
-      return patternReadPaths(
-        args,
-        new Set([
-          "-e",
-          "--regexp",
-          "-f",
-          "--file",
-          "--exclude",
-          "--include",
-          "--exclude-dir",
-          "--include-dir",
-          "-m",
-          "--max-count",
-          "-A",
-          "--after-context",
-          "-B",
-          "--before-context",
-          "-C",
-          "--context",
-        ]),
-        args.some((arg) => arg === "-r" || arg === "-R" || arg === "--recursive") ? ["."] : [],
-      );
-    case "rg":
-      return patternReadPaths(
-        args,
-        new Set([
-          "-e",
-          "--regexp",
-          "-f",
-          "--file",
-          "-t",
-          "--type",
-          "-T",
-          "--type-not",
-          "-g",
-          "--glob",
-          "-m",
-          "--max-count",
-          "--max-depth",
-          "-r",
-          "--replace",
-          "-A",
-          "--after-context",
-          "-B",
-          "--before-context",
-          "-C",
-          "--context",
-        ]),
-        ["."],
-      );
-    case "sed":
-      return sedWritePaths(args);
-    case "git":
-      return args[0] === "diff" && args.includes("--no-index")
-        ? positionalArgs(args.slice(1)).slice(0, 2)
-        : [];
-    case "tr":
-      return trReadPaths(args);
-    case "jq":
-      return jqReadPaths(args);
-    case "ls":
-      return positionalArgs(args).length > 0 ? positionalArgs(args) : ["."];
-    default:
-      return positionalArgs(args);
-  }
-}
-
-interface BashWritePaths {
-  paths: string[];
-  hasUnsupportedFlags: boolean;
-}
-
-// `env` executes the command after its own assignments and options. Only peel
-// the forms that leave argv intact; `-S` splits argv while `-C`/`-P` change
-// resolution, so those (and unknown or incomplete options) must prompt.
-function unwrapEnvForBashPathValidation(tokens: string[]): string[] | null {
-  let index = 1;
-  while (index < tokens.length) {
-    const token = tokens[index];
-    if (!token) return null;
-    if (token.includes("=") && !token.startsWith("-")) index++;
-    else if (token === "-i" || token === "-0" || token === "-v") index++;
-    else if (token === "-u" && tokens[index + 1]) index += 2;
-    else if (token.startsWith("-")) return null;
-    else break;
-  }
-  return index < tokens.length ? tokens.slice(index) : null;
-}
-
-function unwrapBashPathWrappers(tokens: string[]): string[] | null {
-  let unwrapped = stripSafeWrappers(stripLeadingSafeEnvVars(tokens));
-  while (unwrapped[0] === "env") {
-    const next = unwrapEnvForBashPathValidation(unwrapped);
-    if (next === null) return null;
-    unwrapped = stripSafeWrappers(next);
-  }
-  return unwrapped;
-}
-
-function bashWritePaths(segment: string): BashWritePaths | null {
-  const tokens = unwrapBashPathWrappers(tokenizeRespectingQuotes(segment.trim()));
-  // An unparseable env wrapper can change the effective argv or path lookup.
-  // Treat it as a write candidate so saved allow rules cannot bypass a prompt.
-  if (tokens === null) return { paths: [], hasUnsupportedFlags: true };
-  const command = tokens[0];
-  if (!command || !BASH_WRITE_COMMANDS.has(command as BashWriteCommand)) return null;
-  const args = tokens.slice(1);
-  if (command === "sed" && isReadOnlyBashCommand(segment)) return null;
-  return {
-    paths: command === "sed" ? sedWritePaths(args) : positionalArgs(args),
-    hasUnsupportedFlags:
-      (command === "cp" || command === "mv") && args.some((arg) => arg.startsWith("-")),
-  };
-}
-
-function bashWritePathDecision(
-  command: string,
-  cwd: string,
-  additionalWorkingDirectories: Iterable<string>,
-): "ask" | null {
-  const segments = splitBashSubcommands(command)
-    .map((segment) => segment.trim())
-    .filter((segment) => segment.length > 0);
-  const compoundHasCd =
-    segments.length > 1 && segments.some((segment) => /^cd(?:\s|$)/.test(segment));
-  for (const segment of segments) {
-    const write = bashWritePaths(segment);
-    if (!write) continue;
-    // Fail closed on cp/mv flags: --target-directory and
-    // similar options can carry a destination outside the positional argv.
-    if (write.hasUnsupportedFlags || compoundHasCd) return "ask";
-    for (const filePath of write.paths) {
-      // Shell/runtime expansions and write globs cannot be resolved before the
-      // command runs, so they must never be authorized by a saved Bash rule.
-      if (
-        filePath.includes("$") ||
-        filePath.includes("%") ||
-        filePath.startsWith("=") ||
-        (filePath.startsWith("~") && filePath !== "~" && !filePath.startsWith("~/")) ||
-        /[*?[\]{}]/.test(filePath)
-      )
-        return "ask";
-      // Check every symlink-chain / best-effort resolved representation, not
-      // just the lexical operand — a link into a sensitive directory (e.g.
-      // `alias -> .git`) must still trigger a prompt for `touch alias/config`.
-      if (
-        filePathRepresentations(filePath, cwd, true).some((path) => isSensitiveFilePath(path, cwd))
-      )
-        return "ask";
-      if (!pathWithinWorkspace(filePath, cwd, realpathSync, additionalWorkingDirectories))
-        return "ask";
-    }
-  }
-  return null;
-}
-
-// A coarser signal than `bashWritePathDecision`: whether ANY segment of a
-// (possibly compound) command is a recognized filesystem-mutating command
-// (mkdir/touch/rm/rmdir/mv/cp/sed), regardless of whether its target path is
-// workspace-safe. Used only to gate plan mode's already-granted-allow-rule
-// fast path (MCP-PLAN-001) — a `Bash(mkdir foo:*)` allow rule must still
-// prompt in plan mode even though the path itself would otherwise be a safe,
-// no-`ask` write. Commands outside BASH_WRITE_COMMANDS (e.g. `npm test`) are
-// intentionally NOT treated as writes here: an explicit
-// Bash allow rule for a non-filesystem command still auto-allows in plan
-// mode.
-function bashHasWriteCommand(command: string): boolean {
-  return splitBashSubcommands(command)
-    .map((segment) => segment.trim())
-    .filter((segment) => segment.length > 0)
-    .some((segment) => bashWritePaths(segment) !== null);
-}
-
-// Root-var expansion pattern: an `rm`/
-// `rmdir` target that is a bare $VAR or ${VAR} expansion directly followed by
-// `/` and a glob, another expansion, another slash, or the end of the
-// argument expands to the filesystem root (or a top-level directory) when the
-// variable is unset or empty at runtime — e.g. `rm -rf $UNSET/*` becomes
-// `rm -rf /*`. Quotes around the expansion (`"$UNSET"/`) are already stripped
-// by tokenizeRespectingQuotes before this runs, so this regex doesn't need to
-// match quote characters itself.
-const DANGEROUS_RM_ROOT_VAR_RE =
-  /^\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)\/(?:[*$/]|$)/;
-
-// This one pattern stays bypass-immune even while a Bash call is
-// otherwise auto-allowed by an allow rule or by yolo/accept-edits mode
-// (the "Dangerous rm operation"/"Dangerous rmdir operation" ask is
-// re-returned even when bypass is set). So — unlike the rest of
-// bashWritePathDecision, whose "ask" is gated by `mode !== "yolo"` below —
-// this check must be OR'd into `mustAsk` unconditionally.
-function bashDangerousRmRootVarDecision(command: string): "ask" | null {
-  for (const rawSegment of splitBashSubcommands(command)) {
-    const segment = rawSegment.trim();
-    if (!segment) continue;
-    const tokens = unwrapBashPathWrappers(tokenizeRespectingQuotes(segment));
-    if (tokens === null) continue;
-    const name = tokens[0];
-    if (name !== "rm" && name !== "rmdir") continue;
-    for (const arg of positionalArgs(tokens.slice(1))) {
-      if (DANGEROUS_RM_ROOT_VAR_RE.test(arg)) return "ask";
-    }
-  }
-  return null;
-}
-
-// Dangerous-removal / working-path check: a
-// path that IS the filesystem root, the user's home directory, or a direct
-// child of root (e.g. `/usr`, `/etc`) is a catastrophic rm/rmdir target on
-// its own; a path that is a tracked working directory (session cwd or an
-// additionalWorkingDirectory) — or an ancestor of one, since removing the
-// ancestor removes the working directory with it — is equally catastrophic.
-// This intentionally compares the plain (lexical) resolved path rather than a
-// symlink-realpath'd one: a plain path-segment check, and
-// avoiding a real filesystem quirk (e.g. macOS resolving `/etc` to
-// `/private/etc`) silently moving a genuine direct-child-of-root target out
-// from under the "direct child of root" shape.
-function isCriticalSystemDirectory(absolutePath: string, homeDir: string): boolean {
-  const parent = dirname(absolutePath);
-  if (parent === absolutePath) return true; // filesystem root itself
-  if (dirname(parent) === parent) return true; // direct child of root
-  return absolutePath === homeDir;
-}
-
-// The dangerous-removal check runs ahead of any allow rule and stays
-// bypass-immune even while yolo is set — the "Dangerous rm/rmdir operation"
-// ask reason is re-returned by the narrow dangerous-rm exception regardless
-// of bypass state.
-// Like bashDangerousRmRootVarDecision above (a distinct, narrower
-// pattern for unresolved `$VAR/` expansions), this must be OR'd into
-// `mustAsk` unconditionally, never gated by `mode !== "yolo"`.
-function bashDangerousRmCriticalPathDecision(
-  command: string,
-  cwd: string,
-  additionalWorkingDirectories: Iterable<string>,
-): "ask" | null {
-  const homeDir = resolve(homedir());
-  const workingDirectories = [cwd, ...additionalWorkingDirectories].map((directory) =>
-    resolve(directory),
-  );
-  for (const rawSegment of splitBashSubcommands(command)) {
-    const segment = rawSegment.trim();
-    if (!segment) continue;
-    const tokens = unwrapBashPathWrappers(tokenizeRespectingQuotes(segment));
-    if (tokens === null) continue;
-    const name = tokens[0];
-    if (name !== "rm" && name !== "rmdir") continue;
-    for (const arg of positionalArgs(tokens.slice(1))) {
-      // An unresolved shell expansion or glob cannot be safely resolved here
-      // without risking a false match on the literal text; those forms are
-      // covered separately by bashDangerousRmRootVarDecision (root-shaped
-      // `$VAR/` expansions) and, for any resulting non-workspace target, by
-      // bashWritePathDecision's mode-gated ask.
-      if (arg.includes("$") || arg.includes("%") || /[*?[\]{}]/.test(arg)) continue;
-      const expanded = expandHome(arg);
-      const absoluteTarget = isAbsolute(expanded) ? resolve(expanded) : resolve(cwd, expanded);
-      if (isCriticalSystemDirectory(absoluteTarget, homeDir)) return "ask";
-      if (workingDirectories.some((directory) => startsWithDir(directory, absoluteTarget)))
-        return "ask";
-    }
-  }
-  return null;
-}
-
-function bashReadPathDecision(
-  command: string,
-  cwd: string,
-  additionalWorkingDirectories: Iterable<string>,
-): "ask" | null {
-  if (!isReadOnlyBashCommand(command)) return null;
-  for (const segment of splitBashSubcommands(command)) {
-    const paths = bashReadPaths(segment);
-    if (paths === null) continue;
-    for (const filePath of paths) {
-      if (!pathWithinWorkspace(filePath, cwd, realpathSync, additionalWorkingDirectories)) {
-        return "ask";
-      }
-    }
-  }
-  return null;
-}
-
-// `cd` is not a content-reading command, so it never appears in
-// BASH_READ_COMMANDS and isReadOnlyBashCommand() does not classify it —
-// which means bashReadPathDecision's whole-command read-only gate never even
-// looks at a `cd` segment. A compound like `cd <outside> && cat secret`
-// would otherwise reach compoundBashDecision, where separately allow-ruled
-// `cd *` and `cat *` segments combine into an unprompted "allow" even though
-// the `cd` destination itself leaves the workspace and every later relative
-// operand is actually resolved there at runtime, not against the original
-// cwd. Checked independently of isReadOnlyBashCommand so both a bare
-// `cd <outside>` and any compound containing it are covered — the cd target
-// is validated for every Bash call, not only compounds. Multiple `cd`s or
-// unresolvable destinations
-// (globs, `$VAR`, unparseable wrappers) fail closed to "ask" rather than
-// attempt to track an effective cwd across segments.
-function bashCdPathDecision(
-  command: string,
-  cwd: string,
-  additionalWorkingDirectories: Iterable<string>,
-): "ask" | null {
-  for (const segment of splitBashSubcommands(command)) {
-    const trimmed = segment.trim();
-    if (!/^cd(?:\s|$)/.test(trimmed)) continue;
-    const tokens = unwrapBashPathWrappers(tokenizeRespectingQuotes(trimmed));
-    // An unparseable env/wrapper form leaves the destination unknowable.
-    if (tokens === null || tokens[0] !== "cd") return "ask";
-    const args = tokens.slice(1);
-    const destination = args.length === 0 ? homedir() : args.join(" ");
-    if (
-      destination.includes("$") ||
-      destination.includes("%") ||
-      destination.startsWith("=") ||
-      (destination.startsWith("~") && destination !== "~" && !destination.startsWith("~/")) ||
-      /[*?[\]{}]/.test(destination)
-    )
-      return "ask";
-    if (!pathWithinWorkspace(destination, cwd, realpathSync, additionalWorkingDirectories)) {
-      return "ask";
-    }
-  }
-  return null;
-}
-
-export interface CompoundBashProbes {
-  matchSub: (sub: string) => PermissionBehavior | null;
-  subSessionAllowed: (sub: string) => boolean;
-  subAutoAllowed: (sub: string) => boolean;
-}
-
-// Single-rule matchers refuse compound commands outright (a `sleep *` allow
-// must not bless `sleep 1 && rm -rf /`), so compounds are decided here by
-// evaluating EVERY chained segment on its own: any denied segment denies the
-// call, an explicit ask-rule forces the prompt, and the call is auto-allowed
-// only when each segment is individually allowed (rule, session grant, or
-// read-only). Substitution/newline commands stay un-splittable → prompt.
-export function compoundBashDecision(
-  command: string,
-  probes: CompoundBashProbes,
-): "allow" | "deny" | "ask" | "rule-ask" | null {
-  if (command.includes("\n") || /\$\(|`/.test(command)) return null;
-  const segments = splitBashSubcommands(command)
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
-  if (segments.length <= 1) return null;
-  if (segments.length > MAX_COMPOUND_BASH_SEGMENTS) return "ask";
-  const cdCount = segments.filter((segment) => /^cd(?:\s|$)/.test(segment)).length;
-  if (cdCount > 1) return "ask";
-  if (cdCount === 1 && segments.some((segment) => bashWritePaths(segment) !== null)) return "ask";
-  if (cdCount === 1 && segments.some((segment) => /^git(?:\s|$)/.test(segment))) return "ask";
-  let allAllowed = true;
-  for (const segment of segments) {
-    const matched = probes.matchSub(segment);
-    if (matched === "deny") return "deny";
-    if (matched === "ask") return "rule-ask";
-    if (matched === "allow" || probes.subSessionAllowed(segment)) continue;
-    if (!containsUnsafeRedirect(segment) && probes.subAutoAllowed(segment)) continue;
-    allAllowed = false;
-  }
-  return allAllowed ? "allow" : null;
 }
 
 export async function resolvePermission(
@@ -1062,7 +202,7 @@ export async function resolvePermission(
   const store = new RuleStore();
   store.addAll(rules);
   for (const pattern of sessionAllowPatternsForMatch(deps)) {
-    const ruleValue = permissionRuleValueFromString(pattern);
+    const ruleValue = parseRuleValueText(pattern);
     if (ruleValue) {
       store.add({ source: "session", ruleBehavior: "allow", ruleValue });
     }
@@ -1207,7 +347,21 @@ export async function resolvePermission(
         return "allow";
     }
   }
-  const agentContext = getAgentContext();
+  const suggestions =
+    canonicalName === "Read"
+      ? filesystemReadSessionSuggestions(filePath, cwd, additionalWorkingDirectories)
+      : [];
+  await firePermissionRequestHooks(deps.agentDeps.config, {
+    kind: "permissionRequest",
+    ctx: {
+      toolName: call.name,
+      toolInput: call.input,
+      sessionId: deps.agentDeps.session.id,
+      cwd,
+      ...(suggestions.length > 0 ? { permissionSuggestions: suggestions } : {}),
+    },
+  });
+  const agentContext = currentSpawnedAgentScope();
   // AGENT-PERM-003: a detached named background subagent has no parent turn
   // of its own to answer a prompt, but in an interactive TUI session the
   // permission channel is a session-long duplex the REPL is already
@@ -1221,10 +375,6 @@ export async function resolvePermission(
   // headless and no-prompt guards above, but does not need a second generic
   // permission approval before showing that dialog.
   if (!hasRuleAsk && requiresUserInteraction) return "allow";
-  const suggestions =
-    canonicalName === "Read"
-      ? filesystemReadSessionSuggestions(filePath, cwd, additionalWorkingDirectories)
-      : [];
   const result = await askPermission(
     {
       toolName: call.name,
@@ -1275,6 +425,15 @@ async function resolveExitPlanMode(
         "ExitPlanMode is only valid while in plan mode. If your plan was already approved, continue with the implementation instead.",
     };
   }
+  await firePermissionRequestHooks(deps.agentDeps.config, {
+    kind: "permissionRequest",
+    ctx: {
+      toolName: call.name,
+      toolInput: call.input,
+      sessionId: deps.agentDeps.session.id,
+      cwd: deps.agentDeps.session.cwd,
+    },
+  });
   if (getRuntimeKind() === "print") return await headlessAutoDeny(deps, call);
   const result = await askPermission(
     {
@@ -1330,11 +489,19 @@ async function applyUpdate(
     const added: string[] = [];
     for (const directory of update.dirs) {
       const canonical = canonicalizeWorkingDirectory(directory, ctx.cwd);
-      if (canonical === null) continue;
+      if (canonical === null || directories.has(canonical)) continue;
       directories.add(canonical);
       added.push(canonical);
     }
     await persistAdditionalDirectoryUpdate(added, update.destination ?? "session", ctx.cwd, false);
+    for (const directory of added) {
+      await fireDirectoryAddedHooks(deps.agentDeps.config, {
+        directory,
+        source: "permission",
+        sessionId: deps.agentDeps.session.id,
+        cwd: ctx.cwd,
+      });
+    }
     return;
   }
   if (update.type === "removeDirectories") {
@@ -1349,7 +516,7 @@ async function applyUpdate(
       const sessionAllowed = activeSessionAllowSet(deps);
       for (const rule of update.rules) {
         if (rule.ruleBehavior !== "allow") continue;
-        sessionAllowed.add(permissionRuleValueToString(rule.ruleValue));
+        sessionAllowed.add(serializeRuleValue(rule.ruleValue));
       }
       return;
     }
@@ -1364,7 +531,7 @@ async function applyUpdate(
       const sessionAllowed = activeSessionAllowSet(deps);
       for (const rule of update.rules) {
         if (rule.ruleBehavior !== "allow") continue;
-        sessionAllowed.delete(permissionRuleValueToString(rule.ruleValue));
+        sessionAllowed.delete(serializeRuleValue(rule.ruleValue));
       }
       return;
     }

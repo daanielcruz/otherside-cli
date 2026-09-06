@@ -1,7 +1,10 @@
 import { readFileSync } from "node:fs";
 import { delimiter, resolve } from "node:path";
-import { findModel } from "@/engine/model/catalog.ts";
+import { findUniqueModel } from "@/engine/model/catalog.ts";
+import type { ProviderModelRoute } from "@/kernel/std/types/provider-ids.ts";
 import type { PermissionMode } from "@/kernel/std/types/request.ts";
+
+export type ThinkingDisplay = "summarized" | "omitted";
 
 export type CliMode =
   | {
@@ -11,6 +14,8 @@ export type CliMode =
       resumeSessionId: string | null;
       resumeLatest: boolean;
       model: string | null;
+      effort: string | null;
+      thinkingDisplay: ThinkingDisplay | null;
       provider: string | null;
       /** `--worktree [name]`: enter a session worktree at launch (null name = auto). */
       worktree: { name: string | null } | null;
@@ -26,6 +31,7 @@ export type CliMode =
       verbose: boolean;
       model: string | null;
       effort: string | null;
+      thinkingDisplay: ThinkingDisplay | null;
       provider: string | null;
       resumeSessionId: string | null;
       resumeLatest: boolean;
@@ -34,7 +40,7 @@ export type CliMode =
       addDirs?: string[];
       maxTurns: number | null;
       maxBudgetUsd?: number | null;
-      fallbackModel?: string | null;
+      fallbackRoute?: ProviderModelRoute | null;
       systemPrompt?: string | null;
       appendSystemPrompt?: string | null;
       includePartialMessages?: boolean;
@@ -69,6 +75,11 @@ function parsePermissionMode(raw: string | null): PermissionMode | null {
   return PERMISSION_MODE_ALIASES[raw] ?? null;
 }
 
+function parseThinkingDisplay(raw: string | null): ThinkingDisplay | null {
+  if (raw === "summarized" || raw === "omitted") return raw;
+  return null;
+}
+
 // Internal permission mode → the wire value emitted on the headless surface.
 // A full-set Record keeps this exhaustive: a new PermissionMode breaks tsc here.
 const PERMISSION_MODE_WIRE: Record<PermissionMode, string> = {
@@ -90,6 +101,7 @@ const PRINT_VALUE_FLAGS: ReadonlySet<string> = new Set([
   "--model",
   "--provider",
   "--effort",
+  "--thinking-display",
   "--permission-mode",
   "--settings",
   "--resume",
@@ -263,6 +275,15 @@ export function parseArgs(argv: string[]): CliMode {
       code: 1,
     };
   }
+  const thinkingDisplayRaw = optionValue(argv, "--thinking-display");
+  const thinkingDisplay = parseThinkingDisplay(thinkingDisplayRaw);
+  if (thinkingDisplayRaw !== null && thinkingDisplay === null) {
+    return {
+      kind: "error",
+      message: `otherside: invalid --thinking-display "${thinkingDisplayRaw}" (expected: summarized or omitted)`,
+      code: 1,
+    };
+  }
   const yolo =
     argv.includes("--yolo") ||
     argv.includes("--dangerously-skip-permissions") ||
@@ -289,13 +310,18 @@ export function parseArgs(argv: string[]): CliMode {
       };
     }
     const fallbackModel = optionValue(argv, "--fallback-model");
-    if (fallbackModel !== null && !findModel(fallbackModel)) {
+    const fallbackModelEntry = fallbackModel === null ? undefined : findUniqueModel(fallbackModel);
+    if (fallbackModel !== null && fallbackModelEntry === undefined) {
       return {
         kind: "error",
-        message: `otherside: invalid --fallback-model "${fallbackModel}" (model not found)`,
+        message: `otherside: invalid --fallback-model "${fallbackModel}" (model not found or provider is ambiguous)`,
         code: 1,
       };
     }
+    const fallbackRoute =
+      fallbackModelEntry === undefined
+        ? null
+        : { provider: fallbackModelEntry.provider, model: fallbackModelEntry.id };
     const resumeSessionId = optionValue(argv, "--resume");
     const resumeLatest = argv.includes("-c") || argv.includes("--continue");
     const addDirs = optionValues(argv, "--add-dir");
@@ -324,6 +350,7 @@ export function parseArgs(argv: string[]): CliMode {
       verbose: argv.includes("--verbose"),
       model: optionValue(argv, "--model"),
       effort: optionValue(argv, "--effort"),
+      thinkingDisplay,
       provider: optionValue(argv, "--provider"),
       resumeSessionId,
       resumeLatest,
@@ -332,7 +359,7 @@ export function parseArgs(argv: string[]): CliMode {
       addDirs,
       maxTurns: parsePositiveInt(optionValue(argv, "--max-turns")),
       maxBudgetUsd,
-      fallbackModel,
+      fallbackRoute,
       systemPrompt: optionValue(argv, "--system-prompt"),
       appendSystemPrompt: optionValue(argv, "--append-system-prompt"),
       includePartialMessages: argv.includes("--include-partial-messages"),
@@ -353,6 +380,8 @@ export function parseArgs(argv: string[]): CliMode {
     resumeSessionId,
     resumeLatest,
     model: optionValue(argv, "--model"),
+    effort: optionValue(argv, "--effort"),
+    thinkingDisplay,
     provider: optionValue(argv, "--provider"),
     worktree: worktreeOption(argv),
     tmux: tmuxOption(argv),
@@ -471,7 +500,13 @@ function applyCliFlagsToEnv(argv: string[]): void {
   const budget = optionValue(argv, "--max-budget-usd");
   if (budget !== null) process.env.OTHERSIDE_CLI_MAX_BUDGET_USD = budget;
   const fallbackModel = optionValue(argv, "--fallback-model");
-  if (fallbackModel !== null) process.env.OTHERSIDE_CLI_FALLBACK_MODEL = fallbackModel;
+  const fallbackModelEntry = fallbackModel === null ? undefined : findUniqueModel(fallbackModel);
+  if (fallbackModelEntry !== undefined) {
+    process.env.OTHERSIDE_CLI_FALLBACK_ROUTE = JSON.stringify({
+      provider: fallbackModelEntry.provider,
+      model: fallbackModelEntry.id,
+    });
+  }
   if (optionValue(argv, "--resume") || argv.includes("-c") || argv.includes("--continue")) {
     process.env.OTHERSIDE_CLI_RESUME_ACTIVE = "1";
   }

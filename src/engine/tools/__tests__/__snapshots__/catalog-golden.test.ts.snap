@@ -4,7 +4,7 @@ exports[`tool catalog golden (gates #3 deterministic catalog) base tools — nam
 [
   {
     "name": "Agent",
-    "schema": "0fd82c5d48514fd7",
+    "schema": "fe025246b470600a",
   },
   {
     "name": "AskUserQuestion",
@@ -24,7 +24,11 @@ exports[`tool catalog golden (gates #3 deterministic catalog) base tools — nam
   },
   {
     "name": "ReportFindings",
-    "schema": "a18f240e95f8a631",
+    "schema": "ed9475255273e907",
+  },
+  {
+    "name": "ScheduleWakeup",
+    "schema": "af1d9e7b1fb28d68",
   },
   {
     "name": "Skill",
@@ -96,12 +100,8 @@ exports[`tool catalog golden (gates #3 deterministic catalog) deferred tools —
     "schema": "3f1286b5118924aa",
   },
   {
-    "name": "ScheduleWakeup",
-    "schema": "3f1eadc06aa87ff7",
-  },
-  {
     "name": "SendMessage",
-    "schema": "e97d9fa527608310",
+    "schema": "40b54393746f169d",
   },
   {
     "name": "TaskCreate",

@@ -1,4 +1,7 @@
-import { beforeAll, describe, expect, it } from "bun:test";
+import { afterEach, beforeAll, describe, expect, it, mock } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { registerAllProviders } from "@/engine/providers/bootstrap.ts";
 import {
   clearRoutingUsage,
@@ -10,12 +13,33 @@ import {
   warningForProvider,
 } from "@/engine/session/usage/limits.ts";
 import { providerRouteability } from "@/engine/session/usage/provider-routeability.ts";
-import { applyAnthropicUsageLimits, parseAnthropicUsage } from "../usage.ts";
+import { type AnthropicTokens, saveFor } from "@/kernel/storage/credentials.ts";
+import { applyAnthropicUsageLimits, fetchAnthropicUsage, parseAnthropicUsage } from "../usage.ts";
 
 beforeAll(() => registerAllProviders());
 
 const RESET_SESSION = "2026-07-03T01:29:59Z";
 const RESET_WEEK = "2026-07-07T21:59:59Z";
+const originalFetch = global.fetch;
+const originalConfigDir = process.env.OTHERSIDE_CONFIG_DIR;
+let credentialDir: string | null = null;
+
+function testTokens(scopes?: string[]): AnthropicTokens {
+  return {
+    accessToken: "anthropic-test-token",
+    refreshToken: "anthropic-test-refresh",
+    expiresAt: Date.now() + 10 * 60_000,
+    ...(scopes !== undefined ? { scopes } : {}),
+  };
+}
+
+afterEach(() => {
+  global.fetch = originalFetch;
+  if (originalConfigDir === undefined) delete process.env.OTHERSIDE_CONFIG_DIR;
+  else process.env.OTHERSIDE_CONFIG_DIR = originalConfigDir;
+  if (credentialDir !== null) rmSync(credentialDir, { recursive: true, force: true });
+  credentialDir = null;
+});
 
 function liveShape(): Record<string, unknown> {
   return {
@@ -40,22 +64,89 @@ function liveShape(): Record<string, unknown> {
   };
 }
 
-describe("parseAnthropicUsage (limits[] shape)", () => {
+describe("fetchAnthropicUsage profile scope gate", () => {
+  it.each([
+    [undefined],
+    [[]],
+    [["user:profile"]],
+    [["user:inference"]],
+  ] as const)("skips the endpoint without both inference and profile scopes for %p", async (scopes) => {
+    credentialDir = mkdtempSync(join(tmpdir(), "anthropic-usage-scope-"));
+    process.env.OTHERSIDE_CONFIG_DIR = credentialDir;
+    await saveFor("anthropic", testTokens(scopes === undefined ? undefined : [...scopes]));
+    let fetchCount = 0;
+    global.fetch = mock(() => {
+      fetchCount += 1;
+      return Promise.resolve(new Response(JSON.stringify({ limits: [] })));
+    }) as unknown as typeof fetch;
+
+    await expect(fetchAnthropicUsage()).resolves.toBeNull();
+    expect(fetchCount).toBe(0);
+  });
+
+  it("fetches when user:profile is present", async () => {
+    credentialDir = mkdtempSync(join(tmpdir(), "anthropic-usage-scope-"));
+    process.env.OTHERSIDE_CONFIG_DIR = credentialDir;
+    await saveFor("anthropic", testTokens(["user:inference", "user:profile"]));
+    let fetchCount = 0;
+    global.fetch = mock(() => {
+      fetchCount += 1;
+      return Promise.resolve(new Response(JSON.stringify({ limits: [] })));
+    }) as unknown as typeof fetch;
+
+    await expect(fetchAnthropicUsage()).resolves.toEqual({ extraUsage: undefined });
+    expect(fetchCount).toBe(1);
+  });
+});
+
+describe("parseAnthropicUsage (current usage response)", () => {
   it("maps session/weekly_all/weekly_scoped-Fable from limits[]", () => {
     const usage = parseAnthropicUsage(liveShape());
     expect(usage.fiveHour).toEqual({ utilization: 28, resetsAt: RESET_SESSION });
     expect(usage.sevenDay).toEqual({ utilization: 71, resetsAt: RESET_WEEK });
     expect(usage.sevenDayFable).toEqual({ utilization: 100, resetsAt: RESET_WEEK });
+    expect(usage.modelScoped).toEqual([
+      { displayName: "Fable", utilization: 100, resetsAt: RESET_WEEK },
+    ]);
   });
 
-  it("yields all-undefined windows when limits[] is absent", () => {
+  it("preserves all named top-level windows", () => {
+    const usage = parseAnthropicUsage({
+      five_hour: { utilization: 10, resets_at: RESET_SESSION },
+      seven_day: { utilization: 20, resets_at: RESET_WEEK },
+      seven_day_oauth_apps: { utilization: 30, resets_at: RESET_WEEK },
+      seven_day_opus: { utilization: 40, resets_at: RESET_WEEK },
+      seven_day_sonnet: { utilization: 50, resets_at: RESET_WEEK },
+      cinder_cove: { utilization: 60, resets_at: RESET_WEEK },
+    });
+    expect(usage).toMatchObject({
+      fiveHour: { utilization: 10, resetsAt: RESET_SESSION },
+      sevenDay: { utilization: 20, resetsAt: RESET_WEEK },
+      sevenDayOauthApps: { utilization: 30, resetsAt: RESET_WEEK },
+      sevenDayOpus: { utilization: 40, resetsAt: RESET_WEEK },
+      sevenDaySonnet: { utilization: 50, resetsAt: RESET_WEEK },
+      cinderCove: { utilization: 60, resetsAt: RESET_WEEK },
+    });
+  });
+
+  it("retains explicit nulls for named windows", () => {
     const usage = parseAnthropicUsage({ five_hour: null, seven_day: null });
-    expect(usage.fiveHour).toBeUndefined();
-    expect(usage.sevenDay).toBeUndefined();
+    expect(usage.fiveHour).toBeNull();
+    expect(usage.sevenDay).toBeNull();
     expect(usage.sevenDayFable).toBeUndefined();
   });
 
-  it("ignores weekly_scoped entries for other models", () => {
+  it("normalizes numeric resets_at values as epoch seconds", () => {
+    const usage = parseAnthropicUsage({
+      limits: [{ kind: "session", percent: 40, resets_at: 1_893_456_000, scope: null }],
+    });
+    expect(usage.fiveHour).toEqual({
+      utilization: 40,
+      resetsAt: new Date(1_893_456_000 * 1000).toISOString(),
+    });
+  });
+
+  it("retains all model-scoped rows without changing unknown routing scopes", () => {
     const payload = {
       limits: [
         {
@@ -64,10 +155,42 @@ describe("parseAnthropicUsage (limits[] shape)", () => {
           resets_at: RESET_WEEK,
           scope: { model: { display_name: "Opus" } },
         },
+        {
+          kind: "weekly_scoped",
+          percent: 65,
+          resets_at: RESET_WEEK,
+          scope: { model: { display_name: "Future Model" } },
+        },
       ],
     };
     const usage = parseAnthropicUsage(payload);
     expect(usage.sevenDayFable).toBeUndefined();
+    expect(usage.modelScoped).toEqual([
+      { displayName: "Opus", utilization: 40, resetsAt: RESET_WEEK },
+      { displayName: "Future Model", utilization: 65, resetsAt: RESET_WEEK },
+    ]);
+  });
+
+  it("preserves extra-usage currency and disabled reason", () => {
+    expect(
+      parseAnthropicUsage({
+        extra_usage: {
+          is_enabled: false,
+          monthly_limit: 200,
+          used_credits: 25,
+          utilization: 12.5,
+          currency: "EUR",
+          disabled_reason: "org_spend_cap_reached",
+        },
+      }).extraUsage,
+    ).toEqual({
+      isEnabled: false,
+      monthlyLimit: 200,
+      usedCredits: 25,
+      utilization: 12.5,
+      currency: "EUR",
+      disabledReason: "org_spend_cap_reached",
+    });
   });
 });
 
@@ -200,6 +323,19 @@ describe("applyAnthropicUsageLimits (provider+scope SoT: routeability)", () => {
     applyAnthropicUsageLimits({});
     expect(getRoutingUsageSnapshot().byProviderScope?.anthropic).toBeUndefined();
     expect(providerRouteability("anthropic", undefined, "claude-opus-4-8").usable).toBe(true);
+    clearUsageLimits();
+  });
+
+  it("a null fetch result preserves the last observed scopes", () => {
+    clearUsageLimits();
+    applyAnthropicUsageLimits({
+      fiveHour: { utilization: 100, resetsAt: futureIso() },
+    });
+    expect(providerRouteability("anthropic", undefined, "claude-opus-4-8").usable).toBe(false);
+
+    applyAnthropicUsageLimits(null);
+    expect(getRoutingUsageSnapshot().byProviderScope?.anthropic).toBeDefined();
+    expect(providerRouteability("anthropic", undefined, "claude-opus-4-8").usable).toBe(false);
     clearUsageLimits();
   });
 });

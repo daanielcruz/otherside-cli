@@ -58,6 +58,83 @@ describe("resolveSessionBrokerState — ultracode restore", () => {
   });
 });
 
+describe("resolveSessionBrokerState — orchestration mode restore", () => {
+  it("restores the session's own recorded mode over the fallback", () => {
+    const res = resolveSessionBrokerState([meta({ orchestrationMode: "default" })], {
+      ...FALLBACK,
+      orchestrationMode: "feudalism",
+    });
+    expect(res.orchestrationMode).toBe("default");
+  });
+
+  it("takes the last recorded mode when it changes across metas", () => {
+    const res = resolveSessionBrokerState(
+      [meta({ orchestrationMode: "feudalism" }), meta({ orchestrationMode: "disabled" })],
+      FALLBACK,
+    );
+    expect(res.orchestrationMode).toBe("disabled");
+  });
+
+  it("keeps the fallback mode when no record carries one, and drops invalid values", () => {
+    const noRecord = resolveSessionBrokerState([meta({})], {
+      ...FALLBACK,
+      orchestrationMode: "default",
+    });
+    expect(noRecord.orchestrationMode).toBe("default");
+    const invalid = resolveSessionBrokerState([meta({ orchestrationMode: "bogus" })], {
+      ...FALLBACK,
+      orchestrationMode: "default",
+    });
+    expect(invalid.orchestrationMode).toBe("default");
+  });
+});
+
+describe("resolveSessionBrokerState — route restore", () => {
+  function assistantStamp(provider: string, model: string): SessionRecord {
+    return {
+      type: "assistant_message",
+      ts: "2026-07-03T00:00:00Z",
+      content: "streamed under the turn's route",
+      provider,
+      model,
+    };
+  }
+
+  /**
+   * Regression: a route switched mid-turn keeps stamping the OLD route on the
+   * in-flight turn's assistant records after the meta that names the new one;
+   * resume then restored the old route. The meta snapshots the broker the user
+   * chose, so later per-request stamps must not steer the restore.
+   */
+  it("restores the last meta route over later stamps from an in-flight turn", () => {
+    const res = resolveSessionBrokerState(
+      [
+        meta({ model: "claude-opus-5", effort: "high" }),
+        assistantStamp("anthropic", "claude-opus-5"),
+        meta({ model: "claude-sonnet-5", effort: "high" }),
+        assistantStamp("anthropic", "claude-opus-5"),
+        assistantStamp("anthropic", "claude-opus-5"),
+      ],
+      FALLBACK,
+    );
+    expect(res.model).toBe("claude-sonnet-5");
+    expect(res.effort).toBe("high");
+  });
+
+  it("still follows record stamps when the session carries no meta route", () => {
+    const res = resolveSessionBrokerState([assistantStamp("anthropic", "claude-opus-5")], FALLBACK);
+    expect(res.model).toBe("claude-opus-5");
+  });
+
+  it("takes the last meta when the route changes across metas", () => {
+    const res = resolveSessionBrokerState(
+      [meta({ model: "claude-fable-5" }), meta({ model: "claude-opus-5" })],
+      FALLBACK,
+    );
+    expect(res.model).toBe("claude-opus-5");
+  });
+});
+
 describe("restoreBrokerStateOnRewind", () => {
   function restore(target: SessionBrokerState): Readonly<BrokerState> {
     let state: BrokerState = {
@@ -67,6 +144,7 @@ describe("restoreBrokerStateOnRewind", () => {
       fastMode: false,
       ultracode: true,
       permissionMode: "default",
+      orchestrationMode: "disabled",
     };
     const broker: BrokerHandle = {
       read: () => state,

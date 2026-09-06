@@ -8,7 +8,22 @@ export interface InboxMessage {
   delivered: boolean;
 }
 
-export type InboxFailureCode = "unknown_recipient" | "inbox_unavailable" | "ambiguous_recipient";
+/**
+ * How a delivered message reads to the agent receiving it. An agent that cannot tell
+ * who wrote to it cannot answer them, so the sender leads whenever one is known.
+ */
+export function addressedMessageText(message: {
+  message: string;
+  from?: string | undefined;
+  replyTo?: string | undefined;
+}): string {
+  const marks: string[] = [];
+  if (message.from !== undefined) marks.push(`From ${message.from}`);
+  if (message.replyTo !== undefined) marks.push(`Reply to ${message.replyTo}`);
+  return marks.length === 0 ? message.message : `[${marks.join(" · ")}]\n${message.message}`;
+}
+
+export type InboxFailureCode = "unknown_recipient" | "inbox_unavailable";
 
 export type InboxDeliveryResult =
   | { delivered: true; messageId: string; agentId: string }
@@ -16,10 +31,12 @@ export type InboxDeliveryResult =
 
 type DeliveryHandler = (message: InboxMessage) => void;
 
-const MAIN_ALIAS = "main";
+// Addressing is id-only. "main" is the one reserved address — the standing
+// channel to the main conversation, not an agent name.
+const MAIN_ADDRESS = "main";
 const queues = new Map<string, InboxMessage[]>();
-const aliases = new Map<string, Set<string>>();
 const deliveryHandlers = new Map<string, DeliveryHandler>();
+let mainAgentId: string | null = null;
 let counter = 0;
 
 function nextId(): string {
@@ -27,31 +44,14 @@ function nextId(): string {
   return `msg_${Date.now()}_${counter.toString(36)}`;
 }
 
-function registerAlias(alias: string, agentId: string): void {
-  let claimants = aliases.get(alias);
-  if (!claimants) {
-    claimants = new Set<string>();
-    aliases.set(alias, claimants);
-  }
-  claimants.add(agentId);
-}
-
 export function registerMainAgent(agentId: string): () => void {
   if (!queues.has(agentId)) queues.set(agentId, []);
-  aliases.set(MAIN_ALIAS, new Set([agentId]));
+  mainAgentId = agentId;
   return () => unregisterAgent(agentId);
 }
 
-export function registerAgent(
-  agentId: string,
-  name?: string,
-  onMessage?: DeliveryHandler,
-): () => void {
-  if (name === MAIN_ALIAS) {
-    throw new Error('agent name "main" is reserved for the main conversation');
-  }
+export function registerAgent(agentId: string, onMessage?: DeliveryHandler): () => void {
   if (!queues.has(agentId)) queues.set(agentId, []);
-  if (name && name !== agentId) registerAlias(name, agentId);
   if (onMessage) deliveryHandlers.set(agentId, onMessage);
   return () => unregisterAgent(agentId);
 }
@@ -59,34 +59,12 @@ export function registerAgent(
 export function unregisterAgent(agentId: string): void {
   queues.delete(agentId);
   deliveryHandlers.delete(agentId);
-  for (const [alias, claimants] of aliases) {
-    claimants.delete(agentId);
-    if (claimants.size === 0) {
-      aliases.delete(alias);
-    }
-  }
+  if (mainAgentId === agentId) mainAgentId = null;
 }
 
-export function resolveAgentId(idOrName: string): string | null {
-  if (queues.has(idOrName)) return idOrName;
-  const claimants = aliases.get(idOrName);
-  if (claimants && claimants.size === 1) {
-    return Array.from(claimants)[0] ?? null;
-  }
-  return null;
-}
-
-export function agentDisplayName(agentId: string): string | null {
-  const matchingAliases: string[] = [];
-  for (const [alias, claimants] of aliases) {
-    if (claimants.has(agentId) && claimants.size === 1) {
-      matchingAliases.push(alias);
-    }
-  }
-  if (matchingAliases.length === 1) {
-    return matchingAliases[0] ?? null;
-  }
-  return null;
+export function resolveAgentId(id: string): string | null {
+  if (id === MAIN_ADDRESS && mainAgentId !== null) return mainAgentId;
+  return queues.has(id) ? id : null;
 }
 
 export function enqueue(
@@ -95,25 +73,7 @@ export function enqueue(
   replyTo?: string,
   from?: string,
 ): InboxDeliveryResult {
-  let agentId: string | null = null;
-  if (queues.has(to)) {
-    agentId = to;
-  } else {
-    const claimants = aliases.get(to);
-    if (claimants) {
-      if (claimants.size > 1) {
-        const sortedIds = Array.from(claimants).sort();
-        return {
-          delivered: false,
-          code: "ambiguous_recipient",
-          reason: `name "${to}" is claimed by ${claimants.size} running agents: ${sortedIds.join(", ")} — address one by its id`,
-        };
-      } else if (claimants.size === 1) {
-        agentId = Array.from(claimants)[0] ?? null;
-      }
-    }
-  }
-
+  const agentId = resolveAgentId(to);
   if (agentId === null) {
     return {
       delivered: false,
@@ -178,7 +138,7 @@ export function listAgents(): { agentId: string; pending: number }[] {
 
 export function clear(): void {
   queues.clear();
-  aliases.clear();
   deliveryHandlers.clear();
+  mainAgentId = null;
   counter = 0;
 }

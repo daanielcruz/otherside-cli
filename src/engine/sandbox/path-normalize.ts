@@ -16,7 +16,7 @@ export const DANGEROUS_FILES = [
 
 const DANGEROUS_DIRECTORIES = [".git", ".vscode", ".idea"] as const;
 
-export function getDangerousDirectories(): string[] {
+export function listProtectedDirectories(): string[] {
   return [
     ...DANGEROUS_DIRECTORIES.filter((d) => d !== ".git"),
     ".otherside/commands",
@@ -24,7 +24,7 @@ export function getDangerousDirectories(): string[] {
   ];
 }
 
-export function normalizeCaseForComparison(pathStr: string): string {
+export function foldPathCase(pathStr: string): string {
   return pathStr.toLowerCase();
 }
 

@@ -1,21 +1,23 @@
-import { getAgentContext, MAX_AGENT_SPAWN_DEPTH } from "@/engine/agents/agent-context.ts";
+import { currentSpawnedAgentScope, MAX_AGENT_SPAWN_DEPTH } from "@/engine/agents/agent-context.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 
 export function agentSpawnDepth(ctx: RequestContext): number {
-  return getAgentContext()?.depth ?? (ctx.agentOwnerId !== undefined ? 1 : 0);
+  return currentSpawnedAgentScope()?.depth ?? (ctx.agentOwnerId !== undefined ? 1 : 0);
 }
 
 export function agentSpawnDepthFromContext(): number {
-  return getAgentContext()?.depth ?? 0;
+  return currentSpawnedAgentScope()?.depth ?? 0;
 }
 
 export function isForkChildContext(ctx: RequestContext): boolean {
   return ctx.isForkChild === true;
 }
 
-export function isMainAgentContext(ctx: RequestContext): boolean {
+export function isRootAgentRun(ctx: RequestContext): boolean {
   return (
-    ctx.agentOwnerId === undefined && ctx.isForkChild !== true && getAgentContext() === undefined
+    ctx.agentOwnerId === undefined &&
+    ctx.isForkChild !== true &&
+    currentSpawnedAgentScope() === undefined
   );
 }
 
