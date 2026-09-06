@@ -1,4 +1,4 @@
-import type { WorkflowPhaseDescriptor } from "@/engine/background/workflows/runtime/parser/types.ts";
+import type { WorkflowPhaseSpec } from "@/engine/background/workflows/runtime/parser/types.ts";
 import type { WorkflowDefinition } from "@/engine/background/workflows/runtime/registry/types.ts";
 
 const WORKFLOW_NAME = "ultraplan";
@@ -6,7 +6,7 @@ const WORKFLOW_DESCRIPTION =
   "Workflow-backed deep planning — fan-out explorer agents map the codebase, competing approaches are drafted and independently critiqued, then merged into one ordered, verifiable implementation plan.";
 const WORKFLOW_WHEN_TO_USE =
   'Deep, multi-agent implementation planning for a non-trivial change. Pass args as "<level> <task>" — level is high, xhigh, or max (default high); task is the change to plan (a feature, refactor, or free-form instruction, e.g. "add OAuth login", "split the parser into modules", "only plan changes under src/engine"). Produces a final plan with context, an ordered step list naming files, reuse notes, a dependency diagram, risks, and a verification section. It is read-only — it explores and designs, it does not write any code.';
-const WORKFLOW_PHASES: WorkflowPhaseDescriptor[] = [
+const WORKFLOW_PHASES: WorkflowPhaseSpec[] = [
   { index: 0, title: "Scope", detail: "Restate the task and decompose it into exploration areas" },
   {
     index: 1,

@@ -94,7 +94,7 @@ export function stripLeadingSafeEnvVars(tokens: string[]): string[] {
   return tokens.slice(i);
 }
 
-export function stripAllLeadingEnvVars(tokens: string[]): string[] {
+export function stripLeadingEnvAssignments(tokens: string[]): string[] {
   let i = 0;
   while (i < tokens.length) {
     const token = tokens[i];
@@ -150,7 +150,7 @@ export function stripExecWrappers(tokens: string[]): string[] {
     i++;
   }
   // `env` may then carry NAME=VALUE assignments before the command.
-  return wrapper === "env" ? stripAllLeadingEnvVars(tokens.slice(i)) : tokens.slice(i);
+  return wrapper === "env" ? stripLeadingEnvAssignments(tokens.slice(i)) : tokens.slice(i);
 }
 
 export function looksLikeXargsCarrier(tokens: string[]): { remainder: string[] } | null {
@@ -239,14 +239,14 @@ export function shellDashCBody(tokens: string[]): string | null {
   return null;
 }
 
-export function findAllowRuleWouldCoverDangerousFind(command: string): boolean {
+export function allowRuleCoversDangerousFind(command: string): boolean {
   const tokens = tokenizeRespectingQuotes(command);
   // An env-var assignment, safe wrapper, or exec-wrapper (`DEBUG=1 find …`,
   // `timeout 10 find …`, `env X=1 find …`, `sudo find …`) must not hide the
   // real `find` head. Peel them off to a fixpoint before deciding.
   let stripped = tokens;
   for (;;) {
-    const next = stripExecWrappers(stripSafeWrappers(stripAllLeadingEnvVars(stripped)));
+    const next = stripExecWrappers(stripSafeWrappers(stripLeadingEnvAssignments(stripped)));
     if (next.length === stripped.length) break;
     stripped = next;
   }
@@ -254,7 +254,7 @@ export function findAllowRuleWouldCoverDangerousFind(command: string): boolean {
     // The body recursion terminates: each level's body is strictly shorter
     // than its carrier command.
     const body = shellDashCBody(stripped);
-    return body !== null && findAllowRuleWouldCoverDangerousFind(body);
+    return body !== null && allowRuleCoversDangerousFind(body);
   }
   return stripped.some((t) => {
     if (DANGEROUS_FIND_FLAGS.has(t)) return true;

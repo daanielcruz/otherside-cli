@@ -1,5 +1,4 @@
 import { emitQueue } from "@/engine/queue/emit.ts";
-import { getIsScrollDraining } from "@/kernel/std/state/scroll-activity.ts";
 import {
   DEFAULT_MAX_AGE_DAYS,
   get as getJob,
@@ -49,9 +48,9 @@ function tick(sink: InjectionSink): void {
     lastFireAt.set(job.id, now);
     if (job.kind === "loop") {
       // idle_prompt: a scheduled wakeup never interrupts a running tool loop —
-      // it drains only at turn_start (reference parity: wakeups enqueue at
-      // priority "later"; the mid-turn fold is capped at "next"). autoTurn
-      // still wakes an idle session immediately.
+      // it drains only at turn_start (wakeups enqueue at priority "later";
+      // the mid-turn fold is capped at "next"). autoTurn still wakes an idle
+      // session immediately.
       emitQueue.emit({
         class: "idle_prompt",
         target: "both",
@@ -111,10 +110,7 @@ function surfaceMissedOneShots(sink: InjectionSink): void {
 export function startCronScheduler(sink: InjectionSink): () => void {
   if (timer !== null) return stopCronScheduler;
   surfaceMissedOneShots(sink);
-  timer = setInterval(() => {
-    if (getIsScrollDraining()) return;
-    tick(sink);
-  }, TICK_INTERVAL_MS);
+  timer = setInterval(() => tick(sink), TICK_INTERVAL_MS);
   return stopCronScheduler;
 }
 

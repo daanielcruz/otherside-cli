@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { applyEdit } from "@/design/capabilities/design-tools.ts";
+import { applyEdit } from "@/design/capabilities/canvas-tools.ts";
 
 const PATH = "design.os.html";
 

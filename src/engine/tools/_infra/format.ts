@@ -22,7 +22,7 @@ export function formatValidationError(toolName: string, issues: ValidationIssue[
 function missingParams(issues: ValidationIssue[]): string[] {
   return issues.flatMap((issue) =>
     issue.code === "invalid_type" && issue.received === MISSING_RECEIVED
-      ? [formatValidationPath(issue.path)]
+      ? [formatPathForValidation(issue.path)]
       : [],
   );
 }
@@ -42,7 +42,7 @@ function typeMismatches(issues: ValidationIssue[]): TypeMismatch[] {
     issue.code === "invalid_type" && issue.received !== MISSING_RECEIVED
       ? [
           {
-            param: formatValidationPath(issue.path),
+            param: formatPathForValidation(issue.path),
             expected: issue.expected,
             received: issue.received,
           },
@@ -51,7 +51,7 @@ function typeMismatches(issues: ValidationIssue[]): TypeMismatch[] {
   );
 }
 
-function formatValidationPath(path: ValidationPath): string {
+function formatPathForValidation(path: ValidationPath): string {
   let out = "";
   for (const [index, segment] of path.entries()) {
     if (typeof segment === "number") {

@@ -1,6 +1,6 @@
-import type { WorkflowPhaseDescriptor } from "@/engine/background/workflows/runtime/parser/types.ts";
+import type { WorkflowPhaseSpec } from "@/engine/background/workflows/runtime/parser/types.ts";
 import type {
-  WorkflowProgressEntry,
+  WorkflowProgressItem,
   WorkflowTaskStatus,
 } from "@/engine/background/workflows/runtime/store/types.ts";
 
@@ -12,8 +12,8 @@ export interface WorkflowDetailItem {
   durationMs: number;
   agentCount: number;
   script: string;
-  phases: WorkflowPhaseDescriptor[];
-  workflowProgress: WorkflowProgressEntry[];
+  phases: WorkflowPhaseSpec[];
+  workflowProgress: WorkflowProgressItem[];
 }
 
 export type DetailLevel = "phases" | "agents" | "agent";

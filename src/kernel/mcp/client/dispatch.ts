@@ -7,8 +7,10 @@ import {
   sanitizeNamePart,
   wireToolName,
 } from "@/kernel/mcp/protocol/wire-name.ts";
+import { isAbortError } from "@/kernel/std/stream/abort.ts";
 import type { ToolResult } from "@/kernel/std/types/message.ts";
 import { clientFor } from "./registry.ts";
+import { notifyMcpServerUsed } from "./use-listener.ts";
 
 interface McpPersistContext {
   cwd: string;
@@ -46,8 +48,9 @@ export async function dispatchMcp(req: {
   toolName: string;
   args: unknown;
   persistCtx?: McpPersistContext;
+  signal?: AbortSignal;
 }): Promise<ToolResult> {
-  const { toolUseId, toolName, args, persistCtx } = req;
+  const { toolUseId, toolName, args, persistCtx, signal } = req;
   const parsed = parseWireToolName(toolName);
   if (!parsed) return err(toolUseId, `not an MCP tool: ${toolName}`);
   const [serverHint] = parsed;
@@ -67,8 +70,10 @@ export async function dispatchMcp(req: {
     const client = await clientFor(serverName, serverCfg);
     const originalTool = await resolveOriginalTool(client, serverName, toolName);
     if (!originalTool) return err(toolUseId, `MCP tool \`${toolName}\` not found on server`);
+    if (signal?.aborted) return err(toolUseId, "Interrupted by user");
     const payloadContext = { serverName, toolName: originalTool, toolUseId };
-    const result = await client.callTool(originalTool, args);
+    const result = await client.callTool(originalTool, args, signal ? { signal } : undefined);
+    notifyMcpServerUsed(serverName);
     recordPayloadDiagnostic("mcp-transport-result", result, payloadContext);
     const { content, isError } = marshalMcpContent(result, {
       cwd: persistCtx?.cwd ?? process.cwd(),
@@ -79,6 +84,7 @@ export async function dispatchMcp(req: {
     if (isError) return { tool_use_id: toolUseId, content, is_error: true };
     return { tool_use_id: toolUseId, content };
   } catch (e) {
+    if (isAbortError(e) || signal?.aborted) return err(toolUseId, "Interrupted by user");
     return err(toolUseId, e instanceof Error ? e.message : String(e));
   }
 }

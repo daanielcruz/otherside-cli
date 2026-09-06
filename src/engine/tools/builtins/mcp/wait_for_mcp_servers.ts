@@ -5,38 +5,39 @@ import { isEnvDefinedFalsy, isEnvTruthy } from "@/kernel/std/proc/env.ts";
 import type { ToolCall, ToolResult } from "@/kernel/std/types/message.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 
-const WAIT_TIMEOUT_MS = 5000;
+const SERVER_WAIT_LIMIT_MS = 5000;
 
-export type ToolSearchMode = "tst" | "tst-auto" | "standard";
+export type SearchCatalogPolicy = "tst" | "tst-auto" | "standard";
 
-export function parseAutoPercentage(value: string): number | null {
+export function readAutomaticShare(value: string): number | null {
   if (!value.startsWith("auto:")) return null;
-  const pct = parseInt(value.slice(5), 10);
-  if (Number.isNaN(pct)) return null;
-  return Math.max(0, Math.min(100, pct));
+  const percentage = parseInt(value.slice(5), 10);
+  if (Number.isNaN(percentage)) return null;
+  return Math.max(0, Math.min(100, percentage));
 }
 
-function isAutoToolSearchMode(value: string | undefined): boolean {
-  if (!value) return false;
-  return value === "auto" || value.startsWith("auto:");
-}
-
-export function getToolSearchMode(): ToolSearchMode {
-  const value = process.env.ENABLE_TOOL_SEARCH;
-  const autoPercent = value ? parseAutoPercentage(value) : null;
-  if (autoPercent === 0) return "tst";
-  if (autoPercent === 100) return "standard";
-  if (isAutoToolSearchMode(value)) return "tst-auto";
-  if (isEnvTruthy(value)) return "tst";
-  if (isEnvDefinedFalsy(process.env.ENABLE_TOOL_SEARCH)) return "standard";
+export function resolveSearchCatalogPolicy(): SearchCatalogPolicy {
+  const setting = process.env.ENABLE_TOOL_SEARCH;
+  const percentage = setting ? readAutomaticShare(setting) : null;
+  if (percentage === 0) return "tst";
+  if (percentage === 100) return "standard";
+  if (setting === "auto" || setting?.startsWith("auto:") === true) return "tst-auto";
+  if (isEnvTruthy(setting)) return "tst";
+  if (isEnvDefinedFalsy(setting)) return "standard";
   return "tst";
 }
 
-type McpStatus = "connected" | "failed" | "pending" | "needs-auth" | "disabled" | string;
+type ServerConnectionStatus =
+  | "connected"
+  | "failed"
+  | "pending"
+  | "needs-auth"
+  | "disabled"
+  | string;
 
-interface McpClientState {
+interface ServerConnection {
   name: string;
-  type: McpStatus;
+  type: ServerConnectionStatus;
 }
 
 interface WaitOutput {
@@ -53,7 +54,7 @@ function ok(toolUseId: string, payload: WaitOutput): ToolResult {
   return { tool_use_id: toolUseId, content: JSON.stringify(payload) };
 }
 
-async function snapshotMcpClients(cwd: string): Promise<McpClientState[]> {
+async function readConnections(cwd: string): Promise<ServerConnection[]> {
   try {
     const cfg = await loadEnabledMcpConfig(cwd);
     const names = Object.keys(cfg.mcpServers);
@@ -62,45 +63,81 @@ async function snapshotMcpClients(cwd: string): Promise<McpClientState[]> {
         const serverCfg = cfg.mcpServers[serverName];
         if (!serverCfg) return null;
         const inspection = await inspectServer(serverName, serverCfg);
-        const type: McpStatus =
+        const type: ServerConnectionStatus =
           inspection.status === "connected"
             ? "connected"
             : inspection.status === "needs-auth"
               ? "needs-auth"
               : "failed";
-        return { name: serverName, type } satisfies McpClientState;
+        return { name: serverName, type } satisfies ServerConnection;
       }),
     );
-    return results.filter((r): r is McpClientState => r !== null);
+    return results.filter((result): result is ServerConnection => result !== null);
   } catch {
     return [];
   }
 }
 
-async function waitForClients(
+async function awaitConnectionSettling(
   targets: string[],
   cwd: string,
-  abortSignal?: AbortSignal,
-): Promise<McpClientState[]> {
-  const deadline = Date.now() + WAIT_TIMEOUT_MS;
-  let current = await snapshotMcpClients(cwd);
-  while (Date.now() < deadline && !abortSignal?.aborted) {
-    const targetSet = new Set(targets);
-    const matching = current.filter((c) => targetSet.has(c.name));
-    const allSettled = matching.every((c) => c.type !== "pending");
-    if (allSettled) break;
+  signal?: AbortSignal,
+): Promise<ServerConnection[]> {
+  const targetNames = new Set(targets);
+  const expiresAt = Date.now() + SERVER_WAIT_LIMIT_MS;
+  let connections = await readConnections(cwd);
+  while (Date.now() < expiresAt && !signal?.aborted) {
+    const waiting = connections.some(
+      (connection) => targetNames.has(connection.name) && connection.type === "pending",
+    );
+    if (!waiting) break;
     await new Promise<void>((resolve) => setTimeout(resolve, 50));
-    current = await snapshotMcpClients(cwd);
+    connections = await readConnections(cwd);
   }
-  return current;
+  return connections;
 }
 
-async function getAllPending(cwd: string): Promise<string[]> {
-  const clients = await snapshotMcpClients(cwd);
-  return clients.filter((c) => c.type === "pending").map((c) => c.name);
+async function connectionNamesInFlight(cwd: string): Promise<string[]> {
+  const connections = await readConnections(cwd);
+  return connections
+    .filter((connection) => connection.type === "pending")
+    .map((connection) => connection.name);
 }
 
-export const WaitForMcpServersTool: ToolHandler = {
+function connectionOutcome(
+  type: ServerConnectionStatus | undefined,
+): keyof Omit<WaitOutput, "ready"> {
+  if (type === "connected") return "connected";
+  if (type === "failed") return "failed";
+  if (type === "pending") return "stillPending";
+  if (type === "needs-auth") return "needsAuth";
+  if (type === "disabled") return "disabled";
+  return "unknown";
+}
+
+function projectConnectionOutcomes(targets: string[], connections: ServerConnection[]): WaitOutput {
+  const byName = new Map(connections.map((connection) => [connection.name, connection.type]));
+  const output: WaitOutput = {
+    ready: false,
+    connected: [],
+    failed: [],
+    stillPending: [],
+    needsAuth: [],
+    disabled: [],
+    unknown: [],
+  };
+  for (const name of targets) output[connectionOutcome(byName.get(name))].push(name);
+  output.ready = [
+    output.failed,
+    output.stillPending,
+    output.needsAuth,
+    output.disabled,
+    output.unknown,
+  ].every((names) => names.length === 0);
+  return output;
+}
+
+export const MISSING_MCP_TOOLS_WAITER: ToolHandler = {
   schema: {
     name: "WaitForMcpServers",
     description: [
@@ -136,87 +173,39 @@ export const WaitForMcpServersTool: ToolHandler = {
       ? input.servers.filter((s): s is string => typeof s === "string")
       : null;
 
-    const targets = servers && servers.length > 0 ? servers : await getAllPending(ctx.cwd);
+    const targets =
+      servers && servers.length > 0 ? servers : await connectionNamesInFlight(ctx.cwd);
 
     if (targets.length === 0) {
-      const result: WaitOutput = {
-        ready: true,
-        connected: [],
-        failed: [],
-        stillPending: [],
-        needsAuth: [],
-        disabled: [],
-        unknown: [],
-      };
-      return ok(call.id, result);
+      return ok(call.id, projectConnectionOutcomes([], []));
     }
 
-    const allClients = await waitForClients(targets, ctx.cwd);
-    const clientMap = new Map(allClients.map((c) => [c.name, c]));
-
-    const connected: string[] = [];
-    const failed: string[] = [];
-    const stillPending: string[] = [];
-    const needsAuth: string[] = [];
-    const disabled: string[] = [];
-    const unknown: string[] = [];
-
-    for (const name of targets) {
-      const client = clientMap.get(name);
-      if (!client) {
-        unknown.push(name);
-        continue;
-      }
-      switch (client.type) {
-        case "connected":
-          connected.push(name);
-          break;
-        case "failed":
-          failed.push(name);
-          break;
-        case "pending":
-          stillPending.push(name);
-          break;
-        case "needs-auth":
-          needsAuth.push(name);
-          break;
-        case "disabled":
-          disabled.push(name);
-          break;
-        default:
-          unknown.push(name);
-      }
-    }
-
-    const ready =
-      stillPending.length === 0 &&
-      failed.length === 0 &&
-      needsAuth.length === 0 &&
-      disabled.length === 0 &&
-      unknown.length === 0;
-
+    const connections = await awaitConnectionSettling(targets, ctx.cwd);
+    const output = projectConnectionOutcomes(targets, connections);
     const lines = [
-      `ready: ${ready}`,
-      connected.length
-        ? `Connected (their tools are now available — call them directly): ${connected.join(", ")}`
+      `ready: ${output.ready}`,
+      output.connected.length
+        ? `Connected (their tools are now available — call them directly): ${output.connected.join(", ")}`
         : "",
-      failed.length ? `Failed to connect: ${failed.join(", ")}` : "",
-      stillPending.length
-        ? `Still connecting (try again or proceed without): ${stillPending.join(", ")}`
+      output.failed.length ? `Failed to connect: ${output.failed.join(", ")}` : "",
+      output.stillPending.length
+        ? `Still connecting (try again or proceed without): ${output.stillPending.join(", ")}`
         : "",
-      needsAuth.length
-        ? `Needs authentication (ask the user to run /mcp): ${needsAuth.join(", ")}`
+      output.needsAuth.length
+        ? `Needs authentication (ask the user to run /mcp): ${output.needsAuth.join(", ")}`
         : "",
-      disabled.length ? `Disabled (ask the user to enable via /mcp): ${disabled.join(", ")}` : "",
-      unknown.length
-        ? `Unknown (no MCP server with this name is configured): ${unknown.join(", ")}`
+      output.disabled.length
+        ? `Disabled (ask the user to enable via /mcp): ${output.disabled.join(", ")}`
+        : "",
+      output.unknown.length
+        ? `Unknown (no MCP server with this name is configured): ${output.unknown.join(", ")}`
         : "",
     ].filter(Boolean);
 
     return {
       tool_use_id: call.id,
       content: lines.join("\n"),
-      is_error: !ready,
+      is_error: !output.ready,
     };
   },
 };

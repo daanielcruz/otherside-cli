@@ -1,6 +1,10 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { atomicWriteFileSync } from "@/kernel/std/fs/secure-fs.ts";
+import {
+  createPreservedImageLedger,
+  preservedImagesForWire,
+} from "./compact/preserved-image-ledger.ts";
 import { enqueueWrite, invalidateOffsetIndex } from "./infra.ts";
 import { sessionPathForCwd } from "./paths.ts";
 import { type Session, SessionChain, serializeRecord } from "./record/index.ts";
@@ -16,7 +20,15 @@ interface PreservedLines {
   titleLines: string[];
 }
 
+/**
+ * Rebuild the transcript file from the session's records. Refuses when those records
+ * are a reduced view of a large resume: they carry bodyless stubs for turns that were
+ * never materialized, so writing them back would replace real conversation with the
+ * summaries that stood in for it. Callers use this as a fallback, and leaving the file
+ * as it is costs at most an unpersisted edit — far less than the rewrite would.
+ */
 export function rewriteSession(s: Session): Promise<void> {
+  if (s.recordsArePartial) return Promise.resolve();
   const path = sessionPathForCwd(s.storageCwd, s.id);
   const dir = dirname(path);
   mkdirSync(dir, { recursive: true });
@@ -24,8 +36,17 @@ export function rewriteSession(s: Session): Promise<void> {
   const chain = new SessionChain();
   s.chain.headUuid = null;
   const stamp = s.stamp();
-  const mainLines: string[] = records.map((r) => serializeRecord(r, chain, stamp));
+  // A full rewrite re-establishes which mark stores each image, so the pass
+  // starts from an empty ledger: first occurrence in walk order stays full and
+  // every later copy becomes a reference to it.
+  let ledger = createPreservedImageLedger();
+  const mainLines: string[] = records.map((r) => {
+    const wire = preservedImagesForWire(r, ledger);
+    ledger = wire.ledger;
+    return serializeRecord(wire.record, chain, stamp);
+  });
   s.chain.headUuid = chain.headUuid;
+  s.preservedImageLedger = ledger;
   const callIdToLineIndex = new Map<string, number>();
   const survivingCallIds = new Set<string>();
   records.forEach((r, index) => {

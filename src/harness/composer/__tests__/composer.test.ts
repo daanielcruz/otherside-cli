@@ -22,12 +22,14 @@ function sampleContext(): LayerContext {
     sessionId: "sess-fixture",
     cwd: "/tmp/fixture",
     config: DEFAULT_CONFIG,
+    outputStyle: null,
     orchestrationMode: "disabled",
     mcpInstructionBlocks: [],
     injections: makeQueue(),
     deferredToolExclusions: new Set<string>(),
     emitDeferredReminder: true,
     emitAgentListing: true,
+    promoteMidSystem: true,
     supportsMidSystem: true,
     lean: false,
     modelFamily: "other" as const,
@@ -46,7 +48,7 @@ function sampleContext(): LayerContext {
       {
         provider: "anthropic",
         models: [
-          { id: "claude-fable-5", display: "Fable 5" },
+          { id: "claude-fable-5-1", display: "Fable 5.1" },
           { id: "claude-opus-4-8", display: "Opus 4.8" },
           { id: "claude-sonnet-5", display: "Sonnet 5" },
           { id: "claude-haiku-4-5", display: "Haiku 4.5" },
@@ -116,23 +118,45 @@ describe("harness composer purity and golden", () => {
     }
   });
 
-  it("golden: compose defaultStack across 24 matrix combos", () => {
+  it("keeps the Fable communication profile without an unrelated model identity", () => {
+    const harness = compose(defaultStack(), {
+      ...sampleContext(),
+      model: "claude-fable-5-1",
+      modelDisplayName: "Fable 5.1",
+      modelFamily: "fable",
+      lean: true,
+    });
+    const system = JSON.stringify(harness.systemBlocks);
+    expect(system).toContain("Lead with the outcome.");
+    expect(system).not.toContain("This iteration of Claude is Claude Fable 5,");
+    expect(system).not.toContain("Claude Mythos 5");
+  });
+
+  it("golden: compose defaultStack across 36 matrix combos", () => {
     const base = sampleContext();
     const combos: Record<string, unknown> = {};
+    // The three real reminder routes: kept in the user turn, promoted with the
+    // wrapper, and promoted unwrapped.
+    const midModes = [
+      { key: "user", promoteMidSystem: false, supportsMidSystem: false },
+      { key: "wrapped", promoteMidSystem: true, supportsMidSystem: false },
+      { key: "unwrapped", promoteMidSystem: true, supportsMidSystem: true },
+    ] as const;
     for (const lean of [false, true]) {
       for (const orchestrationMode of ["disabled", "default", "feudalism"] as const) {
-        for (const supportsMidSystem of [false, true]) {
+        for (const midMode of midModes) {
           for (const gitStatus of [undefined, "On branch main"]) {
             const ctx = {
               ...base,
               lean,
               orchestrationMode,
-              supportsMidSystem,
+              promoteMidSystem: midMode.promoteMidSystem,
+              supportsMidSystem: midMode.supportsMidSystem,
               injections: makeQueue(),
               ...(gitStatus !== undefined ? { gitStatus } : {}),
             };
             const h = compose(defaultStack(), ctx);
-            const key = `lean=${lean}|mode=${orchestrationMode}|mid=${supportsMidSystem}|git=${gitStatus !== undefined}`;
+            const key = `lean=${lean}|mode=${orchestrationMode}|mid=${midMode.key}|git=${gitStatus !== undefined}`;
             combos[key] = {
               systemBlocks: h.systemBlocks,
               userPrepend: h.userPrepend,

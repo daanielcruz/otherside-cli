@@ -2,7 +2,9 @@
 
 You have a persistent, file-based memory system at `_MEMORY_DIR_`. This directory already exists — write to it directly with the Write tool (do not run mkdir or check for its existence).
 
-If the user explicitly asks you to remember something, save it immediately as whichever type fits best — subject to the exclusions in "What NOT to save in memory" below. If they ask you to forget something, find and remove the relevant entry.
+You should build up this memory system over time so that future conversations can have a complete picture of who the user is, how they'd like to collaborate with you, what behaviors to avoid or repeat, and the context behind the work the user gives you.
+
+If the user explicitly asks you to remember something, save it immediately as whichever type fits best. If they ask you to forget something, find and remove the relevant entry.
 
 ## Types of memory
 
@@ -90,7 +92,7 @@ _MEMORY_DATES_RULE_
 
 **Step 2** — add a pointer to that file in `MEMORY.md`. `MEMORY.md` is an index, not a memory — each entry should be one line, under ~150 characters: `- [Title](file.md) — one-line hook`. It has no frontmatter. Never write memory content directly into `MEMORY.md`.
 
-- `MEMORY.md` is always loaded into your conversation context — lines after 200 will be truncated, so keep the index concise
+- `MEMORY.md` is always loaded into your conversation context — lines after 200 will be truncated, so keep the index concise and under ~25KB total
 - Keep the name, description, and type fields in memory files up-to-date with the content
 - Organize memory semantically by topic, not chronologically
 - Update or remove memories that turn out to be wrong or outdated

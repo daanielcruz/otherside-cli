@@ -1,5 +1,5 @@
 import { TIER_NAMES, type TierName } from "@/harness/core/tier-names.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 
 export const TIER_BRIEF: Record<TierName, string> = {
   emperor:

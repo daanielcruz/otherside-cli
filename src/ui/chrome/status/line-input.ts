@@ -1,10 +1,9 @@
-import { spawn } from "node:child_process";
 import { getProviderConfig } from "@/engine/contract/registry.ts";
-import { findModel } from "@/engine/model/catalog.ts";
-import type { OrchestrationMode } from "@/kernel/config/orchestration-mode.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
-import { shellCommand } from "@/kernel/std/proc/shell.ts";
+import { effortLevelsForModel, findModel } from "@/engine/model/catalog.ts";
+import { DEFAULT_OUTPUT_STYLE } from "@/harness/routines/output-styles/built-in.ts";
 import { capitalize } from "@/kernel/std/text/text.ts";
+import type { OrchestrationMode } from "@/kernel/std/types/orchestration-mode.ts";
+import { type ProviderId, providerDisplayName } from "@/kernel/std/types/provider-ids.ts";
 import type { PermissionMode } from "@/kernel/std/types/request.ts";
 import type { BrokerState } from "@/store/app-store/broker.ts";
 
@@ -63,6 +62,7 @@ export interface BuildStatuslineInputArgs {
   cacheReadInputTokens?: number | undefined;
   costUsd?: number | undefined;
   durationMs?: number | undefined;
+  outputStyle?: string | undefined;
 }
 
 export function buildStatuslineInput({
@@ -76,8 +76,9 @@ export function buildStatuslineInput({
   cacheReadInputTokens = 0,
   costUsd = 0,
   durationMs = 0,
+  outputStyle = DEFAULT_OUTPUT_STYLE,
 }: BuildStatuslineInputArgs): StatuslineInput {
-  const model = findModel(state.model, state.provider);
+  const model = findModel({ provider: state.provider, model: state.model });
   const contextWindowSize = model?.contextWindow ?? 200_000;
   const totalInput = inputTokens + cacheCreationInputTokens + cacheReadInputTokens;
   const contextUsed = totalInput + outputTokens;
@@ -91,7 +92,7 @@ export function buildStatuslineInput({
     cwd,
     provider: {
       id: state.provider,
-      display_name: getProviderConfig(state.provider)?.provider.label ?? state.provider,
+      display_name: providerDisplayName(state.provider),
     },
     model: {
       id: state.model,
@@ -106,7 +107,7 @@ export function buildStatuslineInput({
     permission_mode: state.permissionMode,
     yolo: state.permissionMode === "yolo",
     output_style: {
-      name: "default",
+      name: outputStyle,
     },
     cost: {
       total_cost_usd: costUsd,
@@ -143,7 +144,7 @@ export function renderNativeStatusline(input: StatuslineInput): string {
 
 // Transient notice shown for a few seconds at session start and whenever the
 // orchestration mode changes; it never renders as a permanent label.
-export function orchestrationNoticeText(
+function orchestrationNoticeText(
   mode: OrchestrationMode,
   kind: "startup" | "switch",
 ): string | null {
@@ -155,11 +156,35 @@ export function orchestrationNoticeText(
   return `Multiprovider orchestration set to ${mode} mode`;
 }
 
+// Session-scoped dedup: the notice fires on the first observation of the
+// session (startup) and on a real mode change (switch) — never again for the
+// same mode, no matter how often the consuming component remounts.
+let observedOrchestrationMode: OrchestrationMode | null = null;
+
+export function nextOrchestrationNotice(mode: OrchestrationMode): string | null {
+  if (observedOrchestrationMode === mode) return null;
+  const kind = observedOrchestrationMode === null ? "startup" : "switch";
+  observedOrchestrationMode = mode;
+  return orchestrationNoticeText(mode, kind);
+}
+
+/** Clears the session dedup so the next observation counts as startup. */
+export function resetOrchestrationNoticeState(): void {
+  observedOrchestrationMode = null;
+}
+
+/**
+ * The effort the active model is running at, named for the reader. The model decides
+ * whether there is one to name: a provider is the wrong unit, because a provider can
+ * offer a model that reasons at a chosen level beside one that has no levels at all.
+ */
 export function effortStatuslineSuffix(
-  state: Pick<BrokerState, "provider" | "effort">,
+  state: Pick<BrokerState, "provider" | "model" | "effort">,
 ): string | null {
-  if (!getProviderConfig(state.provider)?.featureFlags?.effortSuffix) return null;
   if (state.effort === null) return null;
+  if (effortLevelsForModel({ provider: state.provider, model: state.model }).length === 0) {
+    return null;
+  }
   if (state.effort === "xhigh") return "xHigh";
   if (state.effort === "max") return "Max";
   return capitalize(state.effort);
@@ -175,61 +200,6 @@ export function fastModeStatuslineSuffix(
 function displayModelName(state: BrokerState, base: string): string {
   const suffixes = [fastModeStatuslineSuffix(state)].filter((v): v is string => v !== null);
   return suffixes.length === 0 ? base : `${base} ${suffixes.join(" ")}`;
-}
-
-export function runStatuslineCommand(
-  command: string,
-  input: StatuslineInput,
-  timeoutMs = 5000,
-): Promise<string | null> {
-  return new Promise((resolve) => {
-    const argv = shellCommand(command, { login: true });
-    const [head, ...rest] = argv;
-    if (!head) {
-      resolve(null);
-      return;
-    }
-    const child = spawn(head, rest, {
-      cwd: input.cwd,
-      env: process.env,
-      stdio: ["pipe", "pipe", "ignore"],
-    });
-    let settled = false;
-    let stdout = "";
-    const finish = (value: string | null): void => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve(value);
-    };
-    const timer = setTimeout(() => {
-      child.kill("SIGTERM");
-      finish(null);
-    }, timeoutMs);
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk;
-    });
-    child.on("error", () => finish(null));
-    child.on("close", (code) => {
-      if (code !== 0) {
-        finish(null);
-        return;
-      }
-      finish(normalizeCommandOutput(stdout));
-    });
-    child.stdin.end(`${JSON.stringify(input)}\n`);
-  });
-}
-
-function normalizeCommandOutput(stdout: string): string | null {
-  const text = stdout
-    .trim()
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .join("\n");
-  return text.length > 0 ? text : null;
 }
 
 function formatTokens(tokens: number, _window: number): string {

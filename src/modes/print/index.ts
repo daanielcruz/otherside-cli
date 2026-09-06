@@ -11,12 +11,15 @@ import {
   listWorkflowTasks,
   subscribeWorkflowTasks,
 } from "@/engine/background/workflows/runtime/store/store.ts";
+import { listOutputStyles } from "@/engine/output-styles/loader.ts";
 import { emitQueue } from "@/engine/queue/emit.ts";
 import type { Agent } from "@/engine/queue/index.ts";
 import { takeHeadlessDenials } from "@/engine/queue/runtime/headless-denials.ts";
 import type { TurnObserver } from "@/engine/queue/turn/observer.ts";
 import { runSessionTurn } from "@/engine/queue/turn/run-session.ts";
 import { costFor } from "@/engine/session/usage/pricing.ts";
+import { DEFAULT_OUTPUT_STYLE } from "@/harness/routines/output-styles/built-in.ts";
+import { resolveConfig } from "@/kernel/config/resolver.ts";
 import { getMcpServerStatuses } from "@/kernel/mcp/runtime/manager.ts";
 import { uuidv4 } from "@/kernel/std/id.ts";
 import { permissionModeToWire } from "@/modes/args.ts";
@@ -143,7 +146,7 @@ export async function runPrintMode(
     return 1;
   }
   const maxBudgetUsd = numericCliEnv("OTHERSIDE_CLI_MAX_BUDGET_USD");
-  const fallbackModel = process.env.OTHERSIDE_CLI_FALLBACK_MODEL;
+  const fallbackRoute = runtime.fallbackRoute;
   const restoreStructuredProvider =
     structuredState === null
       ? () => {}
@@ -182,13 +185,14 @@ export async function runPrintMode(
       session_id: sessionId,
       tools: sessionToolNames.map(sdkToolName),
       mcp_servers: sessionMcpStatuses,
-      model: runtime.model,
+      model: runtime.route.model,
       permissionMode: permissionModeToWire(runtime.permissionMode),
       slash_commands: runtime.slashCommands,
       agents: sessionAgentNames,
       skills: runtime.skillNames,
       apiKeySource: "none",
-      output_style: "default",
+      output_style: resolveConfig(runtime.cwd).outputStyle ?? DEFAULT_OUTPUT_STYLE,
+      available_output_styles: listOutputStyles(runtime.cwd).map((style) => style.value),
       fast_mode_state: "off",
       otherside_version: runtime.version,
       uuid: uuidv4(),
@@ -353,7 +357,7 @@ export async function runPrintMode(
         emit({
           type: "assistant",
           message: {
-            model: runtime.model,
+            model: runtime.route.model,
             id: `msg_${uuidv4().replace(/-/g, "").slice(0, 24)}`,
             type: "message",
             role: "assistant",
@@ -462,8 +466,8 @@ export async function runPrintMode(
         hitStructuredOutputRetries = true;
         lastError = structuredRetryMessage(structuredState, maxStructuredRetries);
       }
-      if (fallbackModel && shouldRetryWithFallback(lastError, fallbackModel)) {
-        trace(`retrying with fallback model: ${fallbackModel}`);
+      if (fallbackRoute && shouldRetryWithFallback(lastError, fallbackRoute.model)) {
+        trace(`retrying with fallback model: ${fallbackRoute.provider}/${fallbackRoute.model}`);
         lastError = null;
         lastAssistantText = "";
         turnText = "";
@@ -476,7 +480,7 @@ export async function runPrintMode(
         turnCacheRead = null;
         turnCacheCreation = null;
         agent.cancelled = false;
-        agent.deps.broker.dispatch({ kind: "set_model", model: fallbackModel });
+        agent.deps.broker.dispatch({ kind: "set_route", route: fallbackRoute });
         await runSessionTurn(agent.runTurn(prompt), observer);
         await continueForAsyncTasks();
       }
@@ -501,15 +505,7 @@ export async function runPrintMode(
   const budgetMessage = hitBudget ? `Exceeded USD budget (${maxBudgetUsd})` : null;
   const runError = maxTurnsMessage ?? budgetMessage ?? lastError;
   const isError = runError !== null;
-  const subtype = hitMaxTurns
-    ? "error_max_turns"
-    : hitBudget
-      ? "error_max_budget_usd"
-      : hitStructuredOutputRetries
-        ? "error_max_structured_output_retries"
-        : lastError
-          ? "error_during_execution"
-          : "success";
+  const subtype = runSubtype({ hitMaxTurns, hitBudget, hitStructuredOutputRetries, lastError });
 
   if (outputFormat === "text") {
     // Final-only: the buffered last-turn result is printed once after the run
@@ -560,7 +556,7 @@ export async function runPrintMode(
       service_tier: "standard",
     },
     modelUsage: {
-      [runtime.model]: {
+      [runtime.route.model]: {
         inputTokens: inputTokensSum,
         outputTokens: outputTokensSum,
         cacheReadInputTokens: cacheReadSum,
@@ -593,4 +589,22 @@ export async function runPrintMode(
   }
 
   return isError ? 1 : 0;
+}
+
+/**
+ * What the run is called when it ended. The order is the answer: a run that hit
+ * its turn limit also has a last error, and the limit is the reason worth
+ * reporting.
+ */
+function runSubtype(ended: {
+  hitMaxTurns: boolean;
+  hitBudget: boolean;
+  hitStructuredOutputRetries: boolean;
+  lastError: string | null;
+}): string {
+  if (ended.hitMaxTurns) return "error_max_turns";
+  if (ended.hitBudget) return "error_max_budget_usd";
+  if (ended.hitStructuredOutputRetries) return "error_max_structured_output_retries";
+  if (ended.lastError !== null) return "error_during_execution";
+  return "success";
 }

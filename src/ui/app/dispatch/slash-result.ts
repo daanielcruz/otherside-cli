@@ -1,17 +1,10 @@
-import type { SetStateAction } from "react";
 import { CATALOG, type PendingChange, type SlashResult } from "@/commands/index.ts";
 import type { Agent } from "@/engine/queue/index.ts";
-import {
-  appendHookEventRecord,
-  appendRecord,
-  nowIso,
-  persistLocalCommand,
-  type Session,
-} from "@/engine/session/index.ts";
+import { persistLocalCommand, type Session } from "@/engine/session/index.ts";
 import type { MacrotaskBatch } from "@/kernel/std/perf/macrotask-batch.ts";
 import type { Broker } from "@/store/app-store/broker.ts";
 import { submitPluginNotice } from "@/store/app-store/right-region-notices.ts";
-import type { TranscriptEntry } from "@/ui/transcript/types";
+import type { TranscriptWrite } from "@/ui/transcript/types";
 
 type RunSubmittedTurn = (
   text: string,
@@ -19,11 +12,16 @@ type RunSubmittedTurn = (
 ) => Promise<void>;
 
 export interface ApplySlashResultDeps {
-  runSkill: (name: string, args: string, raw: string) => void;
+  /**
+   * Runs a command that stands in for a prompt. It owns the whole shape of that
+   * run — an inline command becomes a turn, a `context: fork` skill becomes a
+   * subagent — so this surface hands the command over and stops there.
+   */
+  runSkill: (name: string, args: string, raw: string) => Promise<void>;
   runningRef: { current: boolean };
   applyPendingChange: (change: PendingChange) => void;
   nextTranscriptId: (prefix: string) => string;
-  setTranscript: (value: SetStateAction<readonly TranscriptEntry[]>) => void;
+  setTranscript: (value: TranscriptWrite) => void;
   agent: Agent;
   runSubmittedTurnRef: { current: RunSubmittedTurn };
   transcriptBatch: MacrotaskBatch;
@@ -48,6 +46,14 @@ export function shouldRecordLocalCommand(result: SlashResult): boolean {
   );
 }
 
+/** The words typed after `/name`, whether the line names the command or an alias. */
+export function commandArgsFromText(commandName: string, text: string): string {
+  const slashIndex = text.indexOf("/" + commandName);
+  if (slashIndex !== -1) return text.slice(slashIndex + 1 + commandName.length).trim();
+  const parts = text.trim().split(/\s+/);
+  return parts.slice(1).join(" ").trim();
+}
+
 export function createApplySlashResult(deps: ApplySlashResultDeps) {
   const {
     runSkill,
@@ -68,14 +74,7 @@ export function createApplySlashResult(deps: ApplySlashResultDeps) {
       if (shouldRecordLocalCommand(result) && result.command && result.feedback) {
         const brokerState = broker.read();
         const commandName = result.command.name;
-        const slashIndex = text.indexOf("/" + commandName);
-        let args = "";
-        if (slashIndex !== -1) {
-          args = text.slice(slashIndex + 1 + commandName.length).trim();
-        } else {
-          const parts = text.trim().split(/\s+/);
-          args = parts.slice(1).join(" ").trim();
-        }
+        const args = commandArgsFromText(commandName, text);
 
         await persistLocalCommand({
           session,
@@ -89,8 +88,13 @@ export function createApplySlashResult(deps: ApplySlashResultDeps) {
       }
     };
 
+    // A command that stands in for a prompt never becomes a turn here: its
+    // frontmatter decides whether it runs inline or as a fork, and only the
+    // runner reads that. Falling through would make every one of them a main
+    // turn and silently discard the `context: fork` declaration.
     if ((result.kind === "skill" || result.kind === "workflow") && result.command) {
-      void runSkill(result.command.name, text.slice(result.command.name.length + 1).trim(), text);
+      const commandName = result.command.name;
+      await runSkill(commandName, commandArgsFromText(commandName, text), text.trim());
       return;
     }
     if (result.pendingChange) {
@@ -168,6 +172,14 @@ export function createApplySlashResult(deps: ApplySlashResultDeps) {
           { id: userId, kind: "user", text: "/reload" },
           { id: outId, kind: "command_output", text: result.feedback ?? "" },
         ]);
+      } else if (result.command?.name === "fork") {
+        const userId = nextTranscriptId("user");
+        const outputId = nextTranscriptId("cmd_out");
+        setTranscript((t) => [
+          ...t,
+          { id: userId, kind: "user", text: text.trim() },
+          { id: outputId, kind: "command_output", text: result.feedback ?? "" },
+        ]);
       } else if (result.command?.name === "plugins") {
         const userId = nextTranscriptId("user");
         const outputId = nextTranscriptId("cmd_out");
@@ -189,31 +201,17 @@ export function createApplySlashResult(deps: ApplySlashResultDeps) {
         setTranscript((t) => [...t, { id, kind: "system", text: result.feedback ?? "" }]);
       }
     }
-    if (result.goalEvent) {
-      const ev = result.goalEvent;
-      await appendHookEventRecord(session, {
-        type: "hook_event",
-        ts: nowIso(),
-        kind: ev.kind,
-        payload: {
-          condition: ev.condition,
-          ...(ev.kind === "goal_set" ? { setAt: ev.setAt } : {}),
-        },
-      });
-      if (ev.kind === "goal_cleared") {
-        await appendRecord(session, {
-          type: "attachment",
-          ts: nowIso(),
-          attachment: {
-            type: "goal_status",
-            condition: ev.condition,
-            cleared: true,
-          },
-        });
-      }
-    }
     if (result.shouldQuery && !runningRef.current) {
-      await runSubmittedTurnRef.current(text, { suppressUserTranscript: true });
+      // A command that resolved its own words sends those, and they are shown
+      // the way a typed message is — what goes out under the reader's name has
+      // to be readable back. Without a resolved text the typed line IS the turn,
+      // and it is already on screen, so echoing it again would double it.
+      const resolved = result.queryText;
+      if (resolved === undefined) {
+        await runSubmittedTurnRef.current(text, { suppressUserTranscript: true });
+        return;
+      }
+      await runSubmittedTurnRef.current(resolved);
     }
   };
 }

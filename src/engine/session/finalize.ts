@@ -1,13 +1,9 @@
-import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
-import { appendFile } from "node:fs/promises";
+import { existsSync, mkdirSync, unlinkSync } from "node:fs";
+import { appendFile, type FileHandle, open } from "node:fs/promises";
 import { dirname } from "node:path";
-import {
-  clearScope,
-  MAIN_TASK_SCOPE,
-  removeTaskListFromDisk,
-} from "@/engine/background/tasks/index.ts";
+import { clearScope, MAIN_TASK_SCOPE } from "@/engine/background/tasks/index.ts";
 import { clearSessionState as clearCodexSessionState } from "@/engine/providers/codex/transport/state.ts";
-import { closeAllSockets as closeCodexSockets } from "@/engine/providers/codex/transport/ws.ts";
+import { closeAllSockets as closeCodexSockets } from "@/engine/providers/codex/transport/ws-socket-pool.ts";
 import {
   enqueueWrite,
   invalidateOffsetIndex,
@@ -15,6 +11,7 @@ import {
   recordAppendedLine,
   releaseSessionForkChains,
 } from "@/engine/session/infra.ts";
+import { restampSessionTitles } from "@/engine/session/title/store.ts";
 import { clearReadStateForScope, MAIN_SCOPE } from "@/engine/tools/builtins/read/state.ts";
 import { clearAssembledTurn } from "@/engine/translator/assembled.ts";
 import { shutdownAll as shutdownAllLspServers } from "@/kernel/lsp/client.ts";
@@ -48,7 +45,7 @@ export async function finalizeSession(s: Session): Promise<void> {
   try {
     const path = sessionPathForCwd(s.storageCwd, s.id);
     if (!hasMessageRecords(s)) {
-      if (!fileHasMessageRecords(path)) {
+      if (!(await fileHasMessageRecords(path))) {
         try {
           unlinkSync(path);
         } catch {}
@@ -88,9 +85,11 @@ export async function finalizeSession(s: Session): Promise<void> {
         recordAppendedLine(index, null, Buffer.byteLength(line, "utf8"));
       });
     } catch {}
+    try {
+      await restampSessionTitles(path);
+    } catch {}
   } finally {
     cleanupSessionHeapState(s.id, s.storageCwd);
-    removeTaskListFromDisk(s.id);
     detachSessionWorktreeHost(s.id);
     closeCodexSockets();
     await closeAllClients();
@@ -98,13 +97,31 @@ export async function finalizeSession(s: Session): Promise<void> {
   }
 }
 
-function fileHasMessageRecords(path: string): boolean {
+/**
+ * A transcript past the head budget counts as non-empty without parsing; only
+ * the head bytes are read, so a multi-hundred-MB transcript never lands in the
+ * heap just to answer "is this file worth keeping".
+ */
+async function fileHasMessageRecords(path: string): Promise<boolean> {
+  let handle: FileHandle | null = null;
   try {
-    const raw = readFileSync(path, "utf8");
-    if (raw.length > OBVIOUSLY_NONEMPTY_BYTES) return true;
+    handle = await open(path, "r");
+    const buffer = Buffer.allocUnsafe(OBVIOUSLY_NONEMPTY_BYTES + 1);
+    let filled = 0;
+    while (filled < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, filled, buffer.length - filled, filled);
+      if (bytesRead === 0) break;
+      filled += bytesRead;
+    }
+    if (filled > OBVIOUSLY_NONEMPTY_BYTES) return true;
+    const raw = buffer.subarray(0, filled).toString("utf8");
     return recordsFromLines(raw.split("\n")).some(isMessageRecord);
   } catch {
     return false;
+  } finally {
+    try {
+      await handle?.close();
+    } catch {}
   }
 }
 

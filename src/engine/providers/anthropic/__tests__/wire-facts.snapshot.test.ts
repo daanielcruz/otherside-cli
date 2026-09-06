@@ -157,6 +157,52 @@ describe("anthropic beta feature gates", () => {
     expect(fingerprint(memoryRecall).betaHeaders).toContain(EXTENDED_CACHE_TTL_BETA);
   });
 
+  it("drops cache_control ttl from the body when the extended TTL beta is absent", () => {
+    const cached: Message[] = [
+      {
+        role: "system",
+        content: [
+          { type: "text", text: "static", cache_control: { type: "ephemeral", ttl: "1h" } },
+        ],
+      },
+      {
+        role: "user",
+        content: [{ type: "text", text: "go", cache_control: { type: "ephemeral", ttl: "1h" } }],
+      },
+    ];
+    const collectControls = (body: unknown): unknown[] => {
+      const record = body as Record<string, unknown>;
+      const system = record.system as Array<Record<string, unknown>>;
+      const messages = record.messages as Array<{ content: Array<Record<string, unknown>> }>;
+      return [...system, ...messages.flatMap((m) => m.content)]
+        .map((block) => block.cache_control)
+        .filter((cc) => cc !== undefined);
+    };
+
+    const nested = collectControls(
+      translateRequestAnthropic(context({ agentOwnerId: "nested-fixture" }), cached, TOOLS),
+    );
+    expect(nested).toEqual([{ type: "ephemeral" }, { type: "ephemeral" }]);
+
+    const main = collectControls(translateRequestAnthropic(context({}), cached, TOOLS));
+    expect(main).toEqual([
+      { type: "ephemeral", ttl: "1h" },
+      { type: "ephemeral", ttl: "1h" },
+    ]);
+
+    const memoryRecall = collectControls(
+      translateRequestAnthropic(
+        context({ agentic: false, requestRole: "memory_recall" }),
+        cached,
+        TOOLS,
+      ),
+    );
+    expect(memoryRecall).toEqual([
+      { type: "ephemeral", ttl: "1h" },
+      { type: "ephemeral", ttl: "1h" },
+    ]);
+  });
+
   it("keeps a latched fast beta off side queries", () => {
     _resetWireLatchesForTests();
     fingerprint(context({ fastMode: true }));
@@ -164,6 +210,33 @@ describe("anthropic beta feature gates", () => {
     expect(fingerprint(context({ agentic: false })).betaHeaders).not.toContain(FAST_MODE_BETA);
     expect(fingerprint(context({ fastMode: false })).betaHeaders).toContain(FAST_MODE_BETA);
     _resetWireLatchesForTests();
+  });
+});
+
+describe("anthropic agent lineage headers", () => {
+  it("omits both agent ids on a top-level request", () => {
+    const headers = fingerprint(context({})).extraHeaders;
+
+    expect(headers["x-claude-code-agent-id"]).toBeUndefined();
+    expect(headers["x-claude-code-parent-agent-id"]).toBeUndefined();
+  });
+
+  it("emits only the agent id for a subagent spawned from the main session", () => {
+    const headers = fingerprint(context({ agentOwnerId: "child-owner" })).extraHeaders;
+
+    expect(headers["x-claude-code-agent-id"]).toBeDefined();
+    expect(headers["x-claude-code-parent-agent-id"]).toBeUndefined();
+  });
+
+  it("emits the parent agent id for a nested subagent, hashed like the parent's own id", () => {
+    const parent = fingerprint(context({ agentOwnerId: "parent-owner" })).extraHeaders;
+    const nested = fingerprint(
+      context({ agentOwnerId: "child-owner", parentAgentOwnerId: "parent-owner" }),
+    ).extraHeaders;
+
+    expect(nested["x-claude-code-agent-id"]).toBeDefined();
+    expect(nested["x-claude-code-parent-agent-id"]).toBe(parent["x-claude-code-agent-id"]);
+    expect(nested["x-claude-code-parent-agent-id"]).not.toBe(nested["x-claude-code-agent-id"]);
   });
 });
 

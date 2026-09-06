@@ -1,6 +1,6 @@
 import type { AnsiCode } from "@alcalzone/ansi-tokenize";
 import chalk from "chalk";
-import type { TerminalColor, TerminalTextStyle } from "@/terminal-runtime/paint/style-model.js";
+import type { TerminalColor, TerminalTextStyle } from "@/terminal-runtime/text/style-model.js";
 
 const NO_COLOR_FLAGS = new Set(["--no-color", "--no-colors", "--color=false", "--color=never"]);
 const FORCE_COLOR_FLAGS = new Set([
@@ -93,8 +93,17 @@ export const COLOR_DEPTH_ELEVATED_FOR_MODERN_TERMINALS = elevateColorDepthForMod
 export const COLOR_DEPTH_LIMITED_FOR_TMUX = limitColorDepthForTmuxTerminal();
 
 const TRUECOLOR_SGR = /^\x1b\[([34]8);2;(\d+);(\d+);(\d+)m$/;
+const TRUECOLOR_DEPTH = 3;
 
 const ANSI_CUBE_LEVELS = [0, 95, 135, 175, 215, 255];
+
+/**
+ * Whether the resolved colour depth carries 24-bit values through untouched. Below it
+ * every truecolor run is downsampled, so near-identical shades land on the same cell.
+ */
+export function rendersTruecolor(): boolean {
+  return chalk.level >= TRUECOLOR_DEPTH;
+}
 
 export function rgbToAnsi256(r: number, g: number, b: number): number {
   const level = (v: number): number =>
@@ -119,7 +128,7 @@ export function rgbToAnsi256(r: number, g: number, b: number): number {
 }
 
 export function downsampleTruecolorCodes(codes: AnsiCode[]): AnsiCode[] {
-  if (chalk.level >= 3 || codes.length === 0) return codes;
+  if (rendersTruecolor() || codes.length === 0) return codes;
   let out: AnsiCode[] | undefined;
   for (let i = 0; i < codes.length; i++) {
     const code = codes[i];

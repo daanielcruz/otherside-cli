@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, parse } from "node:path";
-import { type AgentContext, runWithAgentContext } from "@/engine/agents/agent-context.ts";
+import { type AgentContext, withSpawnedAgentScope } from "@/engine/agents/agent-context.ts";
 import { isReadOnlyBashCommand } from "@/engine/tools/_infra/command-analysis/read-only.ts";
 import { dispatch as dispatchTool } from "@/engine/tools/pipeline.ts";
 import { activePlanFilePath } from "@/engine/tools/plan-gate.ts";
@@ -26,7 +26,7 @@ import { loadRules, saveRules } from "@/kernel/permissions/persist.ts";
 import {
   type PermissionBehavior,
   type PermissionRule,
-  permissionRuleValueToString,
+  serializeRuleValue,
 } from "@/kernel/permissions/types.ts";
 import { setRuntimeKind } from "@/kernel/std/proc/runtime-mode.ts";
 import type { ToolCall } from "@/kernel/std/types/message.ts";
@@ -297,7 +297,7 @@ describe("fork session-allow isolation", () => {
   it("uses the fork's own set inside a fork, NOT the parent's grants", () => {
     const parent = new Set(["Bash:ls"]);
     const forkSet = new Set<string>();
-    runWithAgentContext(forkContext(forkSet), () => {
+    withSpawnedAgentScope(forkContext(forkSet), () => {
       const active = activeSessionAllowSet(depsWith(parent));
       expect(active).toBe(forkSet);
       expect(active.has("Bash:ls")).toBe(false); // parent grant does not leak in
@@ -307,7 +307,7 @@ describe("fork session-allow isolation", () => {
   it("accumulates a fork's own grants in its set, leaving the parent's untouched", () => {
     const parent = new Set<string>();
     const forkSet = new Set<string>();
-    runWithAgentContext(forkContext(forkSet), () => {
+    withSpawnedAgentScope(forkContext(forkSet), () => {
       activeSessionAllowSet(depsWith(parent)).add("Write:src/x.ts");
     });
     expect(forkSet.has("Write:src/x.ts")).toBe(true);
@@ -324,7 +324,7 @@ describe("sessionAllowPatternsForMatch (AGENT-PERM-001)", () => {
   it("layers a fork's inherited parent grant into match patterns, without moving it into the fork's own set", () => {
     const parent = new Set(["Bash:ls"]);
     const forkSet = new Set<string>();
-    runWithAgentContext(forkContext(forkSet), () => {
+    withSpawnedAgentScope(forkContext(forkSet), () => {
       const matched = new Set(sessionAllowPatternsForMatch(depsWith(parent)));
       expect(matched.has("Bash:ls")).toBe(true);
     });
@@ -335,7 +335,7 @@ describe("sessionAllowPatternsForMatch (AGENT-PERM-001)", () => {
   it("layers both the parent's grant and the fork's own accumulated grant", () => {
     const parent = new Set(["Bash:ls"]);
     const forkSet = new Set(["Write:src/x.ts"]);
-    runWithAgentContext(forkContext(forkSet), () => {
+    withSpawnedAgentScope(forkContext(forkSet), () => {
       const matched = new Set(sessionAllowPatternsForMatch(depsWith(parent)));
       expect(matched.has("Bash:ls")).toBe(true);
       expect(matched.has("Write:src/x.ts")).toBe(true);
@@ -345,7 +345,7 @@ describe("sessionAllowPatternsForMatch (AGENT-PERM-001)", () => {
   it("does not mutate either set while layering", () => {
     const parent = new Set(["Bash:ls"]);
     const forkSet = new Set(["Write:src/x.ts"]);
-    runWithAgentContext(forkContext(forkSet), () => {
+    withSpawnedAgentScope(forkContext(forkSet), () => {
       void [...sessionAllowPatternsForMatch(depsWith(parent))];
     });
     expect(parent).toEqual(new Set(["Bash:ls"]));
@@ -383,7 +383,7 @@ describe("fork inherits the parent's session-scoped approval (AGENT-PERM-001)", 
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 2_000);
       try {
-        const childDecision = await runWithAgentContext(forkContext(new Set<string>()), () =>
+        const childDecision = await withSpawnedAgentScope(forkContext(new Set<string>()), () =>
           resolvePermission(
             deps,
             {
@@ -409,7 +409,7 @@ describe("fork inherits the parent's session-scoped approval (AGENT-PERM-001)", 
       const outsideDir = join(cwd, "..", "ungranted");
       mkdirSync(outsideDir);
 
-      const decisionPromise = runWithAgentContext(forkContext(new Set<string>()), () =>
+      const decisionPromise = withSpawnedAgentScope(forkContext(new Set<string>()), () =>
         resolvePermission(deps, {
           id: "t-child-no-grant",
           name: "Read",
@@ -445,7 +445,7 @@ describe("fork inherits the parent's session-scoped approval (AGENT-PERM-001)", 
         cwd,
       );
 
-      const childDecision = await runWithAgentContext(forkContext(new Set<string>()), () =>
+      const childDecision = await withSpawnedAgentScope(forkContext(new Set<string>()), () =>
         resolvePermission(deps, {
           id: "t-child-deny-over-inherited-allow",
           name: "Read",
@@ -466,7 +466,7 @@ describe("fork inherits the parent's session-scoped approval (AGENT-PERM-001)", 
         cwd,
       );
 
-      const decisionPromise = runWithAgentContext(forkContext(new Set<string>()), () =>
+      const decisionPromise = withSpawnedAgentScope(forkContext(new Set<string>()), () =>
         resolvePermission(deps, {
           id: "t-child-ask-over-inherited-allow",
           name: "Bash",
@@ -487,7 +487,7 @@ describe("subagent permission prompts", () => {
         ...forkContext(new Set<string>()),
         shouldAvoidPermissionPrompts: true,
       };
-      const decision = await runWithAgentContext(context, () =>
+      const decision = await withSpawnedAgentScope(context, () =>
         resolvePermission(resolutionDeps(cwd, "default"), {
           id: "t-background-ask",
           name: "ProbeTool",
@@ -511,7 +511,7 @@ describe("subagent permission prompts", () => {
       // is true (forks always keep a parent turn able to answer, per
       // fork/types.ts), so this must bubble rather than auto-deny.
       const backgroundedForkContext = forkContext(new Set<string>());
-      const decisionPromise = runWithAgentContext(backgroundedForkContext, () =>
+      const decisionPromise = withSpawnedAgentScope(backgroundedForkContext, () =>
         resolvePermission(resolutionDeps(cwd, "default"), {
           id: "t-fork-background-rm-outside",
           name: "Bash",
@@ -531,7 +531,7 @@ describe("subagent permission prompts", () => {
         [{ source: "localSettings", ruleBehavior: "deny", ruleValue: { toolName: "Bash" } }],
         cwd,
       );
-      const decision = await runWithAgentContext(forkContext(new Set<string>()), () =>
+      const decision = await withSpawnedAgentScope(forkContext(new Set<string>()), () =>
         resolvePermission(resolutionDeps(cwd, "default"), {
           id: "t-fork-background-rm-outside-denied-by-rule",
           name: "Bash",
@@ -545,7 +545,7 @@ describe("subagent permission prompts", () => {
 
   it("still auto-denies a genuinely detached (named background subagent) ask, unaffected by the fork fix", async () => {
     await withPermissionFixture(async (cwd) => {
-      const decision = await runWithAgentContext(
+      const decision = await withSpawnedAgentScope(
         { ...forkContext(new Set<string>()), shouldAvoidPermissionPrompts: true },
         () =>
           resolvePermission(resolutionDeps(cwd, "default"), {
@@ -566,7 +566,7 @@ describe("subagent permission prompts", () => {
     await withPermissionFixture(async (cwd) => {
       setRuntimeKind("interactive");
       try {
-        const decisionPromise = runWithAgentContext(
+        const decisionPromise = withSpawnedAgentScope(
           { ...forkContext(new Set<string>()), shouldAvoidPermissionPrompts: true },
           () =>
             resolvePermission(resolutionDeps(cwd, "default"), {
@@ -590,7 +590,7 @@ describe("subagent permission prompts", () => {
     await withPermissionFixture(async (cwd) => {
       setRuntimeKind("piped");
       try {
-        const decision = await runWithAgentContext(
+        const decision = await withSpawnedAgentScope(
           { ...forkContext(new Set<string>()), shouldAvoidPermissionPrompts: true },
           () =>
             resolvePermission(resolutionDeps(cwd, "default"), {
@@ -618,7 +618,7 @@ describe("subagent permission prompts", () => {
           [{ source: "localSettings", ruleBehavior: "deny", ruleValue: { toolName: "Bash" } }],
           cwd,
         );
-        const decision = await runWithAgentContext(
+        const decision = await withSpawnedAgentScope(
           { ...forkContext(new Set<string>()), shouldAvoidPermissionPrompts: true },
           () =>
             resolvePermission(resolutionDeps(cwd, "default"), {
@@ -637,7 +637,7 @@ describe("subagent permission prompts", () => {
 
   it("bubbles an outside Write from a foreground named subagent", async () => {
     await withPermissionFixture(async (cwd) => {
-      const decisionPromise = runWithAgentContext(forkContext(new Set<string>()), () =>
+      const decisionPromise = withSpawnedAgentScope(forkContext(new Set<string>()), () =>
         resolvePermission(resolutionDeps(cwd, "default"), {
           id: "t-foreground-named-write",
           name: "Write",
@@ -659,7 +659,7 @@ describe("subagent permission prompts", () => {
         cwd,
       );
       expect(
-        await runWithAgentContext(forkContext(new Set<string>()), () =>
+        await withSpawnedAgentScope(forkContext(new Set<string>()), () =>
           resolvePermission(resolutionDeps(cwd, "yolo"), {
             id: "t-foreground-named-deny",
             name: "Write",
@@ -673,7 +673,7 @@ describe("subagent permission prompts", () => {
         [{ source: "localSettings", ruleBehavior: "ask", ruleValue: { toolName: "Write" } }],
         cwd,
       );
-      const askDecision = runWithAgentContext(forkContext(new Set<string>()), () =>
+      const askDecision = withSpawnedAgentScope(forkContext(new Set<string>()), () =>
         resolvePermission(resolutionDeps(cwd, "yolo"), {
           id: "t-foreground-named-ask",
           name: "Write",
@@ -726,7 +726,7 @@ describe("PreToolUse hook permissionDecision allow/ask (PERM-HOOK-ALLOW-BYPASS-0
       };
       const context = { ...forkContext(new Set<string>()), shouldAvoidPermissionPrompts: true };
 
-      const decision = await runWithAgentContext(context, () =>
+      const decision = await withSpawnedAgentScope(context, () =>
         runWithPreToolUseHookPermissionSignal("allow", () =>
           resolvePermission(resolutionDeps(cwd, "default"), call),
         ),
@@ -1272,7 +1272,7 @@ describe("mode and rule resolution", () => {
         expect(await decision).toBe("deny");
       }
 
-      const backgroundDecision = await runWithAgentContext(
+      const backgroundDecision = await withSpawnedAgentScope(
         { ...forkContext(new Set<string>()), shouldAvoidPermissionPrompts: true },
         () => resolvePermission(resolutionDeps(cwd, "default"), workflow("t-workflow-background")),
       );
@@ -1525,11 +1525,11 @@ describe("mode and rule resolution", () => {
       expect(await first).toBe("allow");
       expect(sessionGrants).toEqual(
         new Set([
-          permissionRuleValueToString({
+          serializeRuleValue({
             toolName: "Read",
             ruleContent: permissionDirectoryGlob(outsideDir),
           }),
-          permissionRuleValueToString({
+          serializeRuleValue({
             toolName: "Read",
             ruleContent: permissionDirectoryGlob(resolvedOutsideDir),
           }),
@@ -2708,6 +2708,86 @@ describe("plan-mode permission semantics", () => {
       expect(pending.toolName).toBe("Write");
       answerPermission(pending.id, { decision: "deny", updates: [] });
       expect(await decisionPromise).toBe("deny");
+    });
+  });
+
+  // Plan mode auto-allows read-only commands: inspection must flow without a
+  // prompt so the model can research while mutations stay gated.
+  it("auto-allows in-workspace read-only Bash commands without prompting", async () => {
+    await withPermissionFixture(async (cwd) => {
+      mkdirSync(join(cwd, "sub"));
+      for (const command of ["ls", "ls sub", `ls ${bashPath(join(cwd, "sub"))}`, "ls sub/*"]) {
+        expect(
+          await resolvePermission(resolutionDeps(cwd, "plan"), {
+            id: `t-plan-readonly-${command}`,
+            name: "Bash",
+            input: { command },
+          }),
+        ).toBe("allow");
+      }
+      expect(peekPermission()).toBeNull();
+    });
+  });
+
+  // Subagents inherit the parent's live permission mode unless their
+  // definition pins one: the same read-only auto-allow applies inside a
+  // spawned-agent scope, so a delegated agent's `ls` never prompts in plan
+  // mode.
+  it("auto-allows a subagent's in-workspace read-only Bash command under live plan mode", async () => {
+    await withPermissionFixture(async (cwd) => {
+      mkdirSync(join(cwd, "sub"));
+      for (const command of ["ls sub", "ls sub/*"]) {
+        const decision = await withSpawnedAgentScope(forkContext(new Set<string>()), () =>
+          resolvePermission(resolutionDeps(cwd, "plan"), {
+            id: `t-plan-subagent-readonly-${command}`,
+            name: "Bash",
+            input: { command },
+          }),
+        );
+        expect(decision).toBe("allow");
+      }
+      expect(peekPermission()).toBeNull();
+    });
+  });
+
+  it("keeps the plan-mode write gate inside a subagent scope under live plan mode", async () => {
+    await withPermissionFixture(async (cwd) => {
+      const decisionPromise = withSpawnedAgentScope(forkContext(new Set<string>()), () =>
+        resolvePermission(resolutionDeps(cwd, "plan"), {
+          id: "t-plan-subagent-write",
+          name: "Write",
+          input: { file_path: join(cwd, "impl.ts"), content: "not yet" },
+        }),
+      );
+      const pending = await waitForPermission();
+      expect(pending.toolName).toBe("Write");
+      answerPermission(pending.id, { decision: "deny", updates: [] });
+      expect(await decisionPromise).toBe("deny");
+    });
+  });
+
+  // Workspace containment is mode-independent: plan mode's read-only
+  // auto-allow never extends to paths outside the working directories —
+  // including a glob whose static prefix leaves the workspace.
+  it("still prompts for a read-only Bash command targeting a path outside the workspace", async () => {
+    await withPermissionFixture(async (cwd) => {
+      const outsideDir = join(cwd, "..", "outside-plan-read");
+      mkdirSync(outsideDir);
+      for (const command of [
+        `ls ${bashPath(outsideDir)}`,
+        `ls ${bashPath(outsideDir)}/*`,
+        "ls ../*",
+      ]) {
+        const decisionPromise = resolvePermission(resolutionDeps(cwd, "plan"), {
+          id: `t-plan-outside-${command}`,
+          name: "Bash",
+          input: { command },
+        });
+        const pending = await waitForPermission();
+        expect(pending.toolName).toBe("Bash");
+        answerPermission(pending.id, { decision: "deny", updates: [] });
+        expect(await decisionPromise).toBe("deny");
+      }
     });
   });
 });

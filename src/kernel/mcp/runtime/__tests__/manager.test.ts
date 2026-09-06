@@ -15,6 +15,7 @@ import {
 import {
   buildMcpRuntime,
   loadNamespacedMcpRuntime,
+  mcpToolDescription,
   refreshMcpTools,
   setMcpToolRegistry,
 } from "@/kernel/mcp/runtime/manager.ts";
@@ -55,6 +56,16 @@ class FakeMcpClient implements McpClient {
   serverInstructions(): string | null {
     return null;
   }
+
+  async listPrompts() {
+    return [];
+  }
+
+  async getPrompt() {
+    return { messages: [] };
+  }
+
+  announce(): void {}
 
   isClosed(): boolean {
     return this.closed;
@@ -397,5 +408,24 @@ describe("MCP config normalization", () => {
       else process.env.MCP_CONFIG_TEST_TOKEN = previousToken;
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("mcpToolDescription (wire schema description)", () => {
+  test("sends the tool's own description verbatim, empty stays empty", () => {
+    expect(mcpToolDescription({ description: "Navigate to a URL" })).toBe("Navigate to a URL");
+    expect(mcpToolDescription({ description: "" })).toBe("");
+  });
+
+  test("caps over-long descriptions with the truncation marker", () => {
+    const long = "x".repeat(3000);
+    const capped = mcpToolDescription({ description: long });
+    expect(capped).toBe(`${"x".repeat(2048)}… [truncated]`);
+  });
+
+  test("drops a lone trailing high surrogate at the cap boundary", () => {
+    const long = `${"x".repeat(2047)}😀${"y".repeat(1000)}`;
+    const capped = mcpToolDescription({ description: long });
+    expect(capped).toBe(`${"x".repeat(2047)}… [truncated]`);
   });
 });

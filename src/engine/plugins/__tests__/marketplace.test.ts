@@ -210,12 +210,14 @@ mock.module("node:fs", () => fsMock);
 import { activeInstallPath, listPluginInstallations } from "@/engine/plugins/installations.ts";
 import {
   addMarketplace,
-  detectSourceType,
   getCachedManifest,
-  installMarketplacePlugin,
   listMarketplacePlugins,
-  parseMarketplaceManifest,
 } from "@/engine/plugins/marketplace.ts";
+import { installMarketplacePlugin } from "@/engine/plugins/marketplace-install.ts";
+import {
+  detectSourceType,
+  parseMarketplaceManifest,
+} from "@/engine/plugins/marketplace-manifest.ts";
 import { getKnownMarketplace } from "@/engine/plugins/marketplaces-store.ts";
 
 describe("marketplace parse + detect", () => {
@@ -313,22 +315,22 @@ describe("marketplace file-source end-to-end", () => {
     mock.module("node:fs", () => originalFs);
   });
 
-  it("addMarketplace parses a file marketplace and persists it", () => {
-    const res = addMarketplace(mpDir);
+  it("addMarketplace parses a file marketplace and persists it", async () => {
+    const res = await addMarketplace(mpDir);
     expect(res.ok).toBe(true);
     expect(res.name).toBe(mpName);
     expect(res.count).toBe(1);
     expect(getKnownMarketplace(mpName)?.sourceType).toBe("file");
   });
 
-  it("listMarketplacePlugins returns entries from the cached manifest", () => {
-    addMarketplace(mpDir);
+  it("listMarketplacePlugins returns entries from the cached manifest", async () => {
+    await addMarketplace(mpDir);
     const plugins = listMarketplacePlugins(mpName);
     expect(plugins.map((p) => p.name)).toEqual([pluginName]);
   });
 
-  it("installMarketplacePlugin copies the plugin into plugins/installed", () => {
-    addMarketplace(mpDir);
+  it("installMarketplacePlugin copies the plugin into plugins/installed", async () => {
+    await addMarketplace(mpDir);
     const res = installMarketplacePlugin(mpName, pluginName);
     expect(res.success).toBe(true);
     expect(res.pluginName).toBe(pluginName);
@@ -337,7 +339,7 @@ describe("marketplace file-source end-to-end", () => {
     ).toBe(true);
   });
 
-  it("installs a non-strict manifestless plugin with generated metadata", () => {
+  it("installs a non-strict manifestless plugin with generated metadata", async () => {
     rmFn(join(mpDir, pluginName, "plugin.json"), { force: true });
     writeFileFn(
       join(mpDir, ".claude-plugin", "marketplace.json"),
@@ -347,7 +349,7 @@ describe("marketplace file-source end-to-end", () => {
         plugins: [{ name: pluginName, source: `./${pluginName}`, strict: false }],
       }),
     );
-    addMarketplace(mpDir);
+    await addMarketplace(mpDir);
 
     const res = installMarketplacePlugin(mpName, pluginName);
 
@@ -363,8 +365,8 @@ describe("marketplace file-source end-to-end", () => {
     ).toBe(true);
   });
 
-  it("rejects another install when the plugin is already installed", () => {
-    addMarketplace(mpDir);
+  it("rejects another install when the plugin is already installed", async () => {
+    await addMarketplace(mpDir);
     expect(installMarketplacePlugin(mpName, pluginName, "user").success).toBe(true);
 
     const duplicate = installMarketplacePlugin(mpName, pluginName, "project");
@@ -379,8 +381,8 @@ describe("marketplace file-source end-to-end", () => {
     expect(installations.map((installation) => installation.scope)).toEqual(["user"]);
   });
 
-  it("preserves an existing install when replacement validation fails", () => {
-    addMarketplace(mpDir);
+  it("preserves an existing install when replacement validation fails", async () => {
+    await addMarketplace(mpDir);
     expect(installMarketplacePlugin(mpName, pluginName).success).toBe(true);
     const installedManifest = join(
       activeInstallPath(pluginName, "user", mpName, "1.0.0"),
@@ -395,7 +397,7 @@ describe("marketplace file-source end-to-end", () => {
     expect(existsFn(installedManifest)).toBe(true);
   });
 
-  it("rejects local plugin sources that escape the marketplace", () => {
+  it("rejects local plugin sources that escape the marketplace", async () => {
     mkdirFn(join(configDir, "outside"), { recursive: true });
     writeFileFn(join(configDir, "outside", "plugin.json"), JSON.stringify({ name: pluginName }));
     writeFileFn(
@@ -406,7 +408,7 @@ describe("marketplace file-source end-to-end", () => {
         plugins: [{ name: pluginName, source: "../outside" }],
       }),
     );
-    addMarketplace(mpDir);
+    await addMarketplace(mpDir);
 
     const res = installMarketplacePlugin(mpName, pluginName);
 
@@ -414,13 +416,13 @@ describe("marketplace file-source end-to-end", () => {
     expect(res.message).toContain("escapes marketplace");
   });
 
-  it("getCachedManifest returns the parsed manifest", () => {
-    addMarketplace(mpDir);
+  it("getCachedManifest returns the parsed manifest", async () => {
+    await addMarketplace(mpDir);
     expect(getCachedManifest(mpName)?.name).toBe(mpName);
   });
 
-  it("installMarketplacePlugin fails for unknown plugins", () => {
-    addMarketplace(mpDir);
+  it("installMarketplacePlugin fails for unknown plugins", async () => {
+    await addMarketplace(mpDir);
     const res = installMarketplacePlugin(mpName, "no-such-plugin");
     expect(res.success).toBe(false);
   });

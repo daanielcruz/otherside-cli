@@ -1,9 +1,7 @@
 import type { UserConfig } from "@/kernel/config/config.ts";
-import { fireUserPromptSubmitHooks } from "@/kernel/hooks/handler.ts";
 import type { RunSubmittedTurn } from "@/store/turn-run/index.ts";
-import { nextTranscriptId } from "@/store/turn-tracking/index.ts";
+import { createPromptHookGate } from "@/ui/app/dispatch/prompt-hook-gate.ts";
 import type { TurnContinuation } from "@/ui/app/drain/post-turn.ts";
-import { formatHookOutcome } from "@/ui/app/status-text.ts";
 import type { TranscriptSetters } from "@/ui/transcript/stream/setters.ts";
 
 export interface PromoteContinuationDeps {
@@ -24,11 +22,7 @@ export function createPromoteContinuation(
 ): (continuation: TurnContinuation) => Promise<boolean> {
   const { runtimeConfig, setTranscript, handleSlash, runSubmittedTurn, requestBackgroundResume } =
     deps;
-
-  const blockedByHook = (reason: string): void => {
-    const id = nextTranscriptId("hook");
-    setTranscript((t) => [...t, { id, kind: "system", text: `prompt blocked by hook: ${reason}` }]);
-  };
+  const promptHookGate = createPromptHookGate({ runtimeConfig, setTranscript });
 
   // Returns true only when runSubmittedTurn was actually invoked — callers that
   // pre-reserved the guard for this promotion (a forced queue drain) use that to
@@ -39,32 +33,22 @@ export function createPromoteContinuation(
     let dispatched = false;
     if (nextText.trim().startsWith("/")) {
       if (!handleSlash(nextText)) {
-        const hookResult = await fireUserPromptSubmitHooks(runtimeConfig, nextText);
-        const failedHook = hookResult.outcomes.find((outcome) => outcome.kind !== "ok");
-        if (failedHook) {
-          blockedByHook(formatHookOutcome(failedHook));
-        } else {
-          dispatched = true;
-          await runSubmittedTurn(nextText, {
+        dispatched = await promptHookGate(nextText, (additionalContext) =>
+          runSubmittedTurn(nextText, {
             suppressUserTranscript: nextSuppress,
-            additionalContext: hookResult.additionalContext,
-          });
-        }
+            additionalContext,
+          }),
+        );
       }
       requestBackgroundResume();
     } else {
-      const hookResult = await fireUserPromptSubmitHooks(runtimeConfig, nextText);
-      const failedHook = hookResult.outcomes.find((outcome) => outcome.kind !== "ok");
-      if (failedHook) {
-        blockedByHook(formatHookOutcome(failedHook));
-      } else {
-        dispatched = true;
-        await runSubmittedTurn(nextText, {
+      dispatched = await promptHookGate(nextText, (additionalContext) =>
+        runSubmittedTurn(nextText, {
           suppressUserTranscript: nextSuppress,
-          additionalContext: hookResult.additionalContext,
+          additionalContext,
           ...(nextRestoreEntryId !== undefined ? { restoreEntryId: nextRestoreEntryId } : {}),
-        });
-      }
+        }),
+      );
     }
     return dispatched;
   };

@@ -1,10 +1,19 @@
 import { get as getAgent } from "@/engine/agents/registry.ts";
 import { findModel } from "@/engine/model/catalog.ts";
 import { filePathSegment } from "@/engine/tools/contract.ts";
-import { parseSedEditCommand } from "@/engine/tools/index.ts";
-import { detectHyperlinkCapability } from "@/ink";
-import { osc8FileLink } from "@/ui/transcript/markdown/osc8.ts";
+import { parseSedEditInvocation } from "@/engine/tools/index.ts";
+import {
+  isProviderId,
+  type ProviderId,
+  type ProviderModelRoute,
+} from "@/kernel/std/types/provider-ids.ts";
+import { osc8FileLink, terminalAllowsLinks } from "@/terminal-runtime";
 import { clipFlat } from "@/ui/transcript/tool-render/format.ts";
+import { SILENT_TOOL_NAMES } from "@/ui/transcript/tool-render/silent-tools.ts";
+
+const SILENT_TOOL_DISPLAY_NAMES = Object.fromEntries(
+  SILENT_TOOL_NAMES.map((name) => [name, ""] as const),
+);
 
 export const DISPLAY_NAME_OVERRIDES: Record<string, string> = {
   WebFetch: "Fetch",
@@ -14,22 +23,13 @@ export const DISPLAY_NAME_OVERRIDES: Record<string, string> = {
   TaskOutput: "Task Output",
   ListMcpResourcesTool: "listMcpResources",
   ReadMcpResourceTool: "readMcpResource",
-  TaskCreate: "",
-  TaskUpdate: "",
-  TaskList: "",
-  TaskGet: "",
-  AskUserQuestion: "",
-  EnterPlanMode: "",
-  ExitPlanMode: "",
-  ToolSearch: "",
+  ...SILENT_TOOL_DISPLAY_NAMES,
 };
 
 export function displayNameFor(name: string, args: unknown): string {
   if (name === "Agent") {
     const sub = readString(args, "subagent_type");
-    if (sub && sub !== "general-purpose" && sub !== "worker") {
-      return getAgent(sub)?.name ?? sub;
-    }
+    if (sub) return getAgent(sub)?.name ?? sub;
   }
   const override = DISPLAY_NAME_OVERRIDES[name];
   if (override !== undefined) return override;
@@ -47,12 +47,18 @@ export function displayNameFor(name: string, args: unknown): string {
 }
 
 export function displayModelName(modelId: string): string {
-  return findModel(modelId)?.displayName ?? modelId;
+  return modelId;
+}
+
+/** Display name for a fully-identified route; historical model-only entries stay raw. */
+export function displayRouteModelName(route: ProviderModelRoute): string {
+  return findModel(route)?.displayName ?? route.model;
 }
 
 export function agentModelSuffix(
   name: string,
   args: unknown,
+  provider: ProviderId,
   providerShortKey: string,
   currentModel?: string,
 ): string | undefined {
@@ -64,8 +70,13 @@ export function agentModelSuffix(
   const callOverride = readString(args, "model");
   const defOverride = def.model[providerShortKey];
   const modelId = callOverride ?? defOverride?.model ?? currentModel;
-  if (!modelId || modelId === currentModel) return undefined;
-  const m = findModel(modelId);
+  // An explicit provider pin moves the display route off the session provider;
+  // without it the model resolves under the session provider as before.
+  const callProvider = readString(args, "provider");
+  const routeProvider =
+    callProvider !== undefined && isProviderId(callProvider) ? callProvider : provider;
+  if (!modelId || (modelId === currentModel && routeProvider === provider)) return undefined;
+  const m = findModel({ provider: routeProvider, model: modelId });
   return m?.displayName ?? modelId;
 }
 
@@ -97,14 +108,8 @@ export function segmentsText(segs: ArgSegment[]): string {
   return segs.map((s) => s.text).join("");
 }
 
-export function supportsHyperlinks(): boolean {
-  if (process.env.NO_HYPERLINK || process.env.FORCE_HYPERLINK === "0") return false;
-  if (process.env.FORCE_HYPERLINK === "1") return true;
-  return detectHyperlinkCapability();
-}
-
 export function segmentsToAnsi(segs: ArgSegment[]): string {
-  if (!supportsHyperlinks()) return segmentsText(segs);
+  if (!terminalAllowsLinks()) return segmentsText(segs);
   return segs
     .map((s) => (s.kind === "path" ? osc8FileLink({ path: s.path, label: s.text }) : s.text))
     .join("");
@@ -169,7 +174,7 @@ export function summarizeArgs(name: string, args: unknown): string {
   if (name === "Bash") {
     const cmd = readString(obj, "command");
     if (cmd) {
-      const sedInfo = parseSedEditCommand(cmd);
+      const sedInfo = parseSedEditInvocation(cmd);
       if (sedInfo) return sedInfo.filePath;
       return clipFlat(cmd, 90);
     }
@@ -234,12 +239,21 @@ export function summarizeArgs(name: string, args: unknown): string {
   return parts.join(", ");
 }
 
-export function bashHeaderCommand(args: unknown): string | null {
+const BASH_HEADER_MAX_LINES = 2;
+const BASH_HEADER_MAX_CHARS = 160;
+
+export function bashHeaderCommand(args: unknown, options: { full: boolean }): string | null {
   const cmd = readString(args, "command");
   if (cmd === undefined || cmd.length === 0) return null;
-  const sedInfo = parseSedEditCommand(cmd);
+  const sedInfo = parseSedEditInvocation(cmd);
   if (sedInfo !== null) return sedInfo.filePath;
-  return cmd;
+  if (options.full) return cmd;
+
+  const lines = cmd.split("\n");
+  if (lines.length <= BASH_HEADER_MAX_LINES && cmd.length <= BASH_HEADER_MAX_CHARS) return cmd;
+  let clipped = lines.slice(0, BASH_HEADER_MAX_LINES).join("\n");
+  if (clipped.length > BASH_HEADER_MAX_CHARS) clipped = clipped.slice(0, BASH_HEADER_MAX_CHARS);
+  return `${clipped.trim()}…`;
 }
 
 export function resolveArgBody(options: {

@@ -1,5 +1,5 @@
 import { notify } from "@/design/bridge/envelope.ts";
-import { ReadDesignTool } from "@/design/capabilities/design-tools.ts";
+import { ReadDesignTool } from "@/design/capabilities/canvas-tools.ts";
 import { drainVerificationPaths } from "@/design/capabilities/verification-tools.ts";
 import {
   type DesignForkContext,

@@ -10,9 +10,6 @@ import type { ContentBlock } from "@/kernel/std/types/message.ts";
 
 registerAllProviders();
 
-const encoder = new TextEncoder();
-const decoder = new TextDecoder();
-
 // First provider response is silent (no text, no tool calls) — this drives
 // the loop's own empty-response recovery into a second continuation
 // (turn > 0), which is where the mid-turn permission-mode reminder check
@@ -23,27 +20,28 @@ function makeProvider(onFirstCallLanded: () => void): Provider {
   return {
     ...providers.get("xai"),
     id: "xai",
-    stream: async function* () {
+    startStreamAttempt: () => {
       calls += 1;
-      yield encoder.encode(String(calls));
-    },
-    translateResponse: async function* (raw) {
-      let call = "";
-      for await (const chunk of raw) call += decoder.decode(chunk);
-      yield { kind: "message_start", id: `msg-${call}` };
-      if (call === "1") {
-        onFirstCallLanded();
-      } else {
-        yield { kind: "text_delta", text: "done" };
-        yield {
-          kind: "usage",
-          inputTokens: 1_000,
-          outputTokens: 100,
-          cacheCreationInputTokens: 0,
-          cacheReadInputTokens: 0,
-        };
-      }
-      yield { kind: "message_stop", stop_reason: "stop" };
+      const call = calls;
+      return {
+        events: (async function* () {
+          yield { kind: "message_start", id: `msg-${call}` };
+          if (call === 1) {
+            onFirstCallLanded();
+          } else {
+            yield { kind: "text_delta", text: "done" };
+            yield {
+              kind: "usage",
+              inputTokens: 1_000,
+              outputTokens: 100,
+              cacheCreationInputTokens: 0,
+              cacheReadInputTokens: 0,
+            };
+          }
+          yield { kind: "message_stop", stop_reason: "stop" };
+        })(),
+        abort: () => {},
+      };
     },
   };
 }

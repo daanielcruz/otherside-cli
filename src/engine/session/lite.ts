@@ -1,6 +1,10 @@
 import { open } from "node:fs/promises";
 
-export const LITE_READ_BYTES = 16 * 1024;
+// Bounded head/tail window for cheap per-session metadata extraction
+// (titles, preview, cwd) without scanning the whole transcript. 64KB rides
+// out large early records (image pastes routinely exceed 16KB as one line)
+// that would otherwise push the title line beyond the head window.
+export const LITE_READ_BYTES = 64 * 1024;
 
 export interface SessionLite {
   head: string;

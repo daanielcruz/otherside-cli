@@ -1,4 +1,10 @@
-import { agentDisplayName, enqueue, listAgents, resolveAgentId } from "@/engine/agents/inbox.ts";
+import {
+  addressedMessageText,
+  enqueue,
+  listAgents,
+  resolveAgentId,
+} from "@/engine/agents/inbox.ts";
+import { forkRouteFromRoutingField } from "@/engine/background/subagents/fork/route-override.ts";
 import { resumeForkWithMessage } from "@/engine/background/subagents/lifecycle.ts";
 import type { ToolHandler } from "@/engine/tools/contract.ts";
 import SendMessageSchema from "@/harness/tools/SendMessage/tool.json" with { type: "json" };
@@ -9,6 +15,7 @@ interface Input {
   to?: unknown;
   message?: unknown;
   reply_to?: unknown;
+  routing?: unknown;
 }
 
 function err(toolUseId: string, msg: string): ToolResult {
@@ -32,6 +39,8 @@ export const SendMessage: ToolHandler = {
     const replyTo = typeof args.reply_to === "string" ? args.reply_to : undefined;
     if (!to) return err(call.id, "`to` is required");
     if (!message) return err(call.id, "`message` is required");
+    const routing = forkRouteFromRoutingField(args.routing);
+    if (!routing.ok) return err(call.id, routing.error);
 
     const resolvedTargetId = resolveAgentId(to);
     const callerId = ctx.agentId ?? ctx.sessionId;
@@ -43,11 +52,13 @@ export const SendMessage: ToolHandler = {
       return err(call.id, selfMsgErr);
     }
 
-    const from =
-      ctx.agentId !== undefined ? (agentDisplayName(ctx.agentId) ?? ctx.agentId) : "main";
+    const from = ctx.agentId ?? "main";
 
-    const result = enqueue(to, message, replyTo, from);
-    if (result.delivered) {
+    // A routing field is a decision about the target's route, and the inbox
+    // fast path cannot make it — such a message always goes through the
+    // lifecycle, which owns the gate, the prompt, and the no-op warning.
+    const result = routing.route === undefined ? enqueue(to, message, replyTo, from) : null;
+    if (result?.delivered === true) {
       return ok(call.id, {
         delivered: true,
         to: result.agentId,
@@ -56,26 +67,14 @@ export const SendMessage: ToolHandler = {
       });
     }
 
-    if (result.code === "ambiguous_recipient") {
-      const known = listAgents()
-        .map((agent) => agent.agentId)
-        .join(", ");
-      return ok(call.id, {
-        delivered: false,
-        to,
-        code: "ambiguous_recipient",
-        reason: result.reason,
-        knownAgents: known.length > 0 ? known : null,
-      });
-    }
-
-    const resumePrompt = replyTo === undefined ? message : `[Reply to ${replyTo}]\n${message}`;
-    const resumed = await resumeForkWithMessage(to, resumePrompt, ctx);
+    const resumePrompt = addressedMessageText({ message, from, replyTo });
+    const resumed = await resumeForkWithMessage(to, resumePrompt, ctx, routing.route);
     if (resumed.delivered) {
       return ok(call.id, {
         delivered: true,
         to: resumed.agentId,
         resumed: resumed.resumed,
+        ...(resumed.warning !== undefined ? { warning: resumed.warning } : {}),
       });
     }
 

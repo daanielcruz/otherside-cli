@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import {
-  hasDirectoryReadCapability,
   hasResourcesCapability,
   isMcpSkillsEnabled,
   parseDirectoryEntry,
@@ -8,6 +7,7 @@ import {
   sanitizeMcpText,
   sanitizeMcpUri,
   setMcpSkillsEnabledForTests,
+  supportsResourceDirectoryRead,
 } from "@/kernel/mcp/protocol/parse.ts";
 import {
   MCP_SKILLS_EXTENSION_URI,
@@ -39,17 +39,17 @@ describe("MCP capability + directory parsers", () => {
     expect(isMcpSkillsEnabled()).toBe(true);
   });
 
-  it("hasDirectoryReadCapability requires skills extension directoryRead:true", () => {
+  it("supportsResourceDirectoryRead requires skills extension directoryRead:true", () => {
     const base: McpServerCapabilities = { resources: {} };
-    expect(hasDirectoryReadCapability(base)).toBe(false);
+    expect(supportsResourceDirectoryRead(base)).toBe(false);
     expect(
-      hasDirectoryReadCapability({
+      supportsResourceDirectoryRead({
         resources: {},
         extensions: { [MCP_SKILLS_EXTENSION_URI]: { directoryRead: false } },
       }),
     ).toBe(false);
     expect(
-      hasDirectoryReadCapability({
+      supportsResourceDirectoryRead({
         resources: {},
         extensions: { [MCP_SKILLS_EXTENSION_URI]: { directoryRead: true } },
       }),

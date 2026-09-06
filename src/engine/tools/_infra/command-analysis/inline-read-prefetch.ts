@@ -2,27 +2,26 @@ import { readFile, stat } from "node:fs/promises";
 import { splitCommandParts } from "@/engine/tools/_infra/command-analysis/commands.ts";
 import { tokenizeSegment, unquote } from "@/engine/tools/_infra/command-analysis/shell-tokens.ts";
 
-const DEFAULT_HEAD_LINES = 10;
-const DEFAULT_TAIL_LINES = 10;
-const MAX_PREFETCH_FILE_SIZE = 10_485_760;
+const HEAD_LINE_DEFAULT = 10;
+const TAIL_LINE_DEFAULT = 10;
+const INLINE_READ_SIZE_CEILING = 10_485_760;
 
-const SED_RANGE_REGEX = /^(\d+),(\d+)p$/;
-const SED_SINGLE_REGEX = /^(\d+)p$/;
-const SAFE_NOOP_SEGMENT_REGEX = /^\s*(echo|printf|true|:)\b/;
-const GLOB_CHAR_REGEX = /[*?[{]/;
-const DIGITS_REGEX = /^\d+$/;
+const SED_PRINT_LINES_REGEX = /^(\d+)(?:,(\d+))?p$/;
+const PASSIVE_SEGMENT_REGEX = /^\s*(echo|printf|true|:)\b/;
+const GLOB_SYNTAX_REGEX = /[*?[{]/;
+const UNSIGNED_INTEGER_REGEX = /^\d+$/;
 
-const FILE_PRINT_COMMAND_FLAGS = new Map<string, Set<string>>([
+const FILE_VIEWER_FLAGS = new Map<string, Set<string>>([
   ["cat", new Set(["-n", "--number"])],
   ["nl", new Set()],
   ["bat", new Set(["-n", "--number", "-p", "--plain"])],
   ["batcat", new Set(["-n", "--number", "-p", "--plain"])],
 ]);
 
-const GREP_SHORT_FLAG_REGEX = /^-[niwxEFGPHh]+$/;
-const GREP_CONTEXT_SHORT_FLAG_REGEX = /^-[ABC]\d+$/;
-const GREP_CONTEXT_LONG_FLAG_REGEX = /^--(?:after-context|before-context|context)=\d+$/;
-const GREP_SAFE_LONG_FLAGS = new Set([
+const COMPACT_CONTEXT_FLAG_REGEX = /^-[ABC]\d+$/;
+const ASSIGNED_CONTEXT_FLAG_REGEX = /^--(?:after-context|before-context|context)=\d+$/;
+const GREP_INLINE_FLAGS_REGEX = /^-[niwxEFGPHh]+$/;
+const GREP_LONG_FLAGS = new Set([
   "--line-number",
   "--ignore-case",
   "--word-regexp",
@@ -37,10 +36,8 @@ const GREP_SAFE_LONG_FLAGS = new Set([
   "--color=auto",
 ]);
 
-const RIPGREP_SHORT_FLAG_REGEX = /^-[iSswxFnNHUP]+$/;
-const RIPGREP_CONTEXT_SHORT_FLAG_REGEX = /^-[ABC]\d+$/;
-const RIPGREP_CONTEXT_LONG_FLAG_REGEX = /^--(?:after-context|before-context|context)=\d+$/;
-const RIPGREP_SAFE_LONG_FLAGS = new Set([
+const RIPGREP_INLINE_FLAGS_REGEX = /^-[iSswxFnNHUP]+$/;
+const RIPGREP_LONG_FLAGS = new Set([
   "--ignore-case",
   "--smart-case",
   "--case-sensitive",
@@ -55,240 +52,262 @@ const RIPGREP_SAFE_LONG_FLAGS = new Set([
   "--pcre2",
 ]);
 
-export interface InlinePrefetchEntry {
+type InlineReadSelection =
+  | { kind: "range"; firstLine: number; lastLine: number }
+  | { kind: "tail"; count: number };
+
+export interface InlineReadPlan {
   filePath: string;
-  startLine?: number;
-  endLine?: number;
-  tailLines?: number;
-  requiresExitZero?: boolean;
+  selection?: InlineReadSelection;
+  onlyOnSuccess?: boolean;
 }
 
-export interface PrefetchedRead {
+export interface LoadedInlineRead {
   content: string;
   offset?: number;
   limit?: number;
 }
 
-export function parseInlineReadCommands(command: string): InlinePrefetchEntry[] {
+export function parseEmbeddedReadCommands(command: string): InlineReadPlan[] {
   if (/[|<>]/.test(command)) return [];
   const segments = splitCommandParts(command);
   if (segments.length === 0) return [];
-  const out: InlinePrefetchEntry[] = [];
+  const prefetchPlans: InlineReadPlan[] = [];
   for (const segment of segments) {
     const tokens = tokenizeSegment(segment);
-    const parsed =
+    const readPlan =
       parseSed(tokens) ??
       parseCat(tokens) ??
       parseHead(tokens) ??
       parseTail(tokens) ??
       (segments.length === 1 ? (parseGrep(tokens) ?? parseRipgrep(tokens)) : null);
-    if (parsed) {
-      out.push(parsed);
-    } else if (segments.length > 1 && !SAFE_NOOP_SEGMENT_REGEX.test(segment)) {
+    if (readPlan) {
+      prefetchPlans.push(readPlan);
+    } else if (segments.length > 1 && !PASSIVE_SEGMENT_REGEX.test(segment)) {
       return [];
     }
   }
-  return out;
+  return prefetchPlans;
 }
 
-function parseSed(tokens: string[]): InlinePrefetchEntry | null {
+function parseSed(tokens: string[]): InlineReadPlan | null {
   if (tokens[0] !== "sed") return null;
-  let quiet = false;
-  let script: string | null = null;
-  let filePath: string | null = null;
-  for (let i = 1; i < tokens.length; i++) {
-    const tok = tokens[i] ?? "";
-    if (tok.startsWith("-")) {
-      if (tok.startsWith("--")) {
-        if (tok === "--in-place" || tok.startsWith("--in-place=")) return null;
-        if (tok === "--expression") return null;
-        if (tok === "--quiet" || tok === "--silent") quiet = true;
-      } else {
-        if (tok.includes("i")) return null;
-        if (tok === "-e") return null;
-        if (tok.includes("n")) quiet = true;
-      }
+  let suppressDefaultOutput = false;
+  let printExpression: string | null = null;
+  let candidatePath: string | null = null;
+
+  for (let index = 1; index < tokens.length; index++) {
+    const argument = tokens[index] ?? "";
+    if (!argument.startsWith("-")) {
+      if (printExpression === null) printExpression = unquote(argument);
+      else if (candidatePath === null) candidatePath = unquote(argument);
+      else return null;
       continue;
     }
-    if (script === null) script = unquote(tok);
-    else if (filePath === null) filePath = unquote(tok);
-    else return null;
+    if (argument.startsWith("--")) {
+      if (argument === "--in-place" || argument.startsWith("--in-place=")) return null;
+      if (argument === "--expression") return null;
+      suppressDefaultOutput ||= argument === "--quiet" || argument === "--silent";
+      continue;
+    }
+    if (argument.includes("i") || argument === "-e") return null;
+    suppressDefaultOutput ||= argument.includes("n");
   }
-  if (!quiet || script === null || filePath === null) return null;
-  const range = SED_RANGE_REGEX.exec(script);
-  if (range) return { filePath, startLine: Number(range[1]), endLine: Number(range[2]) };
-  const single = SED_SINGLE_REGEX.exec(script);
-  if (single) {
-    const line = Number(single[1]);
-    return { filePath, startLine: line, endLine: line };
-  }
-  return null;
+
+  if (!suppressDefaultOutput || printExpression === null || candidatePath === null) return null;
+  const printLines = SED_PRINT_LINES_REGEX.exec(printExpression);
+  if (printLines === null) return null;
+  const firstLine = Number(printLines[1]);
+  const lastLine = Number(printLines[2] ?? printLines[1]);
+  return { filePath: candidatePath, selection: { kind: "range", firstLine, lastLine } };
 }
 
-function parseCat(tokens: string[]): InlinePrefetchEntry | null {
-  const allowedFlags = FILE_PRINT_COMMAND_FLAGS.get(tokens[0] ?? "");
-  if (allowedFlags === undefined) return null;
+function parseCat(tokens: string[]): InlineReadPlan | null {
+  const viewerFlags = FILE_VIEWER_FLAGS.get(tokens[0] ?? "");
+  if (viewerFlags === undefined) return null;
   let filePath: string | null = null;
-  for (let i = 1; i < tokens.length; i++) {
-    const tok = tokens[i] ?? "";
-    if (tok.startsWith("-")) {
-      if (!allowedFlags.has(tok)) return null;
+  for (let index = 1; index < tokens.length; index++) {
+    const argument = tokens[index] ?? "";
+    if (argument.startsWith("-")) {
+      if (!viewerFlags.has(argument)) return null;
       continue;
     }
     if (filePath !== null) return null;
-    filePath = unquote(tok);
+    filePath = unquote(argument);
   }
   if (filePath === null || filePath === "-") return null;
   return { filePath };
 }
 
-function parseGrep(tokens: string[]): InlinePrefetchEntry | null {
+function parseGrep(tokens: string[]): InlineReadPlan | null {
   if (tokens[0] !== "grep" && tokens[0] !== "egrep" && tokens[0] !== "fgrep") return null;
   let pattern: string | null = null;
   let filePath: string | null = null;
-  for (let i = 1; i < tokens.length; i++) {
-    const tok = tokens[i] ?? "";
-    if (tok.startsWith("-") && tok !== "-") {
-      if (tok === "-A" || tok === "-B" || tok === "-C") {
-        const next = tokens[++i];
-        if (next === undefined || !DIGITS_REGEX.test(next)) return null;
+  for (let index = 1; index < tokens.length; index++) {
+    const argument = tokens[index] ?? "";
+    if (argument.startsWith("-") && argument !== "-") {
+      if (argument === "-A" || argument === "-B" || argument === "-C") {
+        const contextValue = tokens[++index];
+        if (contextValue === undefined || !UNSIGNED_INTEGER_REGEX.test(contextValue)) return null;
         continue;
       }
       if (
-        GREP_CONTEXT_LONG_FLAG_REGEX.test(tok) ||
-        GREP_CONTEXT_SHORT_FLAG_REGEX.test(tok) ||
-        GREP_SHORT_FLAG_REGEX.test(tok) ||
-        GREP_SAFE_LONG_FLAGS.has(tok)
+        ASSIGNED_CONTEXT_FLAG_REGEX.test(argument) ||
+        COMPACT_CONTEXT_FLAG_REGEX.test(argument) ||
+        GREP_INLINE_FLAGS_REGEX.test(argument) ||
+        GREP_LONG_FLAGS.has(argument)
       ) {
         continue;
       }
       return null;
     }
-    if (pattern === null) pattern = unquote(tok);
-    else if (filePath === null) filePath = unquote(tok);
+    if (pattern === null) pattern = unquote(argument);
+    else if (filePath === null) filePath = unquote(argument);
     else return null;
   }
   if (pattern === null || filePath === null || filePath === "-") return null;
-  if (GLOB_CHAR_REGEX.test(filePath)) return null;
-  return { filePath, requiresExitZero: true };
+  if (GLOB_SYNTAX_REGEX.test(filePath)) return null;
+  return { filePath, onlyOnSuccess: true };
 }
 
-function parseRipgrep(tokens: string[]): InlinePrefetchEntry | null {
+function parseRipgrep(tokens: string[]): InlineReadPlan | null {
   if (tokens[0] !== "rg") return null;
   let pattern: string | null = null;
   let filePath: string | null = null;
-  for (let i = 1; i < tokens.length; i++) {
-    const tok = tokens[i] ?? "";
-    if (tok.startsWith("-") && tok !== "-") {
-      if (tok === "-A" || tok === "-B" || tok === "-C") {
-        const next = tokens[++i];
-        if (next === undefined || !DIGITS_REGEX.test(next)) return null;
-        continue;
-      }
-      if (tok === "--after-context" || tok === "--before-context" || tok === "--context") {
-        const next = tokens[++i];
-        if (next === undefined || !DIGITS_REGEX.test(next)) return null;
+  for (let index = 1; index < tokens.length; index++) {
+    const argument = tokens[index] ?? "";
+    if (argument.startsWith("-") && argument !== "-") {
+      if (argument === "-A" || argument === "-B" || argument === "-C") {
+        const contextValue = tokens[++index];
+        if (contextValue === undefined || !UNSIGNED_INTEGER_REGEX.test(contextValue)) return null;
         continue;
       }
       if (
-        RIPGREP_CONTEXT_LONG_FLAG_REGEX.test(tok) ||
-        RIPGREP_CONTEXT_SHORT_FLAG_REGEX.test(tok) ||
-        RIPGREP_SHORT_FLAG_REGEX.test(tok) ||
-        RIPGREP_SAFE_LONG_FLAGS.has(tok)
+        argument === "--after-context" ||
+        argument === "--before-context" ||
+        argument === "--context"
+      ) {
+        const contextValue = tokens[++index];
+        if (contextValue === undefined || !UNSIGNED_INTEGER_REGEX.test(contextValue)) return null;
+        continue;
+      }
+      if (
+        ASSIGNED_CONTEXT_FLAG_REGEX.test(argument) ||
+        COMPACT_CONTEXT_FLAG_REGEX.test(argument) ||
+        RIPGREP_INLINE_FLAGS_REGEX.test(argument) ||
+        RIPGREP_LONG_FLAGS.has(argument)
       ) {
         continue;
       }
       return null;
     }
-    if (pattern === null) pattern = unquote(tok);
-    else if (filePath === null) filePath = unquote(tok);
+    if (pattern === null) pattern = unquote(argument);
+    else if (filePath === null) filePath = unquote(argument);
     else return null;
   }
   if (pattern === null || filePath === null || filePath === "-") return null;
-  if (GLOB_CHAR_REGEX.test(filePath)) return null;
-  return { filePath, requiresExitZero: true };
+  if (GLOB_SYNTAX_REGEX.test(filePath)) return null;
+  return { filePath, onlyOnSuccess: true };
 }
 
-function parseLineCountFlag(
+function parseLineLimitFlag(
   tokens: string[],
-  fallback: number,
-): { count: number; filePath: string } | null {
-  let count: number | null = null;
-  let filePath: string | null = null;
-  for (let i = 1; i < tokens.length; i++) {
-    const tok = tokens[i] ?? "";
-    if (tok === "-n" || tok === "--lines") {
-      const next = tokens[++i];
-      if (next === undefined || !DIGITS_REGEX.test(next)) return null;
-      count = Number(next);
+  defaultCount: number,
+): readonly [number, string] | null {
+  let requestedLines = defaultCount;
+  let candidatePath: string | null = null;
+
+  for (let index = 1; index < tokens.length; index++) {
+    const argument = tokens[index] ?? "";
+    if (argument === "-n" || argument === "--lines") {
+      const countArgument = tokens[++index];
+      if (countArgument === undefined || !UNSIGNED_INTEGER_REGEX.test(countArgument)) return null;
+      requestedLines = Number(countArgument);
       continue;
     }
-    if (tok.startsWith("--lines=")) {
-      const value = tok.slice(8);
-      if (!DIGITS_REGEX.test(value)) return null;
-      count = Number(value);
+    const attachedCount = attachedLineCount(argument);
+    if (attachedCount !== null) {
+      if (!UNSIGNED_INTEGER_REGEX.test(attachedCount)) return null;
+      requestedLines = Number(attachedCount);
       continue;
     }
-    if (/^-n\d+$/.test(tok)) {
-      count = Number(tok.slice(2));
-      continue;
-    }
-    if (/^-\d+$/.test(tok)) {
-      count = Number(tok.slice(1));
-      continue;
-    }
-    if (tok.startsWith("-")) return null;
-    if (filePath !== null) return null;
-    filePath = unquote(tok);
+    if (argument.startsWith("-")) return null;
+    if (candidatePath !== null) return null;
+    candidatePath = unquote(argument);
   }
-  if (filePath === null || filePath === "-") return null;
-  if (count === 0) return null;
-  return { count: count ?? fallback, filePath };
+
+  if (candidatePath === null || candidatePath === "-" || requestedLines === 0) return null;
+  return [requestedLines, candidatePath];
 }
 
-function parseHead(tokens: string[]): InlinePrefetchEntry | null {
+function attachedLineCount(argument: string): string | null {
+  if (argument.startsWith("--lines=")) return argument.slice("--lines=".length);
+  const compactValue = /^-n?(\d+)$/.exec(argument);
+  return compactValue?.[1] ?? null;
+}
+
+function parseHead(tokens: string[]): InlineReadPlan | null {
   if (tokens[0] !== "head") return null;
-  const parsed = parseLineCountFlag(tokens, DEFAULT_HEAD_LINES);
-  if (parsed === null) return null;
-  return { filePath: parsed.filePath, startLine: 1, endLine: parsed.count };
+  const lineLimit = parseLineLimitFlag(tokens, HEAD_LINE_DEFAULT);
+  if (lineLimit === null) return null;
+  const [requestedLines, filePath] = lineLimit;
+  return {
+    filePath,
+    selection: { kind: "range", firstLine: 1, lastLine: requestedLines },
+  };
 }
 
-function parseTail(tokens: string[]): InlinePrefetchEntry | null {
+function parseTail(tokens: string[]): InlineReadPlan | null {
   if (tokens[0] !== "tail") return null;
-  const parsed = parseLineCountFlag(tokens, DEFAULT_TAIL_LINES);
-  if (parsed === null) return null;
-  return { filePath: parsed.filePath, tailLines: parsed.count };
+  const lineLimit = parseLineLimitFlag(tokens, TAIL_LINE_DEFAULT);
+  if (lineLimit === null) return null;
+  const [requestedLines, filePath] = lineLimit;
+  return { filePath, selection: { kind: "tail", count: requestedLines } };
 }
 
 export async function loadInlineRead(
-  absolutePath: string,
-  entry: InlinePrefetchEntry,
+  path: string,
+  plan: InlineReadPlan,
   signal: AbortSignal | undefined,
-): Promise<PrefetchedRead | null> {
+): Promise<LoadedInlineRead | null> {
   try {
-    const stats = await stat(absolutePath);
-    if (stats.size > MAX_PREFETCH_FILE_SIZE) return null;
-    if (signal?.aborted === true) return null;
-    const fullContent = await readFile(absolutePath, { encoding: "utf8" });
-    if (entry.tailLines !== undefined) {
-      const lines = fullContent.split("\n");
-      if (lines.length > 0 && lines.at(-1) === "") lines.pop();
-      if (lines.length === 0) return null;
-      const sliceLen = Math.min(entry.tailLines, lines.length);
-      const startIdx = lines.length - sliceLen + 1;
-      return { content: lines.slice(startIdx - 1).join("\n"), offset: startIdx, limit: sliceLen };
+    const fileInfo = await stat(path);
+    if (fileInfo.size > INLINE_READ_SIZE_CEILING || signal?.aborted === true) return null;
+    const content = await readFile(path, { encoding: "utf8" });
+    if (plan.selection?.kind === "tail") {
+      return selectTrailingLines(content, plan.selection.count);
     }
-    if (entry.startLine === undefined) return { content: fullContent };
-    const lines = fullContent.split("\n");
-    const startLine = Math.max(1, entry.startLine);
-    const endLine = Math.max(startLine, entry.endLine ?? startLine);
-    if (startLine > lines.length) return null;
-    return {
-      content: lines.slice(startLine - 1, endLine).join("\n"),
-      offset: startLine,
-      limit: endLine - startLine + 1,
-    };
+    if (plan.selection?.kind === "range") {
+      return selectLineRange(content, plan.selection.firstLine, plan.selection.lastLine);
+    }
+    return { content };
   } catch {
     return null;
   }
+}
+
+function selectTrailingLines(content: string, requestedLines: number): LoadedInlineRead | null {
+  const rows = content.split("\n");
+  if (rows.at(-1) === "") rows.pop();
+  if (rows.length === 0) return null;
+  const limit = Math.min(requestedLines, rows.length);
+  const firstIndex = rows.length - limit;
+  return {
+    content: rows.slice(firstIndex).join("\n"),
+    offset: firstIndex + 1,
+    limit,
+  };
+}
+
+function selectLineRange(
+  content: string,
+  requestedStart: number,
+  requestedEnd: number | undefined,
+): LoadedInlineRead | null {
+  const rows = content.split("\n");
+  const offset = Math.max(1, requestedStart);
+  if (offset > rows.length) return null;
+  const endIndex = Math.max(offset, requestedEnd ?? offset);
+  const selectedContent = rows.slice(offset - 1, endIndex).join("\n");
+  return { content: selectedContent, offset, limit: endIndex - offset + 1 };
 }

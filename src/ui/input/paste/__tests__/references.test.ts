@@ -1,11 +1,17 @@
 import { describe, expect, it } from "bun:test";
-import { formatTruncatedRef, parsePasteReferences } from "@/kernel/std/paste/ref.ts";
+import {
+  formatImageRef,
+  formatTruncatedRef,
+  parsePasteReferences,
+} from "@/kernel/std/paste/ref.ts";
 import type { PastedContent } from "@/kernel/std/types/paste.ts";
 import {
   expandToContentBlocks,
   INPUT_TRUNCATION_THRESHOLD,
   maybeTruncateBuffer,
   normalizePastedText,
+  PASTE_THRESHOLD,
+  shouldCollapsePastedText,
 } from "../references.ts";
 
 function fakeStore(): {
@@ -27,6 +33,20 @@ function fakeStore(): {
     },
   };
 }
+
+describe("shouldCollapsePastedText", () => {
+  it("collapses only above the length or normal-height line-break limit", () => {
+    expect(shouldCollapsePastedText("x".repeat(PASTE_THRESHOLD), 24)).toBe(false);
+    expect(shouldCollapsePastedText("x".repeat(PASTE_THRESHOLD + 1), 24)).toBe(true);
+    expect(shouldCollapsePastedText("one\ntwo\nthree", 24)).toBe(false);
+    expect(shouldCollapsePastedText("one\ntwo\nthree\nfour", 24)).toBe(true);
+  });
+
+  it("shrinks the line-break limit with the terminal height", () => {
+    expect(shouldCollapsePastedText("one\ntwo\nthree", 12)).toBe(false);
+    expect(shouldCollapsePastedText("one\ntwo\nthree", 11)).toBe(true);
+  });
+});
 
 describe("maybeTruncateBuffer", () => {
   it("leaves text at the threshold untouched", () => {
@@ -52,6 +72,23 @@ describe("maybeTruncateBuffer", () => {
     const refs = parsePasteReferences("abc [...Truncated text #3 +12 lines...] def");
     expect(refs).toHaveLength(1);
     expect(refs[0]?.id).toBe(3);
+  });
+});
+
+describe("expandToContentBlocks — image refs", () => {
+  it("expands pasted images without changing their stored bytes", () => {
+    const store = fakeStore();
+    const original = "cGFzdGVkLWltYWdl";
+    const { id } = store.add({ type: "image", content: original, mediaType: "image/png" });
+    const { blocks } = expandToContentBlocks(formatImageRef(id), store);
+
+    expect(blocks).toEqual([
+      {
+        type: "image",
+        source: { type: "base64", media_type: "image/png", data: original },
+      },
+    ]);
+    expect(store.get(id)?.content).toBe(original);
   });
 });
 

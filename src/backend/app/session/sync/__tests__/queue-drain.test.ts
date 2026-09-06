@@ -186,7 +186,7 @@ describe("emitQueuedInputDrained", () => {
     const inFlight = installPushEmitter(session);
 
     // The outbox pre-claims counters for a batch it has not delivered yet.
-    const claimed = claimOutgoingCounters(session.id, 0, 3);
+    const claimed = claimOutgoingCounters(session.id, ["r0", "r1", "r2"]);
     expect(claimed).toEqual([1, 2, 3]);
 
     emitQueuedInputDrained([drained("interleaved drain")]);

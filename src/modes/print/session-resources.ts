@@ -1,40 +1,30 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import type { SubagentDef } from "@/engine/agents/registry.ts";
 import * as agentRegistry from "@/engine/agents/registry.ts";
-import { listProviderConfigs } from "@/engine/contract/registry.ts";
+import { getProviderConfig } from "@/engine/contract/registry.ts";
+import { findUniqueModel } from "@/engine/model/catalog.ts";
 import type { NamespaceLabel } from "@/engine/tools/registry.ts";
 import * as toolRegistry from "@/engine/tools/registry.ts";
-import { parseServer } from "@/kernel/mcp/config.ts";
-import type { McpServerConfig } from "@/kernel/mcp/index.ts";
+import { loadFlagMcpServers } from "@/kernel/mcp/config.ts";
 import { parseWireToolName } from "@/kernel/mcp/index.ts";
 import { loadNamespacedMcpRuntime } from "@/kernel/mcp/runtime/manager.ts";
 import { uuidv4 } from "@/kernel/std/id.ts";
+import { isProviderId } from "@/kernel/std/types/provider-ids.ts";
 import { isRecord } from "@/kernel/std/value-guards.ts";
-import { readStringArrayEnv } from "./flags.ts";
 import type { InstalledSessionResources, McpStatus, PrintRuntime } from "./types.ts";
-
-function loadMcpConfigEntry(raw: string, cwd: string): Record<string, McpServerConfig> {
-  const trimmed = raw.trim();
-  const text = trimmed.startsWith("{") ? raw : readFileSync(resolve(cwd, trimmed), "utf8");
-  const parsed = JSON.parse(text) as unknown;
-  if (!isRecord(parsed) || !isRecord(parsed.mcpServers)) {
-    throw new Error("expected object with mcpServers object");
-  }
-  const servers: Record<string, McpServerConfig> = {};
-  for (const [name, server] of Object.entries(parsed.mcpServers)) {
-    const config = parseServer(name, server);
-    if (config === null) throw new Error(`invalid server "${name}"`);
-    servers[name] = config;
-  }
-  return servers;
-}
 
 function restoreAgents(snapshot: SubagentDef[]): void {
   agentRegistry.clear();
   for (const def of snapshot) agentRegistry.register(def);
 }
 
+/**
+ * Build a SubagentDef model map for a print-manifest model string.
+ * Accepts:
+ * - "inherit" / empty → no pin
+ * - "provider/model" (or "provider:model") qualified route → pin only that owner
+ * - bare model id with a unique catalog owner → pin only that owner
+ * Ambiguous bare models throw rather than fanning out under every provider.
+ */
 function modelMapForInlineAgent(model: string | undefined): SubagentDef["model"] {
   if (
     model === undefined ||
@@ -43,11 +33,44 @@ function modelMapForInlineAgent(model: string | undefined): SubagentDef["model"]
   ) {
     return {};
   }
-  const out: SubagentDef["model"] = {};
-  for (const config of listProviderConfigs()) {
-    out[config.provider.shortKey] = { model: model.trim() };
-    out[config.provider.id] = { model: model.trim() };
+  const raw = model.trim();
+  const qualified = parseQualifiedRoute(raw);
+  if (qualified !== null) {
+    return pinForProvider(qualified.provider, qualified.model);
   }
+  const unique = findUniqueModel(raw);
+  if (unique !== undefined) {
+    return pinForProvider(unique.provider, unique.id);
+  }
+  throw new Error(
+    `model "${raw}" is not a unique catalog id; use "provider/model" (e.g. "anthropic/claude-opus-4-8")`,
+  );
+}
+
+function parseQualifiedRoute(raw: string): { provider: string; model: string } | null {
+  const slash = raw.indexOf("/");
+  const colon = raw.indexOf(":");
+  const sep =
+    slash >= 0 && colon >= 0
+      ? Math.min(slash, colon)
+      : slash >= 0
+        ? slash
+        : colon >= 0
+          ? colon
+          : -1;
+  if (sep <= 0 || sep === raw.length - 1) return null;
+  const provider = raw.slice(0, sep).trim();
+  const model = raw.slice(sep + 1).trim();
+  if (!isProviderId(provider) || model.length === 0) return null;
+  return { provider, model };
+}
+
+function pinForProvider(provider: string, model: string): SubagentDef["model"] {
+  const out: SubagentDef["model"] = {};
+  if (!isProviderId(provider)) return out;
+  const config = getProviderConfig(provider);
+  out[provider] = { model };
+  if (config?.provider.shortKey) out[config.provider.shortKey] = { model };
   return out;
 }
 
@@ -77,6 +100,13 @@ function loadInlineAgents(raw: string | undefined): SubagentDef[] {
     if (manifest.model !== undefined && typeof manifest.model !== "string") {
       throw new Error(`entry "${id}" model must be a string`);
     }
+    let modelMap: SubagentDef["model"];
+    try {
+      modelMap = modelMapForInlineAgent(manifest.model);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`entry "${id}" ${message}`);
+    }
     defs.push({
       id,
       name: id,
@@ -84,7 +114,7 @@ function loadInlineAgents(raw: string | undefined): SubagentDef[] {
       body: prompt,
       tools: parseToolsField(manifest.tools),
       disallowedTools: null,
-      model: modelMapForInlineAgent(manifest.model),
+      model: modelMap,
       background: false,
       scope: "project",
       mcpServers: null,
@@ -109,10 +139,7 @@ export async function installPrintSessionResources(
       for (const def of inlineAgents) agentRegistry.register(def);
     }
 
-    const servers: Record<string, McpServerConfig> = {};
-    for (const entry of readStringArrayEnv("OTHERSIDE_CLI_MCP_CONFIGS")) {
-      Object.assign(servers, loadMcpConfigEntry(entry, runtime.cwd));
-    }
+    const servers = loadFlagMcpServers(runtime.cwd);
     const serverNames = Object.keys(servers).sort((a, b) => a.localeCompare(b));
     if (serverNames.length > 0) {
       const namespace = `print:${runtime.sessionId}:${uuidv4()}`;

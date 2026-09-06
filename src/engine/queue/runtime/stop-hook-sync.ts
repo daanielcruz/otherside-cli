@@ -1,11 +1,14 @@
-import { DEFAULT_TIMEOUT_MS } from "@/kernel/hooks/constants.ts";
-import { type CommandHookEntry, fireEntry, type HookOutcome } from "@/kernel/hooks/exec.ts";
+import { fireEntry, type HookOutcome } from "@/kernel/hooks/exec.ts";
+import { hookStopReason, hookStopsFlow, jsonObjectFromStdout } from "@/kernel/hooks/response.ts";
+import type { CommandHookEntry } from "@/kernel/std/types/hook-entry.ts";
 
 // Synchronous command Stop hooks run to completion at turn end and their
 // verdict gates whether the turn may stop:
 // - exit 0 with no JSON decision (or decision "approve") allows the stop;
 // - exit 0 with stdout JSON `{"decision":"block","reason":...}` blocks with
 //   the reason (default "Blocked by hook");
+// - exit 0 with stdout JSON `{"continue":false}` blocks the same way, using
+//   `systemMessage` as the feedback when present;
 // - exit 2 blocks with `[<command>]: <stderr or "No stderr output">` — the
 //   stderr body is passed through unmodified (trailing newlines included);
 // - any other exit, a timeout, or a spawn failure is a non-blocking failure
@@ -25,11 +28,7 @@ export async function runSyncStopHook(
   sessionId: string,
   stopHookActive = false,
 ): Promise<SyncStopHookVerdict> {
-  const outcome = await fireEntry(
-    entry,
-    { kind: "stop", ctx: { sessionId, stopHookActive } },
-    entry.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-  );
+  const outcome = await fireEntry(entry, { kind: "stop", ctx: { sessionId, stopHookActive } });
   return syncStopHookVerdict(entry, outcome);
 }
 
@@ -60,6 +59,8 @@ export function syncStopHookVerdict(
         kind: "failed",
         message: `command "${entry.command}" failed to start: ${outcome.error}`,
       };
+    case "prompt_blocked":
+      return { kind: "block", feedback: outcome.reason };
     default:
       // Prompt outcomes never reach the command path.
       return { kind: "allow" };
@@ -67,17 +68,11 @@ export function syncStopHookVerdict(
 }
 
 function verdictFromStdout(stdout: string): SyncStopHookVerdict {
-  const trimmed = stdout.trim();
-  if (!trimmed.startsWith("{")) return { kind: "allow" };
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(trimmed);
-  } catch {
-    return { kind: "allow" };
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { kind: "allow" };
-  const json = parsed as { decision?: unknown; reason?: unknown };
-  if (json.decision !== "block") return { kind: "allow" };
-  const reason = typeof json.reason === "string" && json.reason.length > 0 ? json.reason : null;
+  if (hookStopsFlow(stdout)) return { kind: "block", feedback: hookStopReason(stdout) };
+  const parsed = jsonObjectFromStdout(stdout);
+  if (!parsed) return { kind: "allow" };
+  if (parsed.decision !== "block") return { kind: "allow" };
+  const reason =
+    typeof parsed.reason === "string" && parsed.reason.length > 0 ? parsed.reason : null;
   return { kind: "block", feedback: reason ?? "Blocked by hook" };
 }

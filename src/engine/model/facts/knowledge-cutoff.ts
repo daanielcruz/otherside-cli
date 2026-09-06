@@ -4,9 +4,9 @@
 // imports nothing from here. The future model registry absorbs this table.
 
 const KNOWLEDGE_CUTOFFS: readonly (readonly [prefix: string, cutoff: string])[] = [
-  ["claude-fable-5", "January 2026"],
+  ["claude-fable-5-1", "January 2026"],
+  ["claude-opus-5", "January 2026"],
   ["claude-opus-4-8", "January 2026"],
-  ["claude-opus-4-7", "January 2026"],
   ["claude-opus-4-6", "May 2025"],
   ["claude-opus-4-5", "May 2025"],
   ["claude-opus-4-1", "January 2025"],

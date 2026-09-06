@@ -1,11 +1,16 @@
 import { existsSync } from "node:fs";
 import { CATALOG, type SlashCommand } from "@/commands/catalog.ts";
+import { expandCommand } from "@/commands/expansion.ts";
+import { handleServerPrompt } from "@/commands/handlers/mcp-prompt.ts";
 import { DEFAULT_BY_KIND, HANDLERS } from "@/commands/handlers.ts";
 import { commandHint } from "@/commands/hints.ts";
 import type { SlashContext, SlashResult } from "@/commands/types.ts";
+import { findServerPrompt, listServerPrompts, promptCommandName } from "@/engine/mcp/prompts.ts";
 import { resolvePluginComponents } from "@/engine/plugins/loader.ts";
 import * as pluginsRegistry from "@/engine/plugins/registry.ts";
 import * as skillsRegistry from "@/engine/skills/registry.ts";
+import { resolveConfig } from "@/kernel/config/resolver.ts";
+import { fireConfiguredHooks } from "@/kernel/hooks/handler.ts";
 
 export type { PendingChange, SlashContext, SlashResult } from "@/commands/types.ts";
 export { isAbortMessage } from "@/commands/types.ts";
@@ -45,6 +50,22 @@ export function lookup(name: string): SlashCommand | undefined {
     };
   }
 
+  const serverPrompt = findServerPrompt(name);
+  if (serverPrompt) {
+    const fullName = promptCommandName(serverPrompt.server, serverPrompt.name);
+    return {
+      name: fullName,
+      kind: "instant",
+      description: commandHint(
+        fullName,
+        serverPrompt.description || `Prompt from the ${serverPrompt.server} server`,
+      ),
+      ...(serverPrompt.argumentNames.length > 0
+        ? { argumentHint: serverPrompt.argumentNames.map((arg) => `<${arg}>`).join(" ") }
+        : {}),
+    };
+  }
+
   for (const { pluginId, plugin } of pluginsRegistry.list()) {
     if (!pluginsRegistry.isRuntimeEnabled(pluginId)) continue;
     const resolved = resolvePluginComponents(plugin);
@@ -79,6 +100,20 @@ export function listCompletions(prefix: string): SlashCommand[] {
         aliases: skill.aliases,
       });
     }
+  }
+  for (const prompt of listServerPrompts()) {
+    const fullName = promptCommandName(prompt.server, prompt.name);
+    all.push({
+      name: fullName,
+      kind: "instant",
+      description: commandHint(
+        fullName,
+        prompt.description || `Prompt from the ${prompt.server} server`,
+      ),
+      ...(prompt.argumentNames.length > 0
+        ? { argumentHint: prompt.argumentNames.map((arg) => `<${arg}>`).join(" ") }
+        : {}),
+    });
   }
   for (const { pluginId, plugin } of pluginsRegistry.list()) {
     if (!pluginsRegistry.isRuntimeEnabled(pluginId)) continue;
@@ -178,6 +213,49 @@ export async function dispatch(input: string, ctx: SlashContext): Promise<SlashR
     return { kind: "unknown", feedback };
   }
   const args = tail.slice(name.length).trim();
-  const handler = HANDLERS[cmd.name] ?? DEFAULT_BY_KIND[cmd.kind];
-  return handler(cmd, args, ctx);
+  // A server's prompt is named by its server, so it never collides with a
+  // catalog entry and is looked up before the by-kind default.
+  const handler =
+    HANDLERS[cmd.name] ??
+    (findServerPrompt(cmd.name) ? handleServerPrompt : DEFAULT_BY_KIND[cmd.kind]);
+  const result = await handler(cmd, args, ctx);
+  if (result.kind !== "skill" && result.kind !== "workflow") return result;
+  return await announceExpansion(cmd, args, ctx, result);
+}
+
+/**
+ * A skill, a plugin command and a workflow command are all the same shape: the
+ * command stands in for words. Resolving those words here does two things and
+ * only two: it refuses a name whose definition is missing, and it announces the
+ * expansion to the hooks that watch it — exactly once, on the one path every
+ * such command takes. How the words then run (a turn, or a fork) is decided by
+ * the command's own frontmatter, which the skill runner reads.
+ */
+async function announceExpansion(
+  cmd: SlashCommand,
+  args: string,
+  ctx: SlashContext,
+  result: SlashResult,
+): Promise<SlashResult> {
+  const expansion = expandCommand(cmd.name, args);
+  if (!expansion) {
+    return {
+      kind: "unknown",
+      command: cmd,
+      feedback: `/${cmd.name} could not be resolved — its definition is missing or unreadable.`,
+    };
+  }
+  await fireConfiguredHooks(ctx.config ?? resolveConfig(ctx.session.cwd), "userPromptExpansion", {
+    kind: "userPromptExpansion",
+    ctx: {
+      expansionType: "slash_command",
+      commandName: cmd.name,
+      commandArgs: args,
+      commandSource: expansion.source,
+      prompt: expansion.prompt,
+      sessionId: ctx.session.id,
+      cwd: ctx.session.cwd,
+    },
+  });
+  return result;
 }

@@ -4,8 +4,9 @@ import {
   dispatchSubagent,
   type SubagentResult,
 } from "@/engine/background/subagents/dispatcher.ts";
+import { forkRouteFromSpawnInput } from "@/engine/background/subagents/fork/route-override.ts";
 import {
-  isMainAgentContext,
+  isRootAgentRun,
   nestedForkUnavailableMessage,
 } from "@/engine/background/subagents/fork/spawn-depth.ts";
 import type { ToolHandler } from "@/engine/tools/contract.ts";
@@ -15,8 +16,8 @@ import { isAgentAutoBackgroundEnabled } from "@/kernel/config/agent-auto-backgro
 import type { ToolCall, ToolResult } from "@/kernel/std/types/message.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 
-const FORK_OVERRIDE_REJECTION =
-  "InputValidationError: `tier` and `provider` are not allowed with a fork. A fork inherits the parent model and provider — drop the override, or name a non-fork `subagent_type`.";
+const FORK_TIER_REJECTION =
+  "InputValidationError: `tier` is not allowed with a fork. A fork inherits the parent route, or pins an explicit `provider` + `model` pair — drop the override, or name a non-fork `subagent_type`.";
 
 function stripUnsupportedAgentCwd(input: unknown): unknown {
   if (input === null || typeof input !== "object" || Array.isArray(input) || !("cwd" in input)) {
@@ -28,6 +29,12 @@ function stripUnsupportedAgentCwd(input: unknown): unknown {
 
 function formatAgentResultContent(result: SubagentResult): string {
   let content = result.output;
+  for (const warning of result.setupWarnings ?? []) {
+    if (content.length > 0 && !content.endsWith("\n")) {
+      content += "\n";
+    }
+    content += `Warning: ${warning}\n`;
+  }
   if (result.worktreePath) {
     const statusSuffix = result.worktreeDeleted ? " removed (unchanged)" : "";
     const trailer = `worktree: ${result.worktreePath} (branch ${result.worktreeBranch})${statusSuffix}`;
@@ -68,7 +75,6 @@ export const Agent: ToolHandler = {
       tier,
       model,
       provider,
-      name,
       isolation,
       validationError,
     } = parseAgentInput(call.input ?? {});
@@ -83,12 +89,15 @@ export const Agent: ToolHandler = {
       return { tool_use_id: call.id, content: "missing `prompt`", is_error: true };
     }
     const orchestrationMode = ctx.orchestrationMode ?? "disabled";
+    const isFork = subagentType !== null && subagentType.toLowerCase() === "fork";
     const orchestrationError =
       orchestrationMode === "disabled" && (provider !== undefined || tier !== undefined)
         ? "InputValidationError: `provider` and `tier` are unavailable when orchestration is disabled. Use `model` with the active provider."
         : orchestrationMode === "default" && tier !== undefined
           ? "InputValidationError: `tier` is unavailable in Default mode. Use concrete `provider` + `model` pins or omit overrides."
-          : orchestrationMode === "feudalism" && (provider !== undefined || model !== undefined)
+          : orchestrationMode === "feudalism" &&
+              !isFork &&
+              (provider !== undefined || model !== undefined)
             ? "InputValidationError: concrete `provider`/`model` pins are unavailable in feudalism mode. Use `tier` routing instead."
             : undefined;
     if (orchestrationError !== undefined) {
@@ -101,14 +110,19 @@ export const Agent: ToolHandler = {
     const effectiveBackground = runInBackground || isAgentAutoBackgroundEnabled();
     const forkId = ctx.childTaskIdMap?.get(call.id) ?? ctx.bgTaskId;
 
-    if (subagentType !== null && subagentType.toLowerCase() === "fork") {
-      if (!isMainAgentContext(ctx)) {
+    if (isFork) {
+      if (!isRootAgentRun(ctx)) {
         return { tool_use_id: call.id, content: nestedForkUnavailableMessage, is_error: true };
       }
-      if (tier || provider) {
-        return { tool_use_id: call.id, content: FORK_OVERRIDE_REJECTION, is_error: true };
+      if (tier) {
+        return { tool_use_id: call.id, content: FORK_TIER_REJECTION, is_error: true };
       }
-      // `model` is silently ignored on a fork — it always inherits the parent model.
+      // A fork route is a {provider, model} pair or nothing at all; the spawn
+      // path owns the setting gate, the approval prompt, and the literal pin.
+      const requestedRoute = forkRouteFromSpawnInput({ provider, model });
+      if (!requestedRoute.ok) {
+        return { tool_use_id: call.id, content: requestedRoute.error, is_error: true };
+      }
       const result = await dispatchFork(
         {
           directive: prompt,
@@ -116,8 +130,8 @@ export const Agent: ToolHandler = {
           runInBackground: effectiveBackground,
           parentToolCallId: call.id,
           ...(forkId !== undefined ? { forkId } : {}),
-          ...(name !== undefined ? { name } : {}),
           ...(effectiveIsolation !== undefined ? { isolation: effectiveIsolation } : {}),
+          ...(requestedRoute.route !== undefined ? { route: requestedRoute.route } : {}),
         },
         ctx,
       );
@@ -142,7 +156,6 @@ export const Agent: ToolHandler = {
         subagentType: subagentType ?? "general-purpose",
         prompt,
         ...(description !== undefined ? { description } : {}),
-        ...(name !== undefined ? { name } : {}),
         runInBackground: effectiveBackground,
         parentToolCallId: call.id,
         ...(forkId !== undefined ? { forkId } : {}),

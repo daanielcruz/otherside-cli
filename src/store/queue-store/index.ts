@@ -1,4 +1,3 @@
-import { useSyncExternalStore } from "react";
 import { makeStore, type Store } from "@/kernel/std/state/make-store.ts";
 import type { ContentBlock } from "@/kernel/std/types/message.ts";
 
@@ -85,16 +84,4 @@ export function selectQueuedText(): string {
     .messages.map((m) => m.expanded || m.text)
     .filter((s) => s.length > 0)
     .join("\n");
-}
-
-export function useQueueState(): QueueState {
-  return useSyncExternalStore(queueStore.subscribe, queueStore.getState, queueStore.getState);
-}
-
-export function useQueueMessages(): readonly QueuedMessage[] {
-  return useSyncExternalStore(
-    queueStore.subscribe,
-    () => queueStore.getState().messages,
-    () => queueStore.getState().messages,
-  );
 }

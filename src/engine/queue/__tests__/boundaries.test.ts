@@ -32,7 +32,7 @@ describe("boundary policy", () => {
       payload: { kind: "tool_result_interrupt", toolUseId: "t1", content: "x" },
     });
     emitQueue.emit({
-      class: "interrupt_agent_workflow",
+      class: "interrupt_bash",
       target: "llm_request",
       payload: { kind: "tool_result_interrupt", toolUseId: "a1", content: "x" },
     });
@@ -40,7 +40,7 @@ describe("boundary policy", () => {
     expect(result.consumedIds.length).toBe(2);
   });
 
-  test("T13 tool_loop_end drains interrupts and deferred_output; user_message remains queued", () => {
+  test("T13 tool_loop_end drains interrupts and deferred_output; idle_prompt remains queued", () => {
     emitQueue.emit({
       class: "interrupt_bash",
       target: "llm_request",
@@ -52,14 +52,14 @@ describe("boundary policy", () => {
       payload: { kind: "tool_result", toolUseId: "a1", content: "x" },
     });
     emitQueue.emit({
-      class: "user_message",
+      class: "idle_prompt",
       target: "llm_request",
-      payload: { kind: "queued_message", queuedMessageId: "q1" },
+      payload: { kind: "user_interrupt_message", text: "wake" },
     });
     const result = emitQueue.drainForBoundary("tool_loop_end");
     expect(result.consumedIds.length).toBe(2);
     expect(emitQueue.peek({ class: "deferred_output" }).length).toBe(0);
-    expect(emitQueue.peek({ class: "user_message" }).length).toBe(1);
+    expect(emitQueue.peek({ class: "idle_prompt" }).length).toBe(1);
   });
 
   test("T13c tool_loop_end delivers background completions mid-turn with envelope and record text", () => {
@@ -100,10 +100,8 @@ describe("boundary policy", () => {
   });
 
   test("T14 idle_prompt (scheduled wakeup) never drains mid-turn — tool_loop_end and mid_turn skip it; turn_start picks it", () => {
-    // Reference parity: wakeups enqueue at priority "later"
-    // (useScheduledTasks), and the mid-turn fold is capped at "next"
-    // (getCommandsByMaxPriority("next")) — a wakeup must NOT interrupt a
-    // running tool loop.
+    // Wakeups enqueue at priority "later", and the mid-turn fold is capped at
+    // "next" — a wakeup must NOT interrupt a running tool loop.
     emitQueue.emit({
       class: "idle_prompt",
       target: "both",
@@ -176,5 +174,59 @@ describe("boundary policy", () => {
     expect(result).not.toBeNull();
     if (result === null) return;
     expect(result.consumedIds.length).toBe(1);
+  });
+});
+
+describe("arrival order inside a delivery band", () => {
+  // urgent_output and deferred_output share one band: they say how loudly a
+  // completion reports, not when it lands, so a drain must not reorder them.
+  function emitOutputs(): { first: string; second: string; third: string } {
+    const first = emitQueue.emit({
+      class: "deferred_output",
+      target: "llm_request",
+      payload: { kind: "task_notification_xml", text: "<task-notification>1</task-notification>" },
+    });
+    const second = emitQueue.emit({
+      class: "urgent_output",
+      target: "llm_request",
+      payload: { kind: "task_notification_xml", text: "<task-notification>2</task-notification>" },
+    });
+    const third = emitQueue.emit({
+      class: "deferred_output",
+      target: "llm_request",
+      payload: { kind: "task_notification_xml", text: "<task-notification>3</task-notification>" },
+    });
+    return { first, second, third };
+  }
+
+  test("tool_loop_end drains the band in the order it arrived", () => {
+    const { first, second, third } = emitOutputs();
+    const result = emitQueue.drainForBoundary("tool_loop_end");
+    expect(result.consumedIds).toEqual([first, second, third]);
+    expect(result.notificationTexts).toEqual([
+      "<task-notification>1</task-notification>",
+      "<task-notification>2</task-notification>",
+      "<task-notification>3</task-notification>",
+    ]);
+  });
+
+  test("mid_turn drains the band in the order it arrived", () => {
+    const { first, second, third } = emitOutputs();
+    expect(emitQueue.drainForBoundary("mid_turn").consumedIds).toEqual([first, second, third]);
+  });
+
+  test("an interrupt still outranks the band whenever it arrived", () => {
+    const { first, second, third } = emitOutputs();
+    const interrupt = emitQueue.emit({
+      class: "interrupt_bash",
+      target: "llm_request",
+      payload: { kind: "tool_result_interrupt", toolUseId: "t1", content: "stop" },
+    });
+    expect(emitQueue.drainForBoundary("tool_loop_end").consumedIds).toEqual([
+      interrupt,
+      first,
+      second,
+      third,
+    ]);
   });
 });

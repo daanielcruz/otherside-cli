@@ -2,7 +2,7 @@ import { findModel } from "@/engine/model/catalog.ts";
 import { TIER_NAMES } from "@/engine/model/tier/names.ts";
 import { resolvedTierRoster } from "@/engine/model/tier/resolver.ts";
 import type { ResolvedTierEntry, ResolvedTierRoster } from "@/harness/core/tier-guidance.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 
 export function resolveTierRosterData(activeProvider: ProviderId): ResolvedTierRoster {
   const resolved = resolvedTierRoster(activeProvider);
@@ -11,7 +11,8 @@ export function resolveTierRosterData(activeProvider: ProviderId): ResolvedTierR
     roster[tier] = resolved[tier].map(
       (entry): ResolvedTierEntry => ({
         provider: entry.provider,
-        display: findModel(entry.model, entry.provider)?.displayName ?? entry.model,
+        display:
+          findModel({ provider: entry.provider, model: entry.model })?.displayName ?? entry.model,
       }),
     );
   }

@@ -1,31 +1,31 @@
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
 import { EFFORT_LEVEL_VALUES, type EffortLevel } from "@/kernel/std/types/effort.ts";
+import type { OrchestrationMode } from "@/kernel/std/types/orchestration-mode.ts";
 import { PERMISSION_MODES, type PermissionMode } from "@/kernel/std/types/permission-mode.ts";
+import type { ProviderId, ProviderModelRoute } from "@/kernel/std/types/provider-ids.ts";
 import type { BrokerState } from "@/kernel/std/types/request.ts";
 
 export type { BrokerState };
 
 export interface BrokerModelCatalog {
-  findModel: (id: string, provider?: ProviderId) => { provider: ProviderId } | undefined;
-  effortLevelsForModel: (id: string, provider?: ProviderId) => EffortLevel[];
-  defaultEffortForModel: (id: string, provider?: ProviderId) => EffortLevel | null;
+  findModel: (route: ProviderModelRoute) => { provider: ProviderId } | undefined;
+  effortLevelsForModel: (route: ProviderModelRoute) => EffortLevel[];
+  defaultEffortForModel: (route: ProviderModelRoute) => EffortLevel | null;
   defaultModelForProvider: (provider: ProviderId) => string;
 }
 
 export type BrokerEvent =
   | {
-      kind: "set_provider";
-      provider: ProviderId;
-      model: string;
+      kind: "set_route";
+      route: ProviderModelRoute;
       fastMode?: boolean;
     }
-  | { kind: "set_model"; model: string }
   | { kind: "set_effort"; effort: EffortLevel | null }
   | { kind: "set_ultracode"; enabled: boolean; effort?: EffortLevel }
   | { kind: "toggle_fast_mode" }
   | { kind: "set_fast_mode"; enabled: boolean }
   | { kind: "set_permission_mode"; mode: PermissionMode }
-  | { kind: "cycle_permission_mode" };
+  | { kind: "cycle_permission_mode" }
+  | { kind: "set_orchestration_mode"; mode: OrchestrationMode };
 
 const PERMISSION_CYCLE = PERMISSION_MODES;
 const EFFORT_RANK = EFFORT_LEVEL_VALUES;
@@ -35,8 +35,9 @@ function resolveUltracodeEffort(
   desired: EffortLevel,
   catalog: BrokerModelCatalog,
 ): EffortLevel | null {
-  const levels = catalog.effortLevelsForModel(state.model, state.provider);
-  if (levels.length === 0) return catalog.defaultEffortForModel(state.model, state.provider);
+  const route = { provider: state.provider, model: state.model };
+  const levels = catalog.effortLevelsForModel(route);
+  if (levels.length === 0) return catalog.defaultEffortForModel(route);
   if (levels.includes(desired)) return desired;
   if (desired === "max") return levels[levels.length - 1] ?? desired;
   const desiredRank = EFFORT_RANK.indexOf(desired);
@@ -59,34 +60,19 @@ export function reduce(
   catalog: BrokerModelCatalog,
 ): BrokerState {
   switch (event.kind) {
-    case "set_provider": {
-      const target = catalog.findModel(event.model, event.provider);
-      const model =
-        target && target.provider === event.provider
-          ? event.model
-          : (catalog.defaultModelForProvider(event.provider) ?? event.model);
+    case "set_route": {
+      const target = catalog.findModel(event.route);
+      const route = target
+        ? event.route
+        : {
+            provider: event.route.provider,
+            model: catalog.defaultModelForProvider(event.route.provider),
+          };
       return {
         ...state,
-        provider: event.provider,
-        model,
-        effort: catalog.defaultEffortForModel(model, event.provider),
+        ...route,
+        effort: catalog.defaultEffortForModel(route),
         fastMode: event.fastMode ?? state.fastMode,
-      };
-    }
-    case "set_model": {
-      const target = catalog.findModel(event.model);
-      if (target && target.provider !== state.provider) {
-        return {
-          ...state,
-          provider: target.provider,
-          model: event.model,
-          effort: catalog.defaultEffortForModel(event.model, target.provider),
-        };
-      }
-      return {
-        ...state,
-        model: event.model,
-        effort: catalog.defaultEffortForModel(event.model, state.provider),
       };
     }
     case "set_effort":
@@ -96,7 +82,10 @@ export function reduce(
         return {
           ...state,
           ultracode: false,
-          effort: catalog.defaultEffortForModel(state.model, state.provider),
+          effort: catalog.defaultEffortForModel({
+            provider: state.provider,
+            model: state.model,
+          }),
         };
       }
       return {
@@ -109,6 +98,10 @@ export function reduce(
       return { ...state, fastMode: !state.fastMode };
     case "set_fast_mode":
       return { ...state, fastMode: event.enabled };
+    case "set_orchestration_mode":
+      return state.orchestrationMode === event.mode
+        ? state
+        : { ...state, orchestrationMode: event.mode };
     case "set_permission_mode": {
       if (event.mode === state.permissionMode) return state;
       const next: BrokerState = { ...state, permissionMode: event.mode };
@@ -140,6 +133,19 @@ export function reduce(
 type Subscriber<T> = (snapshot: T) => void;
 type Selector<T> = (state: BrokerState) => T;
 
+/**
+ * Last-constructed broker for the process. String-view panels that cannot take a
+ * Broker prop (e.g. `/model` slash-open) dispatch through this so the live turn
+ * path (`broker.read()`) and the app-store mirror stay paired. The session
+ * broker constructed at boot overwrites any earlier test fixture.
+ */
+let processBroker: Broker | undefined;
+
+/** Active process broker when one has been constructed; undefined in pure unit tests. */
+export function getProcessBroker(): Broker | undefined {
+  return processBroker;
+}
+
 export class Broker {
   private state: BrokerState;
   private readonly catalog: BrokerModelCatalog;
@@ -153,10 +159,19 @@ export class Broker {
   constructor(initial: BrokerState, catalog: BrokerModelCatalog) {
     this.state = initial;
     this.catalog = catalog;
+    processBroker = this;
   }
 
   read(): Readonly<BrokerState> {
     return this.state;
+  }
+
+  /**
+   * Give up the process registration, when this broker still holds it. A broker
+   * outliving the session that built it would answer for a route nobody is on.
+   */
+  release(): void {
+    if (processBroker === this) processBroker = undefined;
   }
 
   dispatch(event: BrokerEvent): void {

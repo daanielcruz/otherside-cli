@@ -14,7 +14,7 @@ describe("isVisionCapable", () => {
     expect(isVisionCapable("anthropic")).toBe(true);
     expect(isVisionCapable("anthropic", "claude-opus-4-8")).toBe(true);
     expect(isVisionCapable("antigravity")).toBe(true);
-    expect(isVisionCapable("antigravity", "gemini-3-flash")).toBe(true);
+    expect(isVisionCapable("antigravity", "gemini-3.8-flash")).toBe(true);
     expect(isVisionCapable("codex")).toBe(true);
     expect(isVisionCapable("codex", "gpt-5.5")).toBe(true);
     expect(isVisionCapable("kimi")).toBe(true);
@@ -27,15 +27,18 @@ describe("isVisionCapable", () => {
 
   it("returns true for hybrid-kind providers when the parser model is active", () => {
     expect(isVisionCapable("minimax", "minimax-m3")).toBe(true);
+    expect(isVisionCapable("xai", "grok-4.6")).toBe(true);
   });
 
   it("returns false for hybrid-kind providers when model is undefined", () => {
     expect(isVisionCapable("minimax")).toBe(false);
+    expect(isVisionCapable("xai")).toBe(false);
   });
 
   it("returns false for model-scoped providers when the model is not vision-capable", () => {
     expect(isVisionCapable("glm", "glm-5-turbo")).toBe(false);
     expect(isVisionCapable("minimax", "minimax-m2.7")).toBe(false);
+    expect(isVisionCapable("xai", "grok-composer-2.5-fast")).toBe(false);
   });
 
   it("returns false for none-kind providers", () => {
@@ -49,6 +52,7 @@ describe("isVisionCapable", () => {
 describe("visionParserModel", () => {
   it("returns the parser model id for hybrid providers", () => {
     expect(visionParserModel("minimax")).toBe("minimax-m3");
+    expect(visionParserModel("xai")).toBe("grok-4.6");
   });
 
   it("returns undefined for vision and none providers", () => {
@@ -62,6 +66,7 @@ describe("visionParserModel", () => {
 describe("canAutoRoute", () => {
   it("returns true for hybrid providers", () => {
     expect(canAutoRoute("minimax")).toBe(true);
+    expect(canAutoRoute("xai")).toBe(true);
   });
 
   it("returns false for vision and none providers", () => {

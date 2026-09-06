@@ -1,7 +1,12 @@
 import type { CompactionSummaryRef } from "@/engine/session/compact/summary-spill.ts";
 import { isTruthyCompactionSummaryRef } from "@/engine/session/compact/summary-spill.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
+import type { McpCallIdentity } from "@/kernel/mcp/protocol/tool-label.ts";
 import type { ContentBlock, ToolResultMeta } from "@/kernel/std/types/message.ts";
+import {
+  isProviderId,
+  type ProviderId,
+  type ProviderModelRoute,
+} from "@/kernel/std/types/provider-ids.ts";
 
 export type Timestamp = string;
 
@@ -15,6 +20,7 @@ export type RecordType =
   | "usage"
   | "compaction_mark"
   | "injection_queued"
+  | "injection_dequeued"
   | "attachment"
   | "turn_completion"
   | "content_replacement"
@@ -24,17 +30,23 @@ export interface SessionMetaRecord {
   type: "session_meta";
   ts: Timestamp;
   cwd: string;
+  /** Atomic provider+model when both are known. Prefer over independent fields. */
+  route?: ProviderModelRoute;
   provider?: string;
   model?: string;
   effort?: string;
   fastMode?: boolean;
   ultracode?: boolean;
+  orchestrationMode?: string;
+  remoteEnabled?: boolean;
 }
 
 export interface UserMessagePastedImage {
   id: number;
   data: string;
   mediaType: string;
+  /** Where the paste was written in the image cache, so a replayed chip still opens. */
+  localPath?: string;
 }
 
 export interface UserMessageRecord {
@@ -42,6 +54,8 @@ export interface UserMessageRecord {
   ts: Timestamp;
   uuid?: string;
   content: string;
+  /** Atomic provider+model when both are known. Prefer over independent fields. */
+  route?: ProviderModelRoute;
   provider?: string;
   model?: string;
   permissionMode?: string;
@@ -77,6 +91,8 @@ export interface AssistantMessageRecord {
   thinking?: string;
   thinkingSignature?: string;
   usage?: AssistantRequestUsage;
+  /** Atomic provider+model when both are known. Prefer over independent fields. */
+  route?: ProviderModelRoute;
   provider?: string;
   model?: string;
   producedAccount?: string;
@@ -97,6 +113,10 @@ export interface ToolCallRecord {
   tool_name: string;
   args: unknown;
   call_id: string;
+  /** How the serving MCP server named itself and this tool. Absent off MCP. */
+  mcpIdentity?: McpCallIdentity;
+  /** Atomic provider+model when both are known. Prefer over independent fields. */
+  route?: ProviderModelRoute;
   provider?: string;
   model?: string;
   isSidechain?: boolean;
@@ -115,6 +135,9 @@ export interface ToolResultRecord {
   is_error: boolean;
   toolUseResult?: unknown;
   meta?: ToolResultMeta;
+  /** Atomic agent identity when known. Prefer this over bare agentModel. */
+  agentRoute?: ProviderModelRoute;
+  /** @deprecated Prefer agentRoute. Still written for older readers. */
   agentModel?: string;
   isSidechain?: boolean;
   parentToolCallId?: string | undefined;
@@ -148,6 +171,12 @@ export interface UsageRecord {
   cache_creation_input_tokens: number;
   cache_read_input_tokens: number;
   estimated?: boolean | undefined;
+  /**
+   * Set on a record standing for the summed spend of history a resume did not
+   * materialize. It counts toward spend totals but is never a context snapshot:
+   * a sum says nothing about how full the window was at any single request.
+   */
+  rollup?: boolean | undefined;
   isSidechain?: boolean;
   parentToolCallId?: string | undefined;
   parentAgentId?: string | undefined;
@@ -161,9 +190,19 @@ export interface PreservedSegment {
   anchorUuid: string;
 }
 
-export interface PreservedMessages {
+export interface CompactKeepList {
   uuids: string[];
   anchorUuid: string;
+}
+
+/**
+ * Wire-only pointer to a preserved image already stored in full on an earlier
+ * compaction mark. In-memory records always carry the resolved blocks.
+ */
+export interface PreservedImageRef {
+  type: "image_ref";
+  markUuid: string;
+  index: number;
 }
 
 export interface CompactionMarkRecord {
@@ -171,15 +210,17 @@ export interface CompactionMarkRecord {
   ts: Timestamp;
   uuid?: string;
   summary_ref: CompactionSummaryRef;
+  /** Atomic provider+model when both are known. Prefer over independent fields. */
+  route?: ProviderModelRoute;
   provider?: string;
   model?: string;
   version?: number;
   leafUuid?: string;
   preservedSegment?: PreservedSegment;
-  preservedMessages?: PreservedMessages;
+  preservedMessages?: CompactKeepList;
   preTokens?: number;
   trigger?: "auto" | "manual" | "rapid_refill_trip" | "circuit_breaker_trip" | "auto_failure";
-  preservedImages?: ContentBlock[];
+  preservedImages?: (ContentBlock | PreservedImageRef)[];
   error?: string;
   rapidRefillCount?: number;
   consecutiveFailures?: number;
@@ -196,6 +237,17 @@ export interface InjectionQueuedRecord {
   source?: string;
 }
 
+// Records that a queued user input left the queue WITHOUT being delivered to
+// the model (cancel restores queue text to the prompt; the user may edit or
+// discard it). Replay treats it like a delivery: it consumes one earlier
+// queued copy of the same text so resume/rewind never re-deliver input the
+// user took back.
+export interface InjectionDequeuedRecord {
+  type: "injection_dequeued";
+  ts: Timestamp;
+  text: string;
+}
+
 export interface QueuedCommandAttachment {
   type: "queued_command";
   prompt: string;
@@ -206,10 +258,26 @@ export interface QueuedCommandAttachment {
 export interface GoalStatusAttachment {
   type: "goal_status";
   condition: string;
-  met?: boolean;
+  met: boolean;
+  sentinel: true;
   cleared?: boolean;
+  failed?: boolean;
   reason?: string;
   iteration?: number;
+}
+
+export function goalStatusAttachment(
+  condition: string,
+  status: Omit<GoalStatusAttachment, "type" | "condition" | "sentinel">,
+): GoalStatusAttachment {
+  const { met, ...details } = status;
+  return {
+    type: "goal_status",
+    met,
+    sentinel: true,
+    condition,
+    ...details,
+  };
 }
 
 export interface ForeignAttachment {
@@ -245,7 +313,7 @@ export interface WorktreeStateRecord {
   state: Record<string, unknown> | null;
 }
 
-export interface ContentReplacementSessionRecord {
+export interface ToolOutputArchiveSessionRecord {
   type: "content_replacement";
   ts: Timestamp;
   kind: "tool-result";
@@ -268,9 +336,10 @@ export type SessionRecord =
   | UsageRecord
   | CompactionMarkRecord
   | InjectionQueuedRecord
+  | InjectionDequeuedRecord
   | AttachmentRecord
   | TurnCompletionRecord
-  | ContentReplacementSessionRecord
+  | ToolOutputArchiveSessionRecord
   | WorktreeStateRecord;
 
 export const KNOWN_TYPES: ReadonlySet<RecordType> = new Set([
@@ -283,6 +352,7 @@ export const KNOWN_TYPES: ReadonlySet<RecordType> = new Set([
   "usage",
   "compaction_mark",
   "injection_queued",
+  "injection_dequeued",
   "attachment",
   "turn_completion",
   "content_replacement",
@@ -302,15 +372,17 @@ export interface OsCompactionSidecar {
   version?: number;
   trigger?: CompactionMarkRecord["trigger"];
   preservedSegment?: PreservedSegment;
-  preservedMessages?: PreservedMessages;
+  preservedMessages?: CompactKeepList;
   preTokens?: number;
-  preservedImages?: ContentBlock[];
+  preservedImages?: (ContentBlock | PreservedImageRef)[];
   error?: string;
   rapidRefillCount?: number;
   consecutiveFailures?: number;
 }
 
 export interface OsSidecar {
+  /** Atomic provider+model when both are known. Prefer over independent fields. */
+  route?: ProviderModelRoute;
   provider?: string;
   model?: string;
   producedAccount?: string;
@@ -328,8 +400,15 @@ export interface OsSidecar {
   effort?: string;
   fastMode?: boolean;
   ultracode?: boolean;
+  remoteEnabled?: boolean;
   toolResultMeta?: ToolResultMeta;
+  mcpIdentity?: McpCallIdentity;
+  /** Atomic agent identity (new). Prefer over bare agentModel. */
+  agentRoute?: ProviderModelRoute;
+  /** Legacy bare model; still read when agentRoute is absent. */
   agentModel?: string;
+  /** Legacy companion to agentModel when the full route was not written. */
+  agentProvider?: string;
 }
 
 export interface UpstreamMessageEnvelope {
@@ -354,7 +433,7 @@ export function nowIso(): Timestamp {
   return d.toISOString();
 }
 
-export function isChainParticipant(type: RecordType): boolean {
+export function isTranscriptLinked(type: RecordType): boolean {
   return (
     type === "user_message" ||
     type === "assistant_message" ||
@@ -367,4 +446,51 @@ export function isChainParticipant(type: RecordType): boolean {
 
 export function providerFromModelId(model: string): ProviderId | undefined {
   return /^claude-/.test(model) ? "anthropic" : undefined;
+}
+
+/**
+ * Normalize independent provider/model (and optional route) into an atomic route.
+ * - Prefer an explicit valid `route`.
+ * - When loose provider+model both exist, form a route if provider is a ProviderId.
+ * - When route and loose fields disagree, keep the route and drop the loose halves
+ *   that conflict (validation = route wins).
+ * - Legacy single-half records stay as independent fields with no route.
+ */
+export function normalizeRecordRoute(fields: {
+  route?: ProviderModelRoute | { provider?: string; model?: string } | undefined;
+  provider?: string | undefined;
+  model?: string | undefined;
+}): {
+  route?: ProviderModelRoute;
+  provider?: string;
+  model?: string;
+} {
+  const explicit = coerceRoute(fields.route);
+  if (explicit) {
+    const out: { route: ProviderModelRoute; provider: string; model: string } = {
+      route: explicit,
+      provider: explicit.provider,
+      model: explicit.model,
+    };
+    return out;
+  }
+  const provider = typeof fields.provider === "string" ? fields.provider : undefined;
+  const model = typeof fields.model === "string" ? fields.model : undefined;
+  if (provider !== undefined && model !== undefined && isProviderId(provider)) {
+    const route = { provider, model };
+    return { route, provider: route.provider, model: route.model };
+  }
+  return {
+    ...(provider !== undefined ? { provider } : {}),
+    ...(model !== undefined ? { model } : {}),
+  };
+}
+
+function coerceRoute(
+  value: ProviderModelRoute | { provider?: string; model?: string } | undefined,
+): ProviderModelRoute | undefined {
+  if (!value) return undefined;
+  if (typeof value.provider !== "string" || !isProviderId(value.provider)) return undefined;
+  if (typeof value.model !== "string" || value.model.length === 0) return undefined;
+  return { provider: value.provider, model: value.model };
 }

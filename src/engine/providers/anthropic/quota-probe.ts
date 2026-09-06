@@ -8,8 +8,8 @@ import { authorizationHeader } from "@/engine/providers/anthropic/auth.ts";
 import { anthropicUserIdMetadata } from "@/engine/providers/anthropic/metadata.ts";
 import { ingestAnthropicHeaders } from "@/engine/providers/anthropic/rate-limits.ts";
 import { loadConfig } from "@/kernel/config/config.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
 import { uuidv4 } from "@/kernel/std/id.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 import type { PermissionMode, RequestContext } from "@/kernel/std/types/request.ts";
 import { loadFor } from "@/kernel/storage/credentials.ts";
 

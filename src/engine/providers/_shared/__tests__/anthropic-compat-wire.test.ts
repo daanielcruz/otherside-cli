@@ -68,14 +68,17 @@ mock.module("node:fs", () => fsMock);
 
 import { join } from "node:path";
 import { accountFingerprint } from "@/engine/providers/_shared/account-identity.ts";
-import {
-  buildKimiMessages,
-  translateResponseKimi,
-} from "@/engine/providers/_shared/anthropic-compat-wire.ts";
-import { translateRequestKimi } from "@/engine/providers/kimi/translate.ts";
+import { buildCompatMessages } from "@/engine/providers/_shared/anthropic-compat-wire.ts";
+import { registerAllProviders } from "@/engine/providers/bootstrap.ts";
+import { translateRequestKimi, translateResponseKimi } from "@/engine/providers/kimi/translate.ts";
 import type { ProviderEvent } from "@/kernel/std/types/events.ts";
 import type { Message } from "@/kernel/std/types/message.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
+
+// The effort a request carries is read off the model catalog, which stays empty
+// until the providers register. Registering here keeps the thinking-envelope
+// assertion measuring the envelope instead of an unpopulated catalog.
+registerAllProviders();
 
 const ENV_KEYS = [
   "OTHERSIDE_CONFIG_DIR",
@@ -130,7 +133,7 @@ function assistantWith(overrides: Partial<Message>): Message[] {
 }
 
 function signedThinkingCount(messages: Message[]): number {
-  return buildKimiMessages(messages, "glm")
+  return buildCompatMessages(messages, "glm")
     .out.flatMap((m) => m.content)
     .filter((b) => b.type === "thinking" && !!b.signature).length;
 }
@@ -165,7 +168,7 @@ describe("compat-wire signed thinking replay gate", () => {
         { type: "thinking", text: "t" },
         { type: "text", text: "ok" },
       ];
-    const out = buildKimiMessages(messages, "glm").out.flatMap((m) => m.content);
+    const out = buildCompatMessages(messages, "glm").out.flatMap((m) => m.content);
     expect(out.filter((b) => b.type === "thinking").length).toBe(1);
   });
 
@@ -177,7 +180,7 @@ describe("compat-wire signed thinking replay gate", () => {
         { type: "thinking", text: "t" },
         { type: "text", text: "ok" },
       ];
-    const wireAssistant = buildKimiMessages(messages, "glm").out.find(
+    const wireAssistant = buildCompatMessages(messages, "glm").out.find(
       (m) => m.role === "assistant",
     );
     expect(wireAssistant?.content.some((b) => b.type === "thinking")).toBe(false);
@@ -188,7 +191,7 @@ describe("compat-wire signed thinking replay gate", () => {
     const messages = assistantWith({});
     const assistant = messages[1] as Message & { producedBy?: string };
     delete assistant.producedBy;
-    const out = buildKimiMessages(messages, "glm").out.flatMap((m) => m.content);
+    const out = buildCompatMessages(messages, "glm").out.flatMap((m) => m.content);
     expect(out.filter((b) => b.type === "thinking").length).toBe(0);
   });
 });

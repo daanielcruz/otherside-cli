@@ -6,14 +6,14 @@ import {
 } from "@/commands/dispatch.ts";
 import { estimateHarnessTokens } from "@/engine/session/compact/harness-baseline.ts";
 import { clearLastUsage } from "@/engine/session/compact/last-usage.ts";
-import { roughTokenCountEstimationForMessages } from "@/engine/session/compact/token-count.ts";
+import { estimateConversationTokens } from "@/engine/session/compact/token-count.ts";
 import { emptyTokenTotals } from "@/engine/session/usage/provider.ts";
 import { contextUsageTotal } from "@/engine/session/usage/snapshot.ts";
 import { dispatch, overlayStack } from "@/store/index.ts";
 import { addLiveOutputTokens, setLiveOutputTokens } from "@/store/live-tokens/index.ts";
+import { isOverlayName } from "@/store/overlay-stack/index.ts";
 import type { DispatchLoopDeps } from "@/ui/app/dispatch/types.ts";
 import { compactDoneText } from "@/ui/app/status-text.ts";
-import { isOverlayName } from "@/ui/panels/registry.tsx";
 
 export function createHandleSlash(
   deps: DispatchLoopDeps,
@@ -118,7 +118,7 @@ export function createHandleSlash(
                 inputTokens: 0,
                 outputTokens: 0,
                 cacheReadInputTokens:
-                  roughTokenCountEstimationForMessages(session.messages) +
+                  estimateConversationTokens(session.messages) +
                   estimateHarnessTokens(brokerNow.provider, brokerNow.model),
                 cacheCreationInputTokens: 0,
               });

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { realpath } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join, normalize, resolve } from "node:path";
 import type { SlashCommand } from "@/commands/catalog.ts";
@@ -12,9 +13,10 @@ import {
   type PendingGroup,
   peek as peekAsk,
   resolveGroup,
+  subscribe as subscribeAsk,
 } from "@/kernel/channels/ask.ts";
 import { isPathTrusted, setPathTrusted } from "@/kernel/config/project-trust.ts";
-import { checkCdPermission } from "@/kernel/permissions/cd.ts";
+import { evaluateCdPermission } from "@/kernel/permissions/cd.ts";
 import type { PermissionRule } from "@/kernel/permissions/types.ts";
 import { expandPath } from "@/kernel/std/fs/expand-path.ts";
 import { canonicalizeCwd } from "@/kernel/std/fs/paths.ts";
@@ -34,6 +36,38 @@ async function waitForAsk(): Promise<PendingGroup> {
     await Bun.sleep(1);
   }
   throw new Error("expected a directory trust question");
+}
+
+async function finishMove(move: Promise<unknown>): Promise<void> {
+  const unsubscribe = subscribeAsk((groups) => {
+    for (const group of groups) resolveGroup(group.id, { declined: true, reason: "cancel" });
+  });
+  try {
+    clearAsk();
+    await move;
+  } finally {
+    unsubscribe();
+  }
+}
+
+async function withoutTrustQuestion<T>(operation: () => Promise<T>): Promise<T> {
+  const unexpected: string[] = [];
+  const unsubscribe = subscribeAsk((groups) => {
+    for (const group of groups) {
+      unexpected.push(...group.questions.map((question) => question.question));
+      resolveGroup(group.id, { declined: true, reason: "cancel" });
+    }
+  });
+  const result = operation();
+  try {
+    const value = await result;
+    expect(unexpected).toEqual([]);
+    return value;
+  } finally {
+    clearAsk();
+    unsubscribe();
+    await result;
+  }
 }
 
 function makeCtx(session: Session): SlashContext {
@@ -114,10 +148,10 @@ describe("validateCdTarget + handleCd", () => {
   });
 
   it("defaults an untrusted directory prompt to staying put", async () => {
-    const destination = canonicalizeCwd(mkdtempSync(join(tmpdir(), "otherside-cd-target-")));
+    const destination = mkdtempSync(join(tmpdir(), "otherside-cd-target-"));
+    const session = new Session("s-trust-no", root);
+    const move = handleCd(CMD, destination, makeCtx(session));
     try {
-      const session = new Session("s-trust-no", root);
-      const move = handleCd(CMD, destination, makeCtx(session));
       const pending = await waitForAsk();
       expect(pending.questions[0]?.question).toContain("Moving to a new directory:");
       expect(pending.questions[0]?.options.map((option) => option.label)).toEqual([
@@ -135,47 +169,74 @@ describe("validateCdTarget + handleCd", () => {
       expect(session.cwd).toBe(root);
       expect(isPathTrusted(destination)).toBe(false);
     } finally {
-      rmSync(destination, { recursive: true, force: true });
+      try {
+        await finishMove(move);
+      } finally {
+        rmSync(destination, { recursive: true, force: true });
+      }
     }
   });
 
   it("persists accepted trust and moves the session", async () => {
-    const destination = canonicalizeCwd(mkdtempSync(join(tmpdir(), "otherside-cd-target-")));
+    const destination = mkdtempSync(join(tmpdir(), "otherside-cd-target-"));
+    const expected = await realpath(destination);
+    const session = new Session("s-trust-yes", root);
+    const ctx = makeCtx(session) as SlashContext & { _injections: string[] };
+    const move = handleCd(CMD, destination, ctx);
     try {
-      const session = new Session("s-trust-yes", root);
-      const ctx = makeCtx(session) as SlashContext & { _injections: string[] };
-      const move = handleCd(CMD, destination, ctx);
       const pending = await waitForAsk();
       resolveGroup(pending.id, {
         declined: false,
         answers: [{ question: pending.questions[0]?.question ?? "", answer: "Yes, move here" }],
       });
       const result = await move;
-      expect(result.feedback).toBe(`Moved to ${destination}`);
-      expect(session.cwd).toBe(destination);
-      expect(session.storageCwd).toBe(destination);
-      expect(getTrackedCwd()).toBe(destination);
+      expect(result.feedback).toBe(`Moved to ${expected}`);
+      expect(session.cwd).toBe(expected);
+      expect(session.storageCwd).toBe(expected);
+      expect(getTrackedCwd()).toBe(expected);
       expect(isPathTrusted(destination)).toBe(true);
+      expect(isPathTrusted(expected)).toBe(true);
       expect(ctx._injections[0]).toContain("working directory has changed");
       expect(ctx._injections[0]).toContain("via /cd");
+    } finally {
+      try {
+        await finishMove(move);
+      } finally {
+        rmSync(destination, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it("moves to relative directories with spaces", async () => {
+    const destination = join(root, "space dir");
+    mkdirSync(destination);
+    const expected = await realpath(destination);
+    const session = new Session("s-relative", root);
+    const result = await withoutTrustQuestion(() => handleCd(CMD, "space dir", makeCtx(session)));
+    expect(result.feedback).toBe(`Moved to ${expected}`);
+    expect(session.cwd).toBe(expected);
+  });
+
+  it("rejects an unexpected trust question without approving it or leaving a pending move", async () => {
+    const destination = mkdtempSync(join(tmpdir(), "otherside-cd-target-"));
+    const session = new Session("s-unexpected-trust", root);
+    try {
+      await expect(
+        withoutTrustQuestion(() => handleCd(CMD, destination, makeCtx(session))),
+      ).rejects.toThrow();
+      expect(peekAsk()).toBeNull();
+      expect(session.cwd).toBe(root);
+      expect(isPathTrusted(destination)).toBe(false);
     } finally {
       rmSync(destination, { recursive: true, force: true });
     }
   });
 
-  it("moves to relative directories with spaces", async () => {
-    const destination = canonicalizeCwd(join(root, "space dir"));
-    mkdirSync(destination);
-    const session = new Session("s-relative", root);
-    const result = await handleCd(CMD, "space dir", makeCtx(session));
-    expect(result.feedback).toBe(`Moved to ${destination}`);
-    expect(session.cwd).toBe(destination);
-  });
-
   it("reports a canonical same-directory no-op", async () => {
+    const expected = await realpath(root);
     const session = new Session("s-same", root);
-    const result = await handleCd(CMD, ".", makeCtx(session));
-    expect(result.feedback).toBe(`Already in ${root}.`);
+    const result = await withoutTrustQuestion(() => handleCd(CMD, ".", makeCtx(session)));
+    expect(result.feedback).toBe(`Already in ${expected}.`);
     expect(session.cwd).toBe(root);
   });
 
@@ -201,7 +262,7 @@ describe("validateCdTarget + handleCd", () => {
         ruleValue: { toolName: "Cd" },
       },
     ];
-    const check = checkCdPermission(
+    const check = evaluateCdPermission(
       { requestedPath: dest, canonicalPath: dest },
       { rules, baseCwd: root },
     );

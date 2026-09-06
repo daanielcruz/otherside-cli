@@ -2,7 +2,10 @@ import { providerEndpoint } from "@/devtools/config.ts";
 import type { WireFingerprint } from "@/engine/contract/types.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 
-export const CLI_VERSION = "1.1.0";
+// The model catalog is version-gated server-side: a 1.1.4 client never sees
+// the gemini-3.7 tier entries and is told 3.6 is the default. Keep this pinned
+// to the installed Antigravity CLI release.
+export const CLI_VERSION = "1.1.13";
 
 export const PROD_HOST = "https://cloudcode-pa.googleapis.com";
 export const DAILY_HOST = "https://daily-cloudcode-pa.googleapis.com";

@@ -1,80 +1,63 @@
 import { existsSync } from "node:fs";
-import { registerAgent } from "@/engine/agents/inbox.ts";
-import { get as getAgentDef } from "@/engine/agents/registry.ts";
+import { addressedMessageText, registerAgent } from "@/engine/agents/inbox.ts";
 import {
-  addUsage,
-  appendAction,
-  appendAssistantText,
-  type BackgroundTask,
   cancelTaskTree,
-  completeAction,
   completeTaskForRun,
-  discardAssistantText,
-  failAction,
   get as getBackgroundTask,
   markBackgrounded,
   reopenTask,
   restoreTaskForResume,
-  setModel,
   setTaskOwnerForRun,
-  setUsageSnapshot,
   subscribeCompletion,
-  type TaskRunRef,
   taskRunRef,
 } from "@/engine/background/tasks/background.ts";
 import * as bgControllers from "@/engine/background/tasks/background-controllers.ts";
-import { publish } from "@/engine/background/tasks/bus.ts";
 import { emitQueue } from "@/engine/queue/emit.ts";
-import { previewArgs } from "@/engine/queue/runtime/args-preview.ts";
-import { appendAgentRecordRaw } from "@/engine/session/append.ts";
-import { nowIso } from "@/engine/session/record/index.ts";
 import { loadSubagentTranscript } from "@/engine/session/transcript/subagent-transcript.ts";
 import { sessionRecordsToMessages } from "@/engine/session/transcript/to-messages.ts";
 import { clearReadStateForScope } from "@/engine/tools/builtins/read/state.ts";
-import { sanitizeMessages } from "@/engine/translator/sanitize.ts";
 import { clearSessionHooks } from "@/kernel/hooks/session-registry.ts";
 import { isAbortError } from "@/kernel/std/stream/abort.ts";
 import type { ForkEvent } from "@/kernel/std/types/events.ts";
 import type { Message } from "@/kernel/std/types/message.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
-import { mcpDeclarationsForDef } from "./fork/declarations.ts";
+import { type ForkResumeProfile, profileFromDurableSpec } from "./durable-profile.ts";
 import {
-  type DurableForkSpecV1,
   isDurableForkStopped,
   markDurableForkStopped,
   readDurableForkSpec,
 } from "./fork/durable-spec.ts";
 import { runForkLoopExternal } from "./fork/loop.ts";
 import {
-  computeAllowedAgentTypes,
-  resolveAllowSetForFork,
-  resolveDefaultAllowSetForFork,
-} from "./fork/profile.ts";
-import { skillMessagesForDef } from "./fork/skill-messages.ts";
-import { drainAgentSteers, queueAgentSteer } from "./fork/steering.ts";
+  askForkRouteApproval,
+  classifyForkRouteSwitch,
+  type RequestedForkRoute,
+  withPinnedForkRoute,
+} from "./fork/route-override.ts";
+import { queueAgentSteer } from "./fork/steering.ts";
 import type { ForkSpec } from "./fork/types.ts";
+import { activeTaskForRun, routeResumedEvent } from "./resume-events.ts";
+import {
+  drainUndrainedSteers,
+  mergeResumedMessages,
+  persistResumeSteerRecords,
+  queuedSteerIds,
+  snapshotMessages,
+} from "./resume-messages.ts";
 import { acquireResumedWorktreeLease } from "./worktree.ts";
-
-type ForkLifecycleState = "running" | "resuming" | "finished";
-
-export interface ForkResumeProfile {
-  forkId: string;
-  name: string;
-  spec: ForkSpec;
-  ctx: RequestContext;
-  baseMessages?: Message[];
-  state: ForkLifecycleState;
-  task?: BackgroundTask;
-}
 
 export type ForkMessageFailure =
   | "unknown_agent"
   | "not_resumable"
   | "stopped_by_user"
-  | "already_running";
+  | "already_running"
+  | "route_rejected"
+  | "route_denied";
 
 export type ForkMessageResult =
-  | { delivered: true; agentId: string; resumed: boolean }
+  // `warning` rides a delivered message so a no-op routing field reaches both
+  // the caller's tool result and the transcript surface that renders it.
+  | { delivered: true; agentId: string; resumed: boolean; warning?: string }
   | { delivered: false; code: ForkMessageFailure; reason: string };
 
 type ForkProfileResolution =
@@ -82,15 +65,40 @@ type ForkProfileResolution =
   | { ok: false; code: "unknown_agent" | "stopped_by_user"; reason: string };
 
 const profiles = new Map<string, ForkResumeProfile>();
-const idByName = new Map<string, string>();
 
-function snapshotMessages(messages: Message[] | undefined): Message[] | undefined {
-  return messages?.map((message) => ({
-    ...message,
-    content: Array.isArray(message.content)
-      ? message.content.map((block) => ({ ...block }))
-      : message.content,
-  }));
+// A resume waits here until the run it scheduled actually registers. The fork loop
+// yields several times before that point (module load, worktree, MCP), so reporting
+// the delivery when the call returns would claim a message that a cancel or an exit
+// inside that window erases.
+const registrationWaiters = new Map<string, Set<() => void>>();
+
+function announceForkRegistration(forkId: string): void {
+  const waiters = registrationWaiters.get(forkId);
+  if (waiters === undefined) return;
+  registrationWaiters.delete(forkId);
+  for (const wake of waiters) wake();
+}
+
+function awaitForkRegistration(forkId: string): {
+  registered: Promise<void>;
+  stopWaiting: () => void;
+} {
+  let wake: () => void = () => {};
+  const registered = new Promise<void>((resolve) => {
+    wake = () => resolve();
+  });
+  const waiters = registrationWaiters.get(forkId) ?? new Set<() => void>();
+  waiters.add(wake);
+  registrationWaiters.set(forkId, waiters);
+  return {
+    registered,
+    stopWaiting: () => {
+      const current = registrationWaiters.get(forkId);
+      if (current === undefined) return;
+      current.delete(wake);
+      if (current.size === 0) registrationWaiters.delete(forkId);
+    },
+  };
 }
 
 export function registerRunningFork(
@@ -116,17 +124,8 @@ export function registerRunningFork(
     ...(task !== undefined ? { task } : {}),
   };
   profiles.set(forkId, profile);
-  const registeredName = idByName.get(name);
-  const nameHolder = registeredName === undefined ? undefined : profiles.get(registeredName);
-  // A name is claimable only when nobody holds it, this fork already holds it,
-  // or the current holder has finished. A finished agent may lose its alias to a
-  // new claimant — resume by id still reaches it. A running/resuming holder keeps
-  // its name: the new fork registers without the alias and idByName is untouched,
-  // so resume routing for the live holder stays intact.
-  const canClaimName =
-    registeredName === forkId || nameHolder === undefined || nameHolder.state === "finished";
-  if (canClaimName) idByName.set(name, forkId);
-  const releaseInbox = registerAgent(forkId, canClaimName ? name : undefined, (message) => {
+  announceForkRegistration(forkId);
+  const releaseInbox = registerAgent(forkId, (message) => {
     // A fork whose stop already fired (user cancel) must not swallow the message
     // on the fast path: reject it so the inbox reports the delivery failed and
     // SendMessage falls through to the resume path, which returns the truthful
@@ -134,10 +133,7 @@ export function registerRunningFork(
     if (ctx.abortSignal?.aborted === true || getBackgroundTask(forkId)?.stoppedByUser === true) {
       throw new Error(`agent ${forkId} is stopping and cannot accept messages`);
     }
-    const text =
-      message.replyTo === undefined
-        ? message.message
-        : `[Reply to ${message.replyTo}]\n${message.message}`;
+    const text = addressedMessageText(message);
     queueAgentSteer(forkId, {
       text,
       blocks: [{ type: "text", text }],
@@ -166,13 +162,10 @@ export function registerRunningFork(
 function resolveProfile(to: string): ForkProfileResolution {
   const direct = profiles.get(to);
   if (direct) return { ok: true, profile: direct };
-  const id = idByName.get(to);
-  const profile = id === undefined ? undefined : profiles.get(id);
-  if (profile) return { ok: true, profile };
   return {
     ok: false,
     code: "unknown_agent",
-    reason: `No agent found for recipient "${to}".`,
+    reason: `No agent found for id "${to}".`,
   };
 }
 
@@ -182,7 +175,7 @@ export async function resolveForkProfileForResume(
 ): Promise<ForkProfileResolution> {
   const resolved = resolveProfile(to);
   if (resolved.ok) return resolved;
-  const forkId = idByName.get(to) ?? to;
+  const forkId = to;
   const task = getBackgroundTask(forkId);
   if (task?.stoppedByUser === true) {
     return {
@@ -227,269 +220,83 @@ export async function resolveForkProfileForResume(
     };
   }
   profiles.set(profile.forkId, profile);
-  if (!idByName.has(profile.name)) idByName.set(profile.name, profile.forkId);
   return { ok: true, profile };
 }
 
-function profileFromDurableSpec(
-  durable: DurableForkSpecV1,
-  requestCtx: RequestContext,
-): ForkResumeProfile | null {
-  const def = durable.kind === "subagent" ? getAgentDef(durable.agentId) : undefined;
-  const allowSet =
-    durable.allowSet !== null
-      ? new Set(durable.allowSet)
-      : durable.kind === "fork"
-        ? null
-        : def !== undefined
-          ? resolveAllowSetForFork(def, "subagent", requestCtx)
-          : resolveDefaultAllowSetForFork("subagent", requestCtx);
-  let definitionFields: Partial<ForkSpec>;
-  if (def === undefined) {
-    definitionFields = { inheritParentTurn: durable.kind === "fork" };
-  } else {
-    definitionFields = {
-      extraDeclarations: mcpDeclarationsForDef(def, allowSet),
-      skillMessages: skillMessagesForDef(def),
-      agentHooks: def.hooks ?? null,
-      allowedAgentTypes: computeAllowedAgentTypes(def),
-      allowNestedAgents: true,
-      shouldAvoidPermissionPrompts: true,
-      inlineMcpServers: def.mcpServers,
-      ...(def.maxTurns !== undefined ? { maxTurns: def.maxTurns } : {}),
-    };
-  }
-  // A durable sidecar records the spawn-time mode even when it was inherited.
-  // Only an agent definition's explicit mode is a child override; inherited
-  // modes must be refreshed from the caller's live broker on every rebuild.
-  // Sidecars from before the provenance field deliberately take this safer
-  // inherited path.
-  const permissionMode =
-    durable.permissionModeIsDefinitionPinned === true
-      ? durable.permissionMode
-      : (requestCtx.broker?.read().permissionMode ?? requestCtx.permissionMode);
-  const ctx: RequestContext = {
-    ...requestCtx,
-    provider: durable.provider as RequestContext["provider"],
-    model: durable.model,
-    effort: durable.effort,
-    permissionMode,
-    cwd: durable.cwd,
-    sessionId: durable.sessionId,
-    bgTaskId: durable.forkId,
-    ...(durable.originalCwd !== undefined ? { originalCwd: durable.originalCwd } : {}),
-    ...(durable.worktreeRoot !== undefined ? { worktreeRoot: durable.worktreeRoot } : {}),
-  };
-  const spec: ForkSpec = {
-    ctx,
-    name: durable.name,
-    body: def?.body ?? durable.body ?? "",
-    allowSet,
-    prompt: durable.prompt,
-    agentId: durable.agentId,
-    ...(durable.description !== undefined ? { description: durable.description } : {}),
-    ...(durable.parentToolCallId !== undefined
-      ? { parentToolCallId: durable.parentToolCallId }
-      : {}),
-    ...(durable.permissionModeIsDefinitionPinned === true
-      ? {
-          permissionMode: durable.permissionMode,
-          permissionModeIsDefinitionPinned: true,
-        }
-      : {}),
-    ...(durable.isolation !== undefined ? { isolation: durable.isolation } : {}),
-    ...(durable.deferredAllow !== undefined
-      ? { deferredAllow: new Set(durable.deferredAllow) }
-      : {}),
-    ...(durable.initialMessages !== undefined
-      ? { initialMessages: snapshotMessages(durable.initialMessages) }
-      : {}),
-    ...definitionFields,
-  };
-  const now = Date.now();
-  const task: BackgroundTask = {
-    id: durable.forkId,
-    kind: "agent",
-    parentToolCallId: durable.parentToolCallId ?? durable.forkId,
-    agentName: durable.name,
-    agentId: durable.agentId,
-    ...(durable.description !== undefined ? { description: durable.description } : {}),
-    prompt: durable.prompt,
-    provider: durable.provider as RequestContext["provider"],
-    model: durable.model,
-    ...(durable.effort !== null ? { effort: durable.effort } : {}),
-    cwd: durable.originalCwd ?? durable.cwd,
-    sessionId: durable.sessionId,
-    runGeneration: 0,
-    runToken: `${durable.forkId}:durable`,
-    lifecycleMode: "detached",
-    terminalNotification: "main",
-    status: "completed",
-    startedAt: now,
-    endedAt: now,
-    isBackgrounded: true,
-    forkId: durable.forkId,
-    actions: [],
-    assistantText: "",
-    shellOutput: "",
-    inputTokens: 0,
-    outputTokens: 0,
-    notified: true,
-  };
-  return {
-    forkId: durable.forkId,
-    name: durable.name,
-    spec,
-    ctx,
-    state: "finished",
-    task,
-    ...(durable.initialMessages !== undefined
-      ? { baseMessages: snapshotMessages(durable.initialMessages) ?? [] }
-      : {}),
-  };
-}
+type ResumeRouteOutcome =
+  | { ok: true; warning?: string }
+  | { ok: false; failure: Extract<ForkMessageResult, { delivered: false }> };
 
-export function mergeResumedMessages(args: {
-  baseMessages?: Message[];
-  history: Message[];
-  steers: Message[];
-  prompt: string;
-}): Message[] {
-  const promptMessage: Message = {
-    role: "user",
-    content: [{ type: "text", text: args.prompt }],
-  };
-  if (args.baseMessages === undefined) {
-    return sanitizeMessages([...args.history, ...args.steers, promptMessage]);
-  }
-
-  const durableIds = new Set(
-    args.history.flatMap((message) => (message.id === undefined ? [] : [message.id])),
-  );
-  const baseMessages = (snapshotMessages(args.baseMessages) ?? []).filter(
-    (message) => message.id === undefined || !durableIds.has(message.id),
-  );
-  const transcriptAfterInitialPrompt =
-    args.history[0]?.role === "user" ? args.history.slice(1) : args.history;
-  return sanitizeMessages([
-    ...baseMessages,
-    ...transcriptAfterInitialPrompt,
-    ...args.steers,
-    promptMessage,
-  ]);
-}
-
-interface UndrainedSteer {
-  message: Message;
-  text: string;
-  queueId?: string;
-}
-
-function drainUndrainedSteers(forkId: string): UndrainedSteer[] {
-  const steers: UndrainedSteer[] = [];
-  for (const queued of drainAgentSteers(forkId)) {
-    steers.push({
-      message: {
-        role: "user",
-        content: queued.blocks,
-        ...(queued.queueId !== undefined ? { id: queued.queueId } : {}),
-      },
-      text: queued.text,
-      ...(queued.queueId !== undefined ? { queueId: queued.queueId } : {}),
-    });
-  }
-  return steers;
-}
-
-// Persist each undrained steer as a user record in the sidechain transcript, in
-// queue order, immediately before the resume prompt record (which the fork loop
-// writes when the resumed run starts). Without this, only the prompt is
-// persisted, so a second resume rebuilds history missing these steers and the
-// agent's replies reference a message that is no longer there.
-async function persistResumeSteerRecords(
+// The resume route is settled before the transcript is touched: a rejected or
+// denied switch must leave the agent exactly as it was, message included.
+async function resolveResumeRoute(
   profile: ForkResumeProfile,
-  steers: UndrainedSteer[],
-): Promise<void> {
-  for (const steer of steers) {
-    await appendAgentRecordRaw(
-      {
-        cwd: profile.ctx.originalCwd ?? profile.ctx.cwd,
-        sessionId: profile.ctx.sessionId,
-        agentId: profile.forkId,
-      },
-      {
-        type: "user_message",
-        ts: nowIso(),
-        content: steer.text,
-        provider: profile.ctx.provider,
-        model: profile.ctx.model,
-        isSidechain: true,
-        ...(steer.queueId !== undefined ? { queueId: steer.queueId } : {}),
-        ...(profile.spec.parentToolCallId !== undefined
-          ? { parentToolCallId: profile.spec.parentToolCallId }
-          : {}),
-        ...(profile.spec.agentId !== undefined ? { agentId: profile.spec.agentId } : {}),
-      },
-    );
-  }
-}
-
-function activeTaskForRun(run: TaskRunRef): BackgroundTask | undefined {
-  const current = getBackgroundTask(run.taskId);
-  if (
-    current?.runGeneration !== run.generation ||
-    current.runToken !== run.token ||
-    current.status !== "running"
-  ) {
-    return undefined;
-  }
-  return current;
-}
-
-function routeResumedEvent(run: TaskRunRef, event: ForkEvent): void {
-  if (activeTaskForRun(run) === undefined) return;
-  const taskId = run.taskId;
-  if (event.kind === "fork_tool_dispatch_start") {
-    appendAction(taskId, {
-      id: event.toolCallId,
-      toolName: event.toolName,
-      argsLabel: previewArgs(event.input),
-      running: true,
-      ts: Date.now(),
-    });
-  } else if (event.kind === "fork_tool_dispatch_complete") {
-    event.isError ? failAction(taskId, event.toolCallId) : completeAction(taskId, event.toolCallId);
-  } else if (event.kind === "fork_start") {
-    setModel(taskId, event.model, event.effort, event.provider);
-  } else if (event.kind === "fork_usage") {
-    const usage = {
-      inputTokens: event.inputTokens,
-      outputTokens: event.outputTokens,
-      cacheCreationInputTokens: event.cacheCreationInputTokens,
-      cacheReadInputTokens: event.cacheReadInputTokens,
+  route: RequestedForkRoute | undefined,
+  requestCtx: RequestContext | undefined,
+  isLive: boolean,
+): Promise<ResumeRouteOutcome> {
+  if (route === undefined) return { ok: true };
+  const current = { provider: profile.ctx.provider, model: profile.ctx.model };
+  const gateCtx = requestCtx ?? profile.ctx;
+  const classified = classifyForkRouteSwitch(route, current, gateCtx, profile.forkId);
+  if (classified.kind === "inherit") return { ok: true };
+  if (classified.kind === "noop") return { ok: true, warning: classified.warning };
+  if (classified.kind === "rejected") {
+    return {
+      ok: false,
+      failure: { delivered: false, code: "route_rejected", reason: classified.error },
     };
-    event.isSnapshot ? setUsageSnapshot(taskId, usage) : addUsage(taskId, usage);
-  } else if (event.kind === "fork_text_delta") {
-    appendAssistantText(taskId, event.text);
-  } else if (event.kind === "fork_stream_reset") {
-    discardAssistantText(taskId, event.discardedChars);
   }
+  if (isLive) {
+    return {
+      ok: false,
+      failure: {
+        delivered: false,
+        code: "already_running",
+        reason: `Agent ${profile.forkId} is still running, and a routing switch only takes effect on a resumed run. Send the switch once its current run has finished.`,
+      },
+    };
+  }
+  const approval = await askForkRouteApproval({
+    requested: classified.route,
+    session: current,
+    subject: profile.forkId,
+    ...(gateCtx.abortSignal !== undefined ? { signal: gateCtx.abortSignal } : {}),
+  });
+  if (!approval.ok) {
+    return {
+      ok: false,
+      failure: { delivered: false, code: "route_denied", reason: approval.error },
+    };
+  }
+  profile.ctx = withPinnedForkRoute(profile.ctx, classified.route);
+  return { ok: true };
 }
 
 export async function resumeForkWithMessage(
   to: string,
   prompt: string,
   requestCtx?: RequestContext,
+  route?: RequestedForkRoute,
 ): Promise<ForkMessageResult> {
   const resolved = await resolveForkProfileForResume(to, requestCtx);
   if (!resolved.ok) return { delivered: false, code: resolved.code, reason: resolved.reason };
   const { profile } = resolved;
-  if (profile.state === "running" || profile.state === "resuming") {
+  const isLive = profile.state === "running" || profile.state === "resuming";
+  const switched = await resolveResumeRoute(profile, route, requestCtx, isLive);
+  if (!switched.ok) return switched.failure;
+  const warning = switched.warning;
+  if (isLive) {
     queueAgentSteer(profile.forkId, {
       text: prompt,
       blocks: [{ type: "text", text: prompt }],
     });
-    return { delivered: true, agentId: profile.forkId, resumed: false };
+    return {
+      delivered: true,
+      agentId: profile.forkId,
+      resumed: false,
+      ...(warning !== undefined ? { warning } : {}),
+    };
   }
 
   const latestTask = getBackgroundTask(profile.forkId) ?? profile.task;
@@ -516,6 +323,10 @@ export async function resumeForkWithMessage(
   }
 
   profile.state = "resuming";
+  // Everything queued at this instant predates the prompt being accepted, so it
+  // belongs ahead of it. Anything arriving from here on belongs after the prompt
+  // and is left for the resumed loop's drainer, which records it in that order.
+  const steerIdsBeforePrompt = queuedSteerIds(profile.forkId);
   let history: Message[];
   try {
     const records = await loadSubagentTranscript({
@@ -563,7 +374,7 @@ export async function resumeForkWithMessage(
   }
   profile.task = getBackgroundTask(reopened.id) ?? reopened;
 
-  const undrainedSteers = drainUndrainedSteers(profile.forkId);
+  const undrainedSteers = drainUndrainedSteers(profile.forkId, steerIdsBeforePrompt);
   const messages = mergeResumedMessages({
     ...(profile.baseMessages !== undefined ? { baseMessages: profile.baseMessages } : {}),
     history,
@@ -574,7 +385,28 @@ export async function resumeForkWithMessage(
   // record the fork loop writes; the queue was just drained, so the resumed
   // loop's own drainer will not re-inject them and the next resume gets them
   // only through the rebuilt transcript.
-  await persistResumeSteerRecords(profile, undrainedSteers);
+  try {
+    await persistResumeSteerRecords(profile, undrainedSteers);
+  } catch (error) {
+    // The task is already reopened and the steers already off the queue. Put them
+    // back and end the run, or the agent stays running forever on messages that
+    // reached no transcript.
+    for (const steer of undrainedSteers) {
+      queueAgentSteer(profile.forkId, {
+        text: steer.text,
+        blocks: [{ type: "text", text: steer.text }],
+        ...(steer.queueId !== undefined ? { queueId: steer.queueId } : {}),
+      });
+    }
+    const reason = error instanceof Error ? error.message : String(error);
+    completeTaskForRun(resumedRun, { content: reason, isError: true });
+    profile.state = "finished";
+    return {
+      delivered: false,
+      code: "not_resumable",
+      reason: `Agent ${profile.forkId} could not record its pending messages: ${reason}`,
+    };
+  }
   const abortController = new AbortController();
   const eventSink = (event: ForkEvent): void => routeResumedEvent(resumedRun, event);
   const { isolation: previousIsolation, ...nonIsolatedSpec } = profile.spec;
@@ -629,7 +461,8 @@ export async function resumeForkWithMessage(
   };
   const releaseController = bgControllers.register(reopened.parentToolCallId, resumeController);
 
-  void (async () => {
+  const { registered, stopWaiting } = awaitForkRegistration(profile.forkId);
+  const run = (async () => {
     try {
       const result = await runForkLoopExternal({
         ...resumeSpec,
@@ -668,25 +501,43 @@ export async function resumeForkWithMessage(
     }
   })();
 
-  return { delivered: true, agentId: profile.forkId, resumed: true };
+  // The run settles without ever registering when it is cancelled or fails during
+  // that window; the message reached no transcript, so it was never delivered.
+  const outcome = await Promise.race([
+    registered.then(() => "registered" as const),
+    run.then(() => "ended" as const),
+  ]);
+  stopWaiting();
+  if (outcome === "ended") {
+    profile.state = "finished";
+    return {
+      delivered: false,
+      code: "not_resumable",
+      reason: `Agent ${profile.forkId} stopped before its resumed run could start.`,
+    };
+  }
+  return {
+    delivered: true,
+    agentId: profile.forkId,
+    resumed: true,
+    ...(warning !== undefined ? { warning } : {}),
+  };
 }
 
 subscribeCompletion((task) => {
   const stoppedForkId =
     task.stoppedByUser === true && task.kind === "agent" ? (task.forkId ?? task.id) : undefined;
   if (stoppedForkId !== undefined && task.cwd !== undefined && task.sessionId !== undefined) {
+    // Best-effort cross-process marker: within this process the live task's
+    // stoppedByUser flag already refuses the resume, so a write failure has no
+    // caller to answer and nothing for the user to act on.
     try {
       markDurableForkStopped({
         cwd: task.cwd,
         sessionId: task.sessionId,
         forkId: stoppedForkId,
       });
-    } catch (error) {
-      publish(
-        "error",
-        `Failed to persist stop marker for agent ${stoppedForkId}: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
+    } catch {}
   }
   const profile = profiles.get(task.id);
   if (!profile) return;
@@ -696,5 +547,4 @@ subscribeCompletion((task) => {
 
 export function clearForkLifecyclesForTests(): void {
   profiles.clear();
-  idByName.clear();
 }

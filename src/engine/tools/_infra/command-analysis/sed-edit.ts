@@ -85,7 +85,7 @@ function parseSubstitutionExpression(expression: string): SubstitutionParts | nu
   return { pattern, replacement, flags };
 }
 
-export function parseSedEditCommand(command: string): SedEditInfo | null {
+export function parseSedEditInvocation(command: string): SedEditInfo | null {
   const trimmed = command.trim();
   const sedMatch = trimmed.match(SED_PREFIX);
   if (sedMatch === null) return null;

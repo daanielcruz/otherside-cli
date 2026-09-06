@@ -1,12 +1,16 @@
 import { basename } from "node:path";
 import type { UserConfig } from "@/kernel/config/config.ts";
+import { stopWatchingSettings } from "@/kernel/config/settings-watch.ts";
+import type { HookEntry } from "@/kernel/std/types/hook-entry.ts";
+import { isCommandHook } from "@/kernel/std/types/hook-entry.ts";
 import type { ToolResult, ToolResultContentBlock } from "@/kernel/std/types/message.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
-import { DEFAULT_TIMEOUT_MS } from "./constants.ts";
+import { startSettingsWatch } from "./config-change.ts";
 import type { EventCtx, FileChangedEventKind, HookEvent } from "./events.ts";
-import { fireEntry, type HookEntry, type HookOutcome, isCommandHook } from "./exec.ts";
+import { fireEntry, type HookOutcome } from "./exec.ts";
 import { startFileChangedWatcher, stopFileChangedWatcher } from "./file-changed-watcher.ts";
 import type { HookHandler } from "./index.ts";
+import { hookOutcomeText, jsonObjectFromStdout, systemMessagesFromOutcomes } from "./response.ts";
 
 type HookEntryProvider = (event: HookEvent) => HookEntry[];
 
@@ -16,7 +20,7 @@ export function registerHookEntryProvider(provider: HookEntryProvider): void {
   hookEntryProvider = provider;
 }
 
-function listHookEntries(event: HookEvent): HookEntry[] {
+export function listHookEntries(event: HookEvent): HookEntry[] {
   return hookEntryProvider(event);
 }
 
@@ -34,10 +38,14 @@ export function handlersFromHookMap(hooks: Partial<Record<HookEvent, HookEntry[]
   if (Object.keys(hooks).length === 0) return [];
   return [
     {
-      async preToolUse(call) {
+      async preToolUse(call, ctx) {
         const outcomes = await fireMatchingHooks(hooks.preToolUse ?? [], call.name, {
           kind: "preToolUse",
-          ctx: { toolName: call.name, toolInput: stringifyInput(call.input) },
+          ctx: {
+            toolName: call.name,
+            toolInput: stringifyInput(call.input),
+            ...ambientFromRequestContext(ctx),
+          },
         });
         const decision = preToolUseDecisionFromOutcomes(outcomes);
         if (decision.action === "block") {
@@ -53,19 +61,44 @@ export function handlersFromHookMap(hooks: Partial<Record<HookEvent, HookEntry[]
         if (decision.hookPermission === "allow") return { kind: "allow", call: updatedCall };
         return updatedCall;
       },
-      async postToolUse(call, result) {
-        const outcomes = await fireMatchingHooks(hooks.postToolUse ?? [], call.name, {
-          kind: "postToolUse",
-          ctx: {
-            toolName: call.name,
-            toolInput: stringifyInput(call.input),
-            toolExit: result.is_error ? 1 : 0,
-          },
-        });
+      async postToolUse(call, result, ctx) {
+        const outcomes = result.is_error
+          ? await fireMatchingHooks(hooks.postToolUseFailure ?? [], call.name, {
+              kind: "postToolUseFailure",
+              ctx: {
+                toolName: call.name,
+                toolInput: call.input,
+                toolUseId: call.id,
+                error: stringifyInput(result.content),
+                ...ambientFromRequestContext(ctx),
+              },
+            })
+          : await fireMatchingHooks(hooks.postToolUse ?? [], call.name, {
+              kind: "postToolUse",
+              ctx: {
+                toolName: call.name,
+                toolInput: stringifyInput(call.input),
+                toolExit: 0,
+                toolResponse: result.content,
+                toolUseId: call.id,
+                ...ambientFromRequestContext(ctx),
+              },
+            });
         return appendPostToolUseFeedback(result, postToolUseHookFeedback(outcomes));
       },
     },
   ];
+}
+
+function ambientFromRequestContext(ctx: RequestContext | undefined): {
+  sessionId?: string;
+  cwd?: string;
+} {
+  if (!ctx) return {};
+  return {
+    ...(typeof ctx.sessionId === "string" ? { sessionId: ctx.sessionId } : {}),
+    ...(typeof ctx.cwd === "string" ? { cwd: ctx.cwd } : {}),
+  };
 }
 
 export async function fireHookEntries(entries: HookEntry[], ctx: EventCtx): Promise<HookOutcome[]> {
@@ -98,6 +131,24 @@ export async function fireUserPromptSubmitHooks(
     ctx: { promptText },
   });
   return { outcomes, additionalContext: additionalContextFromOutcomes(outcomes) };
+}
+
+export async function firePostToolBatchHooks(
+  config: UserConfig,
+  ctx: Extract<EventCtx, { kind: "postToolBatch" }>,
+): Promise<HookOutcome[]> {
+  return fireConfiguredHooks(config, "postToolBatch", ctx);
+}
+
+export async function firePermissionRequestHooks(
+  config: UserConfig,
+  ctx: Extract<EventCtx, { kind: "permissionRequest" }>,
+): Promise<HookOutcome[]> {
+  const entries = [
+    ...(config.hooks?.permissionRequest ?? []),
+    ...listHookEntries("permissionRequest"),
+  ];
+  return fireMatchingHooks(entries, ctx.ctx.toolName, ctx);
 }
 
 export async function firePermissionDeniedHooks(
@@ -142,11 +193,32 @@ export async function fireConfiguredHooks(
         fireFileChangedHooksInBackground(config, filePath, changeEvent);
       },
     });
+    startSettingsWatch(config, ctx.ctx.sessionId, ctx.ctx.cwd);
   } else if (event === "sessionEnd") {
     stopFileChangedWatcher();
+    stopWatchingSettings();
   }
 
   return outcomes;
+}
+
+export async function fireDirectoryAddedHooks(
+  config: UserConfig,
+  ctx: Extract<EventCtx, { kind: "directoryAdded" }>["ctx"],
+): Promise<HookOutcome[]> {
+  const entries = [...(config.hooks?.directoryAdded ?? []), ...listHookEntries("directoryAdded")];
+  return fireMatchingHooks(entries, ctx.source, { kind: "directoryAdded", ctx });
+}
+
+export function fireDirectoryAddedHooksInBackground(
+  config: UserConfig,
+  ctx: Extract<EventCtx, { kind: "directoryAdded" }>["ctx"],
+): void {
+  queueMicrotask(() => {
+    try {
+      void fireDirectoryAddedHooks(config, ctx).catch(() => {});
+    } catch {}
+  });
 }
 
 export function fireFileChangedHooksInBackground(
@@ -200,6 +272,9 @@ export async function fireWorktreeRemoveHooks(
   });
 }
 
+// UserPromptSubmit hook text reaches the model as system-style context injected
+// ahead of the prompt; `systemMessage` rides that same channel after any
+// `additionalContext` the hook also emitted.
 function additionalContextFromOutcomes(outcomes: HookOutcome[]): string[] {
   const out: string[] = [];
   for (const outcome of outcomes) {
@@ -207,6 +282,7 @@ function additionalContextFromOutcomes(outcomes: HookOutcome[]): string[] {
     const ctx = additionalContextFromStdout(outcome.stdout);
     if (ctx) out.push(ctx);
   }
+  out.push(...systemMessagesFromOutcomes(outcomes));
   return out;
 }
 
@@ -346,17 +422,6 @@ export function permissionDeniedSpecificOutputFromStdout(
     : { hookEventName: "PermissionDenied", retry };
 }
 
-function jsonObjectFromStdout(stdout: string): Record<string, unknown> | null {
-  const trimmed = stdout.trim();
-  if (!trimmed.startsWith("{")) return null;
-  try {
-    const parsed = JSON.parse(trimmed) as unknown;
-    return isObject(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
 function isObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
@@ -375,7 +440,7 @@ async function fireMatchingHooks(
 async function fireAll(entries: HookEntry[], ctx: EventCtx): Promise<HookOutcome[]> {
   const out: HookOutcome[] = [];
   for (const entry of entries) {
-    out.push(await fireEntry(entry, ctx, entry.timeoutMs ?? DEFAULT_TIMEOUT_MS));
+    out.push(await fireEntry(entry, ctx));
   }
   return out;
 }
@@ -437,13 +502,16 @@ export async function fireTaskHook(input: {
 // a nonzero exit, timeout, or spawn failure is non-blocking feedback, not a
 // reason to discard or replace what the tool actually returned. Every non-"ok"
 // outcome is turned into a short feedback line surfaced alongside -- never in
-// place of -- the tool's own content, appended after the tool result.
+// place of -- the tool's own content, appended after the tool result. A
+// successful hook's `systemMessage` rides that same feedback block, which is
+// how PostToolUse hook text already reaches the model.
 function postToolUseHookFeedback(outcomes: HookOutcome[]): string[] {
   const feedback: string[] = [];
   for (const outcome of outcomes) {
     if (outcome.kind === "ok" || outcome.kind === "prompt_passed") continue;
     feedback.push(taskHookFeedback(outcome));
   }
+  feedback.push(...systemMessagesFromOutcomes(outcomes));
   return feedback;
 }
 
@@ -464,7 +532,7 @@ export function appendPostToolUseFeedback(result: ToolResult, feedback: string[]
 function taskHookFeedback(outcome: HookOutcome): string {
   switch (outcome.kind) {
     case "non_zero_exit": {
-      const text = outcome.stderr.trim() || outcome.stdout.trim();
+      const text = hookOutcomeText(outcome);
       return text.length > 0 ? text : `hook exited with code ${outcome.code}`;
     }
     case "timeout":

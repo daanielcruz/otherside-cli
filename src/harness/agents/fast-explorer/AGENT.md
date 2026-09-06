@@ -11,7 +11,7 @@ model:
     model: gpt-5.6-luna
     effort: medium
   antigravity:
-    model: gemini-3-flash
+    model: gemini-3.8-flash
   deepseek:
     model: deepseek-v4-flash
     effort: medium

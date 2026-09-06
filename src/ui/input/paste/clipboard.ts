@@ -1,7 +1,6 @@
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resizeImageIfTooLarge } from "@/kernel/std/image-resize.ts";
 import { getPlatform } from "@/kernel/std/proc/platform.ts";
 import { shellCommand } from "@/kernel/std/proc/shell.ts";
 import type { ImageMediaType } from "@/kernel/std/types/image.ts";
@@ -134,21 +133,11 @@ export function readImageFromClipboard(): ClipboardImage | null {
     } catch {}
   }
   if (buffer.length === 0) return null;
-  const mediaType = detectMediaType(buffer);
-  try {
-    const resized = resizeImageIfTooLarge(buffer, mediaType);
-    return {
-      base64: resized.buffer.toString("base64"),
-      mediaType: resized.mediaType,
-      byteLength: resized.buffer.length,
-    };
-  } catch {
-    return {
-      base64: buffer.toString("base64"),
-      mediaType,
-      byteLength: buffer.length,
-    };
-  }
+  return {
+    base64: buffer.toString("base64"),
+    mediaType: detectMediaType(buffer),
+    byteLength: buffer.length,
+  };
 }
 
 function writeClipboardImageToFile(): boolean {

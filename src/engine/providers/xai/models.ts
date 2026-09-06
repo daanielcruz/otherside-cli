@@ -1,11 +1,21 @@
 import type { ModelEntry } from "@/engine/model/catalog.ts";
 import type { EffortLevel } from "@/kernel/std/types/effort.ts";
 
-// SoT for grok's roster. Ids, windows, and reasoning-effort support come from
-// `grok models` + `~/.grok/models_cache.json` on a live SuperGrok account.
-// grok-4.5 is the reasoning flagship; grok-composer-2.5-fast is the fast coding
-// model and does NOT accept the reasoning/effort parameters.
+// SoT for Grok's roster. Ids, windows, and reasoning-effort support come from
+// `xai-org/grok-build` `default_models.json` and the live `grok models` roster.
+// grok-4.6 is the reasoning flagship (adds wire-level `xhigh`); grok-4.5 stays
+// selectable; grok-composer-2.5-fast is the fast coding model and does NOT
+// accept the reasoning/effort parameters.
 export const GROK_MODELS: readonly ModelEntry[] = [
+  {
+    id: "grok-4.6",
+    displayName: "Grok 4.6",
+    contextWindow: 500_000,
+    autoCompactTokenLimit: 467_000,
+    provider: "xai",
+    efforts: ["low", "medium", "high", "xhigh"],
+    defaultEffort: "high",
+  },
   {
     id: "grok-4.5",
     displayName: "Grok 4.5",
@@ -36,12 +46,34 @@ export function modelSupportsReasoning(modelId: string): boolean {
   return entry ? entry.efforts.length > 0 : true;
 }
 
-// The chat proxy rejects `reasoning_effort: "none"` for grok-4.5 — the model has
-// no way to fully disable reasoning. When a turn asks to suppress thinking, we
-// approximate "off" with the model's cheapest real effort. Returns the lowest
-// listed effort, defaulting to "low" for unknown (custom) reasoning ids.
-export function lowestReasoningEffort(modelId: string): EffortLevel | null {
+// Wire effort is never `max` — that name is otherside-only and folds here.
+export type GrokWireEffort = Exclude<EffortLevel, "max">;
+
+// The chat proxy rejects `reasoning_effort: "none"` on the reasoning flagships —
+// they have no way to fully disable reasoning. When a turn asks to suppress
+// thinking, we approximate "off" with the model's cheapest real effort. Returns
+// the lowest listed effort, defaulting to "low" for unknown (custom) reasoning ids.
+export function lowestReasoningEffort(modelId: string): GrokWireEffort | null {
   const entry = GROK_MODELS.find((m) => m.id === modelId);
   if (!entry) return "low";
-  return entry.efforts[0] ?? null;
+  const lowest = entry.efforts[0];
+  return lowest && lowest !== "max" ? lowest : null;
+}
+
+// Highest effort the model lists. Used when the session asks for `max` (an
+// otherside-only tier the wire never names) or for an effort the model lacks.
+export function highestReasoningEffort(modelId: string): GrokWireEffort | null {
+  const entry = GROK_MODELS.find((m) => m.id === modelId);
+  if (!entry || entry.efforts.length === 0) return null;
+  const highest = entry.efforts[entry.efforts.length - 1];
+  return highest && highest !== "max" ? highest : null;
+}
+
+export function modelListsEffort(modelId: string, effort: EffortLevel): boolean {
+  const entry = GROK_MODELS.find((m) => m.id === modelId);
+  if (!entry) {
+    // Unknown reasoning ids accept the common four, not max (max is never wire).
+    return effort === "low" || effort === "medium" || effort === "high" || effort === "xhigh";
+  }
+  return entry.efforts.includes(effort);
 }

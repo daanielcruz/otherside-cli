@@ -1,11 +1,11 @@
+import type { TierCandidateDetail } from "@/engine/model/tier/resolver.ts";
 import {
   askGroupWithDefault,
   type GroupQuestion,
   type GroupResult,
 } from "@/kernel/channels/ask.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
 import { getRuntimeKind, type RuntimeKind } from "@/kernel/std/proc/runtime-mode.ts";
-import type { TierCandidateDetail } from "../tier/resolver.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 
 export type ModelFallbackDecision = "use_fallback" | "wait";
 

@@ -2,13 +2,20 @@ import type { ContentBlock, Message } from "@/kernel/std/types/message.ts";
 
 export function sanitizeMessages(
   messages: Message[],
-  options?: { preserveToolReferences?: boolean },
+  options?: { preserveToolReferences?: boolean; declaredToolNames?: ReadonlySet<string> },
 ): Message[] {
   const declared = collectDeclaredToolUseIds(messages);
   const filtered = filterUnknownToolResults(messages, declared);
-  const providerSafe = options?.preserveToolReferences
-    ? filtered
-    : stripToolReferenceContent(filtered);
+  // A tool_reference block is validated against THIS request's declared
+  // toolset at the provider boundary, so preserving may only keep references
+  // whose tool is actually declared for this request. An inherited transcript
+  // (e.g. a context-inheriting fork) can carry references to tools the child
+  // never declares (fork-disallowed or not re-announced); those must be
+  // stripped from the outgoing body — the persisted transcript is untouched.
+  const keepReference = options?.preserveToolReferences
+    ? (name: string) => options.declaredToolNames?.has(name) ?? true
+    : () => false;
+  const providerSafe = filterToolReferenceContent(filtered, keepReference);
   const repaired = injectOrphanInterrupts(providerSafe);
   const grouped = coalesceConsecutiveSameRole(repaired);
   const withoutOrphanThinking = dropThinkingOnlyAssistants(grouped);
@@ -72,12 +79,17 @@ function fillEmptyNonFinalAssistants(messages: Message[]): Message[] {
   });
 }
 
-function stripToolReferenceContent(messages: Message[]): Message[] {
+function filterToolReferenceContent(
+  messages: Message[],
+  keepReference: (toolName: string) => boolean,
+): Message[] {
   return messages.map((msg) => {
     let changed = false;
     const content = msg.content.map((block) => {
       if (block.type !== "tool_result" || !Array.isArray(block.content)) return block;
-      const kept = block.content.filter((part) => part.type !== "tool_reference");
+      const kept = block.content.filter(
+        (part) => part.type !== "tool_reference" || keepReference(part.tool_name),
+      );
       if (kept.length === block.content.length) return block;
       changed = true;
       return { ...block, content: kept.length > 0 ? kept : "" };

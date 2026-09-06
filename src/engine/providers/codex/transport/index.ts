@@ -7,15 +7,13 @@ import {
   incrementWsStreamFailures,
   resetWsStreamFailures,
 } from "@/engine/providers/codex/transport/state.ts";
-import {
-  CodexWsClosedBeforeCompletionError,
-  CodexWsHandshakeError,
-  streamWs,
-} from "@/engine/providers/codex/transport/ws.ts";
+import { streamWs } from "@/engine/providers/codex/transport/ws.ts";
+import { CodexWsClosedBeforeCompletionError } from "@/engine/providers/codex/transport/ws-router.ts";
+import { CodexWsHandshakeError } from "@/engine/providers/codex/transport/ws-socket-pool.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 
 export { clearSessionState } from "@/engine/providers/codex/transport/state.ts";
-export { closeAllSockets } from "@/engine/providers/codex/transport/ws.ts";
+export { closeAllSockets } from "@/engine/providers/codex/transport/ws-socket-pool.ts";
 
 function isHandshake401(err: unknown): boolean {
   if (!(err instanceof CodexWsHandshakeError)) return false;
@@ -35,13 +33,18 @@ function isWsStreamLevelError(err: unknown): boolean {
   return false;
 }
 
-export async function* stream(ctx: RequestContext, body: unknown): AsyncIterable<Uint8Array> {
+export async function* stream(
+  ctx: RequestContext,
+  body: unknown,
+  signal: AbortSignal,
+): AsyncIterable<Uint8Array> {
+  const transportContext = { ...ctx, abortSignal: signal };
   recordPayloadDiagnostic("provider-request", body, {
     toolName: ctx.subagentLabel ? "codex-subagent" : "codex-main",
     toolUseId: ctx.responseRequestId ?? ctx.agentId ?? ctx.turnId ?? ctx.sessionId,
   });
   if (getTransport(ctx.sessionId) === "http") {
-    yield* streamHttp(ctx, body);
+    yield* streamHttp(transportContext, body);
     return;
   }
   const initialTokens = await currentTokens().catch(() => null);
@@ -49,7 +52,7 @@ export async function* stream(ctx: RequestContext, body: unknown): AsyncIterable
   let hasAttemptedWsHandshakeRecovery = false;
 
   try {
-    for await (const chunk of streamWs(ctx, body)) {
+    for await (const chunk of streamWs(transportContext, body)) {
       yield chunk;
     }
     resetWsStreamFailures(ctx.sessionId);
@@ -62,11 +65,11 @@ export async function* stream(ctx: RequestContext, body: unknown): AsyncIterable
         // OAuth endpoint when the stored token is the one the server rejected.
         let newTokens = await currentTokens().catch(() => null);
         if (!newTokens || newTokens.accessToken === initialTokenStr) {
-          newTokens = await forceRefreshTokens().catch(() => null);
+          newTokens = await forceRefreshTokens(initialTokens ?? undefined).catch(() => null);
         }
         if (newTokens && newTokens.accessToken !== initialTokenStr) {
           try {
-            for await (const chunk of streamWs(ctx, body)) {
+            for await (const chunk of streamWs(transportContext, body)) {
               yield chunk;
             }
             resetWsStreamFailures(ctx.sessionId);
@@ -76,13 +79,13 @@ export async function* stream(ctx: RequestContext, body: unknown): AsyncIterable
               ctx.sessionId,
               retryErr instanceof Error ? retryErr.message : String(retryErr),
             );
-            yield* streamHttp(ctx, body);
+            yield* streamHttp(transportContext, body);
             return;
           }
         }
       }
       forceHttpFallback(ctx.sessionId, err.message);
-      yield* streamHttp(ctx, body);
+      yield* streamHttp(transportContext, body);
       return;
     }
 

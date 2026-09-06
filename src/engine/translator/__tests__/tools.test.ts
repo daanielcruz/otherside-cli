@@ -123,6 +123,7 @@ describe("provider tool declarations", () => {
       "Edit",
       "Read",
       "ReportFindings",
+      "ScheduleWakeup",
       "Skill",
       "ToolSearch",
       "Workflow",
@@ -170,8 +171,9 @@ describe("provider tool declarations", () => {
     const description = (tools: typeof small, name: string) =>
       tools.find((tool) => tool.name === name)?.description;
 
-    expect(description(small, "Workflow")).toContain("small workflow size guideline");
-    expect(description(small, "Workflow")).toContain("warn the user before launching");
+    expect(description(small, "Workflow")).toContain(
+      "A workflow size guideline is configured for this session: small — keep workflows under 5 agents.",
+    );
     expect(description(unrestricted, "Workflow")).not.toContain("workflow size guideline");
     expect(description(small, "Agent")).toBe(description(unrestricted, "Agent"));
     expect(description(small, "Agent")).not.toContain("workflow size guideline");
@@ -219,6 +221,7 @@ describe("provider tool declarations", () => {
       "Edit",
       "Read",
       "ReportFindings",
+      "ScheduleWakeup",
       "Skill",
       "ToolSearch",
       "Workflow",
@@ -292,8 +295,8 @@ describe("provider tool declarations", () => {
 
     expect(description).not.toContain("## When to fork");
     expect(description).not.toContain("Don't peek");
-    expect(description).not.toContain("Don't race");
     expect(description).not.toContain("Writing a fork prompt");
+    expect(description).toContain("**Don't race**");
     expect(description).toContain("## Background execution");
     expect(description).toContain("## Writing the prompt");
   });
@@ -310,8 +313,8 @@ describe("provider tool declarations", () => {
       const subagentDescription = assembledAgentDescription(ctxOverrides);
       expect(subagentDescription).not.toContain("## When to fork");
       expect(subagentDescription).not.toContain("Don't peek");
-      expect(subagentDescription).not.toContain("Don't race");
       expect(subagentDescription).not.toContain("Writing a fork prompt");
+      expect(subagentDescription).toContain("**Don't race**");
       expect(subagentDescription).toContain("## Background execution");
       expect(subagentDescription).toContain("## Writing the prompt");
     }
@@ -334,8 +337,8 @@ describe("provider tool declarations", () => {
     expect(subagentDescription).toContain("Multi-provider orchestration");
     expect(subagentDescription).not.toContain("## When to fork");
     expect(subagentDescription).not.toContain("Don't peek");
-    expect(subagentDescription).not.toContain("Don't race");
     expect(subagentDescription).not.toContain("Writing a fork prompt");
+    expect(subagentDescription).toContain("**Don't race**");
     expect(subagentDescription).toContain("## Background execution");
     expect(subagentDescription).toContain("## Writing the prompt");
   });

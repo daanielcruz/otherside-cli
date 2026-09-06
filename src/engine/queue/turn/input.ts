@@ -1,10 +1,10 @@
 import { autoRoutesNonVision, canSendNatively } from "@/engine/model/facts/capabilities-runtime.ts";
 import { resolveImagesForNonVision } from "@/engine/tools/builtins/image/parse-image.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
 import { imageRefMatches } from "@/kernel/std/paste/ref.ts";
 import type { EffortLevel } from "@/kernel/std/types/effort.ts";
 import type { ContentBlock } from "@/kernel/std/types/message.ts";
 import type { PasteStore } from "@/kernel/std/types/paste.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 import type { PermissionMode } from "@/kernel/std/types/request.ts";
 
 export interface PastedImageRef {

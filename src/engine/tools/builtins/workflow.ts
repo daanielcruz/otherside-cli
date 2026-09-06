@@ -1,5 +1,5 @@
 import { launchWorkflow } from "@/engine/background/workflows/runtime/launch/launcher.ts";
-import { getWorkflowToolUseSummary } from "@/engine/background/workflows/runtime/transcript/tool-use-summary.ts";
+import { workflowToolUseSummary } from "@/engine/background/workflows/runtime/transcript/tool-use-summary.ts";
 import type { ToolHandler } from "@/engine/tools/contract.ts";
 import WorkflowSchema from "@/harness/tools/Workflow/tool.json" with { type: "json" };
 import { errorMessage } from "@/kernel/std/errno.ts";
@@ -10,11 +10,11 @@ export const Workflow: ToolHandler = {
   schema: WorkflowSchema,
   isConcurrencySafe: true,
   render: {
-    userFacingName() {
+    userFacingLabel() {
       return "Workflow";
     },
     summarizeArgs(input) {
-      return getWorkflowToolUseSummary(input, { verbose: true });
+      return workflowToolUseSummary(input, { verbose: true });
     },
   },
   async run(call: ToolCall, ctx: RequestContext): Promise<ToolResult> {

@@ -11,16 +11,16 @@ afterEach(() => {
 
 describe("providerRouteability model-scoped cooldowns", () => {
   it("keeps a sibling model routeable for the same provider", () => {
-    markProviderCooldown("anthropic", Date.now() + 60_000, "rate_limited", "claude-fable-5");
+    markProviderCooldown("anthropic", Date.now() + 60_000, "rate_limited", "claude-fable-5-1");
 
-    expect(providerRouteability("anthropic", undefined, "claude-fable-5").usable).toBe(false);
+    expect(providerRouteability("anthropic", undefined, "claude-fable-5-1").usable).toBe(false);
     expect(providerRouteability("anthropic", undefined, "claude-opus-4-8").usable).toBe(true);
   });
 
   it("blocks every model under a provider-wide cooldown", () => {
     markProviderCooldown("anthropic", Date.now() + 60_000, "rate_limited");
 
-    expect(providerRouteability("anthropic", undefined, "claude-fable-5").usable).toBe(false);
+    expect(providerRouteability("anthropic", undefined, "claude-fable-5-1").usable).toBe(false);
     expect(providerRouteability("anthropic", undefined, "claude-opus-4-8").usable).toBe(false);
   });
 });

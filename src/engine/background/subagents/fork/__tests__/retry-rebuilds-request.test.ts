@@ -10,8 +10,8 @@ import { registerProviderConfig, unregisterProviderConfig } from "@/engine/contr
 import type { ApiProviderSourceId, ProviderConfig } from "@/engine/contract/types.ts";
 import type { WireFingerprint } from "@/engine/contract/wire-fingerprint.ts";
 import { registerAllBuiltins } from "@/engine/tools/register-builtins.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
 import type { Message } from "@/kernel/std/types/message.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 import { runForkLoopInContext } from "../loop-runner.ts";
 import type { ForkSpec } from "../types.ts";

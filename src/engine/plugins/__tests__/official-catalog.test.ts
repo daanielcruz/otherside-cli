@@ -5,17 +5,19 @@ import { join } from "node:path";
 import {
   _markOfficialCheckoutUnavailableForTesting,
   _resetOfficialCatalogForTesting,
-  getInstallCountsSync,
   hasOfficialMarketplaceCheckout,
   listMarketplacePlugins,
-  PLUGIN_CATALOG_VERSION,
-  refreshOfficialCatalog,
 } from "@/engine/plugins/marketplace.ts";
 import {
   addKnownMarketplace,
   OFFICIAL_MARKETPLACE_NAME,
   OFFICIAL_MARKETPLACE_SOURCE,
 } from "@/engine/plugins/marketplaces-store.ts";
+import {
+  getInstallCountsSync,
+  PLUGIN_CATALOG_VERSION,
+  refreshOfficialCatalog,
+} from "@/engine/plugins/official-catalog.ts";
 
 describe("official plugin catalog + checkout Discover sourcing", () => {
   let previousConfigDir: string | undefined;

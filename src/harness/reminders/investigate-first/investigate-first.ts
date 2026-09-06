@@ -5,9 +5,9 @@ import INVESTIGATE_FIRST_DYNAMIC_SECTION from "@/harness/reminders/investigate-f
 
 export { INVESTIGATE_FIRST_DYNAMIC_SECTION };
 
-export type InvestigateFirstMode = "off" | "additive" | "compact";
+export type InvestigateFirstSetting = "off" | "additive" | "compact";
 
-export function investigateFirstMode(model: string | undefined): InvestigateFirstMode {
+export function investigateFirstMode(model: string | undefined): InvestigateFirstSetting {
   if (!model) return "off";
   if (!model.startsWith("claude-opus-4-8")) return "off";
 

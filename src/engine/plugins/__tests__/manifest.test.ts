@@ -25,7 +25,7 @@ describe("parseManifest", () => {
       agents: ["agents/reviewer.md"],
       skills: ["skills/deploy.md"],
       hooks: {
-        preToolUse: [{ matcher: "Bash", command: "echo pre", timeoutMs: 5000 }],
+        preToolUse: [{ matcher: "Bash", command: "echo pre", timeout: 5 }],
         stop: [{ type: "prompt" as const, matcher: ".*", prompt: "summarize" }],
       },
       mcpServers: {

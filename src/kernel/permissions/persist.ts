@@ -4,13 +4,13 @@ import { configPath, loadConfig, loadConfigSync, updateConfig } from "@/kernel/c
 import type {
   PermissionBehavior,
   PermissionRule,
-  PermissionRuleSource,
+  RuleSourceScope,
   SettingsPermissionsBlock,
 } from "@/kernel/permissions/types.ts";
 import {
-  permissionRuleValueFromString,
-  permissionRuleValueToString,
+  parseRuleValueText,
   READ_ONLY_PERMISSION_SOURCES,
+  serializeRuleValue,
 } from "@/kernel/permissions/types.ts";
 import { withFileLockSync } from "@/kernel/std/fs/file-lock.ts";
 import { canonicalizeCwd, configRoot, isEphemeralCwd } from "@/kernel/std/fs/paths.ts";
@@ -186,7 +186,7 @@ function appendCliArgRuleList(
   for (const token of raw.split(",")) {
     const trimmed = token.trim();
     if (trimmed.length === 0) continue;
-    const value = permissionRuleValueFromString(trimmed);
+    const value = parseRuleValueText(trimmed);
     if (!value) continue;
     out.push({ source: "cliArg", ruleBehavior: behavior, ruleValue: value });
   }
@@ -259,6 +259,20 @@ function loadManagedDropInDirectories(out: Set<string>, baseDir = configRoot()):
   }
 }
 
+/**
+ * Grants the session a directory beyond the one it started in, at user scope so
+ * it outlives the session the way the reader granting it expects.
+ */
+export async function grantWorkingDirectory(directory: string): Promise<void> {
+  await updateConfig((cfg) => {
+    const permissions = cfg.permissions ?? {};
+    const existing = permissions.additionalDirectories ?? [];
+    if (existing.includes(directory)) return;
+    permissions.additionalDirectories = [...existing, directory];
+    cfg.permissions = permissions;
+  });
+}
+
 export async function saveRules(rules: readonly PermissionRule[], cwd?: string): Promise<void> {
   if (isManagedPermissionRulesOnly()) {
     // Policy forbids persisting new/edited rules to editable settings
@@ -291,7 +305,7 @@ export async function saveRules(rules: readonly PermissionRule[], cwd?: string):
 
 export async function persistAdditionalDirectoryUpdate(
   directories: readonly string[],
-  source: PermissionRuleSource,
+  source: RuleSourceScope,
   cwd: string | undefined,
   remove: boolean,
 ): Promise<void> {
@@ -315,7 +329,7 @@ export async function persistAdditionalDirectoryUpdate(
 
 async function saveAdditionalDirectories(
   directories: readonly string[],
-  source: PermissionRuleSource,
+  source: RuleSourceScope,
   cwd?: string,
 ): Promise<void> {
   const unique = [...new Set(directories)];
@@ -352,7 +366,7 @@ function writeDirectoriesForSource(
 }
 
 function writeRulesForSource(
-  source: PermissionRuleSource,
+  source: RuleSourceScope,
   block: SettingsPermissionsBlock,
   cwd: string,
 ): void {
@@ -455,7 +469,7 @@ function appendDirectoriesFromFile(out: Set<string>, filePath: string): void {
 function appendRules(
   out: PermissionRule[],
   block: SettingsPermissionsBlock | undefined,
-  source: PermissionRuleSource,
+  source: RuleSourceScope,
 ): void {
   if (!block) return;
   pushPatterns({ out, patterns: block.allow, source, behavior: "allow" });
@@ -466,7 +480,7 @@ function appendRules(
 function appendRulesFromFile(
   out: PermissionRule[],
   filePath: string,
-  source: PermissionRuleSource,
+  source: RuleSourceScope,
 ): void {
   if (!existsSync(filePath)) return;
   let parsed: unknown;
@@ -484,13 +498,13 @@ function appendRulesFromFile(
 function pushPatterns(opts: {
   out: PermissionRule[];
   patterns: string[] | undefined;
-  source: PermissionRuleSource;
+  source: RuleSourceScope;
   behavior: PermissionBehavior;
 }): void {
   const { out, patterns, source, behavior } = opts;
   if (!patterns) return;
   for (const p of patterns) {
-    const ruleValue = permissionRuleValueFromString(p);
+    const ruleValue = parseRuleValueText(p);
     if (!ruleValue) continue;
     out.push({ source, ruleBehavior: behavior, ruleValue });
   }
@@ -498,14 +512,14 @@ function pushPatterns(opts: {
 
 function serializeRulesForSource(
   rules: readonly PermissionRule[],
-  source: PermissionRuleSource,
+  source: RuleSourceScope,
 ): SettingsPermissionsBlock {
   const allow: string[] = [];
   const ask: string[] = [];
   const deny: string[] = [];
   for (const r of rules) {
     if (r.source !== source) continue;
-    const serializedRule = permissionRuleValueToString(r.ruleValue);
+    const serializedRule = serializeRuleValue(r.ruleValue);
     if (r.ruleBehavior === "allow") allow.push(serializedRule);
     else if (r.ruleBehavior === "ask") ask.push(serializedRule);
     else if (r.ruleBehavior === "deny") deny.push(serializedRule);
@@ -518,5 +532,5 @@ function serializeRulesForSource(
 }
 
 function ruleKey(rule: PermissionRule): string {
-  return `${rule.source}|${rule.ruleBehavior}|${permissionRuleValueToString(rule.ruleValue)}`;
+  return `${rule.source}|${rule.ruleBehavior}|${serializeRuleValue(rule.ruleValue)}`;
 }

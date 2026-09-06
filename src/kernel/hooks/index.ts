@@ -1,13 +1,17 @@
+import type { HookEntry } from "@/kernel/std/types/hook-entry.ts";
 import type { ToolCall, ToolResult } from "@/kernel/std/types/message.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
-import { DEFAULT_TIMEOUT_MS } from "./constants.ts";
 import type { EventCtx, HookEvent } from "./events.ts";
-import { fireEntry, type HookEntry, type HookOutcome } from "./exec.ts";
+import { fireEntry, type HookOutcome } from "./exec.ts";
 
+export type { HookEntry } from "@/kernel/std/types/hook-entry.ts";
 export type { EventCtx, HookEvent } from "./events.ts";
 export { HOOK_EVENT_VALUES } from "./events.ts";
-export type { HookEntry, HookOutcome } from "./exec.ts";
+export type { HookOutcome } from "./exec.ts";
 export { fireEntry } from "./exec.ts";
+export type { HookResponse } from "./response.ts";
+export { hookResponseFromStdout } from "./response.ts";
+export { defaultHookTimeoutSeconds, hookTimeoutMs } from "./timeout.ts";
 
 export interface HookHandler {
   // A bare `ToolCall` return means the hook chain expressed no explicit
@@ -16,7 +20,7 @@ export interface HookHandler {
   // input). `{ kind: "allow" | "ask", call }` carries an explicit
   // hookSpecificOutput.permissionDecision through to permission resolution
   // (see pretooluse-hook-permission-context.ts) so it can bypass or force the
-  // interactive/headless prompt, mirroring upstream's resolveHookPermissionDecision.
+  // interactive/headless prompt.
   preToolUse?(
     call: ToolCall,
     ctx: RequestContext,
@@ -42,8 +46,7 @@ export async function fireFor(
   const entries = cfg.hooks[event] ?? [];
   const out: HookOutcome[] = [];
   for (const entry of entries) {
-    const t = entry.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-    out.push(await fireEntry(entry, ctx, t));
+    out.push(await fireEntry(entry, ctx));
   }
   return out;
 }

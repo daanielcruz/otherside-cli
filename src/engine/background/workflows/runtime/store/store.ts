@@ -3,30 +3,30 @@ import {
   buildWorkflowSummary,
   type TaskNotificationStatus,
 } from "@/engine/background/tasks/notification.ts";
-import { getWorkflowTranscriptDir } from "@/engine/background/workflows/runtime/history/paths.ts";
+import { workflowTranscriptDir } from "@/engine/background/workflows/runtime/history/paths.ts";
 import { persistWorkflowRun } from "@/engine/background/workflows/runtime/history/snapshot.ts";
 import type {
-  LocalWorkflowTaskState,
   WorkflowAgentControlReason,
-  WorkflowProgressEntry,
+  WorkflowProgressItem,
+  WorkflowTaskLifecycle,
 } from "@/engine/background/workflows/runtime/store/types.ts";
 import {
   WORKFLOW_AGENT_RETRY_REASON,
   WORKFLOW_AGENT_SKIP_REASON,
 } from "@/engine/background/workflows/runtime/store/types.ts";
 import { emitQueue } from "@/engine/queue/emit.ts";
+import type { ProviderAllocation } from "@/kernel/channels/usage-limits.ts";
 import {
   registerWorkflowTasksProvider,
   type WorkflowTaskStatus,
 } from "@/kernel/channels/workflow-tasks.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
 
 /** Matches `[]` / `{}` / `{"key": []}` result previews for the empty-result count. */
 const EMPTY_RESULT_PREVIEW_RE = /^(\[\s*\]|\{\s*\}|\{\s*"[^"]+"\s*:\s*\[\s*\]\s*\})$/;
 
-const tasks = new Map<string, LocalWorkflowTaskState>();
+const tasks = new Map<string, WorkflowTaskLifecycle>();
 const listeners = new Set<() => void>();
-type WorkflowCompletionListener = (task: LocalWorkflowTaskState) => void;
+type WorkflowCompletionListener = (task: WorkflowTaskLifecycle) => void;
 const completionListeners = new Set<WorkflowCompletionListener>();
 const evictionTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const persistenceByRunId = new Map<string, Promise<void>>();
@@ -52,14 +52,14 @@ export function setWorkflowEvictionDelayForTests(ms: number): void {
   evictDelayMs = ms;
 }
 
-function isTerminalWorkflowStatus(status: WorkflowTaskStatus): boolean {
+function isFinalWorkflowStatus(status: WorkflowTaskStatus): boolean {
   return status === "completed" || status === "failed" || status === "killed";
 }
 
 function evictWorkflowTask(taskId: string): void {
   const task = tasks.get(taskId);
   if (!task) return;
-  if (!isTerminalWorkflowStatus(task.status)) return;
+  if (!isFinalWorkflowStatus(task.status)) return;
   tasks.delete(taskId);
   notifyWorkflowTaskListeners();
 }
@@ -76,16 +76,16 @@ function scheduleWorkflowEviction(taskId: string): void {
   evictionTimers.set(taskId, timer);
 }
 
-export function registerWorkflowTask(task: LocalWorkflowTaskState): void {
+export function enrollWorkflowTask(task: WorkflowTaskLifecycle): void {
   tasks.set(task.id, task);
   notifyWorkflowTaskListeners();
 }
 
-export function getWorkflowTask(taskId: string): LocalWorkflowTaskState | undefined {
+export function getWorkflowTask(taskId: string): WorkflowTaskLifecycle | undefined {
   return tasks.get(taskId);
 }
 
-export function getRunningWorkflowByRunId(runId: string): LocalWorkflowTaskState | undefined {
+export function getRunningWorkflowByRunId(runId: string): WorkflowTaskLifecycle | undefined {
   return [...tasks.values()].find(
     (task) => task.workflowRunId === runId && task.status === "running",
   );
@@ -93,7 +93,7 @@ export function getRunningWorkflowByRunId(runId: string): LocalWorkflowTaskState
 
 export function getWorkflowTaskByParentToolCallId(
   parentToolCallId: string,
-): LocalWorkflowTaskState | undefined {
+): WorkflowTaskLifecycle | undefined {
   return [...tasks.values()].find((task) => task.parentToolCallId === parentToolCallId);
 }
 
@@ -108,26 +108,42 @@ export function removeWorkflowTask(taskId: string): boolean {
   return existed;
 }
 
-export function listWorkflowTasks(): LocalWorkflowTaskState[] {
+export function listWorkflowTasks(): WorkflowTaskLifecycle[] {
   return [...tasks.values()].sort((left, right) => right.startedAt - left.startedAt);
 }
 
 /**
- * Distinct routing providers of stage agents currently executing in running
- * workflows. Stage agents never enter the background-task store, so this is
- * their only allocation signal for passive quota warnings.
+ * Distinct (provider, model) routes of stage agents currently executing in
+ * running workflows. Stage agents never enter the background-task store, so
+ * this is their only allocation signal for passive quota warnings.
  */
-export function listActiveWorkflowAgentProviders(): ProviderId[] {
-  const providers = new Set<ProviderId>();
+export function listActiveWorkflowAgentAllocations(): ProviderAllocation[] {
+  const byRoute = new Map<string, ProviderAllocation>();
   for (const task of tasks.values()) {
     if (task.status !== "running") continue;
     for (const entry of task.workflowProgress) {
       if (entry.type !== "workflow_agent") continue;
       if (entry.state !== "start") continue;
-      if (entry.provider !== undefined) providers.add(entry.provider);
+      const route = entry.route;
+      if (route !== undefined) {
+        const allocation: ProviderAllocation = {
+          provider: route.provider,
+          model: route.model,
+        };
+        byRoute.set(`${allocation.provider}\u0000${allocation.model}`, allocation);
+        continue;
+      }
+      if (entry.provider === undefined) continue;
+      // Legacy path: independent provider with optional model. Prefer provider-only
+      // when model is a display name rather than a routing id (no route object).
+      const allocation: ProviderAllocation =
+        entry.model === undefined
+          ? { provider: entry.provider }
+          : { provider: entry.provider, model: entry.model };
+      byRoute.set(`${allocation.provider}\u0000${allocation.model ?? ""}`, allocation);
     }
   }
-  return [...providers];
+  return [...byRoute.values()];
 }
 
 export function subscribeWorkflowTasks(listener: () => void): () => void {
@@ -137,8 +153,8 @@ export function subscribeWorkflowTasks(listener: () => void): () => void {
 
 export function updateWorkflowTask(
   taskId: string,
-  patch: Partial<Omit<LocalWorkflowTaskState, "id">>,
-): LocalWorkflowTaskState | undefined {
+  patch: Partial<Omit<WorkflowTaskLifecycle, "id">>,
+): WorkflowTaskLifecycle | undefined {
   const task = tasks.get(taskId);
   if (!task) return undefined;
   Object.assign(task, patch);
@@ -146,7 +162,7 @@ export function updateWorkflowTask(
   return task;
 }
 
-export function completeWorkflowTask(taskId: string, result: unknown, outputFile: string): void {
+export function finalizeWorkflowTask(taskId: string, result: unknown, outputFile: string): void {
   finishWorkflowTask(taskId, { status: "completed", result, outputFile });
 }
 
@@ -172,7 +188,7 @@ export function pauseWorkflowTask(taskId: string): boolean {
   if (task.status !== "running") return false;
   task.abortController.abort();
   task.agentControllers?.clear();
-  const patch: Partial<Omit<LocalWorkflowTaskState, "id">> = {
+  const patch: Partial<Omit<WorkflowTaskLifecycle, "id">> = {
     status: "paused",
     endedAt: Date.now(),
   };
@@ -183,14 +199,14 @@ export function pauseWorkflowTask(taskId: string): boolean {
 }
 
 export function skipWorkflowAgent(agentId: string): boolean {
-  return abortWorkflowAgent(agentId, WORKFLOW_AGENT_SKIP_REASON);
+  return cancelWorkflowAgent(agentId, WORKFLOW_AGENT_SKIP_REASON);
 }
 
 export function retryWorkflowAgent(agentId: string): boolean {
-  return abortWorkflowAgent(agentId, WORKFLOW_AGENT_RETRY_REASON);
+  return cancelWorkflowAgent(agentId, WORKFLOW_AGENT_RETRY_REASON);
 }
 
-function abortWorkflowAgent(agentId: string, reason: WorkflowAgentControlReason): boolean {
+function cancelWorkflowAgent(agentId: string, reason: WorkflowAgentControlReason): boolean {
   for (const task of tasks.values()) {
     if (task.status !== "running") continue;
     const controller = task.agentControllers?.get(agentId);
@@ -218,7 +234,7 @@ export function resetWorkflowTasksForTests(): void {
   notifyWorkflowTaskListeners();
 }
 
-function enqueueWorkflowPersistence(task: LocalWorkflowTaskState): void {
+function enqueueWorkflowPersistence(task: WorkflowTaskLifecycle): void {
   const runId = task.workflowRunId;
   const previous = persistenceByRunId.get(runId) ?? Promise.resolve();
   const next = previous.then(() =>
@@ -237,11 +253,11 @@ function enqueueWorkflowPersistence(task: LocalWorkflowTaskState): void {
 
 function finishWorkflowTask(
   taskId: string,
-  patch: Partial<Omit<LocalWorkflowTaskState, "id">> & { status: WorkflowTaskStatus },
+  patch: Partial<Omit<WorkflowTaskLifecycle, "id">> & { status: WorkflowTaskStatus },
 ): void {
   const task = tasks.get(taskId);
   if (!task) return;
-  if (isTerminalWorkflowStatus(task.status)) return;
+  if (isFinalWorkflowStatus(task.status)) return;
   Object.assign(task, patch, { endedAt: Date.now() });
   task.agentControllers?.clear();
   notifyWorkflowTaskListeners();
@@ -251,7 +267,7 @@ function finishWorkflowTask(
   scheduleWorkflowEviction(taskId);
 }
 
-function routeWorkflowCompletionNotification(task: LocalWorkflowTaskState): void {
+function routeWorkflowCompletionNotification(task: WorkflowTaskLifecycle): void {
   const status = terminalNotificationStatus(task.status);
   if (status === null) return;
   // A user-stopped workflow is silent: the user just watched themselves stop
@@ -266,7 +282,7 @@ function routeWorkflowCompletionNotification(task: LocalWorkflowTaskState): void
     ...(task.error !== undefined ? { error: task.error } : {}),
     byUser,
   });
-  const transcriptDir = getWorkflowTranscriptDir(task.cwd, task.sessionId, task.workflowRunId);
+  const transcriptDir = workflowTranscriptDir(task.cwd, task.sessionId, task.workflowRunId);
   const recovery = composeRecoveryGuidance(task, status, transcriptDir);
   const diagnostics = composeDiagnosticsGuidance(task, status, transcriptDir);
   const durationMs = task.endedAt !== undefined ? Math.max(0, task.endedAt - task.startedAt) : 0;
@@ -304,7 +320,7 @@ function routeWorkflowCompletionNotification(task: LocalWorkflowTaskState): void
 }
 
 function composeRecoveryGuidance(
-  task: LocalWorkflowTaskState,
+  task: WorkflowTaskLifecycle,
   status: TaskNotificationStatus,
   transcriptDir: string,
 ): string | undefined {
@@ -318,7 +334,7 @@ function composeRecoveryGuidance(
 }
 
 function composeDiagnosticsGuidance(
-  task: LocalWorkflowTaskState,
+  task: WorkflowTaskLifecycle,
   status: TaskNotificationStatus,
   transcriptDir: string,
 ): string | undefined {
@@ -344,7 +360,7 @@ export function buildWorkflowResumeCall(input: {
   return `Workflow({scriptPath: ${JSON.stringify(input.scriptPath)}, resumeFromRunId: ${JSON.stringify(input.runId)}${argsPart}})`;
 }
 
-function resumeWorkflowCallLine(task: LocalWorkflowTaskState, mode: "resume" | "rerun"): string {
+function resumeWorkflowCallLine(task: WorkflowTaskLifecycle, mode: "resume" | "rerun"): string {
   const call = buildWorkflowResumeCall({
     scriptPath: task.scriptPath ?? "",
     runId: task.workflowRunId,
@@ -356,7 +372,7 @@ function resumeWorkflowCallLine(task: LocalWorkflowTaskState, mode: "resume" | "
   return `To resume after editing the script, call: ${call}`;
 }
 
-function countWorkflowAgentOutcomes(progress: WorkflowProgressEntry[]): {
+function countWorkflowAgentOutcomes(progress: WorkflowProgressItem[]): {
   done: number;
   error: number;
   skipped: number;

@@ -62,9 +62,10 @@ function makeCtx(messages: Message[]): SlashContext {
             effort: null,
             fastMode: false,
             permissionMode: "default",
+            orchestrationMode: "feudalism",
           }),
         },
-        config: { orchestrationMode: "feudalism", quotaFallback: false },
+        config: { quotaFallback: false },
       },
       injections: { push: () => {} },
       sessionAllowedToolPatterns: new Set(),
@@ -102,14 +103,20 @@ describe("handleFork", () => {
     expect(dispatchFork).toHaveBeenCalledTimes(0);
   });
 
-  test("success feedback uses glyph, derived name, and last four of id", async () => {
+  test("success feedback names the fork and points at the agents panel", async () => {
     const result = await handleFork(
       cmd,
       "Review the auth flow",
       makeCtx([{ role: "user", content: [{ type: "text", text: "hi" }] }]),
     );
     expect(result.kind).toBe("instant");
-    expect(result.feedback).toMatch(/^\u2442 forked review-the-auth \([0-9a-z]{4}\)$/);
+    // The row already carries the transcript's own gutter mark, so the feedback
+    // opens on its text rather than repeating a fork glyph beside it.
+    expect(result.feedback).toMatch(
+      /^forked into a background agent · review-the-auth \([0-9a-z]{4}\)\n/,
+    );
+    expect(result.feedback).toContain("agents panel (↓ to manage)");
+    expect(result.feedback).not.toContain("ctrl+t");
     await Bun.sleep(20);
     expect(dispatchFork).toHaveBeenCalled();
     const parentCtx = dispatchFork.mock.calls.at(-1)?.[1];

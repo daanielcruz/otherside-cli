@@ -18,7 +18,8 @@ export function filePathSegment(filePath: string): ToolArgSegment {
 }
 
 export interface ToolRenderHooks {
-  userFacingName?: (input: unknown) => string;
+  userFacingLabel?: (input: unknown) => string;
+  userFacingDescription?: () => string;
   summarizeArgs?: (input: unknown) => string;
   summarizeArgSegments?: (input: unknown) => ToolArgSegment[];
   formatResult?: (content: string, input: unknown) => string;

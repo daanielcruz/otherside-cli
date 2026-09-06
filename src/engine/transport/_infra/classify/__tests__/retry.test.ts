@@ -4,23 +4,27 @@ import {
   resetPromptCacheDiagnosticsForTests,
   setPromptCacheDiagnosticSinkForTests,
 } from "@/devtools/prompt-cache.ts";
-import { isTransientNetworkError } from "@/engine/providers/_shared/retry.ts";
+import { registerProviderConfig, unregisterProviderConfig } from "@/engine/contract/registry.ts";
+import type { ProviderConfig, RetryDecision } from "@/engine/contract/types.ts";
+import { isRetryableNetworkError } from "@/engine/providers/_shared/retry.ts";
 import {
   clearProviderCooldowns,
   DEFAULT_PROVIDER_COOLDOWN_MS,
   getProviderCooldown,
 } from "@/engine/session/usage/provider-health.ts";
 import { classifyProviderError } from "@/engine/transport/_infra/classify/classify.ts";
-import { StreamIdleTimeoutError } from "@/kernel/std/stream/idle-timeout.ts";
+import { StreamSilenceError } from "@/kernel/std/stream/idle-timeout.ts";
 import { ProviderHttpError } from "@/kernel/std/types/error-meta.ts";
 import type { ProviderEvent } from "@/kernel/std/types/events.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 import {
   DEFAULT_MAX_ATTEMPTS,
   DEFAULT_RETRY_BUDGET_MS,
   isContentEvent,
-  type RetryDecision,
   retryBudgetExhausted,
+  STREAM_SILENCE_MIN_ATTEMPTS,
+  type StreamRunner,
   streamWithRetry,
 } from "../retry.ts";
 
@@ -41,12 +45,35 @@ afterEach(() => {
   }
 });
 
-const ctx = { provider: "test", model: "test-model" } as unknown as RequestContext;
+const ctx = {
+  provider: "test",
+  model: "test-model",
+} as unknown as RequestContext;
 const BUN_SOCKET_CLOSE_MESSAGE =
   "The socket connection was closed unexpectedly. For more information, pass verbose: true in the second argument to fetch()";
 const CODEX_WS_CLOSE_MESSAGE = "codex ws closed before completion (code 1006: Connection ended)";
 
-async function* emptyBytes(): AsyncIterable<Uint8Array> {}
+interface RetryRunnerFixture {
+  events(): AsyncIterable<ProviderEvent>;
+  recoverableError: StreamRunner["recoverableError"];
+  getResumeBody?: StreamRunner["getResumeBody"];
+  onStart?: (ctx: RequestContext) => void;
+  onAbort?: (reason: unknown) => void;
+}
+
+function createRetryRunner(fixture: RetryRunnerFixture): StreamRunner {
+  return {
+    startStreamAttempt: (requestCtx) => {
+      fixture.onStart?.(requestCtx);
+      return {
+        events: fixture.events(),
+        abort: fixture.onAbort ?? (() => {}),
+      };
+    },
+    recoverableError: fixture.recoverableError,
+    ...(fixture.getResumeBody ? { getResumeBody: fixture.getResumeBody } : {}),
+  };
+}
 
 async function collect(it: AsyncIterable<ProviderEvent>): Promise<ProviderEvent[]> {
   const out: ProviderEvent[] = [];
@@ -67,12 +94,25 @@ function classifyWithoutDelay(
   return decision.kind === "retry" ? { ...decision, delayMs: 0 } : decision;
 }
 
+function registerKeepaliveClassifierProvider(providerId: ProviderId): void {
+  const providerConfig: ProviderConfig<"openai-completions"> = {
+    provider: {
+      id: providerId,
+      api: "openai-completions",
+      sourceId: "builtin",
+      label: "Keepalive classifier test",
+      shortKey: "keepalive-test",
+    },
+    streamEmitsKeepalive: true,
+  };
+  registerProviderConfig(providerConfig);
+}
+
 describe("streamWithRetry resume policy", () => {
   it("re-streams after partial content via stream_reset when the provider cannot resume", async () => {
     let calls = 0;
-    const provider = {
-      stream: () => emptyBytes(),
-      translateResponse: async function* (): AsyncIterable<ProviderEvent> {
+    const provider = createRetryRunner({
+      events: async function* (): AsyncIterable<ProviderEvent> {
         calls += 1;
         if (calls === 1) {
           yield { kind: "text_delta", text: "hel" } as ProviderEvent;
@@ -81,7 +121,7 @@ describe("streamWithRetry resume policy", () => {
         yield { kind: "text_delta", text: "hello world" } as ProviderEvent;
       },
       recoverableError: () => ({ kind: "retry" as const }),
-    };
+    });
     const events = await collect(streamWithRetry(ctx, provider, () => ({}), { baseDelayMs: 0 }));
     expect(calls).toBe(2);
     const resetIdx = events.findIndex((e) => e.kind === "stream_reset");
@@ -90,22 +130,24 @@ describe("streamWithRetry resume policy", () => {
     // state before the retry banner shows.
     expect(resetIdx).toBeGreaterThan(-1);
     expect(retryIdx).toBeGreaterThan(resetIdx);
-    expect(events[resetIdx]).toMatchObject({ kind: "stream_reset", attempt: 1 });
+    expect(events[resetIdx]).toMatchObject({
+      kind: "stream_reset",
+      attempt: 1,
+    });
     expect(events.filter((e) => e.kind === "text_delta").length).toBe(2);
     expect(events.some((e) => e.kind === "error")).toBe(false);
   });
 
   it("retries normally when the error happens before any content is emitted", async () => {
     let calls = 0;
-    const provider = {
-      stream: () => emptyBytes(),
-      translateResponse: async function* (): AsyncIterable<ProviderEvent> {
+    const provider = createRetryRunner({
+      events: async function* (): AsyncIterable<ProviderEvent> {
         calls += 1;
         if (calls === 1) throw new Error("pre-content 529");
         yield { kind: "text_delta", text: "ok" } as ProviderEvent;
       },
       recoverableError: () => ({ kind: "retry" as const }),
-    };
+    });
     const events = await collect(streamWithRetry(ctx, provider, () => ({}), { baseDelayMs: 0 }));
     expect(calls).toBe(2);
     expect(events.some((e) => e.kind === "retry_status")).toBe(true);
@@ -114,9 +156,8 @@ describe("streamWithRetry resume policy", () => {
 
   it("resumes via a provider-supplied resume body instead of failing", async () => {
     let calls = 0;
-    const provider = {
-      stream: () => emptyBytes(),
-      translateResponse: async function* (): AsyncIterable<ProviderEvent> {
+    const provider = createRetryRunner({
+      events: async function* (): AsyncIterable<ProviderEvent> {
         calls += 1;
         if (calls === 1) {
           yield { kind: "text_delta", text: "part" } as ProviderEvent;
@@ -126,7 +167,7 @@ describe("streamWithRetry resume policy", () => {
       },
       recoverableError: () => ({ kind: "retry" as const }),
       getResumeBody: () => ({ resumed: true }),
-    };
+    });
     const events = await collect(streamWithRetry(ctx, provider, () => ({}), { baseDelayMs: 0 }));
     expect(calls).toBe(2);
     expect(events.some((e) => e.kind === "retry_status")).toBe(true);
@@ -136,37 +177,41 @@ describe("streamWithRetry resume policy", () => {
 
   it("retries the Bun socket-close fetch error before content", async () => {
     let calls = 0;
-    const provider = {
-      stream: () => emptyBytes(),
-      translateResponse: async function* (): AsyncIterable<ProviderEvent> {
+    const provider = createRetryRunner({
+      events: async function* (): AsyncIterable<ProviderEvent> {
         calls += 1;
         if (calls === 1) throw new Error(BUN_SOCKET_CLOSE_MESSAGE);
         yield { kind: "text_delta", text: "ok" } as ProviderEvent;
       },
       recoverableError: classifyWithoutDelay,
-    };
+    });
     const events = await collect(streamWithRetry(ctx, provider, () => ({})));
     const retry = events.find((e) => e.kind === "retry_status");
     expect(calls).toBe(2);
-    expect(retry).toMatchObject({ kind: "retry_status", attempt: 1, maxAttempts: 10 });
+    expect(retry).toMatchObject({
+      kind: "retry_status",
+      attempt: 1,
+      maxAttempts: 10,
+    });
     expect(events.filter((e) => e.kind === "text_delta").length).toBe(1);
   });
 
   it("exhausts retries on repeated mid-content failures — one stream_reset per attempt, then throws", async () => {
     let calls = 0;
-    const provider = {
-      stream: () => emptyBytes(),
-      translateResponse: async function* (): AsyncIterable<ProviderEvent> {
+    const provider = createRetryRunner({
+      events: async function* (): AsyncIterable<ProviderEvent> {
         calls += 1;
         yield { kind: "text_delta", text: "part" } as ProviderEvent;
         throw new Error(BUN_SOCKET_CLOSE_MESSAGE);
       },
       recoverableError: classifyWithoutDelay,
-    };
+    });
     const events: ProviderEvent[] = [];
     let thrown: unknown = null;
     try {
-      for await (const ev of streamWithRetry(ctx, provider, () => ({}), { maxAttempts: 3 })) {
+      for await (const ev of streamWithRetry(ctx, provider, () => ({}), {
+        maxAttempts: 3,
+      })) {
         events.push(ev);
       }
     } catch (err) {
@@ -194,11 +239,14 @@ describe("streamWithRetry resume policy", () => {
       cwd: "/workspace/project",
     } as RequestContext;
     let calls = 0;
-    const provider = {
-      stream: () => emptyBytes(),
-      translateResponse: async function* (): AsyncIterable<ProviderEvent> {
+    const provider = createRetryRunner({
+      events: async function* (): AsyncIterable<ProviderEvent> {
         calls += 1;
-        yield { kind: "message_start", id: `msg-${calls}`, requestId: `req-${calls}` };
+        yield {
+          kind: "message_start",
+          id: `msg-${calls}`,
+          requestId: `req-${calls}`,
+        };
         yield {
           kind: "usage",
           inputTokens: 10,
@@ -214,7 +262,7 @@ describe("streamWithRetry resume policy", () => {
       },
       recoverableError: () => ({ kind: "retry" as const, delayMs: 0 }),
       getResumeBody: () => ({ resumed: true }),
-    };
+    });
 
     await collect(
       streamWithRetry(
@@ -273,17 +321,19 @@ describe("rate-limit (429/529) classification and exhaustion", () => {
   it("exhausting the retry budget on 429 yields quota_exhausted, not a raw throw", async () => {
     let calls = 0;
     const resetEpochMs = Date.now() + 26 * 60 * 60 * 1000;
-    const provider = {
-      stream: () => emptyBytes(),
+    const provider = createRetryRunner({
       // biome-ignore lint/correctness/useYield: throws before any yield
-      translateResponse: async function* (): AsyncIterable<ProviderEvent> {
+      events: async function* (): AsyncIterable<ProviderEvent> {
         calls += 1;
         throw http429({ quotaResetEpochMs: resetEpochMs });
       },
       recoverableError: classifyWithoutDelay,
-    };
+    });
     const events = await collect(
-      streamWithRetry(ctx, provider, () => ({}), { maxAttempts: 2, baseDelayMs: 0 }),
+      streamWithRetry(ctx, provider, () => ({}), {
+        maxAttempts: 2,
+        baseDelayMs: 0,
+      }),
     );
     expect(calls).toBe(2);
     const last = events.at(-1);
@@ -301,10 +351,9 @@ describe("rate-limit (429/529) classification and exhaustion", () => {
 
   it("hard quota 429: ProviderHttpError with quotaExhausted:true and quotaResetEpochMs does not mark cooldown", async () => {
     const resetEpochMs = Date.now() + 26 * 60 * 60 * 1000;
-    const provider = {
-      stream: () => emptyBytes(),
+    const provider = createRetryRunner({
       // biome-ignore lint/correctness/useYield: throws before any yield
-      translateResponse: async function* (): AsyncIterable<ProviderEvent> {
+      events: async function* (): AsyncIterable<ProviderEvent> {
         throw new ProviderHttpError({
           provider: "/v1/messages",
           status: 429,
@@ -314,9 +363,12 @@ describe("rate-limit (429/529) classification and exhaustion", () => {
         });
       },
       recoverableError: classifyWithoutDelay,
-    };
+    });
     const events = await collect(
-      streamWithRetry(ctx, provider, () => ({}), { maxAttempts: 2, baseDelayMs: 0 }),
+      streamWithRetry(ctx, provider, () => ({}), {
+        maxAttempts: 2,
+        baseDelayMs: 0,
+      }),
     );
     const last = events.at(-1);
     expect(last?.kind).toBe("quota_exhausted");
@@ -326,51 +378,70 @@ describe("rate-limit (429/529) classification and exhaustion", () => {
   });
 
   it("exhausting the retry budget on a non-429 error still throws raw", async () => {
-    const provider = {
-      stream: () => emptyBytes(),
+    const provider = createRetryRunner({
       // biome-ignore lint/correctness/useYield: throws before any yield
-      translateResponse: async function* (): AsyncIterable<ProviderEvent> {
+      events: async function* (): AsyncIterable<ProviderEvent> {
         throw new Error("mid-stream 500");
       },
       recoverableError: () => ({ kind: "retry" as const, delayMs: 0 }),
-    };
+    });
     await expect(
-      collect(streamWithRetry(ctx, provider, () => ({}), { maxAttempts: 2, baseDelayMs: 0 })),
+      collect(
+        streamWithRetry(ctx, provider, () => ({}), {
+          maxAttempts: 2,
+          baseDelayMs: 0,
+        }),
+      ),
     ).rejects.toThrow("mid-stream 500");
   });
 });
 
 describe("network retry classification", () => {
+  it("classifies a silent stream as a transient network failure", () => {
+    // Both classifiers funnel through isRetryableNetworkError, so this single
+    // predicate keeps the retry loop and the error-panel retry action agreeing.
+    expect(isRetryableNetworkError(new StreamSilenceError(300_000))).toBe(true);
+    expect(classifyProviderError(new StreamSilenceError(300_000)).kind).toBe("retry");
+  });
+
   it("classifies Bun and Undici socket close shapes as transient", () => {
-    expect(isTransientNetworkError(new Error(BUN_SOCKET_CLOSE_MESSAGE))).toBe(true);
+    expect(isRetryableNetworkError(new Error(BUN_SOCKET_CLOSE_MESSAGE))).toBe(true);
     expect(classifyProviderError(new Error(BUN_SOCKET_CLOSE_MESSAGE)).kind).toBe("retry");
-    expect(isTransientNetworkError(new Error(CODEX_WS_CLOSE_MESSAGE))).toBe(true);
+    expect(isRetryableNetworkError(new Error(CODEX_WS_CLOSE_MESSAGE))).toBe(true);
     expect(classifyProviderError(new Error(CODEX_WS_CLOSE_MESSAGE)).kind).toBe("retry");
-    expect(isTransientNetworkError(errorWithCode("socket closed", "UND_ERR_SOCKET"))).toBe(true);
+    expect(isRetryableNetworkError(errorWithCode("socket closed", "UND_ERR_SOCKET"))).toBe(true);
     expect(
-      isTransientNetworkError(
-        new Error("fetch failed", { cause: errorWithCode("socket closed", "UND_ERR_SOCKET") }),
+      isRetryableNetworkError(
+        new Error("fetch failed", {
+          cause: errorWithCode("socket closed", "UND_ERR_SOCKET"),
+        }),
       ),
     ).toBe(true);
     expect(
-      isTransientNetworkError(
-        new Error(BUN_SOCKET_CLOSE_MESSAGE, { cause: errorWithCode("reset", "ECONNRESET") }),
+      isRetryableNetworkError(
+        new Error(BUN_SOCKET_CLOSE_MESSAGE, {
+          cause: errorWithCode("reset", "ECONNRESET"),
+        }),
       ),
     ).toBe(true);
   });
 
   it("classifies AbortSignal.timeout TimeoutError as transient (retryable)", () => {
-    const byName = Object.assign(new Error("The operation timed out."), { name: "TimeoutError" });
-    expect(isTransientNetworkError(byName)).toBe(true);
+    const byName = Object.assign(new Error("The operation timed out."), {
+      name: "TimeoutError",
+    });
+    expect(isRetryableNetworkError(byName)).toBe(true);
     expect(classifyProviderError(byName).kind).toBe("retry");
     // message-only fallback (name lost across a boundary) still retries
     const byMessage = new Error("The operation timed out.");
-    expect(isTransientNetworkError(byMessage)).toBe(true);
+    expect(isRetryableNetworkError(byMessage)).toBe(true);
     // nested in a cause chain
     expect(
-      isTransientNetworkError(
+      isRetryableNetworkError(
         new Error("fetch failed", {
-          cause: Object.assign(new Error("The operation timed out."), { name: "TimeoutError" }),
+          cause: Object.assign(new Error("The operation timed out."), {
+            name: "TimeoutError",
+          }),
         }),
       ),
     ).toBe(true);
@@ -382,16 +453,16 @@ describe("network retry classification", () => {
       "Unable to connect. Is the computer able to access the url?",
       "ConnectionRefused",
     );
-    expect(isTransientNetworkError(bunFetch)).toBe(true);
+    expect(isRetryableNetworkError(bunFetch)).toBe(true);
     expect(classifyProviderError(bunFetch).kind).toBe("retry");
     // Bun socket open: FailedToOpenSocket with the "typo" message
     const bunSocket = errorWithCode("Was there a typo in the url or port?", "FailedToOpenSocket");
-    expect(isTransientNetworkError(bunSocket)).toBe(true);
+    expect(isRetryableNetworkError(bunSocket)).toBe(true);
     expect(classifyProviderError(bunSocket).kind).toBe("retry");
     // message-only fallbacks (code lost across a boundary, e.g. WebSocket onerror)
-    expect(isTransientNetworkError(new Error("Was there a typo in the url or port?"))).toBe(true);
+    expect(isRetryableNetworkError(new Error("Was there a typo in the url or port?"))).toBe(true);
     expect(
-      isTransientNetworkError(
+      isRetryableNetworkError(
         new Error("WebSocket connection to 'wss://x' failed: Failed to connect"),
       ),
     ).toBe(true);
@@ -399,13 +470,13 @@ describe("network retry classification", () => {
 
   it("does not retry terminal abort or certificate failures", () => {
     expect(
-      isTransientNetworkError(Object.assign(new Error("aborted"), { name: "AbortError" })),
+      isRetryableNetworkError(Object.assign(new Error("aborted"), { name: "AbortError" })),
     ).toBe(false);
-    expect(isTransientNetworkError(errorWithCode("certificate expired", "CERT_HAS_EXPIRED"))).toBe(
+    expect(isRetryableNetworkError(errorWithCode("certificate expired", "CERT_HAS_EXPIRED"))).toBe(
       false,
     );
     expect(
-      isTransientNetworkError(
+      isRetryableNetworkError(
         new Error("fetch failed", {
           cause: errorWithCode("certificate expired", "CERT_HAS_EXPIRED"),
         }),
@@ -414,23 +485,88 @@ describe("network retry classification", () => {
   });
 });
 
-describe("StreamIdleTimeoutError classification", () => {
-  it("classifies both byte-level and content-level idle timeouts as retry", () => {
-    const byteIdle = classifyProviderError(new StreamIdleTimeoutError(90_000));
-    expect(byteIdle.kind).toBe("retry");
-    const contentIdle = classifyProviderError(new StreamIdleTimeoutError(180_000, "content"));
-    expect(contentIdle.kind).toBe("retry");
+describe("StreamSilenceError classification", () => {
+  it("retries byte-level idle timeouts", () => {
+    const decision = classifyProviderError(new StreamSilenceError(90_000));
+    expect(decision.kind).toBe("retry");
+    expect(decision.reason).toContain("byte stream idle 90000ms — reconnecting");
   });
 
-  it("distinguishes content-idle from byte-idle in the retry reason (debug logs)", () => {
-    const byteIdle = classifyProviderError(new StreamIdleTimeoutError(90_000));
-    const contentIdle = classifyProviderError(new StreamIdleTimeoutError(180_000, "content"));
-    expect(byteIdle.kind).toBe("retry");
-    expect(contentIdle.kind).toBe("retry");
-    if (byteIdle.kind === "retry" && contentIdle.kind === "retry") {
-      expect(byteIdle.reason).toContain("byte");
-      expect(contentIdle.reason).toContain("content");
-      expect(byteIdle.reason).not.toBe(contentIdle.reason);
+  it("retries content-level idle timeouts without transport keepalive proof", () => {
+    const decision = classifyProviderError(new StreamSilenceError(180_000, "content"), {
+      provider: "openai",
+    });
+    expect(decision.kind).toBe("retry");
+    expect(decision.reason).toContain("content stream idle 180000ms — reconnecting");
+  });
+
+  it("fails content-level idle timeouts when transport keepalives prove the socket is alive", () => {
+    const providerId = "keepalive-classifier-test" as ProviderId;
+    registerKeepaliveClassifierProvider(providerId);
+
+    try {
+      const decision = classifyProviderError(new StreamSilenceError(600_000, "content"), {
+        provider: providerId,
+      });
+      expect(decision.kind).toBe("fail");
+      expect(decision.reason).toBe(
+        "content stream idle 600000ms — aborting (live connection, no model output)",
+      );
+    } finally {
+      unregisterProviderConfig(providerId);
+    }
+  });
+
+  it("preserves the terminal idle decision in the surfaced error metadata", async () => {
+    const providerId = "keepalive-stream-error-test" as ProviderId;
+    registerKeepaliveClassifierProvider(providerId);
+    let calls = 0;
+    const localCtx = {
+      provider: providerId,
+      model: "keepalive-test-model",
+    } as unknown as RequestContext;
+    const provider = createRetryRunner({
+      events: (): AsyncIterable<ProviderEvent> => ({
+        [Symbol.asyncIterator]() {
+          return {
+            next: async (): Promise<IteratorResult<ProviderEvent>> => {
+              calls += 1;
+              throw new StreamSilenceError(600_000, "content");
+            },
+          };
+        },
+      }),
+      recoverableError: (error: unknown, requestCtx: RequestContext, attempt?: number) => {
+        const decision = classifyProviderError(error, {
+          attempt: attempt ?? 1,
+          provider: requestCtx.provider,
+          model: requestCtx.model,
+        });
+        return decision.kind === "retry" ? { ...decision, delayMs: 0 } : decision;
+      },
+    });
+
+    try {
+      const events = await collect(streamWithRetry(localCtx, provider, {}));
+      expect(calls).toBe(1);
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        kind: "error",
+        error: "content stream idle 600000ms — aborting (live connection, no model output)",
+        meta: {
+          errorClass: "other",
+          retryable: false,
+          rawDetail: "content stream idle 600000ms — aborting (live connection, no model output)",
+          summary: "content stream idle 600000ms — aborting (live connection, no model output)",
+          providerContext: {
+            provider: providerId,
+            model: "keepalive-test-model",
+            attempt: 1,
+          },
+        },
+      });
+    } finally {
+      unregisterProviderConfig(providerId);
     }
   });
 });
@@ -452,21 +588,21 @@ describe("isContentEvent", () => {
 
 describe("streamWithRetry fresh-connection marking", () => {
   it("marks ctx.freshConnection after a stream idle timeout and keeps it for later attempts", async () => {
-    const localCtx = { provider: "test", model: "test-model" } as unknown as RequestContext;
+    const localCtx = {
+      provider: "test",
+      model: "test-model",
+    } as unknown as RequestContext;
     let calls = 0;
     const seen: Array<boolean | undefined> = [];
-    const provider = {
-      stream: (c: RequestContext) => {
-        seen.push(c.freshConnection);
-        return emptyBytes();
-      },
-      translateResponse: async function* (): AsyncIterable<ProviderEvent> {
+    const provider = createRetryRunner({
+      onStart: (requestCtx) => seen.push(requestCtx.freshConnection),
+      events: async function* (): AsyncIterable<ProviderEvent> {
         calls += 1;
-        if (calls === 1) throw new StreamIdleTimeoutError(30_000);
+        if (calls === 1) throw new StreamSilenceError(30_000);
         yield { kind: "text_delta", text: "ok" } as ProviderEvent;
       },
       recoverableError: classifyWithoutDelay,
-    };
+    });
     await collect(streamWithRetry(localCtx, provider, () => ({}), { baseDelayMs: 0 }));
     expect(seen[0]).toBeUndefined();
     expect(seen[1]).toBe(true);
@@ -474,17 +610,19 @@ describe("streamWithRetry fresh-connection marking", () => {
   });
 
   it("does not mark ctx.freshConnection for non-idle retryable errors", async () => {
-    const localCtx = { provider: "test", model: "test-model" } as unknown as RequestContext;
+    const localCtx = {
+      provider: "test",
+      model: "test-model",
+    } as unknown as RequestContext;
     let calls = 0;
-    const provider = {
-      stream: () => emptyBytes(),
-      translateResponse: async function* (): AsyncIterable<ProviderEvent> {
+    const provider = createRetryRunner({
+      events: async function* (): AsyncIterable<ProviderEvent> {
         calls += 1;
         if (calls === 1) throw new Error("mid-stream 529");
         yield { kind: "text_delta", text: "ok" } as ProviderEvent;
       },
       recoverableError: () => ({ kind: "retry" as const, delayMs: 0 }),
-    };
+    });
     await collect(streamWithRetry(localCtx, provider, () => ({}), { baseDelayMs: 0 }));
     expect(localCtx.freshConnection).toBeUndefined();
   });
@@ -527,5 +665,128 @@ describe("retry budget", () => {
         maxElapsedMs: 180_000,
       }),
     ).toBe(false);
+  });
+
+  it("the attempt floor outranks the elapsed budget, never the attempt limit", () => {
+    // Below the floor: silence observation time cannot drain the budget.
+    expect(
+      retryBudgetExhausted({
+        attempts: 1,
+        maxAttempts: 10,
+        elapsedMs: 300_000,
+        nextDelayMs: 1_000,
+        maxElapsedMs: 180_000,
+        minAttempts: STREAM_SILENCE_MIN_ATTEMPTS,
+      }),
+    ).toBe(false);
+    // At the floor: the elapsed budget applies again.
+    expect(
+      retryBudgetExhausted({
+        attempts: 3,
+        maxAttempts: 10,
+        elapsedMs: 300_000,
+        nextDelayMs: 1_000,
+        maxElapsedMs: 180_000,
+        minAttempts: STREAM_SILENCE_MIN_ATTEMPTS,
+      }),
+    ).toBe(true);
+    // The hard attempt cap always wins over the floor.
+    expect(
+      retryBudgetExhausted({
+        attempts: 2,
+        maxAttempts: 2,
+        elapsedMs: 0,
+        nextDelayMs: 0,
+        maxElapsedMs: 180_000,
+        minAttempts: STREAM_SILENCE_MIN_ATTEMPTS,
+      }),
+    ).toBe(true);
+  });
+});
+
+describe("retry window after mid-stream progress", () => {
+  /**
+   * Regression: the elapsed budget was anchored at stream start, so a stream
+   * that ran successfully past the budget (a long reasoning turn) arrived at
+   * its first disconnect with every retry spent — a transient ws close (1006)
+   * surfaced the error panel with zero automatic retries.
+   */
+  it("retries a ws close after progress even when streaming outlived the budget", async () => {
+    let starts = 0;
+    const provider = createRetryRunner({
+      events: async function* (): AsyncIterable<ProviderEvent> {
+        starts += 1;
+        if (starts === 1) {
+          yield { kind: "text_delta", text: "first half" } as ProviderEvent;
+          await new Promise((resolve) => setTimeout(resolve, 80));
+          throw new Error(CODEX_WS_CLOSE_MESSAGE);
+        }
+        yield { kind: "text_delta", text: "recovered" } as ProviderEvent;
+      },
+      recoverableError: classifyWithoutDelay,
+    });
+    const events = await collect(
+      // The budget is smaller than the first attempt's streaming time, so only
+      // the progress restamp can admit the retry.
+      streamWithRetry(ctx, provider, () => ({}), { maxAttempts: 5, maxElapsedMs: 50 }),
+    );
+    expect(starts).toBe(2);
+    // No server-side resume: the partial tail is discarded before the retry.
+    expect(events.some((ev) => ev.kind === "stream_reset")).toBe(true);
+    expect(events.some((ev) => ev.kind === "retry_status")).toBe(true);
+    expect(
+      events.filter((ev) => ev.kind === "text_delta").map((ev) => ("text" in ev ? ev.text : "")),
+    ).toEqual(["first half", "recovered"]);
+  }, 10_000);
+
+  it("an attempt without progress still drains the elapsed budget", async () => {
+    let starts = 0;
+    const provider = createRetryRunner({
+      events: async function* (): AsyncIterable<ProviderEvent> {
+        starts += 1;
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        throw new Error(CODEX_WS_CLOSE_MESSAGE);
+      },
+      recoverableError: classifyWithoutDelay,
+    });
+    await expect(
+      collect(streamWithRetry(ctx, provider, () => ({}), { maxAttempts: 5, maxElapsedMs: 50 })),
+    ).rejects.toThrow();
+    expect(starts).toBe(1);
+  }, 10_000);
+});
+
+describe("stream-silence retry floor", () => {
+  it("retries a silent stream even after the elapsed budget drained", async () => {
+    let starts = 0;
+    const provider = createRetryRunner({
+      events: async function* (): AsyncIterable<ProviderEvent> {
+        starts += 1;
+        if (starts === 1) throw new StreamSilenceError(300_000);
+        yield { kind: "text_delta", text: "recovered" } as ProviderEvent;
+      },
+      recoverableError: classifyWithoutDelay,
+    });
+    const events = await collect(
+      // maxElapsedMs 0: every elapsed check is already over budget, so only
+      // the silence floor can admit the retry.
+      streamWithRetry(ctx, provider, () => ({}), { maxAttempts: 5, maxElapsedMs: 0 }),
+    );
+    expect(starts).toBe(2);
+    expect(events.some((ev) => ev.kind === "text_delta")).toBe(true);
+    expect(events.some((ev) => ev.kind === "retry_status")).toBe(true);
+  }, 10_000);
+
+  it("a non-silence error over budget still fails without the floor", async () => {
+    const provider = createRetryRunner({
+      // biome-ignore lint/correctness/useYield: throws before any yield
+      events: async function* (): AsyncIterable<ProviderEvent> {
+        throw new Error("mid-stream 500");
+      },
+      recoverableError: () => ({ kind: "retry" as const, delayMs: 0 }),
+    });
+    await expect(
+      collect(streamWithRetry(ctx, provider, () => ({}), { maxAttempts: 5, maxElapsedMs: 0 })),
+    ).rejects.toThrow("mid-stream 500");
   });
 });

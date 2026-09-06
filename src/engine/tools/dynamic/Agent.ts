@@ -7,8 +7,8 @@ import {
 } from "@/harness/tools/Agent/description.ts";
 import tool from "@/harness/tools/Agent/tool.json" with { type: "json" };
 import { isAgentAutoBackgroundEnabled } from "@/kernel/config/agent-auto-background.ts";
-import type { OrchestrationMode } from "@/kernel/config/orchestration-mode.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
+import type { OrchestrationMode } from "@/kernel/std/types/orchestration-mode.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 
 export { buildAgentDescription };
 
@@ -37,7 +37,11 @@ export function buildTierAwareAgentDescription(
 const WORKTREE_ISOLATION_DESCRIPTION =
   'Isolation mode. "worktree" creates a temporary git worktree so the agent works on an isolated copy of the repo.';
 const DISABLED_MODEL_DESCRIPTION =
-  "Concrete model override on the current provider. Takes precedence over the agent definition's model frontmatter. If omitted, uses the agent definition's model or inherits from the parent model. Ignored for subagent_type: \"fork\" — forks always inherit the parent model.";
+  "Concrete model override on the current provider. Takes precedence over the agent definition's model frontmatter. If omitted, uses the agent definition's model or inherits from the parent model. Not valid for subagent_type: \"fork\" — a fork route is a provider+model pair and `provider` is unavailable while orchestration is disabled, so a fork inherits the parent route.";
+const FEUDALISM_FORK_MODEL_DESCRIPTION =
+  'Concrete model id for subagent_type: "fork" only. Pass it together with `provider`; the fork runs that literal pair only after the user approves the extra cost. Omit both to inherit the parent route.';
+const FEUDALISM_FORK_PROVIDER_DESCRIPTION =
+  'Provider id for subagent_type: "fork" only. Pass it together with `model` to name a literal fork route; no model catalog is listed here.';
 
 export function buildAgentInputSchema(
   provider?: ProviderId,
@@ -52,6 +56,16 @@ export function buildAgentInputSchema(
     properties.model = {
       ...(properties.model as Record<string, unknown>),
       description: DISABLED_MODEL_DESCRIPTION,
+    };
+  }
+  if (orchestrationMode === "feudalism") {
+    properties.model = {
+      ...(properties.model as Record<string, unknown>),
+      description: FEUDALISM_FORK_MODEL_DESCRIPTION,
+    };
+    properties.provider = {
+      ...(properties.provider as Record<string, unknown>),
+      description: FEUDALISM_FORK_PROVIDER_DESCRIPTION,
     };
   }
   if (isAgentAutoBackgroundEnabled()) delete properties.run_in_background;

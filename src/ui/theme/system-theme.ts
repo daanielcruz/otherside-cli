@@ -1,4 +1,4 @@
-import type { ThemeName, ThemeSetting } from "@/kernel/config/theme-names.ts";
+import type { BuiltinThemeSetting, ThemeName } from "@/kernel/config/theme-names.ts";
 
 export type SystemTheme = "dark" | "light";
 
@@ -9,11 +9,15 @@ export function getSystemTheme(): SystemTheme {
   return cached;
 }
 
-export function setCachedSystemTheme(value: SystemTheme): void {
+export function cacheSystemTheme(value: SystemTheme): void {
   cached = value;
 }
 
-export function resolveThemeSetting(setting: ThemeSetting): ThemeName {
+/**
+ * Narrows a shipped setting to the palette it names. A stored theme is not one
+ * of these — it resolves through its own record, which carries the base.
+ */
+export function resolveThemeSetting(setting: BuiltinThemeSetting): ThemeName {
   return setting === "auto" ? getSystemTheme() : setting;
 }
 

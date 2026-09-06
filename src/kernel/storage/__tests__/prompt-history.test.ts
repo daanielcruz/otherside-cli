@@ -47,8 +47,10 @@ mockFs[`appendFile${S}`] = (p: string, content: string | Buffer) => {
 mock.module("node:fs", () => mockFs);
 
 import {
+  loadPromptHistoryAllProjects,
   loadPromptHistoryForCwd,
   MAX_PROMPT_HISTORY_ITEMS,
+  MAX_PROMPT_SEARCH_ITEMS,
   promptHistoryPath,
 } from "../prompt-history.ts";
 
@@ -158,5 +160,45 @@ describe("loadPromptHistoryForCwd", () => {
     const missingTimestamp = JSON.stringify({ display: "y", project: CWD });
     memWrite(path, `${valid}\n${missingDisplay}\n${missingProject}\n${missingTimestamp}\n`);
     expect(loadPromptHistoryForCwd(CWD)).toEqual(["ok"]);
+  });
+});
+
+describe("loadPromptHistoryAllProjects", () => {
+  test("missing file returns empty array", () => {
+    expect(loadPromptHistoryAllProjects()).toEqual([]);
+  });
+
+  test("keeps every project's entries, oldest first", () => {
+    writeHistory([
+      { display: "a-one", project: CWD },
+      { display: "b-one", project: OTHER_CWD },
+      { display: "a-two", project: CWD },
+    ]);
+    expect(loadPromptHistoryAllProjects()).toEqual(["a-one", "b-one", "a-two"]);
+  });
+
+  test("reaches further back than the per-project walk", () => {
+    const entries = Array.from({ length: MAX_PROMPT_HISTORY_ITEMS + 20 }, (_, i) => ({
+      display: `entry-${i}`,
+      project: OTHER_CWD,
+    }));
+    writeHistory(entries);
+
+    // The walk sees none of these — they belong to another project.
+    expect(loadPromptHistoryForCwd(CWD)).toEqual([]);
+    expect(loadPromptHistoryAllProjects()).toHaveLength(entries.length);
+  });
+
+  test("stops at the search window", () => {
+    const entries = Array.from({ length: MAX_PROMPT_SEARCH_ITEMS + 5 }, (_, i) => ({
+      display: `entry-${i}`,
+      project: CWD,
+    }));
+    writeHistory(entries);
+
+    const loaded = loadPromptHistoryAllProjects();
+    expect(loaded).toHaveLength(MAX_PROMPT_SEARCH_ITEMS);
+    // The window keeps the newest end of the store.
+    expect(loaded.at(-1)).toBe(`entry-${entries.length - 1}`);
   });
 });

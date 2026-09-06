@@ -12,8 +12,8 @@ import {
 import { registerRuntimeModel } from "@/engine/model/catalog.ts";
 import type { OpenAiCustomModelInfo } from "@/engine/providers/openai/models.ts";
 import { fastModeForProvider, type UserConfig, updateConfig } from "@/kernel/config/config.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
 import { openBrowser } from "@/kernel/std/browser.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 import {
   type CredentialsBundle,
   hasCredential,
@@ -84,6 +84,7 @@ export type Phase =
       status: OAuthStatus;
       message: string;
       supportsPaste: boolean;
+      urlCopied?: boolean;
     }
   | {
       kind: "verify";
@@ -216,7 +217,7 @@ export function loginFooterHints(phase: Phase): [string, string][] {
 export function oauthStatusColor(status: OAuthStatus): ColorValue {
   if (status === "ok") return Color.success;
   if (status === "fail") return Color.error;
-  return Color.highlight;
+  return Color.panelAccent;
 }
 
 export const API_KEY_HOST_LABELS: Record<ApiKeyLoginProvider, string> = {
@@ -361,9 +362,8 @@ export async function activateProviderAfterLogin(
   const rawDefault = getProviderConfig(providerId)?.defaultModelId;
   const model = typeof rawDefault === "function" ? rawDefault() : (rawDefault ?? "");
   broker.dispatch({
-    kind: "set_provider",
-    provider: providerId,
-    model,
+    kind: "set_route",
+    route: { provider: providerId, model },
     ...(config ? { fastMode: fastModeForProvider(config, providerId) } : {}),
   });
   if (config) {

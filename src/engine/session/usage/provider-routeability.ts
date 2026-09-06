@@ -1,7 +1,4 @@
-import { isFableModel } from "@/engine/model/facts/model-family.ts";
-import { baseModelId } from "@/engine/model/tier/tiers.ts";
 import {
-  formatResetTime,
   getProviderScopeEntries,
   type RoutingUsageState,
   type ScopedQuotaEntry,
@@ -10,8 +7,11 @@ import {
   getProviderCooldown,
   type ProviderCooldownRecord,
 } from "@/engine/session/usage/provider-health.ts";
+import { scopeAppliesToRoute } from "@/engine/session/usage/scope-applicability.ts";
 import { QUOTA_BLOCK_PCT } from "@/engine/session/usage/thresholds.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
+import type { ProviderAllocation } from "@/kernel/channels/usage-limits.ts";
+import { formatResetTime } from "@/kernel/std/intl.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 
 export type ProviderRoutingUsageSource = "explicit" | "unobserved";
 
@@ -56,7 +56,9 @@ export function providerRouteability(
   model?: string | null,
 ): ProviderRouteability {
   void activeProvider;
-  const applicableScopes = applicableScopeEntries(provider, model);
+  const allocation: ProviderAllocation =
+    model === undefined || model === null ? { provider } : { provider, model };
+  const applicableScopes = applicableScopeEntries(allocation);
   const routing = effectiveRoutingUsage(applicableScopes);
   const cooldown = getProviderCooldown(provider, model);
   const notes = routingUsageNotes(routing);
@@ -83,31 +85,16 @@ export function providerRouteability(
 }
 
 export function providerRoutingUsage(provider: ProviderId): ProviderRoutingUsage {
-  return effectiveRoutingUsage(applicableScopeEntries(provider, undefined));
+  return effectiveRoutingUsage(applicableScopeEntries({ provider }));
 }
 
-/** Every live scope applicable to (provider, model): global + matching family/model scopes. Informational scopes never apply. */
-function applicableScopeEntries(
-  provider: ProviderId,
-  model: string | null | undefined,
-): ScopedQuotaEntry[] {
-  const entries = getProviderScopeEntries(provider);
-  const family = familyForModel(provider, model);
-  const normalizedModel = model ? normalizeModelId(model) : null;
-  return entries.filter((entry) => {
-    switch (entry.applicability.type) {
-      case "global":
-        return true;
-      case "informational":
-        return false;
-      case "family":
-        return family !== null && entry.applicability.id === family;
-      case "model":
-        return normalizedModel !== null && entry.applicability.id === normalizedModel;
-      default:
-        return false;
-    }
-  });
+/** Every live scope applicable to one route: provider-wide + matching family/model scopes. */
+function applicableScopeEntries(allocation: ProviderAllocation): ScopedQuotaEntry[] {
+  const entries = getProviderScopeEntries(allocation.provider);
+  if (allocation.model === undefined) {
+    return entries.filter((entry) => entry.applicability.type === "global");
+  }
+  return entries.filter((entry) => scopeAppliesToRoute(entry.applicability, allocation));
 }
 
 /** The worst applicable routing state across the given scopes (blocking/exhausted first, then highest utilization). */
@@ -138,32 +125,6 @@ function isScopeQuotaBlocking(state: RoutingUsageState): boolean {
   if (state.trackingStatus !== "tracked" && state.trackingStatus !== "partial") return false;
   // Raw (untruncated) percentage: 99.9 stays usable, only real 100% blocks.
   return state.utilizationPct >= QUOTA_BLOCK_PCT;
-}
-
-/**
- * Model family used to match "family"-applicability scopes:
- *  - antigravity: `/^claude|^gpt|oss/i` => "claude-gpt", everything else => "gemini" (every antigravity model has a family).
- *  - anthropic: a recognized Fable model => "fable", otherwise no family.
- *  - codex: the normalized model id containing "spark" => "spark", otherwise no family.
- */
-function familyForModel(provider: ProviderId, model: string | null | undefined): string | null {
-  if (!model) return null;
-  const normalized = normalizeModelId(model);
-  if (normalized.length === 0) return null;
-  switch (provider) {
-    case "antigravity":
-      return /^claude|^gpt|oss/i.test(normalized) ? "claude-gpt" : "gemini";
-    case "anthropic":
-      return isFableModel(normalized) ? "fable" : null;
-    case "codex":
-      return normalized.toLowerCase().includes("spark") ? "spark" : null;
-    default:
-      return null;
-  }
-}
-
-function normalizeModelId(model: string): string {
-  return baseModelId(model).trim();
 }
 
 function unknownRoutingUsage(): RoutingUsageState {

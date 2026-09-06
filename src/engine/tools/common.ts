@@ -1,5 +1,5 @@
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
 import type { ToolCall, ToolResult } from "@/kernel/std/types/message.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 
 export interface WebSearchInput {
   query: string;

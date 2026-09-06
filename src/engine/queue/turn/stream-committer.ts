@@ -276,7 +276,7 @@ export function createStreamCommitter(deps: StreamCommitterDeps): StreamCommitte
     cancelStreamFlush();
     publishLiveStream();
   };
-  const flushAssistant = async (
+  const flushAssistantOnce = async (
     opts: { allowEmpty?: boolean } = {},
   ): Promise<TranscriptEntry[]> => {
     cancelStreamFlush();
@@ -348,18 +348,38 @@ export function createStreamCommitter(deps: StreamCommitterDeps): StreamCommitte
         ...(blockHasCommitted ? { continuation: true } : {}),
       });
     }
+    // This is the sole live-to-settled handoff. Publish under the current ID
+    // before clearing live state so every caller (including repeated tool starts)
+    // gets the same idempotent ordering and can only commit this accumulator once.
+    if (entries.length > 0) setTranscript((t) => [...t, ...entries]);
     committedStableLen = 0;
     blockHasCommitted = false;
     thinkingEntryCommitted = false;
     thinkingScannedParagraphs = 0;
     lastPromotedHeadline = null;
-    setStreamingCommittedLen(0);
+    setStreamingText("");
     setStreamingThinking("");
+    setStreamingCommittedLen(0);
     acc = "";
     accThinking = "";
     accThinkingSignature = "";
     thinkingBlockBoundaryPending = false;
     return entries;
+  };
+  // Event delivery is ordered today, but parallel tool starts may converge here;
+  // coalesce overlap so the same accumulator cannot persist or publish twice.
+  let assistantFlush: Promise<TranscriptEntry[]> | null = null;
+  const flushAssistant = async (
+    opts: { allowEmpty?: boolean } = {},
+  ): Promise<TranscriptEntry[]> => {
+    if (assistantFlush !== null) return assistantFlush;
+    const pending = flushAssistantOnce(opts);
+    assistantFlush = pending;
+    try {
+      return await pending;
+    } finally {
+      if (assistantFlush === pending) assistantFlush = null;
+    }
   };
 
   return {

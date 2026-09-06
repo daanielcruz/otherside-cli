@@ -38,7 +38,7 @@ import { renderMcpInstructions } from "@/harness/reminders/mcp-instructions.ts";
 import { renderSkillsReminder } from "@/harness/reminders/reminders.ts";
 import { bgSessionLayer, isBackgroundSession } from "@/harness/routines/bg-session.ts";
 import { scratchpadLayer } from "@/harness/routines/scratchpad.ts";
-import { isAutoMemoryEnabled } from "@/kernel/storage/memory/session-toggle.ts";
+import { isSessionMemoryEnabled } from "@/kernel/storage/memory/session-toggle.ts";
 
 interface LayerDescriptorBase {
   name: string;
@@ -145,7 +145,7 @@ export const HARNESS_MANIFEST: readonly LayerDescriptor[] = [
     kind: "system",
     cache: "1h",
     phase: "dynamic",
-    when: () => isAutoMemoryEnabled(),
+    when: () => isSessionMemoryEnabled(),
     render: memoryGuidanceLayer.render,
   },
   // 9
@@ -172,10 +172,7 @@ export const HARNESS_MANIFEST: readonly LayerDescriptor[] = [
     kind: "system",
     cache: "1h",
     phase: "dynamic",
-    when: (ctx) => {
-      const style = ctx.config?.outputStyle?.trim();
-      return !!style && style !== "default";
-    },
+    when: (ctx) => ctx.outputStyle !== null,
     render: outputStyleLayer.render,
   },
   // 12

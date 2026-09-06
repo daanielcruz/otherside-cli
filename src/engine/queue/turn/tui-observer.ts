@@ -1,5 +1,6 @@
 import { getProviderConfig } from "@/engine/contract/registry.ts";
 import { applyCodexQuotaWarning, type CodexUsage } from "@/engine/providers/codex/usage.ts";
+import { createGoalEventHandlers } from "@/engine/queue/turn/goal-events.ts";
 import type { TurnObserver } from "@/engine/queue/turn/observer.ts";
 import { emptyProgressState } from "@/engine/queue/turn/progress.ts";
 import { createStreamCommitter } from "@/engine/queue/turn/stream-committer.ts";
@@ -9,21 +10,25 @@ import { pickVerbForTurn } from "@/engine/queue/turn/verb.ts";
 import { estimateHarnessTokens } from "@/engine/session/compact/harness-baseline.ts";
 import { clearLastUsage } from "@/engine/session/compact/last-usage.ts";
 import { MICRO_COMPACT_CLEARED_MESSAGE } from "@/engine/session/compact/micro.ts";
-import { roughTokenCountEstimationForMessages } from "@/engine/session/compact/token-count.ts";
+import { estimateConversationTokens } from "@/engine/session/compact/token-count.ts";
+import { appendRecord, nowIso, type Session } from "@/engine/session/index.ts";
 import {
-  appendHookEventRecord,
-  appendRecord,
-  nowIso,
-  type Session,
-} from "@/engine/session/index.ts";
-import { applyAgentIdentityToTranscript } from "@/engine/session/record/transcript-update.ts";
-import type { NestedToolEntry, TranscriptEntry } from "@/engine/session/record/types.ts";
+  applyAgentIdentityToTranscript,
+  rewriteClearedToolResults,
+} from "@/engine/session/record/transcript-update.ts";
+import type {
+  NestedToolEntry,
+  TranscriptEntry,
+  TranscriptWrite,
+} from "@/engine/session/record/types.ts";
 import { emptyTokenTotals, type TokenTotals } from "@/engine/session/usage/provider.ts";
 import type { ContextUsageSnapshot } from "@/engine/session/usage/snapshot.ts";
 import type { ErrorMeta } from "@/engine/transport/error-meta.ts";
 import { emitQueuedInputDrained } from "@/kernel/channels/session-events.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
+import { mcpCallIdentity } from "@/kernel/mcp/index.ts";
+import type { MacrotaskBatch } from "@/kernel/std/perf/macrotask-batch.ts";
 import type { ToolResultMeta } from "@/kernel/std/types/message.ts";
+import type { ProviderId, ProviderModelRoute } from "@/kernel/std/types/provider-ids.ts";
 import type { BrokerHandle } from "@/kernel/std/types/request.ts";
 import type { SpinnerMode } from "@/kernel/std/types/spinner-mode.ts";
 
@@ -43,12 +48,6 @@ type TuiViewAction =
   | { type: "view/setSpinnerMode"; mode: SpinnerMode }
   | { type: "view/setRetryStatus"; status: RetryStatus }
   | { type: "view/setTurnVerb"; verb: string };
-
-const GOAL_GLYPHS = {
-  check: "✔",
-  bulletHollow: "○",
-  bullseye: "◎",
-} as const;
 
 export interface TuiTurnObserverDeps {
   startId: string;
@@ -83,7 +82,8 @@ export interface TuiTurnObserverDeps {
   setStreamingThinking: SetState<string>;
   setStreamingCommittedLen: SetState<number>;
   setStreamingId: SetState<string | null>;
-  setTranscript: SetState<readonly TranscriptEntry[]>;
+  setTranscript: (value: TranscriptWrite) => void;
+  transcriptBatch: MacrotaskBatch;
   setProgressInputTokens: SetState<number>;
   setProgressStartedAt: SetState<number | null>;
   setTasksExpanded: SetState<boolean>;
@@ -95,8 +95,8 @@ export interface TuiTurnObserverDeps {
     callId: string,
     mutator: (entries: NestedToolEntry[]) => NestedToolEntry[],
   ) => void;
-  setAgentBackgrounded: (callId: string, resolvedModel?: string) => void;
-  agentModelByCallIdRef: Ref<Map<string, string>>;
+  setAgentBackgrounded: (callId: string, route?: ProviderModelRoute) => void;
+  agentModelByCallIdRef: Ref<Map<string, ProviderModelRoute>>;
   activeToolsRef: Ref<number>;
   forkActionRef: Ref<Map<string, { count: number; lastLabel: string; backgrounded: boolean }>>;
   currentAgentCallIdRef: Ref<string | null>;
@@ -142,6 +142,7 @@ export function makeTuiTurnObserver(deps: TuiTurnObserverDeps): TuiTurnHandle {
     setStreamingCommittedLen,
     setStreamingId,
     setTranscript,
+    transcriptBatch,
     setProgressInputTokens,
     setProgressStartedAt,
     setTasksExpanded,
@@ -170,6 +171,11 @@ export function makeTuiTurnObserver(deps: TuiTurnObserverDeps): TuiTurnHandle {
     emitPushEvent,
   } = deps;
 
+  // The provider that opened the CURRENT stream attempt (stamped on its
+  // message_start). Defaults to the turn-start snapshot until the first
+  // attempt reports in.
+  let attemptProvider = turnState.provider as ProviderId;
+
   const usageTracker = createTurnUsageTracker({
     session,
     turnState,
@@ -192,13 +198,11 @@ export function makeTuiTurnObserver(deps: TuiTurnObserverDeps): TuiTurnHandle {
     // for the rest of this turn step and is overwritten by the next headline
     // or by the next turn's pickVerbForTurn roll (submitted-turn.ts).
     onThinkingHeadline: (headline) => dispatch({ type: "view/setTurnVerb", verb: headline }),
-    // Read the LIVE broker, not the turn-start snapshot: a mid-turn model switch
-    // updates the broker (drain/queue.ts) and the next request already goes out
-    // on the new provider, so presentation must follow the same source or codex
-    // reasoning renders as retained rows after an anthropic-started turn.
+    // Classify reasoning by the route that PRODUCED the attempt (stamped on
+    // message_start), never by the live broker: a mid-stream route switch must
+    // not flip headline stripping while the old provider's bytes still arrive.
     reasoningHeadlinesEnabled: () =>
-      getProviderConfig(broker.read().provider as ProviderId)?.featureFlags?.reasoningHeadlines ===
-      true,
+      getProviderConfig(attemptProvider)?.featureFlags?.reasoningHeadlines === true,
   });
   const toolHandlers = createToolDispatchHandlers({
     session,
@@ -207,9 +211,8 @@ export function makeTuiTurnObserver(deps: TuiTurnObserverDeps): TuiTurnHandle {
     setSpinnerMode: (mode) => dispatch({ type: "view/setSpinnerMode", mode }),
     flushAssistant: committer.flushAssistant,
     setStreamingId,
-    setStreamingText,
-    setStreamingCommittedLen,
     setTranscript,
+    transcriptBatch,
     setTasksExpanded,
     setAgentBackgrounded,
     agentModelByCallIdRef,
@@ -222,6 +225,11 @@ export function makeTuiTurnObserver(deps: TuiTurnObserverDeps): TuiTurnHandle {
     silentToolNames,
   });
 
+  const goalHandlers = createGoalEventHandlers({
+    session,
+    setTranscript,
+    turnHadVisibleOutputRef,
+  });
   const observer: TurnObserver = {
     onAny: (ev) => {
       usageTracker.applyToProgress(ev);
@@ -244,7 +252,17 @@ export function makeTuiTurnObserver(deps: TuiTurnObserverDeps): TuiTurnHandle {
     thinking_signature: (ev) => {
       committer.setSignature(ev.signature);
     },
-    message_start: () => {
+    message_start: (ev) => {
+      const previousAttemptProvider = attemptProvider;
+      if (ev.provider !== undefined) attemptProvider = ev.provider;
+      // A route switch away from a headline-promoting provider strands its
+      // last headline on the verb channel; roll the turn's own verb back.
+      if (
+        attemptProvider !== previousAttemptProvider &&
+        getProviderConfig(attemptProvider)?.featureFlags?.reasoningHeadlines !== true
+      ) {
+        dispatch({ type: "view/setTurnVerb", verb: pickVerbForTurn(turnSeedRef.current) });
+      }
       usageTracker.resetForMessageStart();
     },
     usage: (ev) => {
@@ -260,51 +278,42 @@ export function makeTuiTurnObserver(deps: TuiTurnObserverDeps): TuiTurnHandle {
     message_stop: () => {
       endThinkingStatus();
       usageTracker.flushUsage();
+      // The protocol stop does not settle the assistant record. Keep the flushed
+      // live tail mounted until flushAssistant publishes its settled replacement;
+      // the turn owner clears live state after that handoff.
       committer.flushLive();
-      setStreamingId(null);
-      setStreamingText("");
-      setStreamingCommittedLen(0);
     },
     ...toolHandlers,
     micro_compact: (ev) => {
       if (ev.clearedToolUseIds && ev.clearedToolUseIds.length > 0) {
-        const clearedSet = new Set(ev.clearedToolUseIds);
+        const clearedSet: ReadonlySet<string> = new Set(ev.clearedToolUseIds);
         setTranscript((t) =>
-          t.map((entry) => {
-            if (entry.kind === "tool" && entry.id.startsWith("r_")) {
-              const callId = entry.id.slice(2);
-              if (clearedSet.has(callId)) {
-                return { ...entry, text: MICRO_COMPACT_CLEARED_MESSAGE };
-              }
-            }
-            return entry;
-          }),
+          rewriteClearedToolResults(t, clearedSet, MICRO_COMPACT_CLEARED_MESSAGE),
         );
       }
     },
     compact_start: async () => {
       endThinkingStatus();
       const flushed = await committer.flushAssistant();
-      if (flushed.length > 0) {
-        setTranscript((t) => [...t, ...flushed]);
-        setStreamingId(null);
-        setStreamingText("");
-        setStreamingCommittedLen(0);
-      }
+      if (flushed.length > 0) setStreamingId(null);
       setProgressStartedAt(Date.now());
       dispatch({ type: "view/setTurnVerb", verb: "Compacting conversation" });
     },
     compact_done: (ev) => {
       dispatch({ type: "view/setRetryStatus", status: null });
-      setMainTokenTotals(emptyTokenTotals());
+      // A failed compaction leaves the conversation exactly as it was, so every
+      // reading of it has to survive too. Zeroing the totals here reported an
+      // empty context for a full one — and a summary request dying on a dropped
+      // connection is the common way to reach this branch.
       if (ev.mode !== "failed") {
+        setMainTokenTotals(emptyTokenTotals());
         clearLastUsage();
         const brokerNow = broker.read();
         setMainLastContext({
           inputTokens: 0,
           outputTokens: 0,
           cacheReadInputTokens:
-            roughTokenCountEstimationForMessages(session.messages) +
+            estimateConversationTokens(session.messages) +
             estimateHarnessTokens(brokerNow.provider, brokerNow.model),
           cacheCreationInputTokens: 0,
         });
@@ -334,85 +343,14 @@ export function makeTuiTurnObserver(deps: TuiTurnObserverDeps): TuiTurnHandle {
         },
       ]);
     },
-    goal_met: async (ev) => {
-      const id = `goal_met_${session.eventSeq}_${ev.iteration}`;
-      setTranscript((t) => [
-        ...t,
-        {
-          id,
-          kind: "system",
-          text: `${GOAL_GLYPHS.check} Goal achieved — ${ev.condition}`,
-        },
-      ]);
-      await appendHookEventRecord(session, {
-        type: "hook_event",
-        ts: nowIso(),
-        kind: "goal_met",
-        payload: { condition: ev.condition, iteration: ev.iteration },
-      });
-    },
-    goal_not_met: async (ev) => {
-      turnHadVisibleOutputRef.current = true;
-      const id = `goal_not_met_${session.eventSeq}_${ev.iteration}`;
-      setTranscript((t) => [
-        ...t,
-        {
-          id,
-          kind: "system",
-          text: `${GOAL_GLYPHS.bulletHollow} Goal not yet met — ${ev.reason}`,
-        },
-      ]);
-      await appendHookEventRecord(session, {
-        type: "hook_event",
-        ts: nowIso(),
-        kind: "goal_not_met",
-        payload: { condition: ev.condition, iteration: ev.iteration, reason: ev.reason },
-      });
-    },
-    goal_continue: async (ev) => {
-      turnHadVisibleOutputRef.current = true;
-      endThinkingStatus();
-      const flushed = await committer.flushAssistant();
-      if (flushed.length > 0) setTranscript((t) => [...t, ...flushed]);
-      const nextId = `a_${session.eventSeq}_${ev.iteration + 1}`;
-      committer.setCurId(nextId);
-      setStreamingId(nextId);
-      setStreamingText("");
-      setStreamingCommittedLen(0);
-    },
-    goal_paused_bg: async (ev) => {
-      turnHadVisibleOutputRef.current = true;
-      const id = `goal_paused_bg_${session.eventSeq}_${ev.iteration}`;
-      const plural = ev.runningBackgroundTasks === 1 ? "task" : "tasks";
-      setTranscript((t) => [
-        ...t,
-        {
-          id,
-          kind: "system",
-          text: `${GOAL_GLYPHS.bullseye} Goal paused — waiting on ${ev.runningBackgroundTasks} background ${plural}`,
-        },
-      ]);
-      await appendHookEventRecord(session, {
-        type: "hook_event",
-        ts: nowIso(),
-        kind: "goal_paused_bg",
-        payload: {
-          condition: ev.condition,
-          iteration: ev.iteration,
-          runningBackgroundTasks: ev.runningBackgroundTasks,
-        },
-      });
-    },
+    ...goalHandlers,
     queued_input_drained: async (ev) => {
       emitQueuedInputDrained(ev.messages);
       const flushed = await committer.flushAssistant();
       if (flushed.length > 0) {
-        setTranscript((t) => [...t, ...flushed]);
         const nextId = `a_${session.eventSeq}_${Date.now()}`;
         committer.setCurId(nextId);
         setStreamingId(nextId);
-        setStreamingText("");
-        setStreamingCommittedLen(0);
       }
       const baseId = `qmid_${Date.now()}`;
       setTranscript((t) => [
@@ -467,9 +405,13 @@ export function makeTuiTurnObserver(deps: TuiTurnObserverDeps): TuiTurnHandle {
     fork_start: (ev) => {
       const callId = ev.parentToolCallId ?? forkToCallIdRef.current.get(ev.forkId);
       if (callId) {
-        agentModelByCallIdRef.current.set(callId, ev.model);
+        agentModelByCallIdRef.current.set(callId, { provider: ev.provider, model: ev.model });
         setTranscript((entries) =>
-          applyAgentIdentityToTranscript(entries, callId, { model: ev.model, name: ev.name }),
+          applyAgentIdentityToTranscript(entries, callId, {
+            model: ev.model,
+            provider: ev.provider,
+            name: ev.name,
+          }),
         );
       }
     },
@@ -479,9 +421,17 @@ export function makeTuiTurnObserver(deps: TuiTurnObserverDeps): TuiTurnHandle {
         forkToCallIdRef.current.get(ev.forkId) ??
         currentAgentCallIdRef.current;
       if (callId) {
+        // A nested row is never persisted, so its identity has to be read while
+        // the server is still registered — the row outlives the fork that made it.
+        const nestedIdentity = mcpCallIdentity(ev.toolName);
         setAgentNested(callId, (prev) => [
           ...prev,
-          { toolName: ev.toolName, args: ev.input, running: true },
+          {
+            toolName: ev.toolName,
+            args: ev.input,
+            running: true,
+            ...(nestedIdentity ? { mcpIdentity: nestedIdentity } : {}),
+          },
         ]);
       }
     },
@@ -514,14 +464,15 @@ export function makeTuiTurnObserver(deps: TuiTurnObserverDeps): TuiTurnHandle {
         { isFork: true },
       );
     },
-    turn_end: (ev) => {
+    turn_end: async (ev) => {
       if (ev.stopReason !== "tool_calls") return;
       endThinkingStatus();
+      // Settle under the current ID before handing the live slot to the response
+      // that follows tool execution. A later tool_dispatch_start flush is empty.
+      await committer.flushAssistant();
       const nextId = `a_${session.eventSeq}_${ev.turn + 1}`;
       committer.setCurId(nextId);
       setStreamingId(nextId);
-      setStreamingText("");
-      setStreamingCommittedLen(0);
     },
     retry_status: (ev) => {
       if (ev.attempt < 4) {

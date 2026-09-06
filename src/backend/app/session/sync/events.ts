@@ -1,4 +1,4 @@
-import type { BackgroundTaskStatus } from "@/kernel/channels/background-tasks.ts";
+import type { BackgroundTaskState } from "@/kernel/channels/background-tasks.ts";
 import { subscribeEnvBroadcast, subscribePushEvent } from "@/kernel/channels/session-events.ts";
 export type PushEmitter = (eventType: string, plaintext: string) => Promise<void>;
 export type EnvEmitter = (plaintext: string) => Promise<void>;
@@ -33,7 +33,7 @@ export function emitEnvBroadcast(plaintext: string): void {
   } catch {}
 }
 
-export function bgCompletionStatus(status: BackgroundTaskStatus): string {
+export function bgCompletionStatus(status: BackgroundTaskState): string {
   if (status === "killed") return "stopped";
   if (status === "error") return "failed";
   return "completed";

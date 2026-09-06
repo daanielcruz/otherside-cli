@@ -10,11 +10,11 @@ export interface UsageSnapshot {
 
 export const IMAGE_BLOCK_TOKEN_ESTIMATE = 2_000;
 
-export function roughTokenCountEstimation(content: string, bytesPerToken = 4): number {
+export function estimateTokensFromChars(content: string, bytesPerToken = 4): number {
   return Math.round(content.length / bytesPerToken);
 }
 
-export function bytesPerTokenForFileType(fileExtension: string): number {
+export function bytesPerTokenByExtension(fileExtension: string): number {
   switch (fileExtension) {
     case "json":
     case "jsonl":
@@ -25,11 +25,8 @@ export function bytesPerTokenForFileType(fileExtension: string): number {
   }
 }
 
-export function roughTokenCountEstimationForFileType(
-  content: string,
-  fileExtension: string,
-): number {
-  return roughTokenCountEstimation(content, bytesPerTokenForFileType(fileExtension));
+export function estimateFileTokens(content: string, fileExtension: string): number {
+  return estimateTokensFromChars(content, bytesPerTokenByExtension(fileExtension));
 }
 
 function safeJsonStringify(value: unknown): string {
@@ -40,19 +37,17 @@ function safeJsonStringify(value: unknown): string {
   }
 }
 
-const TOOL_RESULT_BYTES_PER_TOKEN = 3;
+const RESULT_CHARS_PER_TOKEN = 3;
 
-export function roughTokenCountEstimationForToolResult(
-  content: ContentBlock & { type: "tool_result" },
-): number {
+export function estimateToolResultTokens(content: ContentBlock & { type: "tool_result" }): number {
   const body = content.content;
   if (typeof body === "string") {
-    return roughTokenCountEstimation(body, TOOL_RESULT_BYTES_PER_TOKEN);
+    return estimateTokensFromChars(body, RESULT_CHARS_PER_TOKEN);
   }
   let total = 0;
   for (const block of body) {
     if (block.type === "text") {
-      total += roughTokenCountEstimation(block.text, TOOL_RESULT_BYTES_PER_TOKEN);
+      total += estimateTokensFromChars(block.text, RESULT_CHARS_PER_TOKEN);
     } else if (block.type === "image") {
       total += IMAGE_BLOCK_TOKEN_ESTIMATE;
     }
@@ -60,32 +55,32 @@ export function roughTokenCountEstimationForToolResult(
   return total;
 }
 
-function roughTokenCountEstimationForBlock(block: ContentBlock): number {
+function estimateBlockTokens(block: ContentBlock): number {
   switch (block.type) {
     case "text":
-      return roughTokenCountEstimation(block.text);
+      return estimateTokensFromChars(block.text);
     case "thinking":
-      return roughTokenCountEstimation(block.text);
+      return estimateTokensFromChars(block.text);
     case "image":
       return IMAGE_BLOCK_TOKEN_ESTIMATE;
     case "tool_use":
-      return roughTokenCountEstimation(block.name + safeJsonStringify(block.input));
+      return estimateTokensFromChars(block.name + safeJsonStringify(block.input));
     case "tool_result":
-      return roughTokenCountEstimationForToolResult(block);
+      return estimateToolResultTokens(block);
   }
 }
 
-export function roughTokenCountEstimationForMessages(messages: readonly Message[]): number {
+export function estimateConversationTokens(messages: readonly Message[]): number {
   let total = 0;
   for (const msg of messages) {
     for (const block of msg.content) {
-      total += roughTokenCountEstimationForBlock(block);
+      total += estimateBlockTokens(block);
     }
   }
   return total;
 }
 
-export function getTokenCountFromUsage(usage: UsageSnapshot): number {
+export function sumUsageTokens(usage: UsageSnapshot): number {
   return (
     usage.inputTokens +
     usage.cacheCreationInputTokens +
@@ -105,34 +100,30 @@ export function getAuthoritativeUsage(
   const lastWithUsage = findLastMessageWithUsage(messages);
   if (lastWithUsage >= 0) {
     const usage = messages[lastWithUsage]?.usage;
-    if (usage && getTokenCountFromUsage(usage) > 0) return usage;
+    if (usage && sumUsageTokens(usage) > 0) return usage;
   }
-  if (lastUsage && getTokenCountFromUsage(lastUsage) > 0) return lastUsage;
+  if (lastUsage && sumUsageTokens(lastUsage) > 0) return lastUsage;
   return null;
 }
 
-export function tokenCountWithEstimation(
+export function countTokensWithEstimates(
   messages: readonly Message[],
   lastUsage: UsageSnapshot | null | undefined,
 ): number {
   const lastWithUsage = findLastMessageWithUsage(messages);
   if (lastWithUsage >= 0) {
     const usage = messages[lastWithUsage]?.usage;
-    if (usage && getTokenCountFromUsage(usage) > 0) {
-      return (
-        getTokenCountFromUsage(usage) +
-        roughTokenCountEstimationForMessages(messages.slice(lastWithUsage + 1))
-      );
+    if (usage && sumUsageTokens(usage) > 0) {
+      return sumUsageTokens(usage) + estimateConversationTokens(messages.slice(lastWithUsage + 1));
     }
   }
-  if (lastUsage && getTokenCountFromUsage(lastUsage) > 0) {
+  if (lastUsage && sumUsageTokens(lastUsage) > 0) {
     const lastAssistantIdx = findLastAssistantIndex(messages);
     return lastAssistantIdx >= 0
-      ? getTokenCountFromUsage(lastUsage) +
-          roughTokenCountEstimationForMessages(messages.slice(lastAssistantIdx + 1))
-      : getTokenCountFromUsage(lastUsage);
+      ? sumUsageTokens(lastUsage) + estimateConversationTokens(messages.slice(lastAssistantIdx + 1))
+      : sumUsageTokens(lastUsage);
   }
-  return roughTokenCountEstimationForMessages(messages);
+  return estimateConversationTokens(messages);
 }
 
 export function hasAuthoritativeUsage(

@@ -4,7 +4,7 @@ export interface PreservedSegment {
   anchorUuid: string;
 }
 
-export interface PreservedMessages {
+export interface CompactKeepList {
   uuids: string[];
   anchorUuid: string;
 }

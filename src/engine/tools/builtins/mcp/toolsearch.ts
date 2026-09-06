@@ -1,4 +1,4 @@
-import { getAgentContext } from "@/engine/agents/agent-context.ts";
+import { currentSpawnedAgentScope } from "@/engine/agents/agent-context.ts";
 import { getProviderConfig } from "@/engine/contract/registry.ts";
 import type { ToolHandler } from "@/engine/tools/contract.ts";
 import {
@@ -81,7 +81,8 @@ function catalog(ctx: RequestContext): CatalogEntry[] {
       return false;
     }
     if (forkAllowSet === undefined) return true;
-    if (isForkDisallowedTool(name, getAgentContext()?.permissionModeOverride)) return false;
+    if (isForkDisallowedTool(name, currentSpawnedAgentScope()?.permissionModeOverride))
+      return false;
     if (forkAllowSet === null) return true;
     return forkAllowSet.has(name) || (ctx.forkDeferredAllow?.has(name) ?? false);
   };

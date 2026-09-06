@@ -1,10 +1,10 @@
+import { env } from "@/kernel/std/proc/env.ts";
 import { BEL, ESC, ESC_TYPE, SEP } from "@/terminal-runtime/terminal/ansi-control.js";
 import type {
   Action,
   Color,
   TabStatusAction,
 } from "@/terminal-runtime/terminal/protocol-contracts.js";
-import { env } from "@/utils/env.js";
 
 export const SEQUENCE_PREFIX = ESC + String.fromCharCode(ESC_TYPE.OSC);
 
@@ -13,6 +13,10 @@ export const ST = ESC + "\\";
 export function osc(...parts: (string | number)[]): string {
   const terminator = env.terminal === "kitty" ? ST : BEL;
   return `${SEQUENCE_PREFIX}${parts.join(SEP)}${terminator}`;
+}
+
+export function oscWithStringTerminator(...parts: (string | number)[]): string {
+  return `${SEQUENCE_PREFIX}${parts.join(SEP)}${ST}`;
 }
 
 export function wrapForSessionManager(sequence: string): string {

@@ -60,6 +60,11 @@ export interface SlashResult {
   command?: SlashCommand;
   feedback?: string;
   shouldQuery?: boolean;
+  /**
+   * What a submitting command resolved to, sent in place of what was typed.
+   * Absent means the typed text is the turn, and it is not echoed a second time.
+   */
+  queryText?: string;
   goalEvent?:
     | { kind: "goal_set"; condition: string; setAt: number }
     | { kind: "goal_cleared"; condition: string };

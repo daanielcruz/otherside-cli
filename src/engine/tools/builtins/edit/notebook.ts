@@ -1,5 +1,9 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute } from "node:path";
+import {
+  isNetworkSharePath,
+  NETWORK_SHARE_PATH_ERROR,
+} from "@/engine/tools/builtins/path-guards.ts";
 import type { ToolHandler } from "@/engine/tools/contract.ts";
 import NotebookEditSchema from "@/harness/tools/NotebookEdit/tool.json" with { type: "json" };
 import type { ToolCall, ToolResult } from "@/kernel/std/types/message.ts";
@@ -8,7 +12,6 @@ import {
   recordFileMutationResult,
   snapshotBeforeFileMutation,
 } from "@/kernel/storage/file-history.ts";
-import { isNetworkSharePath, NETWORK_SHARE_PATH_ERROR } from "../path-guards.ts";
 
 type CellType = "code" | "markdown";
 type EditMode = "replace" | "insert" | "delete";

@@ -1,11 +1,75 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { join, posix, win32 } from "node:path";
 import {
+  canonicalizeCwd,
   ephemeralAwareProjectPath,
   isEphemeralCwd,
   isEphemeralSlug,
+  pathComponent,
   projectPath,
 } from "../paths.ts";
+
+describe("canonicalizeCwd", () => {
+  it("agrees with asynchronous filesystem resolution for an existing directory", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "cwd-identity-"));
+    try {
+      expect(canonicalizeCwd(directory)).toBe(await realpath(directory));
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves the requested spelling when the directory does not exist", () => {
+    const missing = join(tmpdir(), `cwd-missing-${crypto.randomUUID()}`, "child");
+    expect(canonicalizeCwd(missing)).toBe(missing);
+  });
+
+  it.skipIf(process.platform !== "win32")("uses native filesystem resolution on Windows", () => {
+    const path = "C:\\LONGNA~1\\project";
+    const resolved = "C:\\Long Named Directory\\project";
+    const native = spyOn(realpathSync, "native").mockReturnValue(resolved);
+    try {
+      expect(canonicalizeCwd(path)).toBe(resolved);
+      expect(native).toHaveBeenCalledWith(path);
+    } finally {
+      native.mockRestore();
+    }
+  });
+});
+
+describe("pathComponent", () => {
+  it("keeps a name that is already one segment", () => {
+    expect(pathComponent("9f8e7d6c-1234-4abc-9def-0123456789ab")).toBe(
+      "9f8e7d6c-1234-4abc-9def-0123456789ab",
+    );
+    expect(pathComponent("a3prddwvq")).toBe("a3prddwvq");
+    expect(pathComponent("release.notes_2")).toBe("release.notes_2");
+  });
+
+  // What matters is that whatever comes back is one segment: no separator to descend
+  // through, and no `..` left standing on its own to climb with.
+  it("cannot climb out of the directory it names", () => {
+    for (const hostile of ["../../etc/passwd", "..", "nested/child", "/absolute", "a\\b"]) {
+      const segment = pathComponent(hostile);
+      for (const path of [posix, win32]) {
+        expect(path.dirname(path.join("/root", segment))).toBe(path.normalize("/root"));
+      }
+      expect(segment).not.toContain("/");
+      expect(segment).not.toContain("\\");
+    }
+  });
+
+  // The directory sweeps skip dotted entries, so a name may not become one.
+  it("never produces a hidden or empty segment", () => {
+    expect(pathComponent(".highwatermark")).toBe("highwatermark");
+    expect(pathComponent("")).toBe("_");
+    expect(pathComponent("...")).toBe("_");
+    expect(pathComponent("..")).toBe("_");
+  });
+});
 
 describe("isEphemeralCwd", () => {
   it("persists sessions in user temp cwds", () => {

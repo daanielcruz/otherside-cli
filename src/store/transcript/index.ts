@@ -1,20 +1,16 @@
-import { useSyncExternalStore } from "react";
 import type { TranscriptEntry } from "@/engine/session/record/types.ts";
 import { makeStore, type Store } from "@/kernel/std/state/make-store.ts";
-import { dispatch } from "@/store/app-store/index.ts";
-
 export interface TranscriptState {
   readonly entries: readonly TranscriptEntry[];
-  readonly flushedUpTo: string | null;
 }
 
-const initial: TranscriptState = { entries: [], flushedUpTo: null };
+const initial: TranscriptState = { entries: [] };
 
 export const transcriptStore: Store<TranscriptState> = makeStore<TranscriptState>(initial);
 
 // A single pathological entry (a huge tool result the render path never
 // pre-capped, or a stale entry whose record was later shrunk by
-// applyToolResultBudget without this cache being told) can pin arbitrary bytes.
+// applyToolOutputBudget without this cache being told) can pin arbitrary bytes.
 // Clip far above any normal rendered entry; the full content remains on disk.
 // Gated on `String.length` (O(1)) so the scan stays cheap.
 const MAX_ENTRY_TEXT_CHARS = 512 * 1024;
@@ -61,105 +57,65 @@ function clipOversized(entries: readonly TranscriptEntry[]): readonly Transcript
   return hasOversized ? entries.map(clipEntry) : entries;
 }
 
-function sameEntryForFlushGuard(a: TranscriptEntry, b: TranscriptEntry): boolean {
-  if (a === b) return true;
-  try {
-    return JSON.stringify(a) === JSON.stringify(b);
-  } catch {
-    return false;
+function preserveNoopUpdateIdentity(
+  current: readonly TranscriptEntry[],
+  updaterInput: readonly TranscriptEntry[],
+  produced: readonly TranscriptEntry[],
+): readonly TranscriptEntry[] {
+  if (produced !== updaterInput) return produced;
+  if (
+    produced.length === current.length &&
+    produced.every((entry, index) => entry === current[index])
+  ) {
+    return current;
   }
-}
-
-function flushedPrefixMutation(
-  prevEntries: readonly TranscriptEntry[],
-  producedEntries: readonly TranscriptEntry[],
-  flushedUpTo: string | null,
-): TranscriptEntry | null {
-  if (flushedUpTo === null) return null;
-  const cursorIndex = prevEntries.findIndex((entry) => entry.id === flushedUpTo);
-  if (cursorIndex === -1) return null;
-  for (let i = 0; i <= cursorIndex; i++) {
-    const prev = prevEntries[i];
-    const next = producedEntries[i];
-    if (!prev) continue;
-    if (!next || next.id !== prev.id || !sameEntryForFlushGuard(prev, next)) return prev;
-  }
-  return null;
-}
-
-function invalidateAfterFlushedMutation(entry: TranscriptEntry): boolean {
-  const message = `transcript entry ${entry.id} changed after static flush`;
-  if (process.env.NODE_ENV === "development") {
-    throw new Error(message);
-  }
-  dispatch({ type: "view/bumpLogEpoch" });
-  return true;
-}
-
-function cursorStillPresent(
-  entries: readonly TranscriptEntry[],
-  flushedUpTo: string | null,
-): string | null {
-  if (flushedUpTo === null) return null;
-  return entries.some((entry) => entry.id === flushedUpTo) ? flushedUpTo : null;
+  return produced;
 }
 
 export function getTranscriptEntries(): readonly TranscriptEntry[] {
   return transcriptStore.getState().entries;
 }
 
-export function getTranscriptFlushCursor(): string | null {
-  return transcriptStore.getState().flushedUpTo;
-}
-
 type TranscriptUpdater = (prev: readonly TranscriptEntry[]) => readonly TranscriptEntry[];
 
 export const transcriptActions = {
+  appendProvisional(entry: TranscriptEntry): void {
+    transcriptActions.update((entries) => [
+      ...entries,
+      { ...entry, settlementState: "provisional" },
+    ]);
+  },
+  replaceMutable(recordId: string, update: (entry: TranscriptEntry) => TranscriptEntry): void {
+    transcriptActions.update((entries) =>
+      entries.map((entry) =>
+        entry.id === recordId ? { ...update(entry), settlementState: "mutable-live" } : entry,
+      ),
+    );
+  },
+  settle(entry: TranscriptEntry): void {
+    const settled = { ...entry, settlementState: "settled" as const };
+    transcriptActions.update((entries) => {
+      const existing = entries.find((candidate) => candidate.id === settled.id);
+      if (existing === undefined) return [...entries, settled];
+      return entries.map((candidate) => (candidate.id === settled.id ? settled : candidate));
+    });
+  },
   update(updater: TranscriptUpdater): void {
     transcriptStore.setState((prev) => {
-      const produced = updater(prev.entries);
-      const mutation = flushedPrefixMutation(prev.entries, produced, prev.flushedUpTo);
-      const invalidated = mutation !== null ? invalidateAfterFlushedMutation(mutation) : false;
+      const updaterInput = [...prev.entries];
+      const produced = preserveNoopUpdateIdentity(
+        prev.entries,
+        updaterInput,
+        updater(updaterInput),
+      );
       const nextEntries = clipOversized(produced);
-      const nextFlushedUpTo = invalidated
-        ? null
-        : cursorStillPresent(nextEntries, prev.flushedUpTo);
-      return nextEntries === prev.entries && nextFlushedUpTo === prev.flushedUpTo
-        ? prev
-        : { entries: nextEntries, flushedUpTo: nextFlushedUpTo };
+      return nextEntries === prev.entries ? prev : { entries: nextEntries };
     });
   },
   replace(entries: readonly TranscriptEntry[]): void {
-    const retained = clipOversized(entries);
-    transcriptStore.setState((prev) =>
-      prev.entries === retained && prev.flushedUpTo === null
-        ? prev
-        : { entries: retained, flushedUpTo: null },
-    );
+    transcriptStore.setState(() => ({ entries: clipOversized(entries) }));
   },
   clear(): void {
-    transcriptStore.setState((prev) =>
-      prev.entries.length === 0 && prev.flushedUpTo === null
-        ? prev
-        : { entries: [], flushedUpTo: null },
-    );
-  },
-  markFlushedUpTo(id: string): void {
-    transcriptStore.setState((prev) =>
-      prev.flushedUpTo === id ? prev : { ...prev, flushedUpTo: id },
-    );
-  },
-  resetFlushCursor(): void {
-    transcriptStore.setState((prev) =>
-      prev.flushedUpTo === null ? prev : { ...prev, flushedUpTo: null },
-    );
+    transcriptStore.setState(() => initial);
   },
 };
-
-export function useTranscriptEntries(): readonly TranscriptEntry[] {
-  return useSyncExternalStore(
-    transcriptStore.subscribe,
-    () => transcriptStore.getState().entries,
-    () => transcriptStore.getState().entries,
-  );
-}

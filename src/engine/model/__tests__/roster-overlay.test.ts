@@ -7,14 +7,14 @@ describe("parseRosterOverlay", () => {
       JSON.stringify({
         tiers: {
           emperor: [
-            { provider: "anthropic", model: "claude-fable-5" },
+            { provider: "anthropic", model: "claude-opus-5" },
             { provider: "codex", model: "gpt-5.6-sol" },
           ],
         },
       }),
     );
     expect(overlay.emperor).toEqual([
-      { provider: "anthropic", model: "claude-fable-5" },
+      { provider: "anthropic", model: "claude-opus-5" },
       { provider: "codex", model: "gpt-5.6-sol" },
     ]);
     expect(overlay.shogun).toBeUndefined();
@@ -53,7 +53,7 @@ describe("parseRosterOverlay", () => {
 describe("mergeRosterOverlays", () => {
   it("project tier replaces the user tier; absent tiers fall through", () => {
     const user = {
-      emperor: [{ provider: "anthropic", model: "claude-fable-5" } as const],
+      emperor: [{ provider: "anthropic", model: "claude-opus-5" } as const],
       samurai: [{ provider: "glm", model: "glm-5-turbo" } as const],
     };
     const project = {

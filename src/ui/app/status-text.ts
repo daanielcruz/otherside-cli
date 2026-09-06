@@ -2,27 +2,27 @@ import type { BackgroundTask } from "@/engine/background/tasks/background.ts";
 import { getProviderConfig } from "@/engine/contract/registry.ts";
 import { findModel } from "@/engine/model/catalog.ts";
 import {
-  getModelAutoCompactThreshold,
-  maxOutputTokensForModel,
-  resolveAutoCompactWindow,
+  configuredCompactWindow,
+  modelAutoCompactTrigger,
+  providerCompactOutputLimit,
 } from "@/engine/session/compact/index.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
 import type { fireUserPromptSubmitHooks } from "@/kernel/hooks/handler.ts";
 import type { EffortLevel } from "@/kernel/std/types/effort.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 
 export function computeAutoCompactRemainingPct(
   usedTokens: number,
   modelId: string,
   providerId: ProviderId,
 ): number | undefined {
-  const model = findModel(modelId, providerId);
+  const model = findModel({ provider: providerId, model: modelId });
   if (!model) return undefined;
   if (model.contextWindow <= 0) return undefined;
-  const window = resolveAutoCompactWindow(model.contextWindow).window;
-  const threshold = getModelAutoCompactThreshold({
+  const window = configuredCompactWindow(model.contextWindow).window;
+  const threshold = modelAutoCompactTrigger({
     model,
     window,
-    maxOutputTokens: maxOutputTokensForModel(modelId),
+    maxOutputTokens: providerCompactOutputLimit({ provider: providerId, model: modelId }),
     provider: providerId,
   });
   if (threshold <= 0) return undefined;
@@ -92,5 +92,6 @@ export function formatHookOutcome(
 ): string {
   if (outcome.kind === "non_zero_exit") return `exit ${outcome.code}`;
   if (outcome.kind === "spawn_failed") return outcome.error;
+  if (outcome.kind === "prompt_blocked") return outcome.reason;
   return outcome.kind;
 }

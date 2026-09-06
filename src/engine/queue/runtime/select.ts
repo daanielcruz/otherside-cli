@@ -7,7 +7,7 @@ import type { ComposedHarness } from "@/harness/composer/injections.ts";
 import type { Message } from "@/kernel/std/types/message.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 import { parseSelectionResponse } from "./parse.ts";
-import { formatMemoryManifest, type MemoryHeader, scanMemoryFiles } from "./scan.ts";
+import { type MemoryHeader, renderMemoryManifest, scanMemoryFiles } from "./scan.ts";
 
 export const SELECT_MEMORIES_SYSTEM_PROMPT = `You are selecting memories that will be useful to Otherside CLI as it processes a user's query. The first message lists the available memory files with their filenames and descriptions; subsequent messages each contain one user query.
 
@@ -49,7 +49,7 @@ async function ensureConversation(
     messages: [
       {
         role: "user",
-        content: [{ type: "text", text: `Available memories:\n${formatMemoryManifest(memories)}` }],
+        content: [{ type: "text", text: `Available memories:\n${renderMemoryManifest(memories)}` }],
       },
     ],
   };
@@ -142,6 +142,7 @@ async function runSelectionQuery(
       combined: SELECT_MEMORIES_SYSTEM_PROMPT,
       systemBlocks: [{ text: SELECT_MEMORIES_SYSTEM_PROMPT }],
       userPrepend: [],
+      midSystemPromotion: "off",
     };
     const messages: Message[] = [
       ...conversation.messages,
@@ -190,7 +191,7 @@ export interface RelevantMemory {
   mtimeMs: number;
 }
 
-export async function findRelevantMemories(
+export async function selectRelevantMemories(
   query: string,
   memoryDir: string,
   state: RecallState,

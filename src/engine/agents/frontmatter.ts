@@ -10,7 +10,8 @@ export interface ParsedHookEntry {
   type?: "command" | "prompt";
   command?: string;
   prompt?: string;
-  timeoutMs?: number;
+  /** Execution budget in SECONDS. */
+  timeout?: number;
 }
 
 export type ParsedHooks = Record<string, ParsedHookEntry[]>;
@@ -279,10 +280,7 @@ function applyHookField(entry: ParsedHookEntry, line: string): void {
   } else if (key === "type" && (value === "command" || value === "prompt")) entry.type = value;
   else if (key === "timeout") {
     const n = Number(value);
-    if (Number.isFinite(n) && n > 0) entry.timeoutMs = n * 1000;
-  } else if (key === "timeoutMs") {
-    const n = Number(value);
-    if (Number.isFinite(n) && n > 0) entry.timeoutMs = n;
+    if (Number.isFinite(n) && n > 0) entry.timeout = n;
   }
 }
 

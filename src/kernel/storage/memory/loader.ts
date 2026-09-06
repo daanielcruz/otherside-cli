@@ -1,11 +1,8 @@
 import { dirname, resolve, sep } from "node:path";
 import { configRoot } from "@/kernel/std/fs/paths.ts";
-import {
-  autoMemEntrypoint,
-  truncateEntrypointContent,
-} from "@/kernel/storage/memory/entrypoint.ts";
+import { autoMemEntrypoint, trimEntrypointContent } from "@/kernel/storage/memory/entrypoint.ts";
 import { expandImports } from "@/kernel/storage/memory/expand.ts";
-import { isAutoMemoryEnabled } from "@/kernel/storage/memory/session-toggle.ts";
+import { isSessionMemoryEnabled } from "@/kernel/storage/memory/session-toggle.ts";
 import type { MemoryFile } from "@/kernel/storage/memory/types.ts";
 import {
   canonicalize,
@@ -38,13 +35,13 @@ function firstProjectMemory(
 }
 
 function autoMemFile(cwd: string, visited: Set<string>): MemoryFile | null {
-  if (!isAutoMemoryEnabled()) return null;
+  if (!isSessionMemoryEnabled()) return null;
   const entrypoint = autoMemEntrypoint(cwd);
   if (visited.has(entrypoint)) return null;
   const raw = readFileSafe(entrypoint);
   if (raw === null || raw.trim().length === 0) return null;
   visited.add(entrypoint);
-  return { path: entrypoint, content: truncateEntrypointContent(raw), scope: "automem" };
+  return { path: entrypoint, content: trimEntrypointContent(raw), scope: "automem" };
 }
 
 /**

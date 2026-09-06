@@ -1,39 +1,50 @@
-import type { WorkflowPhaseDescriptor } from "@/engine/background/workflows/runtime/parser/types.ts";
+import type { WorkflowPhaseSpec } from "@/engine/background/workflows/runtime/parser/types.ts";
 import type { AgentTranscript } from "@/engine/background/workflows/runtime/transcript/types.ts";
-import type { WorkflowTaskStatus } from "@/kernel/channels/workflow-tasks.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
+import type {
+  WorkflowAgentAttemptReason,
+  WorkflowTaskStatus,
+} from "@/kernel/channels/workflow-tasks.ts";
+import type { ProviderId, ProviderModelRoute } from "@/kernel/std/types/provider-ids.ts";
 
-export type { WorkflowTaskStatus } from "@/kernel/channels/workflow-tasks.ts";
+export type {
+  WorkflowAgentAttemptReason,
+  WorkflowTaskStatus,
+} from "@/kernel/channels/workflow-tasks.ts";
 
 export type WorkflowAgentControlReason = "user-skip" | "user-retry";
 
 export const WORKFLOW_AGENT_SKIP_REASON: WorkflowAgentControlReason = "user-skip";
 export const WORKFLOW_AGENT_RETRY_REASON: WorkflowAgentControlReason = "user-retry";
 
-export type WorkflowProgressEntry =
-  | WorkflowAgentProgress
-  | WorkflowPhaseProgress
-  | WorkflowLogProgress;
+export type WorkflowProgressItem = WorkflowAgentStatus | WorkflowPhaseStatus | WorkflowLogProgress;
 
-export interface WorkflowAgentProgress {
+export interface WorkflowAgentStatus {
   type: "workflow_agent";
   index: number;
   label: string;
   phaseTitle?: string;
   agentId?: string;
-  // Resolved routing provider of the stage agent (model is display-only);
-  // feeds the allocation scope for passive quota warnings.
+  /** Atomic routing identity (model id, not display name). Prefer this for allocation. */
+  route?: ProviderModelRoute;
+  // Legacy dual fields: provider is the routing provider; model is display-only
+  // for UI rows. Mirrored from `route` when the route is known.
   provider?: ProviderId;
   model?: string;
   agentType?: string;
   isolation?: "worktree";
   attempt?: number;
-  lastAttemptReason?: "throttled" | "stalled";
+  lastAttemptReason?: WorkflowAgentAttemptReason;
   cached?: boolean;
   skipped?: boolean;
   stopped?: boolean;
   state: "start" | "done" | "error";
-  startedAt: number;
+  /** When the agent joined the queue. Set for every agent, waiting or not. */
+  queuedAt?: number;
+  /**
+   * When a concurrency slot freed and the agent began work. Absent while it is
+   * still waiting, which is what separates a queued row from a running one.
+   */
+  startedAt?: number;
   lastProgressAt: number;
   tokens?: number;
   toolCalls?: number;
@@ -44,7 +55,7 @@ export interface WorkflowAgentProgress {
   lastToolSummary?: string;
 }
 
-export interface WorkflowPhaseProgress {
+export interface WorkflowPhaseStatus {
   type: "workflow_phase";
   index: number;
   title: string;
@@ -56,7 +67,7 @@ export interface WorkflowLogProgress {
   message: string;
 }
 
-export interface LocalWorkflowTaskState {
+export interface WorkflowTaskLifecycle {
   id: string;
   type: "local_workflow";
   status: WorkflowTaskStatus;
@@ -64,8 +75,9 @@ export interface LocalWorkflowTaskState {
   workflowRunId: string;
   cwd: string;
   sessionId: string;
-  // Parent session provider/model at launch — workflow agents inherit the
-  // provider; used to roll the run's token usage into the ledger at completion.
+  /** Parent session route at launch — agents inherit provider; ledger uses both. */
+  route?: ProviderModelRoute;
+  // Legacy dual fields mirrored from `route` for readers that still split them.
   provider?: ProviderId;
   model?: string;
   workflowName: string;
@@ -75,8 +87,8 @@ export interface LocalWorkflowTaskState {
   scriptPath?: string;
   args?: unknown;
   summary?: string;
-  phases?: WorkflowPhaseDescriptor[];
-  workflowProgress: WorkflowProgressEntry[];
+  phases?: WorkflowPhaseSpec[];
+  workflowProgress: WorkflowProgressItem[];
   progressVersion: number;
   agentCount: number;
   totalTokens: number;

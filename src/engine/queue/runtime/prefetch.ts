@@ -1,9 +1,9 @@
 import type { UserConfig } from "@/kernel/config/config.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 import { autoMemDir } from "@/kernel/storage/memory/entrypoint.ts";
-import { isAutoMemoryEnabled } from "@/kernel/storage/memory/session-toggle.ts";
-import { createRecallState, findRelevantMemories, type RecallState } from "./select.ts";
-import { formatRecallReminder, type RecalledMemory, readMemoriesForSurfacing } from "./surface.ts";
+import { isSessionMemoryEnabled } from "@/kernel/storage/memory/session-toggle.ts";
+import { createRecallState, type RecallState, selectRelevantMemories } from "./select.ts";
+import { formatRecallReminder, loadMemoriesForSurfacing, type RecalledMemory } from "./surface.ts";
 
 const MAX_SESSION_BYTES = 60 * 1024;
 const MAX_MEMORIES_PER_TURN = 5;
@@ -50,7 +50,7 @@ export function startMemoryRecallPrefetch(
   args: MemoryRecallArgs,
 ): MemoryRecallPrefetch | undefined {
   if (args.config.memoryRecall === false) return undefined;
-  if (!isAutoMemoryEnabled()) return undefined;
+  if (!isSessionMemoryEnabled()) return undefined;
   const input = args.prompt.trim();
   if (input.length === 0 || !/\s/.test(input)) return undefined;
   const state = recallStateFor(args.sessionId);
@@ -62,7 +62,7 @@ export function startMemoryRecallPrefetch(
 
   const promise = (async (): Promise<RecalledMemory[]> => {
     const ctx = args.makeCtx();
-    const picks = await findRelevantMemories(
+    const picks = await selectRelevantMemories(
       input,
       autoMemDir(args.cwd),
       state,
@@ -72,7 +72,7 @@ export function startMemoryRecallPrefetch(
     const selected = picks
       .filter((p) => !state.surfacedPaths.has(p.path))
       .slice(0, MAX_MEMORIES_PER_TURN);
-    return readMemoriesForSurfacing(selected, controller.signal);
+    return loadMemoriesForSurfacing(selected, controller.signal);
   })().catch(() => [] as RecalledMemory[]);
 
   const handle: MemoryRecallPrefetch = {

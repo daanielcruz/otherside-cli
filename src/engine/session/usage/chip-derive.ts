@@ -1,8 +1,8 @@
-import { roughTokenCountEstimation } from "@/engine/session/compact/token-count.ts";
+import { estimateTokensFromChars } from "@/engine/session/compact/token-count.ts";
 import { contextWindowWarning } from "@/engine/session/usage/context.ts";
 import type { UsageWarning } from "@/engine/session/usage/limits.ts";
 import type { TokenTotals } from "@/engine/session/usage/provider.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 
 interface ChipUsageContextSnapshot {
   inputTokens: number;
@@ -53,7 +53,7 @@ export function deriveChipUsage(args: DeriveChipUsageArgs): ChipUsage {
     totals: mainLastContext,
     suppressed: contextWarningSuppressed,
   });
-  const queuedTokens = queuedText.length > 0 ? roughTokenCountEstimation(queuedText) : 0;
+  const queuedTokens = queuedText.length > 0 ? estimateTokensFromChars(queuedText) : 0;
   // Context arithmetic must stay on the provider usage snapshot: the last
   // request's input side already contains every earlier round's output, so
   // the turn-wide live output meter (streamed chars across all rounds plus

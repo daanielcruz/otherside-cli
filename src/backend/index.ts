@@ -12,19 +12,22 @@ export {
   loadPeer,
   type Peer,
   removePeer,
-  resetRemoteIdentity,
+  retireRemotePairings,
   savePeer,
+  signOutRemote,
   syncPeersWithBackend,
   touchPeer,
 } from "@/backend/app/peers.ts";
-export { bootRemote } from "@/backend/app/session/boot.ts";
 export {
   initRemoteSession,
   isAutoEnable,
   isRemoteEnabled,
+  type RemoteStateSource,
+  removeLegacyRemoteSessionState,
   setAutoEnable,
   setRemoteEnabled,
   subscribeRemoteState,
+  sweepLegacyRemoteSessionState,
 } from "@/backend/app/session/state.ts";
 export {
   emitEnvBroadcast,
@@ -51,7 +54,6 @@ export {
   shareSessionKey,
 } from "@/backend/shared/api.ts";
 export {
-  clearAuth,
   isExpired,
   loadAuth,
   loadFreshAuth,

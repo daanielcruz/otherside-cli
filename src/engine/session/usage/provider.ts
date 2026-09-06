@@ -1,5 +1,5 @@
 import { findModel } from "@/engine/model/catalog.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 import type { ProviderUsageTotals } from "@/kernel/storage/provider-usage.ts";
 import type { UsageWarning } from "./limits.ts";
 
@@ -116,11 +116,10 @@ export function tokenTotalsFromUsageByProvider(usageByProvider: UsageByProvider)
 }
 
 export function providerContextUtilization(
-  modelId: string,
+  route: { provider: ProviderId; model: string },
   currentContextTokens: number,
-  provider?: ProviderId,
 ): number | null {
-  const model = findModel(modelId, provider);
+  const model = findModel(route);
   if (!model || model.contextWindow <= 0) return null;
   return (currentContextTokens / model.contextWindow) * 100;
 }
@@ -131,7 +130,10 @@ export function providerContextWarning(
   currentContextTokens: number,
 ): UsageWarning | null {
   if (provider === "openai") return null;
-  const utilization = providerContextUtilization(modelId, currentContextTokens, provider);
+  const utilization = providerContextUtilization(
+    { provider, model: modelId },
+    currentContextTokens,
+  );
   if (utilization === null || utilization < 90) return null;
   const used = Math.min(100, Math.floor(utilization));
   return {

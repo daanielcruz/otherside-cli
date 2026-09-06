@@ -1,4 +1,3 @@
-import { existsSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -12,6 +11,7 @@ import type {
 } from "@/engine/background/workflows/runtime/registry/types.ts";
 import type { UserConfig } from "@/kernel/config/config.ts";
 import { resolveConfig } from "@/kernel/config/resolver.ts";
+import { findGitRoot } from "@/kernel/std/fs/git-root.ts";
 import { isSafeMode } from "@/kernel/std/proc/env.ts";
 
 const WORKFLOWS_DIR_SEGMENTS = [".otherside", "workflows"];
@@ -42,6 +42,18 @@ export async function getAllWorkflows(
   return [...bundled, ...pluginUnique, ...local];
 }
 
+/**
+ * The roster a caller may offer when asked what exists. A hidden workflow stays
+ * resolvable by name — its own command launches it that way — but never advertises
+ * itself, so the roster holds only what a user can meaningfully pick.
+ */
+export async function getListedWorkflows(
+  cwd: string,
+  config?: UserConfig,
+): Promise<WorkflowDefinition[]> {
+  return (await getAllWorkflows(cwd, config)).filter((workflow) => workflow.hidden !== true);
+}
+
 export async function resolveWorkflow(
   name: string,
   cwd: string,
@@ -64,8 +76,8 @@ export async function getLocalWorkflows(
   const [userWorkflows, ...projectWorkflowLists] = await Promise.all([
     userDir === null
       ? Promise.resolve<WorkflowDefinition[]>([])
-      : loadWorkflowsFromDir(userDir, "user"),
-    ...projectDirs.map((dir) => loadWorkflowsFromDir(dir, "project")),
+      : loadWorkflowsFromDirectory(userDir, "user"),
+    ...projectDirs.map((dir) => loadWorkflowsFromDirectory(dir, "project")),
   ]);
   const byName = new Map<string, WorkflowDefinition>();
   for (const workflow of userWorkflows) byName.set(workflow.name, workflow);
@@ -96,21 +108,7 @@ function projectWorkflowDirs(cwd: string): string[] {
   return dirs;
 }
 
-// Exported for the /workflows save flow, which anchors project-scope saves
-// to the same repository root this walk stops at.
-export function findGitRoot(start: string): string | null {
-  let current = start;
-  for (let depth = 0; depth < 64; depth += 1) {
-    // Directory for a normal repo root; file for a linked worktree.
-    if (existsSync(join(current, ".git"))) return current;
-    const parent = dirname(current);
-    if (parent === current) return null;
-    current = parent;
-  }
-  return null;
-}
-
-async function loadWorkflowsFromDir(
+async function loadWorkflowsFromDirectory(
   dir: string,
   source: WorkflowSource,
 ): Promise<WorkflowDefinition[]> {

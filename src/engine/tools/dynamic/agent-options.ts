@@ -1,9 +1,5 @@
-import type { OrchestrationMode } from "@/kernel/config/orchestration-mode.ts";
+import type { OrchestrationMode } from "@/kernel/std/types/orchestration-mode.ts";
 import { trimmedStringOrUndefined } from "@/kernel/std/value-guards.ts";
-
-const AGENT_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
-const AGENT_NAME_ERROR =
-  "name must begin with a letter or digit and may then include only letters, digits, underscores, or hyphens, up to 64 characters total";
 
 export interface ParsedAgentInput {
   subagentType: string | null;
@@ -13,7 +9,6 @@ export interface ParsedAgentInput {
   tier?: string;
   model?: string;
   provider?: string;
-  name?: string;
   isolation?: "worktree" | "remote";
   validationError?: string;
 }
@@ -73,7 +68,7 @@ export const AGENT_OPTIONS: readonly AgentOptionDescriptor[] = [
   },
   {
     name: "model",
-    modes: ["disabled", "default"],
+    modes: ["disabled", "default", "feudalism"],
     parse: (raw, out) => {
       const model = trimmedStringOrUndefined(raw.model);
       if (model !== undefined) out.model = model;
@@ -81,27 +76,10 @@ export const AGENT_OPTIONS: readonly AgentOptionDescriptor[] = [
   },
   {
     name: "provider",
-    modes: ["default"],
+    modes: ["default", "feudalism"],
     parse: (raw, out) => {
       const provider = trimmedStringOrUndefined(raw.provider);
       if (provider !== undefined) out.provider = provider;
-    },
-  },
-  {
-    name: "name",
-    parse: (raw, out) => {
-      if (raw.name === undefined) return;
-      if (typeof raw.name !== "string" || !AGENT_NAME_PATTERN.test(raw.name)) {
-        out.validationError = AGENT_NAME_ERROR;
-        return;
-      }
-      const name = raw.name;
-      if (name === "main") {
-        out.validationError =
-          '"main" is reserved for the main conversation; SendMessage delivers there automatically';
-        return;
-      }
-      out.name = name;
     },
   },
   {

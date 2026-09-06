@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { type AgentContext, runWithAgentContext } from "@/engine/agents/agent-context.ts";
+import { type AgentContext, withSpawnedAgentScope } from "@/engine/agents/agent-context.ts";
 import { resolveWorkflowAgentModelContextDetailed } from "@/engine/background/workflows/runtime/subagent/bridge.ts";
-import { setCredentialsLoaderForTests } from "@/engine/model/tier/resolver.ts";
+import { setCredentialsLoaderForTests } from "@/engine/model/tier/usability.ts";
 import { registerAllProviders } from "@/engine/providers/bootstrap.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 import type { CredentialsBundle } from "@/kernel/storage/credentials.ts";
@@ -48,7 +48,7 @@ function nestedContext(): AgentContext {
 }
 
 function resolveNested(invocation: Parameters<typeof resolveSubagentRoutingForDispatch>[2]) {
-  return runWithAgentContext(nestedContext(), () =>
+  return withSpawnedAgentScope(nestedContext(), () =>
     resolveSubagentRoutingForDispatch(shogunContext(), TEST_DEF, invocation),
   );
 }
@@ -139,13 +139,13 @@ describe("nested tier ceiling", () => {
 
     expect(result).toMatchObject({
       ok: true,
-      ctx: { provider: "codex", model: "gpt-5.6-sol" },
+      ctx: { provider: "codex", model: "gpt-6-astra" },
     });
     if (result.ok) expect(result.routingNotice).toBeUndefined();
   });
 
   it("clamps workflow tier routing in a nested context", () => {
-    const result = runWithAgentContext(nestedContext(), () =>
+    const result = withSpawnedAgentScope(nestedContext(), () =>
       resolveWorkflowAgentModelContextDetailed(shogunContext(), {
         tier: "emperor",
       }),

@@ -1,4 +1,4 @@
-import type { VoiceProviderId } from "@/kernel/config/provider-ids.ts";
+import type { VoiceProviderId } from "@/kernel/std/types/provider-ids.ts";
 
 const PROVIDER_LABELS: Record<VoiceProviderId, string> = {
   anthropic: "Anthropic",

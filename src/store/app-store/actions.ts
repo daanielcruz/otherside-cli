@@ -1,5 +1,5 @@
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
 import type { EffortLevel } from "@/kernel/std/types/effort.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 
 export type PendingChange =
   | {

@@ -1,12 +1,16 @@
 import { emitQueue } from "@/engine/queue/emit.ts";
 import { agentTranscriptPathForCwd } from "@/engine/session/paths.ts";
 import {
-  type BackgroundTaskStatus,
+  type BackgroundTaskState,
   registerBackgroundTaskProvider,
 } from "@/kernel/channels/background-tasks.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
 import { generateTaskId } from "@/kernel/std/id.ts";
 import type { EffortLevel } from "@/kernel/std/types/effort.ts";
+import {
+  modelRoute,
+  type ProviderId,
+  type ProviderModelRoute,
+} from "@/kernel/std/types/provider-ids.ts";
 import * as backgroundControllers from "./background-controllers.ts";
 import * as taskRecords from "./index.ts";
 import {
@@ -16,9 +20,9 @@ import {
   buildCompletionNotification,
 } from "./notification.ts";
 import {
-  getTaskOutputPath,
   linkTaskOutput,
   resetTaskOutputPathPins,
+  resolveTaskLogPath,
   writeTaskOutputIfAbsent,
 } from "./output-files.ts";
 
@@ -54,6 +58,12 @@ export interface BackgroundTask {
   command?: string;
   description?: string;
   prompt?: string;
+  /** Atomic provider+model identity when known. */
+  route?: ProviderModelRoute;
+  /**
+   * Mirrored from `route` for readers that still access independent fields.
+   * Prefer `route`; never set these without the matching counterpart.
+   */
   provider?: ProviderId;
   model?: string;
   effort?: EffortLevel;
@@ -64,9 +74,15 @@ export interface BackgroundTask {
   reparentedGeneration?: number;
   cwd?: string;
   sessionId?: string;
-  status: BackgroundTaskStatus;
+  status: BackgroundTaskState;
   startedAt: number;
   endedAt?: number;
+  /**
+   * Set while a running fork has ended its turn but still owns live background
+   * work: alive for wake-ups (steer or child notification), no live turn.
+   * Readers treat a parked task as not busy and freeze its elapsed here.
+   */
+  parkedAt?: number;
   isBackgrounded: boolean;
   isSidechain?: boolean;
   ownerId?: string;
@@ -183,6 +199,27 @@ export function get(id: string): BackgroundTask | undefined {
   return task ? cloneTask(task) : undefined;
 }
 
+function resolveStartRoute(input: {
+  route?: ProviderModelRoute;
+  provider?: ProviderId;
+  model?: string;
+}): ProviderModelRoute | undefined {
+  if (input.route !== undefined) return input.route;
+  if (input.provider !== undefined && input.model !== undefined) {
+    return modelRoute(input.provider, input.model);
+  }
+  return undefined;
+}
+
+function applyRouteFields(
+  target: Pick<BackgroundTask, "route" | "provider" | "model">,
+  route: ProviderModelRoute,
+): void {
+  target.route = route;
+  target.provider = route.provider;
+  target.model = route.model;
+}
+
 export function startTask(input: {
   parentToolCallId: string;
   parentTaskId?: string | undefined;
@@ -191,6 +228,7 @@ export function startTask(input: {
   agentId?: string;
   description?: string;
   prompt?: string;
+  route?: ProviderModelRoute;
   provider?: ProviderId;
   model?: string;
   cwd?: string;
@@ -202,6 +240,7 @@ export function startTask(input: {
 }): BackgroundTask {
   const id = nextId();
   const runGeneration = 0;
+  const route = resolveStartRoute(input);
   const task: BackgroundTask = {
     id,
     kind: input.kind ?? "agent",
@@ -212,8 +251,12 @@ export function startTask(input: {
     ...(input.agentId !== undefined ? { agentId: input.agentId } : {}),
     ...(input.description !== undefined ? { description: input.description } : {}),
     ...(input.prompt !== undefined ? { prompt: input.prompt } : {}),
-    ...(input.provider !== undefined ? { provider: input.provider } : {}),
-    ...(input.model !== undefined ? { model: input.model } : {}),
+    ...(route !== undefined
+      ? { route, provider: route.provider, model: route.model }
+      : {
+          ...(input.provider !== undefined ? { provider: input.provider } : {}),
+          ...(input.model !== undefined ? { model: input.model } : {}),
+        }),
     runGeneration,
     runToken: nextRunToken(id, runGeneration),
     lifecycleMode: input.lifecycleMode ?? (input.isBackgrounded ? "detached" : "linked"),
@@ -348,6 +391,29 @@ export function setUsageSnapshot(taskId: string, usage: TaskUsageDelta): void {
   emit();
 }
 
+/** Atomically set the task's provider+model route (and optional effort). */
+export function setRoute(taskId: string, route: ProviderModelRoute, effort?: EffortLevel): void {
+  const task = store.get(taskId);
+  if (!task) return;
+  applyRouteFields(task, route);
+  if (effort !== undefined) task.effort = effort;
+  emit();
+}
+
+/** Marks a running fork parked on owned work, or live again on wake. */
+export function setTaskParked(taskId: string, parked: boolean): void {
+  const task = store.get(taskId);
+  if (!task || task.status !== "running") return;
+  if (parked === (task.parkedAt !== undefined)) return;
+  if (parked) task.parkedAt = Date.now();
+  else delete task.parkedAt;
+  emit();
+}
+
+/**
+ * @deprecated Prefer `setRoute`. Still dual-writes the atomic route when both
+ * halves are known so callers that only learn the model id mid-stream keep working.
+ */
 export function setModel(
   taskId: string,
   model: string,
@@ -356,9 +422,15 @@ export function setModel(
 ): void {
   const task = store.get(taskId);
   if (!task) return;
-  task.model = model;
+  if (provider !== undefined) {
+    applyRouteFields(task, modelRoute(provider, model));
+  } else {
+    task.model = model;
+    if (task.provider !== undefined) {
+      applyRouteFields(task, modelRoute(task.provider, model));
+    }
+  }
   if (effort !== undefined) task.effort = effort;
-  if (provider !== undefined) task.provider = provider;
   emit();
 }
 
@@ -589,6 +661,7 @@ function prepareTaskForResume(task: BackgroundTask): void {
   delete task.reparentedGeneration;
   task.startedAt = Date.now();
   delete task.endedAt;
+  delete task.parkedAt;
   delete task.exitCode;
   delete task.stoppedByUser;
   delete task.result;
@@ -686,6 +759,7 @@ function finishTaskForRun(
 
   task.status = result.killed ? "killed" : result.isError ? "error" : "completed";
   task.endedAt = Date.now();
+  delete task.parkedAt;
   if (result.exitCode !== undefined) task.exitCode = result.exitCode;
   if (result.userInitiated === true) task.stoppedByUser = true;
   task.result = { content: result.content, isError: result.isError };
@@ -717,6 +791,19 @@ export function taskFinalStatus(status: string): "completed" | "failed" | "kille
   return "completed";
 }
 
+/** What the agent produced: its final answer, or the partial one a kill cut short. */
+function agentResultText(
+  task: BackgroundTask,
+  status: "completed" | "failed" | "killed",
+): string | undefined {
+  if (status === "completed") return task.result?.content;
+  // A killed run's result.content is the cancellation reason rather than output.
+  // What it had streamed before stopping is the only answer it produced, and a
+  // reader deciding what to do next is better served by it than by nothing.
+  if (status === "killed") return task.assistantText;
+  return undefined;
+}
+
 function routeBackgroundedNotification(ref: TaskRunRef): void {
   const task = store.get(ref.taskId);
   if (!taskMatchesRun(task, ref) || task.notified) return;
@@ -735,9 +822,7 @@ function routeBackgroundedNotification(ref: TaskRunRef): void {
         ...(task.exitCode !== undefined ? { exitCode: task.exitCode } : {}),
         byUser,
       });
-  // A killed task's result.content holds the cancellation reason, not agent
-  // output, so only completed runs ship a <result>.
-  const agentResult = isAgent && status === "completed" ? task.result?.content : undefined;
+  const agentResult = isAgent ? agentResultText(task, status) : undefined;
   const agentUsage =
     isAgent && task.endedAt !== undefined
       ? {
@@ -749,7 +834,7 @@ function routeBackgroundedNotification(ref: TaskRunRef): void {
   const notificationText = buildCompletionNotification({
     taskId: task.id,
     toolUseId: task.parentToolCallId,
-    outputFile: getTaskOutputPath(task.id),
+    outputFile: resolveTaskLogPath(task.id),
     status,
     summary,
     ...(isAgent && failureError !== undefined ? { error: failureError } : {}),
@@ -868,6 +953,28 @@ export function removeTask(taskId: string): boolean {
   evictionTimers.delete(taskId);
   if (ok) emit();
   return ok;
+}
+
+/**
+ * User close of a panel row: the task and its whole descendant tree leave the
+ * store now instead of waiting out eviction. A run still live is stopped first
+ * so no orphan keeps streaming into a row that no longer exists.
+ */
+export function removeTaskTree(taskId: string): boolean {
+  const root = store.get(taskId);
+  if (root === undefined) return false;
+  if (root.status === "running") stopTaskForUser(root);
+  const ids: string[] = [];
+  const collect = (id: string): void => {
+    ids.push(id);
+    for (const child of store.values()) {
+      if (child.kind === "agent" && child.parentTaskId === id) collect(child.id);
+    }
+  };
+  collect(taskId);
+  let removed = false;
+  for (const id of ids) removed = removeTask(id) || removed;
+  return removed;
 }
 
 export function clear(): void {

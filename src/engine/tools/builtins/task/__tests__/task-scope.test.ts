@@ -11,8 +11,13 @@ function callFor(input: Record<string, unknown>): ToolCall {
   return { id: "call-1", name: "TaskCreate", input } as ToolCall;
 }
 
-function ctxFor(agentOwnerId?: string): RequestContext {
-  return { sessionId: "sess-scope-test", cwd: "/dummy/cwd", agentOwnerId } as RequestContext;
+function ctxFor(agentId?: string): RequestContext {
+  return {
+    sessionId: "sess-scope-test",
+    cwd: "/dummy/cwd",
+    agentId,
+    agentOwnerId: agentId,
+  } as RequestContext;
 }
 
 async function claimInWorker(owner: string, scope: string): Promise<Record<string, unknown>> {
@@ -36,7 +41,7 @@ async function claimInWorker(owner: string, scope: string): Promise<Record<strin
   return JSON.parse(stdout.trim()) as Record<string, unknown>;
 }
 
-describe("authorized task tools share the session planning list", () => {
+describe("task tools work the list of the thread they run in", () => {
   let tempBaseDir: string;
   let savedConfigDir: string | undefined;
 
@@ -57,31 +62,51 @@ describe("authorized task tools share the session planning list", () => {
     rmSync(tempBaseDir, { recursive: true, force: true });
   });
 
-  test("a main-created task is visible and writable from a workflow worker", async () => {
-    const mainCtx = ctxFor();
-    const agentCtx = ctxFor("workflow_worker_1");
-    await TaskCreate.run(callFor({ subject: "shared task", description: "d" }), mainCtx);
+  // A workflow worker plans in its own list — the one the footer shows while its
+  // document is open and the one its teardown drops. Writing into the session's list
+  // would leave the worker's private planning behind in the list the user works from.
+  test("a worker's task is its own and never reaches the session list", async () => {
+    const workerCtx = ctxFor("fork_worker_1");
+    await TaskCreate.run(callFor({ subject: "worker task", description: "d" }), workerCtx);
 
-    const listed = await TaskList.run(callFor({}), agentCtx);
-    const got = await TaskGet.run(callFor({ taskId: "1" }), agentCtx);
-    const updated = await TaskUpdate.run(callFor({ taskId: "1", status: "in_progress" }), agentCtx);
-
-    expect(String(listed.content)).toContain("shared task");
-    expect(String(got.content)).toContain("Task #1: shared task");
-    expect(String(updated.content)).toBe("Updated task #1 status");
-    expect(list()[0]?.status).toBe("in_progress");
+    expect(list()).toHaveLength(0);
+    expect(list("fork_worker_1").map((task) => task.subject)).toEqual(["worker task"]);
+    const mainView = await TaskList.run(callFor({}), ctxFor());
+    expect(String(mainView.content)).toBe("No tasks found");
   });
 
-  test("a workflow worker-created task lands in the shared session list", async () => {
-    await TaskCreate.run(
-      callFor({ subject: "agent task", description: "agent-shared" }),
-      ctxFor("workflow_worker_2"),
-    );
+  test("a worker reads and writes its own list, not the session's", async () => {
+    const mainCtx = ctxFor();
+    const workerCtx = ctxFor("fork_worker_2");
+    await TaskCreate.run(callFor({ subject: "session task", description: "d" }), mainCtx);
 
-    expect(list()).toHaveLength(1);
-    expect(list()[0]?.subject).toBe("agent task");
-    const mainView = await TaskList.run(callFor({}), ctxFor());
-    expect(String(mainView.content)).toContain("agent task");
+    expect(String((await TaskList.run(callFor({}), workerCtx)).content)).toBe("No tasks found");
+    expect(String((await TaskGet.run(callFor({ taskId: "1" }), workerCtx)).content)).toBe(
+      "Task not found",
+    );
+    const update = await TaskUpdate.run(callFor({ taskId: "1", status: "completed" }), workerCtx);
+    expect(String(update.content)).toBe("Task not found");
+    expect(list()[0]?.status).toBe("pending");
+
+    await TaskCreate.run(callFor({ subject: "worker task", description: "d" }), workerCtx);
+    expect(String((await TaskGet.run(callFor({ taskId: "1" }), workerCtx)).content)).toContain(
+      "Task #1: worker task",
+    );
+    expect(list().map((task) => task.subject)).toEqual(["session task"]);
+  });
+
+  test("the session keeps reading and writing its own list", async () => {
+    const mainCtx = ctxFor();
+    await TaskCreate.run(callFor({ subject: "session task", description: "d" }), mainCtx);
+
+    const listed = await TaskList.run(callFor({}), mainCtx);
+    const got = await TaskGet.run(callFor({ taskId: "1" }), mainCtx);
+    const updated = await TaskUpdate.run(callFor({ taskId: "1", status: "in_progress" }), mainCtx);
+
+    expect(String(listed.content)).toContain("session task");
+    expect(String(got.content)).toContain("Task #1: session task");
+    expect(String(updated.content)).toBe("Updated task #1 status");
+    expect(list()[0]?.status).toBe("in_progress");
   });
 
   test("TaskList hides internal tasks and reports empty when only internal remain", async () => {

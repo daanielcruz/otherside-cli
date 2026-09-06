@@ -1,21 +1,28 @@
 import type { SubagentDef } from "@/engine/agents/registry.ts";
-import { publish } from "@/engine/background/tasks/bus.ts";
 import { get as getSkill, list as listSkills, type Skill } from "@/engine/skills/registry.ts";
 import { renderSkillBody } from "@/engine/tools/builtins/skill.ts";
 import type { Message } from "@/kernel/std/types/message.ts";
 
 const SKILL_INSTRUCTIONS_TAG = "skill-instructions";
 
-export function skillMessagesForDef(def: SubagentDef): Message[] {
+export interface SkillMessagesForDef {
+  messages: Message[];
+  warnings: string[];
+}
+
+export function skillMessagesForDef(def: SubagentDef): SkillMessagesForDef {
   const messages: Message[] = [];
+  const warnings: string[] = [];
   for (const name of def.skills ?? []) {
     const skill = resolveSkillByName(name);
     if (!skill) {
-      publish("error", `Agent "${def.id}": skill "${name}" not found — skipped`);
+      warnings.push(`agent "${def.id}" declares skill "${name}", which is not loaded — skipped`);
       continue;
     }
     if (skill.context === "fork") {
-      publish("error", `Agent "${def.id}": skill "${skill.name}" is fork-context — skipped`);
+      warnings.push(
+        `agent "${def.id}" declares skill "${skill.name}", which only runs as a fork — skipped`,
+      );
       continue;
     }
     messages.push({
@@ -28,7 +35,7 @@ export function skillMessagesForDef(def: SubagentDef): Message[] {
       ],
     });
   }
-  return messages;
+  return { messages, warnings };
 }
 
 function resolveSkillByName(name: string): Skill | undefined {

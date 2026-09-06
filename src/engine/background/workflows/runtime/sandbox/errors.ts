@@ -34,17 +34,17 @@ const WORKFLOW_ERROR_MAX_FRAMES = 3;
 
 // A boundary-safe error carrier: no prototype at all, so a script cannot ride
 // `.constructor` off a thrown value back to the host's real Error/Function.
-export interface VmSafeError {
+export interface SandboxError {
   name: string;
   message: string;
   stack: string;
   toString(): string;
 }
 
-export function buildVmSafeError(error: unknown): VmSafeError {
+export function toSandboxError(error: unknown): SandboxError {
   const message = formatWorkflowError(error);
   const name = errorNameOf(error);
-  const safe = Object.create(null) as VmSafeError;
+  const safe = Object.create(null) as SandboxError;
   safe.name = name;
   safe.message = message;
   safe.stack = stackOf(error) ?? `${name}: ${message}`;
@@ -76,7 +76,7 @@ export function wrapSyncForVm<Args extends unknown[], Result>(
     try {
       return fn(...args);
     } catch (error) {
-      throw buildVmSafeError(error);
+      throw toSandboxError(error);
     }
   };
   Object.setPrototypeOf(wrapped, null);

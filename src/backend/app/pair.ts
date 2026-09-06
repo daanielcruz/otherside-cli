@@ -1,7 +1,19 @@
 import { listPeers, removeLocalPeerFile, savePeer } from "@/backend/app/peers.ts";
 import { renderQr } from "@/backend/app/qr.ts";
-import { cortexFetch } from "@/backend/shared/cortex.ts";
-import { type Device, deviceFingerprint } from "@/backend/shared/device.ts";
+import {
+  currentUserId,
+  decodeTokenResponse,
+  decodeUserId,
+  saveAuth,
+  type TokenResponse,
+} from "@/backend/shared/auth.ts";
+import { CortexApiError, cortexFetch } from "@/backend/shared/cortex.ts";
+import {
+  adoptDeviceId,
+  type Device,
+  deviceFingerprint,
+  ensureDevice,
+} from "@/backend/shared/device.ts";
 import {
   b64uDecode,
   b64uEncode,
@@ -9,16 +21,25 @@ import {
   hexToBytes,
   verifyPairConfirmToken,
 } from "@/backend/shared/e2ee.ts";
-import {
-  type BroadcastFrame,
-  type RealtimeChannel,
-  subscribeChannel,
-} from "@/backend/shared/realtime.ts";
-import { registerEnvironment } from "../shared/api.ts";
-import { currentUserId, loadFreshAuth } from "../shared/auth.ts";
-import { encodeQrV2 } from "./qr-payload.ts";
+import { type BroadcastFrame, subscribeChannel } from "@/backend/shared/realtime.ts";
+import { encodeQrV3 } from "./qr-payload.ts";
 
-const PAIR_TIMEOUT_MS = 180_000;
+const DEFAULT_PAIR_TTL_SECONDS = 15 * 60;
+const DEFAULT_POLL_INTERVAL_SECONDS = 5;
+const MAX_POLL_INTERVAL_MS = 30_000;
+const POLL_BACKOFF_MULTIPLIER = 1.5;
+
+interface PairingCodeResponse {
+  device_code: string;
+  user_code: string;
+  expires_in?: number;
+  interval?: number;
+}
+
+export interface PairingCredential extends TokenResponse {
+  auth_session_id: string;
+  environment_id: string;
+}
 
 interface ConfirmBroadcast {
   app_device_id: string;
@@ -26,14 +47,18 @@ interface ConfirmBroadcast {
   confirm_token: string;
 }
 
+export interface VerifiedPairConfirm {
+  appDeviceId: string;
+  appPub: Uint8Array;
+}
+
 export interface PairHandle {
   qr: string;
   nonceB64: string;
   payload: string;
+  userCode: string;
+  expiresInSeconds: number;
   awaiting: Promise<PairResult>;
-  // Tears down the realtime subscription and timeout for an abandoned code, so
-  // regenerating (or closing the panel) never leaves the channel open until its
-  // own timeout fires.
   cancel: () => void;
 }
 
@@ -41,6 +66,228 @@ export interface PairResult {
   peerDeviceId: string;
   userId: string;
   environmentId: string;
+}
+
+interface PairDependencies {
+  now: () => number;
+  request: typeof cortexFetch;
+  subscribe: typeof subscribeChannel;
+  wait: (milliseconds: number, signal: AbortSignal) => Promise<void>;
+}
+
+const DEFAULT_DEPENDENCIES: PairDependencies = {
+  now: Date.now,
+  request: cortexFetch,
+  subscribe: subscribeChannel,
+  wait: waitForRetry,
+};
+
+export async function beginPair(
+  device: Device,
+  dependencyOverrides: Partial<PairDependencies> = {},
+): Promise<PairHandle> {
+  const dependencies = { ...DEFAULT_DEPENDENCIES, ...dependencyOverrides };
+  const code = await requestPairingCode(dependencies.request);
+  const expiresInSeconds = Math.max(1, code.expires_in ?? DEFAULT_PAIR_TTL_SECONDS);
+  const expiresAt = dependencies.now() + expiresInSeconds * 1000;
+  const nonce = generatePairNonce();
+  const nonceB64 = b64uEncode(nonce);
+  const qrData = encodeQrV3({
+    deviceId: device.id,
+    pub: device.pub,
+    nonce,
+    fingerprintHex: deviceFingerprint(),
+    userCode: code.user_code,
+  });
+
+  let resolveConfirm!: (confirm: VerifiedPairConfirm) => void;
+  let rejectConfirm!: (error: Error) => void;
+  const confirmed = new Promise<VerifiedPairConfirm>((resolve, reject) => {
+    resolveConfirm = resolve;
+    rejectConfirm = reject;
+  });
+  const channel = await dependencies.subscribe({
+    topic: `pair:${nonceB64}`,
+    onError: rejectConfirm,
+  });
+  channel.onBroadcast = settlePair({
+    device,
+    nonce,
+    resolve: resolveConfirm,
+    reject: rejectConfirm,
+  });
+
+  let channelClosed = false;
+  const closeChannel = () => {
+    if (channelClosed) return;
+    channelClosed = true;
+    channel.close();
+  };
+  const abort = new AbortController();
+  const expiredError = pairingExpiredError();
+  const timeout = setTimeout(() => {
+    abort.abort(expiredError);
+    rejectConfirm(expiredError);
+  }, expiresInSeconds * 1000);
+  const credential = pollPairingToken({
+    deviceCode: code.device_code,
+    expiresAt,
+    intervalMs: Math.max(1, code.interval ?? DEFAULT_POLL_INTERVAL_SECONDS) * 1000,
+    signal: abort.signal,
+    now: dependencies.now,
+    request: dependencies.request,
+    wait: dependencies.wait,
+  });
+  const awaiting = Promise.all([confirmed, credential]).then(([confirm, pairedCredential]) =>
+    persistPair({ confirm, credential: pairedCredential, request: dependencies.request }),
+  );
+  awaiting
+    .finally(() => {
+      clearTimeout(timeout);
+      closeChannel();
+      abort.abort();
+    })
+    .catch(() => {});
+
+  const cancel = () => {
+    const error = new Error("pairing cancelled");
+    clearTimeout(timeout);
+    closeChannel();
+    abort.abort(error);
+    rejectConfirm(error);
+  };
+
+  return {
+    qr: renderQr(qrData),
+    nonceB64,
+    payload: qrData,
+    userCode: code.user_code,
+    expiresInSeconds,
+    awaiting,
+    cancel,
+  };
+}
+
+async function requestPairingCode(request: typeof cortexFetch): Promise<PairingCodeResponse> {
+  return request<PairingCodeResponse>("/v1/auth/device/code", {
+    method: "POST",
+    body: { purpose: "pairing" },
+  });
+}
+
+export async function pollPairingToken(args: {
+  deviceCode: string;
+  expiresAt: number;
+  intervalMs: number;
+  signal: AbortSignal;
+  now?: () => number;
+  request?: typeof cortexFetch;
+  wait?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
+}): Promise<PairingCredential> {
+  const now = args.now ?? Date.now;
+  const request = args.request ?? cortexFetch;
+  const wait = args.wait ?? waitForRetry;
+  let intervalMs = args.intervalMs;
+
+  for (;;) {
+    if (args.signal.aborted) throw abortError(args.signal);
+    if (now() >= args.expiresAt) throw pairingExpiredError();
+    try {
+      return await request<PairingCredential>("/v1/pairings/token", {
+        method: "POST",
+        body: { device_code: args.deviceCode },
+        signal: args.signal,
+      });
+    } catch (error) {
+      if (args.signal.aborted) throw abortError(args.signal);
+      if (isAuthorizationPending(error)) {
+        const remainingMs = args.expiresAt - now();
+        if (remainingMs <= 0) throw pairingExpiredError();
+        await wait(Math.min(intervalMs, remainingMs), args.signal);
+        intervalMs = Math.min(
+          MAX_POLL_INTERVAL_MS,
+          Math.ceil(intervalMs * POLL_BACKOFF_MULTIPLIER),
+        );
+        continue;
+      }
+      throw pairingPollError(error);
+    }
+  }
+}
+
+export function settlePair(args: {
+  device: Device;
+  nonce: Uint8Array;
+  resolve: (confirm: VerifiedPairConfirm) => void;
+  reject: (error: Error) => void;
+}): (frame: BroadcastFrame) => void {
+  let settling = false;
+  return (frame) => {
+    if (frame.event !== "confirm" || settling) return;
+    try {
+      const confirm = decodeConfirm(frame.payload);
+      if (!confirm) return;
+      settling = true;
+      args.resolve({
+        appDeviceId: confirm.app_device_id,
+        appPub: verifyConfirm(args.device, args.nonce, confirm),
+      });
+    } catch (error) {
+      args.reject(error instanceof Error ? error : new Error(String(error)));
+    }
+  };
+}
+
+async function persistPair(args: {
+  confirm: VerifiedPairConfirm;
+  credential: PairingCredential;
+  request: typeof cortexFetch;
+}): Promise<PairResult> {
+  const userId = decodeUserId(args.credential.access_token);
+  if (!userId) throw new Error("pairing credential did not identify an account");
+
+  const auth = decodeTokenResponse(args.credential);
+  saveAuth(auth);
+  let pairedDevice = ensureDevice();
+  if (args.credential.environment_id !== pairedDevice.id) {
+    pairedDevice = adoptDeviceId(args.credential.environment_id) ?? pairedDevice;
+  }
+
+  const label = await loadPeerLabel(args.confirm.appDeviceId, auth.accessToken, args.request);
+  savePeer({
+    deviceId: args.confirm.appDeviceId,
+    userId,
+    label,
+    kind: "app",
+    pub: args.confirm.appPub,
+    verifiedAt: new Date().toISOString(),
+  });
+
+  for (const old of listPeers()) {
+    if (old.deviceId !== args.confirm.appDeviceId) removeLocalPeerFile(old.deviceId);
+  }
+
+  return {
+    peerDeviceId: args.confirm.appDeviceId,
+    userId: currentUserId() ?? userId,
+    environmentId: pairedDevice.id,
+  };
+}
+
+async function loadPeerLabel(
+  appDeviceId: string,
+  accessToken: string,
+  request: typeof cortexFetch,
+): Promise<string> {
+  try {
+    const rows = await request<Array<{ id: string; device_label: string }>>("/v1/environments", {
+      method: "GET",
+      token: accessToken,
+    });
+    return rows.find((row) => row.id === appDeviceId)?.device_label || "paired app";
+  } catch {
+    return "paired app";
+  }
 }
 
 function decodeConfirm(payload: Record<string, unknown>): ConfirmBroadcast | null {
@@ -65,127 +312,42 @@ function verifyConfirm(device: Device, nonce: Uint8Array, confirm: ConfirmBroadc
   return appPub;
 }
 
-export function settlePair(args: {
-  device: Device;
-  nonce: Uint8Array;
-  channel: RealtimeChannel;
-  resolve: (r: PairResult) => void;
-  reject: (e: Error) => void;
-}): (frame: BroadcastFrame) => void {
-  // Pairing settles at the verified confirm broadcast: the CLI is already
-  // signed in, so the pair carries key exchange and the device link — never
-  // auth material.
-  const finish = async (peer: { appPub: Uint8Array; appDeviceId: string }): Promise<void> => {
-    const userId = currentUserId();
-    if (!userId) throw new Error("not signed in — sign in before pairing");
-    const auth = await loadFreshAuth();
-
-    let label = "paired app";
-    if (auth) {
-      try {
-        const rows = await cortexFetch<Array<{ id: string; device_label: string }>>(
-          "/v1/environments",
-          { method: "GET", token: auth.accessToken },
-        );
-        const match = rows.find((r) => r.id === peer.appDeviceId);
-        if (match?.device_label) label = match.device_label;
-      } catch {}
-    }
-
-    savePeer({
-      deviceId: peer.appDeviceId,
-      userId,
-      label,
-      kind: "app",
-      pub: peer.appPub,
-      verifiedAt: new Date().toISOString(),
-    });
-
-    for (const old of listPeers()) {
-      if (old.deviceId !== peer.appDeviceId) removeLocalPeerFile(old.deviceId);
-    }
-
-    args.channel.close();
-    args.resolve({
-      peerDeviceId: peer.appDeviceId,
-      userId,
-      environmentId: args.device.id,
-    });
-  };
-
-  let settling = false;
-  return (frame) => {
-    if (frame.event !== "confirm" || settling) return;
-    try {
-      const confirm = decodeConfirm(frame.payload);
-      if (!confirm) return;
-      settling = true;
-      const appPub = verifyConfirm(args.device, args.nonce, confirm);
-      void finish({ appPub, appDeviceId: confirm.app_device_id }).catch((err) => {
-        args.channel.close();
-        args.reject(err instanceof Error ? err : new Error(String(err)));
-      });
-    } catch (err) {
-      args.channel.close();
-      args.reject(err instanceof Error ? err : new Error(String(err)));
-    }
-  };
+function isAuthorizationPending(error: unknown): boolean {
+  return (
+    error instanceof CortexApiError &&
+    error.httpStatus === 428 &&
+    error.code === "authorization_pending"
+  );
 }
 
-export async function beginPair(device: Device): Promise<PairHandle> {
-  const auth = await loadFreshAuth();
-  if (!auth) throw new Error("not signed in — sign in before pairing");
+function pairingPollError(error: unknown): Error {
+  if (error instanceof CortexApiError && error.code === "not_found") {
+    return pairingExpiredError();
+  }
+  if (error instanceof CortexApiError && error.code === "conflict") {
+    return new Error("pairing code was already used — generate a new code");
+  }
+  return error instanceof Error ? error : new Error(String(error));
+}
 
-  // The backend resolves the CLI at confirm by this environment id, so the
-  // registration must land (with our own id) before the app can scan.
-  await registerEnvironment({
-    id: device.id,
-    device_label: device.name,
-    fingerprint_hash: deviceFingerprint(),
-    kind: "cli",
+function pairingExpiredError(): Error {
+  return new Error("pairing code expired — generate a new code");
+}
+
+function abortError(signal: AbortSignal): Error {
+  return signal.reason instanceof Error ? signal.reason : new Error("pairing cancelled");
+}
+
+function waitForRetry(milliseconds: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timeout);
+      reject(abortError(signal));
+    };
+    const timeout = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, milliseconds);
+    signal.addEventListener("abort", onAbort, { once: true });
   });
-
-  const nonce = generatePairNonce();
-  const nonceB64 = b64uEncode(nonce);
-  const qrData = encodeQrV2({
-    deviceId: device.id,
-    pub: device.pub,
-    nonce,
-    fingerprintHex: deviceFingerprint(),
-  });
-  const qr = renderQr(qrData);
-
-  let onResolve!: (r: PairResult) => void;
-  let onReject!: (e: Error) => void;
-  const awaiting = new Promise<PairResult>((resolve, reject) => {
-    onResolve = resolve;
-    onReject = reject;
-  });
-
-  const channel = await subscribeChannel({
-    topic: `pair:${nonceB64}`,
-    onError: (err) => onReject(err),
-  });
-
-  channel.onBroadcast = settlePair({
-    device,
-    nonce,
-    channel,
-    resolve: onResolve,
-    reject: onReject,
-  });
-
-  const timeout = setTimeout(() => {
-    channel.close();
-    onReject(new Error("pairing timed out — no response from app"));
-  }, PAIR_TIMEOUT_MS);
-  awaiting.finally(() => clearTimeout(timeout)).catch(() => {});
-
-  const cancel = () => {
-    clearTimeout(timeout);
-    channel.close();
-    onReject(new Error("pairing cancelled"));
-  };
-
-  return { qr, nonceB64, payload: qrData, awaiting, cancel };
 }

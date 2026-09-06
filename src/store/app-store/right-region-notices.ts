@@ -2,6 +2,7 @@
  * Dependency-safe semantic facade for the top-right status region.
  * No React / terminal-runtime imports — safe from store subscribers and engine-adjacent code.
  */
+import { pluralize } from "@/kernel/std/text/pluralize.ts";
 import { dispatch } from "@/store/app-store/index.ts";
 import type {
   EphemeralNoticeInput,
@@ -13,7 +14,6 @@ import {
   DEFAULT_EPHEMERAL_MS,
   ORCHESTRATION_NOTICE_MS,
   PLUGIN_NOTICE_MS,
-  QUOTA_RESHOW_COOLDOWN_MS,
   VOICE_ERROR_MS,
 } from "@/store/app-store/slices/right-region.ts";
 
@@ -22,6 +22,7 @@ export type {
   NoticePriority,
   NoticeTone,
   PersistentNoticeInput,
+  PersistentNoticeLane,
 } from "@/store/app-store/slices/right-region.ts";
 export {
   CLIPBOARD_COPY_NATIVE_MS,
@@ -33,7 +34,6 @@ export {
   GOAL_REFRESH_MS,
   ORCHESTRATION_NOTICE_MS,
   PLUGIN_NOTICE_MS,
-  QUOTA_RESHOW_COOLDOWN_MS,
   VOICE_ERROR_MS,
 } from "@/store/app-store/slices/right-region.ts";
 
@@ -49,10 +49,12 @@ export const RightNoticeKey = {
   voiceProcessing: "voice-processing",
   context: "context-warning",
   autoCompact: "auto-compact",
+  mcpFailure: "mcp-failure",
   goal: "goal",
   remote: "remote-session",
   design: "design-session",
   remoteDesign: "remote-design-session",
+  keyBindings: "key-bindings",
 } as const;
 
 export function submitEphemeral(notice: EphemeralNoticeInput, now: number = Date.now()): void {
@@ -101,10 +103,17 @@ export function submitQuotaWarning(message: string, severity: "warning" | "error
     tone: severity === "error" ? "error" : "warning",
     priority: "high",
     durationMs: DEFAULT_EPHEMERAL_MS,
-    cooldownMs: QUOTA_RESHOW_COOLDOWN_MS,
+    fold: true,
+    restartOnFold: true,
   });
 }
 
+export function clearQuotaWarning(): void {
+  removeNotice(RightNoticeKey.quota);
+}
+
+// Folding lets a rapid mode change replace a still-visible notice with the
+// latest text and a fresh window instead of being dropped as a duplicate key.
 export function submitOrchestrationNotice(text: string): void {
   submitEphemeral({
     key: RightNoticeKey.orchestration,
@@ -112,13 +121,18 @@ export function submitOrchestrationNotice(text: string): void {
     tone: "warning",
     priority: "immediate",
     durationMs: ORCHESTRATION_NOTICE_MS,
+    fold: true,
+    restartOnFold: true,
   });
 }
 
+// The hint rides the mode row, where it shares the side with the goal, so a paste
+// notice never costs the chrome a row of its own.
 export function submitClipboardImageHint(text: string): void {
   submitEphemeral({
     key: RightNoticeKey.clipboardImage,
     text,
+    lane: "statusbar",
     tone: "muted",
     priority: "immediate",
     durationMs: CLIPBOARD_IMAGE_MS,
@@ -134,6 +148,20 @@ export function submitPluginNotice(text: string): void {
     tone: "muted",
     priority: "low",
     durationMs: PLUGIN_NOTICE_MS,
+  });
+}
+
+// Boot-time companion to the transcript rows: servers that would not connect
+// also surface here once, on the queue's default window, then dismiss.
+export function submitMcpFailuresNotice(failedCount: number): void {
+  if (failedCount <= 0) return;
+  submitEphemeral({
+    key: RightNoticeKey.mcpFailure,
+    text: `${failedCount} MCP ${pluralize(failedCount, "server", "servers")} failed`,
+    dimSuffix: " · /mcp",
+    tone: "error",
+    priority: "high",
+    durationMs: DEFAULT_EPHEMERAL_MS,
   });
 }
 

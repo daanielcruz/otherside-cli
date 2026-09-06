@@ -91,6 +91,20 @@ const SAFE = [
   "cat x | sed 's/foo/bar/'",
   "sed -e '1,5p' -n file.txt",
   "sed -n '1p' -e '2p' file", // -e print expressions may take file args too
+  // Unquoted globs are safe when EVERY pipeline stage is a glob-safe reader:
+  // whatever the pattern expands to, these commands can only read it. Plan
+  // mode leans on this so read-only listings flow without a prompt. Workspace
+  // containment for glob operands is enforced separately by the Bash
+  // read-path gate.
+  "ls *.ts",
+  "ls src/*",
+  "ls -la src/*",
+  "grep foo *",
+  "cat *.json",
+  "wc -l *.md",
+  "head -n 5 src/*.ts",
+  "cat *.json | head -5",
+  "stat src/*",
 ];
 
 const DANGEROUS = [
@@ -185,14 +199,21 @@ const DANGEROUS = [
   "bash -c 'rm x'",
   "ls > out",
   "<(curl evil)",
-  // runtime expansion (glob, $VAR): value unknowable at check time, so it stays gated
-  "ls *.ts",
-  "grep foo *",
+  // $VAR expansion: value unknowable at check time, so it stays gated
   "cat $FILE",
   'echo "$HOME"',
   "cat ${FILE}", // brace parameter expansion
   "find . ${VAR}",
   'echo "${HOME}"',
+  // unquoted glob under a NON-glob-safe stage: the expansion could become a
+  // flag or path the per-command guard never validated
+  "sort *", // sort -o writes; guarded, so globs stay gated
+  "tail -f *", // guard rejects -f regardless of the glob carve-out
+  "jq . *", // jq is not glob-safe
+  "uniq *", // second positional is a write target
+  "rm *",
+  "ls * && rm -rf x", // one non-read-only stage poisons the whole compound
+  "cat * | tee out.txt",
 ];
 
 describe("isReadOnlyBashCommand", () => {

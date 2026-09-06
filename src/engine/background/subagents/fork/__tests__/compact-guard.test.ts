@@ -6,10 +6,10 @@ import { runForkLoopExternal } from "@/engine/background/subagents/dispatcher.ts
 import type { Provider } from "@/engine/contract/types.ts";
 import { registerRuntimeModel, resetRuntimeModelsForTests } from "@/engine/model/catalog.ts";
 import * as providers from "@/engine/providers/registry.ts";
-import { AUTOCOMPACT_RAPID_REFILL_ERROR_MESSAGE } from "@/engine/session/compact/index.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
+import { RAPID_REFILL_FAILURE_TEXT } from "@/engine/session/compact/index.ts";
 import type { DrainedQueuedMessage, ProviderEvent } from "@/kernel/std/types/events.ts";
 import type { Message } from "@/kernel/std/types/message.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 import { isForkOverBlockingLimit, maybeCompactFork, maybeMicroCompactFork } from "../compact.ts";
 import { FORK_PROMPT_TOO_LONG_MESSAGE } from "../constants.ts";
@@ -36,8 +36,8 @@ function makeCtx(providerId: ProviderId, model: string, cwd: string): RequestCon
 }
 
 // Every provider call (a real turn request or a compaction summarization
-// request) goes through the same translateRequest/stream/translateResponse
-// trio, in strict call order, so a single scripted queue drives both.
+// request) goes through translateRequest/startStreamAttempt in strict call
+// order, so a single scripted queue drives both.
 function registerScriptedProvider(
   providerId: ProviderId,
   eventsByCall: ProviderEvent[][],
@@ -66,11 +66,15 @@ function registerScriptedProvider(
       captures.push({ isCompaction, messageCount: messages.length });
       return {};
     },
-    stream: async function* () {},
-    translateResponse: async function* () {
+    startStreamAttempt: () => {
       const events = eventsByCall[callIndex] ?? [];
       callIndex += 1;
-      for (const event of events) yield event;
+      return {
+        events: (async function* () {
+          for (const event of events) yield event;
+        })(),
+        abort: () => {},
+      };
     },
     recoverableError: () => ({ kind: "fail", reason: "test" }),
   } as unknown as Provider;
@@ -202,7 +206,7 @@ describe("fork compaction breaker and blocking-limit guard", () => {
     });
 
     expect(result.isError).toBe(true);
-    expect(result.output).toBe(AUTOCOMPACT_RAPID_REFILL_ERROR_MESSAGE);
+    expect(result.output).toBe(RAPID_REFILL_FAILURE_TEXT);
     const mainCalls = captures.filter((c) => !c.isCompaction);
     // Terminated at the start of turn 5, before a 6th main request was sent.
     expect(mainCalls.length).toBe(5);

@@ -15,8 +15,9 @@ export function detectLineEndings(content: string): LineEndingType {
 }
 
 export function applyLineEndings(content: string, endings: LineEndingType): string {
-  if (endings === "LF") return content;
-  return content.replaceAll("\r\n", "\n").split("\n").join("\r\n");
+  const normalized = content.replaceAll("\r\n", "\n").replaceAll("\r", "\n");
+  if (endings === "LF") return normalized;
+  return normalized.split("\n").join("\r\n");
 }
 
 export function defaultLineEndings(): LineEndingType {

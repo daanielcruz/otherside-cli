@@ -36,7 +36,7 @@ function plainAssistantTurns(count: number): Message[] {
 }
 
 function emptyHarness(): ComposedHarness {
-  return { layers: [], combined: "", systemBlocks: [], userPrepend: [] };
+  return { layers: [], combined: "", systemBlocks: [], userPrepend: [], midSystemPromotion: "off" };
 }
 
 function cacheControlOf(block: ContentBlock | undefined): CacheControl | undefined {

@@ -66,11 +66,6 @@ export const DEVTOOL_SETTINGS = {
     kind: "boolean",
     default: false,
   },
-  inkDevtools: {
-    env: "OTHERSIDE_INK_DEVTOOLS",
-    kind: "boolean",
-    default: false,
-  },
   payloadDiagnostics: {
     env: "OTHERSIDE_PAYLOAD_DIAG",
     kind: "path",

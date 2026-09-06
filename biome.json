@@ -10,6 +10,7 @@
     "includes": [
       "src/**",
       "tests/**",
+      "scripts/verify-windows-paths.ts",
       "*.ts",
       "*.tsx",
       "*.json",
@@ -76,7 +77,6 @@
               "level": "error",
               "options": {
                 "paths": {
-                  "@/ink": "src/design is browser-side; do not consume ink.",
                   "@/ui": "src/design must not depend on ui; lifecycle goes via SlashContext."
                 }
               }

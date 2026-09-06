@@ -1,20 +1,22 @@
-export type NamedColor =
-  | "black"
-  | "red"
-  | "green"
-  | "yellow"
-  | "blue"
-  | "magenta"
-  | "cyan"
-  | "white"
-  | "brightBlack"
-  | "brightRed"
-  | "brightGreen"
-  | "brightYellow"
-  | "brightBlue"
-  | "brightMagenta"
-  | "brightCyan"
-  | "brightWhite";
+export const NAMED_COLORS = [
+  "black",
+  "red",
+  "green",
+  "yellow",
+  "blue",
+  "magenta",
+  "cyan",
+  "white",
+  "brightBlack",
+  "brightRed",
+  "brightGreen",
+  "brightYellow",
+  "brightBlue",
+  "brightMagenta",
+  "brightCyan",
+  "brightWhite",
+] as const;
+export type NamedColor = (typeof NAMED_COLORS)[number];
 
 export type Color =
   | { type: "named"; name: NamedColor }
@@ -22,7 +24,8 @@ export type Color =
   | { type: "rgb"; r: number; g: number; b: number }
   | { type: "default" };
 
-export type UnderlineStyle = "none" | "single" | "double" | "curly" | "dotted" | "dashed";
+export const UNDERLINE_STYLES = ["none", "single", "double", "curly", "dotted", "dashed"] as const;
+export type UnderlineStyle = (typeof UNDERLINE_STYLES)[number];
 
 export type TextStyle = {
   bold: boolean;
@@ -54,37 +57,6 @@ export function createDefaultStyle(): TextStyle {
     bg: { type: "default" },
     underlineColor: { type: "default" },
   };
-}
-
-export function stylesMatch(a: TextStyle, b: TextStyle): boolean {
-  return (
-    a.bold === b.bold &&
-    a.dim === b.dim &&
-    a.italic === b.italic &&
-    a.underline === b.underline &&
-    a.blink === b.blink &&
-    a.inverse === b.inverse &&
-    a.hidden === b.hidden &&
-    a.strikethrough === b.strikethrough &&
-    a.overline === b.overline &&
-    colorsEqual(a.fg, b.fg) &&
-    colorsEqual(a.bg, b.bg) &&
-    colorsEqual(a.underlineColor, b.underlineColor)
-  );
-}
-
-export function colorsEqual(a: Color, b: Color): boolean {
-  if (a.type !== b.type) return false;
-  switch (a.type) {
-    case "named":
-      return a.name === (b as typeof a).name;
-    case "indexed":
-      return a.index === (b as typeof a).index;
-    case "rgb":
-      return a.r === (b as typeof a).r && a.g === (b as typeof a).g && a.b === (b as typeof a).b;
-    case "default":
-      return true;
-  }
 }
 
 export type CursorDirection = "up" | "down" | "forward" | "back";

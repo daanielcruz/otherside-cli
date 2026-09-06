@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Session } from "@/engine/session/record/state.ts";
@@ -95,12 +96,12 @@ describe("worktree agent-context rules", () => {
     // state; creation anchors at the main checkout and yields a sibling.
     const relaunched = mainCtx(created.worktreePath, "wt-rules-nested-create-relaunch");
     const sibling = await enterSessionWorktree(relaunched, { name: "nested-child" });
-    expect(realpathSync(sibling.worktreePath)).toBe(
-      realpathSync(join(repoRoot, ".otherside", "worktrees", "nested-child")),
+    expect(await realpath(sibling.worktreePath)).toBe(
+      await realpath(join(repoRoot, ".otherside", "worktrees", "nested-child")),
     );
     const exited = await exitSessionWorktree(relaunched, { action: "remove" });
     // Exit returns to the launch directory — the previous worktree.
-    expect(realpathSync(exited.originalCwd)).toBe(realpathSync(created.worktreePath));
+    expect(await realpath(exited.originalCwd)).toBe(await realpath(created.worktreePath));
     git(repoRoot, ["worktree", "remove", "--force", created.worktreePath]);
   });
 

@@ -16,8 +16,8 @@ import {
   positiveTokenDelta,
 } from "@/engine/session/usage/provider.ts";
 import { type ContextUsageSnapshot, contextUsageTotal } from "@/engine/session/usage/snapshot.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
 import type { AgentEvent } from "@/kernel/std/types/events.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 import type { BrokerHandle } from "@/kernel/std/types/request.ts";
 
 type SetState<T> = (value: T | ((prev: T) => T)) => void;

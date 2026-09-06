@@ -1,8 +1,9 @@
+import { OTHERSIDE_VERSION } from "@/boot/version.ts";
+import type { PreservedImageLedger } from "@/engine/session/compact/preserved-image-ledger.ts";
 import type { SystemInjectionEntry } from "@/engine/session/system-injection-store.ts";
 import type { SessionWorktreeState } from "@/engine/session/worktree.ts";
-import type { ContentReplacementState } from "@/engine/tool-result-storage/index.ts";
 import type { Message } from "@/kernel/std/types/message.ts";
-import pkg from "../../../../package.json" with { type: "json" };
+import type { ToolOutputArchive } from "@/kernel/std/types/request.ts";
 import type {
   HookEventRecord,
   SessionMetaRecord,
@@ -10,8 +11,6 @@ import type {
   SessionStamp,
   UsageRecord,
 } from "./schema.ts";
-
-export const OTHERSIDE_VERSION = pkg.version;
 
 // Cap on hook events held in memory. Hook events (goal_set/met/cleared, goal_not_met, goal_paused_bg, etc.) accumulate per turn in workflows with active goals, so keep a capped FIFO array on the session rather than in records[].
 // 200 is comfortably above the deepest single-goal iteration count we have seen.
@@ -57,8 +56,19 @@ export class Session {
   readonly additionalWorkingDirectories = new Set<string>();
   eventSeq = 0;
   readonly chain = new SessionChain();
+  /**
+   * Images already stored in full on a persisted compaction mark. Later marks
+   * carrying the same image serialize a reference instead of the payload.
+   */
+  preservedImageLedger: PreservedImageLedger = new Map();
+  /**
+   * True when `records` came back from a large resume as a reduced view, holding
+   * bodyless stubs for turns it did not materialize. Any write that reconstructs
+   * the transcript from `records` must refuse while this holds.
+   */
+  recordsArePartial = false;
   pendingMeta: SessionMetaRecord | null = null;
-  contentReplacementState?: ContentReplacementState;
+  toolOutputArchive?: ToolOutputArchive;
 
   constructor(id: string, cwd: string = process.cwd()) {
     this.id = id;

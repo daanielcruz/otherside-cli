@@ -70,11 +70,12 @@ mock.module("@/engine/session/title/store.ts", () => ({
 
 // Inject count/kill via module under test after mocks — re-import pattern like enter test.
 const worktreeExitModule = await import("../worktree-exit.ts");
+const worktreeSessionExitModule = await import("../worktree-session-exit.ts");
 
 // Patch exported helpers used by the handler/session-exit path through re-binding is not
 // possible; instead the tests below call the public ExitWorktree handler and
 // resolveWorktreeOnSessionExit with injectable ask, and stub count/kill by replacing
-// the module's internal usage via the public countWorktreeChanges/killTmuxSession only
+// the module's internal usage via the public tallyWorktreeChanges/killTmuxSession only
 // when we exercise them directly. For handler paths that call the real implementations,
 // we keep the mocks on foundation and control state via activeState + countChangesMock
 // by reassigning the module exports after load is not available.
@@ -83,8 +84,8 @@ const worktreeExitModule = await import("../worktree-exit.ts");
 // the dirty/probe gates, temporarily override by monkey-patching the imported bindings
 // on the module namespace (they are live bindings for export functions).
 
-const { ExitWorktree, resolveWorktreeOnSessionExit, countWorktreeChanges, killTmuxSession } =
-  worktreeExitModule;
+const { ExitWorktree, tallyWorktreeChanges, killTmuxSession } = worktreeExitModule;
+const { resolveWorktreeOnSessionExit } = worktreeSessionExitModule;
 
 const ctx = {
   provider: "anthropic",
@@ -180,13 +181,13 @@ describe("ExitWorktree tool", () => {
 
   it("removes a clean created worktree without discard_changes", async () => {
     activeState.current = createdState();
-    // Real countWorktreeChanges will hit git on a fake path and fail closed.
+    // Real tallyWorktreeChanges will hit git on a fake path and fail closed.
     // Force the gate open by pre-seeding via a spy on the exported function.
-    const originalCount = countWorktreeChanges;
+    const originalCount = tallyWorktreeChanges;
     const spy = mock(async () => ({ changedFiles: 0, commits: 0 }));
     // Live binding: reassign if possible; otherwise call through a path that uses mock.
     // Bun module exports are live for `export function` but our import is const-bound.
-    // Work around: the remove-without-discard gate uses countWorktreeChanges from the
+    // Work around: the remove-without-discard gate uses tallyWorktreeChanges from the
     // same module; we cannot rebind. Use discard_changes:true for remove success path,
     // and test the refuse path with a real (likely failing) probe separately.
     void originalCount;
@@ -390,14 +391,14 @@ describe("resolveWorktreeOnSessionExit", () => {
   });
 });
 
-describe("countWorktreeChanges / killTmuxSession exports", () => {
-  it("exports countWorktreeChanges and killTmuxSession", () => {
-    expect(typeof countWorktreeChanges).toBe("function");
+describe("tallyWorktreeChanges / killTmuxSession exports", () => {
+  it("exports tallyWorktreeChanges and killTmuxSession", () => {
+    expect(typeof tallyWorktreeChanges).toBe("function");
     expect(typeof killTmuxSession).toBe("function");
   });
 
-  it("fail-closes countWorktreeChanges when path is not a git worktree", async () => {
-    const summary = await countWorktreeChanges("/tmp/does-not-exist-wt-xyz", "abc");
+  it("fail-closes tallyWorktreeChanges when path is not a git worktree", async () => {
+    const summary = await tallyWorktreeChanges("/tmp/does-not-exist-wt-xyz", "abc");
     expect(summary).toBeNull();
   });
 });

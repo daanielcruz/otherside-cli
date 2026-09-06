@@ -9,7 +9,7 @@ import type { RequestContext } from "@/kernel/std/types/request.ts";
 function ctx(sessionId: string): RequestContext {
   return {
     provider: "xai",
-    model: "grok-4.5",
+    model: "grok-4.6",
     effort: "high",
     permissionMode: "default",
     sessionId,
@@ -23,7 +23,7 @@ function reasoningMessages(): Message[] {
     {
       role: "assistant",
       producedBy: "xai",
-      producedModel: "grok-4.5",
+      producedModel: "grok-4.6",
       producedAccount: accountFingerprint("xai"),
       content: [
         { type: "thinking", text: "prior reasoning", signature: "ENC-STALE-BLOB" },

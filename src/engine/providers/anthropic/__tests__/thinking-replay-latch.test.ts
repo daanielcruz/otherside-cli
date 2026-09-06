@@ -30,7 +30,7 @@ const SIGNATURE = "A".repeat(420);
 function ctx(sessionId: string): RequestContext {
   return {
     provider: "anthropic",
-    model: "claude-fable-5",
+    model: "claude-fable-5-1",
     effort: "high",
     permissionMode: "default",
     sessionId,
@@ -44,7 +44,7 @@ function thinkingConversation(): Message[] {
     {
       role: "assistant",
       producedBy: "anthropic",
-      producedModel: "claude-fable-5",
+      producedModel: "claude-fable-5-1",
       content: [
         { type: "thinking", text: "prior reasoning", signature: SIGNATURE },
         { type: "text", text: "ok" },
@@ -98,6 +98,17 @@ describe("anthropic thinking replay rejection recovery", () => {
     const c = ctx("anthropic-latch-2");
     const first = config.recoverableError?.(
       thinkingRejection("messages.3: the final assistant message must start with a thinking block"),
+      c,
+      1,
+    );
+    expect(first?.kind).toBe("retry");
+    expect(first?.reason).toBe("dropped stale thinking replay");
+  });
+
+  it("recognizes the invalid-signature rejection from a cross-provider replay", () => {
+    const c = ctx("anthropic-latch-signature");
+    const first = config.recoverableError?.(
+      thinkingRejection("messages.51.content.0: Invalid `signature` in `thinking` block"),
       c,
       1,
     );

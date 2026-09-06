@@ -1,8 +1,13 @@
 import { describe, expect, it } from "bun:test";
+import { requestQualifiesForExtendedCacheTtl } from "@/engine/providers/anthropic/_infra/fingerprint.ts";
 import type { ProviderEvent } from "@/kernel/std/types/events.ts";
 import type { Message } from "@/kernel/std/types/message.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
-import { buildAnthropicMessages, translateResponseAnthropic } from "../translate.ts";
+import {
+  buildAnthropicMessages,
+  translateRequestAnthropic,
+  translateResponseAnthropic,
+} from "../translate.ts";
 
 async function* sse(chunks: string[]): AsyncIterable<Uint8Array> {
   const enc = new TextEncoder();
@@ -130,5 +135,51 @@ describe("buildAnthropicMessages PDF blocks", () => {
         ],
       },
     ]);
+  });
+});
+
+describe("side-question cache anchor", () => {
+  const ctx: RequestContext = {
+    provider: "anthropic",
+    model: "claude-opus-5",
+    sessionId: "s-1",
+    cwd: "/tmp",
+    cacheRole: "side-question",
+  } as RequestContext;
+
+  const conversation: Message[] = [
+    { role: "user", content: [{ type: "text", text: "first ask" }] },
+    { role: "assistant", content: [{ type: "text", text: "first answer" }] },
+    {
+      role: "user",
+      content: [
+        { type: "text", text: "<system-reminder>side question</system-reminder>\n\nthe question" },
+      ],
+    },
+  ];
+
+  type WireBody = {
+    messages: { role: string; content: { cache_control?: { type: string; ttl?: string } }[] }[];
+  };
+
+  it("moves the breakpoint off the question onto the shared-prefix end, plain ephemeral", () => {
+    const body = translateRequestAnthropic(ctx, conversation, []) as WireBody;
+    const contents = body.messages.map((m) =>
+      Array.isArray(m.content)
+        ? m.content.flatMap((b) => (b.cache_control ? [b.cache_control] : []))
+        : [],
+    );
+    expect(contents.at(-1)).toEqual([]);
+    expect(contents.at(-2)).toEqual([{ type: "ephemeral" }]);
+  });
+
+  it("withholds the extended-ttl beta from side questions", () => {
+    expect(requestQualifiesForExtendedCacheTtl(ctx)).toBe(false);
+    expect(
+      requestQualifiesForExtendedCacheTtl({
+        ...ctx,
+        cacheRole: undefined,
+      } as unknown as RequestContext),
+    ).toBe(true);
   });
 });

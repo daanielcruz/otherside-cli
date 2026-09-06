@@ -1,5 +1,5 @@
 import type { Message, ToolResultContentBlock } from "@/kernel/std/types/message.ts";
-import { roughTokenCountEstimationForToolResult } from "./token-count.ts";
+import { estimateToolResultTokens } from "./token-count.ts";
 
 export const MICRO_COMPACT_CLEARED_MESSAGE = "[Old tool result content cleared]";
 
@@ -102,7 +102,7 @@ function clearStaleToolResults(args: {
       const currentText =
         typeof block.content === "string" ? block.content : extractText(block.content);
       if (currentText === MICRO_COMPACT_CLEARED_MESSAGE) continue;
-      tokensSaved += roughTokenCountEstimationForToolResult(block);
+      tokensSaved += estimateToolResultTokens(block);
       msg.content[i] = {
         type: "tool_result",
         tool_use_id: block.tool_use_id,

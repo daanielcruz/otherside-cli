@@ -1,70 +1,76 @@
-import type { Color as InkColor } from "@/ink";
 import {
+  type CustomThemeId,
   THEME_NAMES,
   THEME_SETTINGS,
   type ThemeName,
   type ThemeSetting,
 } from "@/kernel/config/theme-names.ts";
 import { getPlatform } from "@/kernel/std/proc/platform.ts";
+import type { TerminalColor } from "@/terminal-runtime";
 
-export type { ThemeName, ThemeSetting };
+export type { CustomThemeId, ThemeName, ThemeSetting };
 export { THEME_NAMES, THEME_SETTINGS };
 
 export interface ThemeRecord {
-  primary: InkColor;
-  primaryGlow: InkColor;
-  accentWarm: InkColor;
-  text: InkColor;
-  textStrong: InkColor;
-  muted: InkColor;
-  subtle: InkColor;
-  success: InkColor;
-  error: InkColor;
-  warning: InkColor;
-  highlight: InkColor;
-  user: InkColor;
-  inverseBg: InkColor;
-  userText: InkColor;
-  badgePrefix: InkColor;
-  queueText: InkColor;
-  queueBackground: InkColor;
-  tabSelectedText: InkColor;
-  assistant: InkColor;
-  system: InkColor;
-  modeYolo: InkColor;
-  modeAccept: InkColor;
-  modePlan: InkColor;
-  designSession: InkColor;
-  bashMode: InkColor;
-  bashInputBg: InkColor;
-  steel: InkColor;
-  border: InkColor;
-  chevron: InkColor;
-  fastMode: InkColor;
-  titleStrong: InkColor;
-  toolBody: InkColor;
-  diffAddBg: InkColor | undefined;
-  diffAddHighlightBg: InkColor | undefined;
-  diffAddDimBg: InkColor | undefined;
-  diffRemBg: InkColor | undefined;
-  diffRemHighlightBg: InkColor | undefined;
-  diffRemDimBg: InkColor | undefined;
-  diffAddFg: InkColor;
-  diffRemFg: InkColor;
-  diffContentFg: InkColor;
-  syntaxKeyword: InkColor;
-  syntaxString: InkColor;
-  syntaxNumber: InkColor;
-  syntaxTitle: InkColor;
-  syntaxType: InkColor;
-  syntaxSymbol: InkColor;
-  inlineCode: InkColor;
+  primary: TerminalColor;
+  primaryGlow: TerminalColor;
+  /** The one accent every overlay panel wears: titles, rules, selection, pills. */
+  panelAccent: TerminalColor;
+  /** The product's warm signature hue: long-running product work in progress. */
+  brand: TerminalColor;
+  accentWarm: TerminalColor;
+  text: TerminalColor;
+  textStrong: TerminalColor;
+  muted: TerminalColor;
+  subtle: TerminalColor;
+  success: TerminalColor;
+  error: TerminalColor;
+  warning: TerminalColor;
+  highlight: TerminalColor;
+  user: TerminalColor;
+  inverseBg: TerminalColor;
+  userText: TerminalColor;
+  badgePrefix: TerminalColor;
+  queueText: TerminalColor;
+  queueBackground: TerminalColor;
+  tabSelectedText: TerminalColor;
+  assistant: TerminalColor;
+  system: TerminalColor;
+  modeYolo: TerminalColor;
+  modeAccept: TerminalColor;
+  modePlan: TerminalColor;
+  designSession: TerminalColor;
+  bashMode: TerminalColor;
+  bashInputBg: TerminalColor;
+  steel: TerminalColor;
+  border: TerminalColor;
+  chevron: TerminalColor;
+  fastMode: TerminalColor;
+  titleStrong: TerminalColor;
+  toolBody: TerminalColor;
+  diffAddBg: TerminalColor | undefined;
+  diffAddHighlightBg: TerminalColor | undefined;
+  diffAddDimBg: TerminalColor | undefined;
+  diffRemBg: TerminalColor | undefined;
+  diffRemHighlightBg: TerminalColor | undefined;
+  diffRemDimBg: TerminalColor | undefined;
+  diffAddFg: TerminalColor;
+  diffRemFg: TerminalColor;
+  diffContentFg: TerminalColor;
+  syntaxKeyword: TerminalColor;
+  syntaxString: TerminalColor;
+  syntaxNumber: TerminalColor;
+  syntaxTitle: TerminalColor;
+  syntaxType: TerminalColor;
+  syntaxSymbol: TerminalColor;
+  inlineCode: TerminalColor;
 }
 
 const SHARED_TUI: Pick<
   ThemeRecord,
   | "primary"
   | "primaryGlow"
+  | "panelAccent"
   | "highlight"
   | "modeYolo"
   | "modeAccept"
@@ -89,6 +95,7 @@ const SHARED_TUI: Pick<
 > = {
   primary: "#3EA0C3",
   primaryGlow: "#B1B9F9",
+  panelAccent: "#00CCCC",
   highlight: "#B1B9F9",
   modeYolo: "#FF6B80",
   modeAccept: "#48AAAA",
@@ -114,6 +121,7 @@ const SHARED_TUI: Pick<
 
 const DARK: ThemeRecord = {
   ...SHARED_TUI,
+  brand: "#D77757",
   accentWarm: "#af87ff",
   text: "#D4D4D4",
   textStrong: "#FFFFFF",
@@ -143,6 +151,7 @@ const DARK: ThemeRecord = {
 
 const LIGHT: ThemeRecord = {
   ...SHARED_TUI,
+  brand: "#FF9933",
   accentWarm: "#8700ff",
   text: "#000000",
   textStrong: "#000000",
@@ -193,6 +202,7 @@ const LIGHT_DALTONIZED: ThemeRecord = {
 
 const DARK_ANSI: ThemeRecord = {
   ...DARK,
+  brand: "ansi:redBright",
   accentWarm: "ansi:magentaBright",
   diffAddBg: undefined,
   diffAddHighlightBg: undefined,
@@ -208,6 +218,7 @@ const DARK_ANSI: ThemeRecord = {
 
 const LIGHT_ANSI: ThemeRecord = {
   ...LIGHT,
+  brand: "ansi:redBright",
   accentWarm: "ansi:magenta",
   diffAddBg: undefined,
   diffAddHighlightBg: undefined,
@@ -231,22 +242,53 @@ const THEMES: Record<ThemeName, ThemeRecord> = {
 };
 
 let activeThemeName: ThemeName = "dark";
+let activeCustomThemeId: CustomThemeId | undefined;
 let activeTheme: ThemeRecord = THEMES.dark;
 const subscribers = new Set<() => void>();
 
+/**
+ * The shipped palette in force. A stored theme reports the palette it layers
+ * onto, so callers that key off a light/dark distinction stay right without
+ * knowing stored themes exist.
+ */
 export function getActiveThemeName(): ThemeName {
   return activeThemeName;
+}
+
+/** The stored theme in force, or undefined when a shipped palette is. */
+export function getActiveCustomThemeId(): CustomThemeId | undefined {
+  return activeCustomThemeId;
 }
 
 export function getThemeRecord(name: ThemeName): ThemeRecord {
   return THEMES[name];
 }
 
-export function setActiveTheme(name: ThemeName): void {
-  if (name === activeThemeName) return;
-  activeThemeName = name;
-  activeTheme = THEMES[name];
+function publish(): void {
   for (const sub of subscribers) sub();
+}
+
+export function setActiveTheme(name: ThemeName): void {
+  if (name === activeThemeName && activeCustomThemeId === undefined) return;
+  activeThemeName = name;
+  activeCustomThemeId = undefined;
+  activeTheme = THEMES[name];
+  publish();
+}
+
+/**
+ * Puts a stored theme in force. The palette it was built on is kept alongside,
+ * since that is what `getActiveThemeName` owes its callers.
+ */
+export function setActiveCustomTheme(
+  id: CustomThemeId,
+  base: ThemeName,
+  record: ThemeRecord,
+): void {
+  activeThemeName = base;
+  activeCustomThemeId = id;
+  activeTheme = record;
+  publish();
 }
 
 export function subscribeTheme(fn: () => void): () => void {
@@ -271,7 +313,7 @@ export const Color = new Proxy({} as ThemeRecord, {
 }) as ThemeRecord;
 
 export type ColorKey = keyof ThemeRecord;
-export type ColorValue = InkColor;
+export type ColorValue = TerminalColor;
 export type SolidColorKey = {
   [K in ColorKey]: undefined extends ThemeRecord[K] ? never : K;
 }[ColorKey];
@@ -290,9 +332,9 @@ export const Glyph = {
   promptBusy: "… ",
   bolt: "↯",
   fastForward: "⏵",
-  // U+FE0E forces text presentation: bare U+23F8 falls back to the emoji font
-  // on terminals whose mono font lacks the glyph.
-  pause: "⏸\uFE0E",
+  // Windows Terminal falls back to the emoji font for U+23F8 even with VS15;
+  // two heavy bars carry the pause meaning without an emoji mapping.
+  pause: getPlatform() === "macos" ? "⏸\uFE0E" : "❚❚",
   bullet: getPlatform() === "macos" ? "⏺" : "●",
   bulletFilled: "●",
   bulletHollow: "○",
@@ -305,6 +347,7 @@ export const Glyph = {
   triangleFilled: "▶",
   check: "✔",
   checkThin: "✓",
+  cross: "✘",
   squareFilled: "■",
   squareHollow: "□",
   squareSmallFilled: "◼",
@@ -316,6 +359,8 @@ export const Glyph = {
   search: "⌕",
   arrowUp: "↑",
   arrowDown: "↓",
+  arrowLeft: "←",
+  arrowRight: "→",
   barFilled: "▰",
   barEmpty: "▱",
   block: "█",
@@ -337,6 +382,8 @@ export const Glyph = {
   boxCross: "┼",
   boxPipe: "│",
   boxHLine: "─",
+  /** Lighter rule than `boxHLine`, for a divider inside a panel rather than around it. */
+  boxHLineDashed: "╌",
   boxTeeDown: "┬",
   boxTeeUp: "┴",
   bullseye: "◎",

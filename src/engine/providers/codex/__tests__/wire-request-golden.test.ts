@@ -10,7 +10,7 @@ import {
   clearSessionState,
   getSessionState,
 } from "@/engine/providers/codex/transport/state.ts";
-import { buildWsFrame } from "@/engine/providers/codex/transport/ws.ts";
+import { buildWsFrame } from "@/engine/providers/codex/transport/ws-frames.ts";
 import type { Message } from "@/kernel/std/types/message.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 
@@ -67,6 +67,7 @@ function stableWireSnapshot(
     clientMetadata["x-codex-turn-metadata"],
   );
   const stableHeaders = { ...headers };
+  stableHeaders["User-Agent"] = stableUserAgent(stableHeaders["User-Agent"]);
   stableHeaders["x-codex-turn-metadata"] = stableTurnMetadata(
     stableHeaders["x-codex-turn-metadata"],
   );
@@ -76,6 +77,37 @@ function stableWireSnapshot(
     headers: stableHeaders,
   };
 }
+
+function stableUserAgent(value: string | undefined): string {
+  if (value === undefined) throw new Error("missing User-Agent");
+  return value.replace(
+    /^(Codex Desktop\/\S+) \([^)]+; [^);]+\) (?:[^()]+ )?(\(Codex Desktop; [^)]+\))$/,
+    "$1 (<os> <release>; <arch>) <terminal>/<version> $2",
+  );
+}
+
+describe("stable User-Agent snapshot", () => {
+  it.each([
+    "(Mac OS 27.0.0; arm64) iTerm.app/3.6.11",
+    "(X11; Linux 6.8.0; x64)",
+    "(Windows NT 10.0 10.0.26100; x64) WindowsTerminal/1.22",
+  ])("normalizes host segments in %s without masking client versions", (host) => {
+    const prefix = "Codex Desktop/0.153.4";
+    const suffix = "(Codex Desktop; 26.901.41600)";
+    expect(stableUserAgent(`${prefix} ${host} ${suffix}`)).toBe(
+      `${prefix} (<os> <release>; <arch>) <terminal>/<version> ${suffix}`,
+    );
+  });
+
+  it("keeps version and format changes visible", () => {
+    const value = "Codex Desktop/9.8.7 (X11; Linux 6.8.0; x64) (Codex Desktop; 6.5.4)";
+    expect(stableUserAgent(value)).toBe(
+      "Codex Desktop/9.8.7 (<os> <release>; <arch>) <terminal>/<version> (Codex Desktop; 6.5.4)",
+    );
+    expect(stableUserAgent("unexpected format")).toBe("unexpected format");
+    expect(() => stableUserAgent(undefined)).toThrow("missing User-Agent");
+  });
+});
 
 function stableTurnMetadata(value: string | undefined): string {
   if (value === undefined) throw new Error("missing x-codex-turn-metadata");
@@ -180,7 +212,8 @@ describe("codex wire-request-golden", () => {
     expect((res1.frame.client_metadata as Record<string, string>).session_id).toBe(
       "session-fixture",
     );
-    expect(res1.headers.session_id).toBe("session-fixture");
+    expect(res1.headers["session-id"]).toBe("session-fixture");
+    expect(res1.headers["thread-id"]).toBe("thread-fixture");
     expect(res1.body.prompt_cache_key).toBe("session-fixture");
     expect(res1.body.store).toBe(false);
     expect(res1.body.previous_response_id).toBeUndefined();
@@ -277,7 +310,8 @@ describe("codex wire-request-golden", () => {
     expect(Number.isInteger(meta.turn_started_at_unix_ms)).toBe(true);
     expect(meta.workspaces).toBeUndefined();
     expect((res1.frame.client_metadata as Record<string, string>).session_id).toBe(meta.session_id);
-    expect(res1.headers.session_id).toBe(meta.session_id);
+    expect(res1.headers["session-id"]).toBe(meta.session_id);
+    expect(res1.headers["thread-id"]).toBe(meta.thread_id);
     expect(res1.headers["x-codex-parent-thread-id"]).toBe("session-fixture");
     expect(res1.body.prompt_cache_key).toBe("session-fixture:fork:fork-fixture");
     expect(res1.body.store).toBe(false);
@@ -324,18 +358,31 @@ describe("codex wire-request-golden", () => {
       installation_id: "installation-fixture",
       session_id: "prewarm-session-fixture",
       thread_id: "prewarm-thread-fixture",
-      thread_source: "user",
+      agent_name: "/root",
       turn_id: "",
       window_id: "prewarm-thread-fixture:2",
+      window_number: 2,
+      context_window_id: requestMetadata.turnMetadata.context_window_id,
+      request_kind: "prewarm",
+      thread_source: "user",
       sandbox:
         process.platform === "darwin"
           ? "seatbelt"
           : process.platform === "linux"
             ? "landlock"
             : "none",
-      request_kind: "prewarm",
+      sandbox_mode: "workspace-write",
+      auto_review_enabled: false,
+      node_repl_auto_review_required: true,
+      node_repl_disabled: false,
       workspaces: {},
     });
+    expect(requestMetadata.turnMetadata.context_window_id).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+    );
+    expect(requestMetadata.turnMetadata.context_window_id).not.toBe(
+      requestMetadata.turnMetadata.thread_id,
+    );
     expect(requestMetadata.turnMetadata.turn_started_at_unix_ms).toBeUndefined();
   });
 

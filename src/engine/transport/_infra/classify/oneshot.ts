@@ -1,10 +1,10 @@
 import { QuotaExhaustedError } from "@/engine/providers/_shared/retry.ts";
 import * as providers from "@/engine/providers/registry.ts";
 import { streamWithRetry } from "@/engine/transport/_infra/classify/retry.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
 import { uuidv4 } from "@/kernel/std/id.ts";
 import { isAbortError } from "@/kernel/std/stream/abort.ts";
 import type { Message } from "@/kernel/std/types/message.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 
 const DEFAULT_TIMEOUT_MS = 30_000;

@@ -1,4 +1,4 @@
-import { StreamIdleTimeoutError } from "@/kernel/std/stream/idle-timeout.ts";
+import { StreamSilenceError } from "@/kernel/std/stream/idle-timeout.ts";
 import type { ProviderEvent } from "@/kernel/std/types/events.ts";
 
 // Anthropic's edge sends an `event: ping` SSE frame roughly every 25s to keep the
@@ -8,7 +8,7 @@ import type { ProviderEvent } from "@/kernel/std/types/events.ts";
 // otherwise-live socket can re-arm the byte watchdog forever while producing zero
 // parsed output. This wrapper watches the PARSED event stream instead: only
 // events that represent real generation progress re-arm it, so a ping-fed
-// silence still trips a deadline and triggers the existing retry machinery.
+// silence still trips a deadline for the shared classifier to resolve.
 const DEFAULT_CONTENT_IDLE_TIMEOUT_MS = 180_000;
 
 // One coarse tick instead of a clearTimeout/setTimeout pair per event: text
@@ -69,21 +69,30 @@ export function isContentProgressEvent(ev: ProviderEvent): boolean {
 /**
  * Wraps a parsed ProviderEvent iterable with an independent idle deadline that
  * only re-arms on semantic progress (see CONTENT_PROGRESS_KINDS). Throws
- * StreamIdleTimeoutError("content") on expiry — the caller (streamWithRetry)
- * catches it exactly like the byte-level watchdog's error and reconnects.
+ * StreamSilenceError("content") on expiry. The shared classifier retries
+ * without keepalive proof and fails terminally when keepalives prove liveness.
  *
  * checkIntervalMs is exposed only so tests can use a fast tick; production
  * call sites should leave it at the default.
  */
+export interface ContentIdleTimeoutOptions {
+  timeoutMs?: number;
+  checkIntervalMs?: number;
+  onTimeout?: (error: StreamSilenceError) => void;
+}
+
 export async function* wrapProviderEventsWithContentIdleTimeout(
   events: AsyncIterable<ProviderEvent>,
-  timeoutMs: number = getContentIdleTimeoutMs(),
-  checkIntervalMs: number = DEFAULT_CONTENT_IDLE_CHECK_INTERVAL_MS,
+  options: ContentIdleTimeoutOptions = {},
 ): AsyncIterable<ProviderEvent> {
+  const timeoutMs = options.timeoutMs ?? getContentIdleTimeoutMs();
+  const checkIntervalMs =
+    options.checkIntervalMs ?? Math.min(DEFAULT_CONTENT_IDLE_CHECK_INTERVAL_MS, timeoutMs);
   const it = events[Symbol.asyncIterator]();
   let waiting = false;
   let waitingSinceMs: number | null = null;
   let accumulatedIdleMs = 0;
+  let deadlineExpired = false;
   let rejectDeadline: (reason?: unknown) => void = () => {};
 
   const deadline = new Promise<never>((_, reject) => {
@@ -94,11 +103,19 @@ export async function* wrapProviderEventsWithContentIdleTimeout(
   // as an unhandled rejection before the next pull attaches one.
   deadline.catch(() => {});
 
+  const expireDeadline = (): void => {
+    if (deadlineExpired) return;
+    deadlineExpired = true;
+    const error = new StreamSilenceError(timeoutMs, "content");
+    rejectDeadline(error);
+    try {
+      options.onTimeout?.(error);
+    } catch {}
+  };
+
   const tick = setInterval(() => {
     const currentOutstanding = waiting && waitingSinceMs !== null ? Date.now() - waitingSinceMs : 0;
-    if (accumulatedIdleMs + currentOutstanding >= timeoutMs) {
-      rejectDeadline(new StreamIdleTimeoutError(timeoutMs, "content"));
-    }
+    if (accumulatedIdleMs + currentOutstanding >= timeoutMs) expireDeadline();
   }, checkIntervalMs);
   // The tick stays ref'd on purpose: with every other handle idle (upstream
   // parked on a never-settling promise), an unref'd interval stops firing on
@@ -123,9 +140,7 @@ export async function* wrapProviderEventsWithContentIdleTimeout(
         accumulatedIdleMs = 0;
       } else {
         accumulatedIdleMs += upstreamWaitMs;
-        if (accumulatedIdleMs >= timeoutMs) {
-          rejectDeadline(new StreamIdleTimeoutError(timeoutMs, "content"));
-        }
+        if (accumulatedIdleMs >= timeoutMs) expireDeadline();
       }
       yield result.value;
     }

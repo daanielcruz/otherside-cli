@@ -5,6 +5,14 @@ import { CCH_PLACEHOLDER } from "./cch.ts";
 const FINGERPRINT_SALT = "59cf53e54c78";
 const FINGERPRINT_CHAR_INDICES = [4, 7, 20];
 
+/**
+ * The chain field carries a request id and nothing else. A stored value can be
+ * empty, truncated, or left over from a shape that was never a request id, and
+ * a malformed chain reads worse than no chain, so the field is written only
+ * while the stored value still looks like one.
+ */
+const REQUEST_ID_PATTERN = /^req_[A-Za-z0-9_-]{1,36}$/;
+
 function attributionFingerprint(firstMessageText: string): string {
   const chars = FINGERPRINT_CHAR_INDICES.map((i) => firstMessageText[i] || "0").join("");
   return createHash("sha256")
@@ -20,7 +28,11 @@ function billingHeader(
 ): string {
   const version = `${CLAUDE_CODE_VERSION}.${attributionFingerprint(firstMessageText)}`;
   const subagentTail = subagent ? " cc_is_subagent=true;" : "";
-  const previousRequestTail = previousRequestId ? ` cc_prev_req=${previousRequestId};` : "";
+  const chained =
+    previousRequestId !== undefined && REQUEST_ID_PATTERN.test(previousRequestId)
+      ? previousRequestId
+      : undefined;
+  const previousRequestTail = chained ? ` cc_prev_req=${chained};` : "";
   return `x-anthropic-billing-header: cc_version=${version}; cc_entrypoint=cli; cch=${CCH_PLACEHOLDER};${subagentTail}${previousRequestTail}`;
 }
 

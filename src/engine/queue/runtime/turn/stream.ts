@@ -1,6 +1,19 @@
 import { listEnabledHookEntries } from "@/engine/plugins/registry.ts";
 import { QuotaExhaustedError } from "@/engine/providers/_shared/retry.ts";
 import * as providers from "@/engine/providers/registry.ts";
+import { sessionGitStatus } from "@/engine/queue/runtime/git-status.ts";
+import { runPromptClassifier } from "@/engine/queue/runtime/goal-evaluation.ts";
+import { makeRequestContext } from "@/engine/queue/runtime/request-context.ts";
+import type { StopConditionVerdict } from "@/engine/queue/runtime/stop-hook-classifier.ts";
+import {
+  isStopHookActiveTurn,
+  launchAsyncStopHook,
+} from "@/engine/queue/runtime/stop-hook-rewake.ts";
+import {
+  runSyncStopHook,
+  type SyncStopHookVerdict,
+} from "@/engine/queue/runtime/stop-hook-sync.ts";
+import { currentLocalISODate } from "@/engine/queue/runtime/turn-prompts.ts";
 import { appendRecord } from "@/engine/session/persist.ts";
 import { nowIso } from "@/engine/session/record/index.ts";
 import { shrinkToolResultRecord } from "@/engine/session/state.ts";
@@ -9,22 +22,20 @@ import {
   buildTaskReminderInjection,
 } from "@/engine/session/task-reminder.ts";
 import {
-  applyToolResultBudget,
-  createContentReplacementState,
-} from "@/engine/tool-result-storage/index.ts";
+  applyToolOutputBudget,
+  createToolOutputArchive,
+} from "@/engine/tool-output-archive/index.ts";
 import { providerToolDeclarations, runRound } from "@/engine/translator/index.ts";
 import type { InjectionQueue } from "@/harness/composer/injections.ts";
+import { fireEntry } from "@/kernel/hooks/exec.ts";
+import { fireConfiguredHooks } from "@/kernel/hooks/handler.ts";
 import { loadRulesSync } from "@/kernel/permissions/persist.ts";
 import { getRuntimeKind } from "@/kernel/std/proc/runtime-mode.ts";
 import type { AgentEvent, ProviderEvent } from "@/kernel/std/types/events.ts";
-import { sessionGitStatus } from "../git-status.ts";
-import { runPromptClassifier } from "../goal-evaluation.ts";
-import { makeRequestContext } from "../request-context.ts";
-import type { StopConditionVerdict } from "../stop-hook-classifier.ts";
-import { isStopHookActiveTurn, launchAsyncStopHook } from "../stop-hook-rewake.ts";
-import { runSyncStopHook, type SyncStopHookVerdict } from "../stop-hook-sync.ts";
-import { currentLocalISODate } from "../turn-prompts.ts";
+import { collectMemoryFiles } from "@/kernel/storage/memory/loader.ts";
 import type { AgentDeps, TurnLoopHost } from "./types.ts";
+
+const instructionHookPaths = new WeakMap<object, Set<string>>();
 
 export interface TurnStreamDeps {
   agentDeps: AgentDeps;
@@ -44,19 +55,42 @@ export function turnStreamDeps(host: TurnLoopHost): TurnStreamDeps {
   };
 }
 
+async function fireNewInstructionHooks(deps: AgentDeps): Promise<void> {
+  let loaded = instructionHookPaths.get(deps.session);
+  if (!loaded) {
+    loaded = new Set();
+    instructionHookPaths.set(deps.session, loaded);
+  }
+  for (const file of collectMemoryFiles(deps.session.cwd)) {
+    if ((file.scope !== "user" && file.scope !== "project") || loaded.has(file.path)) continue;
+    loaded.add(file.path);
+    await fireConfiguredHooks(deps.config, "instructionsLoaded", {
+      kind: "instructionsLoaded",
+      ctx: {
+        filePath: file.path,
+        memoryType: file.scope === "user" ? "User" : "Project",
+        loadReason: "session_start",
+        sessionId: deps.session.id,
+        cwd: deps.session.cwd,
+      },
+    });
+  }
+}
+
 export async function* openProviderStream(
   deps: TurnStreamDeps,
   abortSignal?: AbortSignal,
 ): AsyncIterable<ProviderEvent> {
   const ctx = makeRequestContext(deps.agentDeps, deps.turnId);
   if (abortSignal) ctx.abortSignal = abortSignal;
+  await fireNewInstructionHooks(deps.agentDeps);
   const provider = providers.get(ctx.provider);
-  if (!deps.agentDeps.session.contentReplacementState) {
-    deps.agentDeps.session.contentReplacementState = createContentReplacementState();
+  if (!deps.agentDeps.session.toolOutputArchive) {
+    deps.agentDeps.session.toolOutputArchive = createToolOutputArchive();
   }
-  const budgetMessages = await applyToolResultBudget(
+  const budgetMessages = await applyToolOutputBudget(
     deps.agentDeps.session.messages,
-    deps.agentDeps.session.contentReplacementState,
+    deps.agentDeps.session.toolOutputArchive,
     (records) => {
       for (const record of records) {
         shrinkToolResultRecord(deps.agentDeps.session, record.toolUseId, record.replacement);
@@ -84,6 +118,7 @@ export async function* openProviderStream(
     model: ctx.model,
     mainAgent: ctx.agentOwnerId === undefined && ctx.isForkChild !== true,
     permissionRules: loadRulesSync(ctx.cwd),
+    ...(ctx.orchestrationMode !== undefined ? { orchestrationMode: ctx.orchestrationMode } : {}),
   });
   const taskReminder = buildTaskReminderInjection({
     messages: deps.agentDeps.session.messages,
@@ -93,7 +128,9 @@ export async function* openProviderStream(
     appendTaskReminderMessage(deps.agentDeps.session.messages, taskReminder);
   }
   const gitStatus = await sessionGitStatus();
-  yield* runRound({
+  // Stamp each attempt's message_start with the route that opened it: a
+  // mid-stream route switch must not reclassify bytes this attempt produces.
+  for await (const event of runRound({
     ctx,
     provider,
     assemble: {
@@ -105,7 +142,11 @@ export async function* openProviderStream(
       ...(gitStatus !== null ? { gitStatus } : {}),
     },
     persistAssembledTurn: true,
-  });
+  })) {
+    yield event.kind === "message_start"
+      ? { ...event, provider: ctx.provider, model: ctx.model }
+      : event;
+  }
 }
 
 export async function* fireStopPromptHooks(
@@ -157,6 +198,21 @@ export async function* fireStopPromptHooks(
         ],
       });
       yield { kind: "error", error: `stop hook blocked: ${verdict.feedback}` };
+      continue;
+    }
+    if (entry.type === "agent" || entry.type === "http") {
+      if (deps.cancelled() || abortSignal?.aborted) return blocked;
+      const outcome = await fireEntry(entry, {
+        kind: "stop",
+        ctx: { sessionId: deps.agentDeps.session.id, stopHookActive },
+      });
+      if (outcome.kind !== "prompt_blocked") continue;
+      blocked = true;
+      deps.agentDeps.session.messages.push({
+        role: "user",
+        content: [{ type: "text", text: `Stop hook feedback:\n${outcome.reason}` }],
+      });
+      yield { kind: "error", error: `stop hook blocked: ${outcome.reason}` };
       continue;
     }
     if (entry.type !== "prompt") continue;

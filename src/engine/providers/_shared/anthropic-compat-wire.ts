@@ -11,29 +11,28 @@ import {
   ensureNonEmptyErrorContent,
   sanitizeToolResultContent,
 } from "@/engine/providers/_shared/tool-result.ts";
-import { usageFromAnthropic } from "@/engine/providers/_shared/usage.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
 import { parseSse } from "@/kernel/std/stream/sse.ts";
 import type { ProviderEvent } from "@/kernel/std/types/events.ts";
 import type { ContentBlock, Message } from "@/kernel/std/types/message.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 
-interface KimiBlock {
+interface CompatBlock {
   type: string;
   [k: string]: unknown;
 }
 
-interface KimiMessage {
+interface CompatMessage {
   role: "user" | "assistant";
-  content: KimiBlock[];
+  content: CompatBlock[];
 }
 
-interface KimiReplayOpts {
+interface CompatReplayOpts {
   currentProvider: ProviderId | undefined;
   currentAccount: string;
   messageProvenance: ThinkingProvenance;
 }
 
-function blockToKimi(block: ContentBlock, replay: KimiReplayOpts): KimiBlock | null {
+function blockToCompat(block: ContentBlock, replay: CompatReplayOpts): CompatBlock | null {
   switch (block.type) {
     case "text":
       return {
@@ -93,18 +92,18 @@ function blockToKimi(block: ContentBlock, replay: KimiReplayOpts): KimiBlock | n
   }
 }
 
-export function buildKimiMessages(
+export function buildCompatMessages(
   messages: Message[],
   currentProvider?: ProviderId,
 ): {
-  system: KimiBlock[] | undefined;
-  out: KimiMessage[];
+  system: CompatBlock[] | undefined;
+  out: CompatMessage[];
 } {
   // Derived fresh at request build so a credential switch (even mid-turn
   // from another client) gates signature replay on the very next request.
   const currentAccount = currentProvider ? accountFingerprint(currentProvider) : "";
-  const systemBlocks: KimiBlock[] = [];
-  const out: KimiMessage[] = [];
+  const systemBlocks: CompatBlock[] = [];
+  const out: CompatMessage[] = [];
   for (const msg of messages) {
     if (msg.role === "system") {
       for (const b of msg.content) {
@@ -118,14 +117,14 @@ export function buildKimiMessages(
       continue;
     }
     const role: "user" | "assistant" = msg.role === "assistant" ? "assistant" : "user";
-    const replay: KimiReplayOpts = {
+    const replay: CompatReplayOpts = {
       currentProvider,
       currentAccount,
       messageProvenance: msg,
     };
-    const blocks: KimiBlock[] = [];
+    const blocks: CompatBlock[] = [];
     for (const block of msg.content) {
-      const k = blockToKimi(block, replay);
+      const k = blockToCompat(block, replay);
       if (k !== null) blocks.push(k);
     }
     if (blocks.length === 0) continue;
@@ -151,16 +150,33 @@ export function tagLastToolCache(tools: unknown[]): unknown[] {
   return [...tools.slice(0, -1), cloned];
 }
 
-interface KimiToolBlockState {
+interface CompatToolBlockState {
   id: string;
   name: string;
   buffer: string;
 }
 
-export async function* translateResponseKimi(
+/**
+ * The two response facts that differ across Anthropic-shaped endpoints: how the
+ * upstream splits prompt tokens between its fresh and cached counters, and the
+ * endpoint named when the stream carries an error frame.
+ */
+export interface CompatResponseWire {
+  usage: (value: unknown) => ProviderEvent | null;
+  endpointLabel: string;
+}
+
+export function compatResponseTranslator(
+  wire: CompatResponseWire,
+): (raw: AsyncIterable<Uint8Array>) => AsyncIterable<ProviderEvent> {
+  return (raw) => translateCompatResponse(raw, wire);
+}
+
+async function* translateCompatResponse(
   raw: AsyncIterable<Uint8Array>,
+  wire: CompatResponseWire,
 ): AsyncIterable<ProviderEvent> {
-  const tools = new Map<number, KimiToolBlockState>();
+  const tools = new Map<number, CompatToolBlockState>();
   let stopReason = "stop";
   let messageStarted = false;
 
@@ -184,7 +200,7 @@ export async function* translateResponseKimi(
             ? { kind: "message_start", id: startId }
             : { kind: "message_start" };
         }
-        const startUsage = usageFromAnthropic(startMessage?.usage);
+        const startUsage = wire.usage(startMessage?.usage);
         if (startUsage) yield startUsage;
         break;
       }
@@ -248,9 +264,9 @@ export async function* translateResponseKimi(
       case "message_delta": {
         const delta = data.delta as Record<string, unknown> | undefined;
         if (delta && typeof delta.stop_reason === "string") {
-          stopReason = mapKimiStopReason(delta.stop_reason);
+          stopReason = mapCompatStopReason(delta.stop_reason);
         }
-        const usage = usageFromAnthropic(data.usage);
+        const usage = wire.usage(data.usage);
         if (usage) yield usage;
         break;
       }
@@ -260,7 +276,7 @@ export async function* translateResponseKimi(
       }
       case "error": {
         throw streamErrorToHttpError({
-          provider: "kimi/coding/messages",
+          provider: wire.endpointLabel,
           rawBody: ev.data,
         });
       }
@@ -270,7 +286,7 @@ export async function* translateResponseKimi(
   }
 }
 
-function mapKimiStopReason(r: string): string {
+function mapCompatStopReason(r: string): string {
   switch (r) {
     case "end_turn":
     case "stop_sequence":

@@ -23,7 +23,7 @@ function createDeferred<T>(): Deferred<T> {
 }
 
 // Flushes both microtasks and one macrotask turn — enough for the awaits
-// inside dispatchForkToolCalls's Phase C (maybePersistLargeToolResult, etc.)
+// inside dispatchForkToolCalls's Phase C (archiveLargeToolOutput, etc.)
 // to progress between assertions.
 function tick(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
@@ -142,6 +142,22 @@ describe("dispatchForkToolCalls concurrency", () => {
     toolRegistry.unregister("Agent");
     deferredByCallId.clear();
     mockDispatch.mockClear();
+  });
+
+  it("persists immediate denied results in the sidechain", async () => {
+    const call: ToolCall = { id: "task-call", name: "TaskCreate", input: {} };
+    const { args, appendSidechainRecord } = makeArgs([call]);
+
+    const outcome = await dispatchForkToolCalls(args);
+
+    expect(outcome.kind).toBe("ready");
+    expect(appendSidechainRecord).toHaveBeenCalledWith({
+      type: "tool_result",
+      ts: expect.any(String),
+      call_id: "task-call",
+      result: "tool TaskCreate not allowed for test-fork",
+      is_error: true,
+    });
   });
 
   it("starts both Agent dispatches (and emits both start events) before either settles", async () => {
@@ -278,5 +294,58 @@ describe("dispatchForkToolCalls concurrency", () => {
     expect(okTask?.status).toBe("completed");
     expect(okTask?.result?.content).toBe("great success");
     expect(errTask?.status).toBe("error");
+  });
+
+  /**
+   * Regression: the caller persists a tool_call record for every call before
+   * dispatch, so a rejection escaping without a paired tool_result record left
+   * the durable transcript with an unpaired tool_use — resume replays it and
+   * the session audit flags it as corruption.
+   */
+  it("pairs every persisted tool_call with a tool_result record when a dispatch rejects", async () => {
+    const dOk = createDeferred<PipelineResult>();
+    const dErr = createDeferred<PipelineResult>();
+    deferredByCallId.set("call-ok", dOk);
+    deferredByCallId.set("call-err", dErr);
+
+    const { args, appendSidechainRecord } = makeArgs([agentCall("call-ok"), agentCall("call-err")]);
+    const outcomePromise = dispatchForkToolCalls(args);
+    outcomePromise.catch(() => {});
+
+    dErr.reject(new Error("boom"));
+    dOk.resolve({ content: "great success", is_error: false });
+    await expect(outcomePromise).rejects.toThrow("boom");
+
+    const resultRecords = appendSidechainRecord.mock.calls
+      .map((c) => c[0] as { type: string; call_id?: string; result?: unknown; is_error?: boolean })
+      .filter((record) => record.type === "tool_result");
+    expect(resultRecords.map((record) => record.call_id).sort()).toEqual(["call-err", "call-ok"]);
+    const sealed = resultRecords.find((record) => record.call_id === "call-err");
+    expect(sealed?.is_error).toBe(true);
+    expect(sealed?.result).toBe("boom");
+  });
+
+  it("pairs undispatched later-group calls when an abort escapes between groups", async () => {
+    const dX = createDeferred<PipelineResult>();
+    deferredByCallId.set("call-x", dX);
+    const abortController = new AbortController();
+
+    // Two Bash calls run as two sequential groups; abort lands between them.
+    const { args, appendSidechainRecord } = makeArgs([bashCall("call-x"), bashCall("call-y")]);
+    (args.ctx as { abortSignal?: AbortSignal }).abortSignal = abortController.signal;
+    const outcomePromise = dispatchForkToolCalls(args);
+    outcomePromise.catch(() => {});
+
+    abortController.abort();
+    dX.resolve({ content: "x done", is_error: false });
+    await expect(outcomePromise).rejects.toThrow();
+
+    const resultRecords = appendSidechainRecord.mock.calls
+      .map((c) => c[0] as { type: string; call_id?: string; result?: unknown; is_error?: boolean })
+      .filter((record) => record.type === "tool_result");
+    const sealed = resultRecords.find((record) => record.call_id === "call-y");
+    expect(sealed).toBeDefined();
+    expect(sealed?.is_error).toBe(true);
+    expect(sealed?.result).toBe("Interrupted by user");
   });
 });

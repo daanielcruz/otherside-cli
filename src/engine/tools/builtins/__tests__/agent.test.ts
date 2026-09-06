@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import { type AgentContext, runWithAgentContext } from "@/engine/agents/agent-context.ts";
+import { type AgentContext, withSpawnedAgentScope } from "@/engine/agents/agent-context.ts";
 import type {
   ForkInvocation,
   SubagentInvocation,
 } from "@/engine/background/subagents/dispatcher.ts";
 import * as realDispatcher from "@/engine/background/subagents/dispatcher.ts";
+import { buildAgentInputSchema } from "@/engine/tools/dynamic/Agent.ts";
 import {
   AGENT_OPTIONS,
   orchestrationModeForAgentFields,
@@ -173,7 +174,7 @@ describe("Agent tool fork vs named subagent", () => {
   });
 
   test("rejects fork when the child marker is available only through agent context", async () => {
-    const result = await runWithAgentContext(childAgentContext, () =>
+    const result = await withSpawnedAgentScope(childAgentContext, () =>
       Agent.run(makeCall({ description: "test", prompt: "do it", subagent_type: "fork" }), baseCtx),
     );
 
@@ -192,36 +193,57 @@ describe("Agent tool fork vs named subagent", () => {
     expect(result.is_error).toBe(true);
   });
 
-  test("rejects a concrete model on an Experimental fork", async () => {
+  test.each([
+    "default",
+    "feudalism",
+  ] as const)("forwards a concrete pair on a %s fork", async (orchestrationMode) => {
+    await Agent.run(
+      makeCall({
+        description: "test",
+        prompt: "do it",
+        subagent_type: "fork",
+        provider: "codex",
+        model: "gpt-5.5",
+      }),
+      { ...baseCtx, orchestrationMode },
+    );
+
+    expect(dispatchFork).toHaveBeenCalledTimes(1);
+    const args = dispatchFork.mock.calls[0]?.[0];
+    if (!args) throw new Error("expected dispatchFork call");
+    expect(args.route).toEqual({ provider: "codex", model: "gpt-5.5" });
+    expect(dispatchSubagent).toHaveBeenCalledTimes(0);
+  });
+
+  test("rejects a concrete pair on a disabled fork", async () => {
     const result = await Agent.run(
       makeCall({
         description: "test",
         prompt: "do it",
         subagent_type: "fork",
-        model: "claude-haiku-4-5",
+        provider: "codex",
+        model: "gpt-5.5",
       }),
-      baseCtx,
+      { ...baseCtx, orchestrationMode: "disabled" },
     );
 
     expect(result.is_error).toBe(true);
-    expect(result.content).toContain("concrete `provider`/`model` pins are unavailable");
+    expect(result.content).toContain("`provider` and `tier` are unavailable");
     expect(dispatchFork).toHaveBeenCalledTimes(0);
     expect(dispatchSubagent).toHaveBeenCalledTimes(0);
   });
 
-  test("forwards name and the background task id without a permission override", async () => {
+  test("forwards the background task id without a permission override", async () => {
     await Agent.run(
       makeCall({
         description: "test",
         prompt: "do it",
-        name: "worker-1",
       }),
       { ...baseCtx, bgTaskId: "agent-task-id" },
     );
 
     const args = dispatchSubagent.mock.calls[0]?.[0];
     if (!args) throw new Error("expected dispatchSubagent call");
-    expect(args.name).toBe("worker-1");
     expect(args.permissionMode).toBeUndefined();
     expect(args.forkId).toBe("agent-task-id");
   });
@@ -260,34 +282,46 @@ describe("Agent tool fork vs named subagent", () => {
     expect(dispatchFork).toHaveBeenCalledTimes(0);
   });
 
-  test.each([
-    "_worker",
-    "worker space",
-    "worker!",
-    " worker",
-    "a".repeat(65),
-  ])("rejects invalid agent name %s", async (name) => {
-    const result = await Agent.run(
-      makeCall({ description: "test", prompt: "do it", name }),
-      baseCtx,
+  test("folds definition setup warnings into the result above the worktree trailer", async () => {
+    dispatchSubagent.mockImplementationOnce(() =>
+      Promise.resolve({
+        output: "done",
+        isError: false,
+        setupWarnings: [
+          'agent "auditor" declares skill "missing", which is not loaded — skipped',
+          'agent "auditor" declares MCP server "slack", which failed to connect: timeout',
+        ],
+        worktreePath: "/tmp/wt",
+        worktreeBranch: "agent/auditor",
+        worktreeDeleted: true,
+      }),
     );
 
-    expect(result.is_error).toBe(true);
-    expect(result.content).toContain(
-      "name must begin with a letter or digit and may then include only letters, digits, underscores, or hyphens",
+    const result = await Agent.run(makeCall({ description: "test", prompt: "do it" }), baseCtx);
+
+    expect(result.is_error).toBeUndefined();
+    expect(result.content).toBe(
+      [
+        "done",
+        'Warning: agent "auditor" declares skill "missing", which is not loaded — skipped',
+        'Warning: agent "auditor" declares MCP server "slack", which failed to connect: timeout',
+        "worktree: /tmp/wt (branch agent/auditor) removed (unchanged)",
+      ].join("\n"),
     );
-    expect(dispatchSubagent).toHaveBeenCalledTimes(0);
   });
 
-  test("rejects the reserved main name", async () => {
-    const result = await Agent.run(
-      makeCall({ description: "test", prompt: "do it", name: "main" }),
-      baseCtx,
-    );
+  test("leaves the result untouched when no setup warnings are reported", async () => {
+    const result = await Agent.run(makeCall({ description: "test", prompt: "do it" }), baseCtx);
+    expect(result.content).toBe("ok");
+  });
 
-    expect(result.is_error).toBe(true);
-    expect(result.content).toContain('"main" is reserved');
-    expect(dispatchSubagent).toHaveBeenCalledTimes(0);
+  // Addressing is id-only: a name in the input is not a schema field, so it is
+  // ignored rather than validated, and never reaches the dispatch.
+  test("ignores a name field in the input", async () => {
+    await Agent.run(makeCall({ description: "test", prompt: "do it", name: "worker-1" }), baseCtx);
+    const args = dispatchSubagent.mock.calls[0]?.[0];
+    if (!args) throw new Error("expected dispatchSubagent call");
+    expect(args).not.toHaveProperty("name");
   });
 });
 
@@ -301,7 +335,17 @@ describe("Agent option descriptor SoT", () => {
   test("mode-specific fields expose the canonical Agent boundary", () => {
     expect([...orchestrationModeForAgentFields("disabled")]).toEqual(["tier", "provider"]);
     expect([...orchestrationModeForAgentFields("default")]).toEqual(["tier"]);
-    expect([...orchestrationModeForAgentFields("feudalism")]).toEqual(["model", "provider"]);
+    expect([...orchestrationModeForAgentFields("feudalism")]).toEqual([]);
+  });
+
+  test("exposes literal fork pins without a roster in feudalism", () => {
+    const schema = buildAgentInputSchema("anthropic", "feudalism");
+    const properties = schema.properties as Record<string, { description?: string }>;
+
+    expect(properties.model?.description).toContain("subagent_type");
+    expect(properties.provider?.description).toContain("subagent_type");
+    expect(properties.model?.description).not.toContain("gpt-5.5");
+    expect(properties.provider?.description).not.toContain("codex");
   });
 
   test("does not expose a mode property", () => {

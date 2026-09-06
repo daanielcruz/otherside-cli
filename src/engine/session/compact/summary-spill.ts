@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { persistToolResult } from "@/engine/tool-result-storage/persist.ts";
+import { archiveToolOutput } from "@/engine/tool-output-archive/files.ts";
 
 export interface SpilledCompactionSummaryRef {
   kind: "spilled_compaction_summary";
@@ -41,15 +41,15 @@ export async function spillCompactionSummaryForMemory(
 ): Promise<CompactionSummaryRef> {
   if (typeof summary !== "string") return summary;
   if (summary.length === 0) return summary;
-  const result = await persistToolResult(summary, `compact-summary-${crypto.randomUUID()}`);
-  if ("error" in result) {
-    console.warn(`[session] compact summary spill failed: ${result.error}`);
+  const archived = await archiveToolOutput(summary, `compact-summary-${crypto.randomUUID()}`);
+  if ("error" in archived) {
+    console.warn(`[session] compact summary spill failed: ${archived.error}`);
     return summary;
   }
   return {
     kind: "spilled_compaction_summary",
-    filepath: result.filepath,
-    originalSize: result.originalSize,
+    filepath: archived.path,
+    originalSize: archived.characterCount,
   };
 }
 

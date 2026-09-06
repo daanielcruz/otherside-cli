@@ -1,6 +1,6 @@
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import type { Subprocess } from "bun";
-import { getTaskOutputDir } from "@/engine/background/tasks/output-files.ts";
+import { taskArtifactDirectory } from "@/engine/background/tasks/output-files.ts";
 import {
   ensureSandboxMonitor,
   shouldUseSandbox,
@@ -9,7 +9,7 @@ import {
 import type { OutputProgress, SpillBuffer } from "@/engine/tools/_infra/spill-buffer.ts";
 import { isEnvTruthy } from "@/kernel/std/proc/env.ts";
 import { isWindows } from "@/kernel/std/proc/platform.ts";
-import { findShell, getDisableExtglobCommand, shellCommand } from "@/kernel/std/proc/shell.ts";
+import { extglobDisableCommand, findShell, shellCommand } from "@/kernel/std/proc/shell.ts";
 import { getShellSnapshotPath } from "@/kernel/storage/shell-snapshot.ts";
 import { bashOutputCap, truncationMarker } from "./output.ts";
 
@@ -73,7 +73,7 @@ export async function prepareExecCommand(
   const { command, dangerouslyDisableSandbox, cwdFilePath } = input;
   const snapshotPath = await getShellSnapshotPath();
   const shellPath = findShell() ?? "/bin/sh";
-  const disableExtglob = getDisableExtglobCommand(shellPath);
+  const disableExtglob = extglobDisableCommand(shellPath);
   const guard = disableExtglob !== null ? `${disableExtglob} && ` : "";
   const core =
     snapshotPath !== null
@@ -326,7 +326,7 @@ interface TaskLogAppender {
 
 export function makeTaskLogAppender(outputPath: string): TaskLogAppender {
   try {
-    mkdirSync(getTaskOutputDir(), { recursive: true });
+    mkdirSync(taskArtifactDirectory(), { recursive: true });
     writeFileSync(outputPath, "", "utf8");
   } catch {}
   const pending: string[] = [];

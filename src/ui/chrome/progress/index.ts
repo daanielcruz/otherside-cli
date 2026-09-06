@@ -1,5 +1,5 @@
 import { listCompletions } from "@/commands/index.ts";
-import { stringWidth } from "@/kernel/std/text/string-width.ts";
+import { stringWidth, type TerminalColor } from "@/terminal-runtime";
 
 const SPINNER_FRAMES = ["◰", "◳", "◲", "◱"] as const;
 
@@ -7,7 +7,8 @@ export { pickVerbForTurn, TURN_COMPLETION_VERB } from "@/engine/queue/turn/verb.
 
 const SPINNER_FRAME_MS = 120;
 
-export const SHIMMER_TICK_MS = 50;
+export const SHIMMER_TICK_MS = 40;
+export const SHIMMER_PAINT_MS = 100;
 const SHIMMER_LEAD_COLUMNS = 10;
 const SHIMMER_GAP_COLUMNS = 20;
 
@@ -15,6 +16,30 @@ export type { SpinnerMode } from "@/store/app-store/slices/view.ts";
 
 export function spinnerFrame(timeMs: number): string {
   return SPINNER_FRAMES[Math.floor(timeMs / SPINNER_FRAME_MS) % SPINNER_FRAMES.length] ?? "·";
+}
+
+const REASONING_GLOW_BASE = 153;
+const REASONING_GLOW_PEAK = 185;
+const REASONING_GLOW_DELAY_MS = 3_000;
+const REASONING_GLOW_PERIOD_MS = 2_000;
+
+/**
+ * The live reasoning label breathes: base gray for the first three seconds,
+ * then a soft sine glow toward the peak gray on a two-second cycle.
+ */
+export function reasoningGlowColor(elapsedMs: number): TerminalColor {
+  const intensity =
+    elapsedMs < REASONING_GLOW_DELAY_MS
+      ? 0
+      : (Math.sin(
+          ((elapsedMs - REASONING_GLOW_DELAY_MS) / REASONING_GLOW_PERIOD_MS) * Math.PI * 2,
+        ) +
+          1) /
+        2;
+  const gray = Math.round(
+    REASONING_GLOW_BASE + (REASONING_GLOW_PEAK - REASONING_GLOW_BASE) * intensity,
+  );
+  return `rgb(${gray},${gray},${gray})`;
 }
 
 export interface ShimmerSegments {
@@ -81,3 +106,12 @@ export function tipAt(index: number): string {
   const randomIndex = Math.floor((hash - Math.floor(hash)) * tips.length);
   return tips[randomIndex] ?? "";
 }
+
+export {
+  COMPACT_EASE_SECONDS,
+  COMPACT_MAX_RATIO,
+  compactProgressBarParts,
+  compactProgressRatio,
+  monotonicRatio,
+  PROGRESS_BAR_WIDTH,
+} from "@/ui/chrome/progress/compact-bar.ts";

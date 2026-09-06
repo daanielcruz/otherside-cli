@@ -1,5 +1,5 @@
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
 import type { ImageDimensions, ImageMediaType } from "@/kernel/std/types/image.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 
 export interface MessageUsageSnapshot {
   inputTokens: number;
@@ -73,7 +73,10 @@ export function toolResultText(content: string | ToolResultContentBlock[]): stri
 }
 
 export type ContentBlock =
-  | { type: "text"; text: string; cache_control?: CacheControl }
+  // reminder_type marks harness-injected guidance (steer/queued, task nudges):
+  // a text-only user message carrying one is provider-promotable to a
+  // mid-conversation system message. Never set on genuine user input.
+  | { type: "text"; text: string; cache_control?: CacheControl; reminder_type?: string }
   | { type: "tool_use"; id: string; name: string; input: unknown }
   | {
       type: "tool_result";

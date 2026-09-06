@@ -4,7 +4,7 @@ import {
   subscribeCompletion,
 } from "@/engine/background/tasks/background.ts";
 import { runForegroundWithAutoBg } from "../auto-bg.ts";
-import { killBackground, listBackground } from "../background.ts";
+import { killBackground, listBackground, SHELLS } from "../background.ts";
 import { isAutoBackgroundableCommand } from "../safety.ts";
 
 afterEach(() => {
@@ -69,6 +69,7 @@ describe("runForegroundWithAutoBg", () => {
       expect(outcome.promoted).toBe(true);
       if (!outcome.promoted) return;
       taskId = outcome.shellId;
+      expect(SHELLS.get(taskId)?.stopWatchdog).toBeFunction();
 
       resolveExit(0);
       await Promise.resolve();
@@ -76,6 +77,7 @@ describe("runForegroundWithAutoBg", () => {
       stdoutController?.close();
 
       expect(await completed).toContain("promoted late tail");
+      expect(SHELLS.get(taskId)?.stopWatchdog).toBeUndefined();
     } finally {
       unsubscribe();
       spawnSpy.mockRestore();

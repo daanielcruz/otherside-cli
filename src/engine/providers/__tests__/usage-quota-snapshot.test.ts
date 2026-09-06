@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { registerAllProviders } from "@/engine/providers/bootstrap.ts";
 import { applyKimiQuotaWarning } from "@/engine/providers/kimi/usage.ts";
+import { resetQuotaRefreshMetaForTests } from "@/engine/providers/quota-refresh.ts";
 import { fetchUsageSnapshot } from "@/engine/providers/usage-quota-snapshot.ts";
 import {
   clearRoutingUsage,
@@ -20,6 +21,7 @@ let previousConfigDir: string | undefined;
 let previousApiKey: string | undefined;
 
 beforeEach(async () => {
+  resetQuotaRefreshMetaForTests();
   clearRoutingUsage();
   applyKimiQuotaWarning(null);
   previousConfigDir = process.env.OTHERSIDE_CONFIG_DIR;
@@ -35,6 +37,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  resetQuotaRefreshMetaForTests();
   global.fetch = originalFetch;
   if (previousConfigDir === undefined) delete process.env.OTHERSIDE_CONFIG_DIR;
   else process.env.OTHERSIDE_CONFIG_DIR = previousConfigDir;

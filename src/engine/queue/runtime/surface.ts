@@ -47,7 +47,7 @@ export function clampMemoryContent(
   return { content, truncated };
 }
 
-export async function readMemoriesForSurfacing(
+export async function loadMemoriesForSurfacing(
   selected: readonly RelevantMemory[],
   signal?: AbortSignal,
 ): Promise<RecalledMemory[]> {

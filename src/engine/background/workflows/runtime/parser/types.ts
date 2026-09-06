@@ -1,6 +1,6 @@
 export const WORKFLOW_SCRIPT_MAX_BYTES = 524288;
 
-export interface WorkflowPhaseDescriptor {
+export interface WorkflowPhaseSpec {
   index: number;
   title: string;
   detail?: string;
@@ -12,7 +12,7 @@ export interface WorkflowMeta {
   description: string;
   title?: string;
   whenToUse?: string;
-  phases?: WorkflowPhaseDescriptor[];
+  phases?: WorkflowPhaseSpec[];
 }
 
 export interface ParsedWorkflowScript {

@@ -2,7 +2,6 @@ import type { EffortLevel } from "@/kernel/std/types/effort.ts";
 
 export interface ProviderFeatureFlags {
   fastMode?: boolean;
-  effortSuffix?: boolean;
   thinkingSuffix?: boolean;
   supportsImages?: boolean;
   // Reasoning summaries stream as sections opening with a bare bold headline

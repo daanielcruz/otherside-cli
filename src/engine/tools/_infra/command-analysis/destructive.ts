@@ -246,11 +246,11 @@ export function detectDestructiveCommand(command: string): DestructiveMatch | nu
   return matchRegexPatterns(command);
 }
 
-export function getDestructiveCommandWarning(command: string): string | null {
+export function destructiveCommandWarning(command: string): string | null {
   return detectDestructiveCommand(command)?.warning ?? null;
 }
 
-export function getDestructiveCommandCategory(command: string): DestructiveCategory | null {
+export function classifyDestructiveCommand(command: string): DestructiveCategory | null {
   return detectDestructiveCommand(command)?.category ?? null;
 }
 

@@ -7,10 +7,13 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import { markInternalWrite } from "@/kernel/config/internal-writes.ts";
+import type { HookEvent } from "@/kernel/hooks/events.ts";
 import type { SettingsPermissionsBlock } from "@/kernel/permissions/types.ts";
 import { withFileLockSync } from "@/kernel/std/fs/file-lock.ts";
 import { configRoot } from "@/kernel/std/fs/paths.ts";
 import { chmodIfPosix } from "@/kernel/std/fs/secure-fs.ts";
+import type { HookEntry } from "@/kernel/std/types/hook-entry.ts";
 
 // SoT: scope precedence IS the scope enumeration; SettingScope derives from it.
 export const SCOPE_PRECEDENCE = ["user", "project", "local", "session", "policy"] as const;
@@ -25,6 +28,8 @@ export interface ProjectSettingsFile {
   enableAllProjectMcpServers?: boolean;
   mcpTrustAccepted?: boolean;
   permissions?: SettingsPermissionsBlock;
+  /** Project-scope hook definitions; appended after the user-scope ones. */
+  hooks?: Partial<Record<HookEvent, HookEntry[]>>;
   /**
    * MCP servers configured in the current project's local (untracked) scope —
    * i.e. personal to this checkout, not shared via .mcp.json. Raw/unvalidated;
@@ -83,6 +88,7 @@ export function writeProjectSettings(
 
 function atomicWriteProjectSettings(path: string, data: string): void {
   const tmp = `${path}.tmp.${process.pid}`;
+  markInternalWrite(path);
   try {
     writeFileSync(tmp, data, { mode: 0o600 });
     chmodIfPosix(tmp, 0o600);

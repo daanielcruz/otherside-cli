@@ -1,6 +1,6 @@
 import type { AnthropicRateLimitUsage } from "@/engine/providers/anthropic/usage.ts";
 import { applyQuotaWarning, type QuotaCandidate } from "@/engine/session/usage/quota-warning.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 
 export interface PlanQuotaWindow {
   label: string;

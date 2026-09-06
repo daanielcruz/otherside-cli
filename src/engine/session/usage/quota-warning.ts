@@ -1,19 +1,21 @@
 import { formatQuotaWarningMessage } from "@/engine/session/usage/format.ts";
 import {
-  normalizeEpochMs,
-  normalizeUtilizationPct,
   type ProviderScopeObservation,
   type RoutingBalanceStatus,
   type RoutingTrackingStatus,
-  type RoutingUsageInput,
   type RoutingUsageState,
   replaceProviderQuotaObservations,
   type ScopeApplicability,
   setProviderQuotaObservation,
   type UsageWarning,
 } from "@/engine/session/usage/limits.ts";
+import {
+  normalizeEpochMs,
+  normalizeUtilizationPct,
+  type RoutingUsageInput,
+} from "@/engine/session/usage/routing-usage-normalize.ts";
 import { QUOTA_BLOCK_PCT, QUOTA_WARN_PCT } from "@/engine/session/usage/thresholds.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 
 export const QUOTA_REFRESH_COOLDOWN_MS = 120_000;
 
@@ -31,8 +33,8 @@ export interface QuotaCandidate {
 }
 
 /**
- * Explicit wire-level exhaustion verdict from the provider's own API (e.g.
- * Codex `rate_limit_reached_type`). When present it wins over derived
+ * Explicit wire-level exhaustion verdict from the provider's own API. When
+ * present it wins over derived
  * percentages: `exhausted: true` blocks even when the rounded utilization reads
  * below 100, and `exhausted: false` keeps the provider usable even when a
  * rounded utilization reads 100. Callers refresh it on every observation so a
@@ -269,10 +271,16 @@ function normalizeCandidates(candidates: QuotaCandidate[]): NormalizedQuotaCandi
   return valid.length > 0 ? valid : null;
 }
 
+function normalizeExplicitPercentage(value: number): number | undefined {
+  if (!Number.isFinite(value)) return undefined;
+  return Math.max(0, Math.min(100, value));
+}
+
 function normalizeCandidate(candidate: QuotaCandidate): NormalizedQuotaCandidate | null {
-  const normalizedUtilizationPct = normalizeUtilizationPct(
-    candidate.utilizationPct ?? candidate.utilization,
-  );
+  const normalizedUtilizationPct =
+    candidate.utilizationPct !== undefined
+      ? normalizeExplicitPercentage(candidate.utilizationPct)
+      : normalizeUtilizationPct(candidate.utilization);
   if (normalizedUtilizationPct === undefined) return null;
   return {
     ...candidate,
@@ -286,8 +294,7 @@ function normalizeCandidate(candidate: QuotaCandidate): NormalizedQuotaCandidate
 
 /**
  * A single provider+scope observation for the plural scoped API. `signal`,
- * when present, is an explicit per-SCOPE exhaustion verdict (e.g. Codex's
- * rate_limit_reached_type naming exactly this window) — it wins over the
+ * when present, is an explicit per-scope exhaustion verdict — it wins over the
  * derived utilization gate only within this same scope; it never affects any
  * other scope.
  */
@@ -331,7 +338,10 @@ function buildScopedObservation(
   provider: ProviderId,
   scope: ScopedQuotaCandidate,
 ): ProviderScopeObservation {
-  const utilizationPct = normalizeUtilizationPct(scope.utilizationPct ?? scope.utilization) ?? 0;
+  const utilizationPct =
+    (scope.utilizationPct !== undefined
+      ? normalizeExplicitPercentage(scope.utilizationPct)
+      : normalizeUtilizationPct(scope.utilization)) ?? 0;
   const signal = scope.signal;
   const derivedExhausted =
     scope.balanceStatus === "exhausted" ||
@@ -339,11 +349,7 @@ function buildScopedObservation(
   const exhausted = signal !== undefined ? signal.exhausted : derivedExhausted;
   const explicitAvailable =
     signal !== undefined ? !signal.exhausted : scope.balanceStatus === "available";
-  const balanceStatus: RoutingBalanceStatus = exhausted
-    ? "exhausted"
-    : explicitAvailable
-      ? "available"
-      : (scope.balanceStatus ?? "unknown");
+  const balanceStatus = resolvedBalanceStatus(exhausted, explicitAvailable, scope.balanceStatus);
 
   const resetsAt: string | number | null =
     signal?.resetsAt !== undefined ? signal.resetsAt : (scope.resetsAt ?? null);
@@ -384,4 +390,18 @@ function buildScopedObservation(
       ...(resetsAtEpochMs !== undefined ? { resetsAtEpochMs } : {}),
     },
   };
+}
+
+/**
+ * What a scope's balance is called: what the signal said if it spoke, and what
+ * the scope last recorded if it did not.
+ */
+function resolvedBalanceStatus(
+  exhausted: boolean,
+  explicitAvailable: boolean,
+  recorded: RoutingBalanceStatus | undefined,
+): RoutingBalanceStatus {
+  if (exhausted) return "exhausted";
+  if (explicitAvailable) return "available";
+  return recorded ?? "unknown";
 }

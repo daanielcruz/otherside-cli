@@ -45,10 +45,7 @@ async function renameWithFallback(from: string, to: string): Promise<void> {
  * Keeps storage under the new cwd project slug so resume from the destination
  * can find the session. Never process.chdir().
  */
-export async function relocateSessionTranscript(
-  session: Session,
-  newCwd: string,
-): Promise<boolean> {
+export async function moveSessionTranscript(session: Session, newCwd: string): Promise<boolean> {
   const oldCwd = session.storageCwd;
   if (oldCwd === newCwd) return true;
 
@@ -123,7 +120,7 @@ export async function relocateSession(
 
   let transcriptRelocated = true;
   try {
-    transcriptRelocated = await relocateSessionTranscript(session, dir);
+    transcriptRelocated = await moveSessionTranscript(session, dir);
   } catch (err) {
     // Roll back storage identity if the move failed.
     session.storageCwd = prevStorage;

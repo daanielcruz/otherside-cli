@@ -1,9 +1,9 @@
-export type BackgroundTaskStatus = "running" | "completed" | "error" | "killed";
+export type BackgroundTaskState = "running" | "completed" | "error" | "killed";
 
 export interface BackgroundTaskSnapshot {
   id: string;
   subject?: string;
-  status: BackgroundTaskStatus;
+  status: BackgroundTaskState;
   owner?: string | null;
   blockedBy?: readonly string[];
   isBackgrounded?: boolean;

@@ -2,8 +2,8 @@ import type {
   ProviderId,
   VoiceProviderId,
   VoiceProviderSelection,
-} from "@/kernel/config/provider-ids.ts";
-import { isVoiceProviderId } from "@/kernel/config/provider-ids.ts";
+} from "@/kernel/std/types/provider-ids.ts";
+import { isVoiceProviderId } from "@/kernel/std/types/provider-ids.ts";
 
 export interface VoiceTranscriberCallbacks {
   onInterim: (text: string) => void;

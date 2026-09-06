@@ -2,304 +2,360 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { devtoolBoolean, devtoolPath } from "@/devtools/settings.ts";
 import { configRoot } from "@/kernel/std/fs/paths.ts";
-import { isEnvDefinedFalsy, isEnvTruthy } from "@/kernel/std/proc/env.ts";
+import { isEnvDefinedFalsy } from "@/kernel/std/proc/env.ts";
 
-const STALL_CHECKPOINT_MS = [15000, 30000, 60000, 120000] as const;
-const LATE_FIRE_REPORT_THRESHOLD_MS = 1000;
-// Keepalive streams carry a ping frame ~every 25s, so a short deadline cannot
-// false-fire on a healthy connection: 90s idle = 3+ missed pings = dead socket
-// (a VPN/path change otherwise hangs until the quiet-provider 300s deadline).
-// The same 90s governs time-to-first-byte: the deadline is armed before the
-// request fires, so it must also cover uploading a media-heavy body — a
-// tighter first-byte deadline turns a slow upload into an unrecoverable
-// retry loop that re-sends the same large body every attempt.
-export const KEEPALIVE_IDLE_TIMEOUT_MS = 90_000;
-const DEFAULT_IDLE_TIMEOUT_MS = 300_000;
+const SILENCE_NOTICE_MARKS_MS = [15_000, 30_000, 60_000, 120_000] as const;
+const DELAY_REPORT_LAG_MS = 1_000;
+const DEFAULT_BYTE_SILENCE_LIMIT_MS = 300_000;
 
-export type StreamIdleTimeoutKind = "byte" | "content";
+// Keepalive streams carry a ping frame about every 25 seconds. Ninety seconds
+// therefore tolerates three missed pings while still recovering a dead socket.
+// The same window covers request upload because observation starts before the
+// first response byte arrives.
+export const KEEPALIVE_BYTE_SILENCE_LIMIT_MS = 90_000;
 
-export class StreamIdleTimeoutError extends Error {
-  idleMs: number;
-  kind: StreamIdleTimeoutKind;
-  constructor(idleMs: number, kind: StreamIdleTimeoutKind = "byte") {
+export type StreamSilenceScope = "byte" | "content";
+
+export class StreamSilenceError extends Error {
+  readonly silenceMs: number;
+  readonly scope: StreamSilenceScope;
+
+  constructor(silenceMs: number, scope: StreamSilenceScope = "byte") {
     super(
-      kind === "content"
-        ? `stream idle: no parsed content events for ${idleMs}ms (byte traffic may still be flowing, e.g. keepalive pings)`
-        : `stream idle: no bytes for ${idleMs}ms`,
+      scope === "content"
+        ? `stream idle: no parsed content events for ${silenceMs}ms (byte traffic may still be flowing, e.g. keepalive pings)`
+        : `stream idle: no bytes for ${silenceMs}ms`,
     );
     this.name = "StreamIdleTimeoutError";
-    this.idleMs = idleMs;
-    this.kind = kind;
+    this.silenceMs = silenceMs;
+    this.scope = scope;
   }
 }
 
-let watchdogFlag: boolean | undefined;
+let byteGuardSetting: boolean | undefined;
 
-export function isStreamWatchdogEnabled(): boolean {
-  if (watchdogFlag !== undefined) return watchdogFlag;
-  if (isEnvDefinedFalsy(process.env.OTHERSIDE_ENABLE_BYTE_WATCHDOG)) {
-    watchdogFlag = false;
-    return false;
-  }
-  if (isEnvTruthy(process.env.OTHERSIDE_ENABLE_BYTE_WATCHDOG)) {
-    watchdogFlag = true;
-    return true;
-  }
-  watchdogFlag = true;
-  return true;
+export function byteSilenceGuardEnabled(): boolean {
+  if (byteGuardSetting !== undefined) return byteGuardSetting;
+
+  byteGuardSetting = !isEnvDefinedFalsy(process.env.OTHERSIDE_ENABLE_BYTE_WATCHDOG);
+  return byteGuardSetting;
 }
 
-export function getStreamIdleTimeoutMs(fallbackMs: number = DEFAULT_IDLE_TIMEOUT_MS): number {
-  const raw = process.env.OTHERSIDE_STREAM_IDLE_TIMEOUT_MS;
-  if (!raw) return fallbackMs;
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) return fallbackMs;
-  return parsed;
+export function byteSilenceLimitMs(defaultLimitMs: number = DEFAULT_BYTE_SILENCE_LIMIT_MS): number {
+  const configured = process.env.OTHERSIDE_STREAM_IDLE_TIMEOUT_MS;
+  if (!configured) return defaultLimitMs;
+
+  const parsedLimitMs = Number.parseInt(configured, 10);
+  return Number.isFinite(parsedLimitMs) && parsedLimitMs > 0 ? parsedLimitMs : defaultLimitMs;
 }
 
-let debugFlag: boolean | undefined;
+let traceSetting: boolean | undefined;
 
-function isDebugEnabled(): boolean {
-  if (debugFlag !== undefined) return debugFlag;
-  debugFlag = devtoolBoolean("streamDebug");
-  return debugFlag;
+function traceEnabled(): boolean {
+  if (traceSetting === undefined) traceSetting = devtoolBoolean("streamDebug");
+  return traceSetting;
 }
 
-let debugLogPath: string | undefined;
+let traceDestination: string | undefined;
 
-function resolveDebugLogPath(): string {
-  if (debugLogPath) return debugLogPath;
-  const dir = devtoolPath("debugLogDir") ?? join(configRoot(), "debug");
+function resolveByteSilenceTracePath(): string {
+  if (traceDestination !== undefined) return traceDestination;
+
+  const directory = devtoolPath("debugLogDir") ?? join(configRoot(), "debug");
   try {
-    mkdirSync(dir, { recursive: true });
+    mkdirSync(directory, { recursive: true });
   } catch {}
-  debugLogPath = join(dir, `stream-watchdog-${process.pid}.log`);
-  return debugLogPath;
+  traceDestination = join(directory, `stream-watchdog-${process.pid}.log`);
+  return traceDestination;
 }
 
-function writeDebug(line: string): void {
-  if (!isDebugEnabled()) return;
-  const stamp = performance.now().toFixed(1);
+function appendTrace(message: string): void {
+  if (!traceEnabled()) return;
+
+  const timestamp = performance.now().toFixed(1);
   try {
-    appendFileSync(resolveDebugLogPath(), `${stamp} ${line}\n`);
+    appendFileSync(resolveByteSilenceTracePath(), `${timestamp} ${message}\n`);
   } catch {}
 }
 
-export interface WatchdogFiredEvent {
-  idleMs: number;
-  lateMs: number;
-  bytesTotal: number;
-  readableErrored: boolean;
+export interface ByteSilenceEvent {
+  limitMs: number;
+  delayedByMs: number;
+  bytesSeen: number;
+  outputClosed: boolean;
 }
 
-type FiredHook = (event: WatchdogFiredEvent) => void;
-type LateFiredHook = (event: WatchdogFiredEvent) => void;
+type ByteSilenceListener = (event: ByteSilenceEvent) => void;
 
-let firedHook: FiredHook | null = null;
-let lateFiredHook: LateFiredHook | null = null;
+let byteSilenceListener: ByteSilenceListener | null = null;
+let delayedByteSilenceListener: ByteSilenceListener | null = null;
 
-export function setWatchdogFiredHook(hook: FiredHook | null): void {
-  firedHook = hook;
+export function setByteSilenceListener(listener: ByteSilenceListener | null): void {
+  byteSilenceListener = listener;
 }
 
-export function setWatchdogFiredLateHook(hook: LateFiredHook | null): void {
-  lateFiredHook = hook;
+export function setDelayedByteSilenceListener(listener: ByteSilenceListener | null): void {
+  delayedByteSilenceListener = listener;
 }
 
-type Controller =
+type BytePipeController =
   | ReadableStreamDefaultController<Uint8Array>
   | TransformStreamDefaultController<Uint8Array>;
+type TimerHandle = ReturnType<typeof setTimeout>;
 
-export function wrapStreamWithIdleTimeout(
-  stream: ReadableStream<Uint8Array>,
-  timeoutMs: number,
-  onTimeout?: (error: StreamIdleTimeoutError) => void,
-): ReadableStream<Uint8Array> {
-  let deadlineTimer: ReturnType<typeof setTimeout> | null = null;
-  let progressTimer: ReturnType<typeof setTimeout> | null = null;
-  let progressIdx = 0;
-  let bytesTotal = 0;
-  let lastChunkAt = 0;
-  const pipeAbort = new AbortController();
+function cancelTimer(handle: TimerHandle | null): null {
+  if (handle !== null) clearTimeout(handle);
+  return null;
+}
 
-  const clearProgress = (): void => {
-    if (progressTimer !== null) {
-      clearTimeout(progressTimer);
-      progressTimer = null;
+function detachTimer(handle: TimerHandle): void {
+  // On Windows the runtime does not fire unref'd timers while no other ref'd
+  // handle is active, which would let a silent stream hang past its deadline.
+  if (process.platform === "win32") return;
+  const detachable = handle as TimerHandle & { unref?: () => void };
+  detachable.unref?.();
+}
+
+function ignoreFailure(operation: () => void): void {
+  try {
+    operation();
+  } catch {}
+}
+
+class ByteSilenceGuard {
+  private expiryAlarm: TimerHandle | null = null;
+  private noticeAlarm: TimerHandle | null = null;
+  private noticeCursor = 0;
+  private bytesObserved = 0;
+  private latestByteMark = 0;
+  private readonly transportStop = new AbortController();
+
+  constructor(
+    private readonly limitMs: number,
+    private readonly onSilence?: (error: StreamSilenceError) => void,
+  ) {}
+
+  get signal(): AbortSignal {
+    return this.transportStop.signal;
+  }
+
+  begin(output: BytePipeController): void {
+    this.observeFromNow(output);
+  }
+
+  accept(byteCount: number, output: BytePipeController): void {
+    this.bytesObserved += byteCount;
+    this.observeFromNow(output);
+  }
+
+  finish(): void {
+    this.clearSchedule();
+  }
+
+  stopTransport(reason: unknown): void {
+    this.transportStop.abort(reason);
+  }
+
+  private silenceAgeMs(): number {
+    return performance.now() - this.latestByteMark;
+  }
+
+  private clearSchedule(): void {
+    this.expiryAlarm = cancelTimer(this.expiryAlarm);
+    this.noticeAlarm = cancelTimer(this.noticeAlarm);
+  }
+
+  private observeFromNow(output: BytePipeController): void {
+    this.clearSchedule();
+    this.latestByteMark = performance.now();
+    this.noticeCursor = 0;
+    this.planNotice(output);
+    this.planExpiry(output);
+  }
+
+  private planNotice(output: BytePipeController): void {
+    this.noticeAlarm = cancelTimer(this.noticeAlarm);
+    const noticeAtMs = SILENCE_NOTICE_MARKS_MS[this.noticeCursor];
+    if (noticeAtMs === undefined) return;
+
+    const waitMs = Math.max(0, noticeAtMs - this.silenceAgeMs());
+    const alarm = setTimeout(() => this.reviewNotice(output, noticeAtMs), waitMs);
+    this.noticeAlarm = alarm;
+    detachTimer(alarm);
+  }
+
+  private reviewNotice(output: BytePipeController, noticeAtMs: number): void {
+    this.noticeAlarm = null;
+    if (output.desiredSize === null) return;
+
+    if (this.silenceAgeMs() < noticeAtMs / 2) {
+      this.planNotice(output);
+      return;
     }
-  };
 
-  const clearDeadline = (): void => {
-    if (deadlineTimer !== null) {
-      clearTimeout(deadlineTimer);
-      deadlineTimer = null;
-    }
-  };
-
-  const clearBoth = (): void => {
-    clearDeadline();
-    clearProgress();
-  };
-
-  const scheduleProgress = (controller: Controller): void => {
-    clearProgress();
-    if (progressIdx >= STALL_CHECKPOINT_MS.length) return;
-    const target = STALL_CHECKPOINT_MS[progressIdx]!;
-    const elapsed = performance.now() - lastChunkAt;
-    progressTimer = setTimeout(
-      () => {
-        progressTimer = null;
-        if (controller.desiredSize === null) return;
-        if (performance.now() - lastChunkAt < target / 2) {
-          scheduleProgress(controller);
-          return;
-        }
-        writeDebug(
-          `[Stall] stream_idle_partial lastChunkAgeMs=${Math.round(performance.now() - lastChunkAt)} bytesTotal=${bytesTotal} idleDeadlineMs=${timeoutMs}`,
-        );
-        progressIdx++;
-        scheduleProgress(controller);
-      },
-      Math.max(0, target - elapsed),
+    appendTrace(
+      `[Stall] stream_idle_partial lastChunkAgeMs=${Math.round(this.silenceAgeMs())} bytesTotal=${this.bytesObserved} idleDeadlineMs=${this.limitMs}`,
     );
-    (progressTimer as { unref?: () => void } | null)?.unref?.();
-  };
+    this.noticeCursor += 1;
+    this.planNotice(output);
+  }
 
-  const armBoth = (controller: Controller): void => {
-    clearBoth();
-    lastChunkAt = performance.now();
-    progressIdx = 0;
-    scheduleProgress(controller);
-    const deadlineMs = timeoutMs;
-    deadlineTimer = setTimeout(() => {
-      deadlineTimer = null;
-      const lateMs = Math.round(performance.now() - lastChunkAt - deadlineMs);
-      const readableErrored = controller.desiredSize === null;
-      if (lateMs < -deadlineMs / 2) {
-        writeDebug(`[byte-watchdog] suppressed: late=${lateMs}ms (sleep/suspend), re-arming`);
-        armBoth(controller);
-        return;
-      }
-      writeDebug(
-        `[byte-watchdog] firing: idle=${deadlineMs}ms late=${lateMs}ms errored=${readableErrored} bytesTotal=${bytesTotal}`,
-      );
-      const event: WatchdogFiredEvent = {
-        idleMs: deadlineMs,
-        lateMs,
-        bytesTotal,
-        readableErrored,
-      };
-      try {
-        firedHook?.(event);
-      } catch {}
-      if (lateMs >= LATE_FIRE_REPORT_THRESHOLD_MS) {
-        try {
-          lateFiredHook?.(event);
-        } catch {}
-      }
-      const error = new StreamIdleTimeoutError(deadlineMs);
-      try {
-        onTimeout?.(error);
-      } catch {}
-      try {
-        controller.error(error);
-      } catch {}
-      // Erroring the transform does not reliably cancel Bun's fetch body. Abort
-      // the pipe explicitly so the source reader closes its transport; otherwise
-      // the retry can keep selecting the same live-but-wedged pooled socket.
-      pipeAbort.abort(error);
-    }, deadlineMs);
-    (deadlineTimer as { unref?: () => void } | null)?.unref?.();
-  };
+  private planExpiry(output: BytePipeController): void {
+    const alarm = setTimeout(() => this.expire(output), this.limitMs);
+    this.expiryAlarm = alarm;
+    detachTimer(alarm);
+  }
 
-  const transformed = stream.pipeThrough(
-    new TransformStream<Uint8Array, Uint8Array>({
-      start(controller) {
-        armBoth(controller);
-      },
-      transform(chunk, controller) {
-        bytesTotal += chunk.byteLength;
-        armBoth(controller);
-        controller.enqueue(chunk);
-      },
-      flush() {
-        clearBoth();
-      },
-    }),
-    { signal: pipeAbort.signal },
-  );
-  const reader = transformed.getReader();
+  private expire(output: BytePipeController): void {
+    this.expiryAlarm = null;
+    const delayedByMs = Math.round(this.silenceAgeMs() - this.limitMs);
+    const outputClosed = output.desiredSize === null;
+
+    if (delayedByMs < -this.limitMs / 2) {
+      appendTrace(`[byte-watchdog] suppressed: late=${delayedByMs}ms (sleep/suspend), re-arming`);
+      this.observeFromNow(output);
+      return;
+    }
+
+    appendTrace(
+      `[byte-watchdog] firing: idle=${this.limitMs}ms late=${delayedByMs}ms errored=${outputClosed} bytesTotal=${this.bytesObserved}`,
+    );
+    const event: ByteSilenceEvent = {
+      limitMs: this.limitMs,
+      delayedByMs,
+      bytesSeen: this.bytesObserved,
+      outputClosed,
+    };
+    ignoreFailure(() => byteSilenceListener?.(event));
+    if (delayedByMs >= DELAY_REPORT_LAG_MS) {
+      ignoreFailure(() => delayedByteSilenceListener?.(event));
+    }
+
+    const error = new StreamSilenceError(this.limitMs);
+    ignoreFailure(() => this.onSilence?.(error));
+    ignoreFailure(() => output.error(error));
+    // A transform error alone does not reliably release Bun's fetch body. The
+    // pipe signal also closes the source transport before a retry begins.
+    this.transportStop.abort(error);
+  }
+}
+
+function bytePassThrough(guard: ByteSilenceGuard): Transformer<Uint8Array, Uint8Array> & {
+  readableType?: undefined;
+  writableType?: undefined;
+} {
+  return {
+    start(output) {
+      guard.begin(output);
+    },
+    transform(bytes, output) {
+      guard.accept(bytes.byteLength, output);
+      output.enqueue(bytes);
+    },
+    flush() {
+      guard.finish();
+    },
+  };
+}
+
+type GuardedByteRead =
+  | { done: false; value: Uint8Array }
+  | { done: true; value: Uint8Array | undefined };
+
+interface GuardedByteReader {
+  read(): Promise<GuardedByteRead>;
+  cancel(reason?: unknown): Promise<void>;
+}
+
+function exposeGuardedReader(
+  reader: GuardedByteReader,
+  guard: ByteSilenceGuard,
+): ReadableStream<Uint8Array> {
   return new ReadableStream<Uint8Array>({
-    async pull(controller) {
+    async pull(output) {
       try {
-        const next = await reader.read();
-        if (next.done) {
-          clearBoth();
-          controller.close();
-          return;
+        const item = await reader.read();
+        if (item.done) {
+          guard.finish();
+          output.close();
+        } else {
+          output.enqueue(item.value);
         }
-        controller.enqueue(next.value);
-      } catch (error) {
-        clearBoth();
-        controller.error(error);
+      } catch (reason) {
+        guard.finish();
+        output.error(reason);
       }
     },
     async cancel(reason) {
-      clearBoth();
+      guard.finish();
       try {
         await reader.cancel(reason);
       } finally {
-        pipeAbort.abort(reason);
+        guard.stopTransport(reason);
       }
     },
   });
 }
 
-export function maybeWrapWithIdleTimeout(
-  stream: ReadableStream<Uint8Array>,
-  fallbackMs?: number,
+export function guardReadableByteSilence(
+  source: ReadableStream<Uint8Array>,
+  limitMs: number,
+  onSilence?: (error: StreamSilenceError) => void,
 ): ReadableStream<Uint8Array> {
-  if (!isStreamWatchdogEnabled()) return stream;
-  return wrapStreamWithIdleTimeout(stream, getStreamIdleTimeoutMs(fallbackMs));
+  const guard = new ByteSilenceGuard(limitMs, onSilence);
+  const monitored = source.pipeThrough(new TransformStream(bytePassThrough(guard)), {
+    signal: guard.signal,
+  });
+  return exposeGuardedReader(monitored.getReader(), guard);
 }
 
-function asyncIterToReadable(iter: AsyncIterable<Uint8Array>): ReadableStream<Uint8Array> {
-  const it = iter[Symbol.asyncIterator]();
+export function maybeGuardReadableByteSilence(
+  source: ReadableStream<Uint8Array>,
+  defaultLimitMs?: number,
+): ReadableStream<Uint8Array> {
+  if (!byteSilenceGuardEnabled()) return source;
+  return guardReadableByteSilence(source, byteSilenceLimitMs(defaultLimitMs));
+}
+
+function readableFromByteIterable(source: AsyncIterable<Uint8Array>): ReadableStream<Uint8Array> {
+  const cursor = source[Symbol.asyncIterator]();
   return new ReadableStream<Uint8Array>({
-    async pull(controller) {
+    async pull(output) {
       try {
-        const { value, done } = await it.next();
-        if (done) {
-          controller.close();
-          return;
+        const item = await cursor.next();
+        if (item.done) {
+          output.close();
+        } else {
+          output.enqueue(item.value);
         }
-        controller.enqueue(value);
-      } catch (err) {
-        controller.error(err);
+      } catch (reason) {
+        output.error(reason);
       }
     },
     async cancel(reason) {
       try {
-        await it.return?.(reason);
+        await cursor.return?.(reason);
       } catch {}
     },
   });
 }
 
-export async function* wrapAsyncIterableWithIdleTimeout(
-  iter: AsyncIterable<Uint8Array>,
-  timeoutMs: number,
-  onTimeout?: (error: StreamIdleTimeoutError) => void,
+export async function* guardByteIterableSilence(
+  source: AsyncIterable<Uint8Array>,
+  limitMs: number,
+  onSilence?: (error: StreamSilenceError) => void,
 ): AsyncIterable<Uint8Array> {
-  const wrapped = wrapStreamWithIdleTimeout(asyncIterToReadable(iter), timeoutMs, onTimeout);
-  for await (const chunk of wrapped as unknown as AsyncIterable<Uint8Array>) yield chunk;
+  const guarded = guardReadableByteSilence(readableFromByteIterable(source), limitMs, onSilence);
+  for await (const bytes of guarded as unknown as AsyncIterable<Uint8Array>) {
+    yield bytes;
+  }
 }
 
-export function maybeWrapAsyncIterableWithIdleTimeout(
-  iter: AsyncIterable<Uint8Array>,
-  fallbackMs?: number,
-  onTimeout?: (error: StreamIdleTimeoutError) => void,
+export function maybeGuardByteIterableSilence(
+  source: AsyncIterable<Uint8Array>,
+  defaultLimitMs?: number,
+  onSilence?: (error: StreamSilenceError) => void,
 ): AsyncIterable<Uint8Array> {
-  if (!isStreamWatchdogEnabled()) return iter;
-  return wrapAsyncIterableWithIdleTimeout(iter, getStreamIdleTimeoutMs(fallbackMs), onTimeout);
+  if (!byteSilenceGuardEnabled()) return source;
+  return guardByteIterableSilence(source, byteSilenceLimitMs(defaultLimitMs), onSilence);
 }

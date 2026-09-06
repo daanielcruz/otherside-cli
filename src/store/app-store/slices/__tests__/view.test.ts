@@ -16,7 +16,7 @@ describe("viewReducer", () => {
       expect(state.logEpoch).toBe(5);
     });
 
-    it("bumpLogEpoch creates new state object (DISPLACING trigger)", () => {
+    it("bumpLogEpoch creates a new state object", () => {
       const next = viewReducer(initialViewSlice, { type: "view/bumpLogEpoch" });
       const { logEpoch: nextLogEpoch, ...nextRest } = next;
       const { logEpoch: initialLogEpoch, ...initialRest } = initialViewSlice;
@@ -156,12 +156,6 @@ describe("viewReducer", () => {
       expect(viewReducer(set, { type: "view/setWorkflowDetailTarget", id: "wf_1" })).toBe(set);
       const cleared = viewReducer(set, { type: "view/setWorkflowDetailTarget", id: null });
       expect(cleared.workflowDetailTargetId).toBeNull();
-    });
-
-    it("setBtwMode flips active, preserves identity when unchanged", () => {
-      const on = viewReducer(initialViewSlice, { type: "view/setBtwMode", active: true });
-      expect(on.btwMode).toBe(true);
-      expect(viewReducer(on, { type: "view/setBtwMode", active: true })).toBe(on);
     });
 
     it("setBgPillFocused flips focused, preserves identity when unchanged", () => {

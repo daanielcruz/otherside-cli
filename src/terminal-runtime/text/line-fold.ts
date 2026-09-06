@@ -1,20 +1,31 @@
-import type { Styles } from "@/terminal-runtime/paint/style-model.js";
 import truncateAnsiString from "@/terminal-runtime/text/ansi-slice.js";
 import { wrapAnsi } from "@/terminal-runtime/text/ansi-wrap.js";
-import { stringWidth } from "@/terminal-runtime/text/cell-width.js";
+import { paintCellWidth } from "@/terminal-runtime/text/cell-width.js";
+
+/** Subset of wrap modes actually consumed by wrapText (no layout Styles). */
+export type TextWrapType =
+  | "wrap"
+  | "wrap-trim"
+  | "wrap-stream"
+  | "end"
+  | "middle"
+  | "truncate-end"
+  | "truncate"
+  | "truncate-middle"
+  | "truncate-start";
 
 const ELLIPSIS = "…";
 
 function sliceFit(text: string, start: number, end: number): string {
   const s = truncateAnsiString(text, start, end);
-  return stringWidth(s) > end - start ? truncateAnsiString(text, start, end - 1) : s;
+  return paintCellWidth(s) > end - start ? truncateAnsiString(text, start, end - 1) : s;
 }
 
 function truncate(text: string, columns: number, position: "start" | "middle" | "end"): string {
   if (columns < 1) return "";
   if (columns === 1) return ELLIPSIS;
 
-  const length = stringWidth(text);
+  const length = paintCellWidth(text);
   if (length <= columns) return text;
 
   if (position === "start") {
@@ -36,14 +47,14 @@ export function elideWrapBoundarySpace(line: string): { line: string; elided: bo
   if (line[prefixLen] !== " ") return { line, elided: false };
   const rest = line.slice(prefixLen + 1);
 
-  if (stringWidth(rest) === 0) return { line, elided: false };
+  if (paintCellWidth(rest) === 0) return { line, elided: false };
   return { line: line.slice(0, prefixLen) + rest, elided: true };
 }
 
 export default function wrapText(
   text: string,
   maxWidth: number,
-  wrapType: Styles["textWrap"],
+  wrapType: TextWrapType | undefined,
 ): string {
   if (wrapType === "wrap" || wrapType === "wrap-stream") {
     return wrapAnsi(text, maxWidth, { trim: false, hard: true });

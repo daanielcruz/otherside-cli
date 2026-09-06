@@ -120,6 +120,29 @@ export function loadDevice(): Device | null {
   return null;
 }
 
+/**
+ * Adopt the backend's canonical environment id for this machine. A device
+ * whose local identity was lost re-registers under a fresh id; the backend
+ * resolves it to the durable row by account + fingerprint and returns the
+ * canonical id, which must replace the local one so pairings keep matching.
+ */
+export function adoptDeviceId(canonicalId: string): Device | null {
+  const key = currentUserId() ?? LEGACY_USER_KEY;
+  const raw = readRawStore();
+  if (raw.kind === "legacy") {
+    const adopted: StoredDevice = { ...raw.device, id: canonicalId };
+    persistStore({ version: 2, devices: { [key]: adopted } });
+    return fromStored(adopted);
+  }
+  if (raw.kind !== "v2") return null;
+  const existing = raw.store.devices[key];
+  if (!existing) return null;
+  if (existing.id === canonicalId) return fromStored(existing);
+  const adopted: StoredDevice = { ...existing, id: canonicalId };
+  persistStore({ version: 2, devices: { ...raw.store.devices, [key]: adopted } });
+  return fromStored(adopted);
+}
+
 export function dropCurrentDevice(): void {
   const key = currentUserId() ?? LEGACY_USER_KEY;
   const raw = readRawStore();

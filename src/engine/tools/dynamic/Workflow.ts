@@ -7,17 +7,14 @@ import {
   buildWorkflowMultiproviderDescription,
   replaceWorkflowAgentSignature,
 } from "@/harness/tools/Workflow/description.ts";
-import {
-  normalizeWorkflowSizeGuideline,
-  type WorkflowSizeGuideline,
-} from "@/kernel/config/config.ts";
-import type { OrchestrationMode } from "@/kernel/config/orchestration-mode.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
+import { normalizeWorkflowSizeClass, type WorkflowSizeClass } from "@/kernel/config/config.ts";
+import type { OrchestrationMode } from "@/kernel/std/types/orchestration-mode.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 
 export function buildWorkflowDescription(
   activeProvider: ProviderId,
   orchestrationMode: OrchestrationMode = "disabled",
-  workflowSizeGuideline: WorkflowSizeGuideline | undefined = "unrestricted",
+  workflowSizeGuideline?: WorkflowSizeClass,
 ): string {
   let description: string;
   if (orchestrationMode !== "feudalism") {
@@ -39,11 +36,22 @@ export function buildWorkflowDescription(
   return `${description}${workflowSizeGuidelineGuidance(workflowSizeGuideline)}`;
 }
 
+const WORKFLOW_SIZE_AGENT_CAPS: Record<Exclude<WorkflowSizeClass, "unrestricted">, number> = {
+  small: 5,
+  medium: 15,
+  large: 50,
+};
+
 export function workflowSizeGuidelineGuidance(value: unknown): string {
-  const guideline = normalizeWorkflowSizeGuideline(value);
+  const guideline = normalizeWorkflowSizeClass(value);
+  if (guideline === undefined) {
+    return `
+
+This session has the default workflow size guideline: medium — keep workflows under 15 agents. This is a guideline, not a hard limit — follow it unless the user's prompt calls for a different scale. The user can raise or remove it with "Dynamic workflow size" in /config.`;
+  }
   if (guideline === "unrestricted") return "";
-  const limit = guideline === "small" ? 5 : guideline === "medium" ? 15 : 50;
+  const limit = WORKFLOW_SIZE_AGENT_CAPS[guideline];
   return `
 
-The user configured the ${guideline} workflow size guideline in /config. Keep workflows under ${limit} agents. This is advisory, not a runtime limit: follow it unless the user's request clearly calls for a different scale, and warn the user before launching a larger workflow.`;
+A workflow size guideline is configured for this session: ${guideline} — keep workflows under ${limit} agents. This is a guideline, not a hard limit — follow it unless the user's prompt calls for a different scale.`;
 }

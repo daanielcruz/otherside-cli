@@ -1,18 +1,25 @@
 import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { setRemoteEnabled } from "@/backend/app/session/state.ts";
-import { currentUserId, loadFreshAuth } from "@/backend/shared/auth.ts";
+import { registerEnvironment } from "@/backend/shared/api.ts";
+import {
+  currentUserId,
+  decodeAuthScope,
+  loadAuth,
+  loadFreshAuth,
+  revokeAndClearAuth,
+} from "@/backend/shared/auth.ts";
 import { cortexFetch } from "@/backend/shared/cortex.ts";
+import {
+  adoptDeviceId,
+  type Device,
+  deviceFingerprint,
+  ensureDevice,
+  rotateDeviceKeypair,
+} from "@/backend/shared/device.ts";
 import type { Bytes } from "@/backend/shared/e2ee.ts";
 import { b64uDecode, b64uEncode } from "@/backend/shared/e2ee.ts";
 import { ensurePeersDir, peerPath, peersDir } from "@/backend/shared/paths.ts";
 import { writeFileSecure } from "@/kernel/std/fs/secure-fs.ts";
-import { registerEnvironment } from "../shared/api.ts";
-import {
-  deviceFingerprint,
-  dropCurrentDevice,
-  ensureDevice,
-  rotateDeviceKeypair,
-} from "../shared/device.ts";
 import { unpair } from "./pairing-api.ts";
 
 const FILE_MODE = 0o600;
@@ -102,26 +109,43 @@ export function removeLocalPeerFile(deviceId: string): void {
 }
 
 export async function removePeer(deviceId: string): Promise<void> {
+  const storedAuth = loadAuth();
+  const hasDeviceCredential = !!storedAuth && decodeAuthScope(storedAuth.accessToken) === "device";
+  const auth = await loadFreshAuth();
   try {
-    const auth = await loadFreshAuth();
     if (auth) {
       const device = ensureDevice();
       await unpair({ cli_device_id: device.id, app_device_id: deviceId });
     }
-  } catch (err) {
-    // If backend unpair fails (e.g. invalid token or network offline), we must
-    // still allow the user to clear the local peer so they aren't permanently stuck.
+  } catch {
+    // Local unpair remains available while the backend is unreachable.
   }
   removeLocalPeerFile(deviceId);
-  if (listPeers().length === 0) rotateDeviceKeypair();
+  if (listPeers().length > 0) return;
+  rotateDeviceKeypair();
+  if (hasDeviceCredential) await revokeAndClearAuth();
 }
 
-// Login owns the stored auth: unpairing (or resetting the device identity)
-// drops the pairing, never the sign-in — the same account serves the design
-// relay. Sign-out is the only path that clears auth.
-export function resetRemoteIdentity(): void {
-  dropCurrentDevice();
+// Losing every pairing disables remote and rotates the E2EE keypair. The device
+// id stays stable because it names this machine's durable backend environment row.
+export function retireRemotePairings(): void {
+  rotateDeviceKeypair();
   setRemoteEnabled(false);
+}
+
+// Sign-out orders matter: backend unpair needs the live token, so pairings are
+// released first, then device credentials self-revoke before local removal. The
+// stable device id keeps naming this machine while its E2EE keypair rotates.
+export async function signOutRemote(): Promise<void> {
+  const device = ensureDevice();
+  for (const peer of listPeers()) {
+    try {
+      await unpair({ cli_device_id: device.id, app_device_id: peer.deviceId });
+    } catch {}
+    removeLocalPeerFile(peer.deviceId);
+  }
+  retireRemotePairings();
+  await revokeAndClearAuth();
 }
 
 export function touchPeer(deviceId: string): void {
@@ -130,21 +154,31 @@ export function touchPeer(deviceId: string): void {
   savePeer({ ...peer, lastSeenAt: new Date().toISOString() });
 }
 
+/**
+ * Register this machine's environment under its durable id and adopt the
+ * backend's canonical id when they diverge (identity lost locally). Returns
+ * the device whose id matches the backend row.
+ */
+export async function registerDeviceEnvironment(device: Device): Promise<Device> {
+  const result = await registerEnvironment({
+    id: device.id,
+    device_label: device.name,
+    fingerprint_hash: deviceFingerprint(),
+    kind: "cli",
+  });
+  if (result.environment_id && result.environment_id !== device.id) {
+    return adoptDeviceId(result.environment_id) ?? device;
+  }
+  return device;
+}
+
 export async function syncPeersWithBackend(): Promise<void> {
   const auth = await loadFreshAuth();
   if (!auth) return;
 
-  const device = ensureDevice();
+  let device = ensureDevice();
   try {
-    // Register with our own id: the backend resolves this environment by id at
-    // confirm, and an id-less registration could mint a second row that later
-    // collides on the fingerprint index.
-    await registerEnvironment({
-      id: device.id,
-      device_label: device.name,
-      fingerprint_hash: deviceFingerprint(),
-      kind: "cli",
-    });
+    device = await registerDeviceEnvironment(device);
   } catch {}
 
   const remotePeerIds = await fetchActivePeerIds(auth.accessToken, device.id);

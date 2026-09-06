@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import type { Key } from "@/ink";
+import type { Key } from "@/terminal-runtime";
 import { resumeKeyAction, submitResumeSelection } from "../controller";
 
 const key = (partial: Partial<Key>): Key => partial as Key;

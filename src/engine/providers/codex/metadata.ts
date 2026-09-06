@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import type { PermissionMode } from "@/kernel/std/types/permission-mode.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 
 export type ThreadSource = "user" | "subagent";
@@ -53,18 +54,30 @@ function turnStartedAtUnixMs(turnId: string | undefined): number {
   return startedAt;
 }
 
+/** Agent name the main thread reports; nested agents are not named on our wire. */
+export const ROOT_AGENT_NAME = "/root";
+
 export interface TurnMetadata {
   installation_id: string;
   session_id: string;
   thread_id: string;
-  thread_source: ThreadSource;
+  agent_name: string;
   turn_id: string;
   window_id: string;
-  sandbox: string;
+  window_number: number;
+  context_window_id: string;
   request_kind: RequestKind;
+  thread_source: ThreadSource;
+  sandbox: string;
+  sandbox_mode: SandboxMode;
+  auto_review_enabled: boolean;
+  node_repl_auto_review_required: boolean;
+  node_repl_disabled: boolean;
   turn_started_at_unix_ms?: number;
   workspaces?: Record<string, WorkspaceEntry>;
 }
+
+export type SandboxMode = "read-only" | "workspace-write" | "danger-full-access";
 
 export interface CodexRequestMetadata {
   installationId: string;
@@ -108,18 +121,24 @@ export function buildCodexRequestMetadata(
     installation_id: options.installationId,
     session_id: sessionId,
     thread_id: threadId,
-    thread_source: threadSource,
+    agent_name: ROOT_AGENT_NAME,
     turn_id: options.requestKind === "prewarm" || subagent ? "" : identity.turnId,
     window_id: windowId,
-    sandbox: ctx.permissionMode === "yolo" ? "none" : sandboxLabel(),
+    window_number: windowGeneration,
+    context_window_id: deriveUuid(windowId, "context-window"),
     request_kind: options.requestKind,
+    thread_source: threadSource,
+    sandbox: ctx.permissionMode === "yolo" ? "none" : sandboxLabel(),
+    sandbox_mode: sandboxMode(ctx.permissionMode),
+    auto_review_enabled: false,
+    node_repl_auto_review_required: true,
+    node_repl_disabled: false,
     ...(options.requestKind === "prewarm"
       ? { workspaces: workspacesForCwd(ctx.cwd) }
       : { turn_started_at_unix_ms: identity.turnStartedAtUnixMs }),
   };
   const turnMetadataHeader = JSON.stringify(turnMetadata);
   const sharedMetadata: Record<string, string> = {
-    "x-codex-installation-id": options.installationId,
     "x-codex-window-id": windowId,
     "x-codex-turn-metadata": turnMetadataHeader,
   };
@@ -138,9 +157,27 @@ export function buildCodexRequestMetadata(
     ...(ctx.subagentLabel ? { subagentLabel: ctx.subagentLabel } : {}),
     turnMetadata,
     turnMetadataHeader,
-    headerMetadata: { session_id: sessionId, ...sharedMetadata },
-    clientMetadata: { session_id: sessionId, ...sharedMetadata },
+    // The upgrade carries hyphenated identity headers and leaves the
+    // installation id to turn metadata; the in-frame copy keeps its own keys.
+    headerMetadata: { "session-id": sessionId, "thread-id": threadId, ...sharedMetadata },
+    clientMetadata: {
+      session_id: sessionId,
+      "x-codex-installation-id": options.installationId,
+      ...sharedMetadata,
+    },
   };
+}
+
+/** Sandbox policy the turn runs under, derived from the active permission mode. */
+function sandboxMode(mode: PermissionMode): SandboxMode {
+  switch (mode) {
+    case "yolo":
+      return "danger-full-access";
+    case "plan":
+      return "read-only";
+    default:
+      return "workspace-write";
+  }
 }
 
 function gitCommand(args: string[], cwd: string): string | null {

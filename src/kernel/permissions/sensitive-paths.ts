@@ -8,12 +8,12 @@ export function isAcceptEditsTool(toolName: string): boolean {
 }
 
 const SENSITIVE_PATH_PREFIXES = ["/etc/", "/root/", "/private/etc/", "/private/var/db/"].map(
-  normalizeCaseForComparison,
+  foldPathCase,
 );
 
 // Always normalize to lowercase, regardless of platform, so mixed-case paths cannot
 // bypass these checks on case-insensitive filesystems.
-function normalizeCaseForComparison(path: string): string {
+function foldPathCase(path: string): string {
   return path.toLowerCase();
 }
 
@@ -63,7 +63,7 @@ const SENSITIVE_FILE_BASENAMES = new Set<string>(
     "maven-wrapper.properties",
     ".devcontainer.json",
     "pyrightconfig.json",
-  ].map(normalizeCaseForComparison),
+  ].map(foldPathCase),
 );
 
 const SENSITIVE_DIR_SEGMENTS = new Set<string>(
@@ -77,10 +77,10 @@ const SENSITIVE_DIR_SEGMENTS = new Set<string>(
     ".yarn",
     ".mvn",
     ".otherside",
-  ].map(normalizeCaseForComparison),
+  ].map(foldPathCase),
 );
 
-const SENSITIVE_MULTI_SEGMENT_PATHS = [".config/git"].map(normalizeCaseForComparison);
+const SENSITIVE_MULTI_SEGMENT_PATHS = [".config/git"].map(foldPathCase);
 
 export function isSensitiveFilePath(path: string, cwd?: string): boolean {
   // Resolve relative paths against the SESSION cwd, not the process cwd — a bash
@@ -95,7 +95,7 @@ export function isSensitiveFilePath(path: string, cwd?: string): boolean {
       ? posix.resolve(base.replaceAll("\\", "/"), path)
       : resolve(base, path)
   ).replaceAll("\\", "/");
-  const normalizedPath = normalizeCaseForComparison(resolved);
+  const normalizedPath = foldPathCase(resolved);
   for (const prefix of SENSITIVE_PATH_PREFIXES) {
     if (normalizedPath.startsWith(prefix)) return true;
   }

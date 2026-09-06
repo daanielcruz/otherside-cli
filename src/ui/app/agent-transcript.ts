@@ -1,11 +1,12 @@
-import type { SetStateAction } from "react";
 import * as bgControllers from "@/engine/background/tasks/background-controllers.ts";
+import { isProviderId, type ProviderModelRoute } from "@/kernel/std/types/provider-ids.ts";
+import type { StateSetter } from "@/kernel/std/types/state.ts";
 import { formatToolInput } from "@/ui/transcript/records/entry-builders.ts";
 import type { NestedToolEntry, TranscriptEntry } from "@/ui/transcript/types";
 
 export interface AgentTranscriptDeps {
-  setTranscript: (value: SetStateAction<readonly TranscriptEntry[]>) => void;
-  agentModelByCallIdRef: { current: Map<string, string> };
+  setTranscript: StateSetter<readonly TranscriptEntry[]>;
+  agentModelByCallIdRef: { current: Map<string, ProviderModelRoute> };
 }
 
 const MAX_RETAINED_NESTED_TOOL_ENTRIES = 24;
@@ -16,8 +17,8 @@ export interface AgentTranscriptHelpers {
     callId: string,
     mutator: (entries: NestedToolEntry[]) => NestedToolEntry[],
   ) => void;
-  setAgentBackgrounded: (callId: string, resolvedModel?: string) => void;
-  backgroundCurrentAgent: () => void;
+  setAgentBackgrounded: (callId: string, route?: ProviderModelRoute) => void;
+  backgroundCurrentAgent: () => boolean;
 }
 
 function trimNestedEntries(entries: NestedToolEntry[]): NestedToolEntry[] {
@@ -58,7 +59,7 @@ export function createAgentTranscriptHelpers(deps: AgentTranscriptDeps): AgentTr
     });
   };
 
-  const setAgentBackgrounded = (callId: string, resolvedModel?: string): void => {
+  const setAgentBackgrounded = (callId: string, route?: ProviderModelRoute): void => {
     const startId = `t_${callId}`;
     const settledId = `b_${callId}`;
     setTranscript((t) => {
@@ -77,6 +78,19 @@ export function createAgentTranscriptHelpers(deps: AgentTranscriptDeps): AgentTr
       const inputRecord = inputObj as Record<string, unknown>;
       const description =
         typeof inputRecord.description === "string" ? inputRecord.description : undefined;
+      // The settled entry replaces the args text with a stats blob, so any
+      // route pin in the call args must be lifted onto the entry now: the
+      // resolved route may not have arrived yet (the fork starts async), and
+      // once this entry commits its identity is immutable — without the pin
+      // the renderer would re-derive a model from the agent definition under
+      // the session provider and paint the wrong identity permanently.
+      const pinnedModel = typeof inputRecord.model === "string" ? inputRecord.model : undefined;
+      const pinnedProvider =
+        typeof inputRecord.provider === "string" && isProviderId(inputRecord.provider)
+          ? inputRecord.provider
+          : undefined;
+      const settledModel = route?.model ?? existing.agentModel ?? pinnedModel;
+      const settledProvider = route?.provider ?? existing.agentProvider ?? pinnedProvider;
       const stats: Record<string, unknown> = { status: "backgrounded" };
       if (toolTitle === "Agent") {
         const subagentType =
@@ -94,16 +108,15 @@ export function createAgentTranscriptHelpers(deps: AgentTranscriptDeps): AgentTr
         kind: "tool",
         title: toolTitle,
         text: JSON.stringify(stats),
-        ...((resolvedModel ?? existing.agentModel)
-          ? { agentModel: resolvedModel ?? existing.agentModel }
-          : {}),
+        ...(settledModel !== undefined ? { agentModel: settledModel } : {}),
+        ...(settledProvider !== undefined ? { agentProvider: settledProvider } : {}),
         isBackgrounded: true,
       };
       return out;
     });
   };
 
-  const backgroundCurrentAgent = (): void => {
+  const backgroundCurrentAgent = (): boolean => {
     let backgrounded = false;
     for (const callId of bgControllers.callIds()) {
       const controller = bgControllers.get(callId);
@@ -112,7 +125,7 @@ export function createAgentTranscriptHelpers(deps: AgentTranscriptDeps): AgentTr
       setAgentBackgrounded(callId, agentModelByCallIdRef.current.get(callId));
       backgrounded = true;
     }
-    if (!backgrounded) return;
+    return backgrounded;
   };
 
   return { agentBlockText, setAgentNested, setAgentBackgrounded, backgroundCurrentAgent };

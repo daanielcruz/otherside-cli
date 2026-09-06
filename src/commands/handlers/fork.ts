@@ -3,7 +3,7 @@ import type { SlashContext, SlashResult } from "@/commands/types.ts";
 import type { PermissionResolver } from "@/engine/agents/agent-context.ts";
 import {
   formatForkSuccessFeedback,
-  spawnForkFromDirective,
+  launchForkFromDirective,
 } from "@/engine/background/subagents/fork/spawn-from-directive.ts";
 import { resolvePermission } from "@/engine/queue/runtime/permission-resolution.ts";
 import { makeRequestContext } from "@/engine/queue/runtime/request-context.ts";
@@ -43,7 +43,7 @@ export async function handleFork(
 
   try {
     const parentCtx = buildParentContext(ctx);
-    const result = spawnForkFromDirective(directive, parentCtx, permissionResolverFor(ctx));
+    const result = launchForkFromDirective(directive, parentCtx, permissionResolverFor(ctx));
     if (!result) {
       return { kind: "instant", command: cmd, feedback: FORK_NO_TURN_FEEDBACK };
     }

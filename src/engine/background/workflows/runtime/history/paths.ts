@@ -8,7 +8,7 @@ export function getWorkflowRunDir(cwd: string, sessionId: string, runId: string)
   return join(sessionsRootForCwd(cwd), sessionId, "subagents", "workflows", runId);
 }
 
-export function getWorkflowTranscriptDir(cwd: string, sessionId: string, runId: string): string {
+export function workflowTranscriptDir(cwd: string, sessionId: string, runId: string): string {
   return getWorkflowRunDir(cwd, sessionId, runId);
 }
 
@@ -27,7 +27,7 @@ export function getPersistedWorkflowScriptPath(
   );
 }
 
-export async function persistWorkflowScript(input: {
+export async function persistWorkflowProgram(input: {
   cwd: string;
   sessionId: string;
   runId: string;
@@ -45,7 +45,7 @@ export async function persistWorkflowScript(input: {
   return path;
 }
 
-export async function readWorkflowFromPath(
+export async function loadWorkflowFromPath(
   cwd: string,
   path: string,
 ): Promise<{ ok: true; script: string; resolvedPath: string } | { ok: false; error: string }> {

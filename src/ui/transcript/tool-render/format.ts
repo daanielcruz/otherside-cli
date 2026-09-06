@@ -1,6 +1,6 @@
-import { wrapAnsi } from "@/ink";
 import { prettyJson } from "@/kernel/std/text/json-display.ts";
 import { isRecord } from "@/kernel/std/value-guards.ts";
+import { wrapAnsi } from "@/terminal-runtime";
 import { GUTTER_CONT } from "@/ui/theme/theme.ts";
 
 // Collapse a string to one terminal-safe line: newlines/tabs/other C0 controls
@@ -174,7 +174,7 @@ export function parseJsonEntries(
   return entries;
 }
 
-export function tryUnwrapTextPayload(content: string): UnwrappedTextPayload | null {
+export function unwrapTextPayloadIfPossible(content: string): UnwrappedTextPayload | null {
   const entries = parseJsonEntries(content, {
     maxChars: JSON_PARSE_MAX_CHARS,
     maxKeys: UNWRAP_MAX_KEYS,
@@ -232,4 +232,17 @@ export function tryFlattenJson(content: string): [string, string][] | null {
     return null;
   }
   return result;
+}
+
+/**
+ * Hard-wrap a styled row at a column budget, keeping every column the caller
+ * measured. Words are never moved: an argument or payload row is data, so a
+ * break mid-token beats a ragged edge that hides where the value ends.
+ */
+export function wrapStyledRows(text: string, width: number): string[] {
+  return wrapAnsi(text, Math.max(1, width), {
+    hard: true,
+    trim: false,
+    wordWrap: false,
+  }).split("\n");
 }

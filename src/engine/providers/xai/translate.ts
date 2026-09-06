@@ -2,11 +2,16 @@ import {
   accountFingerprint,
   sameAccountFingerprint,
 } from "@/engine/providers/_shared/account-identity.ts";
-import { parseJsonWithPartialRecovery } from "@/engine/providers/_shared/partial-json.ts";
 import { streamErrorToHttpError } from "@/engine/providers/_shared/retry.ts";
+import { parseJsonWithPartialRecovery } from "@/engine/providers/_shared/streaming-json-repair.ts";
 import { thinkingProvenance } from "@/engine/providers/_shared/thinking-provenance.ts";
 import { usageFromOpenAi } from "@/engine/providers/_shared/usage.ts";
-import { lowestReasoningEffort, modelSupportsReasoning } from "@/engine/providers/xai/models.ts";
+import {
+  highestReasoningEffort,
+  lowestReasoningEffort,
+  modelListsEffort,
+  modelSupportsReasoning,
+} from "@/engine/providers/xai/models.ts";
 import { isEncryptedReasoningRejected } from "@/engine/providers/xai/reasoning-state.ts";
 import { parseSse } from "@/kernel/std/stream/sse.ts";
 import type { ProviderEvent } from "@/kernel/std/types/events.ts";
@@ -119,6 +124,7 @@ function userMessageItem(blocks: ContentBlock[]): GrokInputItem | null {
       parts.push({
         type: "input_image",
         image_url: `data:${b.source.media_type};base64,${b.source.data}`,
+        detail: "auto",
       });
     }
   }
@@ -205,24 +211,26 @@ function messagesToGrokInput(
   return out;
 }
 
-// xAI reasoning models accept none/low/medium/high. Higher otherside tiers fold
-// down to high; disableThinking maps to "none" which switches reasoning off
-// entirely (grok-4.3+); a null effort omits the knob so the model keeps its
-// default. See @ai-sdk/xai reasoningEffort + the captured grok-cli reasoning obj.
-function reasoningEffortFor(ctx: RequestContext): "none" | "low" | "medium" | "high" | null {
+// Wire efforts are the ones the model lists (4.6: low|medium|high|xhigh;
+// 4.5: low|medium|high). `max` is otherside-only and folds to the model's
+// highest listed effort. An effort the model does not list also folds up/down
+// to the nearest listed ceiling. disableThinking maps to synthetic "none",
+// which the chat proxy rejects on the reasoning flagships — the caller then
+// approximates off with the cheapest real effort.
+function reasoningEffortFor(
+  ctx: RequestContext,
+): "none" | "low" | "medium" | "high" | "xhigh" | null {
   if (ctx.disableThinking) return "none";
-  switch (ctx.effort) {
-    case "low":
-      return "low";
-    case "medium":
-      return "medium";
-    case "high":
-    case "xhigh":
-    case "max":
-      return "high";
-    default:
-      return null;
+  const asked = ctx.effort;
+  if (!asked) return null;
+  // `max` is never a wire effort — always fold to the model's highest listed.
+  if (asked === "max") return highestReasoningEffort(ctx.model);
+  if (asked !== "low" && asked !== "medium" && asked !== "high" && asked !== "xhigh") {
+    return null;
   }
+  if (modelListsEffort(ctx.model, asked)) return asked;
+  // Asked for something the model lacks (e.g. xhigh on 4.5) → highest listed.
+  return highestReasoningEffort(ctx.model);
 }
 
 export function translateRequestGrok(
@@ -233,9 +241,9 @@ export function translateRequestGrok(
   const grokTools = toolsToGrok(tools);
 
   // "Thinking off" (disableThinking, aux one-shots) maps to the synthetic "none"
-  // — but the chat proxy 400s `reasoning_effort: "none"` on grok-4.5, which has
-  // no true off switch. Approximate off with the model's cheapest real effort
-  // and drop the summary/include/replay: a minimal, always-valid reasoning body.
+  // — but the chat proxy 400s `reasoning_effort: "none"` on the reasoning
+  // flagships, which have no true off switch. Approximate off with the model's
+  // cheapest real effort and drop the summary/include/replay.
   const reasoningModel = modelSupportsReasoning(ctx.model);
   const requestedEffort = reasoningModel ? reasoningEffortFor(ctx) : null;
   const thinkingOff = requestedEffort === "none";

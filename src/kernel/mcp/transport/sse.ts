@@ -5,11 +5,20 @@ import {
   PROTOCOL_VERSION,
   REQUEST_TIMEOUT_MS,
 } from "@/kernel/mcp/protocol/constants.ts";
+import {
+  deliverInboundNotice,
+  isInboundNotice,
+  isInboundRequest,
+  replyToInbound,
+} from "@/kernel/mcp/protocol/inbound.ts";
 import { parseInstructions, parseServerCapabilities } from "@/kernel/mcp/protocol/parse.ts";
+import { mcpRequestSignal, rejectPendingOnAbort } from "@/kernel/mcp/protocol/request-signal.ts";
 import {
   type JsonRpcResponse,
+  type McpCallToolOptions,
   type McpClient,
   type McpDirectoryListPage,
+  type McpPromptInfo,
   type McpResourceInfo,
   McpRpcError,
   type McpServerCapabilities,
@@ -24,11 +33,15 @@ import {
   resetMcpConnectionErrors,
   scheduleReconnect,
 } from "@/kernel/mcp/runtime/reconnect.ts";
+import { clientCapabilities } from "@/kernel/mcp/transport/capabilities.ts";
+import { AbortError } from "@/kernel/std/stream/abort.ts";
 import { parseBlock } from "@/kernel/std/stream/sse.ts";
 import { buildHeaders } from "./headers.ts";
 import {
   callToolVia,
+  getPromptVia,
   listDirectoryPageVia,
+  listPromptsVia,
   listResourcesVia,
   listToolsVia,
   readResourceVia,
@@ -50,6 +63,7 @@ interface PendingRequest {
   reject: (err: Error) => void;
   timer: ReturnType<typeof setTimeout>;
   method: string;
+  dropAbort: () => void;
 }
 
 export class SseTransport implements McpClient {
@@ -173,11 +187,31 @@ export class SseTransport implements McpClient {
     } catch {
       return;
     }
+    // A message carrying a method is the server asking us something, not
+    // answering: it gets a reply of its own rather than being dropped.
+    if (isInboundRequest(msg)) {
+      void replyToInbound({
+        message: msg,
+        server: this.serverName,
+        signal: this.streamAbort.signal,
+        send: (reply) => {
+          void this.postReply(reply);
+        },
+      });
+      return;
+    }
+    // A method with no id is the server telling us something. Nothing may be
+    // watching it, but dropping it before anyone can is how a catalog goes stale.
+    if (isInboundNotice(msg)) {
+      deliverInboundNotice({ server: this.serverName, method: msg.method, params: msg.params });
+      return;
+    }
     if (typeof msg.id !== "number") return;
     const pending = this.pending.get(msg.id);
     if (!pending) return;
     this.pending.delete(msg.id);
     clearTimeout(pending.timer);
+    pending.dropAbort();
     if (msg.error) {
       pending.reject(new McpRpcError(pending.method, msg.error));
       return;
@@ -203,7 +237,7 @@ export class SseTransport implements McpClient {
   private async initialize(): Promise<void> {
     const init = await this.request("initialize", {
       protocolVersion: PROTOCOL_VERSION,
-      capabilities: {},
+      capabilities: clientCapabilities(),
       clientInfo: { name: CLIENT_NAME, version: CLIENT_VERSION },
     });
     this.instructions = parseInstructions(init);
@@ -217,8 +251,19 @@ export class SseTransport implements McpClient {
     return this.tools;
   }
 
-  async callTool(name: string, args: unknown): Promise<unknown> {
-    return callToolVia((method, params) => this.request(method, params), { name, args });
+  async callTool(name: string, args: unknown, options?: McpCallToolOptions): Promise<unknown> {
+    return callToolVia((method, params) => this.request(method, params, options?.signal), {
+      name,
+      args,
+    });
+  }
+
+  async listPrompts(): Promise<McpPromptInfo[]> {
+    return listPromptsVia((method, params) => this.request(method, params));
+  }
+
+  async getPrompt(name: string, args: Record<string, string>): Promise<unknown> {
+    return getPromptVia((method, params) => this.request(method, params), { name, args });
   }
 
   async listResources(): Promise<McpResourceInfo[]> {
@@ -261,52 +306,56 @@ export class SseTransport implements McpClient {
     } catch {}
     for (const [, pending] of this.pending) {
       clearTimeout(pending.timer);
+      pending.dropAbort();
       pending.reject(err);
     }
     this.pending.clear();
   }
 
-  private async request(method: string, params: unknown): Promise<unknown> {
+  private async request(method: string, params: unknown, signal?: AbortSignal): Promise<unknown> {
     if (this.closed) throw new Error(`MCP sse \`${this.serverName}\` closed before \`${method}\``);
     if (!this.postUrl) throw new Error(`MCP sse \`${this.serverName}\` post URL not set`);
+    if (signal?.aborted) throw new AbortError();
     const id = this.nextId++;
-    const promise = new Promise<unknown>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        if (this.pending.delete(id)) {
-          reject(new Error(`MCP sse \`${method}\` timed out after ${REQUEST_TIMEOUT_MS / 1000}s`));
-        }
-      }, REQUEST_TIMEOUT_MS);
-      this.pending.set(id, { resolve, reject, timer, method });
-    });
+    // The POST carries the turn signal. The pending slot is only armed after the
+    // POST is accepted, so an abort mid-POST rejects via fetch rather than via a
+    // promise nobody is awaiting yet.
     let res: Response;
     try {
       res = await sseFetchImpl(this.postUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...this.headers },
         body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        signal: mcpRequestSignal(signal),
       });
     } catch (e) {
-      const pending = this.pending.get(id);
-      if (pending) {
-        clearTimeout(pending.timer);
-        this.pending.delete(id);
-      }
       this.trackOutcome(e instanceof Error ? e : new Error(String(e)));
       throw e;
     }
     if (!res.ok && res.status !== ACCEPTED) {
-      const pending = this.pending.get(id);
-      if (pending) {
-        clearTimeout(pending.timer);
-        this.pending.delete(id);
-      }
       const err = new Error(`MCP sse \`${this.serverName}\` ${method} POST → HTTP ${res.status}`);
       this.trackOutcome(err);
       throw err;
     }
     this.trackOutcome(null);
-    return promise;
+    if (signal?.aborted) throw new AbortError();
+    return new Promise<unknown>((resolve, reject) => {
+      const settle = (fn: () => void): void => {
+        const pending = this.pending.get(id);
+        if (!pending) return;
+        this.pending.delete(id);
+        clearTimeout(pending.timer);
+        pending.dropAbort();
+        fn();
+      };
+      const timer = setTimeout(() => {
+        settle(() =>
+          reject(new Error(`MCP sse \`${method}\` timed out after ${REQUEST_TIMEOUT_MS / 1000}s`)),
+        );
+      }, REQUEST_TIMEOUT_MS);
+      const dropAbort = rejectPendingOnAbort(signal, (error) => settle(() => reject(error)));
+      this.pending.set(id, { resolve, reject, timer, method, dropAbort });
+    });
   }
 
   private trackOutcome(err: Error | null): void {
@@ -323,6 +372,25 @@ export class SseTransport implements McpClient {
       resetMcpConnectionErrors(this.serverName);
       void scheduleReconnect(this.serverName, this.config);
     }
+  }
+
+  /** Sends an answer back up the same POST endpoint the requests go out on. */
+  private async postReply(reply: object): Promise<void> {
+    if (this.closed || !this.postUrl) return;
+    try {
+      await sseFetchImpl(this.postUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...this.headers },
+        body: JSON.stringify(reply),
+      });
+    } catch {
+      // The connection went away mid-answer; the server has already stopped
+      // waiting, and the stream's own teardown is what reports it.
+    }
+  }
+
+  announce(method: string, params: unknown): void {
+    void this.notify(method, params).catch(() => {});
   }
 
   private async notify(method: string, params: unknown): Promise<void> {

@@ -1,6 +1,6 @@
 const DEFAULT_MAX_TOOL_USE_CONCURRENCY = 10;
 
-export function getMaxToolUseConcurrency(): number {
+export function maxConcurrentToolUses(): number {
   const raw = process.env.OTHERSIDE_MAX_TOOL_USE_CONCURRENCY;
   if (raw === undefined) return DEFAULT_MAX_TOOL_USE_CONCURRENCY;
 

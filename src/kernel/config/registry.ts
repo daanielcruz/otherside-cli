@@ -5,16 +5,12 @@ import {
   normalizeHooksConfig,
   normalizeOptionalProviderId,
   normalizeStatuslineConfig,
-  normalizeWorkflowSizeGuideline,
+  normalizeWorkflowSizeClass,
   type SettingsPermissions,
   type SettingsSandboxConfig,
   type UserConfig,
 } from "@/kernel/config/config.ts";
-import { isOrchestrationMode } from "@/kernel/config/orchestration-mode.ts";
-import {
-  isImageGeneratorSelection,
-  isVoiceProviderSelection,
-} from "@/kernel/config/provider-ids.ts";
+import { normalizeEditorMode } from "@/kernel/config/editor-mode.ts";
 import type {
   AnySettingDescriptor,
   SettingDescriptor,
@@ -22,6 +18,11 @@ import type {
 import type { ThemeSetting } from "@/kernel/config/theme-names.ts";
 import type { McpServerPolicyEntry } from "@/kernel/mcp/protocol/types.ts";
 import { EFFORT_LEVEL_VALUES } from "@/kernel/std/types/effort.ts";
+import { isOrchestrationMode } from "@/kernel/std/types/orchestration-mode.ts";
+import {
+  isImageGeneratorSelection,
+  isVoiceProviderSelection,
+} from "@/kernel/std/types/provider-ids.ts";
 
 function setting<K extends keyof UserConfig>(d: SettingDescriptor<K>): SettingDescriptor<K> {
   return d;
@@ -54,10 +55,22 @@ const isMcpServerPolicyEntryList = (v: unknown): McpServerPolicyEntry[] | undefi
  */
 export const SETTING_REGISTRY: readonly AnySettingDescriptor[] = [
   // Scalar/object, user-only, override.
-  setting({ key: "outputStyle", scopes: ["user"], merge: "override", validate: isString }),
+  setting({
+    key: "outputStyle",
+    scopes: ["user", "project", "local"],
+    merge: "override",
+    validate: isString,
+  }),
   setting({ key: "language", scopes: ["user"], merge: "override", validate: isString }),
   setting({ key: "autoCompact", scopes: ["user"], merge: "override", validate: isBool }),
   setting({ key: "showTips", scopes: ["user"], merge: "override", validate: isBool }),
+  setting({
+    key: "showThinkingSummaries",
+    scopes: ["user", "session"],
+    merge: "override",
+    validate: isBool,
+  }),
+  setting({ key: "verbose", scopes: ["user"], merge: "override", validate: isBool }),
   setting({ key: "fastMode", scopes: ["user"], merge: "override", validate: isBool }),
   setting({
     key: "antigravityGoogleOneAi",
@@ -80,13 +93,19 @@ export const SETTING_REGISTRY: readonly AnySettingDescriptor[] = [
   setting({ key: "memoryRecall", scopes: ["user"], merge: "override", validate: isBool }),
   setting({ key: "autoMemoryEnabled", scopes: ["user"], merge: "override", validate: isBool }),
   setting({ key: "ultracode", scopes: ["user"], merge: "override", validate: isBool }),
+  setting({
+    key: "workflowKeywordTrigger",
+    scopes: ["user", "project", "local", "policy"],
+    merge: "override",
+    validate: isBool,
+  }),
   setting({ key: "enableWorkflows", scopes: ["user"], merge: "override", validate: isBool }),
   setting({
     key: "workflowSizeGuideline",
     scopes: ["user"],
     merge: "override",
     validate: (value) => {
-      const normalized = normalizeWorkflowSizeGuideline(value);
+      const normalized = normalizeWorkflowSizeClass(value);
       return normalized === value ? normalized : undefined;
     },
   }),
@@ -121,6 +140,12 @@ export const SETTING_REGISTRY: readonly AnySettingDescriptor[] = [
     scopes: ["user"],
     merge: "override",
     validate: normalizeStatuslineConfig,
+  }),
+  setting({
+    key: "editorMode",
+    scopes: ["user"],
+    merge: "override",
+    validate: normalizeEditorMode,
   }),
   setting({
     key: "theme",
@@ -227,10 +252,12 @@ export const SETTING_REGISTRY: readonly AnySettingDescriptor[] = [
       return v as UserConfig["worktree"];
     },
   }),
+  // Hook definitions accumulate rather than replace: a project's hooks for an
+  // event run after the user's, and policy hooks after both.
   setting({
     key: "hooks",
-    scopes: ["user", "policy"],
-    merge: "override",
+    scopes: ["user", "project", "local", "policy"],
+    merge: "map-append",
     validate: normalizeHooksConfig,
   }),
 

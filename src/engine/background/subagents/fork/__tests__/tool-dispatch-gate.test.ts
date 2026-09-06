@@ -6,7 +6,7 @@ import {
   clearDeferredAnnouncementsForScope,
 } from "@/engine/tools/deferred.ts";
 import { registerAllBuiltins } from "@/engine/tools/register-builtins.ts";
-import { isDispatchableForkTool } from "../tool-dispatch.ts";
+import { isDispatchableForkTool } from "../tool-gates.ts";
 
 const AGENT_SCOPE = "agent-gate-test-1";
 const OTHER_AGENT_SCOPE = "agent-gate-test-2";

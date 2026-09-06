@@ -1,11 +1,16 @@
 import {
   defaultEffortForModel,
+  defaultModelForProvider,
   effortLevelsForModel,
   resolveModelId,
 } from "@/engine/model/catalog.ts";
 import type { UsageSnapshot } from "@/engine/session/compact/token-count.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
 import { EFFORT_LEVEL_VALUES, type EffortLevel } from "@/kernel/std/types/effort.ts";
+import {
+  isOrchestrationMode,
+  type OrchestrationMode,
+} from "@/kernel/std/types/orchestration-mode.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 import type { BrokerState, PermissionMode } from "@/kernel/std/types/request.ts";
 import type {
   AssistantRequestUsage,
@@ -22,9 +27,10 @@ export interface SessionBrokerState {
   fastMode?: boolean | undefined;
   ultracode?: boolean | undefined;
   permissionMode?: PermissionMode | undefined;
+  orchestrationMode?: OrchestrationMode | undefined;
 }
 
-import { isProviderId } from "@/kernel/config/provider-ids.ts";
+import { isProviderId } from "@/kernel/std/types/provider-ids.ts";
 
 export function shrinkToolResultRecord(
   session: Pick<Session, "records">,
@@ -45,21 +51,37 @@ export function resolveSessionBrokerState(
   fallback: SessionBrokerState,
 ): SessionBrokerState {
   let provider = fallback.provider;
-  let model = resolveModelId(fallback.model);
+  let model = resolveModelId({ provider, model: fallback.model });
   let effort: EffortLevel | null = fallback.effort;
   let fastMode = fallback.fastMode;
   let ultracode: boolean | undefined;
+  let orchestrationMode = fallback.orchestrationMode;
   let sawScopedRecord = false;
   let sawEffort = false;
   let sawUltracode = false;
+  let sawMetaRoute = false;
 
   for (const record of records) {
     if (recordHasSidechainFlag(record)) continue;
     const scoped = scopedStateFromRecord(record);
-    const hasProviderOrModel = scoped.provider !== null || scoped.model !== null;
+    const isMeta = record.type === "session_meta";
+    // A meta record snapshots the broker the user chose; other records stamp the
+    // route that PRODUCED them. A route change mid-turn keeps stamping the old
+    // route on the in-flight turn's records after the change, so once a meta has
+    // named the route, later non-meta stamps no longer steer the restore.
+    const hasProviderOrModel =
+      (scoped.provider !== null || scoped.model !== null) && (isMeta || !sawMetaRoute);
     if (hasProviderOrModel) {
+      if (isMeta) sawMetaRoute = true;
       const nextProvider = scoped.provider ?? provider;
-      const nextModel = scoped.model ?? model;
+      const nextModel = resolveModelId({
+        provider: nextProvider,
+        model:
+          scoped.model ??
+          (scoped.provider !== null && scoped.provider !== provider
+            ? defaultModelForProvider(nextProvider)
+            : model),
+      });
       const changed = nextProvider !== provider || nextModel !== model;
       provider = nextProvider;
       model = nextModel;
@@ -80,6 +102,9 @@ export function resolveSessionBrokerState(
       ultracode = scoped.ultracode;
       sawUltracode = true;
     }
+    if (scoped.orchestrationMode !== null) {
+      orchestrationMode = scoped.orchestrationMode;
+    }
   }
 
   let permissionMode: PermissionMode | undefined = fallback.permissionMode;
@@ -95,27 +120,41 @@ export function resolveSessionBrokerState(
     }
   }
 
+  const route = { provider, model };
   const candidateEffort =
     sawScopedRecord && !sawEffort
-      ? defaultEffortForModel(model, provider)
-      : (effort ?? defaultEffortForModel(model, provider));
+      ? defaultEffortForModel(route)
+      : (effort ?? defaultEffortForModel(route));
   const restored: SessionBrokerState = {
     provider,
     model,
     effort:
-      candidateEffort !== null && !effortLevelsForModel(model, provider).includes(candidateEffort)
-        ? defaultEffortForModel(model, provider)
+      candidateEffort !== null && !effortLevelsForModel(route).includes(candidateEffort)
+        ? defaultEffortForModel(route)
         : candidateEffort,
   };
   if (fastMode !== undefined) restored.fastMode = fastMode;
   if (sawUltracode) restored.ultracode = ultracode;
   if (permissionMode !== undefined) restored.permissionMode = permissionMode;
+  if (orchestrationMode !== undefined) restored.orchestrationMode = orchestrationMode;
   return restored;
+}
+
+// Remote activation is session state owned outside the broker; the runtime
+// registers a reader once at boot so every persisted meta record freezes the
+// session's current activation alongside the broker fields.
+let remoteEnabledReader: (() => boolean) | null = null;
+
+export function registerSessionMetaRemoteEnabled(read: (() => boolean) | null): void {
+  remoteEnabledReader = read;
 }
 
 export function sessionMetaFromBrokerState(
   session: Pick<Session, "cwd" | "storageCwd">,
-  state: Pick<BrokerState, "provider" | "model" | "effort" | "fastMode" | "ultracode">,
+  state: Pick<
+    BrokerState,
+    "provider" | "model" | "effort" | "fastMode" | "ultracode" | "orchestrationMode"
+  >,
   ts: string,
 ): SessionMetaRecord {
   return {
@@ -128,13 +167,18 @@ export function sessionMetaFromBrokerState(
     ...(state.effort !== null ? { effort: state.effort } : {}),
     fastMode: state.fastMode,
     ...(state.ultracode !== undefined ? { ultracode: state.ultracode } : {}),
+    orchestrationMode: state.orchestrationMode,
+    ...(remoteEnabledReader !== null ? { remoteEnabled: remoteEnabledReader() } : {}),
   };
 }
 
 export function sessionBrokerStateKey(
-  state: Pick<BrokerState, "provider" | "model" | "effort" | "fastMode" | "ultracode">,
+  state: Pick<
+    BrokerState,
+    "provider" | "model" | "effort" | "fastMode" | "ultracode" | "orchestrationMode"
+  >,
 ): string {
-  return `${state.provider}\0${state.model}\0${state.effort}\0${state.fastMode}\0${state.ultracode}`;
+  return `${state.provider}\0${state.model}\0${state.effort}\0${state.fastMode}\0${state.ultracode}\0${state.orchestrationMode}`;
 }
 
 export function latestContextUsageSnapshotFromSessionRecords(
@@ -142,7 +186,7 @@ export function latestContextUsageSnapshotFromSessionRecords(
   target?: Pick<SessionBrokerState, "provider" | "model">,
   usageRecords: readonly SessionRecord[] = [],
 ): UsageSnapshot | null {
-  const targetModel = target ? resolveModelId(target.model) : null;
+  const targetModel = target ? resolveModelId({ ...target, model: target.model }) : null;
   let fallback: UsageSnapshot | null = null;
   for (const record of backwardByTs(records, usageRecords)) {
     if (!record) continue;
@@ -223,17 +267,26 @@ function scopedStateFromRecord(record: SessionRecord): {
   effort: EffortLevel | null;
   fastMode: boolean | null;
   ultracode: boolean | null;
+  orchestrationMode: OrchestrationMode | null;
 } {
   if (
     record.type === "tool_result" ||
     record.type === "hook_event" ||
     record.type === "injection_queued" ||
+    record.type === "injection_dequeued" ||
     record.type === "attachment" ||
     record.type === "turn_completion" ||
     record.type === "content_replacement" ||
     record.type === "worktree_state"
   ) {
-    return { provider: null, model: null, effort: null, fastMode: null, ultracode: null };
+    return {
+      provider: null,
+      model: null,
+      effort: null,
+      fastMode: null,
+      ultracode: null,
+      orchestrationMode: null,
+    };
   }
   return {
     provider: providerFromUnknown(record.provider),
@@ -241,6 +294,10 @@ function scopedStateFromRecord(record: SessionRecord): {
     effort: record.type === "session_meta" ? effortFromUnknown(record.effort) : null,
     fastMode: record.type === "session_meta" ? booleanFromUnknown(record.fastMode) : null,
     ultracode: record.type === "session_meta" ? booleanFromUnknown(record.ultracode) : null,
+    orchestrationMode:
+      record.type === "session_meta"
+        ? orchestrationModeFromUnknown(record.orchestrationMode)
+        : null,
   };
 }
 
@@ -271,7 +328,7 @@ function requestUsageMatches(
   if (usage.provider !== provider) return false;
   if (model === null) return true;
   if (!usage.model) return false;
-  return sameModelId(resolveModelId(usage.model), model);
+  return sameModelId(resolveModelId({ provider, model: usage.model }), model);
 }
 
 function providerFromUnknown(value: unknown): ProviderId | null {
@@ -281,7 +338,7 @@ function providerFromUnknown(value: unknown): ProviderId | null {
 function modelFromUnknown(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
-  return trimmed.length > 0 ? resolveModelId(trimmed) : null;
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 function effortFromUnknown(value: unknown): EffortLevel | null {
@@ -292,6 +349,10 @@ function effortFromUnknown(value: unknown): EffortLevel | null {
 
 function booleanFromUnknown(value: unknown): boolean | null {
   return typeof value === "boolean" ? value : null;
+}
+
+function orchestrationModeFromUnknown(value: unknown): OrchestrationMode | null {
+  return isOrchestrationMode(value) ? value : null;
 }
 
 export function usageSnapshotFromAssistantUsage(usage: AssistantRequestUsage): UsageSnapshot {

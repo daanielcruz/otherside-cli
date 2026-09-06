@@ -1,20 +1,23 @@
 import { describe, expect, it } from "bun:test";
 import type { ForkEvent } from "@/kernel/std/types/events.ts";
+import type { ProviderModelRoute } from "@/kernel/std/types/provider-ids.ts";
 import { createForkEventRouter } from "@/ui/app/dispatch/fork-event-router.ts";
 import type { TranscriptEntry } from "@/ui/transcript/types";
 
 function makeHarness() {
   let transcript: readonly TranscriptEntry[] = [];
+  const agentModelByCallIdRef = { current: new Map<string, ProviderModelRoute>() };
   const { routeForkEvent } = createForkEventRouter({
     setTranscript: (value) => {
       transcript = typeof value === "function" ? value(transcript) : value;
     },
     forkToCallIdRef: { current: new Map<string, string>() },
+    agentModelByCallIdRef,
     setAgentNested: () => {},
     recordProviderUsage: () => {},
     broker: { read: () => ({ provider: "anthropic", model: "test-model" }) },
   });
-  return { routeForkEvent, get: () => transcript };
+  return { routeForkEvent, get: () => transcript, agentModelByCallIdRef };
 }
 
 function startSkillFork(routeForkEvent: (event: ForkEvent) => void, forkId: string): void {
@@ -26,6 +29,37 @@ function startSkillFork(routeForkEvent: (event: ForkEvent) => void, forkId: stri
     model: "test-model",
   });
 }
+
+describe("fork-event-router agent identity", () => {
+  it("threads the fork provider+model route into the entry and the call-id ref", () => {
+    const { routeForkEvent, get, agentModelByCallIdRef } = makeHarness();
+    routeForkEvent({
+      kind: "fork_start",
+      forkId: "fk-agent",
+      name: "general-purpose",
+      provider: "kimi",
+      model: "k3",
+      parentToolCallId: "call-1",
+    });
+
+    expect(agentModelByCallIdRef.current.get("call-1")).toEqual({
+      provider: "kimi",
+      model: "k3",
+    });
+    // The running entry only exists once the Agent tool row is on screen; the
+    // ref is what survives until backgrounding/completion re-renders it.
+    routeForkEvent({
+      kind: "fork_start",
+      forkId: "fk-agent-2",
+      name: "general-purpose",
+      provider: "codex",
+      model: "gpt-5.6-luna",
+      parentToolCallId: "call-2",
+    });
+    expect(agentModelByCallIdRef.current.get("call-2")?.provider).toBe("codex");
+    expect(get().length).toBe(0);
+  });
+});
 
 describe("fork-event-router skill completion", () => {
   it("renders a prose conclusion live as a markdown assistant entry", () => {

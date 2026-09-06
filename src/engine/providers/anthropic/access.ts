@@ -6,11 +6,7 @@ export function seedExtraUsageDisabledReason(reason: string | null | undefined):
   cached = reason ?? undefined;
 }
 
-export function getCachedExtraUsageDisabledReason(): string | null | undefined {
-  return cached;
-}
-
-export async function cacheExtraUsageDisabledReason(reason: string | null): Promise<void> {
+export async function cachedExtraUsageBlockReason(reason: string | null): Promise<void> {
   if (cached === reason) return;
   cached = reason;
   try {
@@ -18,7 +14,7 @@ export async function cacheExtraUsageDisabledReason(reason: string | null): Prom
   } catch {}
 }
 
-export type OverageDisabledReason =
+type ExtraUsageBlockReason =
   | "out_of_credits"
   | "overage_not_provisioned"
   | "org_level_disabled"
@@ -33,10 +29,10 @@ export type OverageDisabledReason =
   | "no_limits_configured"
   | "unknown";
 
-export function isExtraUsageEnabled(): boolean {
+function isExtraUsageEnabled(): boolean {
   if (cached === undefined) return false;
   if (cached === null) return true;
-  if ((cached as OverageDisabledReason) === "out_of_credits") return true;
+  if ((cached as ExtraUsageBlockReason) === "out_of_credits") return true;
   return false;
 }
 

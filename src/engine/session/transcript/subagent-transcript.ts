@@ -1,4 +1,5 @@
 import { stat } from "node:fs/promises";
+import { hydratePreservedImages } from "@/engine/session/compact/preserved-image-ledger.ts";
 import { reconstructForeignConversation } from "@/engine/session/conversation-chain.ts";
 import { agentTranscriptPathForCwd } from "@/engine/session/paths.ts";
 import { recordsFromParsedLine, type SessionRecord } from "@/engine/session/record/index.ts";
@@ -37,6 +38,7 @@ export async function loadSubagentTranscript(ref: SubagentTranscriptRef): Promis
     if (!source) continue;
     for (const record of recordsFromParsedLine(source)) out.push(stripSidechain(record));
   }
+  hydratePreservedImages([out]);
   return out;
 }
 

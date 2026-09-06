@@ -1,5 +1,6 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { execFileSync } from "node:child_process";
+import * as filesystem from "node:fs/promises";
 import {
   mkdir,
   mkdtemp,
@@ -12,7 +13,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
-import { join, win32 } from "node:path";
+import { join, relative, win32 } from "node:path";
 import {
   acquireResumedWorktreeLease,
   acquireWorktreeLease,
@@ -25,6 +26,8 @@ import {
   setWorktreeCleanupValidationHookForTests,
   setWorktreeOverlayCopyHookForTests,
 } from "../worktree.ts";
+import * as worktreeGit from "../worktree-git.ts";
+import { setNestedWorktreeRemovalHookForTests } from "../worktree-nested-repos.ts";
 
 async function pathExists(target: string): Promise<boolean> {
   try {
@@ -45,6 +48,7 @@ afterEach(async () => {
   setWorktreeCleanupValidationHookForTests(null);
   setWorktreeCleanupRemovalHookForTests(null);
   setWorktreeOverlayCopyHookForTests(null);
+  setNestedWorktreeRemovalHookForTests(null);
   await rm(tempDir, { recursive: true, force: true });
 });
 
@@ -211,7 +215,7 @@ describe("worktree root selection", () => {
     expect(await realpath(outerWorktree.path)).toBe(
       await realpath(join(outer, ".otherside", "worktrees", "workflow-nearest-outer")),
     );
-    expect(outerWorktree.warning).toContain(nested);
+    expect(outerWorktree.warning).toContain(await realpath(nested));
     expect(await pathExists(join(outerWorktree.path, "nested", "readme.txt"))).toBe(false);
     expect((await outerWorktree.cleanup()).deleted).toBe(true);
 
@@ -325,6 +329,357 @@ describe("worktree lifecycle logic", () => {
       dirExists = false;
     }
     expect(dirExists).toBe(true);
+  });
+
+  // The incident shape: the nested checkout lands on a path the outer repo
+  // GITIGNORES, so the baseline fingerprint (exclude-standard) cannot see it
+  // and only the nested-repo gate stands between the work and deletion.
+  async function setupRepoIgnoringNested(dir: string, ignored: string): Promise<void> {
+    await setupGitRepo(dir);
+    await writeFile(join(dir, ".gitignore"), `/${ignored}/\n`);
+    runGit(dir, ["add", ".gitignore"]);
+    commitGit(dir, "ignore nested checkout dir");
+  }
+
+  test("dirty nested linked worktree of a child repo -> area preserved", async () => {
+    await setupRepoIgnoringNested(tempDir, "child-checkout");
+    const childRepo = join(tempDir, "child-project");
+    await mkdir(childRepo, { recursive: true });
+    await setupGitRepo(childRepo);
+    const wt = await createWorktree(tempDir, "fork_nested_dirty");
+    expect(wt).not.toBeNull();
+    if (!wt) return;
+
+    const nestedPath = join(wt.path, "child-checkout");
+    runGit(childRepo, ["worktree", "add", "--detach", nestedPath]);
+    await writeFile(join(nestedPath, "readme.txt"), "uncommitted nested work");
+
+    const cleanupRes = await wt.cleanup();
+    expect(cleanupRes.deleted).toBe(false);
+    expect(await pathExists(nestedPath)).toBe(true);
+  });
+
+  test.each([
+    "absolute",
+    "relative",
+  ])("clean nested linked worktree with %s forward-slash pointer -> area removed and owner metadata pruned", async (pointerKind) => {
+    await setupRepoIgnoringNested(tempDir, "child-checkout");
+    const childRepo = join(tempDir, "child-project");
+    await mkdir(childRepo, { recursive: true });
+    await setupGitRepo(childRepo);
+    const wt = await createWorktree(tempDir, "fork_nested_clean");
+    expect(wt).not.toBeNull();
+    if (!wt) return;
+
+    const nestedPath = join(wt.path, "child-checkout");
+    runGit(childRepo, ["worktree", "add", "--detach", nestedPath]);
+    const adminDir = runGit(nestedPath, ["rev-parse", "--absolute-git-dir"]).trim();
+    const pointer = pointerKind === "relative" ? relative(nestedPath, adminDir) : adminDir;
+    await writeFile(join(nestedPath, ".git"), `gitdir: ${pointer.replaceAll("\\", "/")}\n`);
+
+    const cleanupRes = await wt.cleanup();
+    expect(cleanupRes.deleted).toBe(true);
+    expect(await pathExists(wt.path)).toBe(false);
+    const registered = runGit(childRepo, ["worktree", "list", "--porcelain"]);
+    expect(registered).not.toContain("child-checkout");
+  });
+
+  test("full nested repo owning its object database -> area preserved", async () => {
+    await setupRepoIgnoringNested(tempDir, "scratch-repo");
+    const wt = await createWorktree(tempDir, "fork_nested_full");
+    expect(wt).not.toBeNull();
+    if (!wt) return;
+
+    const nestedPath = join(wt.path, "scratch-repo");
+    await mkdir(nestedPath, { recursive: true });
+    await setupGitRepo(nestedPath);
+
+    const cleanupRes = await wt.cleanup();
+    expect(cleanupRes.deleted).toBe(false);
+    expect(await pathExists(nestedPath)).toBe(true);
+  });
+
+  test.each([
+    "invalid pointer",
+    "gitdir: ../not-linked",
+    "gitdir: ../missing/.git/worktrees/child",
+  ])("invalid nested pointer %s -> area preserved", async (pointer) => {
+    await setupRepoIgnoringNested(tempDir, "child-checkout");
+    const wt = await createWorktree(tempDir, "fork_nested_invalid");
+    expect(wt).not.toBeNull();
+    if (!wt) return;
+
+    const nestedPath = join(wt.path, "child-checkout");
+    await mkdir(nestedPath, { recursive: true });
+    await writeFile(join(nestedPath, ".git"), `${pointer}\n`);
+    await writeFile(join(nestedPath, "readme.txt"), "nested work");
+
+    expect((await wt.cleanup()).deleted).toBe(false);
+    expect(await readFile(join(nestedPath, "readme.txt"), "utf8")).toBe("nested work");
+  });
+
+  test.each([
+    "readme.txt",
+    "new-work.txt",
+  ])("a nested write to %s before its removal preserves both checkouts", async (filename) => {
+    await setupRepoIgnoringNested(tempDir, "child-checkout");
+    const owner = join(tempDir, "child-project");
+    await mkdir(owner, { recursive: true });
+    await setupGitRepo(owner);
+    const wt = await createWorktree(tempDir, "fork_nested_write");
+    expect(wt).not.toBeNull();
+    if (!wt) return;
+    const child = join(wt.path, "child-checkout");
+    runGit(owner, ["worktree", "add", "--detach", child]);
+    setNestedWorktreeRemovalHookForTests(async (path) => {
+      await writeFile(join(path, filename), "late nested work");
+    });
+
+    expect((await wt.cleanup()).deleted).toBe(false);
+    expect(await readFile(join(child, filename), "utf8")).toBe("late nested work");
+    expect(await realpath(runGit(wt.path, ["rev-parse", "--show-toplevel"]).trim())).toBe(
+      await realpath(wt.path),
+    );
+    expect(runGit(child, ["status", "--porcelain"])).toContain(filename);
+  });
+
+  test.each([
+    "readme.txt",
+    "new-work.txt",
+  ])("the child Git refuses a late write to %s after application validation", async (filename) => {
+    await setupRepoIgnoringNested(tempDir, "child-checkout");
+    const owner = join(tempDir, "child-project");
+    await mkdir(owner, { recursive: true });
+    await setupGitRepo(owner);
+    const wt = await createWorktree(tempDir, "fork_nested_git_guard");
+    expect(wt).not.toBeNull();
+    if (!wt) return;
+    const child = join(wt.path, "child-checkout");
+    runGit(owner, ["worktree", "add", "--detach", child]);
+    const execute = worktreeGit.git;
+    let attempted = false;
+    const intercepted = spyOn(worktreeGit, "git").mockImplementation(async (cwd, args) => {
+      if (args[0] === "worktree" && args[1] === "remove" && args.at(-1) === child) {
+        attempted = true;
+        expect(args).not.toContain("--force");
+        await writeFile(join(child, filename), "written at Git boundary");
+      }
+      return execute(cwd, args);
+    });
+    try {
+      expect((await wt.cleanup()).deleted).toBe(false);
+    } finally {
+      intercepted.mockRestore();
+    }
+    expect(attempted).toBe(true);
+    expect(await readFile(join(child, filename), "utf8")).toBe("written at Git boundary");
+    expect(runGit(child, ["status", "--porcelain"])).toContain(filename);
+    expect(await pathExists(wt.path)).toBe(true);
+  });
+
+  test("a forged nested pointer never changes the registered checkout", async () => {
+    await setupRepoIgnoringNested(tempDir, "child-checkout");
+    const owner = join(tempDir, "child-project");
+    await mkdir(owner, { recursive: true });
+    await setupGitRepo(owner);
+    const wt = await createWorktree(tempDir, "fork_nested_forged");
+    expect(wt).not.toBeNull();
+    if (!wt) return;
+    const registered = join(tempDir, "registered-checkout");
+    runGit(owner, ["worktree", "add", "--detach", registered]);
+    const pointer = await readFile(join(registered, ".git"), "utf8");
+    const admin = runGit(registered, ["rev-parse", "--absolute-git-dir"]).trim();
+    const backlink = await readFile(join(admin, "gitdir"), "utf8");
+    const forged = join(wt.path, "child-checkout");
+    await mkdir(forged, { recursive: true });
+    await writeFile(join(forged, ".git"), pointer);
+    await writeFile(join(forged, "readme.txt"), "hello world");
+
+    expect((await wt.cleanup()).deleted).toBe(false);
+    expect(await readFile(join(admin, "gitdir"), "utf8")).toBe(backlink);
+    expect(await readFile(join(registered, "readme.txt"), "utf8")).toBe("hello world");
+    expect(await readFile(join(forged, "readme.txt"), "utf8")).toBe("hello world");
+    expect(runGit(registered, ["status", "--porcelain"])).toBe("");
+  });
+
+  test("a second nested removal refusal preserves the parent and remaining child", async () => {
+    await setupRepoIgnoringNested(tempDir, "children");
+    const owner = join(tempDir, "child-project");
+    await mkdir(owner, { recursive: true });
+    await setupGitRepo(owner);
+    const wt = await createWorktree(tempDir, "fork_nested_partial");
+    expect(wt).not.toBeNull();
+    if (!wt) return;
+    await mkdir(join(wt.path, "children"), { recursive: true });
+    for (const name of ["one", "two"]) {
+      runGit(owner, ["worktree", "add", "--detach", join(wt.path, "children", name)]);
+    }
+    const visited: string[] = [];
+    setNestedWorktreeRemovalHookForTests(async (path) => {
+      visited.push(path);
+      if (visited.length === 2) await writeFile(join(path, "readme.txt"), "keep second child");
+    });
+
+    expect((await wt.cleanup()).deleted).toBe(false);
+    expect(visited).toHaveLength(2);
+    expect(await pathExists(visited[0] ?? "")).toBe(false);
+    expect(await readFile(join(visited[1] ?? "", "readme.txt"), "utf8")).toBe("keep second child");
+    expect(await realpath(runGit(wt.path, ["rev-parse", "--show-toplevel"]).trim())).toBe(
+      await realpath(wt.path),
+    );
+    expect(runGit(visited[1] ?? "", ["status", "--porcelain"])).toContain("readme.txt");
+  });
+
+  test.each([
+    "full",
+    "invalid",
+    "linked",
+  ])("a %s nested repository created after sealing preserves the original parent path", async (kind) => {
+    await setupRepoIgnoringNested(tempDir, "new-child");
+    const owner = join(tempDir, "child-project");
+    await mkdir(owner, { recursive: true });
+    await setupGitRepo(owner);
+    const wt = await createWorktree(tempDir, "fork_nested_after_seal");
+    expect(wt).not.toBeNull();
+    if (!wt) return;
+    setWorktreeCleanupRemovalHookForTests(async (quarantine) => {
+      const child = join(quarantine, "new-child");
+      await mkdir(child, { recursive: true });
+      if (kind === "full") await setupGitRepo(child);
+      else if (kind === "linked") runGit(owner, ["worktree", "add", "--detach", child]);
+      else await writeFile(join(child, ".git"), "invalid pointer\n");
+      await writeFile(join(child, "valuable.txt"), "created after seal");
+    });
+
+    expect((await wt.cleanup()).deleted).toBe(false);
+    expect(await readFile(join(wt.path, "new-child", "valuable.txt"), "utf8")).toBe(
+      "created after seal",
+    );
+    expect(await realpath(runGit(wt.path, ["rev-parse", "--show-toplevel"]).trim())).toBe(
+      await realpath(wt.path),
+    );
+  });
+
+  test("a nested repository appearing during the move is preserved before sealing", async () => {
+    await setupRepoIgnoringNested(tempDir, "new-child");
+    const wt = await createWorktree(tempDir, "fork_nested_after_move");
+    expect(wt).not.toBeNull();
+    if (!wt) return;
+    const execute = worktreeGit.git;
+    let injected = false;
+    const intercepted = spyOn(worktreeGit, "git").mockImplementation(async (cwd, args) => {
+      const result = await execute(cwd, args);
+      const destination = args.at(-1);
+      if (result.ok && args[0] === "worktree" && args[1] === "move" && !injected && destination) {
+        injected = true;
+        const child = join(destination, "new-child");
+        await mkdir(child, { recursive: true });
+        await setupGitRepo(child);
+        await writeFile(join(child, "valuable.txt"), "created during move");
+      }
+      return result;
+    });
+    try {
+      expect((await wt.cleanup()).deleted).toBe(false);
+    } finally {
+      intercepted.mockRestore();
+    }
+    expect(injected).toBe(true);
+    expect(await readFile(join(wt.path, "new-child", "valuable.txt"), "utf8")).toBe(
+      "created during move",
+    );
+    expect(await realpath(runGit(wt.path, ["rev-parse", "--show-toplevel"]).trim())).toBe(
+      await realpath(wt.path),
+    );
+  });
+
+  test.each([
+    "node_modules",
+    ".otherside",
+    "deep/one/two/three",
+    "ignored/.GIT",
+  ])("a full repository under %s is never hidden from the removal gate", async (container) => {
+    const top = container.split("/")[0] ?? container;
+    await setupRepoIgnoringNested(tempDir, top);
+    const wt = await createWorktree(tempDir, "fork_nested_deep");
+    expect(wt).not.toBeNull();
+    if (!wt) return;
+    const child = join(wt.path, container, "child");
+    await mkdir(child, { recursive: true });
+    await setupGitRepo(child);
+    await writeFile(join(child, "valuable.txt"), "deep nested work");
+
+    expect((await wt.cleanup()).deleted).toBe(false);
+    expect(await readFile(join(child, "valuable.txt"), "utf8")).toBe("deep nested work");
+    expect(await pathExists(join(child, ".git", "objects"))).toBe(true);
+  });
+
+  test.each([
+    "inventory",
+    "quarantine",
+  ])("an incomplete %s inspection preserves the area", async (stage) => {
+    await setupRepoIgnoringNested(tempDir, "unreadable");
+    const wt = await createWorktree(tempDir, "fork_nested_unreadable");
+    expect(wt).not.toBeNull();
+    if (!wt) return;
+    await mkdir(join(wt.path, "unreadable"), { recursive: true });
+    await writeFile(join(wt.path, "unreadable", "valuable.txt"), "uninspected work");
+    const readDirectory = spyOn(filesystem, "readdir");
+    const denyRead = () => {
+      readDirectory.mockRejectedValueOnce(Object.assign(new Error("denied"), { code: "EACCES" }));
+    };
+    if (stage === "inventory") denyRead();
+    else setWorktreeCleanupRemovalHookForTests(denyRead);
+    try {
+      expect((await wt.cleanup()).deleted).toBe(false);
+    } finally {
+      readDirectory.mockRestore();
+    }
+    expect(await readFile(join(wt.path, "unreadable", "valuable.txt"), "utf8")).toBe(
+      "uninspected work",
+    );
+    expect(await realpath(runGit(wt.path, ["rev-parse", "--show-toplevel"]).trim())).toBe(
+      await realpath(wt.path),
+    );
+  });
+
+  test.each([
+    "force",
+    "filesystem",
+  ])("a nested repository appearing before the %s fallback preserves the checkout", async (fallback) => {
+    await setupRepoIgnoringNested(tempDir, "new-child");
+    const wt = await createWorktree(tempDir, "fork_nested_fallback");
+    expect(wt).not.toBeNull();
+    if (!wt) return;
+    const execute = worktreeGit.git;
+    let attempts = 0;
+    const intercepted = spyOn(worktreeGit, "git").mockImplementation(async (cwd, args) => {
+      if (args[0] === "worktree" && args[1] === "remove") {
+        attempts += 1;
+        if ((fallback === "force" && attempts === 1) || attempts === 2) {
+          const quarantine = args.at(-1);
+          if (quarantine === undefined) throw new Error("missing removal path");
+          const child = join(quarantine, "new-child");
+          await mkdir(child, { recursive: true });
+          await setupGitRepo(child);
+          await writeFile(join(child, "valuable.txt"), "fallback nested work");
+        }
+        return { ok: false, stdout: "" };
+      }
+      return execute(cwd, args);
+    });
+    try {
+      expect((await wt.cleanup()).deleted).toBe(false);
+    } finally {
+      intercepted.mockRestore();
+    }
+    expect(attempts).toBe(fallback === "force" ? 1 : 2);
+    expect(await readFile(join(wt.path, "new-child", "valuable.txt"), "utf8")).toBe(
+      "fallback nested work",
+    );
+    expect(await realpath(runGit(wt.path, ["rev-parse", "--show-toplevel"]).trim())).toBe(
+      await realpath(wt.path),
+    );
   });
 
   test("agent commits a local change -> preserved", async () => {

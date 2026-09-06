@@ -2,14 +2,14 @@ import { describe, expect, it } from "bun:test";
 import {
   type AgentContext,
   MAX_AGENT_SPAWN_DEPTH,
-  runWithAgentContext,
+  withSpawnedAgentScope,
 } from "@/engine/agents/agent-context.ts";
 import { runForkLoopExternal } from "@/engine/background/subagents/fork/loop.ts";
 import { dispatchSkillFork } from "@/engine/background/subagents/fork/spawn.ts";
 import {
   agentSpawnDepth,
   isForkChildContext,
-  isMainAgentContext,
+  isRootAgentRun,
   nestedForkUnavailableMessage,
   subagentNestingLimitMessage,
 } from "@/engine/background/subagents/fork/spawn-depth.ts";
@@ -40,7 +40,7 @@ function specWithCtx(ctx: Partial<RequestContext>): ForkSpec {
 describe("subagent nesting ceiling", () => {
   it("refuses to mint a fork when the spawner sits at the cap", async () => {
     await expect(
-      runWithAgentContext(contextAtDepth(MAX_AGENT_SPAWN_DEPTH), () =>
+      withSpawnedAgentScope(contextAtDepth(MAX_AGENT_SPAWN_DEPTH), () =>
         runForkLoopExternal(specWithCtx({ sessionId: "s", cwd: "/tmp" })),
       ),
     ).rejects.toThrow(subagentNestingLimitMessage(MAX_AGENT_SPAWN_DEPTH));
@@ -49,18 +49,18 @@ describe("subagent nesting ceiling", () => {
   it("refuses past the cap too, reporting the actual depth", async () => {
     const over = MAX_AGENT_SPAWN_DEPTH + 2;
     await expect(
-      runWithAgentContext(contextAtDepth(over), () =>
+      withSpawnedAgentScope(contextAtDepth(over), () =>
         runForkLoopExternal(specWithCtx({ sessionId: "s", cwd: "/tmp" })),
       ),
     ).rejects.toThrow(subagentNestingLimitMessage(over));
   });
 
   it("recognizes only an ownerless, unmarked, non-ALS context as main", () => {
-    expect(isMainAgentContext({} as RequestContext)).toBe(true);
-    expect(isMainAgentContext({ agentOwnerId: "named-child" } as RequestContext)).toBe(false);
-    expect(isMainAgentContext({ isForkChild: true } as RequestContext)).toBe(false);
+    expect(isRootAgentRun({} as RequestContext)).toBe(true);
+    expect(isRootAgentRun({ agentOwnerId: "named-child" } as RequestContext)).toBe(false);
+    expect(isRootAgentRun({ isForkChild: true } as RequestContext)).toBe(false);
     expect(
-      runWithAgentContext(contextAtDepth(1), () => isMainAgentContext({} as RequestContext)),
+      withSpawnedAgentScope(contextAtDepth(1), () => isRootAgentRun({} as RequestContext)),
     ).toBe(false);
   });
 

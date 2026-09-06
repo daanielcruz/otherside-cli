@@ -46,6 +46,16 @@ class FakeMcpClient implements McpClient {
     return null;
   }
 
+  async listPrompts() {
+    return [];
+  }
+
+  async getPrompt() {
+    return { messages: [] };
+  }
+
+  announce(): void {}
+
   isClosed(): boolean {
     return this.closed;
   }

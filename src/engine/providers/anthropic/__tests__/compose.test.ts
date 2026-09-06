@@ -13,6 +13,7 @@ function harness(overrides: Partial<ComposedHarness> = {}): ComposedHarness {
     combined: "",
     systemBlocks: [],
     userPrepend: [],
+    midSystemPromotion: "off",
     ...overrides,
   };
 }
@@ -244,5 +245,233 @@ describe("composeAnthropicMessages — cc_prev_req billing chain", () => {
       { role: "user", content: [{ type: "text", text: "again" }] },
     ]);
     expect(billing.endsWith("cc_prev_req=req_011CceFg6SjrwZ8jcYi97EmG;")).toBe(true);
+  });
+});
+
+describe("composeAnthropicMessages — mid-system reminder promotion", () => {
+  const MID_BLOCKS = [
+    { text: "deferred listing body" },
+    { text: "agent listing body" },
+    { text: "skills listing body" },
+  ];
+
+  test("harness reminders travel as ONE concatenated system message after the first user", () => {
+    const result = composeAnthropicMessages(
+      harness({ midSystemBlocks: MID_BLOCKS, midSystemPromotion: "unwrapped" }),
+      [{ role: "user", content: [{ type: "text", text: "hello" }] }],
+    );
+    expect(result.map((m) => m.role)).toEqual(["system", "user", "system"]);
+    const mid = result[2]!;
+    expect(mid.content).toHaveLength(1);
+    const block = mid.content[0]!;
+    expect(block.type === "text" && block.text).toBe(
+      "deferred listing body\n\nagent listing body\n\nskills listing body",
+    );
+  });
+
+  test("the trailing 1h breakpoint lands on the promoted system message when it closes the request", () => {
+    const result = composeAnthropicMessages(
+      harness({ midSystemBlocks: MID_BLOCKS, midSystemPromotion: "unwrapped" }),
+      [{ role: "user", content: [{ type: "text", text: "hello" }] }],
+    );
+    const mid = result[result.length - 1]!;
+    const block = mid.content[mid.content.length - 1];
+    expect(block?.type === "text" && block.cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
+  });
+
+  test("a text-only reminder after a user promotes in place, keeping the wrapper on the wrapped route", () => {
+    const steer: Message = {
+      role: "user",
+      content: [
+        {
+          type: "text",
+          text: "<system-reminder>\nqueued guidance\n</system-reminder>",
+          reminder_type: "queued_input",
+        },
+        { type: "text", text: "follow-up input" },
+      ],
+    };
+    const history: Message[] = [
+      { role: "user", content: [{ type: "text", text: "hello" }] },
+      steer,
+    ];
+    const wrapped = composeAnthropicMessages(harness({ midSystemPromotion: "wrapped" }), history);
+    expect(wrapped.map((m) => m.role)).toEqual(["system", "user", "system"]);
+    const promoted = wrapped[2]!.content[0]!;
+    expect(promoted.type === "text" && promoted.text).toBe(
+      "<system-reminder>\nqueued guidance\n</system-reminder>\n\nfollow-up input",
+    );
+
+    const unwrapped = composeAnthropicMessages(
+      harness({ midSystemPromotion: "unwrapped" }),
+      history,
+    );
+    const bare = unwrapped[2]!.content[0]!;
+    expect(bare.type === "text" && bare.text).toBe("queued guidance\n\nfollow-up input");
+  });
+
+  test("a reminder after a plain assistant remains a user message", () => {
+    const reminder: Message = {
+      role: "user",
+      content: [
+        {
+          type: "text",
+          text: "<system-reminder>\nqueued guidance\n</system-reminder>",
+          reminder_type: "queued_input",
+        },
+      ],
+    };
+    const result = composeAnthropicMessages(harness({ midSystemPromotion: "unwrapped" }), [
+      { role: "user", content: [{ type: "text", text: "hello" }] },
+      { role: "assistant", content: [{ type: "text", text: "working" }] },
+      reminder,
+    ]);
+
+    expect(result.map((m) => m.role)).toEqual(["system", "user", "assistant", "user"]);
+    expect(result[3]?.content).toEqual([
+      {
+        type: "text",
+        text: "<system-reminder>\nqueued guidance\n</system-reminder>",
+        cache_control: { type: "ephemeral", ttl: "1h" },
+      },
+    ]);
+  });
+
+  test("a reminder after an assistant ending in a server tool result promotes", () => {
+    const serverToolResult = {
+      type: "web_search_tool_result",
+      content: [],
+    } as unknown as Message["content"][number];
+    const result = composeAnthropicMessages(harness({ midSystemPromotion: "unwrapped" }), [
+      { role: "user", content: [{ type: "text", text: "hello" }] },
+      { role: "assistant", content: [{ type: "text", text: "searching" }, serverToolResult] },
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: "<system-reminder>\nqueued guidance\n</system-reminder>",
+            reminder_type: "queued_input",
+          },
+        ],
+      },
+    ]);
+
+    expect(result.map((m) => m.role)).toEqual(["system", "user", "assistant", "system"]);
+    expect(result[3]?.content).toMatchObject([{ type: "text", text: "queued guidance" }]);
+  });
+
+  test("multiple reminders in one qualifying turn become one system message", () => {
+    const result = composeAnthropicMessages(harness({ midSystemPromotion: "unwrapped" }), [
+      { role: "user", content: [{ type: "text", text: "hello" }] },
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: "<system-reminder>\nfirst reminder\n</system-reminder>",
+            reminder_type: "queued_input",
+          },
+          {
+            type: "text",
+            text: "<system-reminder>\nsecond reminder\n</system-reminder>",
+            reminder_type: "task_reminder",
+          },
+        ],
+      },
+    ]);
+
+    expect(result.map((m) => m.role)).toEqual(["system", "user", "system"]);
+    expect(result[2]?.content).toMatchObject([
+      { type: "text", text: "first reminder\n\nsecond reminder" },
+    ]);
+  });
+
+  test("adjacent reminder messages do not create consecutive system messages", () => {
+    function reminder(text: string): Message {
+      return {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: `<system-reminder>\n${text}\n</system-reminder>`,
+            reminder_type: "queued_input",
+          },
+        ],
+      };
+    }
+
+    const result = composeAnthropicMessages(harness({ midSystemPromotion: "unwrapped" }), [
+      { role: "user", content: [{ type: "text", text: "hello" }] },
+      reminder("first reminder"),
+      reminder("second reminder"),
+    ]);
+
+    expect(result.map((m) => m.role)).toEqual(["system", "user", "system", "user"]);
+    expect(result[2]?.content).toMatchObject([{ type: "text", text: "first reminder" }]);
+    expect(result[3]?.content).toMatchObject([
+      { type: "text", text: "<system-reminder>\nsecond reminder\n</system-reminder>" },
+    ]);
+  });
+
+  test("a first-turn promoted system message blocks a later reminder promotion", () => {
+    const result = composeAnthropicMessages(
+      harness({
+        midSystemPromotion: "unwrapped",
+        midSystemBlocks: [{ text: "first-turn reminder" }],
+      }),
+      [
+        { role: "user", content: [{ type: "text", text: "hello" }] },
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: "<system-reminder>\nlater reminder\n</system-reminder>",
+              reminder_type: "queued_input",
+            },
+          ],
+        },
+      ],
+    );
+
+    expect(result.map((m) => m.role)).toEqual(["system", "user", "system", "user"]);
+  });
+
+  test("reminder messages stay user turns when promotion is off or content is not text-only", () => {
+    const withImage: Message = {
+      role: "user",
+      content: [
+        {
+          type: "text",
+          text: "<system-reminder>\nnote\n</system-reminder>",
+          reminder_type: "queued_input",
+        },
+        {
+          type: "image",
+          source: { type: "base64", media_type: "image/png", data: "aGk=" },
+        },
+      ],
+    };
+    const offResult = composeAnthropicMessages(harness({ midSystemPromotion: "off" }), [
+      { role: "user", content: [{ type: "text", text: "hello" }] },
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: "<system-reminder>\nnote\n</system-reminder>",
+            reminder_type: "queued_input",
+          },
+        ],
+      },
+    ]);
+    expect(offResult.filter((m) => m.role === "system")).toHaveLength(1);
+
+    const mixedResult = composeAnthropicMessages(harness({ midSystemPromotion: "wrapped" }), [
+      { role: "user", content: [{ type: "text", text: "hello" }] },
+      withImage,
+    ]);
+    expect(mixedResult.filter((m) => m.role === "system")).toHaveLength(1);
   });
 });

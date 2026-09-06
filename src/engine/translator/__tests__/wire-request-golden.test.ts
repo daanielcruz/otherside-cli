@@ -143,14 +143,16 @@ const HARNESS_FLAGSHIP: ComposedHarness = {
     { text: "- foo/\n- bar/", bundleKey: "directoryStructure" },
   ],
   midSystemBlocks: [{ text: "mid-conversation note", bundleKey: "context" }],
+  midSystemPromotion: "unwrapped",
 };
 
-// Non-flagship reality: no mid-system splice (supportsMidSystem=false).
+// Non-flagship reality: no mid-system splice (promotion off).
 const HARNESS_PLAIN: ComposedHarness = {
   layers: [],
   combined: "",
   systemBlocks: HARNESS_FLAGSHIP.systemBlocks,
   userPrepend: HARNESS_FLAGSHIP.userPrepend,
+  midSystemPromotion: "off",
 };
 
 function context(overrides: Partial<RequestContext>): RequestContext {
@@ -345,7 +347,7 @@ const ANTHROPIC_MATRIX: ReadonlyArray<{
   },
   {
     label: "fable / agentic",
-    ctx: context({ model: "claude-fable-5" }),
+    ctx: context({ model: "claude-fable-5-1" }),
     harness: HARNESS_FLAGSHIP,
   },
   {
@@ -501,7 +503,7 @@ describe("OpenAI Custom wire-request golden", () => {
 describe("Antigravity wire-request golden", () => {
   it("captures the Gemini-family wire envelope", () => {
     expect(
-      antigravitySnapshot(context({ provider: "antigravity", model: "gemini-3-flash-medium" })),
+      antigravitySnapshot(context({ provider: "antigravity", model: "gemini-3.8-flash-medium" })),
     ).toMatchSnapshot();
   });
 
@@ -510,7 +512,7 @@ describe("Antigravity wire-request golden", () => {
       antigravitySnapshot(
         context({
           provider: "antigravity",
-          model: "gemini-3-flash-medium",
+          model: "gemini-3.8-flash-medium",
           agentOwnerId: "fork-fixture",
           suppressThinkingSummary: true,
         }),

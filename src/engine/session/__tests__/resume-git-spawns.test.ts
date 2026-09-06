@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it, mock } from "bun:test";
 import * as childProcess from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, parse, toNamespacedPath } from "node:path";
 import { projectConfigKey, updateConfig } from "@/kernel/config/config.ts";
 
 /**
@@ -31,6 +31,10 @@ const { latestSessionId, sessionCwdFilterFor, sessionPathForCwd } = await import
   "@/engine/session/paths.ts"
 );
 const { loadSessionForResume } = await import("@/engine/session/reader.ts");
+const { readResumeChainLines } = await import("../resume-chain.ts");
+const { readSessionLines, readMainChainLines, transcriptFile } = await import(
+  "../transcript-lines.ts"
+);
 const { readProjectWorktreeSlot } = await import("@/engine/session/worktree.ts");
 const { gitAncestorRoot, worktreePathsFor, worktreePathsForAsync } = await import(
   "@/kernel/std/fs/paths.ts"
@@ -147,5 +151,88 @@ describe("resume-path git spawn gate", () => {
       const entry = cfg.projects?.[slotKey];
       if (entry) delete entry.activeWorktreeSession;
     });
+  });
+});
+
+describe("transcript streaming paths", () => {
+  it.each([
+    "ordinary",
+    "extended",
+  ])("reads all and selected chains through an %s path", async (shape) => {
+    const priorConfigDir = process.env.OTHERSIDE_CONFIG_DIR;
+    const priorSkip = process.env.OTHERSIDE_DISABLE_PRECOMPACT_SKIP;
+    const cwd = join(parse(fixtureRoot).root, "reader-fixture");
+    const sessionId = "77777777-8888-4999-8000-111111111111";
+    process.env.OTHERSIDE_CONFIG_DIR = join(fixtureRoot, `reader-${shape}`);
+    delete process.env.OTHERSIDE_DISABLE_PRECOMPACT_SKIP;
+    try {
+      let path = sessionPathForCwd(cwd, sessionId);
+      if (shape === "extended") {
+        while (path.length <= 320) {
+          process.env.OTHERSIDE_CONFIG_DIR = join(
+            process.env.OTHERSIDE_CONFIG_DIR,
+            "nested-segment".repeat(4),
+          );
+          path = sessionPathForCwd(cwd, sessionId);
+        }
+        expect(path.length).toBeGreaterThan(260);
+      }
+      const user = JSON.stringify({
+        type: "user",
+        uuid: "reader-user",
+        parentUuid: null,
+        sessionId,
+        cwd,
+        message: { role: "user", content: "question" },
+      });
+      const abandoned = JSON.stringify({
+        type: "assistant",
+        uuid: "reader-abandoned",
+        parentUuid: "reader-user",
+        sessionId,
+        cwd,
+        message: { role: "assistant", content: "old branch" },
+      });
+      const latest = JSON.stringify({
+        type: "assistant",
+        uuid: "reader-latest",
+        parentUuid: "reader-user",
+        sessionId,
+        cwd,
+        message: { role: "assistant", content: "latest branch" },
+      });
+      const sidechain = JSON.stringify({
+        type: "assistant",
+        uuid: "reader-sidechain",
+        parentUuid: "reader-user",
+        isSidechain: true,
+        sessionId,
+        cwd,
+        message: { role: "assistant", content: "sidechain" },
+      });
+      const allLines = [user, abandoned, latest, sidechain];
+      const mainLines = [user, abandoned, latest];
+      const currentLines = [user, latest];
+      const contents = `\n${allLines.join("\n\n")}\n`;
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, contents);
+
+      expect(await readSessionLines(sessionId)).toEqual(allLines);
+      expect(await readMainChainLines(sessionId)).toEqual(mainLines);
+      const selected = await readResumeChainLines(sessionId);
+      expect(selected.full).toEqual(currentLines);
+      expect(selected.boundary).toEqual(currentLines);
+      process.env.OTHERSIDE_DISABLE_PRECOMPACT_SKIP = "true";
+      const materialized = await readResumeChainLines(sessionId);
+      expect(materialized.full).toEqual(mainLines);
+      expect(materialized.boundary).toEqual(currentLines);
+      expect(await transcriptFile(toNamespacedPath(path)).text()).toBe(contents);
+      expect(readFileSync(path, "utf8")).toBe(contents);
+    } finally {
+      if (priorConfigDir === undefined) delete process.env.OTHERSIDE_CONFIG_DIR;
+      else process.env.OTHERSIDE_CONFIG_DIR = priorConfigDir;
+      if (priorSkip === undefined) delete process.env.OTHERSIDE_DISABLE_PRECOMPACT_SKIP;
+      else process.env.OTHERSIDE_DISABLE_PRECOMPACT_SKIP = priorSkip;
+    }
   });
 });

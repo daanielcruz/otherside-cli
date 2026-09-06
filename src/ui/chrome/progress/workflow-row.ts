@@ -1,25 +1,25 @@
 import { buildMergedPhases } from "@/engine/background/workflows/runtime/progress/merge.ts";
-import { computeWorkflowProgress } from "@/engine/background/workflows/runtime/store/progress.ts";
-import type { LocalWorkflowTaskState } from "@/engine/background/workflows/runtime/store/types.ts";
-import type { Color as InkColor } from "@/ink";
+import { tallyWorkflowProgress } from "@/engine/background/workflows/runtime/store/progress.ts";
+import type { WorkflowTaskLifecycle } from "@/engine/background/workflows/runtime/store/types.ts";
 import { formatDuration, formatTokens } from "@/kernel/std/text/format.ts";
-import { Color } from "@/ui/theme/theme.ts";
+
+import { Color, type ColorValue } from "@/ui/theme/theme.ts";
 
 export interface WorkflowRowParts {
   name: string;
   description: string;
   statusText: string;
-  bulletColor: InkColor | undefined;
+  bulletColor: ColorValue | undefined;
   stateVerb: string | undefined;
-  stateColor: InkColor | undefined;
+  stateColor: ColorValue | undefined;
 }
 
-export function isTerminalWorkflowStatus(status: string): boolean {
+export function isFinalWorkflowStatus(status: string): boolean {
   return status === "completed" || status === "failed" || status === "killed";
 }
 
-function workflowBulletColor(status: string, failedCount: number): InkColor | undefined {
-  if (isTerminalWorkflowStatus(status)) {
+function workflowBulletColor(status: string, failedCount: number): ColorValue | undefined {
+  if (isFinalWorkflowStatus(status)) {
     return status === "completed" ? Color.success : Color.error;
   }
   if (failedCount > 0) return Color.error;
@@ -27,7 +27,7 @@ function workflowBulletColor(status: string, failedCount: number): InkColor | un
   return undefined;
 }
 
-function getCurrentPhaseTitle(task: LocalWorkflowTaskState): string {
+function getCurrentPhaseTitle(task: WorkflowTaskLifecycle): string {
   const phases = buildMergedPhases({
     workflowProgress: task.workflowProgress,
     ...(task.phases !== undefined ? { phases: task.phases } : {}),
@@ -48,9 +48,9 @@ function summarizeDescription(rawDescription: string, name: string): string {
   return trimmed === name ? "" : trimmed;
 }
 
-export function buildWorkflowRowParts(task: LocalWorkflowTaskState, now: number): WorkflowRowParts {
-  const progress = computeWorkflowProgress(task.workflowProgress, task.agentCount);
-  const endRef = isTerminalWorkflowStatus(task.status) ? (task.endedAt ?? task.startedAt) : now;
+export function buildWorkflowRowParts(task: WorkflowTaskLifecycle, now: number): WorkflowRowParts {
+  const progress = tallyWorkflowProgress(task.workflowProgress, task.agentCount);
+  const endRef = isFinalWorkflowStatus(task.status) ? (task.endedAt ?? task.startedAt) : now;
   const elapsedMs = Math.max(0, endRef - task.startedAt);
 
   const phase = getCurrentPhaseTitle(task);

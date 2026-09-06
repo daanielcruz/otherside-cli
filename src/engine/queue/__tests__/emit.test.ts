@@ -105,7 +105,6 @@ describe("emitQueue.drainForBoundary", () => {
       llmBlocks: [],
       transcriptEntries: [],
       consumedIds: [],
-      removedQueuedMessageIds: [],
       notificationTexts: [],
     });
     expect(calls).toEqual([]);
@@ -153,11 +152,11 @@ describe("emitQueue.drainForBoundary", () => {
     expect(emitQueue.peek().map((item) => item.id)).toEqual([secondId]);
   });
 
-  it("drains urgent and deferred output with user input at the mid-turn boundary", () => {
-    const userId = emitQueue.emit({
-      class: "user_message",
+  it("drains an interrupt ahead of urgent and deferred output at the mid-turn boundary", () => {
+    const interruptId = emitQueue.emit({
+      class: "interrupt_bash",
       target: "llm_request",
-      payload: { kind: "user_interrupt_message", text: "please pause" },
+      payload: { kind: "tool_result_interrupt", toolUseId: "t1", content: "please pause" },
     });
     const urgentId = emitQueue.emit({
       class: "urgent_output",
@@ -177,7 +176,7 @@ describe("emitQueue.drainForBoundary", () => {
     });
 
     const midTurn = emitQueue.drainForBoundary("mid_turn");
-    expect(midTurn.consumedIds).toEqual([userId, urgentId, deferredId]);
+    expect(midTurn.consumedIds).toEqual([interruptId, urgentId, deferredId]);
     expect(emitQueue.peek()).toEqual([]);
 
     const loopEnd = emitQueue.drainForBoundary("tool_loop_end");

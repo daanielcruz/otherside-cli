@@ -1,11 +1,19 @@
-import { MAX_AGENT_SPAWN_DEPTH } from "@/engine/agents/agent-context.ts";
-import { listRunning as listRunningBackgroundTasks } from "@/engine/background/tasks/background.ts";
+import {
+  compileOutputSchema,
+  STRUCTURED_OUTPUT_FORCING_INSTRUCTION,
+  STRUCTURED_OUTPUT_NUDGE_MESSAGE,
+  STRUCTURED_OUTPUT_TOOL_NAME,
+} from "@/engine/background/subagents/structured-output.ts";
+import {
+  listRunning as listRunningBackgroundTasks,
+  setTaskParked,
+} from "@/engine/background/tasks/background.ts";
+import { wrapNotificationForModel } from "@/engine/background/tasks/notification.ts";
 import { listWorkflowTasks } from "@/engine/background/workflows/runtime/store/store.ts";
-import { getProviderConfig } from "@/engine/contract/registry.ts";
 import { accountFingerprint } from "@/engine/providers/_shared/account-identity.ts";
 import * as providers from "@/engine/providers/registry.ts";
 import { emitQueue } from "@/engine/queue/emit.ts";
-import { AUTOCOMPACT_RAPID_REFILL_ERROR_MESSAGE } from "@/engine/session/compact/index.ts";
+import { RAPID_REFILL_FAILURE_TEXT } from "@/engine/session/compact/index.ts";
 import type { UsageSnapshot } from "@/engine/session/compact/token-count.ts";
 import { releaseForkChain } from "@/engine/session/infra.ts";
 import { appendAgentRecordRaw } from "@/engine/session/persist.ts";
@@ -15,61 +23,41 @@ import {
   buildTaskReminderInjection,
 } from "@/engine/session/task-reminder.ts";
 import { killShellsForOwner } from "@/engine/tools/builtins/bash.ts";
-import type { ToolSchema } from "@/engine/tools/contract.ts";
-import {
-  activeDeferredToolNames,
-  clearDeferredAnnouncementsForScope,
-  declaredSchemasForOverrides,
-} from "@/engine/tools/deferred.ts";
-import { buildAgentInputSchema } from "@/engine/tools/dynamic/Agent.ts";
-import * as toolRegistry from "@/engine/tools/registry.ts";
+import { clearDeferredAnnouncementsForScope } from "@/engine/tools/deferred.ts";
 import type { ProviderToolDeclaration } from "@/engine/translator/index.ts";
-import { getAssembledTurn, sanitizeMessages } from "@/engine/translator/index.ts";
+import { sanitizeMessages } from "@/engine/translator/index.ts";
 import { streamWithRetry } from "@/engine/transport/_infra/classify/retry.ts";
-import { isMcpToolName } from "@/kernel/mcp/index.ts";
+import { mcpCallIdentity } from "@/kernel/mcp/index.ts";
 import { throwIfAborted } from "@/kernel/std/stream/abort.ts";
 import type { ForkEventSink } from "@/kernel/std/types/events.ts";
 import type { ContentBlock, Message } from "@/kernel/std/types/message.ts";
 import { lastAssistantRequestId } from "@/kernel/std/types/message.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
-import { wrapNotificationForModel } from "../../tasks/notification.ts";
-import {
-  compileOutputSchema,
-  STRUCTURED_OUTPUT_FORCING_INSTRUCTION,
-  STRUCTURED_OUTPUT_NUDGE_MESSAGE,
-  STRUCTURED_OUTPUT_TOOL_DESCRIPTION,
-  STRUCTURED_OUTPUT_TOOL_NAME,
-} from "../structured-output.ts";
-import { combineAbortSignals } from "./abort.ts";
 import { isForkOverBlockingLimit, maybeCompactFork, maybeMicroCompactFork } from "./compact.ts";
-import { composeForkSystem } from "./compose.ts";
+import { appendForkDeferredToolsReminder, composeForkSystem } from "./compose.ts";
 import {
   DEGENERATE_TOOL_LOOP_MESSAGE,
   FORK_PROMPT_TOO_LONG_MESSAGE,
-  FORK_RAPID_REFILL_TURN_THRESHOLD,
+  FORK_RAPID_REFILL_TURN_SPAN,
   MAX_DEGENERATE_TOOL_CALLS,
   MAX_FORK_COMPACT_FAILURES,
   MAX_FORK_RAPID_REFILLS,
-  MAX_FORK_STALL_RETRIES,
   STRUCTURED_OUTPUT_RETRIES_EXCEEDED,
-  WORKFLOW_DEFAULT_STALL_MS,
-  WORKFLOW_STALL_ABORT_REASON,
 } from "./constants.ts";
+import { buildSubagentBaseDeclarations, withStructuredOutputDeclaration } from "./declarations.ts";
 import { fireSubagentStartHooks, fireSubagentStopHooks, registerAgentHooks } from "./hooks.ts";
 import { buildForkMessages } from "./messages.ts";
 import { injectQueuedUserInput } from "./queued-input.ts";
 import { withGuaranteedReport } from "./report.ts";
 import { isTooShortForReturn } from "./return-quality.ts";
 import { withSidechainMetadata } from "./sidechain.ts";
-import { agentSpawnDepthFromContext } from "./spawn-depth.ts";
+import { waitForAgentSteer } from "./steering.ts";
 import { consumeForkStream } from "./stream-consumer.ts";
 import { maxStructuredOutputRetries } from "./structured-retries.ts";
 import {
   applyForkToolResultBudget,
   dispatchForkToolCalls,
   type ForkToolDispatchState,
-  forkToolDescription,
-  isAllowedInForkDeclarations,
 } from "./tool-dispatch.ts";
 import type { ForkSpec, SidechainRecord, SubagentResult } from "./types.ts";
 
@@ -86,238 +74,6 @@ function hasPendingOwnedNotification(ownerId: string): boolean {
   return emitQueue
     .peek({ ownerId })
     .some((item) => item.target === "inventory" && item.payload.kind === "task_notification_xml");
-}
-
-const NAMED_SUBAGENT_TOOL_ORDER = [
-  "Agent",
-  "Bash",
-  "Edit",
-  "Read",
-  "Skill",
-  "ToolSearch",
-  "DeferredToolPlaceholder",
-  "Write",
-] as const;
-
-const INHERITED_FORK_TOOL_ORDER = [
-  "Agent",
-  "AskUserQuestion",
-  "Bash",
-  "Edit",
-  "Read",
-  "ReportFindings",
-  "Skill",
-  "ToolSearch",
-  "Workflow",
-  "DeferredToolPlaceholder",
-  "Write",
-] as const;
-
-const DEFERRED_TOOL_PLACEHOLDER: ProviderToolDeclaration = {
-  name: "DeferredToolPlaceholder",
-  description:
-    "Reserved placeholder that keeps deferred tool loading active; never call this tool.",
-  input_schema: { type: "object", properties: {} },
-  defer_loading: true,
-};
-
-function inputSchemaForSubagent(schema: ToolSchema, ctx: RequestContext): Record<string, unknown> {
-  if (schema.name === "Agent") {
-    return buildAgentInputSchema(ctx.provider, ctx.orchestrationMode ?? "disabled");
-  }
-  return typeof schema.inputSchema.type === "string"
-    ? schema.inputSchema
-    : { type: "object", properties: {}, ...schema.inputSchema };
-}
-
-function toSubagentDeclaration(schema: ToolSchema, ctx: RequestContext): ProviderToolDeclaration {
-  return {
-    name: schema.name,
-    description: forkToolDescription(schema.name, schema.description, {
-      providerId: ctx.provider,
-      model: ctx.model,
-      orchestrationMode: ctx.orchestrationMode ?? "disabled",
-    }),
-    input_schema: inputSchemaForSubagent(schema, ctx),
-  };
-}
-
-function isSkillToolName(name: string): boolean {
-  return toolRegistry.getNamespace(name)?.startsWith("skill:") ?? false;
-}
-
-function atNestedSpawnCeiling(name: string): boolean {
-  return (
-    (name === "Agent" || name === "Skill") && agentSpawnDepthFromContext() >= MAX_AGENT_SPAWN_DEPTH
-  );
-}
-
-export function withStructuredOutputDeclaration(
-  declarations: ProviderToolDeclaration[],
-  outputSchema: Record<string, unknown>,
-): ProviderToolDeclaration[] {
-  return [
-    ...declarations.filter((declaration) => declaration.name !== STRUCTURED_OUTPUT_TOOL_NAME),
-    {
-      name: STRUCTURED_OUTPUT_TOOL_NAME,
-      description: STRUCTURED_OUTPUT_TOOL_DESCRIPTION,
-      input_schema: outputSchema,
-    },
-  ];
-}
-
-export function buildSubagentBaseDeclarations(
-  spec: ForkSpec,
-  ctx: RequestContext,
-): {
-  parentTurn: ReturnType<typeof getAssembledTurn>;
-  declarations: ProviderToolDeclaration[];
-} {
-  const provider = providers.get(ctx.provider);
-  const parentTurn = spec.inheritParentTurn ? getAssembledTurn(ctx.sessionId) : undefined;
-  if (parentTurn) {
-    const retainedByName = new Map(
-      parentTurn.tools.map((declaration) => [declaration.name, declaration]),
-    );
-    const declarations = INHERITED_FORK_TOOL_ORDER.flatMap((name) => {
-      if (name === "DeferredToolPlaceholder" && provider.id !== "anthropic") return [];
-      const declaration = retainedByName.get(name);
-      return declaration === undefined || atNestedSpawnCeiling(name) ? [] : [declaration];
-    });
-    for (const declaration of parentTurn.tools) {
-      if (
-        (isMcpToolName(declaration.name) || isSkillToolName(declaration.name)) &&
-        !declarations.some((existing) => existing.name === declaration.name)
-      ) {
-        declarations.push(declaration);
-      }
-    }
-    const implemented = new Set(toolRegistry.list().map((handler) => handler.schema.name));
-    // A parent-turn fork inherits the spawning session's transcript, so the
-    // session's announced tools legitimately belong to its declared set; the
-    // fork's own later ToolSearch loads land in its own scope and union in.
-    const activeDeferred = new Set([
-      ...activeDeferredToolNames(),
-      ...activeDeferredToolNames(ctx.agentOwnerId),
-    ]);
-    const candidateSchemas = new Map(
-      [
-        ...declaredSchemasForOverrides(provider.deferredOverrides(), implemented),
-        ...declaredSchemasForOverrides(provider.deferredOverrides(), implemented, ctx.agentOwnerId),
-      ].map((schema) => [schema.name, schema]),
-    );
-    for (const schema of candidateSchemas.values()) {
-      if (
-        !activeDeferred.has(schema.name) ||
-        !isAllowedInForkDeclarations(schema.name, spec.allowSet, spec, ctx.agentOwnerId) ||
-        declarations.some((declaration) => declaration.name === schema.name)
-      ) {
-        continue;
-      }
-      declarations.push(retainedByName.get(schema.name) ?? toSubagentDeclaration(schema, ctx));
-    }
-    for (const handler of toolRegistry.list()) {
-      const { schema } = handler;
-      if (
-        !isMcpToolName(schema.name) ||
-        !activeDeferred.has(schema.name) ||
-        !isAllowedInForkDeclarations(schema.name, spec.allowSet, spec, ctx.agentOwnerId) ||
-        declarations.some((declaration) => declaration.name === schema.name)
-      ) {
-        continue;
-      }
-      declarations.push(retainedByName.get(schema.name) ?? toSubagentDeclaration(schema, ctx));
-    }
-    return { parentTurn, declarations };
-  }
-
-  const implemented = new Set(toolRegistry.list().map((handler) => handler.schema.name));
-  // Fresh-context agents never saw the parent transcript: only their OWN
-  // ToolSearch loads count toward declared deferred extras.
-  const activeDeferred = new Set(activeDeferredToolNames(ctx.agentOwnerId));
-  const schemasByName = new Map(
-    declaredSchemasForOverrides(provider.deferredOverrides(), implemented, ctx.agentOwnerId).map(
-      (schema) => [schema.name, schema],
-    ),
-  );
-  const declarations: ProviderToolDeclaration[] = [];
-  for (const name of NAMED_SUBAGENT_TOOL_ORDER) {
-    if (name === "DeferredToolPlaceholder") {
-      if (provider.id === "anthropic") declarations.push(DEFERRED_TOOL_PLACEHOLDER);
-      continue;
-    }
-    const schema = schemasByName.get(name);
-    if (
-      schema === undefined ||
-      !isAllowedInForkDeclarations(name, spec.allowSet, spec, ctx.agentOwnerId)
-    ) {
-      continue;
-    }
-    declarations.push({
-      name,
-      description: forkToolDescription(name, schema.description, {
-        providerId: provider.id,
-        model: ctx.model,
-        orchestrationMode: ctx.orchestrationMode ?? "disabled",
-      }),
-      input_schema: inputSchemaForSubagent(schema, ctx),
-    });
-  }
-
-  for (const handler of toolRegistry.list()) {
-    const { schema } = handler;
-    if (
-      !isSkillToolName(schema.name) ||
-      !isAllowedInForkDeclarations(schema.name, spec.allowSet, spec, ctx.agentOwnerId) ||
-      declarations.some((declaration) => declaration.name === schema.name)
-    ) {
-      continue;
-    }
-    declarations.push({
-      name: schema.name,
-      description: forkToolDescription(schema.name, schema.description, {
-        providerId: provider.id,
-        model: ctx.model,
-        orchestrationMode: ctx.orchestrationMode ?? "disabled",
-      }),
-      input_schema:
-        typeof schema.inputSchema.type === "string"
-          ? schema.inputSchema
-          : { type: "object", properties: {}, ...schema.inputSchema },
-    });
-  }
-  for (const schema of declaredSchemasForOverrides(
-    provider.deferredOverrides(),
-    implemented,
-    ctx.agentOwnerId,
-  )) {
-    if (
-      !activeDeferred.has(schema.name) ||
-      !isAllowedInForkDeclarations(schema.name, spec.allowSet, spec, ctx.agentOwnerId) ||
-      declarations.some((declaration) => declaration.name === schema.name)
-    ) {
-      continue;
-    }
-    declarations.push(toSubagentDeclaration(schema, ctx));
-  }
-  for (const handler of toolRegistry.list()) {
-    const { schema } = handler;
-    if (
-      !isMcpToolName(schema.name) ||
-      !activeDeferred.has(schema.name) ||
-      !isAllowedInForkDeclarations(schema.name, spec.allowSet, spec, ctx.agentOwnerId) ||
-      declarations.some((declaration) => declaration.name === schema.name)
-    ) {
-      continue;
-    }
-    declarations.push(toSubagentDeclaration(schema, ctx));
-  }
-  for (const declaration of spec.extraDeclarations ?? []) {
-    if (!declarations.some((existing) => existing.name === declaration.name)) {
-      declarations.push(declaration);
-    }
-  }
-  return { parentTurn, declarations };
 }
 
 export async function runForkLoopInContext(
@@ -430,6 +186,10 @@ export async function runForkLoopInContext(
       content: composeForkSystem({ ctx, name, body, firstPrompt: prompt }),
     });
   }
+  // A resumed fork already carries its announcement in the restored transcript.
+  if (spec.initialMessages === undefined) {
+    appendForkDeferredToolsReminder(fork, ctx, spec, declarations);
+  }
   if (compiledSchema !== null) {
     fork.push({
       role: "user",
@@ -478,32 +238,6 @@ export async function runForkLoopInContext(
     );
   };
 
-  const stallMs =
-    spec.stallMs ??
-    getProviderConfig(ctx.provider)?.contentIdleTimeoutMs ??
-    WORKFLOW_DEFAULT_STALL_MS;
-  let stallController = new AbortController();
-  let streamSignal = combineAbortSignals(ctx.abortSignal, stallController.signal);
-  let stallTimer: ReturnType<typeof setTimeout> | undefined;
-  let lastStallLabel = "fork-start";
-  let lastStallArmAt = Date.now();
-  let consecutiveStalls = 0;
-  const clearStallTimer = (): void => {
-    if (stallTimer !== undefined) {
-      clearTimeout(stallTimer);
-      stallTimer = undefined;
-    }
-  };
-  const armStallTimer = (label: string): void => {
-    clearStallTimer();
-    lastStallLabel = label;
-    lastStallArmAt = Date.now();
-    if (stallMs > 0) {
-      stallTimer = setTimeout(() => stallController.abort(WORKFLOW_STALL_ABORT_REASON), stallMs);
-    }
-  };
-  const isStalled = (): boolean =>
-    stallController.signal.aborted && ctx.abortSignal?.aborted !== true;
   const runStart = Date.now();
 
   try {
@@ -565,7 +299,7 @@ export async function runForkLoopInContext(
         appendSidechainRecord({
           type: "assistant_message",
           ts: nowIso(),
-          content: AUTOCOMPACT_RAPID_REFILL_ERROR_MESSAGE,
+          content: RAPID_REFILL_FAILURE_TEXT,
           provider: ctx.provider,
           model: ctx.model,
         });
@@ -573,11 +307,11 @@ export async function runForkLoopInContext(
           {
             kind: "fork_complete",
             forkId,
-            output: AUTOCOMPACT_RAPID_REFILL_ERROR_MESSAGE,
+            output: RAPID_REFILL_FAILURE_TEXT,
             isError: true,
             ...parentRef,
           },
-          { output: AUTOCOMPACT_RAPID_REFILL_ERROR_MESSAGE, isError: true },
+          { output: RAPID_REFILL_FAILURE_TEXT, isError: true },
         );
       }
       if (compactFailures >= MAX_FORK_COMPACT_FAILURES) {
@@ -588,7 +322,7 @@ export async function runForkLoopInContext(
         // rest of the fork run, so the transcript grows unbounded until it
         // 400s. A genuine repeat failure just re-trips it.
         const turnsSinceLastCompact = lastCompactTurn === null ? turn : turn - lastCompactTurn;
-        if (turnsSinceLastCompact >= FORK_RAPID_REFILL_TURN_THRESHOLD) {
+        if (turnsSinceLastCompact >= FORK_RAPID_REFILL_TURN_SPAN) {
           compactFailures = 0;
         }
       }
@@ -604,10 +338,7 @@ export async function runForkLoopInContext(
       ) {
         const outcome = await maybeCompactFork(fork, ctx, lastForkUsage, declarations);
         if (outcome === "compacted") {
-          if (
-            lastCompactTurn !== null &&
-            turn - lastCompactTurn < FORK_RAPID_REFILL_TURN_THRESHOLD
-          ) {
+          if (lastCompactTurn !== null && turn - lastCompactTurn < FORK_RAPID_REFILL_TURN_SPAN) {
             rapidRefills += 1;
           } else {
             rapidRefills = 0;
@@ -673,13 +404,19 @@ export async function runForkLoopInContext(
       const requestMessages = parentTurn
         ? provider.composeMessages(
             parentTurn.harness,
-            sanitizeMessages(fork, { preserveToolReferences: provider.id === "anthropic" }),
+            // The inherited parent transcript can reference tools this fork
+            // never declares (e.g. fork-disallowed ones the parent loaded via
+            // ToolSearch); scope preservation to the fork's own declarations
+            // or the provider rejects the request at pre-flight.
+            sanitizeMessages(fork, {
+              preserveToolReferences: provider.id === "anthropic",
+              declaredToolNames: new Set(declarations.map((declaration) => declaration.name)),
+            }),
           )
         : provider.applyTrailingCacheControl
           ? provider.applyTrailingCacheControl(fork)
           : fork;
-      const streamCtx: RequestContext = { ...ctx, abortSignal: streamSignal };
-      armStallTimer("stream-start");
+      const streamCtx: RequestContext = { ...ctx };
       // A builder, not a pre-built body: each retry re-translates the request,
       // so a per-session recovery flagged by recoverableError (e.g. dropping a
       // rejected reasoning replay) reaches the retried attempt.
@@ -689,34 +426,15 @@ export async function runForkLoopInContext(
 
       const streamOutcome = await consumeForkStream({
         stream,
-        streamSignal,
+        streamSignal: ctx.abortSignal,
         ctx,
         forkId,
         parentRef,
         emit,
         streamToolInputFor: spec.streamToolInputFor,
         finish,
-        armStallTimer,
-        isStalled,
-        stallMs,
-        getLastStallLabel: () => lastStallLabel,
-        getLastStallArmAt: () => lastStallArmAt,
-        consecutiveStalls,
-        maxStallRetries: MAX_FORK_STALL_RETRIES,
-        turn,
         appendSidechainRecord,
-        runStart,
-        resetStall: () => {
-          stallController = new AbortController();
-          streamSignal = combineAbortSignals(ctx.abortSignal, stallController.signal);
-        },
       });
-      clearStallTimer();
-      consecutiveStalls = streamOutcome.consecutiveStalls;
-      if (streamOutcome.kind === "retry") {
-        turn -= 1;
-        continue;
-      }
       if (streamOutcome.kind === "finished") return streamOutcome.result;
 
       const {
@@ -793,12 +511,14 @@ export async function runForkLoopInContext(
           name: c.name,
           input: c.input,
         });
+        const mcpIdentity = mcpCallIdentity(c.name);
         appendSidechainRecord({
           type: "tool_call",
           ts: nowIso(),
           tool_name: c.name,
           args: c.input,
           call_id: c.id,
+          ...(mcpIdentity ? { mcpIdentity } : {}),
           provider: ctx.provider,
           model: ctx.model,
         });
@@ -878,7 +598,27 @@ export async function runForkLoopInContext(
         if (injectQueuedUserInput({ spec, fork, ctx, appendSidechainRecord })) continue;
         if (hasPendingOwnedNotification(forkId)) continue;
         if (hasRunningOwnedWork(forkId)) {
-          await emitQueue.waitForOwner(forkId, ctx.abortSignal);
+          // Parked on owned work, two inputs can wake this loop: a child's
+          // notification landing in the owner inventory, or a steer queued for
+          // this fork (agent-view submit / an addressed message). Whichever
+          // fires first wins; the shared wake signal releases the loser's
+          // subscription, and the next iteration's drains consume the input —
+          // waking is not claiming, so a race cannot double-deliver.
+          const wake = new AbortController();
+          const wakeSignal =
+            ctx.abortSignal !== undefined
+              ? AbortSignal.any([ctx.abortSignal, wake.signal])
+              : wake.signal;
+          setTaskParked(forkId, true);
+          try {
+            await Promise.race([
+              emitQueue.waitForOwner(forkId, wakeSignal),
+              waitForAgentSteer(forkId, wakeSignal),
+            ]);
+          } finally {
+            wake.abort();
+            setTaskParked(forkId, false);
+          }
           continue;
         }
         break;
@@ -960,8 +700,6 @@ export async function runForkLoopInContext(
       finalResult,
     );
   } finally {
-    clearStallTimer();
-    stallController.abort();
     killShellsForOwner(forkId);
     clearDeferredAnnouncementsForScope(forkId);
     await fireSubagentStopHooks(forkId, ctx.sessionId);

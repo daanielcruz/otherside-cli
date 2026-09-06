@@ -130,11 +130,8 @@ fsMock[`readdir${S}`] = readdirFn;
 mock.module("node:fs", () => fsMock);
 
 import { join } from "node:path";
-import {
-  loadPluginFromDirectory,
-  normalizePluginHooks,
-  resolvePluginComponents,
-} from "../loader.ts";
+import { normalizePluginHooks } from "../hooks-normalize.ts";
+import { loadPluginFromDirectory, resolvePluginComponents } from "../loader.ts";
 import type { PluginManifest } from "../manifest.ts";
 
 let root: string;

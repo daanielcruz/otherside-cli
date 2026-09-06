@@ -102,7 +102,7 @@ afterAll(() => {
 
 const ctx = {
   provider: "anthropic",
-  model: "claude-fable-5",
+  model: "claude-fable-5-1",
   effort: "high",
   permissionMode: "default",
   sessionId: "test",
@@ -115,7 +115,7 @@ function conversationWith(assistant: Partial<Message>): Message[] {
     {
       role: "assistant",
       producedBy: "anthropic",
-      producedModel: "claude-fable-5",
+      producedModel: "claude-fable-5-1",
       content: [
         { type: "thinking", text: "t", signature: SIGNATURE },
         { type: "text", text: "ok" },

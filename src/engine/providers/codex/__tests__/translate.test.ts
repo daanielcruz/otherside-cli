@@ -1,11 +1,14 @@
 import { describe, expect, it } from "bun:test";
+import { PNG } from "pngjs";
+import { buildProvider } from "@/engine/contract/build.ts";
 import { accountFingerprint } from "@/engine/providers/_shared/account-identity.ts";
 import { streamErrorToHttpError } from "@/engine/providers/_shared/retry.ts";
 import type { ProviderEvent } from "@/kernel/std/types/events.ts";
 import type { Message } from "@/kernel/std/types/message.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 import { config } from "../config.ts";
-import { translateRequestCodex, translateResponseCodex } from "../translate.ts";
+import { translateResponseCodex } from "../stream.ts";
+import { translateRequestCodex } from "../translate.ts";
 import { clearSessionState } from "../transport/state.ts";
 
 function codexCtx(overrides: Partial<RequestContext>): RequestContext {
@@ -20,6 +23,17 @@ function codexCtx(overrides: Partial<RequestContext>): RequestContext {
     agentic: false,
     ...overrides,
   } as unknown as RequestContext;
+}
+
+function opaquePng(width: number, height: number): Buffer {
+  const png = new PNG({ width, height });
+  for (let offset = 0; offset < png.data.length; offset += 4) {
+    png.data[offset] = (offset / 4) % 251;
+    png.data[offset + 1] = 91;
+    png.data[offset + 2] = 173;
+    png.data[offset + 3] = 255;
+  }
+  return PNG.sync.write(png);
 }
 
 function sseStream(events: object[]): AsyncIterable<Uint8Array> {
@@ -119,6 +133,21 @@ describe("translateRequestCodex prompt cache key", () => {
     expect(promptCacheKey({ subagentLabel: "collab_spawn", agentOwnerId: "fork-b" })).toBe(
       "session-1:fork:fork-b",
     );
+  });
+});
+
+describe("Codex request boundary", () => {
+  it("keeps media-free requests byte- and shape-equivalent", () => {
+    const ctx = codexCtx({});
+    const messages: Message[] = [
+      { role: "system", content: [{ type: "text", text: "system" }] },
+      { role: "user", content: [{ type: "text", text: "hello" }] },
+    ];
+    const direct = translateRequestCodex(ctx, messages, []);
+    const throughBoundary = buildProvider(config).translateRequest(ctx, messages, []);
+
+    expect(throughBoundary).toEqual(direct);
+    expect(JSON.stringify(throughBoundary)).toBe(JSON.stringify(direct));
   });
 });
 
@@ -506,7 +535,32 @@ describe("translateResponseCodex stream edge scenarios", () => {
   });
 });
 
-describe("translateRequestCodex tool_result images", () => {
+describe("translateRequestCodex images", () => {
+  it("marks direct user images with high detail", () => {
+    const messages: Message[] = [
+      {
+        role: "user",
+        content: [
+          {
+            type: "image",
+            source: { type: "base64", media_type: "image/png", data: "aGVsbG8=" },
+          },
+        ],
+      },
+    ];
+    const body = translateRequestCodex(codexCtx({}), messages, []) as Record<string, unknown>;
+    const input = body.input as Array<Record<string, unknown>>;
+    const message = input.find((item) => item.type === "message");
+
+    expect(message?.content).toEqual([
+      {
+        type: "input_image",
+        image_url: "data:image/png;base64,aGVsbG8=",
+        detail: "high",
+      },
+    ]);
+  });
+
   it("encodes tool_result image blocks as function_call_output content items", () => {
     const messages: Message[] = [
       { role: "user", content: [{ type: "text", text: "read the image" }] },
@@ -543,7 +597,78 @@ describe("translateRequestCodex tool_result images", () => {
     expect(items[1]).toEqual({
       type: "input_image",
       image_url: "data:image/png;base64,aGVsbG8=",
+      detail: "high",
     });
+  });
+
+  it("forces high detail on serialized input_image tool output", () => {
+    const messages: Message[] = [
+      {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "call_serialized_image",
+            content: JSON.stringify([
+              {
+                type: "input_image",
+                image_url: "data:image/png;base64,aGVsbG8=",
+                detail: "auto",
+              },
+            ]),
+          },
+        ],
+      },
+    ];
+    const body = translateRequestCodex(codexCtx({}), messages, []) as Record<string, unknown>;
+    const input = body.input as Array<Record<string, unknown>>;
+    const output = input.find((item) => item.type === "function_call_output");
+
+    expect(output?.output).toEqual([
+      {
+        type: "input_image",
+        image_url: "data:image/png;base64,aGVsbG8=",
+        detail: "high",
+      },
+    ]);
+  });
+
+  it("applies the active route policy to serialized input_image tool output", () => {
+    const original = opaquePng(2500, 1200).toString("base64");
+    const messages: Message[] = [
+      {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "call_serialized_oversize",
+            content: JSON.stringify([
+              {
+                type: "input_image",
+                image_url: `data:image/png;base64,${original}`,
+                detail: "auto",
+              },
+            ]),
+          },
+        ],
+      },
+    ];
+    const body = buildProvider(config).translateRequest(codexCtx({}), messages, []) as {
+      input: Array<Record<string, unknown>>;
+    };
+    const output = body.input.find((item) => item.type === "function_call_output")?.output as Array<
+      Record<string, unknown>
+    >;
+    const imageUrl = output[0]?.image_url;
+    if (typeof imageUrl !== "string") throw new Error("serialized image missing");
+    const encoded = imageUrl.slice(imageUrl.indexOf(",") + 1);
+    const prepared = PNG.sync.read(Buffer.from(encoded, "base64"));
+
+    expect(Math.max(prepared.width, prepared.height)).toBeLessThanOrEqual(2048);
+    expect(prepared.width * prepared.height).toBeLessThanOrEqual(2_560_000);
+    expect(Buffer.from(encoded, "base64").length).toBeLessThanOrEqual(786_432);
+    expect(output[0]?.detail).toBe("high");
+    expect(JSON.stringify(messages)).toContain(original);
   });
 
   it("encodes tool_result PDF blocks as input_file content items", () => {

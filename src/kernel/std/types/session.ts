@@ -1,11 +1,19 @@
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
-import type { PermissionMode } from "@/kernel/std/types/request.ts";
+import type { PermissionMode } from "@/kernel/std/types/permission-mode.ts";
+import type { ProviderId, ProviderModelRoute } from "@/kernel/std/types/provider-ids.ts";
 
 export interface SessionRecord {
   type: string;
+  /**
+   * Transcript identity, stamped when the line is written. It is the only name
+   * for a record that survives the array being rebuilt or trimmed on resume,
+   * so anything that must still point at the same record across loads holds
+   * this rather than a position.
+   */
+  uuid?: string;
   content?: string;
   thinking?: string;
   isRemote?: boolean;
+  remoteEnabled?: boolean;
   inlineImages?: unknown[];
   queueId?: string;
   tool_name?: string;
@@ -24,6 +32,13 @@ export interface Session {
   gitBranch?: string;
   records: SessionRecord[];
   usageRecords: SessionRecord[];
+  /**
+   * True when `records` stands for history rather than reproducing it: a large
+   * resume aggregates the turns it did not materialize. A position into the
+   * array names nothing under this, and a write rebuilding the transcript from
+   * it must refuse.
+   */
+  recordsArePartial?: boolean;
 }
 
 export interface BrokerStateSnapshot {
@@ -37,7 +52,7 @@ export interface Broker {
   subscribe(fn: (state: BrokerStateSnapshot) => void): () => void;
   dispatch(
     action:
-      | { kind: "set_provider"; provider: ProviderId; model: string }
+      | { kind: "set_route"; route: ProviderModelRoute }
       | { kind: "set_permission_mode"; mode: PermissionMode },
   ): void;
 }

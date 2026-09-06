@@ -8,7 +8,7 @@ import { agentSpawnDepth } from "@/engine/background/subagents/fork/spawn-depth.
 import * as toolRegistry from "@/engine/tools/registry.ts";
 import type { ProviderToolDeclaration } from "@/engine/translator/index.ts";
 import { isMcpToolName } from "@/kernel/mcp/index.ts";
-import { permissionRuleValueFromString } from "@/kernel/permissions/types.ts";
+import { parseRuleValueText } from "@/kernel/permissions/types.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 
 const WORKFLOW_RETURN_CONTRACT =
@@ -104,14 +104,14 @@ export function resolveAllowSetForFork(
 }
 
 function baseToolName(name: string): string {
-  return permissionRuleValueFromString(name)?.toolName ?? name;
+  return parseRuleValueText(name)?.toolName ?? name;
 }
 
 export function computeAllowedAgentTypes(def: ReturnType<typeof getAgent>): string[] | undefined {
   if (!def?.tools || def.tools.kind !== "list") return undefined;
   const out: string[] = [];
   for (const tool of def.tools.tools) {
-    const parsed = permissionRuleValueFromString(tool);
+    const parsed = parseRuleValueText(tool);
     if (parsed?.toolName !== "Agent" || !parsed.ruleContent) continue;
     for (const part of parsed.ruleContent.split(",")) {
       const value = part.trim();

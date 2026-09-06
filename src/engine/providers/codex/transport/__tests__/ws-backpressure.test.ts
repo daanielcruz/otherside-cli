@@ -3,7 +3,7 @@ import {
   CODEX_WS_RECEIVE_QUEUE_HIGH_WATERMARK,
   CODEX_WS_RECEIVE_QUEUE_LOW_WATERMARK,
   CodexWsBackpressureController,
-} from "../ws.ts";
+} from "../ws-backpressure.ts";
 
 class MockSocket {
   pauseCalls = 0;

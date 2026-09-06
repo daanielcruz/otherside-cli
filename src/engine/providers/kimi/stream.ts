@@ -19,6 +19,7 @@ import type { RequestContext } from "@/kernel/std/types/request.ts";
 export const kimiStream: StreamFn = async function* kimiStreamFn(
   ctx: RequestContext,
   body: unknown,
+  signal: AbortSignal,
 ): AsyncIterable<Uint8Array> {
   const apiKey = await currentKimiApiKey();
   const fp = kimiFingerprint(ctx);
@@ -36,7 +37,7 @@ export const kimiStream: StreamFn = async function* kimiStreamFn(
     method: "POST",
     headers,
     body: JSON.stringify(body),
-    ...(ctx.abortSignal ? { signal: ctx.abortSignal } : {}),
+    signal,
     ...connectionInit(ctx),
   });
 

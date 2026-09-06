@@ -1,4 +1,4 @@
-import { stringWidth as cellWidth } from "@/kernel/std/text/string-width.ts";
+import { stringWidth as cellWidth } from "@/terminal-runtime";
 
 // The prompt content sits after a 2-cell prefix (chevron / continuation
 // indent) and reserves room for the cursor cell at end of line.
@@ -75,8 +75,6 @@ interface WrappedLine {
   start: number;
 }
 
-// Diagnostic counter for render tests: increments once per full wrap walk so
-// tests can assert how many wraps a keystroke costs.
 let wrapWalks = 0;
 
 export function promptWrapWalkCount(): number {
@@ -123,22 +121,8 @@ function computeWrappedLines(text: string, width: number): WrappedLine[] {
   return out;
 }
 
-// Wrapped-line cache keyed on the exact (text, width) pair. Every editing
-// helper below re-derives rows from the same buffer several times per
-// keystroke (display rows, cursor verticals, home/end targets), and pure
-// cursor movement re-renders without changing the text at all — one retained
-// entry serves all of them and invalidates itself the moment either input
-// changes.
-let cachedText: string | null = null;
-let cachedWidth = -1;
-let cachedLines: WrappedLine[] = [];
-
 function wrapLinesWithOffsets(text: string, width: number): WrappedLine[] {
-  if (text === cachedText && width === cachedWidth) return cachedLines;
-  cachedLines = computeWrappedLines(text, width);
-  cachedText = text;
-  cachedWidth = width;
-  return cachedLines;
+  return computeWrappedLines(text, width);
 }
 
 export function promptWrapWidth(columns: number): number {
@@ -222,6 +206,10 @@ export function visualLineEndOffset(text: string, cursor: number, columns: numbe
 }
 
 export function logicalLineStartOffset(text: string, cursor: number): number {
+  // A caret at the very start has no break behind it. The guard is load-bearing:
+  // a negative search origin is clamped to 0, so text opening with a newline
+  // would otherwise report that newline as its own predecessor.
+  if (cursor <= 0) return 0;
   const prevNewline = text.lastIndexOf("\n", cursor - 1);
   return prevNewline === -1 ? 0 : prevNewline + 1;
 }
@@ -334,4 +322,27 @@ function offsetAtColumn(text: string, column: number): number {
     width = next;
   }
   return text.length;
+}
+
+/**
+ * What a vertical arrow does from here: move the caret a display row, or step out
+ * of the draft into history because there is no row left to move to.
+ *
+ * The decision is the whole point — a draft tall enough to have rows keeps the
+ * arrow, and only the topmost or bottommost row hands it over. Answering rather
+ * than acting means the two directions share one walk instead of mirroring it.
+ */
+export type VerticalStep = { kind: "caret"; offset: number } | { kind: "history" };
+
+export function verticalStep(
+  direction: "up" | "down",
+  text: string,
+  caret: number,
+  columns: number,
+): VerticalStep {
+  const target =
+    direction === "up"
+      ? cursorUpPosition(text, caret, columns)
+      : cursorDownPosition(text, caret, columns);
+  return target === null ? { kind: "history" } : { kind: "caret", offset: target };
 }

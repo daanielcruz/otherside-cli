@@ -10,7 +10,7 @@ import type { RequestContext } from "@/kernel/std/types/request.ts";
 function ctx(over: Partial<RequestContext>): RequestContext {
   return {
     provider: "xai",
-    model: "grok-4.5",
+    model: "grok-4.6",
     effort: "high",
     permissionMode: "default",
     sessionId: "s1",
@@ -52,7 +52,7 @@ describe("translateRequestGrok", () => {
     ];
     const body = translateRequestGrok(ctx({}), messages, tools) as Record<string, unknown>;
 
-    expect(body.model).toBe("grok-4.5");
+    expect(body.model).toBe("grok-4.6");
     expect(body.stream).toBe(true);
     expect(body.store).toBe(false);
     expect(body.include).toEqual(["reasoning.encrypted_content"]);
@@ -168,7 +168,7 @@ describe("translateRequestGrok", () => {
       {
         type: "message",
         role: "user",
-        content: [{ type: "input_image", image_url: "data:image/png;base64,AAAA" }],
+        content: [{ type: "input_image", image_url: "data:image/png;base64,AAAA", detail: "auto" }],
       },
     ]);
   });
@@ -178,7 +178,7 @@ describe("translateRequestGrok", () => {
     const reasoningOf = (over: Partial<RequestContext>) =>
       (translateRequestGrok(ctx(over), messages, []) as Record<string, unknown>).reasoning;
     expect(reasoningOf({ effort: null })).toEqual({ summary: "concise" });
-    // disableThinking cannot send effort "none" (proxy 400s it on grok-4.5) —
+    // disableThinking cannot send effort "none" (proxy 400s it on the reasoning flagships) —
     // it folds to the model's cheapest real effort with no summary/include.
     expect(reasoningOf({ disableThinking: true })).toEqual({ effort: "low" });
     const off = translateRequestGrok(ctx({ disableThinking: true }), messages, []) as Record<
@@ -187,8 +187,18 @@ describe("translateRequestGrok", () => {
     >;
     expect(off.include).toBeUndefined();
     expect(reasoningOf({ effort: "low" })).toEqual({ summary: "concise", effort: "low" });
-    expect(reasoningOf({ effort: "xhigh" })).toEqual({ summary: "concise", effort: "high" });
-    expect(reasoningOf({ effort: "max" })).toEqual({ summary: "concise", effort: "high" });
+    // 4.6 lists xhigh on the wire; max is otherside-only and folds to the highest listed.
+    expect(reasoningOf({ effort: "xhigh" })).toEqual({ summary: "concise", effort: "xhigh" });
+    expect(reasoningOf({ effort: "max" })).toEqual({ summary: "concise", effort: "xhigh" });
+    // 4.5 does not list xhigh — both xhigh and max fold to high.
+    expect(reasoningOf({ model: "grok-4.5", effort: "xhigh" })).toEqual({
+      summary: "concise",
+      effort: "high",
+    });
+    expect(reasoningOf({ model: "grok-4.5", effort: "max" })).toEqual({
+      summary: "concise",
+      effort: "high",
+    });
     // no tools declared -> no tools / tool_choice fields
     const bare = translateRequestGrok(ctx({}), messages, []) as Record<string, unknown>;
     expect(bare.tools).toBeUndefined();
@@ -199,7 +209,7 @@ describe("translateRequestGrok", () => {
     const messages: Message[] = [
       {
         role: "assistant",
-        producedModel: "grok-4.5",
+        producedModel: "grok-4.6",
         content: [
           { type: "thinking", thinking: "earlier", text: "earlier", signature: "ENC_PRIOR" },
           { type: "text", text: "hi" },

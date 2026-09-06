@@ -53,4 +53,5 @@ assets/demo.mp4
 render-next/
 .otherside/worktrees/
 .otherside/settings.local.json
-scratchpad/
+scratchpad
+src/platform/apple-terminal/native/*.node

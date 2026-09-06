@@ -32,10 +32,12 @@ function registerProvider(events: ProviderEvent[]): void {
       emitDeferredReminder: false,
     }),
     translateRequest: (_ctx: RequestContext, _messages: Message[], _tools: unknown[]) => ({}),
-    stream: async function* () {},
-    translateResponse: async function* () {
-      for (const event of events) yield event;
-    },
+    startStreamAttempt: () => ({
+      events: (async function* () {
+        for (const event of events) yield event;
+      })(),
+      abort: () => {},
+    }),
     recoverableError: () => ({ kind: "fail", reason: "test" }),
   } as unknown as Provider;
   providers.register(provider);
@@ -65,7 +67,7 @@ describe("subagent start hooks", () => {
       prompt: "Finish normally.",
       agentId: "hook-test-agent",
       agentHooks: {
-        subagentStart: [{ matcher: "*", command, timeoutMs: 2_000 }],
+        subagentStart: [{ matcher: "*", command, timeout: 2 }],
       },
     });
 

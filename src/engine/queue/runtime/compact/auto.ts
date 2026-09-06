@@ -1,20 +1,19 @@
 import { findModel } from "@/engine/model/catalog.ts";
 import * as providers from "@/engine/providers/registry.ts";
 import { currentLocalISODate } from "@/engine/queue/runtime/turn-prompts.ts";
-import { pruneContentReplacementStateForSession } from "@/engine/session/compact/content-replacement-prune.ts";
 import { groupByApiRound } from "@/engine/session/compact/grouping.ts";
 import {
-  AUTOCOMPACT_RAPID_REFILL_ERROR_MESSAGE,
-  getModelAutoCompactThreshold,
-  MAX_CONSECUTIVE_RAPID_REFILLS,
-  maxOutputTokensForModel,
-  RAPID_REFILL_TURN_THRESHOLD,
+  modelAutoCompactTrigger,
+  providerCompactOutputLimit,
+  RAPID_REFILL_FAILURE_TEXT,
+  RAPID_REFILL_STREAK_LIMIT,
+  RAPID_REFILL_TURN_SPAN,
 } from "@/engine/session/compact/index.ts";
 import { clearLastUsage } from "@/engine/session/compact/last-usage.ts";
 import {
-  computePeelStep,
-  tokensForGroup,
-  zeroAssistantUsage,
+  countGroupTokens,
+  nextPeelAdvance,
+  scrubCarriedAssistantUsage,
 } from "@/engine/session/compact/peel.ts";
 import { preserveMetadataForTail } from "@/engine/session/compact/preserved-metadata.ts";
 import {
@@ -27,14 +26,20 @@ import {
   summarizeConversation,
 } from "@/engine/session/compact/summary.ts";
 import { estimateTokens } from "@/engine/session/compact/token-count.ts";
-import { appendRecord, nowIso, sessionPathForCwd } from "@/engine/session/index.ts";
+import { pruneToolOutputArchiveForSession } from "@/engine/session/compact/tool-output-archive-prune.ts";
+import {
+  appendRecord,
+  nowIso,
+  restampSessionTitles,
+  sessionPathForCwd,
+} from "@/engine/session/index.ts";
 import { MAIN_SCOPE, readSetClearExcept } from "@/engine/tools/builtins/read/state.ts";
 import { assembleProviderTurn, type ProviderToolDeclaration } from "@/engine/translator/index.ts";
 import type { ComposedHarness } from "@/harness/composer/injections.ts";
 import { makeQueue } from "@/harness/composer/queue.ts";
 import {
-  formatCompactSummary,
-  getCompactUserSummaryMessage,
+  compactSummaryUserMessage,
+  renderCompactSummary,
 } from "@/harness/routines/compact/index.ts";
 import { fireConfiguredHooks } from "@/kernel/hooks/handler.ts";
 import { isEnvTruthy } from "@/kernel/std/proc/env.ts";
@@ -100,12 +105,12 @@ async function runIncrementalCompact(
       return {
         summary: result.summary,
         droppedMessages: result.droppedMessages,
-        preservedTail: preservedTail.map(zeroAssistantUsage),
+        preservedTail: preservedTail.map(scrubCarriedAssistantUsage),
       };
     } catch (err) {
       if (!(err instanceof CompactPromptTooLongError)) throw err;
-      groupTokens ??= groups.map(tokensForGroup);
-      preserveCount += computePeelStep(err.tokenGap, groupTokens, splitAt);
+      groupTokens ??= groups.map(countGroupTokens);
+      preserveCount += nextPeelAdvance(err.tokenGap, groupTokens, splitAt);
     }
   }
   return summarizeAll(ctx, messages, tools, onEvent, harness);
@@ -127,19 +132,19 @@ export async function* maybeCompact(deps: CompactOrchestrationDeps): AsyncIterab
   const failureBreakerOpen =
     deps.state.consecutiveCompactFailures >= MAX_CONSECUTIVE_COMPACT_FAILURES;
   const rearmFailureBreaker =
-    failureBreakerOpen && deps.state.turnsSinceLast >= RAPID_REFILL_TURN_THRESHOLD;
+    failureBreakerOpen && deps.state.turnsSinceLast >= RAPID_REFILL_TURN_SPAN;
   if (failureBreakerOpen && !rearmFailureBreaker) return;
   const rearmRapidRefillBreaker =
-    deps.state.rapidRefillBreakerOpen && deps.state.turnsSinceLast >= RAPID_REFILL_TURN_THRESHOLD;
+    deps.state.rapidRefillBreakerOpen && deps.state.turnsSinceLast >= RAPID_REFILL_TURN_SPAN;
   if (deps.state.rapidRefillBreakerOpen && !rearmRapidRefillBreaker) return;
 
   const state = deps.agentDeps.broker.read();
-  const model = findModel(state.model, state.provider);
+  const model = findModel({ provider: state.provider, model: state.model });
   if (!model) return;
   const window = resolveCompactWindow(model);
-  const maxOutput = maxOutputTokensForModel(state.model);
+  const maxOutput = providerCompactOutputLimit({ provider: state.provider, model: state.model });
   const lastUsage = deps.agentDeps.getLastUsage?.() ?? null;
-  const threshold = getModelAutoCompactThreshold({
+  const threshold = modelAutoCompactTrigger({
     model,
     window,
     maxOutputTokens: maxOutput,
@@ -161,7 +166,7 @@ export async function* maybeCompact(deps: CompactOrchestrationDeps): AsyncIterab
   if (deps.turnId !== null) attemptedAutoCompactTurns.set(deps.state, deps.turnId);
 
   const rapidRefillCount =
-    deps.state.turnsSinceLast < RAPID_REFILL_TURN_THRESHOLD
+    deps.state.turnsSinceLast < RAPID_REFILL_TURN_SPAN
       ? (rearmRapidRefillBreaker ? 0 : deps.state.rapidRefillCount) + 1
       : 0;
   const attemptState: CompactState = {
@@ -171,7 +176,7 @@ export async function* maybeCompact(deps: CompactOrchestrationDeps): AsyncIterab
     turnsSinceLast: deps.state.turnsSinceLast,
     lastAutoCompactAttemptTurnId: deps.turnId,
   };
-  if (rapidRefillCount >= MAX_CONSECUTIVE_RAPID_REFILLS) {
+  if (rapidRefillCount >= RAPID_REFILL_STREAK_LIMIT) {
     attemptState.rapidRefillBreakerOpen = true;
     applyCompactState(deps.state, attemptState);
     yield {
@@ -181,7 +186,7 @@ export async function* maybeCompact(deps: CompactOrchestrationDeps): AsyncIterab
       truncatedMessages: 0,
       preTokens: used,
       durationMs: 0,
-      error: AUTOCOMPACT_RAPID_REFILL_ERROR_MESSAGE,
+      error: RAPID_REFILL_FAILURE_TEXT,
     };
     return;
   }
@@ -237,7 +242,7 @@ export async function* maybeCompact(deps: CompactOrchestrationDeps): AsyncIterab
     }
     const result = await summarizePromise;
     summaryProduced = true;
-    const formatted = formatCompactSummary(result.summary);
+    const formatted = renderCompactSummary(result.summary);
     if (!formatted || formatted === "Summary:" || formatted.length < 50) {
       deps.state.consecutiveCompactFailures = attemptState.consecutiveCompactFailures + 1;
       yield {
@@ -252,7 +257,7 @@ export async function* maybeCompact(deps: CompactOrchestrationDeps): AsyncIterab
       return;
     }
     const preservedTail = result.preservedTail;
-    const summaryMessage = getCompactUserSummaryMessage(result.summary, {
+    const summaryMessage = compactSummaryUserMessage(result.summary, {
       suppressFollowUpQuestions: true,
       transcriptPath,
     });
@@ -292,6 +297,9 @@ export async function* maybeCompact(deps: CompactOrchestrationDeps): AsyncIterab
       ...(preservedImages.length > 0 ? { preservedImages } : {}),
     });
     boundaryAppended = true;
+    void restampSessionTitles(
+      sessionPathForCwd(deps.agentDeps.session.storageCwd, deps.agentDeps.session.id),
+    ).catch(() => {});
 
     deps.agentDeps.session.messages.splice(
       0,
@@ -304,7 +312,7 @@ export async function* maybeCompact(deps: CompactOrchestrationDeps): AsyncIterab
       restoredFiles.map((file) => file.path),
     );
     deps.clearNestedMemory?.();
-    pruneContentReplacementStateForSession(deps.agentDeps.session);
+    pruneToolOutputArchiveForSession(deps.agentDeps.session);
     deps.injections.drain();
     const compactBoundaryIdx = deps.agentDeps.session.records.findLastIndex(
       (r) => r.type === "compaction_mark",

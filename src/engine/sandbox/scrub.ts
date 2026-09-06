@@ -4,7 +4,7 @@ import { join } from "node:path";
 const BARE_REPO_FILES = ["HEAD", "packed-refs", "description"] as const;
 const BARE_REPO_DIRS = ["objects", "refs", "hooks", "info", "branches"] as const;
 
-export function scrubBareGitRepoFiles(cwd: string, commandStartTimeMs: number): string[] {
+export function scrubOrphanGitMetadata(cwd: string, commandStartTimeMs: number): string[] {
   if (existsSync(join(cwd, ".git"))) return [];
   const removed: string[] = [];
   for (const name of [...BARE_REPO_FILES, ...BARE_REPO_DIRS]) {

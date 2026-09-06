@@ -1,35 +1,32 @@
 import { readFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path/posix";
-import { getTaskOutputPath } from "@/engine/background/tasks/output-files.ts";
+import { resolveTaskLogPath } from "@/engine/background/tasks/output-files.ts";
 import { canSendNatively } from "@/engine/model/facts/capabilities-runtime.ts";
+import { annotateStderrWithSandboxDenials, cleanupAfterCommand } from "@/engine/sandbox/manager.ts";
 import {
-  annotateStderrWithSandboxFailures,
-  cleanupAfterCommand,
-} from "@/engine/sandbox/manager.ts";
-import {
-  extractBashCommentLabel,
-  interpretCommandResult,
+  bashCommentLabel,
+  classifyCommandOutcome,
   isSilentCommand,
 } from "@/engine/tools/_infra/command-analysis/commands.ts";
 import {
   detectDestructiveCommand,
   isDestructiveWarnEnabled,
 } from "@/engine/tools/_infra/command-analysis/destructive.ts";
-import { maybeBuildGhRateLimitReminder } from "@/engine/tools/_infra/command-analysis/gh-rate-limit.ts";
+import { buildGhRateLimitReminderIfDue } from "@/engine/tools/_infra/command-analysis/gh-rate-limit.ts";
 import {
   loadInlineRead,
-  parseInlineReadCommands,
+  parseEmbeddedReadCommands,
 } from "@/engine/tools/_infra/command-analysis/inline-read-prefetch.ts";
 import { detectInplaceEditTargets } from "@/engine/tools/_infra/command-analysis/inplace-edit.ts";
 import {
   buildSedEditDiff,
-  parseSedEditCommand,
+  parseSedEditInvocation,
   type SedEditDiff,
   type SedEditInfo,
 } from "@/engine/tools/_infra/command-analysis/sed-edit.ts";
 import { maybeBuildStaleReadHint } from "@/engine/tools/_infra/command-analysis/stale-read.ts";
 import {
-  getDefaultBashTimeoutMs,
+  defaultShellTimeoutMs,
   getMaxBashTimeoutMs,
 } from "@/engine/tools/_infra/command-analysis/timeouts.ts";
 import { parseImageDataUri } from "@/engine/tools/_infra/data-uri.ts";
@@ -43,10 +40,10 @@ import {
   appendShellResetMessage,
   cleanupCwdFile,
   isWithinAllowedWorkingDir,
+  maintainProjectWorkingDir,
   newCwdFilePath,
   recoverCwdIfMissing,
   resolveTrackedCwd,
-  shouldMaintainProjectWorkingDir,
 } from "@/engine/tools/builtins/cwd.ts";
 import { prepareExecCommand } from "@/engine/tools/builtins/exec.ts";
 import { makeBashProgressSink } from "@/engine/tools/builtins/foreground.ts";
@@ -57,7 +54,7 @@ import {
   readSetEntries,
   readSetInsert,
 } from "@/engine/tools/builtins/read/state.ts";
-import { countNonEmptyLines, isSearchOrReadBashCommand } from "@/engine/tools/builtins/safety.ts";
+import { countNonEmptyLines, isReadOrSearchCommand } from "@/engine/tools/builtins/safety.ts";
 import { filePathSegment, type ToolArgSegment, type ToolHandler } from "@/engine/tools/contract.ts";
 import { BashSchema } from "@/engine/tools/dynamic/Bash.ts";
 import { getTrackedCwd, setTrackedCwd } from "@/kernel/std/state/cwd-state.ts";
@@ -96,7 +93,7 @@ export {
 export {
   countNonEmptyLines,
   isAutoBackgroundableCommand,
-  isSearchOrReadBashCommand,
+  isReadOrSearchCommand,
 } from "@/engine/tools/builtins/safety.ts";
 
 interface BashInput {
@@ -119,11 +116,11 @@ interface PrimeInlineReadInput {
 
 async function primeInlineReadCache(input: PrimeInlineReadInput): Promise<void> {
   const { scope, command, exitCode, signal, cwd } = input;
-  for (const entry of parseInlineReadCommands(command)) {
-    if (entry.requiresExitZero === true && exitCode !== 0) continue;
-    const absolutePath = resolveCommandPath(entry.filePath, cwd);
+  for (const plan of parseEmbeddedReadCommands(command)) {
+    if (plan.onlyOnSuccess === true && exitCode !== 0) continue;
+    const absolutePath = resolveCommandPath(plan.filePath, cwd);
     if (readSetContains(scope, absolutePath)) continue;
-    const loaded = await loadInlineRead(absolutePath, entry, signal);
+    const loaded = await loadInlineRead(absolutePath, plan, signal);
     if (loaded) readSetInsert(scope, absolutePath, loaded.content, loaded.offset, loaded.limit);
   }
 }
@@ -196,7 +193,7 @@ function coerceBashInput(input: unknown): unknown {
 function sedEditFromInput(input: unknown): SedEditInfo | null {
   const command = commandFromInput(input);
   if (command.length === 0) return null;
-  return parseSedEditCommand(command);
+  return parseSedEditInvocation(command);
 }
 
 function bashCommandText(input: unknown): string {
@@ -213,7 +210,7 @@ export const Bash: ToolHandler = {
   schema: BashSchema,
   coerceInput: coerceBashInput,
   render: {
-    userFacingName(input) {
+    userFacingLabel(input) {
       return sedEditFromInput(input) !== null ? "Update" : "Bash";
     },
     summarizeArgs(input) {
@@ -253,7 +250,7 @@ export const Bash: ToolHandler = {
       typeof (args as { description?: unknown }).description === "string"
         ? (args as { description: string }).description.trim() || null
         : null;
-    const commentLabel = extractBashCommentLabel(command);
+    const commentLabel = bashCommentLabel(command);
     const displayCommand = inputDescription ?? commentLabel ?? command;
 
     const destructiveWarning = isDestructiveWarnEnabled()
@@ -274,7 +271,7 @@ export const Bash: ToolHandler = {
       await snapshotBeforeFileMutation(ctx, target);
     }
 
-    const sedEdit = parseSedEditCommand(command);
+    const sedEdit = parseSedEditInvocation(command);
     const sedEditPath = sedEdit
       ? isAbsolute(sedEdit.filePath)
         ? sedEdit.filePath
@@ -290,7 +287,7 @@ export const Bash: ToolHandler = {
       login,
     } = await prepareExecCommand({ command, dangerouslyDisableSandbox, cwdFilePath });
 
-    let timeoutMs = getDefaultBashTimeoutMs();
+    let timeoutMs = defaultShellTimeoutMs();
     if (args.timeout !== undefined && args.timeout !== null) {
       const n = typeof args.timeout === "number" ? args.timeout : Number(args.timeout);
       if (!Number.isFinite(n)) {
@@ -321,7 +318,7 @@ export const Bash: ToolHandler = {
       }
       return {
         tool_use_id: call.id,
-        content: `Command running in background with ID: ${r.id}. Output is being written to: ${getTaskOutputPath(r.id)}. You will be notified when it completes. To check interim output, use Read on that file path.`,
+        content: `Command running in background with ID: ${r.id}. Output is being written to: ${resolveTaskLogPath(r.id)}. You will be notified when it completes. To check interim output, use Read on that file path.`,
         meta: { kind: "bash", status: "background", shell_id: r.id },
       };
     }
@@ -347,7 +344,7 @@ export const Bash: ToolHandler = {
     if (autoBgOutcome.promoted) {
       return {
         tool_use_id: call.id,
-        content: `Command moved to the background with ID: ${autoBgOutcome.shellId}. ${autoBgOutcome.reason}. You will be notified when it completes. Output is being written to: ${getTaskOutputPath(autoBgOutcome.shellId)}.`,
+        content: `Command moved to the background with ID: ${autoBgOutcome.shellId}. ${autoBgOutcome.reason}. You will be notified when it completes. Output is being written to: ${resolveTaskLogPath(autoBgOutcome.shellId)}.`,
         meta: { kind: "bash", status: "background", shell_id: autoBgOutcome.shellId },
       };
     }
@@ -359,7 +356,7 @@ export const Bash: ToolHandler = {
           const resolution = resolveTrackedCwd({
             newCwd,
             originalCwd: ctx.cwd,
-            maintain: shouldMaintainProjectWorkingDir(),
+            maintain: maintainProjectWorkingDir(),
             isAllowed: (candidate) =>
               isWithinAllowedWorkingDir(candidate, ctx.cwd, ctx.additionalWorkingDirectories ?? []),
           });
@@ -389,7 +386,7 @@ export const Bash: ToolHandler = {
       if (imageResult !== null) return imageResult;
     }
     const annotatedStderrBase = sandboxed
-      ? annotateStderrWithSandboxFailures(out.stderr, sandboxLogTag)
+      ? annotateStderrWithSandboxDenials(out.stderr, sandboxLogTag)
       : out.stderr;
     const annotatedStderrScrubbed =
       scrubbedFiles.length > 0
@@ -398,13 +395,13 @@ export const Bash: ToolHandler = {
     const annotatedStderr = cwdWasReset
       ? appendShellResetMessage(annotatedStderrScrubbed, ctx.cwd)
       : annotatedStderrScrubbed;
-    const interpreted = interpretCommandResult(command, out.exitCode);
+    const interpreted = classifyCommandOutcome(command, out.exitCode);
     const noOutputExpected = isSilentCommand(command);
-    const searchSummary = isSearchOrReadBashCommand(command)
+    const searchSummary = isReadOrSearchCommand(command)
       ? { lines: countNonEmptyLines(out.stdoutRaw) }
       : null;
     const fullStderrBase = sandboxed
-      ? annotateStderrWithSandboxFailures(out.stderrRaw, sandboxLogTag)
+      ? annotateStderrWithSandboxDenials(out.stderrRaw, sandboxLogTag)
       : out.stderrRaw;
     const fullStderr = cwdWasReset
       ? appendShellResetMessage(fullStderrBase, ctx.cwd)
@@ -426,7 +423,7 @@ export const Bash: ToolHandler = {
     const contentBase = persisted
       ? persisted.preview
       : mergeStdoutStderr(stdoutWithExit, annotatedStderr);
-    const ghReminder = maybeBuildGhRateLimitReminder(command, `${out.stdoutRaw}\n${out.stderrRaw}`);
+    const ghReminder = buildGhRateLimitReminderIfDue(command, `${out.stdoutRaw}\n${out.stderrRaw}`);
     const staleReadHint = await maybeBuildStaleReadHint({
       command,
       entries: readSetEntries(readScopeKey(ctx)),

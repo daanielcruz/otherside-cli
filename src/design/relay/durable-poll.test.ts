@@ -22,7 +22,7 @@ describe("startDurablePoll", () => {
     expect(calls).toBe(stoppedAt);
   });
 
-  test("uses a five-second recovery interval", () => {
-    expect(DESIGN_EVENT_POLL_INTERVAL_MS).toBe(5_000);
+  test("uses a one-minute recovery interval", () => {
+    expect(DESIGN_EVENT_POLL_INTERVAL_MS).toBe(60_000);
   });
 });

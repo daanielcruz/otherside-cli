@@ -1,10 +1,10 @@
 import { existsSync, rmSync } from "node:fs";
 import { delimiter, join, resolve, sep } from "node:path";
 import {
+  agentLoadFailureText,
   loadAndRegister as loadAgent,
   loadFromMarkdown as loadAgentFromMarkdown,
   loadFromDirectory,
-  publishLoadFailures,
 } from "@/engine/agents/loader.ts";
 import * as agentRegistry from "@/engine/agents/registry.ts";
 import { getPluginWorkflows } from "@/engine/background/workflows/runtime/plugins/plugin-workflows.ts";
@@ -36,11 +36,12 @@ import {
   replaceLoadedState,
   replaceSnapshot,
 } from "@/engine/plugins/state.ts";
+import { registerPluginUseListener } from "@/engine/plugins/usage.ts";
 import {
   loadProjectCommandsFromDirectory,
   loadAndRegister as loadSkill,
   loadSkillFromMarkdown,
-  loadSkillsFromDirectory,
+  readSkillsFromDir,
 } from "@/engine/skills/loader.ts";
 import * as skillRegistry from "@/engine/skills/registry.ts";
 import { pruneAnnouncedMcpTools } from "@/engine/tools/deferred.ts";
@@ -227,7 +228,7 @@ async function reloadCandidate(
     for (const skill of resolved.skills) {
       try {
         const skillId = pluginContributionId(pluginId, skill.name);
-        const loadedSkill = loadSkillFromMarkdown(skillId, skill.content, false);
+        const loadedSkill = loadSkillFromMarkdown(skillId, skill.content, false, "plugin");
         skills.push({ ...loadedSkill, name: skillId });
         skillsCount += 1;
       } catch (error) {
@@ -242,7 +243,7 @@ async function reloadCandidate(
           content = `---\ndescription: ${description}\n---\n${content}`;
         }
         const commandId = pluginContributionId(pluginId, command.name);
-        const loadedCommand = loadSkillFromMarkdown(commandId, content, false);
+        const loadedCommand = loadSkillFromMarkdown(commandId, content, false, "plugin");
         skills.push({ ...loadedCommand, name: commandId });
         skillsCount += 1;
       } catch (error) {
@@ -365,6 +366,7 @@ export async function reloadPlugins(options?: PluginReloadOptions): Promise<Plug
     agentRegistry.replaceSnapshot(candidate.agentDefs);
     skillRegistry.replaceSnapshot(candidate.skills);
     setPluginMcpServersProvider(gatherPluginMcpServers);
+    registerPluginUseListener();
     await refresh(cwd);
     pruneAnnouncedMcpTools(new Set(listToolHandlers().map((handler) => handler.schema.name)));
     replaceLoadedState(candidate.loaded);
@@ -394,6 +396,7 @@ export function loadCorpus(options?: CorpusLoadOptions): {
   agents: number;
   skills: number;
   plugins: number;
+  agentFailures: string[];
 } {
   const cwd = options?.cwd ?? process.cwd();
   const config = options?.config ?? resolveConfig(cwd);
@@ -410,7 +413,9 @@ export function loadCorpus(options?: CorpusLoadOptions): {
   const userAgents = loadFromDirectory(join(configRoot(), "agents"), "user");
   const projectAgents = loadFromDirectory(join(cwd, ".otherside", "agents"), "project");
   agents += userAgents.defs.length + projectAgents.defs.length;
-  publishLoadFailures([...userAgents.failures, ...projectAgents.failures]);
+  const agentFailures = [...userAgents.failures, ...projectAgents.failures].map(
+    agentLoadFailureText,
+  );
   let skills = 0;
   for (const { name, src } of SKILL_CORPUS) {
     try {
@@ -418,8 +423,8 @@ export function loadCorpus(options?: CorpusLoadOptions): {
       skills += 1;
     } catch {}
   }
-  skills += loadSkillsFromDirectory(join(configRoot(), "skills"));
-  skills += loadSkillsFromDirectory(join(cwd, ".otherside", "skills"));
+  skills += readSkillsFromDir(join(configRoot(), "skills"));
+  skills += readSkillsFromDir(join(cwd, ".otherside", "skills"), "project");
   skills += loadProjectCommandsFromDirectory(join(cwd, ".otherside", "commands"));
 
   const pluginDirs = [join(configRoot(), "plugins", "installed"), ...cliPluginDirs()];
@@ -509,10 +514,11 @@ export function loadCorpus(options?: CorpusLoadOptions): {
     warnings: getSnapshot().warnings,
   });
   setPluginMcpServersProvider(gatherPluginMcpServers);
+  registerPluginUseListener();
   // Deferred plugin-payload cleanup: uninstall only stamps payload dirs with
   // an orphan marker; this startup sweep deletes dirs whose marker outlived
   // the retention window (and un-stamps anything that was reinstalled).
   schedulePluginPayloadSweep(cwd);
 
-  return { agents, skills, plugins };
+  return { agents, skills, plugins, agentFailures };
 }

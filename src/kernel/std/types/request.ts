@@ -1,6 +1,3 @@
-import type { OrchestrationMode } from "@/kernel/config/orchestration-mode.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
-import type { HookEntry } from "@/kernel/hooks/exec.ts";
 import type { EffortLevel } from "@/kernel/std/types/effort.ts";
 import type {
   BackgroundController,
@@ -8,8 +5,11 @@ import type {
   ForkEventSink,
   ToolProgressSink,
 } from "@/kernel/std/types/events.ts";
+import type { HookEntry } from "@/kernel/std/types/hook-entry.ts";
 import type { Message, ToolCall, ToolResult } from "@/kernel/std/types/message.ts";
+import type { OrchestrationMode } from "@/kernel/std/types/orchestration-mode.ts";
 import type { PermissionMode } from "@/kernel/std/types/permission-mode.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 
 export type { PermissionMode };
 
@@ -21,6 +21,8 @@ export interface BrokerState {
   permissionMode: PermissionMode;
   prePlanMode?: PermissionMode;
   ultracode?: boolean;
+  /** Session-scoped orchestration mode; config only seeds new sessions. */
+  orchestrationMode: OrchestrationMode;
 }
 
 export interface BrokerHandle {
@@ -39,9 +41,9 @@ export interface ScopedToolHandler {
   steerValidationError?(input: unknown): string | null;
 }
 
-export interface ContentReplacementState {
-  seenIds: Set<string>;
-  replacements: Map<string, string>;
+export interface ToolOutputArchive {
+  observedCallIds: Set<string>;
+  notices: Map<string, string>;
 }
 
 export interface RequestContext {
@@ -57,6 +59,9 @@ export interface RequestContext {
   // thinking `display` field (bare adaptive → no summary text); a no-op on
   // providers that can't decouple the summary from effort (glm/deepseek/kimi).
   suppressThinkingSummary?: boolean;
+  // Session-level setting for Anthropic adaptive thinking summaries. Omitted
+  // means visible, preserving the default for contexts built outside the agent.
+  showThinkingSummaries?: boolean;
   permissionMode: PermissionMode;
   permissionModeIsFixed?: boolean;
   /** Canonical orchestration boundary carried into tools and prompt assembly. */
@@ -68,6 +73,10 @@ export interface RequestContext {
   // nested agent cannot launch above its own tier — higher requests clamp to
   // the caller's tier. When false, nested launches may request any tier.
   chainOfCommandEnabled?: boolean;
+  // Multi-model fork ("Multi-model fork" in /config, absent = disabled): when
+  // true an agent spawn or a SendMessage resume may pin a provider/model pair
+  // other than the session route, after the user approves the cost prompt.
+  multiModelForkEnabled?: boolean;
   // Set after a stream idle timeout: a wedged pooled socket looks healthy to
   // the pool, so every retry through it stalls again. Sticky for the rest of
   // this request; fetch-based streams then bypass the pool (keepalive:false).
@@ -105,10 +114,11 @@ export interface RequestContext {
   backgroundController?: BackgroundController;
   abortSignal?: AbortSignal;
   subagentLabel?: CodexSubAgentLabel;
-  cacheRole?: "title";
+  cacheRole?: "title" | "side-question";
   requestRole?: "memory_recall" | "title";
   responseRequestId?: string;
   agentOwnerId?: string;
+  parentAgentOwnerId?: string;
   parentThreadId?: string;
   agentic?: boolean;
   parentMessages?: Message[];
@@ -117,7 +127,7 @@ export interface RequestContext {
   forkDeferredAllow?: ReadonlySet<string> | null | undefined;
   scopedToolHandlers?: ReadonlyMap<string, ScopedToolHandler>;
   taskHooks?: { created: HookEntry[]; completed: HookEntry[] };
-  contentReplacementState?: ContentReplacementState;
+  toolOutputArchive?: ToolOutputArchive;
   bgTaskId?: string | undefined;
   childTaskIdMap?: Map<string, string> | undefined;
 }

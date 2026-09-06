@@ -1,4 +1,5 @@
 import { listPeers } from "@/backend/app/peers.ts";
+import { getSessionSyncStatus } from "@/backend/app/session/sync/session-status.ts";
 import type { Device } from "@/backend/shared/device.ts";
 import type { RealtimeChannel } from "@/backend/shared/realtime.ts";
 import type { Broker, Session } from "@/kernel/std/types/session.ts";
@@ -8,7 +9,6 @@ import {
   latestContextUsageSnapshotFromSessionRecords,
   usageByProviderFromRecords,
 } from "@/kernel/storage/provider-usage.ts";
-import { getSessionSyncStatus } from "../session-status.ts";
 import {
   buildAgentProgressBroadcast,
   buildAvailableModelsBroadcast,

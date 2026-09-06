@@ -1,15 +1,20 @@
-import type { SetStateAction } from "react";
 import { applyAgentIdentityToTranscript } from "@/engine/session/record/transcript-update.ts";
 import type { RecordProviderUsageFn } from "@/engine/session/usage/record-provider-usage.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
 import type { ForkEvent } from "@/kernel/std/types/events.ts";
+import type { ProviderId, ProviderModelRoute } from "@/kernel/std/types/provider-ids.ts";
 import { addLiveOutputTokens } from "@/store/live-tokens/index.ts";
 import { buildSkillCompletionSummary } from "@/ui/transcript/records/skill-completion.ts";
-import type { NestedToolEntry, SkillProgressItem, TranscriptEntry } from "@/ui/transcript/types";
+import type {
+  NestedToolEntry,
+  SkillProgressItem,
+  TranscriptEntry,
+  TranscriptWrite,
+} from "@/ui/transcript/types";
 
 export interface ForkEventRouterDeps {
-  setTranscript: (value: SetStateAction<readonly TranscriptEntry[]>) => void;
+  setTranscript: (value: TranscriptWrite) => void;
   forkToCallIdRef: { current: Map<string, string> };
+  agentModelByCallIdRef: { current: Map<string, ProviderModelRoute> };
   setAgentNested: (
     callId: string,
     mutator: (entries: NestedToolEntry[]) => NestedToolEntry[],
@@ -18,10 +23,25 @@ export interface ForkEventRouterDeps {
   broker: { read: () => { provider: ProviderId; model: string } };
 }
 
+/**
+ * Routes a fork's live events into the transcript for a fork that no turn owns.
+ * A fork spawned by a tool call rides the turn's own event queue and paints the
+ * Agent row that call already put on screen; a fork started by a slash command
+ * has no such row and no live turn to carry it, so its events land here and
+ * drive the skill entry the renderer already knows how to draw. Events that do
+ * name a parent tool call keep the agent shape, so one router serves both.
+ */
 export function createForkEventRouter(deps: ForkEventRouterDeps): {
   routeForkEvent: (event: ForkEvent) => void;
 } {
-  const { setTranscript, forkToCallIdRef, setAgentNested, recordProviderUsage, broker } = deps;
+  const {
+    setTranscript,
+    forkToCallIdRef,
+    agentModelByCallIdRef,
+    setAgentNested,
+    recordProviderUsage,
+    broker,
+  } = deps;
 
   const updateSkillEntry = (
     forkId: string,
@@ -121,9 +141,14 @@ export function createForkEventRouter(deps: ForkEventRouterDeps): {
       const parentCallId = event.parentToolCallId;
       if (parentCallId) {
         forkToCallIdRef.current.set(event.forkId, parentCallId);
+        agentModelByCallIdRef.current.set(parentCallId, {
+          provider: event.provider,
+          model: event.model,
+        });
         setTranscript((t) =>
           applyAgentIdentityToTranscript(t, parentCallId, {
             model: event.model,
+            provider: event.provider,
             name: event.name,
           }),
         );
@@ -200,8 +225,7 @@ export function createForkEventRouter(deps: ForkEventRouterDeps): {
         }));
       }
     } else if (event.kind === "fork_retry_status") {
-      if (event.attempt < 1) {
-      } else {
+      if (event.attempt >= 1) {
         const id = `retry_${event.forkId}`;
         setTranscript((t) => {
           const seconds = Math.max(1, Math.round(event.delayMs / 1000));

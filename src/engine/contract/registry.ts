@@ -1,6 +1,6 @@
 import type { ProviderConfig } from "@/engine/contract/types.ts";
 import type { Api } from "@/engine/translator/dispatch/types.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 
 const configs = new Map<ProviderId, ProviderConfig<Api>>();
 

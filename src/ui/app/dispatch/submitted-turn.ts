@@ -15,15 +15,15 @@ import { makeTuiTurnObserver } from "@/engine/queue/turn/tui-observer.ts";
 import {
   appendAiTitle,
   appendRecord,
-  generateSessionTitle,
+  composeSessionTitle,
   nowIso,
   revokeLastUnansweredUserMessage,
   type UserMessageRecord,
 } from "@/engine/session/index.ts";
 import { mergeContextUsageSnapshot } from "@/engine/session/usage/snapshot.ts";
 import { classifyError, classifyProviderError } from "@/engine/transport/errors.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
 import type { ContentBlock } from "@/kernel/std/types/message.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 import { setActiveRewindTurn } from "@/kernel/storage/file-history.ts";
 import {
   dispatch,
@@ -32,6 +32,7 @@ import {
   sessionTitleStore,
 } from "@/store/index.ts";
 import { setLiveOutputTokens } from "@/store/live-tokens/index.ts";
+import { promptStore, setPromptKeywordDismissed } from "@/store/prompt/index.ts";
 import {
   freezeObserverRef,
   generatorActiveRef,
@@ -119,6 +120,7 @@ export function createRunSubmittedTurn(
     beginThinkingStatus,
     endThinkingStatus,
     resetThinkingStatus,
+    transcriptBatch,
     setTranscript,
     setStreamingId,
     setStreamingText,
@@ -144,7 +146,7 @@ export function createRunSubmittedTurn(
     sessionTitleActions.setAttempted(true);
     const forSessionId = session.id;
     const state = broker.read();
-    void generateSessionTitle(
+    void composeSessionTitle(
       {
         provider: state.provider,
         model: state.model,
@@ -360,6 +362,7 @@ export function createRunSubmittedTurn(
         setStreamingCommittedLen,
         setStreamingId,
         setTranscript,
+        transcriptBatch,
         setProgressInputTokens,
         setProgressStartedAt,
         setTasksExpanded,
@@ -398,7 +401,11 @@ export function createRunSubmittedTurn(
         imageParserProvider: runtimeConfig.imageParserProvider as ProviderId | undefined,
       });
       const turnBlocks = applyAdditionalContext(resolvedBlocks, opts?.additionalContext ?? []);
-      await runSessionTurn(agent.runTurn(turnBlocks, text), turnObserver);
+      // A dismissed keyword is not passed along: with no keyword text the turn
+      // reads no request, which is exactly what dismissing it meant.
+      const keywordText = promptStore.getState().keywordDismissed ? undefined : text;
+      await runSessionTurn(agent.runTurn(turnBlocks, keywordText), turnObserver);
+      setPromptKeywordDismissed(false);
       generatorActiveRef.current = false;
       const { acc, accThinking, sawUsageEvent, progressState } = snapshot();
       if (!sawUsageEvent && turnGuard.generation === generation) {
@@ -418,14 +425,13 @@ export function createRunSubmittedTurn(
         (acc.trim().length > 0 || accThinking.trim().length > 0) &&
         turnGuard.generation === generation
       ) {
-        const finalEntries = await flushAssistant();
+        await flushAssistant();
         const startedAt = turnStartedAtRef.current;
         const elapsedMs = startedAt !== null ? Date.now() - startedAt : 0;
         const durationText = formatTurnDuration(elapsedMs);
         const durationId = nextTranscriptId("turn_done");
         setTranscript((t) => [
           ...t,
-          ...finalEntries,
           {
             id: durationId,
             kind: "compact_done",

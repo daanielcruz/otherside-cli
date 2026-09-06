@@ -1,4 +1,4 @@
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 
 const GEMINI_FAMILY: ReadonlySet<ProviderId> = new Set(["antigravity"]);
 

@@ -33,7 +33,7 @@ function resolveMainRepoFromGitDir(gitdirRef: string, cwd: string): string | nul
   return segments.slice(0, gitDirIdx).join("/");
 }
 
-export function detectWorktreeMainRepoPath(cwd: string = process.cwd()): string | null {
+export function locateWorktreeMainRepo(cwd: string = process.cwd()): string | null {
   if (cachedWorktreeMainRepo !== undefined) return cachedWorktreeMainRepo;
   const gitPath = join(cwd, ".git");
   const content = readGitFile(gitPath);

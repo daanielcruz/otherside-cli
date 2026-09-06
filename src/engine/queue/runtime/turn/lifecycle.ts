@@ -1,12 +1,12 @@
-import type { MutableRefObject } from "react";
+import type { MutableRef } from "@/kernel/std/types/state.ts";
 
 export type TurnKind = "compact" | "skill" | "turn";
 
 export interface TurnLifecycleDeps {
-  runningRef: MutableRefObject<boolean>;
-  generatorActiveRef: MutableRefObject<boolean>;
-  compactRunningRef: MutableRefObject<boolean>;
-  turnStartedAtRef: MutableRefObject<number | null>;
+  runningRef: MutableRef<boolean>;
+  generatorActiveRef: MutableRef<boolean>;
+  compactRunningRef: MutableRef<boolean>;
+  turnStartedAtRef: MutableRef<number | null>;
   setBusy: (value: boolean) => void;
   setProgressStartedAt: (value: number | null) => void;
   setLiveOutputTokens: (value: number) => void;

@@ -11,11 +11,11 @@ import {
   startTask,
 } from "@/engine/background/tasks/background.ts";
 import {
-  completeWorkflowTask,
-  registerWorkflowTask,
+  enrollWorkflowTask,
+  finalizeWorkflowTask,
   resetWorkflowTasksForTests,
 } from "@/engine/background/workflows/runtime/store/store.ts";
-import type { LocalWorkflowTaskState } from "@/engine/background/workflows/runtime/store/types.ts";
+import type { WorkflowTaskLifecycle } from "@/engine/background/workflows/runtime/store/types.ts";
 import type { Provider } from "@/engine/contract/types.ts";
 import * as providers from "@/engine/providers/registry.ts";
 import { emitQueue } from "@/engine/queue/emit.ts";
@@ -28,10 +28,7 @@ import {
   setMcpClientSpawnerForTests,
 } from "@/kernel/mcp/client/registry.ts";
 import type { McpClient, McpToolInfo } from "@/kernel/mcp/protocol/types.ts";
-import {
-  permissionDirectoryGlob,
-  permissionRuleValueToString,
-} from "@/kernel/permissions/types.ts";
+import { permissionDirectoryGlob, serializeRuleValue } from "@/kernel/permissions/types.ts";
 import type { AgentEvent } from "@/kernel/std/types/events.ts";
 import { runPrintMode } from "@/modes/print/index.ts";
 import type { PrintRuntime } from "@/modes/print/types.ts";
@@ -56,7 +53,7 @@ afterEach(async () => {
   delete process.env.OTHERSIDE_CLI_SYSTEM_PROMPT;
   delete process.env.OTHERSIDE_CLI_APPEND_SYSTEM_PROMPT;
   delete process.env.OTHERSIDE_CLI_MAX_BUDGET_USD;
-  delete process.env.OTHERSIDE_CLI_FALLBACK_MODEL;
+  delete process.env.OTHERSIDE_CLI_FALLBACK_ROUTE;
   delete process.env.OTHERSIDE_CLI_MCP_CONFIGS;
   delete process.env.OTHERSIDE_CLI_AGENTS_JSON;
   delete process.env.OTHERSIDE_CLI_JSON_SCHEMA;
@@ -90,8 +87,10 @@ function brokerBackedAgent(turns: AgentEvent[][]): Agent {
     deps: {
       broker: {
         read: () => state,
-        dispatch: (event: { kind: string; model?: string }) => {
-          if (event.kind === "set_model" && event.model) state.model = event.model;
+        dispatch: (event: { kind: string; route?: { provider: string; model: string } }) => {
+          if (event.kind !== "set_route" || event.route === undefined) return;
+          state.provider = event.route.provider;
+          state.model = event.route.model;
         },
       },
     },
@@ -197,6 +196,7 @@ const BASE_HARNESS: ComposedHarness = {
   combined: "default base",
   systemBlocks: [{ text: "default base", phase: "static", bundleKey: "base" }],
   userPrepend: [],
+  midSystemPromotion: "off",
 };
 
 // Honors cancel() by stopping the event stream — mirrors the real agent, whose
@@ -240,6 +240,9 @@ function fakeMcpClient(tools: McpToolInfo[] = []): McpClient {
     listDirectory: async () => ({ resources: [] }),
     serverCapabilities: () => null,
     serverInstructions: () => null,
+    listPrompts: async () => [],
+    getPrompt: async () => ({ messages: [] }),
+    announce: () => {},
     isClosed: () => closed,
     close: () => {
       closed = true;
@@ -250,7 +253,7 @@ function fakeMcpClient(tools: McpToolInfo[] = []): McpClient {
 const BASE_RUNTIME: PrintRuntime = {
   sessionId: "sess-1",
   cwd: "/tmp",
-  model: "test-model",
+  route: { provider: "anthropic", model: "test-model" },
   permissionMode: "accept-edits",
   verbose: false,
   contextWindow: 200_000,
@@ -467,7 +470,7 @@ describe("runPrintMode async completion continuation", () => {
 
   it("waits for a Workflow and consumes its completion before exit", async () => {
     const harness = asyncFollowupAgent(() => {
-      const task: LocalWorkflowTaskState = {
+      const task: WorkflowTaskLifecycle = {
         id: "workflow-task",
         type: "local_workflow",
         status: "running",
@@ -486,8 +489,8 @@ describe("runPrintMode async completion continuation", () => {
         startedAt: Date.now(),
         abortController: new AbortController(),
       };
-      registerWorkflowTask(task);
-      setTimeout(() => completeWorkflowTask(task.id, { ok: true }, "/unused/output.json"), 0);
+      enrollWorkflowTask(task);
+      setTimeout(() => finalizeWorkflowTask(task.id, { ok: true }, "/unused/output.json"), 0);
     });
 
     const { out, code } = await captureStdout(() =>
@@ -564,12 +567,12 @@ describe("runPrintMode G7 flag effects", () => {
       await captureStdout(() => runPrintMode(agent, "hi", "json", BASE_RUNTIME));
       expect(
         agent.sessionAllowedToolPatterns.has(
-          permissionRuleValueToString({ toolName: "Read", ruleContent: dir }),
+          serializeRuleValue({ toolName: "Read", ruleContent: dir }),
         ),
       ).toBe(true);
       expect(
         agent.sessionAllowedToolPatterns.has(
-          permissionRuleValueToString({
+          serializeRuleValue({
             toolName: "Read",
             ruleContent: permissionDirectoryGlob(dir),
           }),
@@ -605,16 +608,22 @@ describe("runPrintMode G7 flag effects", () => {
     ]);
   });
 
-  it("retries once on the fallback model for terminal rate-limit errors", async () => {
-    process.env.OTHERSIDE_CLI_FALLBACK_MODEL = "fallback-model";
+  it("retries once on the fallback provider-model route for terminal rate-limit errors", async () => {
     const agent = brokerBackedAgent([
       [{ kind: "error", error: "rate limit exceeded" }],
       HELLO_TURN,
     ]);
     const { out, code } = await captureStdout(() =>
-      runPrintMode(agent, "hi", "json", BASE_RUNTIME),
+      runPrintMode(agent, "hi", "json", {
+        ...BASE_RUNTIME,
+        fallbackRoute: { provider: "codex", model: "fallback-model" },
+      }),
     );
     expect(code).toBe(0);
+    expect(agent.deps.broker.read()).toMatchObject({
+      provider: "codex",
+      model: "fallback-model",
+    });
     const parsed = JSON.parse(out.trim());
     expect(parsed.subtype).toBe("success");
     expect(parsed.result).toBe("hello");

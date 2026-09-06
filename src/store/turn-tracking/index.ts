@@ -1,22 +1,25 @@
-import type { MutableRefObject } from "react";
 import type { ForkEvent } from "@/kernel/std/types/events.ts";
+import type { ProviderModelRoute } from "@/kernel/std/types/provider-ids.ts";
+import type { MutableRef } from "@/kernel/std/types/state.ts";
 
 // Per-turn transcript + agent-call bookkeeping. These handles track the live
 // turn's assistant/agent output routing and are read/written by the turn
 // observer and the dispatch loop. Owned here as module singletons (the app
 // mounts once) so both sides share the same state.
-export const transcriptSeqRef: MutableRefObject<number> = { current: 0 };
-export const currentAgentCallIdRef: MutableRefObject<string | null> = { current: null };
-export const forkToCallIdRef: MutableRefObject<Map<string, string>> = { current: new Map() };
-export const agentModelByCallIdRef: MutableRefObject<Map<string, string>> = { current: new Map() };
-export const activeToolsRef: MutableRefObject<number> = { current: 0 };
-export const forkActionRef: MutableRefObject<
+export const transcriptSeqRef: MutableRef<number> = { current: 0 };
+export const currentAgentCallIdRef: MutableRef<string | null> = { current: null };
+export const forkToCallIdRef: MutableRef<Map<string, string>> = { current: new Map() };
+export const agentModelByCallIdRef: MutableRef<Map<string, ProviderModelRoute>> = {
+  current: new Map(),
+};
+export const activeToolsRef: MutableRef<number> = { current: 0 };
+export const forkActionRef: MutableRef<
   Map<string, { count: number; lastLabel: string; backgrounded: boolean }>
 > = { current: new Map() };
-export const turnHadVisibleOutputRef: MutableRefObject<boolean> = { current: false };
-export const currentTurnPromptRef: MutableRefObject<string | null> = { current: null };
-export const currentTurnUserIdRef: MutableRefObject<string | null> = { current: null };
-export const routeForkEventRef: MutableRefObject<(event: ForkEvent) => void> = {
+export const turnHadVisibleOutputRef: MutableRef<boolean> = { current: false };
+export const currentTurnPromptRef: MutableRef<string | null> = { current: null };
+export const currentTurnUserIdRef: MutableRef<string | null> = { current: null };
+export const routeForkEventRef: MutableRef<(event: ForkEvent) => void> = {
   current: () => {},
 };
 

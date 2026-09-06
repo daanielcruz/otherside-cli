@@ -1,11 +1,10 @@
-import { stringWidth } from "@/kernel/std/text/string-width.ts";
 import type { ToolResultMeta } from "@/kernel/std/types/message.ts";
-import { osc8UrlLink } from "@/ui/transcript/markdown/osc8.ts";
+import { isRecord } from "@/kernel/std/value-guards.ts";
+import { osc8UrlLink, stringWidth, terminalAllowsLinks } from "@/terminal-runtime";
 import {
   displayNameFor,
   formatNumberCompact,
   summarizeArgs,
-  supportsHyperlinks,
 } from "@/ui/transcript/tool-render/args.ts";
 import {
   countLines,
@@ -17,21 +16,34 @@ import {
   trimMultiline,
   tryFlattenJson,
   tryFormatJsonContent,
-  tryUnwrapTextPayload,
   type UnwrappedTextPayload,
+  unwrapTextPayloadIfPossible,
 } from "@/ui/transcript/tool-render/format.ts";
+import { removeSandboxViolationsBlock } from "@/ui/transcript/tool-render/shell-output.ts";
 import type { NestedEntry, ToolPayload } from "@/ui/transcript/tool-render/types.ts";
 
 const URL_PATTERN = /https?:\/\/[^\s)]+/g;
 
 function linkifyUrls(text: string): string {
-  if (!supportsHyperlinks()) return text;
+  if (!terminalAllowsLinks()) return text;
   return text.replace(URL_PATTERN, (url) => osc8UrlLink({ url, label: url }));
 }
 
 export const TOOL_USE_ERROR_TAG = /^<tool_use_error>([\s\S]*?)<\/tool_use_error>$/;
 export const SANDBOX_VIOLATION_TAG = /<\/?sandbox_violation>/g;
 export const ERROR_TAG = /<\/?error>/g;
+
+const VALIDATION_FAILURE_MARKER = "InputValidationError: ";
+/**
+ * A validation failure restates the tool's own contract, which the reader cannot act
+ * on, so the collapsed transcript says only that the call was malformed. The issue
+ * list stays available in the detailed view.
+ */
+export const VALIDATION_FAILURE_LABEL = "Invalid tool parameters";
+
+export function isValidationFailureText(text: string): boolean {
+  return text.includes(VALIDATION_FAILURE_MARKER);
+}
 
 export function payloadFromError(err: string): ToolPayload {
   const match = err.match(TOOL_USE_ERROR_TAG);
@@ -60,13 +72,16 @@ export function mcpFlatPreview(entries: [string, string][]): ToolPayload {
   return { kind: "preview", text: lines.join("\n") };
 }
 
-export function payloadFromResult(
-  name: string,
-  content: string,
-  args: unknown,
-  isError = false,
-): ToolPayload | null {
-  const base = basePayloadFromResult(name, content, args, isError);
+export interface PayloadFromResultInput {
+  name: string;
+  content: string;
+  args: unknown;
+  isError?: boolean;
+}
+
+export function payloadFromResult(input: PayloadFromResultInput): ToolPayload | null {
+  const { name, content, args, isError = false } = input;
+  const base = basePayloadFromResult(input);
   if (isError || !name.startsWith("mcp__") || base?.kind !== "preview") return base;
   const warning = mcpSizeWarning(content);
   const linked = linkifyUrls(base.text);
@@ -91,12 +106,8 @@ export function payloadFromMeta(meta: ToolResultMeta): ToolPayload | null {
   return null;
 }
 
-export function basePayloadFromResult(
-  name: string,
-  content: string,
-  args: unknown,
-  isError = false,
-): ToolPayload | null {
+export function basePayloadFromResult(input: PayloadFromResultInput): ToolPayload | null {
+  const { name, content, args, isError = false } = input;
   const parsed = tryParseJson(content);
   if (parsed === undefined) {
     if (name === "Skill" && !isError) {
@@ -120,7 +131,7 @@ export function basePayloadFromResult(
     return rawTextPreview(content, name.startsWith("mcp__"));
   }
   if (name.startsWith("mcp__")) {
-    const unwrapped = tryUnwrapTextPayload(content);
+    const unwrapped = unwrapTextPayloadIfPossible(content);
     if (unwrapped !== null) return mcpTextPayloadPreview(unwrapped);
     const flat = tryFlattenJson(content);
     if (flat !== null) return mcpFlatPreview(flat);
@@ -141,6 +152,8 @@ export function basePayloadFromResult(
       return toolSearchPreview(parsed) ?? previewPayload(parsed);
     case "Agent":
       return agentPreview(parsed) ?? previewPayload(parsed);
+    case "SendMessage":
+      return sendMessagePreview(parsed) ?? previewPayload(parsed);
     case "WebFetch":
       return webFetchPreview(parsed) ?? previewPayload(parsed);
     case "WebSearch":
@@ -173,8 +186,6 @@ export function rawTextPreview(content: string, isMcp = false): ToolPayload | nu
   }
   return { kind: "preview", text: oneLinePreview(content, 240) };
 }
-
-import { isRecord } from "@/kernel/std/value-guards.ts";
 
 export function diffPayload(result: unknown, args?: unknown): ToolPayload | null {
   if (!isRecord(result)) return null;
@@ -323,8 +334,7 @@ export function bashPreview(result: unknown): ToolPayload | null {
       se = "";
     }
   }
-  const SANDBOX_VIOLATION_BLOCK = /\n?<sandbox_violations>[\s\S]*?<\/sandbox_violations>\n?/g;
-  se = se.replace(SANDBOX_VIOLATION_BLOCK, "");
+  se = removeSandboxViolationsBlock(se);
   so = tryFormatJsonContent(normalizeNewlines(so));
   se = tryFormatJsonContent(normalizeNewlines(se));
   const noOutputExpected = result.no_output_expected === true;
@@ -472,6 +482,20 @@ export function notebookEditPreview(result: unknown): ToolPayload | null {
     kind: "preview",
     text: `${header}\n${trimMultiline(newSource, 5, 180)}`,
   };
+}
+
+// A SendMessage result is otherwise a bare delivery record. The routing
+// warning and the failure reason are the only parts a reader must see, so they
+// take the preview line instead of collapsing into a field count.
+export function sendMessagePreview(result: unknown): ToolPayload | null {
+  if (!isRecord(result)) return null;
+  const warning = typeof result.warning === "string" ? result.warning.trim() : "";
+  if (warning.length > 0) return { kind: "preview", text: oneLinePreview(warning, 240) };
+  const reason = typeof result.reason === "string" ? result.reason.trim() : "";
+  if (result.delivered === false && reason.length > 0) {
+    return { kind: "preview", text: oneLinePreview(reason, 240) };
+  }
+  return null;
 }
 
 export function agentPreview(result: unknown): ToolPayload | null {

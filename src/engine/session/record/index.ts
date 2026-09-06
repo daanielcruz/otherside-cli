@@ -1,21 +1,17 @@
-export {
-  lineToRecord,
-  lineToRecords,
-  recordsFromParsedLine,
-  stripCommandMarkup,
-} from "./reader.ts";
+export { stripCommandMarkup } from "./foreign-line.ts";
+export { lineToRecord, lineToRecords, recordsFromParsedLine } from "./reader.ts";
 export type {
   AssistantMessageRecord,
   AssistantRequestUsage,
   AttachmentRecord,
   CompactionMarkRecord,
+  CompactKeepList,
   ForeignAttachment,
   GoalStatusAttachment,
   HookEventRecord,
   InjectionQueuedRecord,
   OsCompactionSidecar,
   OsSidecar,
-  PreservedMessages,
   PreservedSegment,
   QueuedCommandAttachment,
   RecordType,
@@ -32,8 +28,9 @@ export type {
   UserMessageRecord,
 } from "./schema.ts";
 export {
-  isChainParticipant,
+  goalStatusAttachment,
   isCompactionBoundary,
+  isTranscriptLinked,
   KNOWN_TYPES,
   nowIso,
   providerFromModelId,

@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import type { SlashCommand, SlashKind } from "@/commands/catalog.ts";
+import { handleAddDir } from "@/commands/handlers/add-dir.ts";
 import { handleCd } from "@/commands/handlers/cd.ts";
 import { handleCompact } from "@/commands/handlers/compact.ts";
 import { handleContext } from "@/commands/handlers/context.ts";
@@ -8,22 +9,24 @@ import { handleDesign } from "@/commands/handlers/design.ts";
 import { handleEffort } from "@/commands/handlers/effort.ts";
 import { handleFork } from "@/commands/handlers/fork.ts";
 import { handleGoal } from "@/commands/handlers/goal.ts";
+import { handleKeybindings } from "@/commands/handlers/keybindings.ts";
 import { handleMarketplace, handlePlugins } from "@/commands/handlers/plugins.ts";
 import { handleReload } from "@/commands/handlers/reload.ts";
 import type { SlashContext, SlashHandler, SlashResult } from "@/commands/types.ts";
 import { getProviderConfig } from "@/engine/contract/registry.ts";
 import { ensureRuntimeModel, findModel } from "@/engine/model/catalog.ts";
 import { activePlanFilePath } from "@/engine/tools/plan-gate.ts";
-import { effectiveOrchestrationMode, updateConfig } from "@/kernel/config/config.ts";
+import { updateConfig } from "@/kernel/config/config.ts";
 import {
   ORCHESTRATION_MODE_VALUES,
   type OrchestrationMode,
   orchestrationModeLabel,
-} from "@/kernel/config/orchestration-mode.ts";
+} from "@/kernel/std/types/orchestration-mode.ts";
+import { providerDisplayName } from "@/kernel/std/types/provider-ids.ts";
 import { deleteFor, type ProviderSlug } from "@/kernel/storage/credentials.ts";
 import {
-  isAutoMemoryEnabled,
-  setAutoMemorySessionEnabled,
+  isSessionMemoryEnabled,
+  setSessionMemoryEnabled,
 } from "@/kernel/storage/memory/session-toggle.ts";
 import { setPendingPluginCommandResult } from "@/ui/panels/plugins/command-result.ts";
 
@@ -46,7 +49,7 @@ async function handleExit(
   // killed on remove, left running on keep) before tearing down the TUI.
   try {
     const { resolveWorktreeOnSessionExit } = await import(
-      "@/engine/tools/builtins/worktree-exit.ts"
+      "@/engine/tools/builtins/worktree-session-exit.ts"
     );
     const result = await resolveWorktreeOnSessionExit(ctx.session);
     if (result.action === "cancel") return { kind: "instant" };
@@ -103,7 +106,7 @@ function handleFast(cmd: SlashCommand, _args: string, ctx: SlashContext): SlashR
     return {
       kind: "toggle",
       command: cmd,
-      feedback: `Fast mode is not available for ${active?.provider.label ?? ctx.broker.read().provider}`,
+      feedback: `Fast mode is not available for ${providerDisplayName(ctx.broker.read().provider)}`,
     };
   }
   const state = ctx.broker.read();
@@ -141,7 +144,7 @@ function handleParallel(cmd: SlashCommand, args: string, ctx: SlashContext): Sla
 }
 
 function handleMultiprovider(cmd: SlashCommand, args: string, ctx: SlashContext): SlashResult {
-  const current = effectiveOrchestrationMode(ctx.config);
+  const current = ctx.broker.read().orchestrationMode;
   const raw = args.trim();
   let selected: OrchestrationMode;
   if (raw.length === 0) {
@@ -156,6 +159,8 @@ function handleMultiprovider(cmd: SlashCommand, args: string, ctx: SlashContext)
       feedback: "Usage: /multiprovider [disabled|default|feudalism]",
     };
   }
+  // Session-scoped switch; the config write only seeds future sessions.
+  ctx.broker.dispatch({ kind: "set_orchestration_mode", mode: selected });
   void updateConfig((config) => {
     config.orchestrationMode = selected;
   });
@@ -167,8 +172,8 @@ function handleMultiprovider(cmd: SlashCommand, args: string, ctx: SlashContext)
 }
 
 function handleToggleMemory(cmd: SlashCommand, _args: string, _ctx: SlashContext): SlashResult {
-  const next = !isAutoMemoryEnabled();
-  setAutoMemorySessionEnabled(next);
+  const next = !isSessionMemoryEnabled();
+  setSessionMemoryEnabled(next);
   return {
     kind: "toggle",
     command: cmd,
@@ -207,10 +212,10 @@ function handleModel(cmd: SlashCommand, args: string, ctx: SlashContext): SlashR
     return { kind: "panel", command: cmd };
   }
   const state = ctx.broker.read();
-  const resolved = findModel(requested, state.provider);
+  const resolved = findModel({ provider: state.provider, model: requested });
   const entry = resolved ?? ensureRuntimeModel(requested, state.provider);
   const provider = entry.provider;
-  const providerLabel = getProviderConfig(provider)?.provider.label ?? provider;
+  const providerLabel = providerDisplayName(provider);
   const display = resolved
     ? entry.displayName
     : `${entry.id} (custom — passed through to ${providerLabel})`;
@@ -228,7 +233,7 @@ function handleModel(cmd: SlashCommand, args: string, ctx: SlashContext): SlashR
 function handleBtw(cmd: SlashCommand, args: string, ctx: SlashContext): SlashResult {
   const question = args.trim();
   if (question.length === 0) {
-    return { kind: "instant", command: cmd, feedback: "Usage: /btw <question>" };
+    return { kind: "instant", command: cmd, feedback: "Usage: /btw <your question>" };
   }
   ctx.enterBtwMode?.(question);
   return { kind: "instant", command: cmd };
@@ -242,7 +247,7 @@ function handleLogout(cmd: SlashCommand, _args: string, ctx: SlashContext): Slas
   return {
     kind: "auth",
     command: cmd,
-    feedback: `Successfully logged out from your ${getProviderConfig(provider)?.provider.label ?? provider} account.`,
+    feedback: `Successfully logged out from your ${providerDisplayName(provider)} account.`,
   };
 }
 
@@ -260,11 +265,14 @@ function defaultPanel(cmd: SlashCommand, _args: string, ctx: SlashContext): Slas
 }
 
 function defaultAnchor(cmd: SlashCommand): SlashResult {
-  return { kind: "anchor", command: cmd, feedback: `${cmd.name} anchor — Phase 14` };
+  return { kind: "anchor", command: cmd };
 }
 
+// A skill and a workflow command carry no feedback of their own: the dispatcher
+// resolves their words and those words become the turn, which is the answer the
+// reader sees.
 function defaultSkill(cmd: SlashCommand): SlashResult {
-  return { kind: "skill", command: cmd, feedback: `${cmd.name} — Phase 11` };
+  return { kind: "skill", command: cmd };
 }
 
 function defaultWorkflow(cmd: SlashCommand): SlashResult {
@@ -296,6 +304,8 @@ export const HANDLERS: Record<string, SlashHandler> = {
   goal: handleGoal,
   compact: handleCompact,
   model: handleModel,
+  keybindings: handleKeybindings,
+  "add-dir": handleAddDir,
   reload: handleReload,
   cd: handleCd,
   logout: handleLogout,

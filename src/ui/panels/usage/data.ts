@@ -1,4 +1,4 @@
-import { getProviderConfig, listProviderConfigs } from "@/engine/contract/registry.ts";
+import { listProviderConfigs } from "@/engine/contract/registry.ts";
 import type {
   AnthropicRateLimitUsage,
   AnthropicUsage,
@@ -17,9 +17,10 @@ import {
 } from "@/engine/session/usage/provider.ts";
 import type { ProviderCooldownRecord } from "@/engine/session/usage/provider-health.ts";
 import { QUOTA_BLOCK_PCT } from "@/engine/session/usage/thresholds.ts";
-import { type Color as InkColor } from "@/ink";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
-import { Color } from "@/ui/theme/theme.ts";
+import { type ProviderId, providerDisplayName } from "@/kernel/std/types/provider-ids.ts";
+
+import { type HintAction, hintChord, hintFor, type PanelHint } from "@/ui/chrome/panel-hints.ts";
+import { Color, type ColorValue } from "@/ui/theme/theme.ts";
 
 export type UsageTab = "general" | ProviderId;
 export type UsageInitialTab = "general" | "per_provider" | "current" | ProviderId;
@@ -30,17 +31,24 @@ export type LoadState<T> =
   | { status: "loaded"; data: T | null }
   | { status: "error"; data: T | null; message: string };
 
-export type AnthropicUsageLoadState =
-  | { status: "idle" }
-  | { status: "loading" }
-  | { status: "loaded"; data: AnthropicUsage | null }
-  | { status: "error"; message: string };
-
+export type AnthropicUsageLoadState = LoadState<AnthropicUsage>;
 export type CodexUsageLoadState = LoadState<CodexUsage>;
 export type AntigravityUsageLoadState = LoadState<AntigravityUsage>;
 export type PlanQuotaLoadState = LoadState<PlanQuotaData>;
 export type KimiUsageLoadState = LoadState<KimiUsage>;
 export type DeepseekBalanceLoadState = LoadState<DeepseekBalance>;
+
+export function restartUsageLoad<T>(current: LoadState<T>): LoadState<T> {
+  return { status: "idle", data: current.data };
+}
+
+export function beginUsageLoad<T>(current: LoadState<T>): LoadState<T> {
+  return { status: "loading", data: current.data };
+}
+
+export function failUsageLoad<T>(current: LoadState<T>, message: string): LoadState<T> {
+  return { status: "error", data: current.data, message };
+}
 
 const XAI_QUOTA_DISPLAY_PCT = 95;
 
@@ -48,7 +56,7 @@ export interface UsageRow {
   label: string;
   value: string;
   muted?: boolean | undefined;
-  valueColor?: InkColor | undefined;
+  valueColor?: ColorValue | undefined;
 }
 
 export function activityRows(usage: ProviderUsageTotals): UsageRow[] {
@@ -69,7 +77,7 @@ export function providerRows(current: UsageByProvider, allTime: UsageByProvider)
     const currentUsage = current[provider] ?? emptyProviderUsage();
     const allTimeUsage = allTime[provider] ?? emptyProviderUsage();
     return {
-      label: getProviderConfig(provider)?.provider.label ?? provider,
+      label: providerDisplayName(provider),
       value: `${formatTokenCount(totalProviderTokens(currentUsage))} current · ${formatTokenCount(totalProviderTokens(allTimeUsage))} all time`,
       muted: totalProviderTokens(currentUsage) === 0 && totalProviderTokens(allTimeUsage) === 0,
     };
@@ -92,7 +100,7 @@ export function blockedRoutingRows(snapshot: RoutingUsageSnapshot): UsageRow[] {
   const warnings: string[] = [];
   for (const [providerId, state] of Object.entries(snapshot.byProvider)) {
     if (!state) continue;
-    const label = getProviderConfig(providerId as ProviderId)?.provider.label ?? providerId;
+    const label = providerDisplayName(providerId as ProviderId);
     if (state.balanceStatus === "exhausted") {
       blocks.push(`${label} balance exhausted`);
       continue;
@@ -129,7 +137,7 @@ export function blockedRoutingRows(snapshot: RoutingUsageSnapshot): UsageRow[] {
 }
 
 function formatCooldownRecord(record: ProviderCooldownRecord): string {
-  const provider = getProviderConfig(record.provider)?.provider.label ?? record.provider;
+  const provider = providerDisplayName(record.provider);
   const scope = record.model === null ? provider : `${provider}/${record.model}`;
   const reset = formatUsageResetText(new Date(record.untilEpochMs).toISOString(), true, true);
   return `${scope} ${record.reason}${reset ? ` until ${reset}` : ""}`;
@@ -203,16 +211,13 @@ export function withTimezone(value: string, showTimezone: boolean, timeZone: str
 
 import { getShortTimeZone } from "@/kernel/std/intl.ts";
 
-export function initialTabIndex(
-  tabs: { id: UsageTab; label: string }[],
-  initialTab: UsageInitialTab,
-  current: ProviderId,
-): number {
-  if (initialTab === "general") return 0;
-  const target: UsageTab =
-    initialTab === "per_provider" || initialTab === "current" ? current : initialTab;
-  const idx = tabs.findIndex((tab) => tab.id === target);
-  return idx >= 0 ? idx : 0;
+export function initialUsageTab(initialTab: UsageInitialTab, current: ProviderId): UsageTab {
+  return initialTab === "per_provider" || initialTab === "current" ? current : initialTab;
+}
+
+export function usageTabIndex(tabs: { id: UsageTab }[], selected: UsageTab): number {
+  const index = tabs.findIndex((tab) => tab.id === selected);
+  return index >= 0 ? index : 0;
 }
 
 export function emptyUsage(): ProviderUsageTotals {
@@ -243,27 +248,12 @@ export function formatTokenCount(value: number): string {
   return `${formatCount(value)} tokens`;
 }
 
-export function wrapIndex(index: number, length: number): number {
-  return ((index % length) + length) % length;
+/** Footer hints from the shared dictionary, so /usage phrases actions like every panel. */
+export function usageFooterHints({ canRefresh }: { canRefresh: boolean }): [string, string][] {
+  const hints: HintAction[] = ["switch", ...(canRefresh ? (["refresh"] as const) : []), "close"];
+  return hints.map((action) => hintPair(hintFor(action)));
 }
 
-export function usageFooterHints({
-  activeTab,
-  canScroll,
-  canRefresh,
-}: {
-  activeTab: UsageTab;
-  canScroll: boolean;
-  canRefresh: boolean;
-}): [string, string][] {
-  void activeTab;
-  const hints: [string, string][] = [["←/→", "switch tabs"]];
-  if (canScroll) {
-    hints.push(["↑/↓", "scroll"]);
-  }
-  if (canRefresh) {
-    hints.push(["r", "refresh"]);
-  }
-  hints.push(["Esc", "close"]);
-  return hints;
+function hintPair(hint: PanelHint): [string, string] {
+  return [hintChord(hint.keys), hint.label];
 }

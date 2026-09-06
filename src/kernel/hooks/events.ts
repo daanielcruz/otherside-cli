@@ -1,8 +1,12 @@
 export const HOOK_EVENT_VALUES = [
   "preToolUse",
   "postToolUse",
+  "postToolUseFailure",
+  "postToolBatch",
   "userPromptSubmit",
+  "userPromptExpansion",
   "stop",
+  "stopFailure",
   "subagentStop",
   "preCompact",
   "postCompact",
@@ -11,7 +15,16 @@ export const HOOK_EVENT_VALUES = [
   "sessionStart",
   "sessionEnd",
   "subagentStart",
+  "permissionRequest",
   "permissionDenied",
+  "teammateIdle",
+  "elicitation",
+  "elicitationResult",
+  "configChange",
+  "instructionsLoaded",
+  "cwdChanged",
+  "directoryAdded",
+  "messageDisplay",
   "Setup",
   "Notification",
   "FileChanged",
@@ -32,19 +45,62 @@ export const SESSION_END_REASON_VALUES = [
 
 export type SessionEndReason = (typeof SESSION_END_REASON_VALUES)[number];
 
+// sessionId/cwd ride along for the stdin JSON payload only — the env surface is
+// unchanged. Present whenever the firing call site knows them.
 export interface PreToolUseCtx {
   toolName: string;
   toolInput: string;
+  sessionId?: string;
+  cwd?: string;
 }
 
 export interface PostToolUseCtx {
   toolName: string;
   toolInput: string;
   toolExit: number;
+  toolResponse?: unknown;
+  toolUseId?: string;
+  durationMs?: number;
+  sessionId?: string;
+  cwd?: string;
+}
+
+export interface PostToolUseFailureCtx {
+  toolName: string;
+  toolInput: unknown;
+  toolUseId: string;
+  error: string;
+  isInterrupt?: boolean;
+  durationMs?: number;
+  sessionId?: string;
+  cwd?: string;
+}
+
+export interface PostToolBatchCall {
+  tool_name: string;
+  tool_input: unknown;
+  tool_use_id: string;
+  tool_response?: unknown;
+}
+
+export interface PostToolBatchCtx {
+  toolCalls: PostToolBatchCall[];
+  sessionId: string;
+  cwd: string;
 }
 
 export interface UserPromptSubmitCtx {
   promptText: string;
+}
+
+export interface UserPromptExpansionCtx {
+  expansionType: "slash_command" | "mcp_prompt";
+  commandName: string;
+  commandArgs: string;
+  commandSource?: string;
+  prompt: string;
+  sessionId: string;
+  cwd: string;
 }
 
 export interface StopCtx {
@@ -52,6 +108,26 @@ export interface StopCtx {
   /** True when the stopping turn was started by a stop-hook rewake
    * notification — lets a hook script break the rewake loop. */
   stopHookActive?: boolean;
+}
+
+export type StopFailureError =
+  | "authentication_failed"
+  | "oauth_org_not_allowed"
+  | "billing_error"
+  | "rate_limit"
+  | "overloaded"
+  | "invalid_request"
+  | "model_not_found"
+  | "server_error"
+  | "unknown"
+  | "max_output_tokens";
+
+export interface StopFailureCtx {
+  sessionId: string;
+  cwd: string;
+  error: StopFailureError;
+  errorDetails?: string;
+  lastAssistantMessage?: string;
 }
 
 export interface SubagentStopCtx {
@@ -106,11 +182,89 @@ export interface SubagentStartCtx {
   agentType: string;
 }
 
+export interface PermissionRequestCtx {
+  toolName: string;
+  toolInput: unknown;
+  permissionSuggestions?: unknown[];
+  sessionId: string;
+  cwd: string;
+}
+
 export interface PermissionDeniedCtx {
   toolName: string;
   toolInput: string;
   toolUseId: string;
   reason: string;
+}
+
+export interface TeammateIdleCtx {
+  teammateName: string;
+  teamName: string;
+  sessionId: string;
+  cwd: string;
+}
+
+export interface ElicitationCtx {
+  mcpServerName: string;
+  message: string;
+  mode?: "form" | "url";
+  url?: string;
+  elicitationId?: string;
+  requestedSchema?: Record<string, unknown>;
+  sessionId: string;
+  cwd: string;
+}
+
+export interface ElicitationResultCtx {
+  mcpServerName: string;
+  elicitationId?: string;
+  mode?: "form" | "url";
+  action: "accept" | "decline" | "cancel";
+  content?: Record<string, unknown>;
+  sessionId: string;
+  cwd: string;
+}
+
+export interface ConfigChangeCtx {
+  source: "user_settings" | "project_settings" | "local_settings" | "policy_settings" | "skills";
+  filePath?: string;
+  sessionId: string;
+  cwd: string;
+}
+
+export interface InstructionsLoadedCtx {
+  filePath: string;
+  memoryType: "User" | "Project" | "Local" | "Managed";
+  loadReason: "session_start" | "nested_traversal" | "path_glob_match" | "include" | "compact";
+  globs?: string[];
+  triggerFilePath?: string;
+  parentFilePath?: string;
+  sessionId: string;
+  cwd: string;
+}
+
+export interface CwdChangedCtx {
+  oldCwd: string;
+  newCwd: string;
+  sessionId: string;
+  cwd: string;
+}
+
+export interface DirectoryAddedCtx {
+  directory: string;
+  source: string;
+  sessionId: string;
+  cwd: string;
+}
+
+export interface MessageDisplayCtx {
+  turnId: string;
+  messageId: string;
+  index: number;
+  final: boolean;
+  delta: string;
+  sessionId: string;
+  cwd: string;
 }
 
 export interface SetupCtx {
@@ -146,6 +300,19 @@ export interface WorktreeRemoveCtx {
 
 export type EventCtx =
   | { kind: "preToolUse"; ctx: PreToolUseCtx }
+  | { kind: "postToolUseFailure"; ctx: PostToolUseFailureCtx }
+  | { kind: "postToolBatch"; ctx: PostToolBatchCtx }
+  | { kind: "userPromptExpansion"; ctx: UserPromptExpansionCtx }
+  | { kind: "stopFailure"; ctx: StopFailureCtx }
+  | { kind: "permissionRequest"; ctx: PermissionRequestCtx }
+  | { kind: "teammateIdle"; ctx: TeammateIdleCtx }
+  | { kind: "elicitation"; ctx: ElicitationCtx }
+  | { kind: "elicitationResult"; ctx: ElicitationResultCtx }
+  | { kind: "configChange"; ctx: ConfigChangeCtx }
+  | { kind: "instructionsLoaded"; ctx: InstructionsLoadedCtx }
+  | { kind: "cwdChanged"; ctx: CwdChangedCtx }
+  | { kind: "directoryAdded"; ctx: DirectoryAddedCtx }
+  | { kind: "messageDisplay"; ctx: MessageDisplayCtx }
   | { kind: "sessionStart"; ctx: SessionStartCtx }
   | { kind: "sessionEnd"; ctx: SessionEndCtx }
   | { kind: "subagentStart"; ctx: SubagentStartCtx }
@@ -168,6 +335,59 @@ export function envFor(ev: EventCtx): Record<string, string> {
   switch (ev.kind) {
     case "preToolUse":
       return { TOOL_NAME: ev.ctx.toolName, TOOL_INPUT: ev.ctx.toolInput };
+    case "postToolUseFailure":
+      return {
+        TOOL_NAME: ev.ctx.toolName,
+        TOOL_INPUT: stringifyHookValue(ev.ctx.toolInput),
+        TOOL_USE_ID: ev.ctx.toolUseId,
+        ERROR: ev.ctx.error,
+      };
+    case "postToolBatch":
+      return { TOOL_CALLS: stringifyHookValue(ev.ctx.toolCalls) };
+    case "userPromptExpansion":
+      return {
+        EXPANSION_TYPE: ev.ctx.expansionType,
+        COMMAND_NAME: ev.ctx.commandName,
+        COMMAND_ARGS: ev.ctx.commandArgs,
+        PROMPT: ev.ctx.prompt,
+      };
+    case "stopFailure":
+      return {
+        SESSION_ID: ev.ctx.sessionId,
+        ERROR: ev.ctx.error,
+        ...(ev.ctx.errorDetails !== undefined ? { ERROR_DETAILS: ev.ctx.errorDetails } : {}),
+      };
+    case "permissionRequest":
+      return {
+        TOOL_NAME: ev.ctx.toolName,
+        TOOL_INPUT: stringifyHookValue(ev.ctx.toolInput),
+      };
+    case "teammateIdle":
+      return { TEAMMATE_NAME: ev.ctx.teammateName, TEAM_NAME: ev.ctx.teamName };
+    case "elicitation":
+      return { MCP_SERVER_NAME: ev.ctx.mcpServerName, MESSAGE: ev.ctx.message };
+    case "elicitationResult":
+      return { MCP_SERVER_NAME: ev.ctx.mcpServerName, ACTION: ev.ctx.action };
+    case "configChange":
+      return { SOURCE: ev.ctx.source };
+    case "instructionsLoaded":
+      return {
+        FILE_PATH: ev.ctx.filePath,
+        MEMORY_TYPE: ev.ctx.memoryType,
+        LOAD_REASON: ev.ctx.loadReason,
+      };
+    case "cwdChanged":
+      return { OLD_CWD: ev.ctx.oldCwd, NEW_CWD: ev.ctx.newCwd };
+    case "directoryAdded":
+      return { DIRECTORY: ev.ctx.directory, SOURCE: ev.ctx.source };
+    case "messageDisplay":
+      return {
+        TURN_ID: ev.ctx.turnId,
+        MESSAGE_ID: ev.ctx.messageId,
+        INDEX: String(ev.ctx.index),
+        FINAL: String(ev.ctx.final),
+        DELTA: ev.ctx.delta,
+      };
     case "postToolUse":
       return {
         TOOL_NAME: ev.ctx.toolName,
@@ -259,5 +479,14 @@ export function envFor(ev: EventCtx): Record<string, string> {
         HOOK_EVENT_NAME: "WorktreeRemove",
         WORKTREE_PATH: ev.ctx.worktree_path,
       };
+  }
+}
+
+function stringifyHookValue(value: unknown): string {
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
   }
 }

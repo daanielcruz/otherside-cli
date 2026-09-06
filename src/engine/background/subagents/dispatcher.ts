@@ -25,7 +25,7 @@ export {
   FORK_GLYPH,
   formatForkSuccessFeedback,
   hasConversationTurn,
-  spawnForkFromDirective,
+  launchForkFromDirective,
 } from "./fork/spawn-from-directive.ts";
 export type {
   ForkInvocation,

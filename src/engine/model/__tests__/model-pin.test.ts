@@ -12,7 +12,7 @@ import {
 } from "@/engine/session/usage/provider-health.ts";
 import type { CredentialsBundle } from "@/kernel/storage/credentials.ts";
 import { resolveModelPin } from "../facts/model-pin.ts";
-import { setCredentialsLoaderForTests } from "../tier/resolver.ts";
+import { setCredentialsLoaderForTests } from "../tier/usability.ts";
 
 registerAllProviders();
 
@@ -49,9 +49,20 @@ describe("resolveModelPin", () => {
   });
 
   it("pins duplicate model ids to the named provider, never a sibling", () => {
-    const result = resolveModelPin("antigravity", "gemini-3-flash");
+    const result = resolveModelPin("antigravity", "gemini-3.8-flash");
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.resolution.provider).toBe("antigravity");
+  });
+
+  it.each([
+    ["anthropic", "claude-fable-5"],
+    ["anthropic", "fable-5"],
+    ["anthropic", "claude-opus-4-7"],
+    ["anthropic", "opus-4-7"],
+    ["antigravity", "gemini-3-flash"],
+    ["antigravity", "gemini-3.5-flash-high"],
+  ])("refuses unavailable pin %s/%s without choosing a sibling", (provider, model) => {
+    expect(resolveModelPin(provider, model).ok).toBe(false);
   });
 
   it("rejects an unknown provider id", () => {
@@ -61,7 +72,7 @@ describe("resolveModelPin", () => {
   });
 
   it("rejects a model the named provider does not carry, hinting at carriers", () => {
-    const result = resolveModelPin("anthropic", "gpt-5.5");
+    const result = resolveModelPin("anthropic", "gpt-5.5", undefined, "default");
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error).toContain('not available on provider "anthropic"');
@@ -130,9 +141,9 @@ describe("resolveModelPin", () => {
   });
 
   it("resolves a unique family shorthand to its catalog id", () => {
-    const result = resolveModelPin("anthropic", "fable-5");
+    const result = resolveModelPin("anthropic", "fable-5-1");
     expect(result.ok).toBe(true);
-    if (result.ok) expect(result.resolution.model).toBe("claude-fable-5");
+    if (result.ok) expect(result.resolution.model).toBe("claude-fable-5-1");
   });
 
   it("resolves a bare family name with no version to its catalog id", () => {
@@ -169,16 +180,63 @@ describe("resolveModelPin", () => {
   });
 
   it("does not take the family path for a base that still carries digits", () => {
-    // "fable-4" names no catalog model and isn't a bare family name (it has a
-    // digit), so it must fail rather than loosely matching claude-fable-5.
     const result = resolveModelPin("anthropic", "fable-4");
     expect(result.ok).toBe(false);
   });
 
-  it("lists the provider's models when the pin matches nothing anywhere", () => {
-    const result = resolveModelPin("anthropic", "not-a-model");
+  it("lists the provider's models when the pin matches nothing anywhere in Default mode", () => {
+    const result = resolveModelPin("anthropic", "not-a-model", undefined, "default");
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.error).toContain("claude-fable-5");
+    if (!result.ok) expect(result.error).toContain("claude-fable-5-1");
+  });
+
+  it("withholds provider rosters from unavailable pins in feudalism", () => {
+    registerRuntimeModel({
+      id: "placeholder-hidden-roster-model",
+      displayName: "Placeholder Hidden Roster Model",
+      contextWindow: 100_000,
+      provider: "anthropic",
+      efforts: [],
+      defaultEffort: null,
+    });
+
+    const result = resolveModelPin(
+      "anthropic",
+      "placeholder-missing-model",
+      undefined,
+      "feudalism",
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain('model "placeholder-missing-model" is not available');
+      expect(result.error).not.toContain("placeholder-hidden-roster-model");
+      expect(result.error).not.toContain("Models on");
+    }
+  });
+
+  it("withholds alternate carriers from unavailable pins in feudalism", () => {
+    registerRuntimeModel({
+      id: "placeholder-hidden-carrier-model",
+      displayName: "Placeholder Hidden Carrier Model",
+      contextWindow: 100_000,
+      provider: "codex",
+      efforts: [],
+      defaultEffort: null,
+    });
+
+    const result = resolveModelPin(
+      "anthropic",
+      "placeholder-hidden-carrier-model",
+      undefined,
+      "feudalism",
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).not.toContain("codex");
+      expect(result.error).not.toContain("It exists on provider");
+    }
   });
 
   it("normalizes a context-window variant to its catalog id", () => {

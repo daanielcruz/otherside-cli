@@ -6,15 +6,8 @@ import { PNG } from "pngjs";
 import { getPlatform } from "@/kernel/std/proc/platform.ts";
 import type { ImageMediaType } from "@/kernel/std/types/image.ts";
 
-export const IMAGE_TARGET_RAW_SIZE = 3.75 * 1024 * 1024;
-export const IMAGE_MAX_WIDTH = 2000;
-export const IMAGE_MAX_HEIGHT = 2000;
-export const MODEL_IMAGE_DIMENSION_OVERRIDES: Record<
-  string,
-  { maxWidth: number; maxHeight: number }
-> = {
-  "claude-opus-4-8": { maxWidth: 2576, maxHeight: 2576 },
-};
+const DEFAULT_IMAGE_TARGET_RAW_SIZE = 3.75 * 1024 * 1024;
+const DEFAULT_IMAGE_MAX_EDGE = 2000;
 
 export interface ResizedImage {
   buffer: Buffer;
@@ -30,6 +23,7 @@ export interface ResizedImage {
 interface ResizeOptions {
   maxWidth?: number;
   maxHeight?: number;
+  maxPixels?: number;
   targetRawSize?: number;
 }
 
@@ -38,23 +32,27 @@ export function resizeImageIfTooLarge(
   mediaType: ImageMediaType,
   opts: ResizeOptions = {},
 ): ResizedImage {
-  const maxW = opts.maxWidth ?? IMAGE_MAX_WIDTH;
-  const maxH = opts.maxHeight ?? IMAGE_MAX_HEIGHT;
-  const targetRaw = opts.targetRawSize ?? IMAGE_TARGET_RAW_SIZE;
+  const maxW = opts.maxWidth ?? DEFAULT_IMAGE_MAX_EDGE;
+  const maxH = opts.maxHeight ?? DEFAULT_IMAGE_MAX_EDGE;
+  const maxPixels = opts.maxPixels ?? Number.POSITIVE_INFINITY;
+  const targetRaw = opts.targetRawSize ?? DEFAULT_IMAGE_TARGET_RAW_SIZE;
   if (buffer.length === 0) {
     throw new Error("image buffer is empty");
   }
-  const dims = readDimensions(buffer, mediaType);
+  const dims = readImageDimensions(buffer, mediaType);
   const overSize = buffer.length > targetRaw;
-  const overDim = dims !== null && (dims.width > maxW || dims.height > maxH);
+  const overDim =
+    dims !== null &&
+    (dims.width > maxW || dims.height > maxH || dims.width * dims.height > maxPixels);
   if (!overSize && !overDim) {
     return { buffer, mediaType };
   }
-  const scaleW = dims !== null && dims.width > maxW ? maxW / dims.width : 1;
-  const scaleH = dims !== null && dims.height > maxH ? maxH / dims.height : 1;
-  const targetScale = Math.min(scaleW, scaleH, 1);
-  const targetWidth = dims !== null ? Math.max(1, Math.round(dims.width * targetScale)) : maxW;
-  const targetHeight = dims !== null ? Math.max(1, Math.round(dims.height * targetScale)) : maxH;
+  const scaleW = dims !== null ? maxW / dims.width : 1;
+  const scaleH = dims !== null ? maxH / dims.height : 1;
+  const scalePixels = dims !== null ? Math.sqrt(maxPixels / (dims.width * dims.height)) : 1;
+  const targetScale = Math.min(scaleW, scaleH, scalePixels, 1);
+  const targetWidth = dims !== null ? Math.max(1, Math.floor(dims.width * targetScale)) : maxW;
+  const targetHeight = dims !== null ? Math.max(1, Math.floor(dims.height * targetScale)) : maxH;
 
   const onDarwin = getPlatform() === "macos";
 
@@ -142,19 +140,17 @@ export class ImageCompressError extends Error {
 }
 
 // Shrinks an image below a hard byte budget through a progressively more
-// aggressive ladder: (1) downscale at 100/75/50/25% preserving the original
-// format, (2) moderate JPEG conversion at 600px, (3) last-resort JPEG at
-// 400px/q20, returned even when it still misses the budget. Fails closed:
-// when no encoder path produces output, it throws rather than letting an
-// over-budget image through. Callers keep the dimensions from their own
-// resize step; this pass reports none.
+// aggressive ladder. The original format is attempted first; opaque images
+// may then use JPEG, while transparency keeps PNG. Missing encoder paths fail
+// closed instead of letting an over-budget image reach a provider.
 export function compressImageToBudget(
   buffer: Buffer,
   mediaType: ImageMediaType,
   maxBytes: number,
 ): ResizedImage {
   if (buffer.length <= maxBytes) return { buffer, mediaType };
-  const dims = readDimensions(buffer, mediaType);
+  const dims = readImageDimensions(buffer, mediaType);
+  const preservePng = mediaType === "image/png" && pngHasTransparency(buffer);
 
   if (getPlatform() === "macos") {
     const sameFormat: "png" | "jpeg" | null =
@@ -169,29 +165,33 @@ export function compressImageToBudget(
         }
       }
     }
-    const jpegW = Math.min(COMPRESS_JPEG_MAX_DIM, dims?.width ?? COMPRESS_JPEG_MAX_DIM);
-    const jpegH = Math.min(COMPRESS_JPEG_MAX_DIM, dims?.height ?? COMPRESS_JPEG_MAX_DIM);
-    const jpeg = runSipsToBuffer(buffer, mediaType, "jpeg", jpegW, jpegH, COMPRESS_JPEG_QUALITY);
-    if (jpeg !== null && jpeg.length <= maxBytes) {
-      return { buffer: jpeg, mediaType: "image/jpeg" };
+    if (!preservePng) {
+      const jpegW = Math.min(COMPRESS_JPEG_MAX_DIM, dims?.width ?? COMPRESS_JPEG_MAX_DIM);
+      const jpegH = Math.min(COMPRESS_JPEG_MAX_DIM, dims?.height ?? COMPRESS_JPEG_MAX_DIM);
+      const jpeg = runSipsToBuffer(buffer, mediaType, "jpeg", jpegW, jpegH, COMPRESS_JPEG_QUALITY);
+      if (jpeg !== null && jpeg.length <= maxBytes) {
+        return { buffer: jpeg, mediaType: "image/jpeg" };
+      }
+      const ultraW = Math.min(COMPRESS_ULTRA_MAX_DIM, dims?.width ?? COMPRESS_ULTRA_MAX_DIM);
+      const ultraH = Math.min(COMPRESS_ULTRA_MAX_DIM, dims?.height ?? COMPRESS_ULTRA_MAX_DIM);
+      const ultra = runSipsToBuffer(
+        buffer,
+        mediaType,
+        "jpeg",
+        ultraW,
+        ultraH,
+        COMPRESS_ULTRA_QUALITY,
+      );
+      if (ultra !== null && ultra.length <= maxBytes) {
+        return { buffer: ultra, mediaType: "image/jpeg" };
+      }
     }
-    const ultraW = Math.min(COMPRESS_ULTRA_MAX_DIM, dims?.width ?? COMPRESS_ULTRA_MAX_DIM);
-    const ultraH = Math.min(COMPRESS_ULTRA_MAX_DIM, dims?.height ?? COMPRESS_ULTRA_MAX_DIM);
-    const ultra = runSipsToBuffer(
-      buffer,
-      mediaType,
-      "jpeg",
-      ultraW,
-      ultraH,
-      COMPRESS_ULTRA_QUALITY,
-    );
-    if (ultra !== null) return { buffer: ultra, mediaType: "image/jpeg" };
     throw new ImageCompressError(buffer.length, maxBytes);
   }
 
   if (mediaType === "image/png" && dims !== null) {
     for (const scale of COMPRESS_SCALING_FACTORS) {
-      if (scale === 1.0) continue; // pngjs re-encode at full size never shrinks
+      if (scale === 1.0) continue;
       const width = Math.max(1, Math.round(dims.width * scale));
       const height = Math.max(1, Math.round(dims.height * scale));
       const out = resizePngPureJs(buffer, width, height);
@@ -200,6 +200,18 @@ export function compressImageToBudget(
   }
 
   throw new ImageCompressError(buffer.length, maxBytes);
+}
+
+function pngHasTransparency(buffer: Buffer): boolean {
+  try {
+    const png = PNG.sync.read(buffer);
+    for (let offset = 3; offset < png.data.length; offset += 4) {
+      if (png.data[offset] !== 255) return true;
+    }
+    return false;
+  } catch {
+    return true;
+  }
 }
 
 function runSipsToBuffer(
@@ -281,7 +293,7 @@ function runSipsQuality(input: string, output: string, q: number): boolean {
   return r.status === 0;
 }
 
-function readDimensions(
+export function readImageDimensions(
   buf: Buffer,
   mediaType: ImageMediaType,
 ): { width: number; height: number } | null {

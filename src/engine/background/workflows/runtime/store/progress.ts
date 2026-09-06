@@ -1,4 +1,4 @@
-import type { WorkflowProgressEntry } from "@/engine/background/workflows/runtime/store/types.ts";
+import type { WorkflowProgressItem } from "@/engine/background/workflows/runtime/store/types.ts";
 
 export interface WorkflowProgressSummary {
   done: number;
@@ -9,8 +9,8 @@ export interface WorkflowProgressSummary {
   complete: boolean;
 }
 
-export function computeWorkflowProgress(
-  events: WorkflowProgressEntry[],
+export function tallyWorkflowProgress(
+  events: WorkflowProgressItem[],
   agentCount = 0,
 ): WorkflowProgressSummary {
   let seen = 0;

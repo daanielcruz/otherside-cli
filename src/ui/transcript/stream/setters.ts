@@ -1,10 +1,9 @@
-import type React from "react";
 import type { MacrotaskBatch } from "@/kernel/std/perf/macrotask-batch.ts";
 import { transcriptActions, transcriptLiveActions, transcriptLiveStore } from "@/store/index.ts";
-import type { TranscriptEntry } from "@/ui/transcript/types";
+import type { TranscriptWrite } from "@/ui/transcript/types";
 
 export interface TranscriptSetters {
-  setTranscript: (value: React.SetStateAction<readonly TranscriptEntry[]>) => void;
+  setTranscript: (value: TranscriptWrite) => void;
   setStreamingId: (value: string | null | ((prev: string | null) => string | null)) => void;
   setStreamingText: (value: string | ((prev: string) => string)) => void;
   setStreamingThinking: (value: string | ((prev: string) => string)) => void;

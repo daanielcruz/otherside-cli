@@ -47,6 +47,7 @@ interface SimpleChatResponse {
 export const stream: StreamFn = async function* openaiCustomStream(
   ctx: RequestContext,
   body: unknown,
+  signal: AbortSignal,
 ): AsyncIterable<Uint8Array> {
   const cfg = await currentConfig();
   const fp = fingerprint(ctx);
@@ -66,7 +67,7 @@ export const stream: StreamFn = async function* openaiCustomStream(
       method: "POST",
       headers,
       body: JSON.stringify(translated.simple),
-      ...(ctx.abortSignal ? { signal: ctx.abortSignal } : {}),
+      signal,
       ...connectionInit(ctx),
     });
     await assertOk(resp, target.url);
@@ -83,7 +84,7 @@ export const stream: StreamFn = async function* openaiCustomStream(
     method: "POST",
     headers: baseHeaders,
     body: JSON.stringify(payload),
-    ...(ctx.abortSignal ? { signal: ctx.abortSignal } : {}),
+    signal,
     ...connectionInit(ctx),
   });
   if (!resp.ok && (resp.status === 400 || resp.status === 422)) {
@@ -94,7 +95,7 @@ export const stream: StreamFn = async function* openaiCustomStream(
         method: "POST",
         headers: baseHeaders,
         body: JSON.stringify(payload),
-        ...(ctx.abortSignal ? { signal: ctx.abortSignal } : {}),
+        signal,
         ...connectionInit(ctx),
       });
     } else {

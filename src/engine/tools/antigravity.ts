@@ -23,7 +23,7 @@ import {
   type WebSearchPayload,
 } from "./common.ts";
 
-const SEARCH_MODEL_ID = "gemini-3-flash";
+const SEARCH_MODEL_ID = "gemini-3.8-flash";
 const SEARCH_THINKING_BUDGET = 1001;
 const MAX_RESULTS = 8;
 const SEARCH_SYSTEM_PROMPT =

@@ -4,7 +4,7 @@ import { isValidDesignId } from "@/design/storage.ts";
 import type { DesignCapability, JsonRpcId, RpcContext } from "@/design/types.ts";
 import { writeDebugError } from "@/devtools/output.ts";
 import { makeRequestContext } from "@/engine/queue/runtime/request-context.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 import { executeOneShotCompletion } from "./llm-stream.ts";
 
 interface CompleteInput {

@@ -31,7 +31,7 @@ export interface AllocLeverDeps {
   execve: ExecveFn | undefined;
 }
 
-// bun-types 1.3.14 does not declare execve yet (runtime ships it since 1.3.14).
+// bun-types does not declare execve yet; the runtime ships it.
 type ProcessWithExecve = NodeJS.Process & { execve?: ExecveFn };
 
 // WebKit activates the system-heap path on the PRESENCE of any Malloc* var,

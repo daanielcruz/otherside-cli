@@ -29,45 +29,43 @@ function restoreEnv(key: string, value: string | undefined): void {
   else process.env[key] = value;
 }
 
-const encoder = new TextEncoder();
-const decoder = new TextDecoder();
-
 function makeProvider(firstUsage = { inputTokens: 447_000, outputTokens: 84_603 }): Provider {
   let calls = 0;
   return {
     ...providers.get("xai"),
     id: "xai",
-    stream: async function* () {
+    startStreamAttempt: () => {
       calls += 1;
-      yield encoder.encode(String(calls));
-    },
-    translateResponse: async function* (raw) {
-      let call = "";
-      for await (const chunk of raw) call += decoder.decode(chunk);
-      yield { kind: "message_start", id: `msg-${call}` };
-      if (call === "1") {
-        yield { kind: "text_delta", text: "done" };
-        yield {
-          kind: "usage",
-          inputTokens: firstUsage.inputTokens,
-          outputTokens: firstUsage.outputTokens,
-          cacheCreationInputTokens: 0,
-          cacheReadInputTokens: 0,
-        };
-      } else {
-        yield {
-          kind: "text_delta",
-          text: "Summary: enough compacted session detail to pass the validity check and keep work resumable.",
-        };
-        yield {
-          kind: "usage",
-          inputTokens: 1_000,
-          outputTokens: 100,
-          cacheCreationInputTokens: 0,
-          cacheReadInputTokens: 0,
-        };
-      }
-      yield { kind: "message_stop", stop_reason: "stop" };
+      const call = calls;
+      return {
+        events: (async function* () {
+          yield { kind: "message_start", id: `msg-${call}` };
+          if (call === 1) {
+            yield { kind: "text_delta", text: "done" };
+            yield {
+              kind: "usage",
+              inputTokens: firstUsage.inputTokens,
+              outputTokens: firstUsage.outputTokens,
+              cacheCreationInputTokens: 0,
+              cacheReadInputTokens: 0,
+            };
+          } else {
+            yield {
+              kind: "text_delta",
+              text: "Summary: enough compacted session detail to pass the validity check and keep work resumable.",
+            };
+            yield {
+              kind: "usage",
+              inputTokens: 1_000,
+              outputTokens: 100,
+              cacheCreationInputTokens: 0,
+              cacheReadInputTokens: 0,
+            };
+          }
+          yield { kind: "message_stop", stop_reason: "stop" };
+        })(),
+        abort: () => {},
+      };
     },
   };
 }

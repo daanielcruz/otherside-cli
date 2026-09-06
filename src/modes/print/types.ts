@@ -1,10 +1,12 @@
 import type { ModelPricing } from "@/engine/contract/pricing.ts";
+import type { ProviderModelRoute } from "@/kernel/std/types/provider-ids.ts";
 import type { PermissionMode } from "@/kernel/std/types/request.ts";
 
 export interface PrintRuntime {
   sessionId: string;
   cwd: string;
-  model: string;
+  route: ProviderModelRoute;
+  fallbackRoute?: ProviderModelRoute | undefined;
   permissionMode: PermissionMode;
   verbose: boolean;
   contextWindow: number;

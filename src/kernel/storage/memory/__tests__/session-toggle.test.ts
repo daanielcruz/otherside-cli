@@ -39,10 +39,10 @@ afterAll(() => {
   mock.module("@/kernel/config/config.ts", () => originalConfig);
 });
 
-describe("isAutoMemoryEnabled", () => {
+describe("isSessionMemoryEnabled", () => {
   test("defaults to enabled with no env var and no setting", async () => {
-    const { isAutoMemoryEnabled } = await import("@/kernel/storage/memory/session-toggle.ts");
-    expect(isAutoMemoryEnabled()).toBe(true);
+    const { isSessionMemoryEnabled } = await import("@/kernel/storage/memory/session-toggle.ts");
+    expect(isSessionMemoryEnabled()).toBe(true);
   });
 
   test.each([
@@ -54,8 +54,8 @@ describe("isAutoMemoryEnabled", () => {
     "On",
   ])("OTHERSIDE_DISABLE_AUTO_MEMORY=%s disables", async (value) => {
     process.env.OTHERSIDE_DISABLE_AUTO_MEMORY = value;
-    const { isAutoMemoryEnabled } = await import("@/kernel/storage/memory/session-toggle.ts");
-    expect(isAutoMemoryEnabled()).toBe(false);
+    const { isSessionMemoryEnabled } = await import("@/kernel/storage/memory/session-toggle.ts");
+    expect(isSessionMemoryEnabled()).toBe(false);
   });
 
   test.each([
@@ -67,29 +67,29 @@ describe("isAutoMemoryEnabled", () => {
     "",
   ])("OTHERSIDE_DISABLE_AUTO_MEMORY=%s does not disable", async (value) => {
     process.env.OTHERSIDE_DISABLE_AUTO_MEMORY = value;
-    const { isAutoMemoryEnabled } = await import("@/kernel/storage/memory/session-toggle.ts");
-    expect(isAutoMemoryEnabled()).toBe(true);
+    const { isSessionMemoryEnabled } = await import("@/kernel/storage/memory/session-toggle.ts");
+    expect(isSessionMemoryEnabled()).toBe(true);
   });
 
   test("autoMemoryEnabled: false in settings disables when no env var is set", async () => {
     mockAutoMemoryEnabled = false;
-    const { isAutoMemoryEnabled } = await import("@/kernel/storage/memory/session-toggle.ts");
-    expect(isAutoMemoryEnabled()).toBe(false);
+    const { isSessionMemoryEnabled } = await import("@/kernel/storage/memory/session-toggle.ts");
+    expect(isSessionMemoryEnabled()).toBe(false);
   });
 
   test("autoMemoryEnabled: true in settings stays enabled", async () => {
     mockAutoMemoryEnabled = true;
-    const { isAutoMemoryEnabled } = await import("@/kernel/storage/memory/session-toggle.ts");
-    expect(isAutoMemoryEnabled()).toBe(true);
+    const { isSessionMemoryEnabled } = await import("@/kernel/storage/memory/session-toggle.ts");
+    expect(isSessionMemoryEnabled()).toBe(true);
   });
 
   test("session override wins over a truthy disable env var", async () => {
     process.env.OTHERSIDE_DISABLE_AUTO_MEMORY = "1";
-    const { isAutoMemoryEnabled, setAutoMemorySessionEnabled, _resetAutoMemorySessionForTesting } =
+    const { isSessionMemoryEnabled, setSessionMemoryEnabled, _resetAutoMemorySessionForTesting } =
       await import("@/kernel/storage/memory/session-toggle.ts");
     try {
-      setAutoMemorySessionEnabled(true);
-      expect(isAutoMemoryEnabled()).toBe(true);
+      setSessionMemoryEnabled(true);
+      expect(isSessionMemoryEnabled()).toBe(true);
     } finally {
       _resetAutoMemorySessionForTesting();
     }
@@ -97,11 +97,11 @@ describe("isAutoMemoryEnabled", () => {
 
   test("session override wins over autoMemoryEnabled: false", async () => {
     mockAutoMemoryEnabled = false;
-    const { isAutoMemoryEnabled, setAutoMemorySessionEnabled, _resetAutoMemorySessionForTesting } =
+    const { isSessionMemoryEnabled, setSessionMemoryEnabled, _resetAutoMemorySessionForTesting } =
       await import("@/kernel/storage/memory/session-toggle.ts");
     try {
-      setAutoMemorySessionEnabled(true);
-      expect(isAutoMemoryEnabled()).toBe(true);
+      setSessionMemoryEnabled(true);
+      expect(isSessionMemoryEnabled()).toBe(true);
     } finally {
       _resetAutoMemorySessionForTesting();
     }

@@ -9,10 +9,10 @@ import { QuotaExhaustedError } from "@/engine/providers/_shared/retry.ts";
 import * as providers from "@/engine/providers/registry.ts";
 import { streamWithRetry } from "@/engine/transport/_infra/classify/retry.ts";
 import { loadConfig } from "@/kernel/config/config.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
 import { uuidv4 } from "@/kernel/std/id.ts";
 import type { ImageMediaType } from "@/kernel/std/types/image.ts";
 import type { ContentBlock, Message, ToolResultContentBlock } from "@/kernel/std/types/message.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 
 const SYSTEM_PROMPT = `You are a vision side-channel for a non-vision LLM. The upstream consumer cannot see images and depends on your description as the source of truth — be exhaustive and exact.

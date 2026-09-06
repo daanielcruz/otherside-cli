@@ -1,4 +1,4 @@
-export interface AgentTranscriptToolCall {
+export interface AgentTranscriptToolUseEntry {
   name: string;
   summary: string;
 }
@@ -6,6 +6,6 @@ export interface AgentTranscriptToolCall {
 export interface AgentTranscript {
   agentId: string;
   prompt: string;
-  toolCalls: AgentTranscriptToolCall[];
+  toolCalls: AgentTranscriptToolUseEntry[];
   finalText: string;
 }

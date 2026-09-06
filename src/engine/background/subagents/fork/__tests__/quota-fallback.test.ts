@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { resolveWorkflowAgentModelContextDetailed } from "@/engine/background/workflows/runtime/subagent/bridge.ts";
-import { setCredentialsLoaderForTests } from "@/engine/model/tier/resolver.ts";
+import { setCredentialsLoaderForTests } from "@/engine/model/tier/usability.ts";
 import { registerAllProviders } from "@/engine/providers/bootstrap.ts";
 import {
   clearRoutingUsage,
   clearUsageLimits,
+  replaceProviderQuotaObservations,
   setRoutingUsage,
-  setUsageLimits,
   stopUsageSweepTimerForTests,
 } from "@/engine/session/usage/limits.ts";
 import {
@@ -16,6 +16,7 @@ import {
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 import type { CredentialsBundle } from "@/kernel/storage/credentials.ts";
 import {
+  inheritedRouteRefusal,
   resolveSubagentRoutingForDispatch,
   resolveToolModelOverride,
   resolveToolTierOverride,
@@ -191,7 +192,7 @@ describe("quota fallback gate (bare tier dispatch)", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error).toContain("Quota fallback is disabled");
-      expect(result.error).toContain("anthropic/claude-fable-5");
+      expect(result.error).toContain("anthropic/claude-opus-5");
       expect(result.error).not.toContain("provider/model");
     }
   });
@@ -262,31 +263,32 @@ describe("quota fallback gate (mid-run reroute)", () => {
 
 describe("quota fallback gate (verify-panel regressions)", () => {
   it("caller's own tier model quota-blocked by a model-scoped window fails instead of silently rerouting", () => {
-    // Fable weekly spent: the caller (anthropic/claude-fable-5, emperor rank 1)
-    // is quota-displaced like any other candidate — no active-provider exemption.
-    setUsageLimits(
+    // A window scoped to the caller's exact model: the caller (emperor rank 1) is
+    // quota-displaced like any other candidate — no active-provider exemption.
+    replaceProviderQuotaObservations("anthropic", [
       {
-        seven_day_fable: {
-          utilization: 1,
-          resetsAt: Math.floor(Date.now() / 1000) + 3600,
+        scopeKey: "weekly_opus_5",
+        displayLabel: "Anthropic Opus limit",
+        applicability: { type: "model", id: "claude-opus-5" },
+        warning: null,
+        routing: {
+          trackingStatus: "tracked",
+          utilizationPct: 100,
+          resetsAtEpochMs: Date.now() + 3_600_000,
+          balanceStatus: "unknown",
         },
       },
-      {
-        status: "allowed",
-        unifiedRateLimitFallbackAvailable: false,
-        isUsingOverage: false,
-      },
-    );
+    ]);
     const ctx = {
       ...ctxWith(false),
       provider: "anthropic",
-      model: "claude-fable-5",
+      model: "claude-opus-5",
     } as RequestContext;
     const result = resolveToolTierOverride(ctx, "emperor");
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.gated).toBe(true);
-      expect(result.error).toContain("anthropic/claude-fable-5");
+      expect(result.error).toContain("anthropic/claude-opus-5");
     }
   });
 
@@ -301,7 +303,7 @@ describe("quota fallback gate (verify-panel regressions)", () => {
     const ctx = {
       ...ctxWith(false),
       provider: "anthropic",
-      model: "claude-fable-5",
+      model: "claude-opus-5",
     } as RequestContext;
     const result = resolveToolTierOverride(ctx, "emperor");
     expect(result.ok).toBe(true);
@@ -317,7 +319,7 @@ describe("quota fallback gate (workflow bridge)", () => {
     const result = resolveWorkflowAgentModelContextDetailed(ctxWith(false), bridgeOpts);
     expect(result.ok).toBe(false);
     expect(result.error).toContain("Quota fallback is disabled");
-    expect(result.error).toContain("anthropic/claude-fable-5");
+    expect(result.error).toContain("anthropic/claude-opus-5");
     expect(result.error).not.toContain("provider/model");
   });
 
@@ -332,5 +334,33 @@ describe("quota fallback gate (workflow bridge)", () => {
     const result = resolveWorkflowAgentModelContextDetailed(ctxWith(false), bridgeOpts);
     expect(result.ok).toBe(true);
     expect(result.ctx.provider).toBe("anthropic");
+  });
+});
+
+// The gate is asserted through its own helper rather than through `dispatchFork`:
+// sibling test files replace `fork/spawn.ts` process-wide (bun's `mock.module` is
+// not file-scoped), so a dispatch-level assertion would test whichever module won.
+describe("inherited launches", () => {
+  it("refuses a launch that would ride an exhausted parent route", () => {
+    const ctx = ctxWith(undefined);
+    expect(inheritedRouteRefusal(ctx)).toBeNull();
+
+    blockAnthropicQuota();
+    expect(inheritedRouteRefusal(ctx)).toContain("QuotaExhaustedError");
+
+    clearRoutingUsage();
+    expect(inheritedRouteRefusal(ctx)).toBeNull();
+  });
+
+  it("names the routing the caller's orchestration mode actually allows", () => {
+    blockAnthropicQuota();
+
+    expect(
+      inheritedRouteRefusal({ ...ctxWith(undefined), orchestrationMode: "disabled" }),
+    ).toContain("another model from the current provider");
+    expect(
+      inheritedRouteRefusal({ ...ctxWith(undefined), orchestrationMode: "default" }),
+    ).toContain("Pin another provider/model");
+    expect(inheritedRouteRefusal(ctxWith(undefined))).toContain("`tier` routing");
   });
 });

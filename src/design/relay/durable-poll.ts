@@ -1,4 +1,4 @@
-export const DESIGN_EVENT_POLL_INTERVAL_MS = 5_000;
+export const DESIGN_EVENT_POLL_INTERVAL_MS = 60_000;
 
 export function startDurablePoll(
   poll: () => void | Promise<void>,

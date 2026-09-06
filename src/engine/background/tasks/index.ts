@@ -1,7 +1,7 @@
-import { existsSync, readdirSync, readFileSync, rmSync, unlinkSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { withFileLockSync } from "@/kernel/std/fs/file-lock.ts";
-import { configRoot } from "@/kernel/std/fs/paths.ts";
+import { configRoot, pathComponent } from "@/kernel/std/fs/paths.ts";
 import { atomicWriteFileSync, mkdirSecure } from "@/kernel/std/fs/secure-fs.ts";
 import { getActiveSessionId, resetTaskOutputPathPins } from "./output-files.ts";
 
@@ -55,17 +55,24 @@ export function taskListIdForScope(scope: Scope = MAIN_TASK_SCOPE): string {
   return resolveTaskListId(scope);
 }
 
+// A list id and a task id are the two names that decide where a record is written, so
+// both are reduced to a single path segment first. Today they are a session uuid, a
+// generated agent id and a counter, none of which can carry a separator — but the id
+// that names a list is exactly the kind that grows an external source later.
 function taskDirectoryFor(taskListId: string): string {
-  return join(configRoot(), "tasks", taskListId);
+  return join(configRoot(), "tasks", pathComponent(taskListId));
+}
+
+function taskFilePath(dir: string, id: string): string {
+  return join(dir, pathComponent(id));
 }
 
 function writeTaskFile(scope: Scope, task: TaskRecord): void {
   const taskListId = resolveTaskListId(scope);
   const dir = taskDirectoryFor(taskListId);
   mkdirSecure(dir, 0o755);
-  const filePath = join(dir, task.id);
   const content = JSON.stringify(task, null, 2);
-  atomicWriteFileSync(filePath, content);
+  atomicWriteFileSync(taskFilePath(dir, task.id), content);
 }
 
 function writeHighwatermark(scope: Scope, id: string): void {
@@ -79,7 +86,7 @@ function writeHighwatermark(scope: Scope, id: string): void {
 function deleteTaskFile(scope: Scope, id: string): void {
   const taskListId = resolveTaskListId(scope);
   const dir = taskDirectoryFor(taskListId);
-  const filePath = join(dir, id);
+  const filePath = taskFilePath(dir, id);
   try {
     if (existsSync(filePath)) {
       unlinkSync(filePath);
@@ -286,6 +293,76 @@ export function updateTaskRecord(
   return next;
 }
 
+export interface TaskUpdateOutcome {
+  task: TaskRecord;
+  blocksChanged: boolean;
+  blockedByChanged: boolean;
+}
+
+/**
+ * Apply a field patch and a set of block edges as one unit. Every record the update
+ * touches is computed first, then written; a write that fails puts the records
+ * already written back the way they were, so a half-applied edge can never leave one
+ * side of a dependency pointing at a task that does not point back.
+ */
+export function applyTaskUpdate(
+  id: string,
+  patch: Partial<Omit<TaskRecord, "id">>,
+  edges: readonly (readonly [string, string])[],
+  scope: Scope = MAIN_SCOPE,
+): TaskUpdateOutcome | undefined {
+  ensureHydrated(scope);
+  const store = storeFor(scope);
+  const target = store.get(id);
+  if (!target) return undefined;
+
+  const next = new Map<string, TaskRecord>();
+  const recordFor = (recordId: string): TaskRecord | undefined =>
+    next.get(recordId) ?? store.get(recordId);
+
+  if (Object.keys(patch).length > 0) next.set(id, { ...target, ...patch });
+
+  let blocksChanged = false;
+  let blockedByChanged = false;
+  for (const [fromId, toId] of edges) {
+    const from = recordFor(fromId);
+    const to = recordFor(toId);
+    if (!from || !to || fromId === toId) continue;
+    if (!from.blocks.includes(toId)) {
+      next.set(fromId, { ...from, blocks: [...from.blocks, toId] });
+      fromId === id ? (blocksChanged = true) : (blockedByChanged = true);
+    }
+    // Re-read: the same record can be both ends across two edges of one update.
+    const linked = recordFor(toId);
+    if (linked && !linked.blockedBy.includes(fromId)) {
+      next.set(toId, { ...linked, blockedBy: [...linked.blockedBy, fromId] });
+      fromId === id ? (blocksChanged = true) : (blockedByChanged = true);
+    }
+  }
+
+  const written: TaskRecord[] = [];
+  try {
+    for (const record of next.values()) {
+      writeTaskFile(scope, record);
+      written.push(record);
+    }
+  } catch (error) {
+    for (const record of written) {
+      const previous = store.get(record.id);
+      if (previous !== undefined) writeTaskFile(scope, previous);
+    }
+    throw error;
+  }
+
+  for (const record of next.values()) store.set(record.id, record);
+  if (next.size > 0) notify(scope);
+  return {
+    task: store.get(id) ?? target,
+    blocksChanged,
+    blockedByChanged,
+  };
+}
+
 export function claimTask(id: string, owner: string, scope: Scope = MAIN_SCOPE): TaskClaimResult {
   const taskListId = resolveTaskListId(scope);
   const dir = taskDirectoryFor(taskListId);
@@ -406,12 +483,6 @@ export function clearAll(): void {
   subscribersByScope.clear();
   hydratedListIdByScope.clear();
   resetTaskOutputPathPins();
-}
-
-export function removeTaskListFromDisk(taskListId: string): void {
-  try {
-    rmSync(taskDirectoryFor(taskListId), { recursive: true, force: true });
-  } catch {}
 }
 
 // Heap-state cleanup on session transitions (/clear, fork teardown). Drops

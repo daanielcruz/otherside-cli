@@ -1,7 +1,7 @@
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
 import type { EffortLevel } from "@/kernel/std/types/effort.ts";
 import type { ErrorMeta } from "@/kernel/std/types/error-meta.ts";
 import type { ContentBlock, ToolResultMeta } from "@/kernel/std/types/message.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 
 export type ToolProgress =
   | { kind: "search_count"; filesScanned: number; matched: number; preview?: string }
@@ -12,7 +12,13 @@ export type ToolProgress =
 export type ToolProgressSink = (progress: ToolProgress) => void;
 
 export type ProviderEvent =
-  | { kind: "message_start"; id?: string; requestId?: string }
+  | {
+      kind: "message_start";
+      id?: string;
+      requestId?: string;
+      provider?: ProviderId;
+      model?: string;
+    }
   | {
       kind: "usage";
       inputTokens?: number;

@@ -13,7 +13,7 @@ import { join } from "node:path";
 import {
   loadConfigSync,
   normalizeConfig,
-  normalizeWorkflowSizeGuideline,
+  normalizeWorkflowSizeClass,
 } from "@/kernel/config/config.ts";
 import { resolveConfig } from "@/kernel/config/resolver.ts";
 import {
@@ -47,12 +47,12 @@ afterEach(() => {
 });
 
 describe("workflow size guideline normalization", () => {
-  test("keeps valid values and defaults absent or invalid values to unrestricted", () => {
+  test("keeps valid values and leaves absent or invalid values unset", () => {
     for (const value of ["unrestricted", "small", "medium", "large"] as const) {
       expect(normalizeConfig({ workflowSizeGuideline: value }).workflowSizeGuideline).toBe(value);
     }
-    expect(normalizeConfig({}).workflowSizeGuideline).toBe("unrestricted");
-    expect(normalizeWorkflowSizeGuideline("invalid")).toBe("unrestricted");
+    expect(normalizeConfig({}).workflowSizeGuideline).toBeUndefined();
+    expect(normalizeWorkflowSizeClass("invalid")).toBeUndefined();
   });
 });
 
@@ -88,6 +88,14 @@ describe("resolveConfig", () => {
     writeJson(join(CWD, ".otherside", "settings.json"), { defaultMode: "garbage" });
 
     expect(resolveConfig(CWD).defaultMode).toBe("plan");
+  });
+
+  test("applies the thinking-summary CLI override only to the resolved session", () => {
+    writeJson(join(USER_DIR, "settings.json"), { showThinkingSummaries: false });
+
+    expect(resolveConfig(CWD).showThinkingSummaries).toBe(false);
+    expect(resolveConfig(CWD, { showThinkingSummaries: true }).showThinkingSummaries).toBe(true);
+    expect(loadConfigSync().showThinkingSummaries).toBe(false);
   });
 });
 

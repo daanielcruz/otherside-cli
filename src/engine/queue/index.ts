@@ -1,4 +1,5 @@
 import { registerMainAgent } from "@/engine/agents/inbox.ts";
+import { dispatchSubagent } from "@/engine/background/subagents/dispatcher.ts";
 import {
   type CompactOrchestrationDeps,
   type CompactState,
@@ -17,6 +18,8 @@ import { clearLastUsage } from "@/engine/session/compact/last-usage.ts";
 import { appendRecord, nowIso } from "@/engine/session/index.ts";
 import { makeQueue } from "@/harness/composer/queue.ts";
 import type { UserConfig } from "@/kernel/config/config.ts";
+import { registerAgentHookRunner } from "@/kernel/hooks/exec.ts";
+import { fireDirectoryAddedHooksInBackground } from "@/kernel/hooks/handler.ts";
 import type { AgentEvent, DrainedQueuedMessage } from "@/kernel/std/types/events.ts";
 import type { ContentBlock } from "@/kernel/std/types/message.ts";
 
@@ -43,12 +46,44 @@ export class Agent {
   constructor(readonly deps: AgentDeps) {
     for (const directory of deps.config.permissions?.additionalDirectories ?? []) {
       const canonical = canonicalizeWorkingDirectory(directory, deps.session.cwd);
-      if (canonical !== null) deps.session.additionalWorkingDirectories.add(canonical);
+      if (canonical === null) continue;
+      deps.session.additionalWorkingDirectories.add(canonical);
+      fireDirectoryAddedHooksInBackground(deps.config, {
+        directory: canonical,
+        source: "settings",
+        sessionId: deps.session.id,
+        cwd: deps.session.cwd,
+      });
     }
     for (const directory of readCliWorkingDirectories(deps.session.cwd)) {
       deps.session.additionalWorkingDirectories.add(directory);
+      fireDirectoryAddedHooksInBackground(deps.config, {
+        directory,
+        source: "cli_arg",
+        sessionId: deps.session.id,
+        cwd: deps.session.cwd,
+      });
     }
     registerMainAgent(deps.session.id);
+    registerAgentHookRunner(deps.session.id, async ({ entry, prompt, timeoutMs }) => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const result = await dispatchSubagent(
+          {
+            subagentType: "general-purpose",
+            description: "Evaluate hook condition",
+            prompt: `${prompt}\n\nReturn only a JSON object with an ok boolean and an optional reason string.`,
+            ...(entry.model !== undefined ? { modelOverride: entry.model } : {}),
+          },
+          { ...makeRequestContext(deps), abortSignal: controller.signal },
+        );
+        if (result.isError) return { ok: true };
+        return agentHookVerdict(result.structured ?? result.output) ?? { ok: true };
+      } finally {
+        clearTimeout(timer);
+      }
+    });
   }
 
   pushInjection(text: string): void {
@@ -128,6 +163,26 @@ export class Agent {
       },
     };
   }
+}
+
+function agentHookVerdict(value: unknown): { ok: boolean; reason?: string } | null {
+  let parsed = value;
+  if (typeof value === "string") {
+    const match = value.match(/\{[\s\S]*\}/);
+    if (!match) return null;
+    try {
+      parsed = JSON.parse(match[0]);
+    } catch {
+      return null;
+    }
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const record = parsed as Record<string, unknown>;
+  if (typeof record.ok !== "boolean") return null;
+  return {
+    ok: record.ok,
+    ...(typeof record.reason === "string" ? { reason: record.reason } : {}),
+  };
 }
 
 export {

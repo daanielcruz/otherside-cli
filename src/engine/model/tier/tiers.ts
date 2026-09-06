@@ -1,5 +1,5 @@
 import type { TierName } from "@/engine/model/tier/names.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 
 const CONTEXT_WINDOW_SUFFIX = /\[1m\]$/i;
 
@@ -14,8 +14,7 @@ export type TierModel = {
 };
 
 export const LEAN_MODELS: readonly TierModel[] = [
-  { provider: "anthropic", name: "claude-fable-5", pos: 1 },
-  { provider: "anthropic", name: "claude-opus-4-8", pos: 2 },
+  { provider: "anthropic", name: "claude-opus-5", pos: 1 },
 ];
 
 export function isLeanModel(provider: ProviderId, model: string): boolean {
@@ -23,13 +22,12 @@ export function isLeanModel(provider: ProviderId, model: string): boolean {
 }
 
 export const EMPEROR_MODELS: readonly TierModel[] = [
-  { provider: "anthropic", name: "claude-fable-5", pos: 1 },
-  { provider: "codex", name: "gpt-5.6-sol", pos: 2 },
-  { provider: "anthropic", name: "claude-opus-4-8", pos: 3 },
+  { provider: "anthropic", name: "claude-opus-5", pos: 1 },
+  { provider: "codex", name: "gpt-6-astra", pos: 2 },
 ];
 
 export const SHOGUN_MODELS: readonly TierModel[] = [
-  { provider: "xai", name: "grok-4.5", pos: 1 },
+  { provider: "xai", name: "grok-4.6", pos: 1 },
   { provider: "kimi", name: "k3", pos: 2 },
   { provider: "codex", name: "gpt-5.6-terra", pos: 3 },
   { provider: "anthropic", name: "claude-sonnet-5", pos: 4 },
@@ -38,7 +36,7 @@ export const SHOGUN_MODELS: readonly TierModel[] = [
 
 export const DAIMYO_MODELS: readonly TierModel[] = [
   { provider: "codex", name: "gpt-5.6-luna", pos: 1 },
-  { provider: "antigravity", name: "gemini-3-flash", pos: 2 },
+  { provider: "antigravity", name: "gemini-3.8-flash", pos: 2 },
   { provider: "antigravity", name: "gemini-3.1-pro-high", pos: 3 },
   { provider: "xai", name: "grok-composer-2.5-fast", pos: 4 },
   { provider: "deepseek", name: "deepseek-v4-pro", pos: 5 },
@@ -46,8 +44,8 @@ export const DAIMYO_MODELS: readonly TierModel[] = [
 ];
 
 export const SAMURAI_MODELS: readonly TierModel[] = [
-  { provider: "antigravity", name: "gemini-3-flash-low", pos: 1 },
-  { provider: "antigravity", name: "gemini-3-flash-medium", pos: 2 },
+  { provider: "antigravity", name: "gemini-3.8-flash-low", pos: 1 },
+  { provider: "antigravity", name: "gemini-3.8-flash-medium", pos: 2 },
   { provider: "glm", name: "glm-5-turbo", pos: 3 },
   { provider: "anthropic", name: "claude-haiku-4-5", pos: 4 },
   { provider: "deepseek", name: "deepseek-v4-flash", pos: 5 },

@@ -39,10 +39,10 @@ export interface AgentContext {
 
 const storage = new AsyncLocalStorage<AgentContext>();
 
-export function getAgentContext(): AgentContext | undefined {
+export function currentSpawnedAgentScope(): AgentContext | undefined {
   return storage.getStore();
 }
 
-export function runWithAgentContext<T>(context: AgentContext, fn: () => T): T {
+export function withSpawnedAgentScope<T>(context: AgentContext, fn: () => T): T {
   return storage.run(context, fn);
 }

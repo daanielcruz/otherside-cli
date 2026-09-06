@@ -2,10 +2,10 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { scopeChildWorkflowHooks } from "@/engine/background/workflows/runtime/launch/launcher.ts";
+import { scopeChildWorkflowHooks } from "@/engine/background/workflows/runtime/launch/execute.ts";
 import { createWorkflowApi } from "@/engine/background/workflows/runtime/registry/api.ts";
 import {
-  getAllWorkflows,
+  getListedWorkflows,
   resolveWorkflow,
 } from "@/engine/background/workflows/runtime/registry/registry.ts";
 import type { WorkflowDefinition } from "@/engine/background/workflows/runtime/registry/types.ts";
@@ -72,7 +72,7 @@ describe("createWorkflowApi with fakes", () => {
       return undefined;
     };
 
-    const getAllWorkflowsMock = async (): Promise<WorkflowDefinition[]> => {
+    const listWorkflowsMock = async (): Promise<WorkflowDefinition[]> => {
       return [mockWorkflowDef];
     };
 
@@ -86,7 +86,7 @@ describe("createWorkflowApi with fakes", () => {
       cwd: "/mock-cwd",
       signal: new AbortController().signal,
       resolveWorkflow: resolveWorkflowMock,
-      getAllWorkflows: getAllWorkflowsMock,
+      listWorkflows: listWorkflowsMock,
       runChild: runChildMock,
       recordPhase: (title) => {
         recordedPhases.push(title);
@@ -117,7 +117,7 @@ describe("createWorkflowApi with fakes", () => {
       return undefined;
     };
 
-    const getAllWorkflowsMock = async (): Promise<WorkflowDefinition[]> => {
+    const listWorkflowsMock = async (): Promise<WorkflowDefinition[]> => {
       return [mockWorkflowDef];
     };
 
@@ -131,7 +131,7 @@ describe("createWorkflowApi with fakes", () => {
       cwd: "/mock-cwd",
       signal: new AbortController().signal,
       resolveWorkflow: resolveWorkflowMock,
-      getAllWorkflows: getAllWorkflowsMock,
+      listWorkflows: listWorkflowsMock,
       runChild: runChildMock,
       recordPhase: (title) => {
         recordedPhases.push(title);
@@ -179,7 +179,7 @@ describe("createWorkflowApi plugin workflow resolution", () => {
       cwd: root,
       signal: new AbortController().signal,
       resolveWorkflow: (name, cwd) => resolveWorkflow(name, cwd, config),
-      getAllWorkflows: (cwd) => getAllWorkflows(cwd, config),
+      listWorkflows: (cwd: string) => getListedWorkflows(cwd, config),
       runChild: async ({ name }) => {
         runNames.push(name);
         return "plugin-child-success";

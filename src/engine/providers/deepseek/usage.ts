@@ -45,24 +45,36 @@ export function parseDeepseekBalancePayload(value: unknown): DeepseekBalance | n
   const infos = Array.isArray(root.balance_infos) ? root.balance_infos : [];
   const rows: DeepseekBalanceRow[] = [];
   for (const item of infos) {
-    const obj = objectValue(item);
-    if (!obj) continue;
-    const currency = stringValue(obj.currency) ?? "USD";
-    const totalBalance = numberValue(obj.total_balance);
-    const grantedBalance = numberValue(obj.granted_balance);
-    const toppedUpBalance = numberValue(obj.topped_up_balance);
-    rows.push({
-      currency,
-      totalBalance: totalBalance ?? 0,
-      grantedBalance: grantedBalance ?? 0,
-      toppedUpBalance: toppedUpBalance ?? 0,
-    });
+    const row = balanceRow(item);
+    if (row) rows.push(row);
   }
   return { isAvailable, rows };
 }
 
+// A row exists only when every wire field parses; a malformed row is dropped,
+// never surfaced as a fabricated zero balance.
+function balanceRow(value: unknown): DeepseekBalanceRow | null {
+  const obj = objectValue(value);
+  if (!obj) return null;
+  const currency = stringValue(obj.currency);
+  const totalBalance = numberValue(obj.total_balance);
+  const grantedBalance = numberValue(obj.granted_balance);
+  const toppedUpBalance = numberValue(obj.topped_up_balance);
+  if (
+    currency === null ||
+    totalBalance === null ||
+    grantedBalance === null ||
+    toppedUpBalance === null
+  ) {
+    return null;
+  }
+  return { currency, totalBalance, grantedBalance, toppedUpBalance };
+}
+
 function objectValue(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
 }
 
 function stringValue(value: unknown): string | null {

@@ -2,7 +2,7 @@ import { isWorkflowEnabled } from "@/engine/background/workflows/runtime/gate.ts
 import { adapterExcludedBaseTools } from "@/engine/contract/prompt-adapter.ts";
 import { isLeanPromptForModel } from "@/engine/providers/_shared/prompt-tier.ts";
 import { resolveImageGeneratorProvider } from "@/engine/providers/image-generation.ts";
-import { getEditToolDescription } from "@/engine/tools/builtins/edit/edit.ts";
+import { editToolDescription } from "@/engine/tools/builtins/edit/edit.ts";
 import { getReadToolDescription } from "@/engine/tools/builtins/read/read.ts";
 import { getSkillToolDescription } from "@/engine/tools/builtins/skill.ts";
 import type { ToolSchema } from "@/engine/tools/contract.ts";
@@ -16,7 +16,7 @@ import { getAskUserQuestionToolDescription } from "@/engine/tools/dynamic/AskUse
 import { getBashPrompt } from "@/engine/tools/dynamic/Bash.ts";
 import { getWebFetchDescription } from "@/engine/tools/dynamic/WebFetch.ts";
 import { buildWorkflowDescription } from "@/engine/tools/dynamic/Workflow.ts";
-import { getWriteToolDescription } from "@/engine/tools/dynamic/Write.ts";
+import { writeToolDescription } from "@/engine/tools/dynamic/Write.ts";
 import * as toolsRegistry from "@/engine/tools/registry.ts";
 import type { ProviderToolDeclaration, TurnProvider } from "@/engine/translator/types.ts";
 import {
@@ -24,10 +24,10 @@ import {
   effectiveOrchestrationMode,
   type UserConfig,
 } from "@/kernel/config/config.ts";
-import type { OrchestrationMode } from "@/kernel/config/orchestration-mode.ts";
 import { isMcpToolName } from "@/kernel/mcp/index.ts";
 import { hasWholeToolDenyRule } from "@/kernel/permissions/index.ts";
 import type { PermissionRule } from "@/kernel/permissions/types.ts";
+import type { OrchestrationMode } from "@/kernel/std/types/orchestration-mode.ts";
 import { hasCredentialSync } from "@/kernel/storage/credentials.ts";
 
 export interface ProviderToolDescriptionOptions {
@@ -58,7 +58,7 @@ export function providerToolDescription(
     case "Read":
       return getReadToolDescription({ lean });
     case "Edit":
-      return getEditToolDescription({ lean });
+      return editToolDescription({ lean });
     case "AskUserQuestion":
       return getAskUserQuestionToolDescription({ lean });
     case "Skill":
@@ -66,7 +66,7 @@ export function providerToolDescription(
     case "Bash":
       return getBashPrompt({ lean });
     case "Write":
-      return getWriteToolDescription({ lean });
+      return writeToolDescription({ lean });
     case "WebFetch":
       return getWebFetchDescription({ lean });
     default:
@@ -77,9 +77,16 @@ export function providerToolDescription(
 export function providerToolDeclarations(
   provider: TurnProvider,
   config?: UserConfig,
-  opts: { model?: string; mainAgent?: boolean; permissionRules?: readonly PermissionRule[] } = {},
+  opts: {
+    model?: string;
+    mainAgent?: boolean;
+    permissionRules?: readonly PermissionRule[];
+    orchestrationMode?: OrchestrationMode;
+  } = {},
 ): ProviderToolDeclaration[] {
-  const orchestrationMode = effectiveOrchestrationMode(config);
+  // The session's mode when the caller carries it; config only covers callers
+  // outside a session context.
+  const orchestrationMode = opts.orchestrationMode ?? effectiveOrchestrationMode(config);
   const descriptionOpts: ProviderToolDescriptionOptions = {
     providerId: provider.id,
     ...(opts.model !== undefined ? { model: opts.model } : {}),
@@ -112,17 +119,13 @@ export function providerToolDeclarations(
       const agentSchema = buildAgentInputSchema(provider.id, orchestrationMode);
       return toProviderTool({ ...schema, description, inputSchema: agentSchema });
     }
-    const declaration = toProviderTool({
+    return toProviderTool({
       ...schema,
       description,
       ...(provider.id === "anthropic" && activeDeferred.has(schema.name)
         ? { defer_loading: true as const }
         : {}),
     });
-    if (schema.name === "Bash" && provider.id === "anthropic") {
-      declaration.eager_input_streaming = true;
-    }
-    return declaration;
   });
 }
 

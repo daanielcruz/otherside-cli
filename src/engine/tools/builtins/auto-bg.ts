@@ -1,6 +1,7 @@
 import { completeTask, startShellTask } from "@/engine/background/tasks/background.ts";
 import { startPressureReap } from "@/engine/background/tasks/pressure-reap.ts";
-import { startStallWatchdog } from "@/engine/background/tasks/stall-watchdog.ts";
+import { watchForInteractiveWait } from "@/engine/background/tasks/stall-watchdog.ts";
+import { startSubagentShellCap } from "@/engine/background/tasks/subagent-shell-cap.ts";
 import type { OutputProgress, SpillBuffer } from "@/engine/tools/_infra/spill-buffer.ts";
 import {
   type BackgroundShell,
@@ -206,11 +207,11 @@ export async function runForegroundWithAutoBg(opts: {
       ...(opts.sessionId !== undefined ? { sessionId: opts.sessionId } : {}),
       startedAt: shell.startedAt,
     });
-    const stopStallWatchdog = startStallWatchdog({
+    const stopInteractiveWaitWatch = watchForInteractiveWait({
       taskId: shellId,
       toolUseId: opts.parentToolCallId,
     });
-    shell.stopWatchdog = stopStallWatchdog;
+    shell.stopWatchdog = stopInteractiveWaitWatch;
     shell.stopPressureReap = startPressureReap({
       taskId: shellId,
       ownerId: opts.ownerId,
@@ -218,11 +219,20 @@ export async function runForegroundWithAutoBg(opts: {
         killBackground(shellId);
       },
     });
+    shell.stopSubagentCap = startSubagentShellCap({
+      taskId: shellId,
+      ownerId: opts.ownerId,
+      kill: () => {
+        killBackground(shellId);
+      },
+    });
     void child.exited.then(async (code) => {
-      stopStallWatchdog();
+      stopInteractiveWaitWatch();
       delete shell.stopWatchdog;
       shell.stopPressureReap?.();
       delete shell.stopPressureReap;
+      shell.stopSubagentCap?.();
+      delete shell.stopSubagentCap;
       await Promise.allSettled([stdoutDrain, stderrDrain]);
       stopOutput();
       shell.status = "exited";

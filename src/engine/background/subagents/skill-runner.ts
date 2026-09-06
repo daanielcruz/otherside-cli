@@ -1,6 +1,7 @@
-import type { MutableRefObject } from "react";
+import { expandCommand } from "@/commands/expansion.ts";
 import type { PermissionResolver } from "@/engine/agents/agent-context.ts";
 import { dispatchSkillFork } from "@/engine/background/subagents/dispatcher.ts";
+import { recordPluginUse } from "@/engine/plugins/usage.ts";
 import type { Agent } from "@/engine/queue/index.ts";
 import { resolvePermission } from "@/engine/queue/runtime/permission-resolution.ts";
 import type { TurnGuard } from "@/engine/queue/runtime/turn/guard.ts";
@@ -8,10 +9,13 @@ import type { TurnLifecycle } from "@/engine/queue/runtime/turn/lifecycle.ts";
 import type { Session } from "@/engine/session/index.ts";
 import { appendRecord, nowIso, revokeLastUnansweredUserMessage } from "@/engine/session/index.ts";
 import type { TranscriptEntry } from "@/engine/session/record/types.ts";
+import { userMayInvokeSkill } from "@/engine/skills/overrides.ts";
 import { get as getSkill } from "@/engine/skills/registry.ts";
+import { recordSkillUse } from "@/engine/skills/usage.ts";
 import { renderSkillBody } from "@/engine/tools/builtins/skill.ts";
 import type { ForkEvent } from "@/kernel/std/types/events.ts";
 import type { BrokerHandle, RequestContext } from "@/kernel/std/types/request.ts";
+import type { MutableRef } from "@/kernel/std/types/state.ts";
 
 export interface RunSkillDeps {
   session: Session;
@@ -20,12 +24,12 @@ export interface RunSkillDeps {
   setTranscript: (
     value: TranscriptEntry[] | ((prev: readonly TranscriptEntry[]) => TranscriptEntry[]),
   ) => void;
-  skillAbortRef: MutableRefObject<AbortController | null>;
+  skillAbortRef: MutableRef<AbortController | null>;
   turnGuard: TurnGuard;
-  runSubmittedTurnRef: MutableRefObject<
+  runSubmittedTurnRef: MutableRef<
     (text: string, opts?: { additionalContext?: string[] }) => Promise<void>
   >;
-  requestBackgroundResumeRef: MutableRefObject<() => void>;
+  requestBackgroundResumeRef: MutableRef<() => void>;
   nextTranscriptId: (prefix: string) => string;
   routeForkEvent: (event: ForkEvent) => void;
   turnLifecycle: TurnLifecycle;
@@ -53,8 +57,15 @@ export function createRunSkill(deps: RunSkillDeps): RunSkillFn {
     args: string,
     slashText: string,
   ): Promise<void> {
-    const skill = getSkill(skillName);
-    if (!skill) {
+    // The one shape an inline command takes: the typed line stays the visible
+    // message and the resolved words ride alongside it, named, as context. Both
+    // a skill and a plugin's command file go out this way.
+    const submitInline = async (body: string): Promise<void> => {
+      const argsBlock = args.length > 0 ? `<command-args>${args}</command-args>\n` : "";
+      const content = `<command-name>${skillName}</command-name>\n${argsBlock}${body}`;
+      await runSubmittedTurnRef.current(slashText, { additionalContext: [content] });
+    };
+    const reportUnknown = (): void => {
       const id = nextTranscriptId("sys");
       setTranscript((t) => [
         ...t,
@@ -65,20 +76,39 @@ export function createRunSkill(deps: RunSkillDeps): RunSkillFn {
           isError: true,
         },
       ]);
+    };
+
+    const skill = getSkill(skillName);
+    if (!skill) {
+      // A plugin's command file answers to a name the skill registry never
+      // holds. It is prose standing in for a prompt just the same, so it takes
+      // the inline shape rather than being turned away as unknown.
+      const expansion = expandCommand(skillName, args);
+      if (!expansion) {
+        reportUnknown();
+        return;
+      }
+      await submitInline(expansion.prompt);
       return;
     }
+    if (!userMayInvokeSkill(skill)) {
+      reportUnknown();
+      return;
+    }
+    recordSkillUse(skill.name);
+    if (skill.source === "plugin")
+      recordPluginUse(skill.name.slice(0, skill.name.lastIndexOf(":")));
     if (skill.context !== "fork") {
-      const body = renderSkillBody(skill.body);
-      const argsBlock = args.length > 0 ? `<command-args>${args}</command-args>\n` : "";
-      const content = `<command-name>${skillName}</command-name>\n${argsBlock}${body}`;
-      await runSubmittedTurnRef.current(slashText, { additionalContext: [content] });
+      await submitInline(renderSkillBody(skill.body));
       return;
     }
 
     const state = broker.read();
     const userId = nextTranscriptId("u");
     session.append("user_input", { text: slashText });
+    const userRecordUuid = crypto.randomUUID();
     await appendRecord(session, {
+      uuid: userRecordUuid,
       type: "user_message",
       ts: nowIso(),
       content: slashText,
@@ -146,7 +176,12 @@ export function createRunSkill(deps: RunSkillDeps): RunSkillFn {
       }
     } catch (err) {
       if (skillAbort.signal.aborted) {
-        revokeLastUnansweredUserMessage(session);
+        const lastRecord = session.records.at(-1);
+        const matchesOwner =
+          lastRecord !== undefined && "uuid" in lastRecord && lastRecord.uuid === userRecordUuid;
+        if (matchesOwner && (skillGen === null || turnGuard.generation <= skillGen + 1)) {
+          revokeLastUnansweredUserMessage(session);
+        }
       } else {
         const id = nextTranscriptId("err");
         const msg = err instanceof Error ? err.message : String(err);
@@ -157,7 +192,9 @@ export function createRunSkill(deps: RunSkillDeps): RunSkillFn {
       }
     } finally {
       if (skillAbortRef.current === skillAbort) skillAbortRef.current = null;
-      turnLifecycle.endTurn("skill");
+      if (skillGen === null || turnGuard.generation <= skillGen + 1) {
+        turnLifecycle.endTurn("skill");
+      }
       const wasCancelled = skillGen !== null && !turnGuard.settle(skillGen);
       if (!wasCancelled) requestBackgroundResumeRef.current();
     }

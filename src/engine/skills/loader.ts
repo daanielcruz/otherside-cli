@@ -3,7 +3,13 @@ import { join } from "node:path";
 import { parseFrontmatter } from "@/engine/agents/frontmatter.ts";
 import { register, type Skill } from "./registry.ts";
 
-export function loadSkillFromMarkdown(name: string, src: string, builtin = false): Skill {
+export function loadSkillFromMarkdown(
+  name: string,
+  src: string,
+  builtin = false,
+  source?: Skill["source"],
+  skillRoot?: string,
+): Skill {
   const parsed = parseFrontmatter(src);
   const aliasesRaw = parsed.fields.aliases ?? "";
   const aliases = parseListField(aliasesRaw);
@@ -24,6 +30,9 @@ export function loadSkillFromMarkdown(name: string, src: string, builtin = false
     context: ctx,
     body: parsed.body,
     builtin,
+    source: source ?? (builtin ? "builtin" : "user"),
+    ...(skillRoot ? { skillRoot } : {}),
+    authorModelLock: modelInvocableField === "false",
   };
   return skill;
 }
@@ -44,8 +53,14 @@ function parseListField(raw: string): string[] {
     .filter((s) => s.length > 0);
 }
 
-export function loadAndRegister(name: string, src: string, builtin = false): Skill {
-  const s = loadSkillFromMarkdown(name, src, builtin);
+export function loadAndRegister(
+  name: string,
+  src: string,
+  builtin = false,
+  source?: Skill["source"],
+  skillRoot?: string,
+): Skill {
+  const s = loadSkillFromMarkdown(name, src, builtin, source, skillRoot);
   register(s);
   return s;
 }
@@ -80,7 +95,7 @@ export function loadProjectCommandsFromDirectory(dir: string, fs: LoaderFS = def
       if (!fs.statSync(path).isFile()) continue;
       const content = fs.readFileSync(path, "utf8");
       const name = entry.replace(/\.md$/, "");
-      const skill = loadSkillFromMarkdown(name, content, false);
+      const skill = loadSkillFromMarkdown(name, content, false, "project", path);
       register({ ...skill, userInvocable: true, modelInvocable: false });
       count += 1;
     } catch {}
@@ -88,7 +103,7 @@ export function loadProjectCommandsFromDirectory(dir: string, fs: LoaderFS = def
   return count;
 }
 
-export function loadSkillsFromDirectory(dir: string): number {
+export function readSkillsFromDir(dir: string, source: "user" | "project" = "user"): number {
   let entries: string[];
   try {
     entries = readdirSync(dir);
@@ -108,7 +123,7 @@ export function loadSkillsFromDirectory(dir: string): number {
       const skillFile = join(path, "SKILL.md");
       try {
         const content = readFileSync(skillFile, "utf8");
-        loadAndRegister(entry, content, false);
+        loadAndRegister(entry, content, false, source, path);
         count += 1;
       } catch {}
       continue;
@@ -117,7 +132,7 @@ export function loadSkillsFromDirectory(dir: string): number {
       const name = entry.replace(/\.md$/, "");
       try {
         const content = readFileSync(path, "utf8");
-        loadAndRegister(name, content, false);
+        loadAndRegister(name, content, false, source, path);
         count += 1;
       } catch {}
     }

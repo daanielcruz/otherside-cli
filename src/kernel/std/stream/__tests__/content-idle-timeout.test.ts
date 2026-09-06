@@ -5,7 +5,7 @@ import {
   isContentProgressEvent,
   wrapProviderEventsWithContentIdleTimeout,
 } from "../content-idle-timeout.ts";
-import { StreamIdleTimeoutError } from "../idle-timeout.ts";
+import { StreamSilenceError } from "../idle-timeout.ts";
 
 const ENV_KEY = "OTHERSIDE_CONTENT_IDLE_TIMEOUT_MS";
 
@@ -79,10 +79,22 @@ describe("isContentProgressEvent", () => {
 
   test("does not count retry/error control events as progress", () => {
     const controlEvents: ProviderEvent[] = [
-      { kind: "retry_status", attempt: 1, maxAttempts: 10, delayMs: 0, reason: "x" },
+      {
+        kind: "retry_status",
+        attempt: 1,
+        maxAttempts: 10,
+        delayMs: 0,
+        reason: "x",
+      },
       { kind: "stream_reset", reason: "x", attempt: 1 },
       { kind: "error", error: "boom" },
-      { kind: "quota_exhausted", provider: "p", model: "m", resetEpochMs: null, message: "x" },
+      {
+        kind: "quota_exhausted",
+        provider: "p",
+        model: "m",
+        resetEpochMs: null,
+        message: "x",
+      },
     ];
     for (const ev of controlEvents) expect(isContentProgressEvent(ev)).toBe(false);
   });
@@ -115,7 +127,7 @@ describe("wrapProviderEventsWithContentIdleTimeout", () => {
   // (well below timeoutMs) so expiry is still detected quickly in a test.
   const FAST_TICK_MS = 10;
 
-  test("throws StreamIdleTimeoutError when the parsed stream stops yielding content", async () => {
+  test("throws StreamSilenceError when the parsed stream stops yielding content", async () => {
     // The upstream iterable never resolves again after the first event — this
     // is the ping-hole scenario: bytes could keep flowing, but no more
     // ProviderEvents ever surface, so only the content deadline can catch it.
@@ -123,14 +135,17 @@ describe("wrapProviderEventsWithContentIdleTimeout", () => {
       yield { kind: "text_delta", text: "hello" };
       await new Promise(() => {}); // never resolves
     }
-    const wrapped = wrapProviderEventsWithContentIdleTimeout(stalledAfterFirst(), 30, FAST_TICK_MS);
+    const wrapped = wrapProviderEventsWithContentIdleTimeout(stalledAfterFirst(), {
+      timeoutMs: 30,
+      checkIntervalMs: FAST_TICK_MS,
+    });
     const { events, error } = await collectUntilError(wrapped);
     expect(events).toEqual([{ kind: "text_delta", text: "hello" }]);
-    expect(error).toBeInstanceOf(StreamIdleTimeoutError);
-    // idleMs reports the configured timeout, not the tick-lagged wall time it
+    expect(error).toBeInstanceOf(StreamSilenceError);
+    // silenceMs reports the configured timeout, not the tick-lagged wall time it
     // actually took to notice — detection can lag by up to one tick.
-    expect((error as StreamIdleTimeoutError).idleMs).toBe(30);
-    expect((error as StreamIdleTimeoutError).kind).toBe("content");
+    expect((error as StreamSilenceError).silenceMs).toBe(30);
+    expect((error as StreamSilenceError).scope).toBe("content");
   });
 
   test("content events re-arm the deadline — steady content never throws", async () => {
@@ -138,13 +153,15 @@ describe("wrapProviderEventsWithContentIdleTimeout", () => {
       { ev: { kind: "text_delta" as const, text: "a" }, delayMs: 5 },
       { ev: { kind: "text_delta" as const, text: "b" }, delayMs: 20 },
       { ev: { kind: "text_delta" as const, text: "c" }, delayMs: 20 },
-      { ev: { kind: "message_stop" as const, stop_reason: "end_turn" }, delayMs: 20 },
+      {
+        ev: { kind: "message_stop" as const, stop_reason: "end_turn" },
+        delayMs: 20,
+      },
     ];
-    const wrapped = wrapProviderEventsWithContentIdleTimeout(
-      delayedEvents(items),
-      30,
-      FAST_TICK_MS,
-    );
+    const wrapped = wrapProviderEventsWithContentIdleTimeout(delayedEvents(items), {
+      timeoutMs: 30,
+      checkIntervalMs: FAST_TICK_MS,
+    });
     const { events, error } = await collectUntilError(wrapped);
     expect(error).toBeNull();
     expect(events.map((e) => e.kind)).toEqual([
@@ -161,11 +178,14 @@ describe("wrapProviderEventsWithContentIdleTimeout", () => {
     async function* stalled(): AsyncIterable<ProviderEvent> {
       await new Promise(() => {});
     }
-    const wrapped = wrapProviderEventsWithContentIdleTimeout(stalled(), 20, FAST_TICK_MS);
+    const wrapped = wrapProviderEventsWithContentIdleTimeout(stalled(), {
+      timeoutMs: 20,
+      checkIntervalMs: FAST_TICK_MS,
+    });
     const { events, error } = await collectUntilError(wrapped);
     expect(events).toEqual([]);
-    expect(error).toBeInstanceOf(StreamIdleTimeoutError);
-    expect((error as StreamIdleTimeoutError).kind).toBe("content");
+    expect(error).toBeInstanceOf(StreamSilenceError);
+    expect((error as StreamSilenceError).scope).toBe("content");
   });
 
   test("continuously producing upstream with downstream sleep longer than timeout after each yielded progress event does not timeout", async () => {
@@ -176,7 +196,10 @@ describe("wrapProviderEventsWithContentIdleTimeout", () => {
       await new Promise((resolve) => setTimeout(resolve, 5));
       yield { kind: "text_delta", text: "c" };
     }
-    const wrapped = wrapProviderEventsWithContentIdleTimeout(slowUpstream(), 20, 5);
+    const wrapped = wrapProviderEventsWithContentIdleTimeout(slowUpstream(), {
+      timeoutMs: 20,
+      checkIntervalMs: 5,
+    });
     const events: ProviderEvent[] = [];
     let error: unknown = null;
     try {
@@ -197,30 +220,54 @@ describe("wrapProviderEventsWithContentIdleTimeout", () => {
       await new Promise((resolve) => setTimeout(resolve, 100));
       yield { kind: "text_delta", text: "b" };
     }
-    const wrapped = wrapProviderEventsWithContentIdleTimeout(slowUpstream(), 20, 5);
+    const wrapped = wrapProviderEventsWithContentIdleTimeout(slowUpstream(), {
+      timeoutMs: 20,
+      checkIntervalMs: 5,
+    });
     const { events, error } = await collectUntilError(wrapped);
     expect(events).toEqual([{ kind: "text_delta", text: "a" }]);
-    expect(error).toBeInstanceOf(StreamIdleTimeoutError);
-    expect((error as StreamIdleTimeoutError).kind).toBe("content");
+    expect(error).toBeInstanceOf(StreamSilenceError);
+    expect((error as StreamSilenceError).scope).toBe("content");
   });
 
   test("repeated non-progress events accumulate upstream wait and eventually timeout rather than rearm", async () => {
     async function* nonProgressUpstream(): AsyncIterable<ProviderEvent> {
       yield { kind: "text_delta", text: "a" };
       await new Promise((resolve) => setTimeout(resolve, 15));
-      yield { kind: "retry_status", attempt: 1, maxAttempts: 5, delayMs: 0, reason: "" };
+      yield {
+        kind: "retry_status",
+        attempt: 1,
+        maxAttempts: 5,
+        delayMs: 0,
+        reason: "",
+      };
       await new Promise((resolve) => setTimeout(resolve, 15));
-      yield { kind: "retry_status", attempt: 2, maxAttempts: 5, delayMs: 0, reason: "" };
+      yield {
+        kind: "retry_status",
+        attempt: 2,
+        maxAttempts: 5,
+        delayMs: 0,
+        reason: "",
+      };
       await new Promise((resolve) => setTimeout(resolve, 15));
-      yield { kind: "retry_status", attempt: 3, maxAttempts: 5, delayMs: 0, reason: "" };
+      yield {
+        kind: "retry_status",
+        attempt: 3,
+        maxAttempts: 5,
+        delayMs: 0,
+        reason: "",
+      };
     }
-    const wrapped = wrapProviderEventsWithContentIdleTimeout(nonProgressUpstream(), 40, 5);
+    const wrapped = wrapProviderEventsWithContentIdleTimeout(nonProgressUpstream(), {
+      timeoutMs: 40,
+      checkIntervalMs: 5,
+    });
     const { events, error } = await collectUntilError(wrapped);
     // Timer scheduling granularity determines which retry races with the deadline.
     // The contract is that control events do not prevent expiry, not an exact event count.
     expect(events[0]).toEqual({ kind: "text_delta", text: "a" });
     expect(events.slice(1).every((event) => event.kind === "retry_status")).toBe(true);
-    expect(error).toBeInstanceOf(StreamIdleTimeoutError);
-    expect((error as StreamIdleTimeoutError).kind).toBe("content");
+    expect(error).toBeInstanceOf(StreamSilenceError);
+    expect((error as StreamSilenceError).scope).toBe("content");
   });
 });

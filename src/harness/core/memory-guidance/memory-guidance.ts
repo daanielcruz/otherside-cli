@@ -23,7 +23,7 @@ export function _setMemoryDirOverrideForTesting(dir: string | null): void {
   memoryDirOverrideForTesting = dir;
 }
 
-function buildCompactMemoryPrompt(dir: string): string {
+function assembleCompactMemoryPrompt(dir: string): string {
   return `# Memory
 
 You have a persistent file-based memory at \`${dir}\`. ${DIR_EXISTS_GUIDANCE} Each memory is one file holding one fact, with frontmatter:
@@ -48,7 +48,7 @@ export const memoryGuidanceLayer: CategorizedLayer = {
   phase: "dynamic",
   render(ctx: LayerContext) {
     const dir = memoryDirOverrideForTesting ?? ensureAutoMemDir(ctx.cwd);
-    if (ctx.lean) return buildCompactMemoryPrompt(dir);
+    if (ctx.lean) return assembleCompactMemoryPrompt(dir);
     return AUTO_MEMORY_FULL_MD.replaceAll(MEMORY_DIR_TOKEN, dir)
       .replace("_MEMORY_FORMAT_", MEMORY_FRONTMATTER_TEMPLATE)
       .replace("_MEMORY_DATES_RULE_", MEMORY_DATES_RULE)

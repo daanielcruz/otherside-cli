@@ -9,9 +9,9 @@ import type { ProviderPromptAdapter } from "@/engine/contract/prompt-adapter.ts"
 import { registerProviderConfig, unregisterProviderConfig } from "@/engine/contract/registry.ts";
 import type { ApiProviderSourceId, ProviderConfig } from "@/engine/contract/types.ts";
 import type { WireFingerprint } from "@/engine/contract/wire-fingerprint.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
 import type { ForkEvent, ProviderEvent } from "@/kernel/std/types/events.ts";
 import type { Message } from "@/kernel/std/types/message.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 import { runForkLoopInContext } from "../loop-runner.ts";
 import type { ForkSpec } from "../types.ts";

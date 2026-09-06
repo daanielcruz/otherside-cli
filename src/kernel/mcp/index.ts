@@ -13,6 +13,7 @@ export {
   hasPendingMcpServers,
   inspectServer,
   MCP_DISABLED_INSPECTION,
+  MCP_PENDING_INSPECTION,
   type McpConnectionStatus,
   type McpServerStatusEntry,
 } from "./client/registry.ts";
@@ -25,7 +26,7 @@ export {
   readMcpResource,
   type ScopedResource,
 } from "./client/resources.ts";
-export { publishConnectivityWarnings, warnOnMcpFailures } from "./errors/warnings.ts";
+export { mcpConnectivityNotices, mcpStartupNotices } from "./errors/warnings.ts";
 export { resolveAuthHeader } from "./oauth/credentials.ts";
 export type { OAuthFlowOptions, OAuthFlowOutcome, OAuthFlowResult } from "./oauth/flow.ts";
 export { startOAuthFlow } from "./oauth/flow.ts";
@@ -36,13 +37,14 @@ export {
   type OAuthToken,
 } from "./oauth/token-store.ts";
 export {
-  hasDirectoryReadCapability,
   hasResourcesCapability,
   isMcpSkillsEnabled,
   sanitizeMcpText,
   sanitizeMcpUri,
   setMcpSkillsEnabledForTests,
+  supportsResourceDirectoryRead,
 } from "./protocol/parse.ts";
+export { formatMcpToolLabel, type McpCallIdentity } from "./protocol/tool-label.ts";
 export type {
   HttpServerConfig,
   McpClient,
@@ -71,6 +73,7 @@ export {
   UnauthorizedError,
 } from "./protocol/types.ts";
 export {
+  displayMcpServerName,
   isMcpToolName,
   MCP_TOOL_PREFIX,
   parseWireToolName,
@@ -85,6 +88,7 @@ export {
   type McpConnectivityReport,
   type McpRuntime,
   makeMcpRenderHooks,
+  mcpCallIdentity,
   probeMcpConnectivity,
   refreshMcpTools,
   setMcpToolRegistry,

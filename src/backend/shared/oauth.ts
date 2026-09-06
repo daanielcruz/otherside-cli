@@ -18,8 +18,6 @@ export interface DeviceAuthPending {
   verificationUri: string;
 }
 
-// Ink swallows stderr, so the pending device code is published here for the
-// design overlay (or any UI) to render while the poll loop waits for approval.
 let pendingDeviceAuth: DeviceAuthPending | null = null;
 const deviceAuthListeners = new Set<() => void>();
 

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { OrchestrationMode } from "@/kernel/config/orchestration-mode.ts";
+import type { OrchestrationMode } from "@/kernel/std/types/orchestration-mode.ts";
 import { WORKFLOW_AGENT_CACHE_KEYS } from "./agent-options.ts";
 
 const AGENT_CACHE_KEY_VERSION = "v5";
@@ -29,7 +29,7 @@ function canonicalizeValue(value: unknown): unknown {
   return value;
 }
 
-export function normalizeAgentCacheOptions(options: unknown): string {
+export function normalizeAgentCacheKeyOptions(options: unknown): string {
   if (!options) return "{}";
   if (typeof options !== "object" || Array.isArray(options)) return "{}";
   const picked: Record<string, unknown> = {};
@@ -55,11 +55,11 @@ function computeAgentCacheDigest(
     .update("\0")
     .update(prompt)
     .update("\0")
-    .update(normalizeAgentCacheOptions(options))
+    .update(normalizeAgentCacheKeyOptions(options))
     .digest("hex");
 }
 
-export function computeAgentCacheKey(
+export function deriveAgentCacheKey(
   prompt: string,
   options: unknown,
   structuralPath: string,

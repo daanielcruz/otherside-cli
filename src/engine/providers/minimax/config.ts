@@ -11,12 +11,13 @@ import {
   translateResponseMinimax as translateResponse,
 } from "@/engine/providers/minimax/translate.ts";
 import { classifyProviderError } from "@/engine/transport/_infra/classify/classify.ts";
+import { providerDisplayName } from "@/kernel/std/types/provider-ids.ts";
 
 const PROVIDER: ApiProvider<"anthropic-messages"> = {
   id: "minimax",
   api: "anthropic-messages",
   sourceId: "builtin",
-  label: "MiniMax",
+  label: providerDisplayName("minimax"),
   shortKey: "minimax",
 };
 
@@ -57,7 +58,6 @@ export const config: ProviderConfig<"anthropic-messages"> = {
   stream: minimaxStream,
   featureFlags: {
     fastMode: false,
-    effortSuffix: false,
     thinkingSuffix: false,
     supportsImages: false,
   },

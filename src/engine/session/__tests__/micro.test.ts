@@ -144,6 +144,7 @@ describe("microcompact and session heap pruning", () => {
         effort: null,
         fastMode: false,
         permissionMode: "default",
+        orchestrationMode: "disabled" as const,
       }),
       dispatch: () => {},
     };

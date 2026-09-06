@@ -12,7 +12,7 @@ export function sessionModelFields(broker: Broker): {
   permission_mode: "accept" | "auto" | "plan" | "yolo";
 } {
   const brokerState = broker.read();
-  const modelEntry = findCatalogModel(brokerState.model, brokerState.provider);
+  const modelEntry = findCatalogModel({ provider: brokerState.provider, model: brokerState.model });
   return {
     provider: brokerState.provider,
     model: modelEntry?.displayName ?? brokerState.model,
@@ -104,13 +104,29 @@ export async function upsertSessionRow(
     });
   } catch (err) {
     if (err instanceof CortexApiError) {
-      throw httpError(err.httpStatus || 500, err.message);
+      throw httpError(err.httpStatus || 500, err.message, err.code);
     }
     throw err;
   }
 }
 
 export async function deleteSessionRow(sessionId: string, accessToken: string): Promise<Response> {
-  // Cortex has no DELETE session route — end via patch status=ended.
-  return patchSessionRow(sessionId, accessToken, { status: "ended" });
+  try {
+    const data = await cortexFetch(`/v1/sessions/${sessionId}`, {
+      method: "DELETE",
+      token: accessToken,
+    });
+    return new Response(JSON.stringify(data), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  } catch (err) {
+    if (err instanceof CortexApiError) {
+      return new Response(JSON.stringify({ message: err.message, code: err.code }), {
+        status: err.httpStatus || 500,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    throw err;
+  }
 }

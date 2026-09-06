@@ -1,4 +1,3 @@
-import { useSyncExternalStore } from "react";
 import { makeStore, type Store } from "@/kernel/std/state/make-store.ts";
 
 export interface SessionTitleState {
@@ -27,19 +26,3 @@ export const sessionTitleActions = {
     sessionTitleStore.setState((prev) => (prev.title === null && !prev.attempted ? prev : initial));
   },
 };
-
-export function useSessionTitleState(): SessionTitleState {
-  return useSyncExternalStore(
-    sessionTitleStore.subscribe,
-    sessionTitleStore.getState,
-    sessionTitleStore.getState,
-  );
-}
-
-export function useSessionTitle(): string | null {
-  return useSyncExternalStore(
-    sessionTitleStore.subscribe,
-    () => sessionTitleStore.getState().title,
-    () => sessionTitleStore.getState().title,
-  );
-}

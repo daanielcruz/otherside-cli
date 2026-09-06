@@ -183,6 +183,7 @@ export interface DesignSpawn {
 
 export interface DesignSpawnHandle {
   spawnId: string;
+  sessionHash: string;
   designId: string;
   url: string;
   stop: () => Promise<void>;

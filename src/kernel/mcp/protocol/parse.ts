@@ -3,6 +3,7 @@ import { DEFAULT_INPUT_SCHEMA } from "./constants.ts";
 import {
   MCP_SKILLS_EXTENSION_URI,
   type McpDirectoryEntry,
+  type McpPromptInfo,
   type McpResourceInfo,
   type McpServerCapabilities,
   type McpToolInfo,
@@ -52,7 +53,7 @@ export function setMcpSkillsEnabledForTests(value: boolean | null): void {
  * Call-time check: skills extension declares `directoryRead: true`.
  * Tool *appearance* is gated only by resources; this gates the directory call.
  */
-export function hasDirectoryReadCapability(
+export function supportsResourceDirectoryRead(
   capabilities: McpServerCapabilities | null | undefined,
 ): boolean {
   const ext = capabilities?.extensions?.[MCP_SKILLS_EXTENSION_URI];
@@ -70,11 +71,11 @@ export function parseMcpTool(value: unknown): McpToolInfo | null {
   const name = typeof obj.name === "string" ? obj.name : null;
   if (!name) return null;
   const description = typeof obj.description === "string" ? obj.description : "";
-  const title = typeof obj.title === "string" ? obj.title : undefined;
   const annotations =
     obj.annotations && typeof obj.annotations === "object" && !Array.isArray(obj.annotations)
       ? (obj.annotations as Record<string, unknown>)
       : {};
+  const title = typeof annotations.title === "string" ? annotations.title : undefined;
   const raw = obj.inputSchema ?? obj.input_schema;
   const inputSchema =
     raw && typeof raw === "object" && !Array.isArray(raw)
@@ -107,6 +108,28 @@ export function parseMcpResource(value: unknown): McpResourceInfo | null {
     ...(typeof obj.mimeType === "string" ? { mimeType: obj.mimeType } : {}),
   };
   return Object.keys(out).length > 0 ? out : null;
+}
+
+/**
+ * One prompt a server offers. A prompt with no name cannot be asked for, so it
+ * is dropped rather than listed as something that would fail on use.
+ */
+export function parseMcpPrompt(value: unknown): McpPromptInfo | null {
+  if (!value || typeof value !== "object") return null;
+  const obj = value as Record<string, unknown>;
+  if (typeof obj.name !== "string" || obj.name.length === 0) return null;
+  const args = Array.isArray(obj.arguments)
+    ? obj.arguments.flatMap((entry) => {
+        if (!entry || typeof entry !== "object") return [];
+        const record = entry as Record<string, unknown>;
+        return typeof record.name === "string" && record.name.length > 0 ? [record.name] : [];
+      })
+    : [];
+  return {
+    name: obj.name,
+    ...(typeof obj.description === "string" ? { description: obj.description } : {}),
+    argumentNames: args,
+  };
 }
 
 export function parseDirectoryEntry(value: unknown): McpDirectoryEntry | null {

@@ -2,15 +2,12 @@ import { CortexApiError, cortexFetch } from "@/backend/shared/cortex.ts";
 
 const DESIGN_WEB_ORIGIN_DEFAULT = "https://design.othersidecli.com";
 
-export function designWebUrl(openToken: string, cliPubB64: string, accountEmail?: string): string {
+export function designWebUrl(openToken: string, cliPubB64: string): string {
   const origin = (process.env.OTHERSIDE_DESIGN_WEB_ORIGIN ?? DESIGN_WEB_ORIGIN_DEFAULT).replace(
     /\/+$/,
     "",
   );
-  const account = accountEmail
-    ? `&a=${Buffer.from(accountEmail, "utf8").toString("base64url")}`
-    : "";
-  return `${origin}/open/${encodeURIComponent(openToken)}#k=${cliPubB64}${account}`;
+  return `${origin}/open/${encodeURIComponent(openToken)}#k=${cliPubB64}`;
 }
 
 export async function ensureDesignProject(args: {
@@ -42,8 +39,8 @@ export async function registerDesignSession(args: {
   provider: string;
   model: string;
   permissionMode: string;
-}): Promise<void> {
-  await cortexFetch("/v1/sessions", {
+}): Promise<{ instanceId: string }> {
+  const session = await cortexFetch<{ instance_id: string }>("/v1/sessions", {
     method: "POST",
     token: args.accessToken,
     body: {
@@ -57,21 +54,27 @@ export async function registerDesignSession(args: {
     },
     idempotencyKey: crypto.randomUUID(),
   });
+  return { instanceId: session.instance_id };
 }
 
-export async function designSessionExists(
-  accessToken: string,
-  sessionHash: string,
-): Promise<boolean> {
+export type DesignSessionStatus = "streaming" | "idle" | "awaiting" | "disconnected" | "ended";
+
+export async function readDesignSessionStatus(args: {
+  accessToken: string;
+  sessionHash: string;
+}): Promise<DesignSessionStatus | null> {
   try {
-    await cortexFetch(`/v1/sessions/${sessionHash}`, {
-      method: "GET",
-      token: accessToken,
-    });
-    return true;
-  } catch (err) {
-    if (err instanceof CortexApiError && err.code === "not_found") return false;
-    return false;
+    const session = await cortexFetch<{ status: DesignSessionStatus }>(
+      `/v1/sessions/${args.sessionHash}`,
+      {
+        method: "GET",
+        token: args.accessToken,
+      },
+    );
+    return session.status;
+  } catch (error) {
+    if (error instanceof CortexApiError && error.code === "not_found") return null;
+    throw error;
   }
 }
 
@@ -122,19 +125,21 @@ export async function endSessionsForDesignProject(
   }
 }
 
-// Aliases used by relay.ts
-export async function designSessionAlive(args: {
-  accessToken: string;
-  sessionHash: string;
-}): Promise<boolean> {
-  return designSessionExists(args.accessToken, args.sessionHash);
-}
-
 export async function touchDesignSession(args: {
   accessToken: string;
   sessionHash: string;
 }): Promise<void> {
-  await patchDesignSession(args.accessToken, args.sessionHash, { status: "idle" }).catch(() => {});
+  await patchDesignSession(args.accessToken, args.sessionHash, { status: "idle" });
+}
+
+export async function refreshDesignSessionLease(args: {
+  accessToken: string;
+  sessionHash: string;
+}): Promise<"active" | "terminal"> {
+  const status = await readDesignSessionStatus(args);
+  if (status === null || status === "ended") return "terminal";
+  await touchDesignSession(args);
+  return "active";
 }
 
 export async function patchProjectVersion(args: {

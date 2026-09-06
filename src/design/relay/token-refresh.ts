@@ -2,7 +2,7 @@
  * Auto-remint loop for the design pairing link. design_open_tokens live for
  * five minutes; while the web app has not attached yet, this schedules a
  * re-mint at each expiry so the URL shown in the overlay stays usable. The
- * backend mint edge function only takes session_id, so the same session is
+ * backend mint endpoint only takes session_id, so the same session is
  * reused — no relay teardown. Remints are capped so an abandoned overlay does
  * not mint tokens forever.
  */

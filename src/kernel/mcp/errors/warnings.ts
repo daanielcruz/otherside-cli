@@ -1,27 +1,31 @@
 import { hasProjectMcpServers, isProjectMcpTrusted } from "@/kernel/mcp/config.ts";
 import type { McpConnectivityReport } from "@/kernel/mcp/runtime/manager.ts";
 import { probeMcpConnectivity } from "@/kernel/mcp/runtime/manager.ts";
-import { publish } from "@/kernel/std/notifications.ts";
 import { pluralize } from "@/kernel/std/text/pluralize.ts";
 
-export function publishConnectivityWarnings(report: McpConnectivityReport): void {
-  if (report.failed.length > 0) {
-    const noun = pluralize(report.failed.length, "server", "servers");
-    publish("error", `${report.failed.length} MCP ${noun} failed · /mcp`);
-  }
-  if (report.needsAuth.length > 0) {
-    const noun = pluralize(report.needsAuth.length, "server needs", "servers need");
-    publish("error", `${report.needsAuth.length} MCP ${noun} auth · /mcp`);
-  }
+/**
+ * A refused connection is reported by the transient footer notice alone, so it
+ * earns no transcript row here; only a server the user must act on to unblock
+ * — one waiting for auth — is durable enough to keep.
+ */
+export function mcpConnectivityNotices(report: McpConnectivityReport): string[] {
+  if (report.needsAuth.length === 0) return [];
+  const noun = pluralize(report.needsAuth.length, "server needs", "servers need");
+  return [`${report.needsAuth.length} MCP ${noun} auth · /mcp`];
 }
 
-export async function warnOnMcpFailures(
-  cwd: string = process.cwd(),
-): Promise<McpConnectivityReport> {
+export interface McpStartupReport {
+  /** Transcript rows: the durable record of what startup found. */
+  notices: string[];
+  /** Servers that would not connect, reported only by the transient surface. */
+  failedCount: number;
+}
+
+export async function mcpStartupNotices(cwd: string = process.cwd()): Promise<McpStartupReport> {
   const report = await probeMcpConnectivity(cwd);
-  publishConnectivityWarnings(report);
+  const notices = mcpConnectivityNotices(report);
   if ((await hasProjectMcpServers(cwd)) && !(await isProjectMcpTrusted(cwd))) {
-    publish("error", "Project MCP servers found — review and trust via /mcp");
+    notices.push("Project MCP servers found — review and trust via /mcp");
   }
-  return report;
+  return { notices, failedCount: report.failed.length };
 }

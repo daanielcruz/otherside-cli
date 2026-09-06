@@ -5,8 +5,10 @@ import { join } from "node:path";
 import { emitQueue } from "@/engine/queue/emit.ts";
 import {
   addUsage,
+  appendAssistantText,
   completeTask,
   get as getBackgroundTask,
+  removeTask,
   setUsageSnapshot,
   startShellTask,
   startTask,
@@ -26,11 +28,22 @@ import {
   updateTaskRecord,
 } from "../index.ts";
 import {
-  getTaskOutputPath,
   getTaskSpillPath,
   isTaskOutputPath,
+  renderTaskResultForMessage,
+  resolveTaskLogPath,
   setTaskOutputSession,
+  taskResultArchiveBanner,
+  taskResultCharacterBudget,
 } from "../output-files.ts";
+
+// A task left running in the shared store gates unrelated suites
+// (pressure reap skips while any agent task runs; the shared output
+// poller stays armed while any shell task runs).
+const startedTasks: string[] = [];
+afterEach(() => {
+  for (const id of startedTasks.splice(0)) removeTask(id);
+});
 
 describe("Task List Persistence", () => {
   let tempBaseDir: string;
@@ -236,6 +249,7 @@ describe("Background Task Store token usage snapshotting", () => {
       parentToolCallId: "parent-tool-1",
       agentName: "TokenTestAgent",
     });
+    startedTasks.push(bgTask.id);
 
     const taskId = bgTask.id;
     let task = getBackgroundTask(taskId);
@@ -273,6 +287,7 @@ describe("Background Task Store token usage snapshotting", () => {
       parentToolCallId: "call-cache",
       agentName: "general-purpose",
     });
+    startedTasks.push(bgTask.id);
     const taskId = bgTask.id;
 
     // Cache miss: whole prompt sent uncached -> input_tokens carries the full 200k.
@@ -338,6 +353,44 @@ describe("Background task completion notifications (autoTurn / stoppedByUser)", 
     // suffix; only agent/workflow kills carry "by user".
     expect(summaryOf(item)).toContain("was stopped");
     expect(emitQueue.hasPendingAutoTurn()).toBe(true);
+  });
+
+  function resultOf(item: ReturnType<typeof notificationFor>): string | undefined {
+    if (item?.payload.kind !== "task_notification_xml") return undefined;
+    return /<result>([\s\S]*?)<\/result>/.exec(item.payload.text)?.[1];
+  }
+
+  test("a killed agent still delivers the answer it had streamed before stopping", () => {
+    const task = startTask({
+      parentToolCallId: "call-killed-partial",
+      agentName: "researcher",
+      description: "survey the codebase",
+      isBackgrounded: true,
+    });
+    appendAssistantText(task.id, "Found three call sites so far");
+
+    completeTask(task.id, { content: "Killed by user", isError: false, killed: true });
+
+    const item = notificationFor(task.id);
+    expect(item).toBeDefined();
+    // The cancellation reason belongs to the summary; <result> carries output.
+    expect(resultOf(item)).toBe("Found three call sites so far");
+    expect(summaryOf(item)).toContain("stopped");
+  });
+
+  test("a killed agent that produced nothing ships no result element", () => {
+    const task = startTask({
+      parentToolCallId: "call-killed-empty",
+      agentName: "researcher",
+      description: "survey the codebase",
+      isBackgrounded: true,
+    });
+
+    completeTask(task.id, { content: "Killed by user", isError: false, killed: true });
+
+    const item = notificationFor(task.id);
+    expect(item).toBeDefined();
+    expect(resultOf(item)).toBeUndefined();
   });
 
   test("a nested agent task (ownerId set) notifies only its owner, never the main projection", () => {
@@ -438,6 +491,7 @@ describe("Session rebind invariants", () => {
       parentToolCallId: "call-start-a",
       startedAt: 123_456,
     });
+    startedTasks.push(explicit.id);
     expect(explicit.startedAt).toBe(123_456);
 
     const zero = startShellTask({
@@ -446,6 +500,7 @@ describe("Session rebind invariants", () => {
       parentToolCallId: "call-start-b",
       startedAt: 0,
     });
+    startedTasks.push(zero.id);
     expect(zero.startedAt).toBe(0);
 
     const before = Date.now();
@@ -454,23 +509,66 @@ describe("Session rebind invariants", () => {
       command: "sleep 1",
       parentToolCallId: "call-start-c",
     });
+    startedTasks.push(fallback.id);
     expect(fallback.startedAt).toBeGreaterThanOrEqual(before);
   });
 
   test("a task's output and spill paths stay pinned across a session rebind", () => {
     setTaskOutputSession({ sessionId: "pin-old", cwd: tempBaseDir });
-    const outputBefore = getTaskOutputPath("shell-pin-probe");
+    const outputBefore = resolveTaskLogPath("shell-pin-probe");
     const spillBefore = getTaskSpillPath({ taskId: "shell-pin-probe", stream: "stdout" });
 
     setTaskOutputSession({ sessionId: "pin-new", cwd: tempBaseDir });
-    expect(getTaskOutputPath("shell-pin-probe")).toBe(outputBefore);
+    expect(resolveTaskLogPath("shell-pin-probe")).toBe(outputBefore);
     expect(getTaskSpillPath({ taskId: "shell-pin-probe", stream: "stdout" })).toBe(spillBefore);
     // The pre-rebind path stays recognized (Read allowlist/labels).
     expect(isTaskOutputPath(outputBefore)).toBe(true);
 
     // A task first seen after the rebind lands in the new session's dir.
-    const fresh = getTaskOutputPath("shell-post-rebind");
+    const fresh = resolveTaskLogPath("shell-post-rebind");
     expect(fresh).not.toBe(outputBefore);
     expect(fresh).toContain("pin-new");
+  });
+});
+
+describe("task result message budget", () => {
+  let savedResultLimit: string | undefined;
+
+  beforeEach(() => {
+    savedResultLimit = process.env.TASK_MAX_OUTPUT_LENGTH;
+  });
+
+  afterEach(() => {
+    if (savedResultLimit === undefined) delete process.env.TASK_MAX_OUTPUT_LENGTH;
+    else process.env.TASK_MAX_OUTPUT_LENGTH = savedResultLimit;
+  });
+
+  test("uses the default for unusable limits and caps large requests", () => {
+    for (const setting of ["", "nope", "0", "-12"]) {
+      process.env.TASK_MAX_OUTPUT_LENGTH = setting;
+      expect(taskResultCharacterBudget()).toBe(32_000);
+    }
+    process.env.TASK_MAX_OUTPUT_LENGTH = "999999";
+    expect(taskResultCharacterBudget()).toBe(160_000);
+  });
+
+  test("keeps exact-fit text and prefixes only the retained suffix after overflow", () => {
+    setTaskOutputSession({ sessionId: "message-budget-test", cwd: "/dummy/cwd" });
+    const taskKey = "message-budget-probe";
+    const expectedBanner = taskResultArchiveBanner(taskKey);
+    const characterBudget = expectedBanner.length + 5;
+    process.env.TASK_MAX_OUTPUT_LENGTH = String(characterBudget);
+
+    const boundaryText = "x".repeat(characterBudget);
+    expect(renderTaskResultForMessage(boundaryText, taskKey)).toEqual({
+      textForModel: boundaryText,
+      trimmedForMessage: false,
+    });
+
+    const sourceText = `${boundaryText}omega`;
+    expect(renderTaskResultForMessage(sourceText, taskKey)).toEqual({
+      textForModel: `${expectedBanner}omega`,
+      trimmedForMessage: true,
+    });
   });
 });

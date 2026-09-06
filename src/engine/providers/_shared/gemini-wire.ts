@@ -167,7 +167,7 @@ function geminiToolResponsePart(
 }
 
 function appendPdfParts(
-  contents: GeminiContent[],
+  target: GeminiPart[],
   result: Extract<ContentBlock, { type: "tool_result" }>,
   supportsPdf: boolean,
 ): void {
@@ -177,21 +177,36 @@ function appendPdfParts(
     .map((part) => ({
       inlineData: { mimeType: "application/pdf", data: part.source.data },
     }));
-  if (parts.length > 0) contents.push({ role: "user", parts });
+  target.push(...parts);
 }
 
-function appendToolResponse(contents: GeminiContent[], fr: GeminiPart): void {
+function appendImageParts(
+  target: GeminiPart[],
+  result: Extract<ContentBlock, { type: "tool_result" }>,
+): void {
+  if (!Array.isArray(result.content)) return;
+  const parts = result.content
+    .filter((part): part is Extract<typeof part, { type: "image" }> => part.type === "image")
+    .map((part) => ({ inlineData: { mimeType: part.source.media_type, data: part.source.data } }));
+  target.push(...parts);
+}
+
+function appendToolResponse(contents: GeminiContent[], response: GeminiPart): GeminiContent {
   const last = contents[contents.length - 1];
   if (last && last.role === "user") {
-    const allFr =
+    const containsOnlyToolResponses =
       last.parts.length > 0 &&
-      last.parts.every((p) => typeof p === "object" && p !== null && "functionResponse" in p);
-    if (allFr) {
-      last.parts.push(fr);
-      return;
+      last.parts.every(
+        (part) => typeof part === "object" && part !== null && "functionResponse" in part,
+      );
+    if (containsOnlyToolResponses) {
+      last.parts.push(response);
+      return last;
     }
   }
-  contents.push({ role: "user", parts: [fr] });
+  const content: GeminiContent = { role: "user", parts: [response] };
+  contents.push(content);
+  return content;
 }
 
 export interface GeminiContentsResult {
@@ -237,8 +252,12 @@ export function geminiBuildContents(
         (b): b is Extract<ContentBlock, { type: "tool_result" }> => b.type === "tool_result",
       );
       for (const r of toolResults) {
-        appendToolResponse(contents, geminiToolResponsePart(r, toolNames, wrapOutput, supportsPdf));
-        appendPdfParts(contents, r, supportsPdf);
+        const resultContent = appendToolResponse(
+          contents,
+          geminiToolResponsePart(r, toolNames, wrapOutput, supportsPdf),
+        );
+        appendPdfParts(resultContent.parts, r, supportsPdf);
+        appendImageParts(resultContent.parts, r);
       }
       if (parts.length > 0) {
         contents.push({ role: "user", parts });
@@ -321,8 +340,12 @@ export function geminiBuildContents(
         (b): b is Extract<ContentBlock, { type: "tool_result" }> => b.type === "tool_result",
       );
       for (const r of toolResults) {
-        appendToolResponse(contents, geminiToolResponsePart(r, toolNames, wrapOutput, supportsPdf));
-        appendPdfParts(contents, r, supportsPdf);
+        const resultContent = appendToolResponse(
+          contents,
+          geminiToolResponsePart(r, toolNames, wrapOutput, supportsPdf),
+        );
+        appendPdfParts(resultContent.parts, r, supportsPdf);
+        appendImageParts(resultContent.parts, r);
       }
     }
   }

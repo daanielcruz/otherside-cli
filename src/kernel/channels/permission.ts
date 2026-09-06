@@ -1,11 +1,15 @@
 import {
   type PermissionUpdate,
+  parseRuleValueText,
   permissionDirectoryGlob,
-  permissionRuleValueFromString,
 } from "@/kernel/permissions/types.ts";
 import { createDuplexChannel } from "@/kernel/std/stream/duplex.ts";
 
 export type PermissionDecisionValue = "allow" | "deny";
+
+// Virtual tool name labeling the fork-route approval prompt: no registry tool
+// backs it, the name only identifies the request on the permission channel.
+export const FORK_ROUTE_PERMISSION_TOOL = "AgentModelRoute";
 
 export interface PermissionResult {
   decision: PermissionDecisionValue;
@@ -160,7 +164,7 @@ export const PermissionResults = {
             {
               source: "localSettings",
               ruleBehavior: "allow",
-              ruleValue: permissionRuleValueFromString(rule) ?? { toolName: rule },
+              ruleValue: parseRuleValueText(rule) ?? { toolName: rule },
             },
           ],
         },
@@ -181,7 +185,7 @@ export const PermissionResults = {
                   {
                     source: "session",
                     ruleBehavior: "allow",
-                    ruleValue: permissionRuleValueFromString(rule) ?? { toolName: rule },
+                    ruleValue: parseRuleValueText(rule) ?? { toolName: rule },
                   },
                 ],
               },

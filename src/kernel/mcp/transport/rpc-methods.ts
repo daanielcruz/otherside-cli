@@ -1,10 +1,12 @@
 import {
   parseDirectoryEntry,
+  parseMcpPrompt,
   parseMcpResource,
   parseMcpTool,
 } from "@/kernel/mcp/protocol/parse.ts";
 import type {
   McpDirectoryListPage,
+  McpPromptInfo,
   McpResourceInfo,
   McpToolInfo,
 } from "@/kernel/mcp/protocol/types.ts";
@@ -47,6 +49,22 @@ export async function listResourcesVia(send: RpcSend): Promise<McpResourceInfo[]
     field: "resources",
     parse: parseMcpResource,
   });
+}
+
+export async function listPromptsVia(send: RpcSend): Promise<McpPromptInfo[]> {
+  return collectPaginated({
+    send,
+    method: "prompts/list",
+    field: "prompts",
+    parse: parseMcpPrompt,
+  });
+}
+
+export async function getPromptVia(
+  send: RpcSend,
+  options: { name: string; args: Record<string, string> },
+): Promise<unknown> {
+  return send("prompts/get", { name: options.name, arguments: options.args });
 }
 
 export async function callToolVia(

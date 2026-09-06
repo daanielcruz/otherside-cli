@@ -24,7 +24,7 @@ function trimmedHead(command: string): string {
     .replace(/^timeout\s+\S+\s+/, "");
 }
 
-export function isSearchOrReadBashCommand(command: string): boolean {
+export function isReadOrSearchCommand(command: string): boolean {
   const head = trimmedHead(command);
   if (head.includes("&&") || head.includes(";") || head.includes("|")) return false;
   return SEARCH_OR_READ_PATTERNS.some((re) => re.test(head));

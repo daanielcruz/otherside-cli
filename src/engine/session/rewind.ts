@@ -1,10 +1,10 @@
 import { statSync } from "node:fs";
 import { type FileHandle, open } from "node:fs/promises";
-import type { MutableRefObject } from "react";
 import type { Agent } from "@/engine/queue/index.ts";
 import { resetRecallStateForSession } from "@/engine/queue/runtime/prefetch.ts";
-import { clearActiveGoal } from "@/engine/queue/state.ts";
+import { restoreGoalFromRecords } from "@/engine/queue/state.ts";
 import { estimateHarnessTokens } from "@/engine/session/compact/harness-baseline.ts";
+import { hydratePreservedImages } from "@/engine/session/compact/preserved-image-ledger.ts";
 import {
   latestContextUsageSnapshotFromSessionRecords,
   resolveSessionBrokerState,
@@ -15,17 +15,22 @@ import {
   sessionBrokerStateKey,
   sessionPathForCwd,
 } from "@/engine/session/index.ts";
-import type { ContentReplacementSessionRecord } from "@/engine/session/record/schema.ts";
+import type { ToolOutputArchiveSessionRecord } from "@/engine/session/record/schema.ts";
 import type { TranscriptEntry } from "@/engine/session/record/types.ts";
 import { replayInjectionsFromRecords } from "@/engine/session/resume.ts";
 import { sessionRecordsToMessages } from "@/engine/session/transcript/to-messages.ts";
 import type { ContextUsageSnapshot } from "@/engine/session/usage/snapshot.ts";
-import { reconstructContentReplacementState } from "@/engine/tool-result-storage/index.ts";
+import { restoreToolOutputArchive } from "@/engine/tool-output-archive/index.ts";
 import { sanitizeMessages } from "@/engine/translator/index.ts";
-import { fastModeForProvider, type UserConfig } from "@/kernel/config/config.ts";
+import {
+  effectiveOrchestrationMode,
+  fastModeForProvider,
+  type UserConfig,
+} from "@/kernel/config/config.ts";
 import type { ImageMediaType } from "@/kernel/std/types/image.ts";
 import type { PasteStore } from "@/kernel/std/types/paste.ts";
 import type { BrokerHandle, PermissionMode } from "@/kernel/std/types/request.ts";
+import type { MutableRef } from "@/kernel/std/types/state.ts";
 import { restoreFilesForRewind } from "@/kernel/storage/file-history.ts";
 import {
   anchorFromIndex,
@@ -64,11 +69,11 @@ export interface RewindToTranscriptIdDeps {
   ) => void;
   setMainLastContext: (snapshot: ContextUsageSnapshot) => void;
   setPromptText: (text: string) => void;
-  pasteStoreRef: MutableRefObject<PasteStore>;
-  suppressBrokerPersistenceRef: MutableRefObject<boolean>;
-  persistedSessionBrokerStateRef: MutableRefObject<string>;
-  pendingRewindPersistRef: MutableRefObject<PendingRewindPersist | null>;
-  pendingBrokerMetaRef: MutableRefObject<SessionMetaRecord | null>;
+  pasteStoreRef: MutableRef<PasteStore>;
+  suppressBrokerPersistenceRef: MutableRef<boolean>;
+  persistedSessionBrokerStateRef: MutableRef<string>;
+  pendingRewindPersistRef: MutableRef<PendingRewindPersist | null>;
+  pendingBrokerMetaRef: MutableRef<SessionMetaRecord | null>;
   overlayStack: { closeTop: () => void };
   transcriptBatch: { flushNow: () => void };
   getTranscriptEntries: () => readonly TranscriptEntry[];
@@ -201,28 +206,24 @@ function applyConversationRewind(
   // records only, mirroring resume.
   queueActions.clear();
   replayInjectionsFromRecords(session.records, agent, session.systemInjections);
-  // An active /goal is live in-memory state keyed by session id; a rewind that
-  // drops the goal_set turn would otherwise keep re-injecting its condition.
-  // Goal hook events are memory-only and never persisted, so a goal cannot be
-  // re-derived from kept records — same as resume, a rewound conversation
-  // starts with no goal and the user re-sets /goal if still relevant.
-  clearActiveGoal(session.id);
+  // Rebuild the active goal from the retained transcript so cutting its status
+  // marker clears it while rewinding later work keeps it active.
+  restoreGoalFromRecords(session.id, keptRecords);
   resetRecallStateForSession(session.id);
   pasteStoreRef.current.clear();
   const restoredPromptPrefix = restoreImagesToPromptPrefix(pasteStoreRef.current, restoredImages);
   const rebuiltMessages = sanitizeMessages(sessionRecordsToMessages(session.records));
   session.messages.splice(0, session.messages.length, ...rebuiltMessages);
-  const replacementRecords = session.records
-    .filter((r): r is ContentReplacementSessionRecord => r.type === "content_replacement")
-    .map((r) => ({
-      kind: r.kind,
-      toolUseId: r.toolUseId,
-      replacement: r.replacement,
+  const archiveRecords = session.records
+    .filter(
+      (record): record is ToolOutputArchiveSessionRecord => record.type === "content_replacement",
+    )
+    .map((record) => ({
+      kind: record.kind,
+      toolUseId: record.toolUseId,
+      replacement: record.replacement,
     }));
-  session.contentReplacementState = reconstructContentReplacementState(
-    session.messages,
-    replacementRecords,
-  );
+  session.toolOutputArchive = restoreToolOutputArchive(session.messages, archiveRecords);
   const rewindAnchorUuid =
     cutRecord && cutRecord.type === "user_message" && typeof cutRecord.uuid === "string"
       ? cutRecord.uuid
@@ -260,21 +261,23 @@ export function restoreBrokerStateOnRewind(args: {
   broker: BrokerHandle;
   target: SessionBrokerState;
   runtimeConfig: UserConfig;
-  suppressRef: MutableRefObject<boolean>;
-  persistedRef: MutableRefObject<string>;
+  suppressRef: MutableRef<boolean>;
+  persistedRef: MutableRef<string>;
 }): void {
   const { broker, target, runtimeConfig, suppressRef, persistedRef } = args;
   suppressRef.current = true;
   try {
     if (broker.read().provider !== target.provider) {
       broker.dispatch({
-        kind: "set_provider",
-        provider: target.provider,
-        model: target.model,
+        kind: "set_route",
+        route: { provider: target.provider, model: target.model },
         fastMode: target.fastMode ?? fastModeForProvider(runtimeConfig, target.provider),
       });
     } else if (broker.read().model !== target.model) {
-      broker.dispatch({ kind: "set_model", model: target.model });
+      broker.dispatch({
+        kind: "set_route",
+        route: { provider: target.provider, model: target.model },
+      });
     }
     if (broker.read().effort !== target.effort) {
       broker.dispatch({ kind: "set_effort", effort: target.effort });
@@ -296,6 +299,11 @@ export function restoreBrokerStateOnRewind(args: {
       });
     } else if (broker.read().ultracode) {
       broker.dispatch({ kind: "set_effort", effort: target.effort });
+    }
+    const historicOrchestrationMode =
+      target.orchestrationMode ?? effectiveOrchestrationMode(runtimeConfig);
+    if (broker.read().orchestrationMode !== historicOrchestrationMode) {
+      broker.dispatch({ kind: "set_orchestration_mode", mode: historicOrchestrationMode });
     }
   } finally {
     suppressRef.current = false;
@@ -397,6 +405,9 @@ export function truncateRewoundTail(s: Session, request: RewindTruncateRequest):
         if (kept.length > 0) await handle.write(kept, 0, kept.length, anchor.lineStart);
       }
       if (s.chain.headUuid === null) s.chain.headUuid = anchor.parentUuid;
+      // The truncated region may have held the only full copy of an image a
+      // later mark references; rebuild the ledger from what survived.
+      s.preservedImageLedger = hydratePreservedImages([s.records]);
       return true;
     } finally {
       await handle.close();

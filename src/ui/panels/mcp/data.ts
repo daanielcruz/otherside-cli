@@ -1,19 +1,26 @@
-import { type Color as InkColor } from "@/ink";
+import { join } from "node:path";
 import {
   loadDisabledMcpServers,
   loadEffectiveMcpConfigWithSources,
   loadProjectMcpServerStatuses,
   type McpConfigSource,
+  type McpScope,
   type ProjectMcpServerStatus,
+  serverConfigLocation,
 } from "@/kernel/mcp/config.ts";
 import {
   inspectServer,
   MCP_DISABLED_INSPECTION,
+  MCP_PENDING_INSPECTION,
   type McpServerConfig,
   type McpServerInspection,
 } from "@/kernel/mcp/index.ts";
-import { computeListWindow } from "@/kernel/std/list-window.ts";
-import { Color, Glyph } from "@/ui/theme/theme.ts";
+import { isExpired, loadOAuthToken } from "@/kernel/mcp/oauth/token-store.ts";
+
+export function hasOAuthToken(serverName: string): boolean {
+  const token = loadOAuthToken(serverName);
+  return token !== null && !isExpired(token);
+}
 
 export interface McpServerRow {
   name: string;
@@ -55,7 +62,9 @@ export async function resolveInspection(
   return inspectServer(name, config);
 }
 
-export async function loadMcpRows(): Promise<McpServerRow[]> {
+export async function loadMcpRows(
+  onInspection?: (name: string, inspection: McpServerInspection) => void,
+): Promise<McpServerRow[]> {
   const cwd = process.cwd();
   const loaded = await loadEffectiveMcpConfigWithSources(cwd);
   const disabled = await loadDisabledMcpServers(cwd);
@@ -64,56 +73,111 @@ export async function loadMcpRows(): Promise<McpServerRow[]> {
     .filter(([name]) => loaded.sources[name]?.scope === "project")
     .map(([name]) => name);
   const projectStatuses = await loadProjectMcpServerStatuses(cwd, projectNames);
-  return Promise.all(
-    entries.map(async ([name, config]) => {
-      const enabled = !disabled.has(name);
-      const source = loaded.sources[name];
-      const projectStatus = projectStatuses.get(name);
-      const blockedByTrust = source?.scope === "project" && projectStatus !== "approved";
-      return {
-        name,
-        config,
-        ...(source ? { source } : {}),
-        ...(projectStatus ? { projectStatus } : {}),
-        enabled,
-        inspection: await resolveInspection(name, config, enabled, blockedByTrust),
-      };
+  // Untrusted/disabled statuses resolve synchronously; enabled servers paint
+  // immediately as pending and stream their real inspection via onInspection.
+  const rows = entries.map(([name, config]): McpServerRow => {
+    const enabled = !disabled.has(name);
+    const source = loaded.sources[name];
+    const projectStatus = projectStatuses.get(name);
+    const blockedByTrust = source?.scope === "project" && projectStatus !== "approved";
+    const inspection = blockedByTrust
+      ? UNTRUSTED_INSPECTION
+      : enabled
+        ? MCP_PENDING_INSPECTION
+        : MCP_DISABLED_INSPECTION;
+    return {
+      name,
+      config,
+      ...(source ? { source } : {}),
+      ...(projectStatus ? { projectStatus } : {}),
+      enabled,
+      inspection,
+    };
+  });
+  void Promise.all(
+    rows.map(async (row) => {
+      if (row.inspection.status !== "pending") return;
+      const inspection = await inspectServer(row.name, row.config);
+      onInspection?.(row.name, inspection);
     }),
   );
+  return rows;
 }
 
-export function groupServerRows(rows: McpServerRow[]): McpGroup[] {
+export function groupServerRows(rows: McpServerRow[], cwd: string): McpGroup[] {
   const groups = new Map<string, McpGroup>();
   for (const row of rows) {
-    const scope = row.source?.scope ?? "project";
-    const path = row.source?.path;
-    const key = `${scope}:${path ?? ""}`;
+    const scope = row.source?.scope ?? "dynamic";
+    const key = scope;
     const existing = groups.get(key);
     if (existing) {
       existing.rows.push(row);
     } else {
-      groups.set(key, {
-        key,
-        label: scope === "user" ? "User MCPs" : "Project MCPs",
-        ...(path ? { path } : {}),
-        rows: [row],
-      });
+      groups.set(key, { key, ...groupHeading(scope, cwd), rows: [row] });
     }
   }
   const order = new Map([
     ["project", 0],
-    ["user", 1],
+    ["local", 1],
+    ["user", 2],
+    ["dynamic", 5],
   ]);
   return [...groups.values()]
-    .sort((a, b) => {
-      const aScope = a.key.split(":")[0] ?? "";
-      const bScope = b.key.split(":")[0] ?? "";
-      return (order.get(aScope) ?? 10) - (order.get(bScope) ?? 10) || a.key.localeCompare(b.key);
-    })
+    .sort(
+      (a, b) => (order.get(a.key) ?? 10) - (order.get(b.key) ?? 10) || a.key.localeCompare(b.key),
+    )
     .map((group) => ({
       ...group,
       rows: [...group.rows].sort((a, b) => a.name.localeCompare(b.name)),
     }));
+}
+
+function groupHeading(scope: McpScope, cwd: string): { label: string; path?: string } {
+  switch (scope) {
+    case "project":
+      return { label: "Project MCPs", path: join(cwd, ".mcp.json") };
+    case "local":
+      return {
+        label: "Local MCPs",
+        path: serverConfigLocation(cwd, { scope: "local" }),
+      };
+    case "user":
+      return { label: "User MCPs", path: serverConfigLocation(cwd, { scope: "user" }) };
+    case "dynamic":
+      return { label: "Built-in MCPs", path: "always available" };
+  }
+}
+
+export interface ListRowStatus {
+  icon: string;
+  tone: "success" | "warning" | "error" | "inactive";
+  text: string;
+}
+
+export function listRowStatus(row: McpServerRow): ListRowStatus {
+  const inspection = row.inspection;
+  if (inspection.status === "untrusted") return { icon: "⚠", tone: "warning", text: "untrusted" };
+  if (!row.enabled || inspection.status === "disabled") {
+    return { icon: "◯", tone: "inactive", text: "disabled" };
+  }
+  if (inspection.status === "needs-auth") {
+    return { icon: "△", tone: "warning", text: "needs authentication" };
+  }
+  if (inspection.status === "pending") {
+    return { icon: "◯", tone: "inactive", text: "connecting…" };
+  }
+  if (inspection.status === "failed") return { icon: "✘", tone: "error", text: "failed" };
+  if (inspection.toolsError) {
+    return { icon: "△", tone: "warning", text: "connected · tools fetch failed" };
+  }
+  if (inspection.tools.length === 0) {
+    return { icon: "△", tone: "warning", text: "connected · no tools" };
+  }
+  return {
+    icon: "✔",
+    tone: "success",
+    text: `connected · ${formatCount(inspection.tools.length, "tool")}`,
+  };
 }
 
 export function serverMenuOptions(server: McpServerRow | undefined): McpMenuOption[] {
@@ -129,10 +193,17 @@ export function serverMenuOptions(server: McpServerRow | undefined): McpMenuOpti
   if (server.enabled && server.inspection.tools.length > 0) {
     options.push({ id: "tools", label: "View tools" });
   }
-  if (server.enabled && server.inspection.status === "needs-auth" && isRemote(server.config)) {
+  if (
+    server.enabled &&
+    isRemote(server.config) &&
+    (server.inspection.status === "needs-auth" ||
+      (server.inspection.status === "failed" && !hasOAuthToken(server.name)))
+  ) {
     options.push({ id: "authenticate", label: "Authenticate" });
   }
-  if (server.enabled) options.push({ id: "reconnect", label: "Reconnect" });
+  if (server.enabled && server.inspection.status !== "needs-auth") {
+    options.push({ id: "reconnect", label: "Reconnect" });
+  }
   options.push({ id: "toggle", label: server.enabled ? "Disable" : "Enable" });
   return options;
 }
@@ -149,34 +220,6 @@ export function capabilities(server: McpServerRow): string {
   return out.length > 0 ? out.join(" · ") : "none";
 }
 
-export function statusColor(status: McpServerInspection["status"]): InkColor {
-  if (status === "connected") return Color.success;
-  if (status === "failed") return Color.error;
-  if (status === "needs-auth") return Color.warning;
-  if (status === "untrusted") return Color.warning;
-  return Color.muted;
-}
-
-export function toolMarker(index: number, selected: number, start: number, total: number): string {
-  if (index === selected) return Glyph.chevron.trimEnd();
-  if (index === start && start > 0) return Glyph.arrowUp;
-  if (index === start + TOOL_PAGE_SIZE - 1 && index + 1 < total) return Glyph.arrowDown;
-  return " ";
-}
-
-export const toolWindowStart = (selected: number, total: number): number =>
-  computeListWindow({
-    cursor: selected,
-    total,
-    size: TOOL_PAGE_SIZE,
-    anchor: "bottom",
-  }).from;
-
 export function formatCount(count: number, singular: string): string {
   return `${count} ${singular}${count === 1 ? "" : "s"}`;
-}
-
-export function wrapIndex(index: number, length: number): number {
-  if (length <= 0) return 0;
-  return ((index % length) + length) % length;
 }

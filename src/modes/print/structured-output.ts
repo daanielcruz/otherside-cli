@@ -8,7 +8,7 @@ import type { Provider } from "@/engine/contract/types.ts";
 import * as providers from "@/engine/providers/registry.ts";
 import type { ToolHandler } from "@/engine/tools/contract.ts";
 import * as toolRegistry from "@/engine/tools/registry.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 import { isRecord } from "@/kernel/std/value-guards.ts";
 import type { StructuredOutputState } from "./types.ts";
 

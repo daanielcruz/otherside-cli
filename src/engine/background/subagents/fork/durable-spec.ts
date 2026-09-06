@@ -15,7 +15,8 @@ export interface DurableForkSpecV1 {
   forkId: string;
   kind: "fork" | "subagent";
   agentId: string;
-  name: string;
+  /** Legacy display label carried by older specs; read tolerantly, never written. */
+  name?: string;
   prompt: string;
   body?: string;
   description?: string;
@@ -72,7 +73,6 @@ export function serializeDurableForkSpec(
     forkId,
     kind: spec.inheritParentTurn === true ? "fork" : "subagent",
     agentId: spec.agentId ?? spec.name,
-    name: spec.name,
     prompt: spec.prompt,
     ...(spec.body.length > 0 ? { body: spec.body } : {}),
     ...(spec.description !== undefined ? { description: spec.description } : {}),
@@ -144,7 +144,7 @@ function parseDurableForkSpec(value: unknown): DurableForkSpecV1 | null {
     !isDurableForkId(value.forkId) ||
     (value.kind !== "fork" && value.kind !== "subagent") ||
     typeof value.agentId !== "string" ||
-    typeof value.name !== "string" ||
+    !isOptionalString(value.name) ||
     typeof value.prompt !== "string" ||
     typeof value.cwd !== "string" ||
     typeof value.provider !== "string" ||

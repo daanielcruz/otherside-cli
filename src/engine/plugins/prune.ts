@@ -2,7 +2,7 @@ import { existsSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync } 
 import { dirname, join, resolve, sep } from "node:path";
 import { configRoot } from "@/kernel/std/fs/paths.ts";
 import { getTrackedCwd } from "@/kernel/std/state/cwd-state.ts";
-import { normalizeProjectPath } from "./identity.ts";
+import { canonicalProjectPath } from "./identity.ts";
 import {
   listPluginInstallations,
   type PluginInstallation,
@@ -128,7 +128,7 @@ function payloadRoots(cwd: string): PayloadRoot[] {
     { path: pluginCacheRoot(), versionDepth: 3 },
     { path: join(configRoot(), "plugins", "installed"), versionDepth: 4 },
   ];
-  const projectPath = normalizeProjectPath(cwd);
+  const projectPath = canonicalProjectPath(cwd);
   if (projectPath !== undefined) {
     roots.push(
       { path: join(projectPath, ".otherside", "plugins", "installed"), versionDepth: 4 },

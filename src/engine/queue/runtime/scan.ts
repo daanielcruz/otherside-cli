@@ -60,7 +60,7 @@ export async function scanMemoryFiles(
   }
 }
 
-export function formatMemoryManifest(memories: MemoryHeader[]): string {
+export function renderMemoryManifest(memories: MemoryHeader[]): string {
   return memories
     .map((m) => {
       const tag = m.type ? `[${m.type}] ` : "";

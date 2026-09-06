@@ -77,6 +77,64 @@ describe("sanitizeMessages thinking normalization", () => {
     ]);
   });
 
+  // A tool_reference is validated against the request's declared toolset at
+  // the provider boundary. An inherited transcript (context-inheriting fork)
+  // can reference tools the child request never declares — e.g. EnterPlanMode
+  // is fork-disallowed but the parent loaded it via ToolSearch. Preserving
+  // such a reference makes the whole request invalid at pre-flight.
+  it("keeps only tool_reference blocks whose tools are declared for this request", () => {
+    const input: Message[] = [
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "search-1", name: "ToolSearch", input: {} }],
+      },
+      {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "search-1",
+            content: [
+              { type: "tool_reference", tool_name: "EnterPlanMode" },
+              { type: "tool_reference", tool_name: "EnterWorktree" },
+            ],
+          },
+        ],
+      },
+    ];
+    const out = sanitizeMessages(input, {
+      preserveToolReferences: true,
+      declaredToolNames: new Set(["EnterWorktree", "Read", "Bash"]),
+    });
+    expect((out[1]?.content[0] as { content?: unknown }).content).toEqual([
+      { type: "tool_reference", tool_name: "EnterWorktree" },
+    ]);
+  });
+
+  it("empties a preserved tool_result whose references are all undeclared", () => {
+    const input: Message[] = [
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "search-1", name: "ToolSearch", input: {} }],
+      },
+      {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "search-1",
+            content: [{ type: "tool_reference", tool_name: "EnterPlanMode" }],
+          },
+        ],
+      },
+    ];
+    const out = sanitizeMessages(input, {
+      preserveToolReferences: true,
+      declaredToolNames: new Set(["Read", "Bash"]),
+    });
+    expect((out[1]?.content[0] as { content?: unknown }).content).toBe("");
+  });
+
   it("drops a whitespace-only assistant message", () => {
     const input: Message[] = [
       { role: "user", content: [text("hi")] },

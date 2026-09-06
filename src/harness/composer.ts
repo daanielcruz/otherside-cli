@@ -4,6 +4,7 @@ import type {
   SystemTextBlock,
 } from "@/harness/composer/injections.ts";
 import { HARNESS_MANIFEST, type LayerDescriptor } from "@/harness/composer/manifest.ts";
+import { stripSystemReminderWrapper } from "@/harness/composer/reminder-wrapper.ts";
 import { applyTokens } from "@/harness/composer/tokens.ts";
 
 export function defaultStack(): LayerDescriptor[] {
@@ -30,8 +31,15 @@ export function compose(layers: readonly LayerDescriptor[], ctx: LayerContext): 
     const block: SystemTextBlock = { text: body, phase, bundleKey };
     if (layer.kind === "system") systemBlocks.push(block);
     else if (layer.kind === "mid-system") {
-      if (ctx.supportsMidSystem) midSystemBlocks.push(block);
-      else userPrepend.push({ ...block, standalone: true });
+      // Promotion lifts the reminder out of the user turn; the unwrap set
+      // additionally drops the reminder envelope from the promoted content.
+      if (ctx.promoteMidSystem) {
+        midSystemBlocks.push(
+          ctx.supportsMidSystem
+            ? { ...block, text: stripSystemReminderWrapper(block.text) }
+            : block,
+        );
+      } else userPrepend.push({ ...block, standalone: true });
     } else userPrepend.push(block);
   }
   return {
@@ -40,5 +48,10 @@ export function compose(layers: readonly LayerDescriptor[], ctx: LayerContext): 
     systemBlocks,
     userPrepend,
     midSystemBlocks,
+    midSystemPromotion: ctx.promoteMidSystem
+      ? ctx.supportsMidSystem
+        ? "unwrapped"
+        : "wrapped"
+      : "off",
   };
 }

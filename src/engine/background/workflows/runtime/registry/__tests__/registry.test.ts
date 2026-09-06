@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { getBundledWorkflows } from "@/engine/background/workflows/bundled/index.ts";
 import {
   getAllWorkflows,
+  getListedWorkflows,
   getLocalWorkflows,
   resolveWorkflow,
 } from "@/engine/background/workflows/runtime/registry/registry.ts";
@@ -306,5 +307,29 @@ describe("workflow source gates and safe mode", () => {
     );
     expect(disabled.every((workflow) => workflow.source !== "user")).toBe(true);
     expect(disabled.some((workflow) => workflow.name === "user-gate-project")).toBe(true);
+  });
+});
+
+describe("hidden workflows", () => {
+  test("a hidden workflow is kept out of the roster but still resolves by name", async () => {
+    const root = makeTempRoot();
+    const hidden = getBundledWorkflows().filter((workflow) => workflow.hidden === true);
+    expect(hidden.length).toBeGreaterThan(0);
+
+    const listed = await getListedWorkflows(root, config({ enableUserWorkflows: false }));
+    for (const workflow of hidden) {
+      expect(listed.some((entry) => entry.name === workflow.name)).toBe(false);
+      expect(await resolveWorkflow(workflow.name, root)).toBeDefined();
+    }
+  });
+
+  test("the roster keeps every workflow that is not hidden", async () => {
+    const root = makeTempRoot();
+    const config_ = config({ enableUserWorkflows: false });
+    const all = await getAllWorkflows(root, config_);
+    const listed = await getListedWorkflows(root, config_);
+
+    expect(listed).toEqual(all.filter((workflow) => workflow.hidden !== true));
+    expect(listed.length).toBeLessThan(all.length);
   });
 });

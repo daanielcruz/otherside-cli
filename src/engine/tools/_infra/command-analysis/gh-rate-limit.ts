@@ -11,7 +11,7 @@ const RATE_LIMIT_REMINDER =
 
 let nextAllowedAt = 0;
 
-export function maybeBuildGhRateLimitReminder(
+export function buildGhRateLimitReminderIfDue(
   command: string,
   output: string,
   nowMs: number = Date.now(),

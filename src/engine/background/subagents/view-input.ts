@@ -1,4 +1,7 @@
+import { existsSync } from "node:fs";
 import { get as getAgentDef } from "@/engine/agents/registry.ts";
+import { readDurableForkSpec } from "@/engine/background/subagents/fork/durable-spec.ts";
+import { acquireResumedWorktreeLease } from "@/engine/background/subagents/worktree.ts";
 import {
   addUsage,
   appendAction,
@@ -11,7 +14,7 @@ import {
   failAction,
   get as getBackgroundTask,
   reopenTask,
-  setModel,
+  setRoute,
   setUsageSnapshot,
   type TaskRunRef,
   taskRunRef,
@@ -81,7 +84,7 @@ function routeResumedAgentEvent(
   } else if (event.kind === "fork_tool_dispatch_complete") {
     event.isError ? failAction(taskId, event.toolCallId) : completeAction(taskId, event.toolCallId);
   } else if (event.kind === "fork_start") {
-    setModel(taskId, event.model, event.effort, event.provider);
+    setRoute(taskId, { provider: event.provider, model: event.model }, event.effort);
   } else if (event.kind === "fork_usage") {
     const usage = {
       inputTokens: event.inputTokens,
@@ -118,8 +121,26 @@ export async function resumeViewedAgent(
   const rebuilt = sanitizeMessages(sessionRecordsToMessages(records));
   if (rebuilt.length === 0) return false;
 
+  // An agent isolated in a worktree recorded where it lives; resuming it anywhere
+  // else would let it write into the project root it was isolated from.
+  const durable = await readDurableForkSpec({
+    cwd: taskCwd,
+    sessionId: transcriptSessionId,
+    forkId,
+  });
+  const worktreeRoot =
+    durable?.worktreeRoot !== undefined && existsSync(durable.worktreeRoot)
+      ? durable.worktreeRoot
+      : undefined;
+  const runCwd = worktreeRoot ?? taskCwd;
+
   const baseCtx = makeRequestContext(input.agent.deps);
-  const modelEntry = task.model !== undefined ? findModel(task.model) : undefined;
+  const taskRoute =
+    task.route ??
+    (task.provider !== undefined && task.model !== undefined
+      ? { provider: task.provider, model: task.model }
+      : null);
+  const modelEntry = taskRoute === null ? undefined : findModel(taskRoute);
   const def = getAgentDef(task.agentId ?? task.agentName);
   if (def === undefined) return false;
   const abort = new AbortController();
@@ -129,16 +150,19 @@ export async function resumeViewedAgent(
   };
   const ctx: RequestContext = {
     ...baseCtx,
-    provider: task.provider ?? modelEntry?.provider ?? baseCtx.provider,
-    model: task.model ?? modelEntry?.id ?? baseCtx.model,
+    provider: taskRoute?.provider ?? baseCtx.provider,
+    model: modelEntry?.id ?? taskRoute?.model ?? baseCtx.model,
     effort: task.effort ?? baseCtx.effort,
     sessionId: transcriptSessionId,
-    cwd: taskCwd,
+    cwd: runCwd,
+    ...(worktreeRoot !== undefined ? { worktreeRoot } : {}),
+    ...(durable?.originalCwd !== undefined ? { originalCwd: durable.originalCwd } : {}),
     eventSink,
     abortSignal: abort.signal,
     ...(task.ownerId !== undefined ? { agentOwnerId: task.ownerId } : {}),
   };
   const allowSet = resolveAllowSetForFork(def, "subagent", ctx);
+  const skills = skillMessagesForDef(def);
   const resumeSpec: ForkSpec = {
     ctx,
     name: task.agentName,
@@ -153,7 +177,8 @@ export async function resumeViewedAgent(
     preserveDurableSpec: true,
     promptInlineImages: input.blocks.filter((block) => block.type === "image"),
     extraDeclarations: mcpDeclarationsForDef(def, allowSet),
-    skillMessages: skillMessagesForDef(def),
+    skillMessages: skills.messages,
+    ...(skills.warnings.length > 0 ? { setupWarnings: skills.warnings } : {}),
     agentHooks: def.hooks ?? null,
     allowedAgentTypes: computeAllowedAgentTypes(def),
     allowNestedAgents: true,
@@ -213,6 +238,10 @@ export async function resumeViewedAgent(
     taskId: task.id,
   };
   const releaseController = bgControllers.register(task.parentToolCallId, resumeController);
+  // Nothing else bumps the worktree's mtime while this run holds it, so the orphan
+  // prune would delete it under a live agent without a lease.
+  const worktreeLease =
+    worktreeRoot !== undefined ? await acquireResumedWorktreeLease(worktreeRoot) : null;
   void (async () => {
     try {
       const result = await runForkLoopExternal({ ...resumeSpec, initialMessages: messages });
@@ -229,6 +258,7 @@ export async function resumeViewedAgent(
         });
       }
     } finally {
+      if (worktreeLease) await worktreeLease.release();
       releaseController();
     }
   })();

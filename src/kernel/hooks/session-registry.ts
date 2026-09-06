@@ -1,5 +1,5 @@
+import type { HookEntry } from "@/kernel/std/types/hook-entry.ts";
 import type { HookEvent } from "./events.ts";
-import type { HookEntry } from "./exec.ts";
 
 export interface SessionHookEntry {
   entry: HookEntry;

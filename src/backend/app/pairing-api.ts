@@ -1,4 +1,4 @@
-import { callCortex } from "../shared/api.ts";
+import { callCortex } from "@/backend/shared/api.ts";
 
 export interface ConfirmPairingInput {
   cli_device_id: string;

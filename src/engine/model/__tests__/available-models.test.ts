@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { availableModelListing } from "@/engine/model/tier/available-models.ts";
-import { setCredentialsLoaderForTests } from "@/engine/model/tier/resolver.ts";
+import { setCredentialsLoaderForTests } from "@/engine/model/tier/usability.ts";
 import { registerAllProviders } from "@/engine/providers/bootstrap.ts";
 import {
   clearRoutingUsage,
@@ -48,6 +48,7 @@ describe("availableModelListing", () => {
     const listing = availableModelListing();
     expect(listing.map((row) => row.provider)).toEqual(["anthropic", "codex"]);
     expect(listing.find((row) => row.provider === "codex")?.models.map((m) => m.id)).toEqual([
+      "gpt-6-astra",
       "gpt-5.6-sol",
       "gpt-5.6-terra",
       "gpt-5.6-luna",
@@ -57,9 +58,9 @@ describe("availableModelListing", () => {
       "gpt-5.3-codex-spark",
     ]);
     expect(listing.find((row) => row.provider === "anthropic")?.models.map((m) => m.id)).toEqual([
-      "claude-fable-5",
+      "claude-opus-5",
+      "claude-fable-5-1",
       "claude-opus-4-8",
-      "claude-opus-4-7",
       "claude-sonnet-5",
       "claude-haiku-4-5",
     ]);
@@ -99,7 +100,7 @@ describe("availableModelListing", () => {
     expect(listing.map((row) => row.provider)).toContain("anthropic");
   });
 
-  it("drops only claude-fable-5 when the Fable weekly window is exhausted", () => {
+  it("drops the whole Fable family when the Fable weekly window is exhausted", () => {
     setCredentialsLoaderForTests(anthropicOnlyCreds);
     const futureSeconds = Math.floor(Date.now() / 1000) + 86_400;
     setUsageLimits(
@@ -107,14 +108,14 @@ describe("availableModelListing", () => {
       {
         status: "allowed",
         unifiedRateLimitFallbackAvailable: false,
-        isUsingOverage: false,
+        isOverageActive: false,
       },
     );
     const listing = availableModelListing();
     const anthropic = listing.find((row) => row.provider === "anthropic");
     expect(anthropic).toBeDefined();
     const ids = anthropic?.models.map((m) => m.id) ?? [];
-    expect(ids).not.toContain("claude-fable-5");
+    expect(ids).not.toContain("claude-fable-5-1");
     expect(ids).toContain("claude-opus-4-8");
   });
 });

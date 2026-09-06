@@ -4,7 +4,7 @@ import type { RequestContext } from "@/kernel/std/types/request.ts";
 
 // OAuth requests use the configured client ID, user-agent, headers, scope, and device-grant shape. Inference uses the CLI chat proxy rather than the public xAI API.
 export const CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828";
-export const GROK_CLIENT_VERSION = "0.2.91";
+export const GROK_CLIENT_VERSION = "0.2.102";
 // OAuth requests tag the surface; inference tags the client identifier.
 export const GROK_CLIENT_SURFACE = "headless";
 export const GROK_CLIENT_IDENTIFIER = "grok-shell";

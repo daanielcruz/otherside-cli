@@ -1,8 +1,8 @@
-import type { Color } from "@/ink";
 import type { ThemeName } from "@/kernel/config/theme-names.ts";
+import type { TerminalColor } from "@/terminal-runtime";
 
 export interface ScopeMap {
-  [scope: string]: Color;
+  [scope: string]: TerminalColor;
 }
 
 export const STORAGE_KEYWORDS = new Set([
@@ -124,7 +124,19 @@ export function scopesForTheme(theme: ThemeName): ScopeMap {
   return GITHUB;
 }
 
-export function defaultForegroundForTheme(theme: ThemeName): Color {
+/**
+ * What to call the scope map a palette resolves to, for a surface that names it.
+ *
+ * It answers here because the choice is the same one `scopesForTheme` makes: a
+ * name kept anywhere else would be a second place to update when a map changes.
+ */
+export function scopeSchemeName(theme: ThemeName): string {
+  if (theme.includes("ansi")) return "ansi";
+  if (theme.includes("dark")) return "Monokai";
+  return "GitHub";
+}
+
+export function defaultForegroundForTheme(theme: ThemeName): TerminalColor {
   if (theme.includes("ansi")) return "ansi:white";
   if (theme.includes("dark")) return "#F8F8F2";
   return "#333333";
@@ -134,8 +146,8 @@ export function resolveScope(args: {
   scope: string | undefined;
   text: string;
   scopes: ScopeMap;
-  fallback: Color;
-}): Color {
+  fallback: TerminalColor;
+}): TerminalColor {
   const { scope, text, scopes, fallback } = args;
   if (!scope) return fallback;
   if (scope === "keyword" && STORAGE_KEYWORDS.has(text.trim())) {

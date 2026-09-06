@@ -57,6 +57,13 @@ class ResourceClient implements McpClient {
   serverInstructions() {
     return null;
   }
+  async listPrompts() {
+    return [];
+  }
+  async getPrompt() {
+    return { messages: [] };
+  }
+  announce(): void {}
   isClosed() {
     return this.closed;
   }

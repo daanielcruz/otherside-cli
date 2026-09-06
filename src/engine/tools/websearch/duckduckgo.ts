@@ -1,1 +1,1 @@
-export { searchDuckDuckGo } from "../duckduckgo.ts";
+export { searchDuckDuckGo } from "@/engine/tools/duckduckgo.ts";

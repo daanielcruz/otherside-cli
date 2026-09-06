@@ -1,13 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  realpathSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { sessionPathForCwd } from "@/engine/session/paths.ts";
@@ -140,7 +133,7 @@ describe("worktree session persistence (project config)", () => {
 
     const exited = await exitSessionWorktree(ctx, { action: "remove" });
     // The restore path is realpath'd (e.g. /var → /private/var on macOS).
-    expect(realpathSync(exited.restoredCwd)).toBe(realpathSync(repoRoot));
+    expect(await realpath(exited.restoredCwd)).toBe(await realpath(repoRoot));
     expect(host.storageCwd).toBe(repoRoot);
     expect(existsSync(originalPath)).toBe(true);
     expect(existsSync(relocatedPath)).toBe(false);

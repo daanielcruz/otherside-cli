@@ -13,10 +13,10 @@ import type {
   UsageProviderBucket,
   UsageProviderMap,
 } from "@/kernel/config/config.ts";
-import type { ProviderId } from "@/kernel/config/provider-ids.ts";
 import { withFileLock, withFileLockSync } from "@/kernel/std/fs/file-lock.ts";
 import { statsCachePath } from "@/kernel/std/fs/paths.ts";
 import { atomicWriteFileSync } from "@/kernel/std/fs/secure-fs.ts";
+import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 import {
   addProviderUsage,
   emptyProviderUsage,
@@ -98,12 +98,19 @@ export function usageByProviderFromRecords(records: readonly unknown[]): UsageBy
 // in the ledger but never occupy the main context window. Legacy fork records
 // lack the isSidechain flag, so non-estimated "usage" records are dropped too —
 // main turns persist usage on assistant_message records, never bare "usage".
+// A rollup is the one bare "usage" record that IS main spend: it stands for
+// main-conversation lines a resume did not materialize.
 export function mainTokenTotalsFromRecords(records: readonly unknown[]): TokenTotals {
   const mainRecords = records.filter((record) => {
     if (!record || typeof record !== "object") return true;
-    const r = record as { isSidechain?: boolean; type?: string; estimated?: boolean };
+    const r = record as {
+      isSidechain?: boolean;
+      type?: string;
+      estimated?: boolean;
+      rollup?: boolean;
+    };
     if (r.isSidechain === true) return false;
-    if (r.type === "usage" && r.estimated !== true) return false;
+    if (r.type === "usage" && r.estimated !== true && r.rollup !== true) return false;
     return true;
   });
   return tokenTotalsFromUsageByProvider(usageByProviderFromRecords(mainRecords));
@@ -429,7 +436,7 @@ function tokenTotalsFromAssistantUsage(usage: AssistantRequestUsage): TokenTotal
   };
 }
 
-import { isProviderId } from "@/kernel/config/provider-ids.ts";
+import { isProviderId } from "@/kernel/std/types/provider-ids.ts";
 
 function positiveInt(value: unknown): number {
   const n = Number(value);

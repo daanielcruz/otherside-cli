@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mergeResumedMessages } from "@/engine/background/subagents/lifecycle.ts";
+import { mergeResumedMessages } from "@/engine/background/subagents/resume-messages.ts";
 import type { SessionRecord } from "@/engine/session/record/index.ts";
 import { sessionRecordsToMessages } from "@/engine/session/transcript/to-messages.ts";
 import type { Message } from "@/kernel/std/types/message.ts";
