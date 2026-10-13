@@ -1,4 +1,3 @@
-import { auxiliaryModelFor } from "@/engine/model/tier/tiers.ts";
 import {
   API_MESSAGES_URL,
   anthropicWireModelId,
@@ -12,6 +11,10 @@ import { uuidv4 } from "@/kernel/std/id.ts";
 import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 import type { PermissionMode, RequestContext } from "@/kernel/std/types/request.ts";
 import { loadFor } from "@/kernel/storage/credentials.ts";
+
+// A one-token request to Haiku 4.5 answers with the plan's rate-limit headers;
+// the same request to Haiku 5.5 is answered 429 without them.
+const QUOTA_PROBE_MODEL = "claude-haiku-4-5";
 
 type QuotaProbeBroker = {
   read(): { provider: ProviderId; permissionMode: PermissionMode };
@@ -36,13 +39,10 @@ export async function probeQuotaStatus(broker?: QuotaProbeBroker): Promise<void>
     }
 
     const auth = await authorizationHeader();
-    const baseModel = auxiliaryModelFor("anthropic");
-    const smallFastModel = anthropicWireModelId(baseModel, false);
-
     const sessionId = uuidv4();
     const ctx: RequestContext = {
       provider: "anthropic",
-      model: baseModel,
+      model: QUOTA_PROBE_MODEL,
       effort: null,
       permissionMode: broker ? broker.read().permissionMode : "accept-edits",
       sessionId,
@@ -66,7 +66,7 @@ export async function probeQuotaStatus(broker?: QuotaProbeBroker): Promise<void>
       metadata: {
         user_id: anthropicUserIdMetadata(sessionId),
       },
-      model: smallFastModel,
+      model: anthropicWireModelId(QUOTA_PROBE_MODEL),
     };
 
     const resp = await fetch(API_MESSAGES_URL, {

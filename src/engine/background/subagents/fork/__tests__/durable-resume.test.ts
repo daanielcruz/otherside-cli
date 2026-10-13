@@ -57,7 +57,7 @@ describe("durable fork resume", () => {
       agentId: "fork",
       name: "durable-fork",
       prompt: "Original directive.",
-      permissionMode: "plan",
+      permissionMode: "accept-edits",
       permissionModeIsDefinitionPinned: true,
       effort: "high",
       cwd,
@@ -164,7 +164,7 @@ describe("durable fork resume", () => {
     expect(durable.permissionMode).toBe("yolo");
     expect(durable.permissionModeIsDefinitionPinned).toBe(false);
 
-    for (const mode of ["default", "accept-edits", "plan", "yolo"] as const) {
+    for (const mode of ["default", "accept-edits", "yolo"] as const) {
       clearForkLifecyclesForTests();
       const requestCtx: RequestContext = {
         ...spawnCtx,

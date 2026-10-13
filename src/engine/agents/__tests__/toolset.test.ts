@@ -45,23 +45,8 @@ describe("filterToolsForAgent", () => {
   });
 
   it("mcp tools bypass every check", () => {
-    const out = filterToolsForAgent(["mcp__srv__thing", "EnterPlanMode"], BASE);
+    const out = filterToolsForAgent(["mcp__srv__thing", "AskUserQuestion"], BASE);
     expect(out).toEqual(["mcp__srv__thing"]);
-  });
-
-  it("ExitPlanMode survives only for plan-mode agents", () => {
-    expect(filterToolsForAgent(["ExitPlanMode"], BASE)).toEqual([]);
-    expect(filterToolsForAgent(["ExitPlanMode"], { ...BASE, permissionMode: "plan" })).toEqual([
-      "ExitPlanMode",
-    ]);
-  });
-
-  it("plan-mode agents gain ExitPlanMode even when the pool never offered it", () => {
-    expect(filterToolsForAgent(["Read"], { ...BASE, permissionMode: "plan" })).toEqual([
-      "Read",
-      "ExitPlanMode",
-    ]);
-    expect(filterToolsForAgent(["Read"], BASE)).toEqual(["Read"]);
   });
 
   it("custom (non-built-in) agent definitions lose Workflow", () => {

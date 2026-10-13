@@ -7,15 +7,15 @@ describe("parseRosterOverlay", () => {
       JSON.stringify({
         tiers: {
           emperor: [
-            { provider: "anthropic", model: "claude-opus-5" },
-            { provider: "codex", model: "gpt-5.6-sol" },
+            { provider: "anthropic", model: "claude-opus-5-5" },
+            { provider: "codex", model: "gpt-5.6-terra" },
           ],
         },
       }),
     );
     expect(overlay.emperor).toEqual([
-      { provider: "anthropic", model: "claude-opus-5" },
-      { provider: "codex", model: "gpt-5.6-sol" },
+      { provider: "anthropic", model: "claude-opus-5-5" },
+      { provider: "codex", model: "gpt-5.6-terra" },
     ]);
     expect(overlay.shogun).toBeUndefined();
   });
@@ -53,14 +53,14 @@ describe("parseRosterOverlay", () => {
 describe("mergeRosterOverlays", () => {
   it("project tier replaces the user tier; absent tiers fall through", () => {
     const user = {
-      emperor: [{ provider: "anthropic", model: "claude-opus-5" } as const],
+      emperor: [{ provider: "anthropic", model: "claude-opus-5-5" } as const],
       samurai: [{ provider: "glm", model: "glm-5-turbo" } as const],
     };
     const project = {
-      emperor: [{ provider: "codex", model: "gpt-5.6-sol" } as const],
+      emperor: [{ provider: "codex", model: "gpt-5.6-terra" } as const],
     };
     const merged = mergeRosterOverlays(user, project);
-    expect(merged.emperor).toEqual([{ provider: "codex", model: "gpt-5.6-sol" }]);
+    expect(merged.emperor).toEqual([{ provider: "codex", model: "gpt-5.6-terra" }]);
     expect(merged.samurai).toEqual([{ provider: "glm", model: "glm-5-turbo" }]);
   });
 });

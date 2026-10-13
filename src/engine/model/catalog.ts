@@ -1,7 +1,11 @@
 import { getProviderConfig, listProviderConfigs } from "@/engine/contract/registry.ts";
 import type { ParsedModelId } from "@/engine/model/types.ts";
 import type { EffortLevel } from "@/kernel/std/types/effort.ts";
-import type { ProviderId, ProviderModelRoute } from "@/kernel/std/types/provider-ids.ts";
+import {
+  isProviderId,
+  type ProviderId,
+  type ProviderModelRoute,
+} from "@/kernel/std/types/provider-ids.ts";
 import { registerModelCatalogProvider } from "@/kernel/storage/model-catalog.ts";
 
 export type { ParsedModelId };
@@ -134,8 +138,39 @@ export function findUniqueModel(id: string): ModelEntry | undefined {
   return pickUniqueById(catalog, parseModelId(id).base);
 }
 
+/**
+ * Split a route written as `provider/model` or `provider:model`. Anything that
+ * does not name a known provider before the separator is a bare model id and
+ * returns null, so ids containing `:` or `/` keep resolving through the catalog.
+ */
+export function parseQualifiedRoute(raw: string): ProviderModelRoute | null {
+  const separators = [raw.indexOf("/"), raw.indexOf(":")].filter((index) => index > 0);
+  if (separators.length === 0) return null;
+  const sep = Math.min(...separators);
+  if (sep === raw.length - 1) return null;
+  const provider = raw.slice(0, sep).trim();
+  const model = raw.slice(sep + 1).trim();
+  if (!isProviderId(provider) || model.length === 0) return null;
+  return { provider, model };
+}
+
 export function resolveModelId(route: ProviderModelRoute): string {
   return findModel(route)?.id ?? route.model;
+}
+
+/**
+ * A remembered model the catalog still offers. One it no longer carries yields to
+ * the provider's default; a provider whose default is not cataloged either keeps the
+ * remembered id, since nothing better is known.
+ */
+export function offeredModelId(route: ProviderModelRoute): string {
+  const remembered = findModel(route);
+  if (remembered !== undefined) return remembered.id;
+  const fallback = findModel({
+    provider: route.provider,
+    model: defaultModelForProvider(route.provider),
+  });
+  return fallback?.id ?? route.model;
 }
 
 export function effortLevelsForModel(route: ProviderModelRoute): EffortLevel[] {
@@ -150,6 +185,18 @@ export function defaultEffortForModel(route: ProviderModelRoute): EffortLevel | 
   const found = findModel(route);
   if (found !== undefined) return found.defaultEffort;
   return getProviderConfig(route.provider)?.fallbackEfforts?.default ?? null;
+}
+
+/**
+ * The effort a route runs at when asked for `requested`: the level itself when
+ * the model offers it, otherwise the model's own default.
+ */
+export function settleEffortForModel(
+  route: ProviderModelRoute,
+  requested: EffortLevel | null,
+): EffortLevel | null {
+  if (requested === null || effortLevelsForModel(route).includes(requested)) return requested;
+  return defaultEffortForModel(route);
 }
 
 export function modelsForProvider(provider: ProviderId): ModelEntry[] {
@@ -168,7 +215,7 @@ export function defaultModelForProvider(provider: ProviderId): string {
   const raw = cfg?.defaultModelId;
   const id = typeof raw === "function" ? raw() : raw;
   if (id) return id;
-  return modelsForProvider(provider)[0]?.id ?? "claude-opus-5";
+  return modelsForProvider(provider)[0]?.id ?? "claude-opus-5-5";
 }
 
 export interface InitialModelInputs {

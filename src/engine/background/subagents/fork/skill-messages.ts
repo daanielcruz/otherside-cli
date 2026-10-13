@@ -1,6 +1,6 @@
 import type { SubagentDef } from "@/engine/agents/registry.ts";
 import { get as getSkill, list as listSkills, type Skill } from "@/engine/skills/registry.ts";
-import { renderSkillBody } from "@/engine/tools/builtins/skill.ts";
+import { skillInstructions } from "@/engine/tools/builtins/skill.ts";
 import type { Message } from "@/kernel/std/types/message.ts";
 
 const SKILL_INSTRUCTIONS_TAG = "skill-instructions";
@@ -30,7 +30,7 @@ export function skillMessagesForDef(def: SubagentDef): SkillMessagesForDef {
       content: [
         {
           type: "text",
-          text: `<${SKILL_INSTRUCTIONS_TAG} name="${skill.name}">\n${renderSkillBody(skill.body)}\n</${SKILL_INSTRUCTIONS_TAG}>`,
+          text: `<${SKILL_INSTRUCTIONS_TAG} name="${skill.name}">\n${skillInstructions(skill, "")}\n</${SKILL_INSTRUCTIONS_TAG}>`,
         },
       ],
     });

@@ -5,7 +5,7 @@ let fromServer = false;
 
 export function setLastUsage(usage: UsageSnapshot | null): void {
   lastUsage = usage;
-  fromServer = usage !== null;
+  fromServer = usage !== null && usage.contextTokens !== null;
 }
 
 export function setEstimatedUsage(usage: UsageSnapshot): void {

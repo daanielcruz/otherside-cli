@@ -7,6 +7,7 @@ import { bindingFilePath, reloadBindings, resetBindingsForTests } from "@/ui/key
 import {
   bindingNoticeText,
   publishBindingNotice,
+  SETTLE_MS,
   stopWatching,
   watchBindingFile,
 } from "@/ui/keys/binding-watch.ts";
@@ -45,10 +46,23 @@ function noticeText(): string | undefined {
  * stretch of clock. The watch settles on its own schedule and the machine may be
  * busy, so a fixed sleep is a coin flip dressed as an assertion.
  */
-async function until(condition: () => boolean, timeoutMs = 5_000): Promise<void> {
+async function until(condition: () => boolean, timeoutMs = 4_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!condition() && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+/**
+ * Saves until the watch has noticed. A watch starts listening on the filesystem's
+ * schedule, not when `watch()` returns, so a save made in the same instant can land
+ * before anyone is listening — and saving again is what a reader would do.
+ */
+async function saveUntil(save: () => void, noticed: () => boolean): Promise<void> {
+  const deadline = Date.now() + 4_000;
+  while (!noticed() && Date.now() < deadline) {
+    save();
+    await until(noticed, Math.min(SETTLE_MS * 4, deadline - Date.now()));
   }
 }
 
@@ -90,15 +104,18 @@ describe("watching the file", () => {
     watchBindingFile();
     expect(noticeText()).toContain("1 key binding");
 
-    writeFileSync(
-      bindingFilePath(),
-      JSON.stringify({ bindings: [{ context: "select", bindings: { n: "select:next" } }] }),
-      "utf8",
-    );
     // The settle window has to pass first — an editor saves in several writes, and
     // reading between them finds a document nobody wrote — and then the read has to
     // happen, which is the filesystem's schedule rather than ours.
-    await until(() => noticeText() === undefined);
+    await saveUntil(
+      () =>
+        writeFileSync(
+          bindingFilePath(),
+          JSON.stringify({ bindings: [{ context: "select", bindings: { n: "select:next" } }] }),
+          "utf8",
+        ),
+      () => noticeText() === undefined,
+    );
     expect(noticeText()).toBeUndefined();
   });
 

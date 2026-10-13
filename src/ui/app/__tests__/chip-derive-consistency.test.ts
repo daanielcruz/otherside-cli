@@ -2,6 +2,8 @@ import { beforeAll, describe, expect, it } from "bun:test";
 import { registerAllProviders } from "@/engine/providers/bootstrap.ts";
 import { deriveChipUsage } from "@/engine/session/usage/chip-derive.ts";
 import type { TokenTotals } from "@/engine/session/usage/provider.ts";
+import type { ContextUsageSnapshot } from "@/engine/session/usage/snapshot.ts";
+import type { Message } from "@/kernel/std/types/message.ts";
 import type { BrokerState } from "@/store/app-store/broker.ts";
 import { computeAutoCompactRemainingPct } from "@/ui/app/status-text.ts";
 import { buildStatuslineInput, renderNativeStatusline } from "@/ui/chrome/status/line-input.ts";
@@ -10,10 +12,10 @@ import { buildStatuslineInput, renderNativeStatusline } from "@/ui/chrome/status
 // "available/used" pair and the "% until auto-compact" / "N tokens" pair are
 // rendered side by side from the same provider usage snapshot, so a divergence
 // between them is a contract violation. Regression source: a live session on
-// codex gpt-5.6-sol (window 372_000, compact threshold 334_800) showed
+// codex gpt-5.6-terra (window 372_000, compact threshold 334_800) showed
 // "45K available · 88% used" next to "0% until auto-compact · 459351 tokens".
 
-const MODEL = "gpt-5.6-sol";
+const MODEL = "gpt-5.6-terra";
 const PROVIDER = "codex" as const;
 
 const zeroTotals: TokenTotals = {
@@ -25,12 +27,9 @@ const zeroTotals: TokenTotals = {
 };
 
 function derive(args: {
-  lastContext: {
-    inputTokens: number;
-    outputTokens: number;
-    cacheCreationInputTokens: number;
-    cacheReadInputTokens: number;
-  };
+  lastContext: ContextUsageSnapshot;
+  messages?: readonly Message[];
+  queuedText?: string;
 }) {
   return deriveChipUsage({
     mainLastContext: args.lastContext,
@@ -39,7 +38,8 @@ function derive(args: {
     model: MODEL,
     contextWarningSuppressed: false,
     fallbackContextTokens: 0,
-    queuedText: "",
+    queuedText: args.queuedText ?? "",
+    ...(args.messages ? { messages: args.messages } : {}),
     autoCompactRemainingPct: (used) => computeAutoCompactRemainingPct(used, MODEL, PROVIDER),
   });
 }
@@ -57,12 +57,103 @@ function statuslineUsedSegments(
     outputTokens: chip.mainOutputTokens,
     cacheCreationInputTokens: lastContext.cacheCreationInputTokens,
     cacheReadInputTokens: lastContext.cacheReadInputTokens,
+    ...(lastContext.contextTokens !== undefined ? { contextTokens: chip.activeContextTotal } : {}),
   });
   return { text: renderNativeStatusline(input), input };
 }
 
 describe("chip usage stays consistent with the available/used status surface", () => {
   beforeAll(() => registerAllProviders());
+
+  it("uses 50k active context for the UI while preserving 200k billed tokens", () => {
+    const lastContext = {
+      inputTokens: 150_000,
+      outputTokens: 10_000,
+      cacheCreationInputTokens: 15_000,
+      cacheReadInputTokens: 25_000,
+      contextTokens: 50_000,
+    };
+    const chip = derive({ lastContext });
+    expect(chip.activeContextTotal).toBe(50_000);
+    expect(chip.autoCompactWarningPct).toBeUndefined();
+    expect(chip.contextBanner).toBeNull();
+    const { text, input } = statuslineUsedSegments(chip, lastContext);
+    expect(text).toContain("322K available");
+    expect(input.context_window.used_percentage).toBe(13);
+    expect(input.context_window.remaining_percentage).toBe(87);
+    expect(input.context_window.total_input_tokens + input.context_window.total_output_tokens).toBe(
+      200_000,
+    );
+  });
+
+  it("adds only messages after the snapshot and pending queued text", () => {
+    const lastContext = {
+      inputTokens: 190_000,
+      outputTokens: 10_000,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0,
+      contextTokens: 50_000,
+    };
+    const chip = derive({
+      lastContext,
+      queuedText: "x".repeat(40),
+      messages: [
+        { role: "assistant", content: [{ type: "text", text: "old output" }], usage: lastContext },
+        { role: "user", content: [{ type: "text", text: "x".repeat(80) }] },
+      ],
+    });
+    expect(chip.activeContextTotal).toBe(50_030);
+    const live = derive({
+      lastContext: { ...lastContext, contextTokens: 45_000 },
+      messages: [
+        { role: "assistant", content: [], usage: lastContext },
+        { role: "user", content: [{ type: "text", text: "already consumed by live inference" }] },
+      ],
+    });
+    expect(live.activeContextTotal).toBe(45_000);
+  });
+
+  it("estimates unknown context from messages and harness instead of old snapshots or billing", () => {
+    const lastContext = {
+      inputTokens: 190_000,
+      outputTokens: 10_000,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0,
+      contextTokens: null,
+    };
+    const chip = derive({
+      lastContext,
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "x".repeat(40_000) }],
+          usage: { ...lastContext, contextTokens: 50_000 },
+        },
+        { role: "user", content: [{ type: "text", text: "x".repeat(80) }] },
+      ],
+    });
+    expect(chip.activeContextTotal).toBe(26_020);
+    expect(chip.autoCompactWarningPct).toBeUndefined();
+    const { text, input } = statuslineUsedSegments(chip, lastContext);
+    expect(text).toContain("345K available");
+    expect(input.context_window.used_percentage).toBe(7);
+    expect(lastContext.inputTokens + lastContext.outputTokens).toBe(200_000);
+  });
+
+  it("keeps a zero snapshot authoritative on both status surfaces", () => {
+    const lastContext = {
+      inputTokens: 190_000,
+      outputTokens: 10_000,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0,
+      contextTokens: 0,
+    };
+    const chip = derive({ lastContext });
+    expect(chip.activeContextTotal).toBe(0);
+    const { text, input } = statuslineUsedSegments(chip, lastContext);
+    expect(text).toContain("372K available");
+    expect(input.context_window.used_percentage).toBe(0);
+  });
 
   it("does not report 0% until auto-compact while used context sits below the threshold", () => {
     // Observed state 2: last request context 306_551 input-side + 20_000

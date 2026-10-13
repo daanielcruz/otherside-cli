@@ -1,3 +1,7 @@
+export {
+  directoryPathPattern,
+  filePathPattern,
+} from "@/kernel/permissions/path-rules.ts";
 export type {
   PermissionBehavior,
   PermissionRule,
@@ -8,7 +12,6 @@ export type {
 export {
   PERMISSION_RULE_SOURCES,
   parseRuleValueText,
-  permissionDirectoryGlob,
   READ_ONLY_PERMISSION_SOURCES,
   serializeRuleValue,
 } from "@/kernel/permissions/types.ts";
@@ -23,6 +26,13 @@ import {
   stripLeadingSafeEnvVars,
   stripSafeWrappers,
 } from "@/kernel/permissions/bash-matcher.ts";
+import {
+  filePathPattern,
+  PATH_RULE_TOOLS,
+  type PathRuleRoots,
+  pathRuleMatches,
+  pathRuleRoots,
+} from "@/kernel/permissions/path-rules.ts";
 import { splitBashSubcommands } from "@/kernel/permissions/sensitive-paths.ts";
 import type { PermissionBehavior, PermissionRule } from "@/kernel/permissions/types.ts";
 
@@ -45,6 +55,9 @@ export function hasWholeToolDenyRule(rules: readonly PermissionRule[], toolName:
 export class RuleStore {
   private readonly rules: PermissionRule[] = [];
 
+  /** `roots` anchor file rules; the working directory is the session's own. */
+  constructor(private readonly roots: PathRuleRoots = pathRuleRoots(process.cwd())) {}
+
   add(rule: PermissionRule): void {
     this.rules.push(rule);
   }
@@ -63,9 +76,9 @@ export class RuleStore {
     aliasNames: readonly string[] = [],
   ): PermissionBehavior | null {
     const matchesAny = (r: PermissionRule): boolean => {
-      if (ruleMatches(r, toolName, input)) return true;
+      if (ruleMatches(r, toolName, input, this.roots)) return true;
       if (!sourceSupportsAliasExpansion(r)) return false;
-      return aliasNames.some((n) => ruleMatches(r, n, input));
+      return aliasNames.some((n) => ruleMatches(r, n, input, this.roots));
     };
     if (this.rules.some((r) => r.ruleBehavior === "deny" && matchesAny(r))) return "deny";
     if (this.rules.some((r) => r.ruleBehavior === "ask" && matchesAny(r))) return "ask";
@@ -112,7 +125,12 @@ export function isCompoundBashCommand(input: string): boolean {
   return subs.length > 1;
 }
 
-export function ruleMatches(rule: PermissionRule, toolName: string, input: string): boolean {
+export function ruleMatches(
+  rule: PermissionRule,
+  toolName: string,
+  input: string,
+  roots: PathRuleRoots = pathRuleRoots(process.cwd()),
+): boolean {
   if (!toolNameMatchesRule(rule.ruleValue.toolName, toolName, rule.ruleBehavior !== "allow"))
     return false;
   // Content-specific rules are ignored for MCP tools. Only server- and
@@ -122,6 +140,10 @@ export function ruleMatches(rule: PermissionRule, toolName: string, input: strin
   if (!rule.ruleValue.ruleContent || rule.ruleValue.ruleContent.length === 0) return true;
   if (toolName === "WebFetch") {
     return webFetchRuleContentMatches(rule.ruleValue.ruleContent, input);
+  }
+  if (toolName === "Skill") return skillRuleMatches(rule.ruleValue.ruleContent, input);
+  if (PATH_RULE_TOOLS.has(toolName)) {
+    return pathRuleMatches(rule.ruleValue.ruleContent, rule.source, input, roots);
   }
   if (toolName === "Bash") {
     if (rule.ruleBehavior === "allow") {
@@ -190,6 +212,10 @@ export function permissionPatternMatches(pattern: string, toolName: string, inpu
   if (!toolNameMatchesRule(split.tool, toolName)) return false;
   if (split.input.length === 0) return true;
   if (toolName === "WebFetch") return webFetchRuleContentMatches(split.input, input);
+  if (toolName === "Skill") return skillRuleMatches(split.input, input);
+  if (PATH_RULE_TOOLS.has(toolName)) {
+    return pathRuleMatches(split.input, "session", input, pathRuleRoots(process.cwd()));
+  }
   if (
     toolName === "Bash" &&
     (isCompoundBashCommand(input) ||
@@ -229,18 +255,43 @@ const PERMISSION_PREFIX_WRAPPERS = new Set([
 const COMMAND_WORD = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 
+/**
+ * The command words a Bash allow rule is keyed on. Environment assignments an allow
+ * rule ignores are left out; any other assignment stays in front, because the rule
+ * only matches a command that still carries it.
+ */
 export function bashCommandPrefix(command: string): string | null {
-  const tokens = command
-    .trim()
-    .split(/\s+/)
-    .filter((token) => token.length > 0);
+  const prefix = bashCommandWords(command);
+  return prefix === null ? null : [...prefix.assignments, ...prefix.words].join(" ");
+}
+
+/**
+ * The rule a lasting approval saves for one segment of a compound command: its two
+ * command words when it has them, otherwise the segment exactly as it ran, so the
+ * approval never widens a lone command word to every use of it.
+ */
+export function bashSegmentRule(segment: string): string {
+  const prefix = bashCommandWords(segment);
+  if (prefix !== null && prefix.words.length === 2) {
+    return `Bash(${[...prefix.assignments, ...prefix.words].join(" ")} *)`;
+  }
+  return `Bash(${segment.trim()})`;
+}
+
+function bashCommandWords(command: string): { assignments: string[]; words: string[] } | null {
+  const tokens = stripLeadingSafeEnvVars(
+    command
+      .trim()
+      .split(/\s+/)
+      .filter((token) => token.length > 0),
+  );
   let index = 0;
   while (index < tokens.length && ENV_ASSIGNMENT.test(tokens[index] as string)) index++;
   const first = tokens[index];
   if (!first || PERMISSION_PREFIX_WRAPPERS.has(first) || !COMMAND_WORD.test(first)) return null;
   const second = tokens[index + 1];
-  if (second && COMMAND_WORD.test(second)) return `${first} ${second}`;
-  return first;
+  const words = second && COMMAND_WORD.test(second) ? [first, second] : [first];
+  return { assignments: tokens.slice(0, index), words };
 }
 
 export function permissionInputForCall(input: unknown, preview = ""): string {
@@ -248,7 +299,8 @@ export function permissionInputForCall(input: unknown, preview = ""): string {
 }
 
 export function permissionKeyForCall(toolName: string, input: unknown, preview = ""): string {
-  if (toolName.startsWith("mcp__")) return toolName;
+  // A search query differs on every call, so its rule covers the whole tool.
+  if (toolName.startsWith("mcp__") || toolName === "WebSearch") return toolName;
   if (toolName === "WebFetch") {
     return `${toolName}(${webFetchPermissionTarget(input)})`;
   }
@@ -256,6 +308,12 @@ export function permissionKeyForCall(toolName: string, input: unknown, preview =
   if (toolName === "Bash" && target.length > 0) {
     const prefix = bashCommandPrefix(target);
     if (prefix) return `${toolName}(${prefix} *)`;
+  }
+  if (toolName === "Skill" && target.length > 0) {
+    return `${toolName}(${target.trim().replace(/^\//, "")})`;
+  }
+  if (PATH_RULE_TOOLS.has(toolName) && target.length > 0) {
+    return `${toolName}(${filePathPattern(target)})`;
   }
   return target.length > 0 ? `${toolName}(${target})` : toolName;
 }
@@ -282,6 +340,7 @@ const PERMISSION_TARGET_FIELDS = [
   "path",
   "url",
   "query",
+  "skill",
   "description",
 ] as const;
 
@@ -382,6 +441,15 @@ function webFetchRuleContentMatches(ruleContent: string, input: string): boolean
   return normalizedRule.includes("*")
     ? matchesDomainWildcard(normalizedRule, normalizedTarget)
     : normalizedRule === normalizedTarget;
+}
+
+/** A Skill rule names one skill, or every skill a prefix starts (`review:*`, `review *`). */
+function skillRuleMatches(ruleContent: string, skillName: string): boolean {
+  const rule = ruleContent.replace(/^\//, "");
+  const name = skillName.trim().replace(/^\//, "");
+  if (rule === name) return true;
+  if (!rule.endsWith(":*") && !rule.endsWith(" *")) return false;
+  return name.startsWith(rule.slice(0, -2));
 }
 
 function matchesPermissionInput(pattern: string, input: string): boolean {

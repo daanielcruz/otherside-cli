@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { interruptIsClaimed } from "@/kernel/std/proc/interrupt-claim.ts";
 
 const TMPDIR_PREFIX = "otherside";
 let cachedTmpdir: string | null = null;
@@ -21,6 +22,7 @@ function registerCleanupOnce(path: string): void {
   };
   process.on("exit", cleanup);
   process.on("SIGINT", () => {
+    if (interruptIsClaimed()) return;
     cleanup();
     process.exit(130);
   });

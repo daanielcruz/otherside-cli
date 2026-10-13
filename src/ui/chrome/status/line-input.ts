@@ -39,6 +39,7 @@ export interface StatuslineInput {
   context_window: {
     total_input_tokens: number;
     total_output_tokens: number;
+    context_tokens?: number;
     context_window_size: number;
     current_usage: null | {
       input_tokens: number;
@@ -60,6 +61,7 @@ export interface BuildStatuslineInputArgs {
   outputTokens?: number | undefined;
   cacheCreationInputTokens?: number | undefined;
   cacheReadInputTokens?: number | undefined;
+  contextTokens?: number | undefined;
   costUsd?: number | undefined;
   durationMs?: number | undefined;
   outputStyle?: string | undefined;
@@ -74,6 +76,7 @@ export function buildStatuslineInput({
   outputTokens = 0,
   cacheCreationInputTokens = 0,
   cacheReadInputTokens = 0,
+  contextTokens,
   costUsd = 0,
   durationMs = 0,
   outputStyle = DEFAULT_OUTPUT_STYLE,
@@ -81,7 +84,7 @@ export function buildStatuslineInput({
   const model = findModel({ provider: state.provider, model: state.model });
   const contextWindowSize = model?.contextWindow ?? 200_000;
   const totalInput = inputTokens + cacheCreationInputTokens + cacheReadInputTokens;
-  const contextUsed = totalInput + outputTokens;
+  const contextUsed = contextTokens ?? totalInput + outputTokens;
   const usedPercentage =
     contextWindowSize > 0 ? Math.min(100, Math.round((contextUsed / contextWindowSize) * 100)) : 0;
   const baseName = model?.displayName ?? state.model;
@@ -117,6 +120,7 @@ export function buildStatuslineInput({
       total_lines_removed: 0,
     },
     context_window: {
+      ...(contextTokens !== undefined ? { context_tokens: contextTokens } : {}),
       total_input_tokens: totalInput,
       total_output_tokens: outputTokens,
       context_window_size: contextWindowSize,
@@ -133,7 +137,9 @@ export function buildStatuslineInput({
 }
 
 export function renderNativeStatusline(input: StatuslineInput): string {
-  const used = input.context_window.total_input_tokens + input.context_window.total_output_tokens;
+  const used =
+    input.context_window.context_tokens ??
+    input.context_window.total_input_tokens + input.context_window.total_output_tokens;
   const available = Math.max(0, input.context_window.context_window_size - used);
   return [
     `[${input.provider.display_name}] ${input.model.display_name}`,

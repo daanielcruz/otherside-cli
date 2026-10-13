@@ -2,6 +2,7 @@ import { findModel, parseModelId } from "@/engine/model/catalog.ts";
 import { knowledgeCutoffFor } from "@/engine/model/facts/knowledge-cutoff.ts";
 import {
   isFableModel,
+  isHaikuFamily,
   isSonnetModel,
   modelSupportsMidConversationSystem,
   modelSupportsMidConversationSystemBeta,
@@ -18,7 +19,11 @@ import { sanitizeMessages } from "@/engine/translator/sanitize.ts";
 import { providerToolDeclarations } from "@/engine/translator/tools.ts";
 import type { AssembleArgs, ProviderTurn } from "@/engine/translator/types.ts";
 import { buildHarness } from "@/harness/builder.ts";
-import type { AgentRowData, MidSystemPromotion } from "@/harness/composer/injections.ts";
+import type {
+  AgentRowData,
+  LayerContext,
+  MidSystemPromotion,
+} from "@/harness/composer/injections.ts";
 import { nestedMemoryFiles, renderMemorySection } from "@/harness/core/memory-section.ts";
 import type { SkillListingEntry } from "@/harness/reminders/reminders.ts";
 import { effectiveOrchestrationMode } from "@/kernel/config/config.ts";
@@ -34,9 +39,9 @@ function supportsMidConversationSystem(ctx: AssembleArgs["ctx"]): boolean {
 }
 
 // Promotion follows the beta gate: an anthropic model that carries the
-// mid-conversation-system beta promotes reminders to system messages; haiku
-// (no beta, API rejects mid-conversation system roles) keeps them in user
-// blocks. Shared with the subagent composer, which delivers its own reminders.
+// mid-conversation-system beta promotes reminders to system messages; Haiku
+// before 5.5 (no beta, API rejects mid-conversation system roles) keeps them in
+// user blocks. Shared with the subagent composer, which delivers its own reminders.
 export function midSystemPromotionFor(
   ctx: Pick<AssembleArgs["ctx"], "provider" | "model">,
 ): MidSystemPromotion {
@@ -50,10 +55,11 @@ function promotesMidSystem(ctx: AssembleArgs["ctx"]): boolean {
   return midSystemPromotionFor(ctx) !== "off";
 }
 
-function modelFamilyFor(model: string): "fable" | "sonnet" | "other" {
+function modelFamilyFor(model: string): LayerContext["modelFamily"] {
   const base = parseModelId(model).base;
   if (isFableModel(base)) return "fable";
   if (isSonnetModel(base)) return "sonnet";
+  if (isHaikuFamily(base)) return "haiku";
   return "other";
 }
 
@@ -102,6 +108,7 @@ export function assembleProviderTurn(args: AssembleArgs): ProviderTurn {
     mainAgent: ctx.agentOwnerId === undefined && ctx.isForkChild !== true,
     permissionRules,
     orchestrationMode,
+    session: { id: ctx.sessionId, permissionMode: ctx.permissionMode },
   });
   const agentInPool = tools.some((tool) => tool.name === "Agent");
   const overrides = provider.deferredOverrides();

@@ -15,8 +15,8 @@ import {
   PermissionResults,
 } from "@/kernel/channels/permission.ts";
 import type { ContentBlock } from "@/kernel/std/types/message.ts";
+import { type PermissionMode, parsePermissionMode } from "@/kernel/std/types/permission-mode.ts";
 import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
-import type { PermissionMode } from "@/kernel/std/types/request.ts";
 import type { Broker, Session } from "@/kernel/std/types/session.ts";
 
 const DEC = new TextDecoder();
@@ -49,10 +49,10 @@ export interface IncomingRowDeps {
   onCancelQueuedMessage?: CancelQueuedMessageHandler | undefined;
 }
 
-function toCliPermissionMode(mode: string): PermissionMode {
+function toCliPermissionMode(mode: string): PermissionMode | undefined {
   if (mode === "accept") return "accept-edits";
   if (mode === "auto") return "default";
-  return mode as PermissionMode;
+  return parsePermissionMode(mode);
 }
 
 function remotePermissionResult(
@@ -65,21 +65,10 @@ function remotePermissionResult(
   if (response === "allow_always") {
     // Persist only the CLI-computed rule — a companion-supplied rule string
     // would let a paired device mint arbitrary persistent grants (e.g. Bash(*)).
-    return pending.rule ? PermissionResults.allowAlways(pending.rule) : PermissionResults.allow();
+    if (pending.rule) return PermissionResults.allowAlways(pending.rule);
+    if (pending.rules) return PermissionResults.allowAlwaysAll(pending.rules);
+    return PermissionResults.allow();
   }
-  // Mode escalations exist only on the ExitPlanMode prompt; for any other
-  // pending tool they are ignored and the prompt stays up (fail-closed).
-  const isPlanPrompt = pending.toolName === "ExitPlanMode";
-  if (response === "plan_bypass") return isPlanPrompt ? PermissionResults.setMode("yolo") : null;
-  if (response === "plan_accept_edits") {
-    return isPlanPrompt ? PermissionResults.setMode("accept-edits") : null;
-  }
-  // "manually approve edits" — kept alongside plan_accept_edits (retained for
-  // companion compatibility) rather than replacing it.
-  if (response === "plan_default") {
-    return isPlanPrompt ? PermissionResults.setMode("default") : null;
-  }
-  if (response === "plan_feedback") return PermissionResults.planFeedback(feedback ?? "");
   return null;
 }
 
@@ -182,9 +171,8 @@ export function applyIncomingEvent(deps: {
     return;
   }
   const modeChange = parsed as { mode?: string };
-  if (modeChange.mode) {
-    broker.dispatch({ kind: "set_permission_mode", mode: toCliPermissionMode(modeChange.mode) });
-  }
+  const mode = modeChange.mode ? toCliPermissionMode(modeChange.mode) : undefined;
+  if (mode !== undefined) broker.dispatch({ kind: "set_permission_mode", mode });
 }
 
 export function isCounterAcceptable(

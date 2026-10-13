@@ -1,6 +1,9 @@
+import { estimateTokensFromChars } from "@/engine/session/compact/token-count.ts";
+import { contextSnapshotWithEstimates } from "@/engine/session/usage/snapshot.ts";
 import { DEFAULT_OUTPUT_STYLE } from "@/harness/routines/output-styles/built-in.ts";
 import { resolveConfig } from "@/kernel/config/resolver.ts";
 import { onSettingsChanged } from "@/kernel/config/settings-watch.ts";
+import type { Message } from "@/kernel/std/types/message.ts";
 import { appStore } from "@/store/app-store/index.ts";
 import {
   expireCurrentNotice,
@@ -43,6 +46,8 @@ export class StringViewStatusLine implements StringComponent {
    * moment the answer can differ.
    */
   private outputStyle = DEFAULT_OUTPUT_STYLE;
+
+  constructor(private readonly messages: readonly Message[] = []) {}
 
   mount(ctx: StringViewContext): void {
     this.unsub?.();
@@ -90,6 +95,13 @@ export class StringViewStatusLine implements StringComponent {
     const state = thread.broker;
     const appState = appStore.getState();
     const usage = thread.context;
+    const contextTokens = contextSnapshotWithEstimates(usage, {
+      provider: state.provider,
+      model: state.model,
+      ...(thread.agent === null
+        ? { messages: this.messages }
+        : { fallbackContextTokens: estimateTokensFromChars(thread.agent.assistantText) }),
+    });
     const input = buildStatuslineInput({
       state,
       sessionId: "",
@@ -99,6 +111,7 @@ export class StringViewStatusLine implements StringComponent {
       outputTokens: usage.outputTokens,
       cacheCreationInputTokens: usage.cacheCreationInputTokens,
       cacheReadInputTokens: usage.cacheReadInputTokens,
+      ...(contextTokens !== undefined ? { contextTokens } : {}),
       outputStyle: this.outputStyle,
     });
     // Effort rides the promptbar badge now; the status row keeps the native line

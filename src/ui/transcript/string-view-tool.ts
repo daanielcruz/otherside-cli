@@ -92,11 +92,21 @@ export function formatToolLines(
     data.name === "Bash" && data.status === "running"
       ? formatBashRunningRows(data, hasBodyPrelude || payload.length > 0)
       : [];
+  const waitingBash =
+    data.name === "Bash" && data.status === "queued" ? gutterRows([muted("Waiting…")], false) : [];
   const agentHint =
     data.name === "Agent" && data.status === "running"
       ? gutterRows([muted(backgroundHintText())], true)
       : [];
-  return [...head, ...initializing, ...nested, ...payload, ...runningBash, ...agentHint];
+  return [
+    ...head,
+    ...initializing,
+    ...nested,
+    ...payload,
+    ...waitingBash,
+    ...runningBash,
+    ...agentHint,
+  ];
 }
 
 function formatNestedRows(
@@ -198,7 +208,7 @@ function diffPayloadRows(payload: DiffPayload, columns: number, suppressHead: bo
     const headGutter = suppressHead ? GUTTER_CONT : GUTTER_HEAD;
     const firstRow =
       renderTextWithStyles(headGutter, { color: Color.muted }) +
-      renderTextWithStyles(ansi.headerLines[0] ?? "", { color: Color.muted });
+      renderTextWithStyles(payload.header ?? ansi.headerLines[0] ?? "", { color: Color.muted });
     const continuation = renderTextWithStyles(GUTTER_CONT, { color: Color.muted });
     return [firstRow, ...ansi.bodyLines.map((line) => continuation + line)];
   }

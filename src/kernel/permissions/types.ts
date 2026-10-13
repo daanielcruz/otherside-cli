@@ -1,4 +1,4 @@
-import { sep } from "node:path";
+import type { PermissionMode } from "@/kernel/std/types/permission-mode.ts";
 
 export type RuleSourceScope =
   | "userSettings"
@@ -143,13 +143,6 @@ export function serializeRuleValue(v: PermissionRuleValue): string {
   return v.ruleContent ? `${v.toolName}(${escapeRuleContent(v.ruleContent)})` : v.toolName;
 }
 
-export function permissionDirectoryGlob(directory: string): string {
-  const base = directory.endsWith(sep) ? directory.slice(0, -1) : directory;
-  const escapedDirectory = base.replaceAll("\\", "\\\\").replaceAll("*", "\\*");
-  const escapedSeparator = sep === "\\" ? "\\\\" : sep;
-  return `${escapedDirectory}${escapedSeparator}*`;
-}
-
 export type PermissionUpdate =
   | {
       type: "addRules";
@@ -161,6 +154,6 @@ export type PermissionUpdate =
       rules: PermissionRule[];
       source: RuleSourceScope;
     }
-  | { type: "setMode"; mode: "default" | "accept-edits" | "plan" | "yolo" }
+  | { type: "setMode"; mode: PermissionMode }
   | { type: "addDirectories"; dirs: string[]; destination?: RuleSourceScope }
   | { type: "removeDirectories"; dirs: string[]; destination?: RuleSourceScope };

@@ -1,10 +1,12 @@
 import { formatResetTime } from "@/kernel/std/intl.ts";
 import { StreamSilenceError } from "@/kernel/std/stream/idle-timeout.ts";
+import { AccountVerificationError, withVerificationLink } from "@/kernel/std/types/error-meta.ts";
 import {
   AUTH_CODES,
   AUTH_PATTERNS,
   CONTEXT_CODES,
   CONTEXT_PATTERNS,
+  CONTEXT_WINDOW_NAMED_PATTERNS,
   INVALID_REQUEST_CODES,
   matches,
   OVERLOAD_CODES,
@@ -16,6 +18,7 @@ import {
   QUOTA_PATTERNS,
   RATE_LIMIT_CODES,
   RATE_LIMIT_PATTERNS,
+  REQUEST_TOO_LARGE_CODES,
   SERVER_CODES,
   TERMINAL_NETWORK_CODES,
   TERMINAL_NETWORK_PATTERNS,
@@ -31,6 +34,7 @@ const PROVIDER_ERROR_CLASSES = [
   "auth",
   "invalid_request",
   "context_overflow",
+  "request_too_large",
   "server",
   "network",
   "unknown",
@@ -107,6 +111,18 @@ export function resolveProviderError(input: ProviderErrorInput): ResolvedProvide
     ...(retryAfterMs !== null ? { retryAfterMs } : {}),
   };
 
+  // The link is longer than any excerpt of a message, so it rides outside the excerpt.
+  if (input.error instanceof AccountVerificationError) {
+    return {
+      ...common,
+      class: "auth",
+      retryable: false,
+      detail: withVerificationLink(
+        conciseDetail(input.error.reason, status),
+        input.error.verificationUrl,
+      ),
+    };
+  }
   const stampedQuota = quotaFromError(input.error);
   if (stampedQuota.exhausted || wireRule?.class === "quota_exhausted") {
     const resetEpochMs = stampedQuota.exhausted
@@ -137,6 +153,16 @@ export function resolveProviderError(input: ProviderErrorInput): ResolvedProvide
       detail: detailWithReset(common.detail, quota.resetEpochMs),
       quotaResetEpochMs: quota.resetEpochMs,
     };
+  }
+  if (
+    status === 413 ||
+    REQUEST_TOO_LARGE_CODES.has(parsed.code) ||
+    REQUEST_TOO_LARGE_CODES.has(parsed.type)
+  ) {
+    const errorClass = matches(CONTEXT_WINDOW_NAMED_PATTERNS, haystack)
+      ? "context_overflow"
+      : "request_too_large";
+    return { ...common, class: errorClass, retryable: false };
   }
   if (
     CONTEXT_CODES.has(parsed.code) ||
@@ -265,6 +291,7 @@ function providerDetail(
   parsed: ParsedWireError,
   detail: string,
 ): string {
+  if (parsed.verificationUrl) return withVerificationLink(detail, parsed.verificationUrl);
   if (
     providerFamily(input.provider) !== "codex" ||
     ![parsed.code, parsed.type].some((value) =>

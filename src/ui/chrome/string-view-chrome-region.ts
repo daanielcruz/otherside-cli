@@ -1,3 +1,4 @@
+import type { Message } from "@/kernel/std/types/message.ts";
 import { isPromptMenuOpen, promptStore } from "@/store/prompt/index.ts";
 import {
   StringContainer,
@@ -9,9 +10,9 @@ import { StringViewStatusLine } from "@/ui/chrome/status/string-view-status-line
 export class StringViewChromeRegion extends StringContainer {
   private unsubPrompt: (() => void) | undefined;
 
-  constructor() {
+  constructor(messages: readonly Message[] = []) {
     super();
-    this.addChild(new StringViewStatusLine());
+    this.addChild(new StringViewStatusLine(messages));
     this.addChild(new StringViewStatusBar());
   }
 
@@ -32,10 +33,10 @@ export class StringViewChromeRegion extends StringContainer {
     // keep the status and mode rows visible beneath them. The bottom margin is not
     // the footer's to hand over with it: it belongs to the frame's last row, and a
     // menu that displaced the status rows still has to clear the terminal's edge.
-    if (isPromptMenuOpen()) return [...BOTTOM_MARGIN];
-    return [...super.render(width), ...BOTTOM_MARGIN];
+    if (isPromptMenuOpen()) return [...FRAME_BOTTOM_MARGIN];
+    return [...super.render(width), ...FRAME_BOTTOM_MARGIN];
   }
 }
 
 /** Blank rows keeping whatever ends the frame clear of the terminal's bottom edge. */
-const BOTTOM_MARGIN = ["", ""] as const;
+export const FRAME_BOTTOM_MARGIN = ["", ""] as const;

@@ -2,6 +2,7 @@ import {
   resolveWorkflowAgentProfile,
   runForkLoopExternal,
   type SubagentResult,
+  withEffortOverride,
 } from "@/engine/background/subagents/dispatcher.ts";
 import { resolveToolModelOverride } from "@/engine/background/subagents/fork/routing.ts";
 import {
@@ -248,10 +249,7 @@ export function createWorkflowAgentExecution(
       }
     }
     const selectedCtx = resolved.ok ? resolved.ctx : baseCtx;
-    const agentCtx: RequestContext = {
-      ...selectedCtx,
-      ...(opts.effort !== undefined ? { effort: opts.effort } : {}),
-    };
+    const agentCtx: RequestContext = withEffortOverride(selectedCtx, opts.effort);
     const modelDisplay =
       findModel({ provider: agentCtx.provider, model: agentCtx.model })?.displayName ??
       agentCtx.model;

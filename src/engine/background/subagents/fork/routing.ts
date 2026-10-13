@@ -2,9 +2,8 @@ import type { SubagentDef } from "@/engine/agents/registry.ts";
 import { getProviderConfig } from "@/engine/contract/registry.ts";
 import {
   availableModelsForProvider,
-  defaultEffortForModel,
-  effortLevelsForModel,
   findModel,
+  settleEffortForModel,
 } from "@/engine/model/catalog.ts";
 import {
   type ModelFallbackDeviation,
@@ -329,18 +328,8 @@ function resolveSubagentRouting(
       modeOf(ctx),
     );
     if (!pin.ok) return pin;
-    const next: RequestContext = {
-      ...ctx,
-      provider: pin.resolution.provider,
-      model: pin.resolution.model,
-    };
-    if (
-      next.effort !== null &&
-      !effortLevelsForModel({ provider: next.provider, model: next.model }).includes(next.effort)
-    ) {
-      next.effort = defaultEffortForModel({ provider: next.provider, model: next.model });
-    }
-    return { ok: true, ctx: next };
+    const route = { provider: pin.resolution.provider, model: pin.resolution.model };
+    return { ok: true, ctx: { ...ctx, ...route, effort: settleEffortForModel(route, ctx.effort) } };
   }
   if (invocation.modelOverride !== undefined) {
     if (modeOf(ctx) === "feudalism") {
@@ -416,14 +405,14 @@ export function resolveToolModelOverride(
   }
   const quotaError = exhaustedProviderLaunchError(ctx.provider, ctx.provider, model, modeOf(ctx));
   if (quotaError !== null) return { ok: false, error: quotaError };
-  const next: RequestContext = { ...ctx, model };
-  if (
-    next.effort !== null &&
-    !effortLevelsForModel({ provider: ctx.provider, model }).includes(next.effort)
-  ) {
-    next.effort = defaultEffortForModel({ provider: ctx.provider, model });
-  }
-  return { ok: true, ctx: next };
+  return {
+    ok: true,
+    ctx: {
+      ...ctx,
+      model,
+      effort: settleEffortForModel({ provider: ctx.provider, model }, ctx.effort),
+    },
+  };
 }
 
 function invalidModelOverrideError(

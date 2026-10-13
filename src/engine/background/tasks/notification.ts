@@ -2,6 +2,28 @@ export type TaskNotificationStatus = "completed" | "failed" | "killed";
 
 export type TaskKind = "agent" | "shell";
 
+// Why a task was stopped by its own lifecycle rather than by a person, keyed to
+// what the stop summary says and the note the model gets with it.
+const STOP_CAUSES = {
+  deadline: {
+    stopped: "stopped after reaching its background time limit",
+    note: "If the work in progress still needs it, start it again with `run_in_background` and a longer `timeout`. If it already had the longest `timeout` allowed, do not restart it. Either way, report that it was stopped.",
+  },
+} as const satisfies Record<string, { stopped: string; note: string }>;
+
+export type TaskStopCause = keyof typeof STOP_CAUSES;
+
+export function stopCauseNote(cause: TaskStopCause): string {
+  return STOP_CAUSES[cause].note;
+}
+
+/** A stop cause read back from stored data; anything else is no known cause. */
+export function asTaskStopCause(value: unknown): TaskStopCause | undefined {
+  return typeof value === "string" && Object.hasOwn(STOP_CAUSES, value)
+    ? (value as TaskStopCause)
+    : undefined;
+}
+
 export interface CompletionNotificationUsage {
   totalTokens: number;
   toolUses: number;
@@ -54,6 +76,7 @@ export interface SummaryOptions {
   exitCode?: number;
   byUser?: boolean;
   byParent?: boolean;
+  stopCause?: TaskStopCause;
 }
 
 // Launch receipt returned inline when an Agent call detaches. Main and nested
@@ -108,7 +131,11 @@ export function buildBashSummary(
   options: SummaryOptions = {},
 ): string {
   const desc = description.length > 0 ? description : "(no description)";
-  if (status === "killed") return `Background command "${desc}" was stopped`;
+  if (status === "killed") {
+    const stopped =
+      options.stopCause !== undefined ? STOP_CAUSES[options.stopCause].stopped : "stopped";
+    return `Background command "${desc}" was ${stopped}`;
+  }
   if (status === "completed") {
     const tail = options.exitCode !== undefined ? ` (exit code ${options.exitCode})` : "";
     return `Background command "${desc}" completed${tail}`;

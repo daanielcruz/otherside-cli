@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { registerAllProviders } from "@/engine/providers/bootstrap.ts";
 import type { UserConfig } from "@/kernel/config/config.ts";
 import type { EffortLevel } from "@/kernel/std/types/effort.ts";
 import type { BrokerHandle, BrokerState } from "@/kernel/std/types/request.ts";
@@ -10,9 +11,11 @@ import {
   type SessionBrokerState,
 } from "../state.ts";
 
+registerAllProviders();
+
 const FALLBACK: SessionBrokerState = {
   provider: "anthropic",
-  model: "claude-sonnet-5",
+  model: "claude-sonnet-5-5",
   effort: "high",
 };
 
@@ -22,7 +25,7 @@ function meta(fields: Partial<SessionMetaRecord>): SessionMetaRecord {
     ts: "2026-07-03T00:00:00Z",
     cwd: "/tmp",
     provider: "anthropic",
-    model: "claude-sonnet-5",
+    model: "claude-sonnet-5-5",
     ...fields,
   };
 }
@@ -109,29 +112,41 @@ describe("resolveSessionBrokerState — route restore", () => {
   it("restores the last meta route over later stamps from an in-flight turn", () => {
     const res = resolveSessionBrokerState(
       [
-        meta({ model: "claude-opus-5", effort: "high" }),
-        assistantStamp("anthropic", "claude-opus-5"),
-        meta({ model: "claude-sonnet-5", effort: "high" }),
-        assistantStamp("anthropic", "claude-opus-5"),
-        assistantStamp("anthropic", "claude-opus-5"),
+        meta({ model: "claude-opus-5-5", effort: "high" }),
+        assistantStamp("anthropic", "claude-opus-5-5"),
+        meta({ model: "claude-sonnet-5-5", effort: "high" }),
+        assistantStamp("anthropic", "claude-opus-5-5"),
+        assistantStamp("anthropic", "claude-opus-5-5"),
       ],
       FALLBACK,
     );
-    expect(res.model).toBe("claude-sonnet-5");
+    expect(res.model).toBe("claude-sonnet-5-5");
     expect(res.effort).toBe("high");
   });
 
   it("still follows record stamps when the session carries no meta route", () => {
-    const res = resolveSessionBrokerState([assistantStamp("anthropic", "claude-opus-5")], FALLBACK);
-    expect(res.model).toBe("claude-opus-5");
+    const res = resolveSessionBrokerState(
+      [assistantStamp("anthropic", "claude-opus-5-5")],
+      FALLBACK,
+    );
+    expect(res.model).toBe("claude-opus-5-5");
   });
 
   it("takes the last meta when the route changes across metas", () => {
     const res = resolveSessionBrokerState(
-      [meta({ model: "claude-fable-5" }), meta({ model: "claude-opus-5" })],
+      [meta({ model: "claude-fable-5-1" }), meta({ model: "claude-opus-5-5" })],
       FALLBACK,
     );
-    expect(res.model).toBe("claude-opus-5");
+    expect(res.model).toBe("claude-opus-5-5");
+  });
+
+  it("restarts a model the catalog no longer offers on its provider's default", () => {
+    const res = resolveSessionBrokerState(
+      [meta({ model: "claude-retired-1", effort: "xhigh" })],
+      FALLBACK,
+    );
+    expect(res.model).toBe("claude-opus-5-5");
+    expect(res.effort).toBe("xhigh");
   });
 });
 

@@ -485,9 +485,9 @@ describe("listActiveWorkflowAgentAllocations", () => {
           agentEntry({ index: 2, provider: "codex", model: "gpt-5.6-luna", state: "start" }),
           agentEntry({
             index: 4,
-            route: { provider: "anthropic", model: "claude-opus-4-8" },
+            route: { provider: "anthropic", model: "claude-opus-5-5" },
             provider: "anthropic",
-            model: "Claude Opus 4.8",
+            model: "Claude Opus 5.5",
             state: "start",
           }),
           agentEntry({ index: 3, provider: "glm", state: "done" }),
@@ -498,7 +498,7 @@ describe("listActiveWorkflowAgentAllocations", () => {
     expect(listActiveWorkflowAgentAllocations()).toEqual([
       { provider: "codex" },
       { provider: "codex", model: "gpt-5.6-luna" },
-      { provider: "anthropic", model: "claude-opus-4-8" },
+      { provider: "anthropic", model: "claude-opus-5-5" },
     ]);
   });
 

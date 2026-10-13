@@ -106,6 +106,16 @@ export function updateReadState(scope: string, path: string, content: string): v
   setReadState(scope, key, { timestamp, content });
 }
 
+/** Records a view the model already holds, dated when it was taken. */
+export function restoreReadState(
+  scope: string,
+  path: string,
+  content: string,
+  timestamp: number,
+): void {
+  setReadState(scope, canonicalize(path), { timestamp, content });
+}
+
 export function readSetClear(scope: string): void {
   READ_STATE.get(scope)?.clear();
 }

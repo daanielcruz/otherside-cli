@@ -1,7 +1,9 @@
 import { completeTask, startShellTask } from "@/engine/background/tasks/background.ts";
 import { startPressureReap } from "@/engine/background/tasks/pressure-reap.ts";
+import { startShellDeadline } from "@/engine/background/tasks/shell-deadline.ts";
 import { watchForInteractiveWait } from "@/engine/background/tasks/stall-watchdog.ts";
 import { startSubagentShellCap } from "@/engine/background/tasks/subagent-shell-cap.ts";
+import { backgroundTimeoutMs } from "@/engine/tools/_infra/command-analysis/timeouts.ts";
 import type { OutputProgress, SpillBuffer } from "@/engine/tools/_infra/spill-buffer.ts";
 import {
   type BackgroundShell,
@@ -53,6 +55,9 @@ export interface AutoBgOutcome {
   promoted: true;
   shellId: string;
   reason: string;
+  // How long the moved command may keep running in the background; absent, it
+  // runs until it exits or is stopped.
+  deadlineMs?: number;
 }
 
 export interface AutoBgEligibleSpawn {
@@ -226,6 +231,16 @@ export async function runForegroundWithAutoBg(opts: {
         killBackground(shellId);
       },
     });
+    const deadlineMs = backgroundTimeoutMs(null);
+    if (deadlineMs !== undefined) {
+      shell.stopDeadline = startShellDeadline({
+        taskId: shellId,
+        limitMs: deadlineMs,
+        kill: () => {
+          killBackground(shellId);
+        },
+      });
+    }
     void child.exited.then(async (code) => {
       stopInteractiveWaitWatch();
       delete shell.stopWatchdog;
@@ -233,6 +248,8 @@ export async function runForegroundWithAutoBg(opts: {
       delete shell.stopPressureReap;
       shell.stopSubagentCap?.();
       delete shell.stopSubagentCap;
+      shell.stopDeadline?.();
+      delete shell.stopDeadline;
       await Promise.allSettled([stdoutDrain, stderrDrain]);
       stopOutput();
       shell.status = "exited";
@@ -257,6 +274,7 @@ export async function runForegroundWithAutoBg(opts: {
       promoted: true,
       shellId,
       reason,
+      ...(deadlineMs !== undefined ? { deadlineMs } : {}),
     };
   }
   const exitFromChild = await child.exited;

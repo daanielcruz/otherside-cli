@@ -5,37 +5,34 @@ import {
   PermissionResults,
   subscribe,
 } from "@/kernel/channels/permission.ts";
-import { truncateEllipsis } from "@/kernel/std/text/text.ts";
 import type { KeyEventData } from "@/terminal-runtime/input/key-decoder.js";
 import type {
   StringComponent,
   StringViewContext,
 } from "@/terminal-runtime/string-view/component.js";
-import { stringWidth } from "@/terminal-runtime/text/cell-width.js";
+import { wrapProse } from "@/terminal-runtime/text/ansi-wrap.js";
 import { renderTextWithStyles } from "@/terminal-runtime/text/color-codes.js";
+import { fieldWithCaret } from "@/ui/chrome/field-caret.ts";
 import { typedText } from "@/ui/chrome/key-input.ts";
+import { hintFor, hintPair } from "@/ui/chrome/panel-hints.ts";
 import { panelKey } from "@/ui/chrome/panel-keys.ts";
+import { cycleStringViewPermissionMode } from "@/ui/chrome/status/string-view-state.ts";
 import {
-  cycleStringViewPermissionMode,
-  readStringViewBrokerState,
-} from "@/ui/chrome/status/string-view-state.ts";
-import {
-  type FooterPanelSpec,
+  panelDashedRuleLine,
   renderFooterPanel,
-  renderPanelRowLine,
+  renderPanelChoiceRowLines,
 } from "@/ui/chrome/string-view-panel.ts";
-import { explanationLines } from "@/ui/panels/permission/explanation.ts";
 import { armPermissionPromptNotification } from "@/ui/panels/permission/notification.ts";
 import {
   bashRuleContentOf,
   buildGenericOptions,
+  type LabelSegment,
   type PermissionOptionKind,
   type PermissionOptionRow,
-  planOptionsFor,
   resultFor,
 } from "@/ui/panels/permission/options.ts";
 import {
-  extractPlan,
+  answeredByChoicesAlone,
   mcpDisplayFor,
   permissionTitle,
   styledProseLines,
@@ -44,17 +41,21 @@ import {
   toolSignature,
 } from "@/ui/panels/permission/tool-presentation.ts";
 import { Color, Glyph } from "@/ui/theme/theme.ts";
-import { renderMarkdownLines } from "@/ui/transcript/markdown/string-view-markdown.ts";
 
-const CONTENT_PAD_X = 2;
-const PREFIX_PLACEHOLDER = "command prefix (e.g., npm run *)";
-const PLAN_QUESTION =
-  "Otherside has written up a plan and is ready to execute. Would you like to proceed?";
+/** Columns the prompt's rows sit in from the frame's edge. */
+const PANEL_PAD_X = 1;
+/** Columns a call's own lines may take beyond the rows around them. */
+const CALL_INSET_WIDTH = 2;
+/** The frame assumed before the first render has measured one. */
+const DEFAULT_FRAME_WIDTH = 80;
+/** Cells kept clear beside a grant that names the working directory on its one row. */
+const GRANT_LABEL_MARGIN = 16;
 
-interface InputRowDisplay {
-  label: string;
-  styledLabel: string;
+function grantLabelWidthFor(frameWidth: number): number {
+  return frameWidth - GRANT_LABEL_MARGIN;
 }
+const PREFIX_LEAD = "Yes, and don't ask again for: ";
+const PREFIX_PLACEHOLDER = "command prefix (e.g., npm run *)";
 
 /** Footer surface for the head of the permission queue. */
 export class StringViewPermissionPrompt implements StringComponent {
@@ -65,10 +66,9 @@ export class StringViewPermissionPrompt implements StringComponent {
   private amendMode = false;
   private amendDraft = "";
   private prefixDraft: string | null = null;
-  private feedbackDraft = "";
-  private explaining = false;
   private notification: ReturnType<typeof armPermissionPromptNotification> | null = null;
   private mountGeneration = 0;
+  private frameWidth = process.stdout.columns ?? DEFAULT_FRAME_WIDTH;
 
   mount(ctx: StringViewContext): void {
     this.unmount();
@@ -100,9 +100,9 @@ export class StringViewPermissionPrompt implements StringComponent {
   render(width: number): string[] {
     const pending = this.pending;
     if (pending === null) return [];
-    return pending.toolName === "ExitPlanMode"
-      ? this.renderPlanPanel(pending, width)
-      : this.renderGenericPanel(pending, width);
+    // Keys read the choices this frame drew, and a grant's label is fitted to it.
+    this.frameWidth = Math.max(1, Math.floor(width));
+    return this.renderGenericPanel(pending, width);
   }
 
   handleKey(key: KeyEventData): boolean {
@@ -110,15 +110,13 @@ export class StringViewPermissionPrompt implements StringComponent {
     if (pending === null) return false;
     this.notification?.markInteraction();
 
-    const isPlan = pending.toolName === "ExitPlanMode";
     const options = this.optionsFor(pending);
     const selected = options[this.cursor];
-    const planFeedbackFocused = isPlan && selected?.kind === "plan_feedback";
     const prefixFocused = this.isPrefixEditable(pending) && selected?.kind === "allow_always";
 
     const panelAction = panelKey(key);
     if (panelAction === "close" || panelAction === "back") {
-      this.dismiss(pending, planFeedbackFocused);
+      this.dismiss(pending);
       return true;
     }
 
@@ -130,14 +128,8 @@ export class StringViewPermissionPrompt implements StringComponent {
       return true;
     }
 
-    if (key.ctrl && key.name === "e") {
-      this.explaining = !this.explaining;
-      this.ctx?.requestRender();
-      return true;
-    }
-
-    if (key.name === "tab" && !isPlan && pending.source?.name !== "design") {
-      if (selected?.kind === "allow" || selected?.kind === "deny" || this.amendMode) {
+    if (key.name === "tab" && this.takesNote(pending)) {
+      if (isAmendable(selected) || this.amendMode) {
         this.amendMode = !this.amendMode;
         this.ctx?.requestRender();
       }
@@ -155,11 +147,6 @@ export class StringViewPermissionPrompt implements StringComponent {
         this.ctx?.requestRender();
         return true;
       }
-      if (planFeedbackFocused) {
-        this.feedbackDraft = this.feedbackDraft.slice(0, -1);
-        this.ctx?.requestRender();
-        return true;
-      }
     }
 
     const input = typedText(key);
@@ -173,11 +160,6 @@ export class StringViewPermissionPrompt implements StringComponent {
       this.ctx?.requestRender();
       return true;
     }
-    if (planFeedbackFocused && input.length > 0) {
-      this.feedbackDraft += input;
-      this.ctx?.requestRender();
-      return true;
-    }
 
     if (key.name === "up") {
       this.moveCursor(-1, options.length);
@@ -188,21 +170,13 @@ export class StringViewPermissionPrompt implements StringComponent {
       return true;
     }
     if (panelAction === "confirm") {
-      this.activate(pending, options, planFeedbackFocused);
+      this.activate(pending, options);
       return true;
     }
 
     const direct = options.find((option) => option.key === input);
     if (direct !== undefined) {
-      if (direct.kind === "plan_feedback") {
-        this.cursor = Math.max(
-          0,
-          options.findIndex((option) => option.kind === "plan_feedback"),
-        );
-        this.ctx?.requestRender();
-      } else {
-        this.answerWith(pending, direct.kind);
-      }
+      this.answerWith(pending, direct.kind);
       return true;
     }
 
@@ -235,43 +209,31 @@ export class StringViewPermissionPrompt implements StringComponent {
     this.amendMode = false;
     this.amendDraft = "";
     this.prefixDraft = null;
-    this.feedbackDraft = "";
-    this.explaining = false;
   }
 
-  /** `Ctrl+E explain` — the same chord hides it again once it is open. */
-  private explainHint(): [string, string] {
-    return ["Ctrl+E", this.explaining ? "hide explanation" : "explain"];
+  /**
+   * `Esc to cancel`, plus `Tab to amend` while the focused answer takes a note and
+   * none is being written. The mode cycle still answers Shift+Tab here, unadvertised.
+   */
+  private footerHints(pending: PendingPermission, selected: PermissionOptionRow | undefined) {
+    const offersAmend = this.takesNote(pending) && isAmendable(selected) && !this.amendMode;
+    return [hintFor("cancel"), ...(offersAmend ? [hintFor("amend")] : [])].map(hintPair);
   }
 
-  /** Names the mode the cycle key would leave from, so the step is never blind. */
-  private modeHint(): [string, string] {
-    return ["Shift+Tab", `mode: ${readStringViewBrokerState().permissionMode}`];
-  }
-
-  /** The explanation section, when it is showing, with its blank line above. */
-  private explanationBlock(
-    pending: PendingPermission,
-    options: PermissionOptionRow[],
-    contentWidth: number,
-  ): string[] {
-    if (!this.explaining) return [];
-    return ["", ...explanationLines({ pending, options, width: contentWidth }), ""];
+  /** A yes or no may carry a note (Tab), except on a design prompt or a fetch. */
+  private takesNote(pending: PendingPermission): boolean {
+    return pending.source?.name !== "design" && !answeredByChoicesAlone(pending);
   }
 
   private optionsFor(pending: PendingPermission): PermissionOptionRow[] {
-    if (pending.toolName === "ExitPlanMode") {
-      return planOptionsFor(pending.bypassAvailable ?? false);
-    }
     const isDesign = pending.source?.name === "design";
     const mcp = isDesign ? null : mcpDisplayFor(pending);
-    return buildGenericOptions(
-      pending.rule,
+    return buildGenericOptions({
+      pending,
       isDesign,
-      pending.toolName,
-      pending.readOnly ?? false,
-      mcp === null ? null : { label: mcp.label, cwd: process.cwd() },
-    );
+      mcp: mcp === null ? null : { label: mcp.label, cwd: process.cwd() },
+      grantLabelWidth: grantLabelWidthFor(this.frameWidth),
+    });
   }
 
   private moveCursor(delta: number, count: number): void {
@@ -280,35 +242,12 @@ export class StringViewPermissionPrompt implements StringComponent {
     this.ctx?.requestRender();
   }
 
-  private dismiss(pending: PendingPermission, planFeedbackFocused: boolean): void {
-    if (this.amendMode) {
-      this.amendMode = false;
-      this.amendDraft = "";
-      this.ctx?.requestRender();
-      return;
-    }
-    if (planFeedbackFocused) {
-      this.cursor = 0;
-      this.feedbackDraft = "";
-      this.ctx?.requestRender();
-      return;
-    }
-    if (pending.toolName === "ExitPlanMode") {
-      answer(pending.id, PermissionResults.planFeedback(""));
-    } else {
-      answer(pending.id, PermissionResults.deny());
-    }
+  /** Esc refuses the call outright, a note being written or not. */
+  private dismiss(pending: PendingPermission): void {
+    answer(pending.id, PermissionResults.deny());
   }
 
-  private activate(
-    pending: PendingPermission,
-    options: PermissionOptionRow[],
-    planFeedbackFocused: boolean,
-  ): void {
-    if (planFeedbackFocused) {
-      answer(pending.id, PermissionResults.planFeedback(this.feedbackDraft));
-      return;
-    }
+  private activate(pending: PendingPermission, options: PermissionOptionRow[]): void {
     const choice = options[this.cursor];
     if (choice !== undefined) this.answerWith(pending, choice.kind);
   }
@@ -323,16 +262,14 @@ export class StringViewPermissionPrompt implements StringComponent {
         this.amendDraft,
         pending.editDirectory,
         pending.suggestions,
+        pending.rules,
       ),
     );
   }
 
   private isPrefixEditable(pending: PendingPermission): boolean {
     return (
-      pending.toolName !== "ExitPlanMode" &&
-      pending.source?.name !== "design" &&
-      pending.toolName === "Bash" &&
-      pending.rule !== null
+      pending.source?.name !== "design" && pending.toolName === "Bash" && pending.rule !== null
     );
   }
 
@@ -347,68 +284,70 @@ export class StringViewPermissionPrompt implements StringComponent {
   }
 
   private renderGenericPanel(pending: PendingPermission, width: number): string[] {
-    const contentWidth = Math.max(1, Math.floor(width) - CONTENT_PAD_X * 2);
+    const frameWidth = Math.max(1, Math.floor(width));
+    const contentWidth = Math.max(1, frameWidth - PANEL_PAD_X * 2);
     const options = this.optionsFor(pending);
     const isDesign = pending.source?.name === "design";
-    const presentation = toolPresentation(pending, contentWidth);
+    const presentation = toolPresentation(pending, contentWidth - CALL_INSET_WIDTH);
     const display = userFacingToolName(pending.toolName);
     const title = isDesign
       ? `Allow ${display} for this design session?`
       : permissionTitle(presentation.title, pending.source);
-    const body: string[] = [];
+    // Rows sit at the panel inset; a file preview's frame alone runs edge to edge.
+    const rows: string[] = [];
+    const place = (lines: readonly string[], inset = 0): void => {
+      const lead = " ".repeat(PANEL_PAD_X + inset);
+      for (const line of lines) rows.push(line.length > 0 ? lead + line : line);
+    };
 
     if (isDesign) {
-      body.push(...styledRawLines(toolSignature(pending), contentWidth, Color.text));
-      body.push("");
+      place(styledRawLines(toolSignature(pending), contentWidth, Color.text), CALL_INSET_WIDTH);
+      rows.push("");
     } else {
-      body.push(...presentation.body);
-      if (presentation.warning !== null) {
-        body.push("");
-        body.push(
-          ...styledProseLines(
-            `${Glyph.warning} ${presentation.warning}`,
-            contentWidth,
-            Color.warning,
-          ),
-        );
+      place(presentation.body, presentation.bodyInset);
+      if (presentation.preview !== null) {
+        const rule = panelDashedRuleLine(frameWidth);
+        rows.push(rule);
+        place(presentation.preview);
+        rows.push(rule);
+      } else {
+        rows.push("");
       }
-      body.push("");
-      body.push(...styledProseLines(presentation.question, contentWidth, Color.text));
-      body.push("");
+      if (presentation.warning !== null) {
+        place(
+          styledProseLines(`${Glyph.warning} ${presentation.warning}`, contentWidth, Color.warning),
+        );
+        rows.push("");
+      }
+      if (presentation.reason !== null) {
+        place(styledProseLines(presentation.reason, contentWidth, Color.text));
+        rows.push("");
+      }
+      place(wrapProse(styledSegments(presentation.question, Color.text), contentWidth));
     }
 
-    body.push(...this.explanationBlock(pending, options, contentWidth));
+    // A choice's label runs on to the frame's right edge before it wraps.
+    const choiceWidth = frameWidth - PANEL_PAD_X;
+    options.forEach((option, index) => {
+      place(this.renderOptionRow(pending, option, index === this.cursor, choiceWidth));
+    });
 
-    for (let index = 0; index < options.length; index++) {
-      const option = options[index]!;
-      const selected = index === this.cursor;
-      body.push(this.renderOptionRow(pending, option, selected, contentWidth));
-    }
-
-    const quickRange = options.length === 2 ? "1-2" : `1-${options.length}`;
-    const footerHints: [string, string][] = this.amendMode
-      ? [
-          ["type", "feedback"],
-          ["Enter", "confirm"],
-          ["Esc", "back"],
-          ["↑↓", "select"],
-        ]
-      : [
-          ["↑↓", "select"],
-          ["Enter", "confirm"],
-          ["Esc", "cancel"],
-          [quickRange, "quick"],
-          ...(isDesign ? [] : ([["Tab", "amend"]] as [string, string][])),
-          this.explainHint(),
-          this.modeHint(),
-        ];
-    const spec: FooterPanelSpec = {
-      title,
-      flushTop: true,
-      footerHints,
-      body,
-    };
-    return renderFooterPanel(spec, width);
+    const hints = answeredByChoicesAlone(pending)
+      ? undefined
+      : this.footerHints(pending, options[this.cursor]);
+    return renderFooterPanel(
+      {
+        title,
+        paddingX: PANEL_PAD_X,
+        bodyPaddingX: 0,
+        // A file prompt's path sits right under its title; any other call follows a blank row.
+        flushTop: !isDesign && presentation.preview !== null,
+        footerHints: hints,
+        footerItalic: false,
+        body: rows,
+      },
+      width,
+    );
   }
 
   private renderOptionRow(
@@ -416,104 +355,40 @@ export class StringViewPermissionPrompt implements StringComponent {
     option: PermissionOptionRow,
     selected: boolean,
     contentWidth: number,
-  ): string {
-    const labelBudget = Math.max(1, contentWidth - 2);
+  ): string[] {
+    const row = { key: option.key, label: option.label, selected };
     if (option.kind === "allow_always" && this.isPrefixEditable(pending)) {
       const value = this.prefixValue(pending);
-      const display = inputRowDisplay({
-        prefix: `${option.key}. Yes, and don't ask again for: `,
-        value,
-        placeholder: PREFIX_PLACEHOLDER,
-        width: labelBudget,
-        cursor: selected,
-        selected,
+      const lead = renderTextWithStyles(PREFIX_LEAD, {
+        color: selected ? Color.panelAccent : Color.text,
       });
-      return renderPanelRowLine(
-        { label: display.label, styledLabel: display.styledLabel, selected },
+      const field = selected
+        ? fieldWithCaret(value, value.length, PREFIX_PLACEHOLDER)
+        : renderTextWithStyles(value || PREFIX_PLACEHOLDER, {
+            color: value ? Color.text : Color.muted,
+          });
+      return renderPanelChoiceRowLines({ ...row, styledLabel: lead + field }, contentWidth);
+    }
+
+    if (this.amendMode && selected && isAmendable(option)) {
+      const lead = renderTextWithStyles(`${option.label}, `, { color: Color.panelAccent });
+      const field = fieldWithCaret(
+        this.amendDraft,
+        this.amendDraft.length,
+        amendPlaceholderFor(option.kind),
+      );
+      return renderPanelChoiceRowLines({ ...row, styledLabel: lead + field }, contentWidth);
+    }
+
+    if (option.segments !== undefined) {
+      const color = selected ? Color.panelAccent : Color.text;
+      return renderPanelChoiceRowLines(
+        { ...row, styledLabel: styledSegments(option.segments, color) },
         contentWidth,
-        labelBudget,
       );
     }
-
-    const amendHere =
-      this.amendMode && selected && (option.kind === "allow" || option.kind === "deny");
-    if (amendHere) {
-      const display = inputRowDisplay({
-        prefix: `${option.key}. ${option.label}, `,
-        value: this.amendDraft,
-        placeholder: amendPlaceholderFor(option.kind),
-        width: labelBudget,
-        cursor: true,
-        selected: true,
-      });
-      return renderPanelRowLine(
-        { label: display.label, styledLabel: display.styledLabel, selected: true },
-        contentWidth,
-        labelBudget,
-      );
-    }
-
-    const label = truncateEllipsis(`${option.key}. ${option.label}`, labelBudget);
-    return renderPanelRowLine({ label, selected }, contentWidth, labelBudget);
+    return renderPanelChoiceRowLines({ ...row, singleLine: true }, contentWidth);
   }
-
-  private renderPlanPanel(pending: PendingPermission, width: number): string[] {
-    const contentWidth = Math.max(1, Math.floor(width) - CONTENT_PAD_X * 2);
-    const options = this.optionsFor(pending);
-    const feedbackFocused = options[this.cursor]?.kind === "plan_feedback";
-    const body: string[] = [renderTextWithStyles("Here is the plan:", { color: Color.muted })];
-    const plan = extractPlan(pending.input);
-
-    if (plan !== null) {
-      body.push("");
-      body.push(...renderMarkdownLines(plan, contentWidth));
-    }
-    body.push("");
-    body.push(...styledProseLines(PLAN_QUESTION, contentWidth, Color.text));
-    body.push("");
-    body.push(...this.explanationBlock(pending, options, contentWidth));
-
-    for (let index = 0; index < options.length; index++) {
-      const option = options[index]!;
-      const selected = index === this.cursor;
-      body.push(optionRowLine(option, selected, contentWidth));
-      if (selected && option.kind === "plan_feedback") {
-        const display = inputRowDisplay({
-          prefix: "",
-          value: this.feedbackDraft,
-          placeholder: "Tell agent what to change",
-          width: Math.max(1, contentWidth - 2),
-          cursor: true,
-          selected: true,
-        });
-        body.push(
-          renderPanelRowLine(
-            { label: display.label, styledLabel: display.styledLabel, selected: true },
-            contentWidth,
-            Math.max(1, contentWidth - 2),
-          ),
-        );
-      }
-    }
-
-    const spec: FooterPanelSpec = {
-      title: "Ready to code?",
-      accent: Color.modePlan,
-      footerHints: [...planFooterHints(feedbackFocused), this.explainHint()],
-      body,
-    };
-    return renderFooterPanel(spec, width);
-  }
-}
-
-function optionRowLine(
-  option: PermissionOptionRow,
-  selected: boolean,
-  contentWidth: number,
-): string {
-  const labelBudget = Math.max(1, contentWidth - 2);
-  const label = truncateEllipsis(`${option.key}. ${option.label}`, labelBudget);
-  return renderPanelRowLine({ label, selected }, contentWidth, labelBudget);
 }
 
 function amendPlaceholderFor(kind: PermissionOptionKind): string {
@@ -522,52 +397,16 @@ function amendPlaceholderFor(kind: PermissionOptionKind): string {
     : "and tell Otherside what to do next";
 }
 
-function planFooterHints(feedbackFocused: boolean): [string, string][] {
-  if (feedbackFocused) {
-    return [
-      ["type", "feedback"],
-      ["Enter", "submit"],
-      ["Esc", "clear"],
-      ["↑↓", "change option"],
-    ];
-  }
-  return [
-    ["↑↓", "select"],
-    ["Enter", "confirm"],
-    ["Esc", "cancel"],
-    ["1-3", "quick"],
-  ];
+/** The answers a note can ride on: the plain yes and the plain no. */
+function isAmendable(option: PermissionOptionRow | undefined): boolean {
+  return option?.kind === "allow" || option?.kind === "deny";
 }
 
-function inputRowDisplay(options: {
-  prefix: string;
-  value: string;
-  placeholder: string;
-  width: number;
-  cursor: boolean;
-  selected: boolean;
-}): InputRowDisplay {
-  const cursorText = options.cursor ? Glyph.blockThreeEighths : "";
-  const available = Math.max(0, options.width - stringWidth(cursorText));
-  const shownValue = options.value.length > 0 ? options.value : options.placeholder;
-  const prefix = truncateEllipsis(options.prefix, available);
-  const valueBudget = Math.max(0, available - stringWidth(prefix));
-  const value = tailEllipsis(shownValue, valueBudget);
-  const label = prefix + value + cursorText;
-  const prefixColor = options.selected ? Color.panelAccent : Color.muted;
-  const valueColor = options.value.length > 0 && options.selected ? Color.text : Color.muted;
-  return {
-    label,
-    styledLabel:
-      renderTextWithStyles(prefix, { color: prefixColor, bold: options.selected }) +
-      renderTextWithStyles(value, { color: valueColor }) +
-      renderTextWithStyles(cursorText, { color: Color.muted }),
-  };
-}
-
-function tailEllipsis(value: string, width: number): string {
-  if (width <= 0) return "";
-  if (stringWidth(value) <= width) return value;
-  if (width === 1) return "…";
-  return `…${value.slice(-(width - 1))}`;
+/** Label or question text in one color, with the parts it names set bold. */
+function styledSegments(segments: readonly LabelSegment[], color: typeof Color.text): string {
+  return segments
+    .map((segment) =>
+      renderTextWithStyles(segment.text, { color, ...(segment.bold ? { bold: true } : {}) }),
+    )
+    .join("");
 }

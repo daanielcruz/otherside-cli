@@ -1,11 +1,9 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { buildResumedSession } from "@/boot/startup-session.ts";
-import { auxiliaryModelFor } from "@/engine/model/tier/tiers.ts";
 import * as authModule from "@/engine/providers/anthropic/auth.ts";
 import { DEFAULT_CONFIG } from "@/kernel/config/config.ts";
 import type { AnthropicTokens } from "@/kernel/storage/credentials.ts";
 import * as credentialsModule from "@/kernel/storage/credentials.ts";
-import { anthropicWireModelId } from "../_infra/fingerprint.ts";
 import { anthropicUserIdMetadata } from "../metadata.ts";
 import { probeQuotaStatus } from "../quota-probe.ts";
 
@@ -16,7 +14,7 @@ function makeAnthropicBroker(): ResumedSessionBroker {
   return {
     read: () => ({
       provider: "anthropic",
-      model: "claude-opus-4-8",
+      model: "claude-opus-5-5",
       effort: "high",
       fastMode: false,
       permissionMode: "accept-edits",
@@ -157,7 +155,7 @@ describe("quota-probe", () => {
       metadata: {
         user_id: anthropicUserIdMetadata(sessionId),
       },
-      model: anthropicWireModelId(auxiliaryModelFor("anthropic"), false),
+      model: "claude-haiku-4-5-20251001",
     });
     expect(requestBody).toBe(expected);
   });

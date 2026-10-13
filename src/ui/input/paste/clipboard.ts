@@ -176,7 +176,7 @@ function writeClipboardImageToFile(): boolean {
   }
 }
 
-function detectMediaType(buf: Buffer): ImageMediaType {
+export function detectMediaType(buf: Buffer): ImageMediaType {
   if (buf.length >= 8 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) {
     return "image/png";
   }

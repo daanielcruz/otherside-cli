@@ -29,7 +29,7 @@ function seedBroker(effort: string, ultracode: boolean): void {
     key: "broker",
     value: {
       provider: "codex",
-      model: "gpt-5.6-sol",
+      model: "gpt-5.6-terra",
       effort,
       fastMode: false,
       permissionMode: "default",

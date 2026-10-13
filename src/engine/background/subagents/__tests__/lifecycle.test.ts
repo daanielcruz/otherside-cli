@@ -235,7 +235,7 @@ describe("subagent messaging lifecycle", () => {
       agentId: "general-purpose",
       initialMessages: inheritedMessages,
       inheritParentTurn: true,
-      permissionMode: "plan",
+      permissionMode: "accept-edits",
     });
 
     await waitUntil(() => resolveAgentId(task.id) === task.id);
@@ -250,7 +250,7 @@ describe("subagent messaging lifecycle", () => {
 
     expect(captures).toHaveLength(2);
     expect(captures[0]?.ctx.cwd).toBe(agentCwd);
-    expect(captures[0]?.ctx.permissionMode).toBe("plan");
+    expect(captures[0]?.ctx.permissionMode).toBe("accept-edits");
     expect(JSON.stringify(captures[1]?.messages)).toContain("Running steering marker.");
     expect(resolveAgentId(task.id)).toBeNull();
     expect(removeTask(task.id)).toBe(true);

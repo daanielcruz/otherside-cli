@@ -6,6 +6,8 @@ import {
   ensureRuntimeModel,
   findModel,
   findUniqueModel,
+  offeredModelId,
+  parseQualifiedRoute,
   pickInitialModel,
   resolveModelId,
 } from "@/engine/model/catalog.ts";
@@ -69,8 +71,11 @@ export function resolveStartupBroker(args: {
   isResume: boolean;
 }) {
   const { mode, cfg, allCreds, customCreds, resumeRecords, isResume } = args;
-  const cliProviderRaw = mode.provider;
-  const cliModelRaw = mode.model;
+  // `--model provider/model` names its owner in the flag itself; an explicit
+  // `--provider` still wins over the prefix.
+  const qualified = mode.model ? parseQualifiedRoute(mode.model) : null;
+  const cliProviderRaw = mode.provider ?? qualified?.provider ?? null;
+  const cliModelRaw = qualified?.model ?? mode.model;
   // `--model` of a non-active provider with no `--provider` resolves to that
   // model's provider via the catalog, instead of mis-routing it to the default
   // provider (which sent e.g. a MiniMax model to api.anthropic.com → 404).
@@ -99,7 +104,14 @@ export function resolveStartupBroker(args: {
   }
   if (cliModelRaw) {
     ensureRuntimeModel(cliModelRaw, defaultInitialProvider);
-  } else if (cfg.defaultModel && cfg.defaultProvider === defaultInitialProvider) {
+  } else if (
+    cfg.defaultModel &&
+    cfg.defaultProvider === defaultInitialProvider &&
+    offeredModelId({ provider: defaultInitialProvider, model: cfg.defaultModel }) ===
+      cfg.defaultModel
+  ) {
+    // A saved default the catalog dropped yields to the provider default; it stays a
+    // free-form model only where the provider has no catalog to fall back on.
     ensureRuntimeModel(cfg.defaultModel, defaultInitialProvider);
   }
   const defaultInitialModel = resolveModelId({

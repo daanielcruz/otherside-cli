@@ -3,8 +3,8 @@ import { join, parse } from "node:path";
 import { PermissionResults } from "@/kernel/channels/permission.ts";
 import { containsUnsafeRedirect, isCompoundForGuard } from "@/kernel/permissions/bash-matcher.ts";
 import {
+  directoryPathPattern,
   parseRuleValueText,
-  permissionDirectoryGlob,
   permissionInputForCall,
   permissionKeyForCall,
   permissionPatternMatches,
@@ -119,17 +119,19 @@ describe("RuleStore.match — deny is absolute across sources", () => {
     expect(store.match("Bash", "ls -la")).toBe("allow");
   });
 
-  test("directory globs match children with the platform separator", () => {
-    const directory = join("permission-root", "literal*directory");
+  test("a directory rule covers the directory and everything in it, glob characters literal", () => {
+    const parent = join(process.cwd(), "permission-root");
+    const directory = join(parent, "literal*directory");
     const store = new RuleStore();
-    store.add(rule("session", "allow", "Read", permissionDirectoryGlob(directory)));
+    store.add(rule("session", "allow", "Read", directoryPathPattern(directory)));
 
-    expect(store.match("Read", join(directory, "child.txt"))).toBe("allow");
-    expect(store.match("Read", join("permission-root", "literal-other", "child.txt"))).toBeNull();
+    expect(store.match("Read", directory)).toBe("allow");
+    expect(store.match("Read", join(directory, "nested", "child.txt"))).toBe("allow");
+    expect(store.match("Read", join(parent, "literal-other", "child.txt"))).toBeNull();
 
     const root = parse(process.cwd()).root;
     const rootStore = new RuleStore();
-    rootStore.add(rule("session", "allow", "Read", permissionDirectoryGlob(root)));
+    rootStore.add(rule("session", "allow", "Read", directoryPathPattern(root)));
     expect(rootStore.match("Read", join(root, "child.txt"))).toBe("allow");
   });
 });
@@ -351,6 +353,60 @@ describe("WebFetch permission rules", () => {
   test("legacy full-URL content does not match", () => {
     const legacyAllow = rule("localSettings", "allow", "WebFetch", "https://docs.github.com/a");
     expect(ruleMatches(legacyAllow, "WebFetch", "https://docs.github.com/a")).toBe(false);
+  });
+});
+
+describe("lasting rules cover the next similar call", () => {
+  function coversNext(toolName: string, first: unknown, next: unknown): boolean {
+    const value = parseRuleValueText(permissionKeyForCall(toolName, first));
+    if (value === null) return false;
+    const store = new RuleStore();
+    store.add({ source: "localSettings", ruleBehavior: "allow", ruleValue: value });
+    return store.match(toolName, permissionInputForCall(next)) === "allow";
+  }
+
+  test("a web search rule covers every query", () => {
+    expect(permissionKeyForCall("WebSearch", { query: "bun test docs" })).toBe("WebSearch");
+    expect(coversNext("WebSearch", { query: "bun test docs" }, { query: "bun build" })).toBe(true);
+  });
+
+  test("a skill rule names the skill, whatever its arguments", () => {
+    expect(permissionKeyForCall("Skill", { skill: "loop", args: "5m x" })).toBe("Skill(loop)");
+    expect(
+      coversNext("Skill", { skill: "loop", args: "5m x" }, { skill: "loop", args: "1h y" }),
+    ).toBe(true);
+    expect(coversNext("Skill", { skill: "loop" }, { skill: "init" })).toBe(false);
+  });
+
+  test("a skill prefix rule covers every skill it starts", () => {
+    const store = new RuleStore();
+    for (const content of ["review:*", "/deploy"]) {
+      store.add({
+        source: "localSettings",
+        ruleBehavior: "allow",
+        ruleValue: { toolName: "Skill", ruleContent: content },
+      });
+    }
+    const verdict = (skill: string) => store.match("Skill", permissionInputForCall({ skill }));
+    expect(verdict("review-pr")).toBe("allow");
+    expect(verdict("/review:security")).toBe("allow");
+    expect(verdict("deploy")).toBe("allow");
+    expect(verdict("deploy-prod")).toBeNull();
+    expect(verdict("release")).toBeNull();
+    expect(permissionKeyForCall("Skill", { skill: "/deploy" })).toBe("Skill(deploy)");
+  });
+
+  test("a Bash rule keeps the environment assignments an allow rule does not ignore", () => {
+    expect(permissionKeyForCall("Bash", { command: "FOO=1 npm test" })).toBe(
+      "Bash(FOO=1 npm test *)",
+    );
+    expect(permissionKeyForCall("Bash", { command: "CI=1 npm test" })).toBe("Bash(npm test *)");
+    expect(
+      coversNext("Bash", { command: "FOO=1 npm test" }, { command: "FOO=1 npm test --watch" }),
+    ).toBe(true);
+    expect(coversNext("Bash", { command: "FOO=1 npm test" }, { command: "FOO=2 npm test" })).toBe(
+      false,
+    );
   });
 });
 

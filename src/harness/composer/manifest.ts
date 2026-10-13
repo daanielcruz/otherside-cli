@@ -3,6 +3,9 @@ import type { LayerKind } from "@/harness/composer/types.ts";
 import AUTONOMY_FABLE_SECTION from "@/harness/core/act-guidance/autonomy-fable.md" with {
   type: "text",
 };
+import AUTONOMY_HAIKU_SECTION from "@/harness/core/act-guidance/autonomy-haiku.md" with {
+  type: "text",
+};
 import ACT_GUIDANCE_SECTION from "@/harness/core/act-guidance/section.md" with { type: "text" };
 import { availableModelsLayer } from "@/harness/core/available-models-guidance.ts";
 import CONTEXT_MANAGEMENT_SECTION from "@/harness/core/context-management/section.md" with {
@@ -214,8 +217,9 @@ export const HARNESS_MANIFEST: readonly LayerDescriptor[] = [
     kind: "system",
     cache: "1h",
     phase: "dynamic",
-    when: (ctx) => ctx.modelFamily === "fable",
-    prompt: AUTONOMY_FABLE_SECTION,
+    when: (ctx) => ctx.modelFamily === "fable" || ctx.modelFamily === "haiku",
+    render: (ctx) =>
+      ctx.modelFamily === "fable" ? AUTONOMY_FABLE_SECTION : AUTONOMY_HAIKU_SECTION,
   },
   // 16
   {

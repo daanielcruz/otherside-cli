@@ -195,7 +195,7 @@ describe("media provider config rows", () => {
 
   it("shows native defaults and labels explicit providers", () => {
     const xaiRows = configRows(
-      { ...state, provider: "xai", model: "grok-4.5" },
+      { ...state, provider: "xai", model: "grok-4.6" },
       DEFAULT_CONFIG,
       null,
     );

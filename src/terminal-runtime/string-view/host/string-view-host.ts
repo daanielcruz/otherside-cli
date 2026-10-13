@@ -1,3 +1,4 @@
+import { claimInterrupt } from "@/kernel/std/proc/interrupt-claim.ts";
 import { createAutoClearDispatch } from "@/kernel/std/state/auto-clear-dispatch.ts";
 import { suspendToShell } from "@/terminal-runtime/host/process-suspend.js";
 import {
@@ -25,7 +26,14 @@ import {
   shouldWatchExternalClears,
 } from "@/terminal-runtime/string-view/host/external-clear-watch.js";
 import { InlineRowPainter } from "@/terminal-runtime/string-view/row-emitter.js";
-import { PASTE_END, PASTE_START } from "@/terminal-runtime/terminal/control-sequences.js";
+import { supportsAdvancedInput } from "@/terminal-runtime/terminal/capability-policy.js";
+import {
+  DISABLE_KITTY_KEYBOARD,
+  ENABLE_KITTY_KEYBOARD,
+  ENABLE_MODIFY_OTHER_KEYS,
+  PASTE_END,
+  PASTE_START,
+} from "@/terminal-runtime/terminal/control-sequences.js";
 import { CURSOR_DISPLAY_OFF, EBP, EFE } from "@/terminal-runtime/terminal/private-modes.js";
 
 const DEFAULT_COLUMNS = 80;
@@ -41,9 +49,20 @@ const PASTE_HINT_BYTES = 3;
 export const EXIT_HINT_HOLD_MS = 800;
 // Bracketed paste makes a multi-line paste arrive as one atomic event the prompt
 // inserts verbatim, instead of a burst of newlines the parser reads as submits.
-// Focus reporting (EFE) drives the focus-gain clipboard probe. `recoverTerminal`
-// disables both (DBP/DFE) whenever the terminal goes back to the shell.
-const OWNED_TERMINAL_MODES = CURSOR_DISPLAY_OFF + EBP + EFE;
+// Focus reporting (EFE) drives the focus-gain clipboard probe. Extended key
+// reporting is what makes Shift+Return arrive distinct from Return; terminals
+// honor whichever of the kitty push or modifyOtherKeys they implement, and the
+// pop before the push keeps the kitty stack one deep across a reclaim.
+// `recoverTerminal` undoes every one of these whenever the terminal goes back to
+// the shell.
+function ownedTerminalModes(): string {
+  const extendedKeys = supportsAdvancedInput()
+    ? DISABLE_KITTY_KEYBOARD + ENABLE_KITTY_KEYBOARD + ENABLE_MODIFY_OTHER_KEYS
+    : "";
+  return CURSOR_DISPLAY_OFF + EBP + EFE + extendedKeys;
+}
+/** What a raw terminal sends for Ctrl+C. */
+const CTRL_C_BYTE = "\x03";
 
 /** The chords whose second press within the hint window leaves the session. */
 export type ExitChord = "ctrl-c" | "ctrl-d";
@@ -103,6 +122,7 @@ class InlineSurfaceSession {
   private readonly closeWaiters: (() => void)[] = [];
   private closed = false;
   private initialRawMode: boolean | undefined;
+  private releaseInterrupt: (() => void) | null = null;
   private decoderState: InputDecodeState = { ...FRESH_INPUT_DECODE_STATE };
   private decoderDrainTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly exitConfirmation = createAutoClearDispatch<ExitChord>({
@@ -141,7 +161,7 @@ class InlineSurfaceSession {
   open(): void {
     registerTerminalRecovery();
     publishTerminalHandoff(this.handoff);
-    this.terminalOutput.write(OWNED_TERMINAL_MODES);
+    this.terminalOutput.write(ownedTerminalModes());
     this.terminalOutput.on("resize", this.reflowToTerminal);
     this.listenForInput();
     this.startClearWatch();
@@ -237,7 +257,22 @@ class InlineSurfaceSession {
     this.terminalInput.setRawMode?.(true);
     this.terminalInput.resume();
     this.terminalInput.on("data", this.acceptInput);
+    this.releaseInterrupt = claimInterrupt(this.acceptInterruptSignal);
   }
+
+  /**
+   * A SIGINT while this session owns the keyboard means the terminal's line
+   * discipline was flipped back to cooked behind our back, so Ctrl+C arrived as a
+   * signal instead of a byte. Retake raw input and replay the byte it would have
+   * been: the press then walks the same exit ladder — and the same teardown and
+   * resume hint — as any other Ctrl+C.
+   */
+  private readonly acceptInterruptSignal = (): void => {
+    if (this.closed) return;
+    this.terminalInput.setRawMode?.(false);
+    this.terminalInput.setRawMode?.(true);
+    this.acceptInput(Buffer.from(CTRL_C_BYTE));
+  };
 
   private readonly acceptInput = (chunk: Buffer): void => {
     const input = this.claimCursorReport(chunk);
@@ -320,7 +355,7 @@ class InlineSurfaceSession {
   private reclaimTerminal(): void {
     if (this.closed) return;
     if (this.terminalInput.isTTY) this.terminalInput.setRawMode?.(true);
-    this.terminalOutput.write(OWNED_TERMINAL_MODES);
+    this.terminalOutput.write(ownedTerminalModes());
     // The shell owned the screen in the meantime, so the frame is rebuilt rather
     // than diffed against rows that are no longer there.
     this.reflowToTerminal();
@@ -407,6 +442,8 @@ class InlineSurfaceSession {
     this.clearWatcher = null;
     this.dropCursorProbe();
     if (currentTerminalHandoff() === this.handoff) publishTerminalHandoff(null);
+    this.releaseInterrupt?.();
+    this.releaseInterrupt = null;
     this.exitConfirmation.clear();
     if (this.decoderDrainTimer) {
       clearTimeout(this.decoderDrainTimer);

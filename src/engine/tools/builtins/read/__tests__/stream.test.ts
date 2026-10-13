@@ -19,7 +19,7 @@ function writeLines(name: string, lines: string[]): string {
   return path;
 }
 
-function readContext(model = "claude-opus-4-8"): RequestContext {
+function readContext(model = "claude-opus-5-5"): RequestContext {
   return {
     provider: "anthropic",
     model,

@@ -1,6 +1,7 @@
 import { recordCodexRawReplayDiagnostic } from "@/devtools/codex-raw-stream.ts";
 import { runWithPermissionResolver } from "@/engine/agents/agent-context.ts";
 import { get as getAgent, type SubagentDef } from "@/engine/agents/registry.ts";
+import { settleEffortForModel } from "@/engine/model/catalog.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 import { assembleForkMessages } from "./builder.ts";
 import { mcpDeclarationsForDef } from "./declarations.ts";
@@ -45,6 +46,16 @@ export function shouldAvoidPermissionPromptsForSubagent(
   def: Pick<SubagentDef, "background">,
 ): boolean {
   return subagentLaunchDetaches(invocation, def);
+}
+
+// An effort the caller named outranks the definition's and the parent's, settled
+// against the model the agent actually runs on.
+export function withEffortOverride(
+  ctx: RequestContext,
+  effort: SubagentInvocation["effortOverride"],
+): RequestContext {
+  if (effort === undefined) return ctx;
+  return { ...ctx, effort: settleEffortForModel(ctx, effort) };
 }
 
 export async function dispatchSubagent(
@@ -97,7 +108,7 @@ export async function dispatchSubagent(
 
   const runResolved = (nextCtx: RequestContext): Promise<SubagentResult> => {
     const subCtx: RequestContext = {
-      ...nextCtx,
+      ...withEffortOverride(nextCtx, invocation.effortOverride),
       suppressThinkingSummary: true,
     };
     const allowSet = resolveAllowSetForFork(def, "subagent", subCtx);

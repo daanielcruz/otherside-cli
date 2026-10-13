@@ -9,9 +9,6 @@ export const PERMISSION_PROMPT_IDLE_MS = 6000;
 export function permissionPromptNotificationMessage(
   pending: Pick<PendingPermission, "toolName">,
 ): string {
-  if (pending.toolName === "ExitPlanMode") {
-    return "Otherside needs your approval for the plan";
-  }
   const toolName = userFacingToolName(pending.toolName);
   if (toolName.trim().length === 0) return "Otherside needs your attention";
   return `Otherside needs your permission to use ${toolName}`;

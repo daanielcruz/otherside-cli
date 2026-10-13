@@ -571,6 +571,46 @@ describe("StreamSilenceError classification", () => {
   });
 });
 
+describe("streamWithRetry surfaced guidance", () => {
+  for (const failure of [
+    new ProviderHttpError({
+      provider: "test",
+      status: 409,
+      body: '{"error":{"message":"session is not active"}}',
+    }),
+    Object.assign(new Error("Cloud initialize timed out"), { name: "TimeoutError" }),
+  ]) {
+    it(`shows the provider's guidance for ${failure.name}`, async () => {
+      const guidance = "The session stopped. Send a new message to continue.";
+      const provider = createRetryRunner({
+        events: (): AsyncIterable<ProviderEvent> => ({
+          [Symbol.asyncIterator]() {
+            return {
+              next: async (): Promise<IteratorResult<ProviderEvent>> => {
+                throw failure;
+              },
+            };
+          },
+        }),
+        recoverableError: (): RetryDecision => ({
+          kind: "fail",
+          reason: guidance,
+          userMessage: guidance,
+        }),
+      });
+
+      const events = await collect(streamWithRetry(ctx, provider, {}));
+
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        kind: "error",
+        error: guidance,
+        meta: { summary: guidance },
+      });
+    });
+  }
+});
+
 describe("isContentEvent", () => {
   it("accepts text/thinking deltas and tool_call start/complete as content", () => {
     expect(isContentEvent({ kind: "text_delta" })).toBe(true);

@@ -50,7 +50,7 @@ export interface DispatchEntry {
 
 export type DispatchOutcome =
   | { kind: "backgrounded"; placeholder: string }
-  | { kind: "completed"; block: ContentBlock }
+  | { kind: "completed"; block: ContentBlock; stopsTurn?: true }
   | { kind: "failed"; error: unknown };
 
 function completeDispatchTask(
@@ -218,7 +218,11 @@ export async function settleDispatch(
       isError: result.is_error ?? false,
       ...(result.meta ? { meta: result.meta } : {}),
     });
-    return finish({ kind: "completed", block: toolResultBlock });
+    return finish({
+      kind: "completed",
+      block: toolResultBlock,
+      ...(result.stopsTurn ? { stopsTurn: true as const } : {}),
+    });
   } catch (err) {
     return finish({ kind: "failed", error: err });
   }

@@ -7,6 +7,7 @@ interface HarnessBaseline {
 
 const PROVIDER_BASELINE: Record<ProviderId, HarnessBaseline> = {
   anthropic: { systemTokens: 4_500, toolDefTokens: 8_500 },
+  "anthropic-cloud": { systemTokens: 4_500, toolDefTokens: 8_500 },
   antigravity: { systemTokens: 4_500, toolDefTokens: 7_500 },
   codex: { systemTokens: 11_500, toolDefTokens: 4_500 },
   xai: { systemTokens: 4_500, toolDefTokens: 8_500 },

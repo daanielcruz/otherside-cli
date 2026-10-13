@@ -14,7 +14,7 @@ describe("statusline context usage", () => {
     const input = buildStatuslineInput({
       state: {
         provider: "xai",
-        model: "grok-4.5",
+        model: "grok-4.6",
         permissionMode: "default",
       } as never,
       sessionId: "s1",
@@ -32,7 +32,7 @@ describe("statusline context usage", () => {
 
 describe("statusline output style", () => {
   const baseArgs = {
-    state: { provider: "xai", model: "grok-4.5", permissionMode: "default" } as never,
+    state: { provider: "xai", model: "grok-4.6", permissionMode: "default" } as never,
     sessionId: "s1",
     version: "test",
     cwd: "/repo",

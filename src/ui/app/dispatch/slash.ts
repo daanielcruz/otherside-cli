@@ -8,7 +8,10 @@ import { estimateHarnessTokens } from "@/engine/session/compact/harness-baseline
 import { clearLastUsage } from "@/engine/session/compact/last-usage.ts";
 import { estimateConversationTokens } from "@/engine/session/compact/token-count.ts";
 import { emptyTokenTotals } from "@/engine/session/usage/provider.ts";
-import { contextUsageTotal } from "@/engine/session/usage/snapshot.ts";
+import {
+  contextSnapshotWithEstimates,
+  contextUsageTotal,
+} from "@/engine/session/usage/snapshot.ts";
 import { dispatch, overlayStack } from "@/store/index.ts";
 import { addLiveOutputTokens, setLiveOutputTokens } from "@/store/live-tokens/index.ts";
 import { isOverlayName } from "@/store/overlay-stack/index.ts";
@@ -97,6 +100,9 @@ export function createHandleSlash(
               },
             });
           },
+          onCompactRetrySettled: () => {
+            dispatch({ type: "view/setRetryStatus", status: null });
+          },
           onCompactStart: () => {
             dispatch({
               type: "view/setTurnVerb",
@@ -157,8 +163,13 @@ export function createHandleSlash(
             enterBtwMode(question);
           },
           getServerInputTokens: () => {
-            const base = contextUsageTotal(mainLastContext);
-            return base > 0 ? base + mainLastContext.outputTokens : 0;
+            const base = contextUsageTotal(mainLastContext) ?? 0;
+            return (
+              contextSnapshotWithEstimates(mainLastContext, {
+                ...broker.read(),
+                messages: session.messages,
+              }) ?? (base > 0 ? base + mainLastContext.outputTokens : 0)
+            );
           },
         });
       } finally {

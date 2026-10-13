@@ -97,7 +97,7 @@ export function loadDesignSnapshot(cwd: string, designId: string): DesignSnapsho
   const path = join(designStorageDir(cwd, designId), SNAPSHOT_FILE);
   if (!existsSync(path)) return null;
   try {
-    const snapshot = parseSnapshot(JSON.parse(readFileSync(path, "utf8")));
+    const snapshot = parseDesignSnapshot(JSON.parse(readFileSync(path, "utf8")));
     return snapshot?.designId === designId ? snapshot : null;
   } catch {
     return null;
@@ -126,7 +126,7 @@ function designListEntry(snapshot: DesignSnapshot): DesignListEntry {
   };
 }
 
-function parseSnapshot(value: unknown): DesignSnapshot | null {
+export function parseDesignSnapshot(value: unknown): DesignSnapshot | null {
   if (!isRecord(value)) return null;
   if (!isValidDesignId(value.designId)) return null;
   if (!isStatus(value.status)) return null;

@@ -7,6 +7,7 @@ import {
   MENU_ROW_WIDTH,
   type PanelDetailView,
 } from "@/ui/panels/plugins/chrome.ts";
+import type { PanelNotice } from "@/ui/panels/plugins/panel-state.ts";
 import type { MarketplaceView } from "@/ui/panels/plugins/types.ts";
 import { Color, Glyph } from "@/ui/theme/theme.ts";
 
@@ -31,7 +32,7 @@ export function marketplaceDetailView(input: {
   selection: number;
   contentWidth: number;
   busy: string | null;
-  notice: { text: string; isError: boolean } | null;
+  notice: PanelNotice | null;
 }): PanelDetailView {
   const { marketplace, installedPlugins, view, selection, contentWidth, busy, notice } = input;
   if (!marketplace) {

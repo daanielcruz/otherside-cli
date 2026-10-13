@@ -2,8 +2,10 @@ import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test
 import chalk from "chalk";
 import { askGroup, clear, type GroupQuestion } from "@/kernel/channels/ask.ts";
 import type { KeyEventData } from "@/terminal-runtime/input/key-decoder.ts";
+import { renderTextWithStyles } from "@/terminal-runtime/text/color-codes.js";
 import { stripAnsi } from "@/terminal-runtime/text/presentation-sequences.ts";
 import { StringViewAskPrompt } from "@/ui/ask/string-view.ts";
+import { Color, Glyph } from "@/ui/theme/theme.ts";
 
 const originalColorLevel = chalk.level;
 
@@ -116,7 +118,7 @@ describe("StringViewAskPrompt", () => {
     panel.handleKey(key("return"));
     panel.handleKey(key("down"));
     panel.handleKey(key("return"));
-    expect(stripAnsi(panel.render(80).join("\n"))).toContain("Review answers");
+    expect(stripAnsi(panel.render(80).join("\n"))).toContain("Review your answers");
     panel.handleKey(key("return"));
 
     expect(await result).toEqual({
@@ -174,5 +176,152 @@ describe("StringViewAskPrompt", () => {
     second.panel.handleKey(key("escape"));
     expect(await declined).toEqual({ declined: true, reason: "cancel" });
     second.panel.unmount();
+  });
+
+  test("steps through the questions from the left edge with arrows around flush chips", () => {
+    const { panel } = mountPanel();
+    void askGroup([question({ header: "Color" }), question({ header: "Size" })]);
+
+    const lines = panel.render(100).map(stripAnsi);
+
+    expect(lines[1]).toBe(`${Glyph.arrowLeft}  ☐ Color  ☐ Size  ✔ Submit  ${Glyph.arrowRight}`);
+    expect(lines[2]).toBe("");
+    expect(lines[3]).toBe("Choose one?");
+    panel.unmount();
+  });
+
+  test("dims the arrow at the end the steps cannot move past", () => {
+    const { panel } = mountPanel();
+    void askGroup([question({ header: "Color" }), question({ header: "Size" })]);
+    const dimmed = (arrow: string) => renderTextWithStyles(arrow, { color: Color.muted });
+
+    expect(panel.render(100)[1]?.startsWith(dimmed(`${Glyph.arrowLeft} `))).toBe(true);
+    panel.handleKey(key("right"));
+    panel.handleKey(key("right"));
+    expect(panel.render(100)[1]?.endsWith(dimmed(` ${Glyph.arrowRight}`))).toBe(true);
+    panel.unmount();
+  });
+
+  test("stops at the first and the last step instead of wrapping around", () => {
+    const { panel } = mountPanel();
+    void askGroup([question(), question({ question: "Second?" })]);
+    const screen = () => stripAnsi(panel.render(100).join("\n"));
+
+    panel.handleKey(key("left"));
+    expect(screen()).toContain("Choose one?");
+    expect(screen()).not.toContain("Review your answers");
+
+    panel.handleKey(key("right"));
+    panel.handleKey(key("right"));
+    panel.handleKey(key("right"));
+    expect(screen()).toContain("Review your answers");
+    panel.unmount();
+  });
+
+  test("moves the free-text caret with the arrows instead of stepping to another question", () => {
+    const { panel } = mountPanel();
+    void askGroup([
+      question({ options: [], allowFreeform: true, question: "First?" }),
+      question({ question: "Second?" }),
+    ]);
+    const screen = () => stripAnsi(panel.render(100).join("\n"));
+
+    panel.handleKey(key(undefined, "ac"));
+    panel.handleKey(key("left"));
+    panel.handleKey(key(undefined, "b"));
+    panel.handleKey(key("right"));
+    panel.handleKey(key("tab", "\t"));
+
+    expect(screen()).toContain("First?");
+    expect(screen()).toContain("abc");
+    panel.unmount();
+  });
+
+  test("sets the key hints upright", () => {
+    const { panel } = mountPanel();
+    void askGroup([question()]);
+    const hintRow = panel.render(100).find((line) => stripAnsi(line).includes("Esc to cancel"));
+
+    expect(hintRow).toBeDefined();
+    expect(hintRow).not.toContain("\x1b[3m");
+    panel.unmount();
+  });
+
+  test("shows a lone question's chip without arrows", () => {
+    const { panel } = mountPanel();
+    void askGroup([question({ header: "Color" })]);
+
+    expect(stripAnsi(panel.render(100)[1] ?? "")).toBe(" ☐ Color ");
+    panel.unmount();
+  });
+
+  test("spells out every key hint under a question", () => {
+    const single = mountPanel();
+    void askGroup([question()]);
+    expect(stripAnsi(single.panel.render(100).join("\n"))).toContain(
+      "Enter to select · ↑/↓ to navigate · Esc to cancel",
+    );
+    single.panel.unmount();
+    clear();
+
+    const several = mountPanel();
+    void askGroup([question(), question({ question: "Second?" })]);
+    expect(stripAnsi(several.panel.render(100).join("\n"))).toContain(
+      "Enter to select · Tab/Arrow keys to navigate · Esc to cancel",
+    );
+    several.panel.unmount();
+  });
+
+  test("reviews the answers under their own heading before asking to submit", () => {
+    const { panel } = mountPanel();
+    void askGroup([question({ header: "Color" }), question({ header: "Size", question: "Size?" })]);
+    panel.handleKey(key("return"));
+    panel.handleKey(key("down"));
+    panel.handleKey(key("return"));
+
+    const lines = panel.render(100).map(stripAnsi);
+
+    expect(lines.slice(1)).toEqual([
+      `${Glyph.arrowLeft}  ☒ Color  ☒ Size  ✔ Submit  ${Glyph.arrowRight}`,
+      "",
+      "Review your answers",
+      "",
+      " ● Choose one?",
+      "   → Alpha",
+      " ● Size?",
+      "   → Beta",
+      "",
+      "Ready to submit your answers?",
+      "",
+      "❯ 1. Submit answers",
+      "  2. Cancel",
+      "",
+    ]);
+    panel.unmount();
+  });
+
+  test("leaves unanswered questions out of the review", () => {
+    const { panel } = mountPanel();
+    void askGroup([question(), question({ question: "Skipped?" })]);
+    panel.handleKey(key("return"));
+    panel.handleKey(key("right"));
+
+    const output = stripAnsi(panel.render(100).join("\n"));
+
+    expect(output).toContain("You have not answered all questions");
+    expect(output).not.toContain("Skipped?");
+    panel.unmount();
+  });
+
+  test("cancels the whole ask from the review's Cancel choice", async () => {
+    const { panel } = mountPanel();
+    const result = askGroup([question(), question({ question: "Second?" })]);
+    panel.handleKey(key("return"));
+    panel.handleKey(key("return"));
+    panel.handleKey(key("down"));
+    panel.handleKey(key("return"));
+
+    expect(await result).toEqual({ declined: true, reason: "cancel" });
+    panel.unmount();
   });
 });

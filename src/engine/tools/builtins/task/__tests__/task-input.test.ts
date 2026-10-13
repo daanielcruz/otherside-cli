@@ -26,6 +26,12 @@ describe("task id coercion", () => {
     });
   });
 
+  it("keeps only the fields TaskUpdate declares", () => {
+    expect(
+      coerceTaskUpdateInput({ taskId: "7", status: "completed", progress: "halfway" }),
+    ).toEqual({ taskId: "7", status: "completed" });
+  });
+
   it("coerces block alongside id normalization for TaskOutput", () => {
     expect(coerceTaskOutputInput({ task_id: "7", block: "false" })).toEqual({
       task_id: "7",

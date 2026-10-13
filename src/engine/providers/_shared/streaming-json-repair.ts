@@ -1,3 +1,5 @@
+import { isRecord } from "@/kernel/std/value-guards.ts";
+
 export type JsonParseResult = { ok: true; value: unknown } | { ok: false };
 
 const JSON_LITERAL_NAMES = ["true", "false", "null"] as const;
@@ -29,6 +31,17 @@ const JSON_LITERAL_NAME_SET: ReadonlySet<string> = new Set(JSON_LITERAL_NAMES);
 const DIGIT_CHARACTER = /[0-9]/;
 const LETTER_CHARACTER = /[a-z]/i;
 const WHITESPACE_CHARACTER = /\s/;
+
+/**
+ * Tool arguments as the object every provider requires, or null when the streamed
+ * text is empty, unrecoverable, or not an object. Callers fall back to `{}`, so the
+ * tool rejects the call and the conversation stays sendable.
+ */
+export function toolArgumentsObject(raw: string): Record<string, unknown> | null {
+  if (raw.trim().length === 0) return null;
+  const result = parseJsonWithPartialRecovery(raw);
+  return result.ok && isRecord(result.value) ? result.value : null;
+}
 
 export function parseJsonWithPartialRecovery(input: string): JsonParseResult {
   const direct = parseJson(input);

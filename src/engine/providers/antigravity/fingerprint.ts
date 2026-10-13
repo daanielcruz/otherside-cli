@@ -2,10 +2,11 @@ import { providerEndpoint } from "@/devtools/config.ts";
 import type { WireFingerprint } from "@/engine/contract/types.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 
-// The model catalog is version-gated server-side: a 1.1.4 client never sees
-// the gemini-3.7 tier entries and is told 3.6 is the default. Keep this pinned
-// to the installed Antigravity CLI release.
-export const CLI_VERSION = "1.1.13";
+// The model catalog is version-gated server-side: a 1.1.13 client never sees
+// the gemini-4-argon entries. Keep both pinned to the installed Antigravity CLI
+// release; the changelist is the build number that release reports.
+export const CLI_VERSION = "1.3.4";
+const CLI_CHANGELIST = "998275202";
 
 export const PROD_HOST = "https://cloudcode-pa.googleapis.com";
 export const DAILY_HOST = "https://daily-cloudcode-pa.googleapis.com";
@@ -43,7 +44,7 @@ export function userAgent(): string {
   // `auth_method=consumer` entered the UA at 1.0.16; our OAuth path is always the
   // consumer installed-app client (personal Google account → GOOGLE_ONE_AI credits),
   // never workspace/enterprise, so the segment is fixed.
-  return `antigravity/cli/${CLI_VERSION} (aidev_client; os_type=${goos()}; arch=${goarch()}; auth_method=consumer)`;
+  return `antigravity/cli/${CLI_VERSION} (aidev_client; os_type=${goos()}; arch=${goarch()}; cl=${CLI_CHANGELIST}; auth_method=consumer)`;
 }
 
 export function backendHost(): string {
@@ -92,6 +93,7 @@ export interface CloudCodeEnvelopeInput {
 export interface RequestIdInput {
   conversationId: string;
   trajectoryId: string;
+  /** The step this request adds to the trajectory: the last step index plus one. */
   turn: number;
 }
 

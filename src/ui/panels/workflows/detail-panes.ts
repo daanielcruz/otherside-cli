@@ -1,5 +1,6 @@
 import type { MergedPhase } from "@/engine/background/workflows/runtime/progress/merge.ts";
 import type { WorkflowAgentStatus } from "@/engine/background/workflows/runtime/store/types.ts";
+import { computeRowBudgetWindow } from "@/kernel/std/list-window.ts";
 import { pluralize } from "@/kernel/std/text/pluralize.ts";
 import { renderTextWithStyles } from "@/terminal-runtime/text/color-codes.js";
 import { agentStatusGlyph } from "@/ui/chrome/progress/glyphs.ts";
@@ -120,6 +121,41 @@ export function agentPaneRows(input: {
         : "")
     );
   });
+}
+
+/** A list column cut to the rows it may show, and where that cut now starts. */
+export interface FittedListRows {
+  rows: string[];
+  start: number;
+}
+
+/**
+ * Keep a one-row-per-item list inside `height` rows with its cursor row in view. The
+ * cut slides only when the cursor leaves it, and says how much it hides on each side.
+ */
+export function fitListRows(input: {
+  rows: readonly string[];
+  cursor: number;
+  height: number;
+  previousStart: number;
+}): FittedListRows {
+  const { rows, cursor, height, previousStart } = input;
+  const window = computeRowBudgetWindow({
+    cursor,
+    itemRows: rows.map(() => 1),
+    budgetRows: Math.max(1, height),
+    previousStart,
+  });
+  const marker = (text: string | undefined): string[] =>
+    text === undefined ? [] : [renderTextWithStyles(text, { color: Color.muted })];
+  return {
+    rows: [
+      ...marker(window.markerAbove),
+      ...rows.slice(window.from, window.to),
+      ...marker(window.markerBelow),
+    ],
+    start: window.from,
+  };
 }
 
 /** A phase named with the size of what it holds, for a column heading. */

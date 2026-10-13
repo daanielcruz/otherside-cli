@@ -1,4 +1,3 @@
-import { readFile } from "node:fs/promises";
 import type { SlashCommand, SlashKind } from "@/commands/catalog.ts";
 import { handleAddDir } from "@/commands/handlers/add-dir.ts";
 import { handleCd } from "@/commands/handlers/cd.ts";
@@ -14,8 +13,7 @@ import { handleMarketplace, handlePlugins } from "@/commands/handlers/plugins.ts
 import { handleReload } from "@/commands/handlers/reload.ts";
 import type { SlashContext, SlashHandler, SlashResult } from "@/commands/types.ts";
 import { getProviderConfig } from "@/engine/contract/registry.ts";
-import { ensureRuntimeModel, findModel } from "@/engine/model/catalog.ts";
-import { activePlanFilePath } from "@/engine/tools/plan-gate.ts";
+import { ensureRuntimeModel, findModel, parseQualifiedRoute } from "@/engine/model/catalog.ts";
 import { updateConfig } from "@/kernel/config/config.ts";
 import {
   ORCHESTRATION_MODE_VALUES,
@@ -63,41 +61,6 @@ async function handleExit(
 function handleClear(cmd: SlashCommand, _args: string, ctx: SlashContext): SlashResult {
   ctx.clearTranscript();
   return { kind: "instant", command: cmd, feedback: "(no content)" };
-}
-
-function currentPlanFeedback(filePath: string, content: string): string {
-  const plan = content.trimEnd();
-  return [
-    "Current Plan",
-    filePath,
-    "",
-    plan.length > 0 ? plan : "No plan has been written yet.",
-    "",
-    '"/plan open" to edit this plan',
-  ].join("\n");
-}
-
-// Enter-only: exiting plan is the leader's own call (ExitPlanMode, or the
-// interactive escalation), never a silent side effect of re-running /plan.
-// When already active, /plan remains entirely local and renders the session's
-// current plan file instead of starting a model turn.
-async function handlePlan(
-  cmd: SlashCommand,
-  _args: string,
-  ctx: SlashContext,
-): Promise<SlashResult> {
-  const state = ctx.broker.read();
-  if (state.permissionMode === "plan") {
-    const filePath = activePlanFilePath(ctx.session.id);
-    const content = await readFile(filePath, "utf8").catch(() => "");
-    return {
-      kind: "toggle",
-      command: cmd,
-      feedback: currentPlanFeedback(filePath, content),
-    };
-  }
-  ctx.broker.dispatch({ kind: "set_permission_mode", mode: "plan" });
-  return { kind: "toggle", command: cmd, feedback: "Entered plan mode" };
 }
 
 function handleFast(cmd: SlashCommand, _args: string, ctx: SlashContext): SlashResult {
@@ -212,8 +175,11 @@ function handleModel(cmd: SlashCommand, args: string, ctx: SlashContext): SlashR
     return { kind: "panel", command: cmd };
   }
   const state = ctx.broker.read();
-  const resolved = findModel({ provider: state.provider, model: requested });
-  const entry = resolved ?? ensureRuntimeModel(requested, state.provider);
+  const qualified = parseQualifiedRoute(requested);
+  const targetProvider = qualified?.provider ?? state.provider;
+  const targetModel = qualified?.model ?? requested;
+  const resolved = findModel({ provider: targetProvider, model: targetModel });
+  const entry = resolved ?? ensureRuntimeModel(targetModel, targetProvider);
   const provider = entry.provider;
   const providerLabel = providerDisplayName(provider);
   const display = resolved
@@ -292,7 +258,6 @@ export const HANDLERS: Record<string, SlashHandler> = {
   exit: handleExit,
   quit: handleExit,
   clear: handleClear,
-  plan: handlePlan,
   fast: handleFast,
   parallel: handleParallel,
   multiprovider: handleMultiprovider,

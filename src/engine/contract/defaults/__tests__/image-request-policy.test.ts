@@ -23,7 +23,7 @@ const ROUTE_EXPECTATIONS: Array<{
     policy: { maxEdge: 2000, maxRawBytes: 786_432, maxPixels: 4_000_000 },
   },
   {
-    route: { provider: "codex", model: "gpt-5.5" },
+    route: { provider: "codex", model: "gpt-5.6-terra" },
     policy: { maxEdge: 2048, maxRawBytes: 786_432, maxPixels: 2_560_000 },
   },
   {
@@ -31,7 +31,7 @@ const ROUTE_EXPECTATIONS: Array<{
     policy: { maxEdge: 2000, maxRawBytes: 512_000, maxPixels: 4_000_000 },
   },
   {
-    route: { provider: "xai", model: "grok-4.5" },
+    route: { provider: "xai", model: "grok-4.6" },
     policy: { maxEdge: 2000, maxRawBytes: 786_432, maxPixels: 2_400_000 },
   },
 ];
@@ -76,7 +76,7 @@ describe("imageRequestPolicyFor", () => {
   });
 
   it("does not apply the Anthropic many-image edge to other providers", () => {
-    const route = { provider: "codex" as const, model: "gpt-5.5" };
+    const route = { provider: "codex" as const, model: "gpt-5.6-terra" };
     expect(imageRequestPolicyFor(route, { imageCount: 100 }).maxEdge).toBe(2048);
   });
 });

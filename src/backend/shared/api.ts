@@ -1,4 +1,4 @@
-import { currentUserId, forceRefreshAuth, loadFreshAuth } from "./auth.ts";
+import { authUnavailableReason, currentUserId, forceRefreshAuth, loadFreshAuth } from "./auth.ts";
 import { CortexApiError, cortexFetch } from "./cortex.ts";
 import type { SessionWrap } from "./e2ee.ts";
 
@@ -13,34 +13,51 @@ export class RemoteApiError extends Error {
   }
 }
 
-export async function callCortex<T>(
-  path: string,
-  body: unknown,
+function authUnavailableError(): RemoteApiError {
+  switch (authUnavailableReason()) {
+    case "signed_out":
+      return new RemoteApiError("unauthorized", "CLI is not paired — run /remote pair", "");
+    case "rejected":
+      return new RemoteApiError(
+        "unauthorized",
+        "sign-in expired — run /remote pair to sign in again",
+        "",
+      );
+    case "refresh_pending":
+      return new RemoteApiError("auth_pending", "sign-in refresh pending — retrying", "");
+  }
+}
+
+/** Run an authenticated request, refreshing once when the server rejects the token. */
+export async function withAccessToken<T>(
+  run: (accessToken: string) => Promise<T>,
   rejectedAccessToken?: string,
 ): Promise<T> {
   const auth = rejectedAccessToken
     ? await forceRefreshAuth(rejectedAccessToken)
     : await loadFreshAuth();
-  if (!auth) {
-    throw new RemoteApiError("unauthorized", "CLI is not paired — run /remote pair", "");
-  }
+  if (!auth) throw authUnavailableError();
   try {
-    return await cortexFetch<T>(path, {
+    return await run(auth.accessToken);
+  } catch (err) {
+    if (!(err instanceof CortexApiError)) throw err;
+    if (err.code === "unauthorized" && !rejectedAccessToken) {
+      return withAccessToken(run, auth.accessToken);
+    }
+    throw new RemoteApiError(err.code, err.message, err.requestId);
+  }
+}
+
+export function callCortex<T>(path: string, body: unknown): Promise<T> {
+  return withAccessToken((accessToken) =>
+    cortexFetch<T>(path, {
       method: "POST",
-      token: auth.accessToken,
+      token: accessToken,
       body,
       idempotencyKey: crypto.randomUUID(),
       client: "cli",
-    });
-  } catch (err) {
-    if (err instanceof CortexApiError) {
-      if (err.code === "unauthorized" && !rejectedAccessToken) {
-        return callCortex<T>(path, body, auth.accessToken);
-      }
-      throw new RemoteApiError(err.code, err.message, err.requestId);
-    }
-    throw err;
-  }
+    }),
+  );
 }
 
 export const SESSION_EVENTS_TIMEOUT_MS = 10_000;
@@ -66,36 +83,24 @@ export interface SessionEventPageOptions {
   after?: SessionEventCursor;
 }
 
-export async function listSessionEvents(
+export function listSessionEvents(
   sessionId: string,
   options: SessionEventPageOptions = {},
 ): Promise<SessionEventRow[]> {
-  const auth = await loadFreshAuth();
-  if (!auth) {
-    throw new RemoteApiError("unauthorized", "CLI is not paired — run /remote pair", "");
-  }
   const query = new URLSearchParams();
   query.set("limit", String(options.limit ?? 50));
   if (options.after) {
     query.set("after_ts", options.after.ts);
     query.set("after_id", options.after.id);
   }
-  try {
-    return await cortexFetch<SessionEventRow[]>(
-      `/v1/sessions/${sessionId}/events?${query.toString()}`,
-      {
-        method: "GET",
-        token: auth.accessToken,
-        client: "cli",
-        signal: AbortSignal.timeout(SESSION_EVENTS_TIMEOUT_MS),
-      },
-    );
-  } catch (err) {
-    if (err instanceof CortexApiError) {
-      throw new RemoteApiError(err.code, err.message, err.requestId);
-    }
-    throw err;
-  }
+  return withAccessToken((accessToken) =>
+    cortexFetch<SessionEventRow[]>(`/v1/sessions/${sessionId}/events?${query.toString()}`, {
+      method: "GET",
+      token: accessToken,
+      client: "cli",
+      signal: AbortSignal.timeout(SESSION_EVENTS_TIMEOUT_MS),
+    }),
+  );
 }
 
 export interface RegisterEnvironmentInput {

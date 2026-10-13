@@ -1,3 +1,4 @@
+import { applyTokens } from "@/harness/composer/tokens.ts";
 import {
   buildMultiproviderToolSection,
   type ResolvedTierRoster,
@@ -7,8 +8,9 @@ import { isAgentAutoBackgroundEnabled } from "@/kernel/config/agent-auto-backgro
 
 // Auto-background rewrites the launch-semantics prose at compose time so the
 // static JSON stays byte-identical for the env-disabled path. Swap targets:
-// the "## Foreground vs background" section (body + offAddendum) and the two
-// usage bullets (foreground-vs-background, optional-background).
+// the "## Foreground vs background" section (body + offAddendum), the two
+// usage bullets (foreground-vs-background, optional-background), and the lean
+// bullet naming `run_in_background`, which the schema drops.
 const BACKGROUND_SECTION = `## Background execution
 
 Agents always run in the **background**: the tool returns immediately with a task id, and the agent's result arrives later as a completion notification (a user-role message in a later turn). The launch tool result is only a receipt — never treat it as the agent's answer.
@@ -27,12 +29,15 @@ const OPTIONAL_BACKGROUND_BULLET =
   "- You can optionally run agents in the background using the run_in_background parameter. When an agent runs in the background, you will be automatically notified when it completes — do NOT sleep, poll, or proactively check on its progress. Continue with other work or respond to the user instead.";
 const ALWAYS_BACKGROUND_BULLET =
   "- Agents always run in the background. When an agent runs in the background, you will be automatically notified when it completes — do NOT sleep, poll, or proactively check on its progress. Continue with other work or respond to the user instead.";
+const LEAN_OPTIONAL_BACKGROUND_BULLET =
+  "\n- `run_in_background: true` runs the agent asynchronously; you'll be notified when it completes.";
 
 export function applyBackgroundDefault(text: string): string {
   if (!isAgentAutoBackgroundEnabled()) return text;
   const out = text
     .replace(FOREGROUND_BULLET, BACKGROUND_BULLET)
-    .replace(OPTIONAL_BACKGROUND_BULLET, ALWAYS_BACKGROUND_BULLET);
+    .replace(OPTIONAL_BACKGROUND_BULLET, ALWAYS_BACKGROUND_BULLET)
+    .replace(LEAN_OPTIONAL_BACKGROUND_BULLET, "");
   const marker = "## Foreground vs background";
   const start = out.indexOf(marker);
   if (start === -1) return out;
@@ -50,10 +55,22 @@ function stripForkGuidance(text: string): string {
   return `${text.slice(0, start)}${text.slice(end)}`.replace(/\n{3,}/g, "\n\n");
 }
 
-export function buildAgentDescription(opts: { lean?: boolean; mainAgent?: boolean } = {}): string {
-  const base = (
-    (opts.lean ?? true) ? tool.description.base.lean : tool.description.base.full
-  ).trimEnd();
+export interface AgentDescriptionOptions {
+  lean?: boolean;
+  mainAgent?: boolean;
+  /** Open "When to use" with what a delegated agent costs before when to reach for one. */
+  delegationCostFirst?: boolean;
+}
+
+export function buildAgentDescription(opts: AgentDescriptionOptions = {}): string {
+  const base = applyTokens(
+    ((opts.lean ?? true) ? tool.description.base.lean : tool.description.base.full).trimEnd(),
+    {
+      "{{WHEN_TO_USE}}": opts.delegationCostFirst
+        ? tool.description.whenToUse.costFirst
+        : tool.description.whenToUse.standard,
+    },
+  );
   const description = applyBackgroundDefault(`${base}\n\n${tool.description.offAddendum}`);
   return opts.mainAgent === false ? stripForkGuidance(description) : description;
 }

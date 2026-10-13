@@ -7,7 +7,7 @@ import { DEFAULT_CONFIG } from "@/kernel/config/config.ts";
 function sampleContext(): LayerContext {
   return {
     provider: "anthropic",
-    model: "claude-opus-4-8",
+    model: "claude-opus-5-5",
     effort: null,
     permissionMode: "default",
     sessionId: "sess-fixture",
@@ -26,9 +26,9 @@ function sampleContext(): LayerContext {
     modelFamily: "other" as const,
     currentDate: "2026-06-22",
     gitStatus: "On branch main",
-    modelDisplayName: "Opus 4.8",
+    modelDisplayName: "Opus 5.5",
     availableModels: [],
-    knowledgeCutoff: "January 2026",
+    knowledgeCutoff: "June 2026",
     agentRows: [
       {
         agentType: "Explore",
@@ -66,9 +66,9 @@ describe("harness compose snapshot", () => {
     const env = blockText(harness.systemBlocks, "# Environment");
     expect(env).toBeDefined();
     expect(env).toContain(
-      " - You are powered by the model named Opus 4.8. The exact model ID is claude-opus-4-8.",
+      " - You are powered by the model named Opus 5.5. The exact model ID is claude-opus-5-5.",
     );
-    expect(env).toContain(" - Assistant knowledge cutoff is January 2026.");
+    expect(env).toContain(" - Assistant knowledge cutoff is June 2026.");
     expect(env).not.toContain("Models on this provider, by tier");
     expect(env).toContain(
       " - otherside is available as a CLI in the terminal, with a companion mobile app (iOS/Android) for remote pairing and steering sessions on the go.",

@@ -15,7 +15,6 @@ import {
 } from "./mcp/mcp_resources.ts";
 import { ToolSearch } from "./mcp/toolsearch.ts";
 import { MISSING_MCP_TOOLS_WAITER } from "./mcp/wait_for_mcp_servers.ts";
-import { EnterPlanMode, ExitPlanMode } from "./plan.ts";
 import { Read } from "./read/read.ts";
 import { ReportFindings } from "./report-findings.ts";
 import { ScheduleWakeup } from "./schedule-wakeup.ts";
@@ -54,9 +53,7 @@ export const BUILTINS: ToolHandler[] = [
   CronList,
   CronDelete,
   NotebookEdit,
-  EnterPlanMode,
   EnterWorktree,
-  ExitPlanMode,
   ExitWorktree,
   AskUserQuestion,
   LSP,

@@ -35,6 +35,8 @@ import {
 export interface InstallResult {
   success: boolean;
   message: string;
+  /** False when the request succeeded but left the installed payload as it was. */
+  changed?: boolean;
   pluginName?: string;
   identity?: string;
   version?: string;

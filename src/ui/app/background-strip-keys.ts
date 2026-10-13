@@ -234,9 +234,9 @@ export function activateBackgroundSelection(): boolean {
   const workflowIndex = view.panelSelection - (hasMainRow ? agents.length + 1 : 0);
   const workflow = activeWorkflows()[workflowIndex];
   if (workflow !== undefined) {
-    dispatch({ type: "view/setWorkflowDetailTarget", id: workflow.id });
     dispatch({ type: "view/setPanelFocused", focused: false });
-    overlayStack.open("workflows");
+    // The row names one run, so its detail opens directly rather than the list.
+    overlayStack.open("workflows", { initialDetailItemId: workflow.id });
     return true;
   }
   // Nothing here answers to the key. The rows this focus was given to are gone — the

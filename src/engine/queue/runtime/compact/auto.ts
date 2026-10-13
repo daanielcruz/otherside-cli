@@ -27,12 +27,7 @@ import {
 } from "@/engine/session/compact/summary.ts";
 import { estimateTokens } from "@/engine/session/compact/token-count.ts";
 import { pruneToolOutputArchiveForSession } from "@/engine/session/compact/tool-output-archive-prune.ts";
-import {
-  appendRecord,
-  nowIso,
-  restampSessionTitles,
-  sessionPathForCwd,
-} from "@/engine/session/index.ts";
+import { appendRecord, nowIso, sessionPathForCwd } from "@/engine/session/index.ts";
 import { MAIN_SCOPE, readSetClearExcept } from "@/engine/tools/builtins/read/state.ts";
 import { assembleProviderTurn, type ProviderToolDeclaration } from "@/engine/translator/index.ts";
 import type { ComposedHarness } from "@/harness/composer/injections.ts";
@@ -48,6 +43,7 @@ import type { AgentEvent, ProviderEvent } from "@/kernel/std/types/events.ts";
 import type { Message } from "@/kernel/std/types/message.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 import {
+  afterCompactionBoundary,
   type CompactOrchestrationDeps,
   type CompactState,
   computeUsedContextTokens,
@@ -264,10 +260,8 @@ export async function* maybeCompact(deps: CompactOrchestrationDeps): AsyncIterab
     const preservedImages = collectImageBlocks(deps.agentDeps.session.messages).slice(
       -POST_COMPACT_MAX_IMAGES,
     );
-    const { blocks: rehydrationBlocks, restoredFiles } = buildPostCompactRehydration(
-      state.permissionMode,
-      preservedImages,
-    );
+    const { blocks: rehydrationBlocks, restoredFiles } =
+      buildPostCompactRehydration(preservedImages);
     const newAutoMessages: Message[] = [
       { role: "user", content: [{ type: "text", text: summaryMessage }] },
     ];
@@ -297,9 +291,7 @@ export async function* maybeCompact(deps: CompactOrchestrationDeps): AsyncIterab
       ...(preservedImages.length > 0 ? { preservedImages } : {}),
     });
     boundaryAppended = true;
-    void restampSessionTitles(
-      sessionPathForCwd(deps.agentDeps.session.storageCwd, deps.agentDeps.session.id),
-    ).catch(() => {});
+    afterCompactionBoundary(deps.agentDeps.session);
 
     deps.agentDeps.session.messages.splice(
       0,
@@ -333,6 +325,7 @@ export async function* maybeCompact(deps: CompactOrchestrationDeps): AsyncIterab
         trigger: "auto",
       },
     });
+    provider.onCompactionSucceeded?.(ctx);
     yield {
       kind: "compact_done",
       mode: "summary",

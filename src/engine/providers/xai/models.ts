@@ -3,13 +3,13 @@ import type { EffortLevel } from "@/kernel/std/types/effort.ts";
 
 // SoT for Grok's roster. Ids, windows, and reasoning-effort support come from
 // `xai-org/grok-build` `default_models.json` and the live `grok models` roster.
-// grok-4.6 is the reasoning flagship (adds wire-level `xhigh`); grok-4.5 stays
-// selectable; grok-composer-2.5-fast is the fast coding model and does NOT
-// accept the reasoning/effort parameters.
+// grok-4.7 is the reasoning flagship and grok-4.6 stays selectable; both accept
+// wire-level `xhigh`. grok-composer-2.5-fast is the fast coding model and does
+// NOT accept the reasoning/effort parameters.
 export const GROK_MODELS: readonly ModelEntry[] = [
   {
-    id: "grok-4.6",
-    displayName: "Grok 4.6",
+    id: "grok-4.7",
+    displayName: "Grok 4.7",
     contextWindow: 500_000,
     autoCompactTokenLimit: 467_000,
     provider: "xai",
@@ -17,12 +17,12 @@ export const GROK_MODELS: readonly ModelEntry[] = [
     defaultEffort: "high",
   },
   {
-    id: "grok-4.5",
-    displayName: "Grok 4.5",
+    id: "grok-4.6",
+    displayName: "Grok 4.6",
     contextWindow: 500_000,
     autoCompactTokenLimit: 467_000,
     provider: "xai",
-    efforts: ["low", "medium", "high"],
+    efforts: ["low", "medium", "high", "xhigh"],
     defaultEffort: "high",
   },
   {

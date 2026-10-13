@@ -21,11 +21,10 @@ export function isDispatchableForkTool(
   name: string,
   allowSet: Set<string> | null,
   opts: {
-    permissionMode?: "default" | "accept-edits" | "plan" | "yolo";
     ownerScope: string | undefined;
   },
 ): boolean {
-  if (isForkDisallowedTool(name, opts.permissionMode)) return false;
+  if (isForkDisallowedTool(name)) return false;
   if (allowSet === null || allowSet.has(name)) return true;
   return allowSet.has("ToolSearch") && activeDeferredToolNames(opts.ownerScope).includes(name);
 }
@@ -36,7 +35,7 @@ export function isAllowedInForkDeclarations(
   spec: ForkSpec,
   ownerScope?: string,
 ): boolean {
-  if (isForkDisallowedTool(name, spec.permissionMode)) return false;
+  if (isForkDisallowedTool(name)) return false;
   if (name === "Agent" && !spec.allowNestedAgents) return false;
   if (SPAWNABLE_NESTED_TOOLS.has(name)) {
     return (

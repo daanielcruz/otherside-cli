@@ -3,11 +3,16 @@ import { isAbortMessage, type SlashContext, type SlashResult } from "@/commands/
 import type { ProviderEvent } from "@/kernel/std/types/events.ts";
 
 function buildCompactEventHandler(ctx: SlashContext): ((ev: ProviderEvent) => void) | undefined {
-  const { onCompactRetry, onCompactProgress } = ctx;
+  const { onCompactRetry, onCompactRetrySettled, onCompactProgress } = ctx;
   if (!onCompactRetry && !onCompactProgress) return undefined;
+  let retrying = false;
   return (ev) => {
-    if (ev.kind === "retry_status" && onCompactRetry) {
-      onCompactRetry(ev.attempt, ev.maxAttempts, ev.delayMs, ev.reason);
+    if (ev.kind === "retry_status") {
+      retrying = true;
+      onCompactRetry?.(ev.attempt, ev.maxAttempts, ev.delayMs, ev.reason);
+    } else if (retrying) {
+      retrying = false;
+      onCompactRetrySettled?.();
     }
     if (ev.kind === "text_delta" && onCompactProgress) {
       onCompactProgress(ev.text.length);

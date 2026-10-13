@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path/posix";
 import { resolveTaskLogPath } from "@/engine/background/tasks/output-files.ts";
+import { shellDeadlineNotice } from "@/engine/background/tasks/shell-deadline.ts";
 import { canSendNatively } from "@/engine/model/facts/capabilities-runtime.ts";
 import { annotateStderrWithSandboxDenials, cleanupAfterCommand } from "@/engine/sandbox/manager.ts";
 import {
@@ -26,8 +27,8 @@ import {
 } from "@/engine/tools/_infra/command-analysis/sed-edit.ts";
 import { maybeBuildStaleReadHint } from "@/engine/tools/_infra/command-analysis/stale-read.ts";
 import {
-  defaultShellTimeoutMs,
-  getMaxBashTimeoutMs,
+  backgroundTimeoutMs,
+  foregroundTimeoutMs,
 } from "@/engine/tools/_infra/command-analysis/timeouts.ts";
 import { parseImageDataUri } from "@/engine/tools/_infra/data-uri.ts";
 import {
@@ -287,7 +288,7 @@ export const Bash: ToolHandler = {
       login,
     } = await prepareExecCommand({ command, dangerouslyDisableSandbox, cwdFilePath });
 
-    let timeoutMs = defaultShellTimeoutMs();
+    let requestedTimeoutMs: number | null = null;
     if (args.timeout !== undefined && args.timeout !== null) {
       const n = typeof args.timeout === "number" ? args.timeout : Number(args.timeout);
       if (!Number.isFinite(n)) {
@@ -298,10 +299,11 @@ export const Bash: ToolHandler = {
         };
       }
       const floored = Math.floor(n);
-      if (floored > 0) timeoutMs = Math.min(floored, getMaxBashTimeoutMs());
+      if (floored > 0) requestedTimeoutMs = floored;
     }
 
     if (runInBackground) {
+      const deadlineMs = backgroundTimeoutMs(requestedTimeoutMs);
       const r = spawnBackground({
         execCommand: wrappedCommand,
         command,
@@ -310,6 +312,7 @@ export const Bash: ToolHandler = {
         isSidechain,
         cwd: executionCwd,
         login,
+        ...(deadlineMs !== undefined ? { timeoutMs: deadlineMs } : {}),
         ...(ctx.agentOwnerId !== undefined ? { ownerId: ctx.agentOwnerId } : {}),
         ...(ctx.sessionId !== undefined ? { sessionId: ctx.sessionId } : {}),
       });
@@ -323,6 +326,7 @@ export const Bash: ToolHandler = {
       };
     }
 
+    const timeoutMs = foregroundTimeoutMs(requestedTimeoutMs);
     const commandStartTimeMs = Date.now();
     const onStdout = makeBashProgressSink(ctx.progressSink, timeoutMs);
     const autoBgOutcome = await runForegroundWithAutoBg({
@@ -342,9 +346,13 @@ export const Bash: ToolHandler = {
       login,
     });
     if (autoBgOutcome.promoted) {
+      const deadlineNotice =
+        autoBgOutcome.deadlineMs !== undefined
+          ? ` ${shellDeadlineNotice(autoBgOutcome.deadlineMs)}`
+          : "";
       return {
         tool_use_id: call.id,
-        content: `Command moved to the background with ID: ${autoBgOutcome.shellId}. ${autoBgOutcome.reason}. You will be notified when it completes. Output is being written to: ${resolveTaskLogPath(autoBgOutcome.shellId)}.`,
+        content: `Command moved to the background with ID: ${autoBgOutcome.shellId}. ${autoBgOutcome.reason}. You will be notified when it completes. Output is being written to: ${resolveTaskLogPath(autoBgOutcome.shellId)}.${deadlineNotice}`,
         meta: { kind: "bash", status: "background", shell_id: autoBgOutcome.shellId },
       };
     }

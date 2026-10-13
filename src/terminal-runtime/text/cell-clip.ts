@@ -10,5 +10,9 @@ import { stringWidth } from "@/terminal-runtime/text/cell-width.js";
 export function cellClip(line: string, max: number): string {
   const width = Math.max(0, max);
   if (stringWidth(line) <= width) return line;
-  return `${truncateAnsiString(line, 0, Math.max(0, width - 1))}…`;
+  const room = Math.max(0, width - 1);
+  const head = truncateAnsiString(line, 0, room);
+  // The slice keeps a wide glyph that straddles the cut whole, one cell past the room.
+  const fitted = stringWidth(head) > room ? truncateAnsiString(line, 0, room - 1) : head;
+  return `${fitted}…`;
 }

@@ -5,6 +5,7 @@ import type { SessionRecord } from "@/engine/session/record/index.ts";
 import type { ToolHandler } from "@/engine/tools/contract.ts";
 import type { ProviderToolDeclaration } from "@/engine/translator/index.ts";
 import type { McpServerSpec } from "@/kernel/mcp/index.ts";
+import type { EffortLevel } from "@/kernel/std/types/effort.ts";
 import type { DrainedQueuedMessage, ForkEventSink } from "@/kernel/std/types/events.ts";
 import type { ContentBlock, Message } from "@/kernel/std/types/message.ts";
 import type { PermissionMode } from "@/kernel/std/types/permission-mode.ts";
@@ -22,6 +23,8 @@ export interface SubagentInvocation {
   providerOverride?: string | undefined;
   tierOverride?: string | undefined;
   tierRankOverride?: number | undefined;
+  /** The effort the caller asked this agent to run at, settled against the routed model. */
+  effortOverride?: EffortLevel | undefined;
   permissionMode?: PermissionMode | undefined;
   isolation?: "worktree" | undefined;
 }

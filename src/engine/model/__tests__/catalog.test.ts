@@ -32,10 +32,15 @@ describe("model catalog", () => {
     expect(missing).toEqual([]);
   });
 
-  it("exposes Opus 5 as the default Anthropic model", () => {
-    expect(modelsForProvider("anthropic").map((model) => model.id)[0]).toBe("claude-opus-5");
-    expect(findModel({ provider: "anthropic", model: "claude-opus-5" })).toMatchObject({
-      displayName: "Opus 5",
+  it("exposes Opus 5.5 as the default Anthropic model", () => {
+    expect(modelsForProvider("anthropic").map((model) => model.id)).toEqual([
+      "claude-opus-5-5",
+      "claude-fable-5-1",
+      "claude-sonnet-5-5",
+      "claude-haiku-5-5",
+    ]);
+    expect(findModel({ provider: "anthropic", model: "claude-opus-5-5" })).toMatchObject({
+      displayName: "Opus 5.5",
       contextWindow: 1_000_000,
       autoCompactTokenLimit: 967_000,
       supports1m: true,
@@ -43,12 +48,22 @@ describe("model catalog", () => {
       efforts: ["low", "medium", "high", "xhigh", "max"],
       defaultEffort: "high",
     });
-    expect(defaultModelForProvider("anthropic")).toBe("claude-opus-5");
+    expect(defaultModelForProvider("anthropic")).toBe("claude-opus-5-5");
+  });
+
+  it("defaults every Codex model to high without changing the default model", () => {
+    const models = modelsForProvider("codex");
+    expect(models.length).toBeGreaterThan(0);
+    for (const model of models) {
+      expect(defaultEffortForModel({ provider: "codex", model: model.id })).toBe("high");
+    }
+    expect(defaultEffortForModel({ provider: "codex", model: "gpt-custom" })).toBe("high");
+    expect(defaultModelForProvider("codex")).toBe("gpt-6-astra");
   });
 
   it("keeps an explicit effort-less default instead of the provider fallback", () => {
-    expect(defaultEffortForModel({ provider: "anthropic", model: "claude-haiku-4-5" })).toBeNull();
-    expect(defaultEffortForModel({ provider: "anthropic", model: "claude-opus-5" })).toBe("high");
+    expect(defaultEffortForModel({ provider: "xai", model: "grok-composer-2.5-fast" })).toBeNull();
+    expect(defaultEffortForModel({ provider: "anthropic", model: "claude-opus-5-5" })).toBe("high");
     expect(defaultEffortForModel({ provider: "anthropic", model: "not-in-the-catalog" })).toBe(
       "high",
     );
@@ -73,7 +88,20 @@ describe("model catalog", () => {
   it("resolves unique CLI model inputs to their provider", () => {
     expect(findUniqueModel("minimax-m2.7")?.provider).toBe("minimax");
     expect(findUniqueModel("deepseek-v4-pro")?.provider).toBe("deepseek");
-    expect(findUniqueModel("claude-opus-4-8")?.provider).toBe("anthropic");
+    expect(findUniqueModel("claude-sonnet-5-5")?.provider).toBe("anthropic");
+  });
+
+  it("keeps Opus routes distinct between inference and Cloud", () => {
+    expect(findUniqueModel("claude-opus-5-5")).toBeUndefined();
+    expect(findModel({ provider: "anthropic", model: "claude-opus-5-5" })?.provider).toBe(
+      "anthropic",
+    );
+    expect(findModel({ provider: "anthropic-cloud", model: "claude-opus-5-5" })?.provider).toBe(
+      "anthropic-cloud",
+    );
+    expect(modelsForProvider("anthropic-cloud").map((model) => model.id)).toEqual([
+      "claude-opus-5-5",
+    ]);
   });
 
   it("rejects an unqualified model owned by multiple providers", () => {
@@ -106,8 +134,10 @@ describe("model catalog", () => {
   });
 
   it("resolves a bare family shorthand inside one provider route", () => {
-    expect(findModel({ provider: "anthropic", model: "sonnet" })?.id).toBe("claude-sonnet-5");
-    expect(findModel({ provider: "anthropic", model: "haiku" })?.id).toBe("claude-haiku-4-5");
+    expect(findModel({ provider: "anthropic", model: "opus" })?.id).toBe("claude-opus-5-5");
+    expect(findModel({ provider: "anthropic", model: "fable" })?.id).toBe("claude-fable-5-1");
+    expect(findModel({ provider: "anthropic", model: "sonnet" })?.id).toBe("claude-sonnet-5-5");
+    expect(findModel({ provider: "anthropic", model: "haiku" })?.id).toBe("claude-haiku-5-5");
   });
 
   it("never infers a provider from a bare family shorthand", () => {
@@ -126,10 +156,10 @@ describe("model catalog", () => {
         trackingStatus: "tracked",
       },
     ]);
-    expect(providerRouteability("anthropic", undefined, "claude-haiku-4-5").usable).toBe(false);
+    expect(providerRouteability("anthropic", undefined, "claude-haiku-5-5").usable).toBe(false);
     // Display resolution never consults quota/availability state.
-    expect(findModel({ provider: "anthropic", model: "claude-haiku-4-5" })?.displayName).toBe(
-      "Haiku 4.5",
+    expect(findModel({ provider: "anthropic", model: "claude-haiku-5-5" })?.displayName).toBe(
+      "Haiku 5.5",
     );
   });
 });
@@ -145,7 +175,7 @@ describe("findFamilyMatch", () => {
   });
 
   it("resolves a bare family name naming exactly one model", () => {
-    const catalog = [build("claude-sonnet-5"), build("claude-haiku-4-5")];
+    const catalog = [build("claude-sonnet-5"), build("claude-haiku-5-5")];
     expect(findFamilyMatch(catalog, "sonnet")?.id).toBe("claude-sonnet-5");
   });
 
@@ -155,7 +185,7 @@ describe("findFamilyMatch", () => {
   });
 
   it("fails when two models in the catalog share the family name", () => {
-    const catalog = [build("claude-opus-4-8"), build("claude-opus-5")];
+    const catalog = [build("claude-opus-4-6-thinking"), build("claude-opus-5-5")];
     expect(findFamilyMatch(catalog, "opus")).toBeUndefined();
   });
 

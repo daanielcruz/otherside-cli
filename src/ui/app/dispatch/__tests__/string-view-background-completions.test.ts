@@ -5,11 +5,13 @@ import type {
   WorkflowTaskStatus,
 } from "@/engine/background/workflows/runtime/store/types.ts";
 import type { TranscriptEntry } from "@/engine/session/record/types.ts";
+import { stripAnsi } from "@/terminal-runtime/text/presentation-sequences.ts";
 import {
   activateStringViewBackgroundCompletions,
   backgroundTaskNoticeData,
   workflowTaskNoticeData,
 } from "@/ui/app/dispatch/string-view-background-completions.ts";
+import { entryLines } from "@/ui/transcript/entry-lines.ts";
 
 type BackgroundStatus = BackgroundTask["status"];
 type TaskCompletionListener = (task: BackgroundTask) => void;
@@ -286,6 +288,24 @@ describe("string-view background completion notices", () => {
     harness.completeTask(backgroundTask("agent", "completed"));
     harness.completeWorkflow(workflowTask("completed"));
     expect(harness.entries()).toHaveLength(0);
+  });
+
+  test("a command stopped at its time limit says so in the transcript", () => {
+    const stopped: BackgroundTask = {
+      ...backgroundTask("shell", "killed"),
+      description: "watch the build",
+      stopCause: "deadline",
+    };
+    const notice = backgroundTaskNoticeData(stopped);
+    expect(notice).toMatchObject({ stopCause: "deadline" });
+
+    const rows = entryLines(
+      { kind: "task_notice", text: JSON.stringify(notice), isError: false },
+      120,
+    ).map((row) => stripAnsi(row).trimEnd());
+    expect(rows[0]).toContain(
+      'Background command "watch the build" was stopped after reaching its background time limit',
+    );
   });
 
   test("notice payloads retain failure details, exit code, and duration", () => {

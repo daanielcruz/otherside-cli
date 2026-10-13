@@ -3,7 +3,12 @@ import { getPermissionResolver } from "@/engine/agents/agent-context.ts";
 import { dispatchSkillFork } from "@/engine/background/subagents/dispatcher.ts";
 import { recordPluginUse } from "@/engine/plugins/usage.ts";
 import { modelMayInvokeSkill } from "@/engine/skills/overrides.ts";
-import { availableNames, get as getSkill } from "@/engine/skills/registry.ts";
+import {
+  availableNames,
+  get as getSkill,
+  promptBody,
+  type Skill as SkillDefinition,
+} from "@/engine/skills/registry.ts";
 import { recordSkillUse } from "@/engine/skills/usage.ts";
 import type { ToolHandler } from "@/engine/tools/contract.ts";
 import {
@@ -13,7 +18,7 @@ import {
 } from "@/harness/core/memory-guidance/format.ts";
 import SkillSchema from "@/harness/tools/Skill/tool.json" with { type: "json" };
 import { ephemeralAwareProjectPath } from "@/kernel/std/fs/paths.ts";
-import { expandShellPrefix } from "@/kernel/std/proc/shell-prefix.ts";
+import { expandShellPrefix, hasShellPrefix } from "@/kernel/std/proc/shell-prefix.ts";
 import type { ToolCall, ToolResult } from "@/kernel/std/types/message.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 
@@ -31,6 +36,13 @@ export const Skill: ToolHandler = {
     name: SkillSchema.name,
     description: getSkillToolDescription({ lean: true }),
     inputSchema: SkillSchema.inputSchema,
+  },
+  // A skill hands the model instructions, so it runs without a prompt. One whose body
+  // runs shell commands as it expands asks first: nothing else checks those commands.
+  isPermissionFree(input: unknown): boolean {
+    const name = (input as SkillInput | null)?.skill;
+    const skill = typeof name === "string" ? getSkill(name) : undefined;
+    return skill !== undefined && !hasShellPrefix(skill.body);
   },
   async run(call: ToolCall, ctx: RequestContext): Promise<ToolResult> {
     const args = (call.input ?? {}) as SkillInput;
@@ -66,7 +78,7 @@ export const Skill: ToolHandler = {
       recordPluginUse(skill.name.slice(0, skill.name.lastIndexOf(":")));
 
     const userArgs = typeof args.args === "string" ? args.args : "";
-    const rendered = renderSkillBody(skill.body);
+    const rendered = skillInstructions(skill, userArgs);
     const body = await expandShellPrefix(rendered);
 
     if (skill.context === "fork") {
@@ -109,6 +121,11 @@ export function renderSkillSummaryReminder(skillName: string, output: string): s
     return `<system-reminder>\nThe skill fork (${skillName}) finished. Your next assistant reply must be a single concise line summarizing the outcome for the user. If the fork emitted findings, include the severity tally and any artifact paths. Do not add prose before or after the summary line.\n</system-reminder>`;
   }
   return `<system-reminder>\nThe skill fork (${skillName}) finished and wrote a report to ${reportPath}.\n\nYour next assistant reply MUST be a single concise line in this exact shape (no prose before or after):\n\nDone · ${skillName} · <severity counts read from fork output> · Report: ${reportPath}\n\nUse the severity tally from the fork output verbatim (e.g. "1 critical · 2 high · 4 medium · 3 low"). Do not rephrase, expand, or add commentary.\n</system-reminder>`;
+}
+
+/** A skill's instructions for the arguments it was invoked with, placeholders filled. */
+export function skillInstructions(skill: SkillDefinition, args: string): string {
+  return renderSkillBody(promptBody(skill, args));
 }
 
 export function renderSkillBody(body: string): string {

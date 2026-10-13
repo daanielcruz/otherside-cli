@@ -1,8 +1,8 @@
 import { readFileSync } from "node:fs";
 import { delimiter, resolve } from "node:path";
 import { findUniqueModel } from "@/engine/model/catalog.ts";
+import { type PermissionMode, parsePermissionMode } from "@/kernel/std/types/permission-mode.ts";
 import type { ProviderModelRoute } from "@/kernel/std/types/provider-ids.ts";
-import type { PermissionMode } from "@/kernel/std/types/request.ts";
 
 export type ThinkingDisplay = "summarized" | "omitted";
 
@@ -60,19 +60,15 @@ export type CliMode =
   | { kind: "error"; message: string; code: number };
 
 const PERMISSION_MODE_ALIASES: Record<string, PermissionMode> = {
-  default: "default",
-  "accept-edits": "accept-edits",
   acceptedits: "accept-edits",
   acceptEdits: "accept-edits",
-  plan: "plan",
-  yolo: "yolo",
   bypass: "yolo",
   bypassPermissions: "yolo",
 };
 
-function parsePermissionMode(raw: string | null): PermissionMode | null {
+function parseCliPermissionMode(raw: string | null): PermissionMode | null {
   if (raw === null) return null;
-  return PERMISSION_MODE_ALIASES[raw] ?? null;
+  return PERMISSION_MODE_ALIASES[raw] ?? parsePermissionMode(raw) ?? null;
 }
 
 function parseThinkingDisplay(raw: string | null): ThinkingDisplay | null {
@@ -85,7 +81,6 @@ function parseThinkingDisplay(raw: string | null): ThinkingDisplay | null {
 const PERMISSION_MODE_WIRE: Record<PermissionMode, string> = {
   default: "default",
   "accept-edits": "acceptEdits",
-  plan: "plan",
   yolo: "bypassPermissions",
 };
 
@@ -265,13 +260,13 @@ export function parseArgs(argv: string[]): CliMode {
   }
   applyCliFlagsToEnv(argv);
   const permissionModeRaw = optionValue(argv, "--permission-mode");
-  const permissionMode = parsePermissionMode(permissionModeRaw);
+  const permissionMode = parseCliPermissionMode(permissionModeRaw);
   // An explicitly-passed but unrecognized --permission-mode is a hard CLI error,
   // never a silent fallback to config default.
   if (permissionModeRaw !== null && permissionMode === null) {
     return {
       kind: "error",
-      message: `otherside: invalid --permission-mode "${permissionModeRaw}" (expected: default, acceptEdits, plan, bypassPermissions)`,
+      message: `otherside: invalid --permission-mode "${permissionModeRaw}" (expected: default, acceptEdits, bypassPermissions)`,
       code: 1,
     };
   }

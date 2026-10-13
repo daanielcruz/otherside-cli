@@ -7,6 +7,7 @@ import {
   type ProviderId,
   type ProviderModelRoute,
 } from "@/kernel/std/types/provider-ids.ts";
+import { nullableNonNegativeFiniteOrUndefined } from "@/kernel/std/value-guards.ts";
 import { recordsFromForeignLine } from "./foreign-line.ts";
 import type {
   AssistantMessageRecord,
@@ -336,7 +337,10 @@ function assistantUsageFromLine(
     stamp.thought_tokens > 0 ||
     stamp.cache_creation_input_tokens > 0 ||
     stamp.cache_read_input_tokens > 0;
-  if (!hasTokens && sidecar.requestCount === undefined) return undefined;
+  const contextTokens = nullableNonNegativeFiniteOrUndefined(sidecar.contextTokens);
+  if (contextTokens !== undefined) stamp.contextTokens = contextTokens;
+  if (!hasTokens && sidecar.requestCount === undefined && contextTokens === undefined)
+    return undefined;
   return stamp;
 }
 

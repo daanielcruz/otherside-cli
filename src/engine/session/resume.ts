@@ -1,3 +1,4 @@
+import { restoreSessionTasks } from "@/engine/background/cron/restore.ts";
 import { notifySubscribers as notifyTaskSubscribers } from "@/engine/background/tasks/index.ts";
 import {
   getActiveSessionId,
@@ -24,8 +25,12 @@ import {
   sessionBrokerStateKey,
   type UsageRecord,
 } from "@/engine/session/index.ts";
+import { restoreReadStateFromRecords } from "@/engine/session/read-state-restore.ts";
 import { isCompactionBoundary } from "@/engine/session/record/index.ts";
-import type { ToolOutputArchiveSessionRecord } from "@/engine/session/record/schema.ts";
+import type {
+  InjectionQueuedRecord,
+  ToolOutputArchiveSessionRecord,
+} from "@/engine/session/record/schema.ts";
 import type { TranscriptEntry } from "@/engine/session/record/types.ts";
 import {
   loadSystemInjectionsForSession,
@@ -359,6 +364,8 @@ export function hydrateSessionFromRecords(args: {
   session.hookEvents.splice(0, session.hookEvents.length);
   const hydratedMessages = messages ?? sanitizeMessages(sessionRecordsToMessages(modelRecords));
   session.messages.splice(0, session.messages.length, ...hydratedMessages);
+  restoreReadStateFromRecords(modelRecords);
+  restoreSessionTasks(modelRecords);
   const archiveRecords = records
     .filter(
       (record): record is ToolOutputArchiveSessionRecord => record.type === "content_replacement",
@@ -372,70 +379,65 @@ export function hydrateSessionFromRecords(args: {
   session.pendingMeta = null;
 }
 
-export function replayInjectionsFromRecords(
-  records: SessionRecord[],
-  agent: Agent,
-  systemInjections?: readonly SystemInjectionEntry[],
-): void {
-  agent.injections.drain();
-  let lastCompactIdx = -1;
+function lastCompactionBoundaryIndex(records: readonly SessionRecord[]): number {
   for (let i = records.length - 1; i >= 0; i -= 1) {
     const rec = records[i];
-    if (rec?.type === "compaction_mark" && isCompactionBoundary(rec)) {
-      lastCompactIdx = i;
-      break;
-    }
+    if (rec?.type === "compaction_mark" && isCompactionBoundary(rec)) return i;
   }
-  // A queued user input that reached the model was persisted as a later
-  // user_message (the queue drain records each delivered entry; the post-turn
-  // promotion delivers every drained entry as ONE user_message joined by
-  // "\n\n" in queue order). Replaying it again would re-deliver
-  // already-answered input into the next turn's wire request, so each
-  // delivery consumes the in-order pending entries that reconstruct its text
-  // exactly — one entry for a per-entry delivery or dequeue marker, several
-  // for a combined promotion — and only the leftovers replay. A partial
-  // reconstruction consumes nothing (never guess), and queued slash commands
-  // never reach the model as message text (the queue drain keeps them out of
-  // the drained batch), so they never replay either.
-  const undeliveredQueuedIdx = new Set<number>();
-  const pendingQueue: { idx: number; text: string }[] = [];
+  return -1;
+}
+
+/**
+ * The user input queued since the last compaction that no later record delivered or
+ * withdrew, oldest first.
+ *
+ * A queued user input that reached the model was persisted as a later user_message
+ * (the queue drain records each delivered entry; the post-turn promotion delivers
+ * every drained entry as ONE user_message joined by "\n\n" in queue order). Each
+ * delivery consumes the in-order pending entries that reconstruct its text exactly —
+ * one entry for a per-entry delivery or dequeue marker, several for a combined
+ * promotion. A partial reconstruction consumes nothing (never guess), and queued
+ * slash commands never reach the model as message text (the queue drain keeps them
+ * out of the drained batch), so they are never pending.
+ */
+export function pendingQueuedInput(records: readonly SessionRecord[]): InjectionQueuedRecord[] {
+  const queued: InjectionQueuedRecord[] = [];
+  const pending = new Set<InjectionQueuedRecord>();
   const consumeDelivery = (delivered: string): void => {
     // Whole-text match first: a per-entry delivery consumes its own entry even
     // when that entry contains "\n\n" (which the greedy split below could
     // otherwise mis-decompose against other pendings).
-    for (const pending of pendingQueue) {
-      if (!undeliveredQueuedIdx.has(pending.idx)) continue;
-      if (pending.text === delivered) {
-        undeliveredQueuedIdx.delete(pending.idx);
+    for (const entry of queued) {
+      if (pending.has(entry) && entry.text === delivered) {
+        pending.delete(entry);
         return;
       }
     }
-    const matched: number[] = [];
+    const matched: InjectionQueuedRecord[] = [];
     let pos = 0;
-    for (const pending of pendingQueue) {
-      if (!undeliveredQueuedIdx.has(pending.idx)) continue;
+    for (const entry of queued) {
+      if (!pending.has(entry)) continue;
       if (pos >= delivered.length) break;
-      if (!delivered.startsWith(pending.text, pos)) continue;
-      const end = pos + pending.text.length;
+      if (!delivered.startsWith(entry.text, pos)) continue;
+      const end = pos + entry.text.length;
       if (end === delivered.length) {
-        matched.push(pending.idx);
+        matched.push(entry);
         pos = end;
         break;
       }
       if (delivered.slice(end, end + 2) !== "\n\n") continue;
-      matched.push(pending.idx);
+      matched.push(entry);
       pos = end + 2;
     }
     if (pos !== delivered.length) return;
-    for (const idx of matched) undeliveredQueuedIdx.delete(idx);
+    for (const entry of matched) pending.delete(entry);
   };
-  for (let i = lastCompactIdx + 1; i < records.length; i += 1) {
+  for (let i = lastCompactionBoundaryIndex(records) + 1; i < records.length; i += 1) {
     const rec = records[i];
     if (rec?.type === "injection_queued") {
-      if (rec.source === "user") {
-        if (rec.text.trim().startsWith("/")) continue;
-        undeliveredQueuedIdx.add(i);
-        pendingQueue.push({ idx: i, text: rec.text });
+      if (rec.source === "user" && !rec.text.trim().startsWith("/")) {
+        queued.push(rec);
+        pending.add(rec);
       }
       continue;
     }
@@ -445,18 +447,51 @@ export function replayInjectionsFromRecords(
         : rec?.type === "injection_dequeued"
           ? rec.text
           : null;
-    if (delivered === null) continue;
-    consumeDelivery(delivered);
+    if (delivered !== null) consumeDelivery(delivered);
   }
+  return queued.filter((entry) => pending.has(entry));
+}
+
+/** Rebuilds the pending injections a resumed session still owes the model. */
+export function replayInjectionsFromRecords(
+  records: SessionRecord[],
+  agent: Agent,
+  systemInjections?: readonly SystemInjectionEntry[],
+): void {
+  replayInjections(records, agent, {
+    queuedInput: new Set(pendingQueuedInput(records)),
+    systemInjections,
+  });
+}
+
+/** Rebuilds only the system's pending injections, for records whose queued input was withdrawn. */
+export function replaySystemInjectionsFromRecords(
+  records: SessionRecord[],
+  agent: Agent,
+  systemInjections?: readonly SystemInjectionEntry[],
+): void {
+  replayInjections(records, agent, { queuedInput: new Set(), systemInjections });
+}
+
+function replayInjections(
+  records: SessionRecord[],
+  agent: Agent,
+  replay: {
+    queuedInput: ReadonlySet<InjectionQueuedRecord>;
+    systemInjections: readonly SystemInjectionEntry[] | undefined;
+  },
+): void {
+  agent.injections.drain();
+  const lastCompactIdx = lastCompactionBoundaryIndex(records);
   for (let i = lastCompactIdx + 1; i < records.length; i += 1) {
     const rec = records[i];
     if (rec?.type !== "injection_queued") continue;
-    if (rec.source === "user" && !undeliveredQueuedIdx.has(i)) continue;
+    if (rec.source === "user" && !replay.queuedInput.has(rec)) continue;
     agent.pushInjectionInMemoryOnly(rec.text);
   }
   const activeSessionId = getActiveSessionId();
   const storedSystemInjections =
-    systemInjections ??
+    replay.systemInjections ??
     (activeSessionId ? loadSystemInjectionsForSession(activeSessionId, process.cwd()) : []);
   for (const entry of systemInjectionsAfterCompact(
     storedSystemInjections,

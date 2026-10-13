@@ -2,6 +2,7 @@ import { applyTokens } from "@/harness/composer/tokens.ts";
 import tool from "@/harness/tools/Bash/tool.json" with { type: "json" };
 
 const MS_PER_MINUTE = 60_000;
+const MS_PER_HOUR = 3_600_000;
 
 export interface SandboxPromptInfo {
   enabled: boolean;
@@ -22,20 +23,43 @@ export interface SandboxPromptInfo {
     | undefined;
 }
 
-export interface BashDescriptionInput {
-  lean?: boolean;
-  sandbox: SandboxPromptInfo;
-  includeGit: boolean;
+export interface BashTimeoutLimits {
   defaultTimeoutMs: number;
   maxTimeoutMs: number;
+  defaultBackgroundTimeoutMs: number;
+  maxBackgroundTimeoutMs: number;
+  /** Whether a background shell is stopped at a time limit; the texts name it only then. */
+  backgroundDeadline: boolean;
 }
 
-function tokensFor(defaultTimeoutMs: number, maxTimeoutMs: number): Record<string, string> {
+type BackgroundDeadlineText = keyof typeof tool.backgroundDeadline;
+
+export interface BashDescriptionInput extends BashTimeoutLimits {
+  lean?: boolean;
+  /** Lean only: steer the model toward the dedicated file tools instead of shell reads. */
+  dedicatedToolSteer?: boolean;
+  sandbox: SandboxPromptInfo;
+  includeGit: boolean;
+}
+
+// Fills the timeout numbers into the Bash description and input schema. The
+// background-limit sentence goes in first so its own numbers are filled too.
+export function bashTimeoutTokens(
+  limits: BashTimeoutLimits,
+  deadlineText: BackgroundDeadlineText,
+): Record<string, string> {
   return {
-    "{{DEFAULT_TIMEOUT_MS}}": String(defaultTimeoutMs),
-    "{{MAX_TIMEOUT_MS}}": String(maxTimeoutMs),
-    "{{DEFAULT_TIMEOUT_MIN}}": String(defaultTimeoutMs / MS_PER_MINUTE),
-    "{{MAX_TIMEOUT_MIN}}": String(maxTimeoutMs / MS_PER_MINUTE),
+    "{{BACKGROUND_DEADLINE}}": limits.backgroundDeadline
+      ? tool.backgroundDeadline[deadlineText]
+      : "",
+    "{{DEFAULT_TIMEOUT_MS}}": String(limits.defaultTimeoutMs),
+    "{{MAX_TIMEOUT_MS}}": String(limits.maxTimeoutMs),
+    "{{DEFAULT_TIMEOUT_MIN}}": String(limits.defaultTimeoutMs / MS_PER_MINUTE),
+    "{{MAX_TIMEOUT_MIN}}": String(limits.maxTimeoutMs / MS_PER_MINUTE),
+    "{{DEFAULT_BACKGROUND_TIMEOUT_MS}}": String(limits.defaultBackgroundTimeoutMs),
+    "{{MAX_BACKGROUND_TIMEOUT_MS}}": String(limits.maxBackgroundTimeoutMs),
+    "{{DEFAULT_BACKGROUND_TIMEOUT_MIN}}": String(limits.defaultBackgroundTimeoutMs / MS_PER_MINUTE),
+    "{{MAX_BACKGROUND_TIMEOUT_HOURS}}": String(limits.maxBackgroundTimeoutMs / MS_PER_HOUR),
   };
 }
 
@@ -93,8 +117,13 @@ function buildSandboxSection(sandbox: SandboxPromptInfo): string {
   return lines.join("\n");
 }
 
-function composeBashPrompt(base: string, git: string, input: BashDescriptionInput): string {
-  const tokens = tokensFor(input.defaultTimeoutMs, input.maxTimeoutMs);
+function composeBashPrompt(
+  base: string,
+  git: string,
+  input: BashDescriptionInput,
+  deadlineText: BackgroundDeadlineText,
+): string {
+  const tokens = bashTimeoutTokens(input, deadlineText);
   const sandboxSection = buildSandboxSection(input.sandbox);
   const parts = [applyTokens(base, tokens).trimEnd()];
   if (sandboxSection.length > 0) parts.push("", sandboxSection);
@@ -103,6 +132,12 @@ function composeBashPrompt(base: string, git: string, input: BashDescriptionInpu
 }
 
 export function buildBashDescription(input: BashDescriptionInput): string {
-  if (input.lean) return composeBashPrompt(tool.description.lean, tool.description.gitLean, input);
-  return composeBashPrompt(tool.description.full, tool.description.git, input);
+  if (!input.lean) {
+    return composeBashPrompt(tool.description.full, tool.description.git, input, "full");
+  }
+  const lean = applyTokens(tool.description.lean, {
+    "{{DEDICATED_TOOL_STEER}}":
+      (input.dedicatedToolSteer ?? true) ? tool.description.leanDedicatedToolSteer : "",
+  });
+  return composeBashPrompt(lean, tool.description.gitLean, input, "lean");
 }

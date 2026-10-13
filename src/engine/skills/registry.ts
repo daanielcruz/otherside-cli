@@ -17,6 +17,8 @@ export interface Skill {
   skillRoot?: string;
   /** The skill's own frontmatter opts out of model invocation (author lock). */
   authorModelLock: boolean;
+  /** Instructions that depend on the arguments; absent means the body as written. */
+  promptFor?: (args: string) => string;
 }
 
 const registry = createRegistry<Skill>({
@@ -50,6 +52,11 @@ export function replaceSnapshot(next: SkillRegistrySnapshot): void {
 
 export function clear(): void {
   registry.clear();
+}
+
+/** A skill's words for the arguments it was invoked with. */
+export function promptBody(skill: Skill, args: string): string {
+  return skill.promptFor ? skill.promptFor(args) : skill.body;
 }
 
 export function lookupInvocableBody(name: string): string | null {

@@ -200,24 +200,24 @@ describe("resolveTierDetailed routing diagnostics", () => {
     ).toBe(false);
   });
 
-  it("surfaces an Opus 5 model cooldown and falls through to the next emperor", () => {
+  it("surfaces an Opus 5.5 model cooldown and falls through to the next emperor", () => {
     const until = Date.now() + 60_000;
-    markProviderCooldown("anthropic", until, "rate_limited", "claude-opus-5");
+    markProviderCooldown("anthropic", until, "rate_limited", "claude-opus-5-5");
 
     const detail = resolveTierDetailed("emperor");
-    const opus = detail.candidates.find((candidate) => candidate.model === "claude-opus-5");
+    const opus = detail.candidates.find((candidate) => candidate.model === "claude-opus-5-5");
 
     expect(detail.resolution).toEqual({ provider: "codex", model: "gpt-6-astra" });
     expect(opus?.blocked).toBe(true);
     expect(opus?.cooldownUntilEpochMs).toBe(until);
     expect(
-      opus?.blockedReasons.some((reason) => reason.includes("model claude-opus-5 cooldown")),
+      opus?.blockedReasons.some((reason) => reason.includes("model claude-opus-5-5 cooldown")),
     ).toBe(true);
   });
 });
 
 describe("emperor Anthropic roster", () => {
-  it("uses Opus 5 regardless of the Fable weekly window", () => {
+  it("uses Opus 5.5 regardless of the Fable weekly window", () => {
     setUsageLimits(
       { seven_day_fable: { utilization: 1, resetsAt: Math.floor(Date.now() / 1000) + 86_400 } },
       {
@@ -227,9 +227,8 @@ describe("emperor Anthropic roster", () => {
       },
     );
     const detail = resolveTierDetailed("emperor");
-    expect(detail.resolution).toEqual({ provider: "anthropic", model: "claude-opus-5" });
-    expect(detail.candidates.some((candidate) => candidate.model === "claude-fable-5")).toBe(false);
-    expect(detail.candidates.some((candidate) => candidate.model === "claude-opus-4-8")).toBe(
+    expect(detail.resolution).toEqual({ provider: "anthropic", model: "claude-opus-5-5" });
+    expect(detail.candidates.some((candidate) => candidate.model === "claude-fable-5-1")).toBe(
       false,
     );
   });
@@ -304,21 +303,21 @@ describe("invalid / legacy tier names", () => {
 
 describe("tierContainsModel", () => {
   it("matches a model that defines the tier", () => {
-    expect(tierContainsModel("emperor", "anthropic", "claude-opus-5")).toBe(true);
+    expect(tierContainsModel("emperor", "anthropic", "claude-opus-5-5")).toBe(true);
     expect(tierContainsModel("emperor", "codex", "gpt-6-astra")).toBe(true);
-    expect(tierContainsModel("samurai", "anthropic", "claude-haiku-4-5")).toBe(true);
+    expect(tierContainsModel("samurai", "anthropic", "claude-haiku-5-5")).toBe(true);
   });
 
   it("ignores the context-window suffix when matching", () => {
-    expect(tierContainsModel("emperor", "anthropic", "claude-opus-5")).toBe(true);
-    expect(tierContainsModel("emperor", "anthropic", "claude-opus-5[1m]")).toBe(true);
+    expect(tierContainsModel("emperor", "anthropic", "claude-opus-5-5")).toBe(true);
+    expect(tierContainsModel("emperor", "anthropic", "claude-opus-5-5[1m]")).toBe(true);
   });
 
   it("is false across tiers and for unknown models/providers", () => {
-    expect(tierContainsModel("emperor", "anthropic", "claude-haiku-4-5")).toBe(false);
+    expect(tierContainsModel("emperor", "anthropic", "claude-haiku-5-5")).toBe(false);
     expect(tierContainsModel("samurai", "codex", "gpt-6-astra")).toBe(false);
     expect(tierContainsModel("emperor", "anthropic", "made-up-model")).toBe(false);
-    expect(tierContainsModel("best" as never, "anthropic", "claude-opus-4-8")).toBe(false);
+    expect(tierContainsModel("best" as never, "anthropic", "claude-opus-5-5")).toBe(false);
   });
 });
 
@@ -334,10 +333,10 @@ describe("unobserved provider routing deprioritization", () => {
 
     const result = resolveTierDetailed("samurai", undefined, "anthropic");
 
-    // Should pick anthropic (claude-haiku-4-5) over the unobserved higher ranks
+    // Should pick anthropic (claude-haiku-5-5) over the unobserved higher ranks
     // because anthropic is observed and they are not.
     expect(result.selected?.provider).toBe("anthropic");
-    expect(result.selected?.model).toBe("claude-haiku-4-5");
+    expect(result.selected?.model).toBe("claude-haiku-5-5");
   });
 
   it("does not hard-block unobserved providers when all are unobserved", () => {

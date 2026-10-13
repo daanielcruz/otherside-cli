@@ -10,7 +10,7 @@ import {
 
 const BROKER_STATE: Parameters<typeof sessionMetaFromBrokerState>[1] = {
   provider: "anthropic",
-  model: "claude-fable-5",
+  model: "claude-fable-5-1",
   effort: null,
   fastMode: false,
   ultracode: false,

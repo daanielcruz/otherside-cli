@@ -2,6 +2,7 @@ import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import {
   type ByteSilenceEvent,
   byteSilenceLimitMs,
+  firstByteWindowMs,
   guardByteIterableSilence,
   guardReadableByteSilence,
   KEEPALIVE_BYTE_SILENCE_LIMIT_MS,
@@ -164,6 +165,30 @@ describe("guardReadableByteSilence", () => {
     );
     const error = await rejectedBy(guarded);
     expect(error).toBeInstanceOf(StreamSilenceError);
+    expect((error as StreamSilenceError).silenceMs).toBe(40);
+  });
+
+  test("waits longer for the first byte after a large upload", async () => {
+    const guarded = guardReadableByteSilence(
+      delayedByteStream([{ bytes: ONE_BYTE, delayMs: 150 }]),
+      40,
+      undefined,
+      32_768,
+    );
+    expect(await collectBytes(guarded)).toEqual([ONE_BYTE]);
+  });
+
+  test("returns to the plain limit once the first byte arrives", async () => {
+    const guarded = guardReadableByteSilence(
+      delayedByteStream([
+        { bytes: ONE_BYTE, delayMs: 5 },
+        { bytes: ONE_BYTE, delayMs: 150 },
+      ]),
+      40,
+      undefined,
+      32_768,
+    );
+    const error = await rejectedBy(guarded);
     expect((error as StreamSilenceError).silenceMs).toBe(40);
   });
 
@@ -378,5 +403,13 @@ describe("guardByteIterableSilence", () => {
     await Bun.sleep(0);
     expect(error).toBeInstanceOf(StreamSilenceError);
     expect(iteratorReleased).toBe(true);
+  });
+});
+
+describe("firstByteWindowMs", () => {
+  test("adds one second per 32 KiB uploaded, capped below ten minutes", () => {
+    expect(firstByteWindowMs(90_000, 0)).toBe(90_000);
+    expect(firstByteWindowMs(90_000, 32_768 * 30)).toBe(120_000);
+    expect(firstByteWindowMs(90_000, 40 * 1024 * 1024)).toBe(599_000);
   });
 });

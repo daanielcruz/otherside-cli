@@ -27,7 +27,7 @@ describe("designTurnFailureMessage — design turn RPC error mapping", () => {
         output: "",
         quotaExhausted: {
           provider: "codex",
-          model: "gpt-5.5",
+          model: "gpt-5.6-terra",
           resetEpochMs: 1234,
           message: "usage limit",
         },
@@ -35,7 +35,7 @@ describe("designTurnFailureMessage — design turn RPC error mapping", () => {
       "zai",
       "glm-4.7",
     );
-    expect(message).toContain("codex/gpt-5.5");
+    expect(message).toContain("codex/gpt-5.6-terra");
   });
 
   test("internal fork errors are replaced at the RPC boundary", () => {

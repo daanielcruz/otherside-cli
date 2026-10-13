@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AuthStrategy } from "@/engine/contract/auth.ts";
@@ -9,6 +9,8 @@ import type { ProviderPromptAdapter } from "@/engine/contract/prompt-adapter.ts"
 import { registerProviderConfig, unregisterProviderConfig } from "@/engine/contract/registry.ts";
 import type { ApiProviderSourceId, ProviderConfig } from "@/engine/contract/types.ts";
 import type { WireFingerprint } from "@/engine/contract/wire-fingerprint.ts";
+import { agentTranscriptPathForCwd } from "@/engine/session/paths.ts";
+import { lineToRecords } from "@/engine/session/record/index.ts";
 import type { ForkEvent, ProviderEvent } from "@/kernel/std/types/events.ts";
 import type { Message } from "@/kernel/std/types/message.ts";
 import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
@@ -75,7 +77,12 @@ function createMockProviderConfig(id: string, streamEvents: ProviderEvent[][]): 
 }
 
 describe("fork parentToolCallId event threading", () => {
-  it("emits fork_usage snapshot and fork_complete with parentToolCallId from the fork spec", async () => {
+  it.each([
+    undefined,
+    50_000,
+    0,
+    null,
+  ])("threads parent identity and context snapshot %s without duplicating billing", async (contextTokens) => {
     const providerId = "parent-ref-events-provider";
     createMockProviderConfig(providerId, [
       [
@@ -86,8 +93,9 @@ describe("fork parentToolCallId event threading", () => {
         },
         {
           kind: "usage",
-          inputTokens: 12,
-          outputTokens: 8,
+          inputTokens: 190_000,
+          outputTokens: 10_000,
+          ...(contextTokens !== undefined ? { contextTokens } : {}),
           thoughtTokens: 0,
           cacheCreationInputTokens: 0,
           cacheReadInputTokens: 0,
@@ -145,6 +153,33 @@ describe("fork parentToolCallId event threading", () => {
       expect(completes.length).toBe(1);
       expect(completes[0]?.parentToolCallId).toBe(parentToolCallId);
       expect(completes[0]?.isError).toBe(false);
+      for (const event of [...usageSnapshots, ...usageTotals]) {
+        expect(event.inputTokens + event.outputTokens).toBe(200_000);
+        if (contextTokens === undefined) expect(event).not.toHaveProperty("contextTokens");
+        else expect(event.contextTokens).toBe(contextTokens);
+      }
+      const persisted = await readFile(
+        agentTranscriptPathForCwd(tempDir, spec.ctx.sessionId, "fork-parent-ref"),
+        "utf8",
+      );
+      const records = persisted.trim().split("\n").flatMap(lineToRecords);
+      const billed = records.filter((record) => record.type === "usage");
+      expect(billed).toHaveLength(1);
+      expect(billed[0]?.input_tokens).toBe(190_000);
+      expect(billed[0]?.output_tokens).toBe(10_000);
+      const response = records.find((record) => record.type === "assistant_message");
+      if (response?.type !== "assistant_message") throw new Error("missing persisted response");
+      if (contextTokens === undefined) expect(response).not.toHaveProperty("usage");
+      else
+        expect(response.usage).toEqual({
+          input_tokens: 0,
+          output_tokens: 0,
+          thought_tokens: 0,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+          request_count: 0,
+          contextTokens,
+        });
     } finally {
       unregisterProviderConfig(providerId as ProviderId);
     }

@@ -1,5 +1,5 @@
 import { streamErrorToHttpError } from "@/engine/providers/_shared/retry.ts";
-import { parseJsonWithPartialRecovery } from "@/engine/providers/_shared/streaming-json-repair.ts";
+import { toolArgumentsObject } from "@/engine/providers/_shared/streaming-json-repair.ts";
 import { usageFromOpenAi } from "@/engine/providers/_shared/usage.ts";
 import { translateRequest } from "@/engine/providers/openai/envelope.ts";
 import { parseSse } from "@/kernel/std/stream/sse.ts";
@@ -103,12 +103,12 @@ export async function* translateResponse(
   }
 
   for (const [, buf] of tools) {
-    let parsed: unknown = {};
-    if (buf.buffer.trim().length > 0) {
-      const result = parseJsonWithPartialRecovery(buf.buffer);
-      parsed = result.ok ? result.value : buf.buffer;
-    }
-    yield { kind: "tool_call_complete", id: buf.id, name: buf.name, input: parsed };
+    yield {
+      kind: "tool_call_complete",
+      id: buf.id,
+      name: buf.name,
+      input: toolArgumentsObject(buf.buffer) ?? {},
+    };
   }
 
   for (const out of harmony.flush()) yield out;

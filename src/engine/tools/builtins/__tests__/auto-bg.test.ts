@@ -3,14 +3,19 @@ import {
   get as getBackgroundTask,
   subscribeCompletion,
 } from "@/engine/background/tasks/background.ts";
+import { defaultBackgroundTimeoutMs } from "@/engine/tools/_infra/command-analysis/timeouts.ts";
+import { getRuntimeKind, setRuntimeKind } from "@/kernel/std/proc/runtime-mode.ts";
 import { runForegroundWithAutoBg } from "../auto-bg.ts";
 import { killBackground, listBackground, SHELLS } from "../background.ts";
 import { isAutoBackgroundableCommand } from "../safety.ts";
+
+const runtimeBefore = getRuntimeKind();
 
 afterEach(() => {
   for (const shell of listBackground()) {
     killBackground(shell.id);
   }
+  setRuntimeKind(runtimeBefore);
 });
 
 describe("isAutoBackgroundableCommand", () => {
@@ -124,5 +129,39 @@ describe("runForegroundWithAutoBg", () => {
     expect(outcome.promoted).toBe(true);
     if (!outcome.promoted) return;
     expect(getBackgroundTask(outcome.shellId)?.sessionId).toBe(sessionId);
+  });
+
+  it("gives a moved command the default background time limit outside an interactive session", async () => {
+    setRuntimeKind("print");
+    const outcome = await runForegroundWithAutoBg({
+      command: "sleep 30",
+      displayCommand: "<description>",
+      parentToolCallId: "call-promoted-deadline",
+      timeoutMs: 10_000,
+      cwd: process.cwd(),
+      userBgSignaled: Promise.resolve(),
+    });
+
+    expect(outcome.promoted).toBe(true);
+    if (!outcome.promoted) return;
+    expect(outcome.deadlineMs).toBe(defaultBackgroundTimeoutMs());
+    expect(SHELLS.get(outcome.shellId)?.stopDeadline).toBeFunction();
+  });
+
+  it("moves a command without a time limit in an interactive session", async () => {
+    setRuntimeKind("interactive");
+    const outcome = await runForegroundWithAutoBg({
+      command: "sleep 30",
+      displayCommand: "<description>",
+      parentToolCallId: "call-promoted-unlimited",
+      timeoutMs: 10_000,
+      cwd: process.cwd(),
+      userBgSignaled: Promise.resolve(),
+    });
+
+    expect(outcome.promoted).toBe(true);
+    if (!outcome.promoted) return;
+    expect(outcome.deadlineMs).toBeUndefined();
+    expect(SHELLS.get(outcome.shellId)?.stopDeadline).toBeUndefined();
   });
 });

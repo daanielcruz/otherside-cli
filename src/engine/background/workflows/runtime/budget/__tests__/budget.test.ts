@@ -95,7 +95,7 @@ return { spent: budget.spent(), remaining: budget.remaining() };
       cwd,
       sessionId,
       provider: "anthropic",
-      model: "claude-opus-4-8",
+      model: "claude-opus-5-5",
       effort: null,
       permissionMode: "default",
       abortSignal: new AbortController().signal,

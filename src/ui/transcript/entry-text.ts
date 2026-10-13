@@ -1,8 +1,15 @@
 import { formatImageRef } from "@/kernel/std/paste/ref.ts";
-import { osc8FileLink } from "@/terminal-runtime/terminal/hyperlink-sequences.js";
+import { osc8FileLink, osc8UrlLink } from "@/terminal-runtime/terminal/hyperlink-sequences.js";
 import { terminalAllowsLinks } from "@/terminal-runtime/terminal/link-policy.js";
 
 const REPORT_PATH_RE = /(\/\S+\.md)\b/;
+const URL_RE = /https?:\/\/[^\s)]+/g;
+
+/** Every web address in the text as a link the terminal opens, still reading as itself. */
+export function withUrlLinks(text: string): string {
+  if (!terminalAllowsLinks()) return text;
+  return text.replace(URL_RE, (url) => osc8UrlLink({ url, label: url }));
+}
 
 export function withReportLink(text: string): string {
   if (!terminalAllowsLinks()) return text;

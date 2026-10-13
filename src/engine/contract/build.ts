@@ -8,6 +8,7 @@ import { mediaItemLimitFor, stripExcessMedia } from "@/engine/contract/defaults/
 import type { Provider, ProviderConfig } from "@/engine/contract/types.ts";
 import type { ModelEntry } from "@/engine/model/catalog.ts";
 import type { Api } from "@/engine/translator/dispatch/types.ts";
+import { requestBodyBytes } from "@/engine/transport/_infra/classify/request-size.ts";
 import {
   getContentIdleTimeoutMs,
   wrapProviderEventsWithContentIdleTimeout,
@@ -77,6 +78,7 @@ export function buildProvider<A extends Api>(config: ProviderConfig<A>): Provide
         stream(ctx, body, signal),
         config.streamEmitsKeepalive ? KEEPALIVE_BYTE_SILENCE_LIMIT_MS : undefined,
         (error) => attemptAbort.abort(error),
+        requestBodyBytes(body),
       );
       return {
         events: wrapProviderEventsWithContentIdleTimeout(translateResponse(raw), {
@@ -98,6 +100,7 @@ export function buildProvider<A extends Api>(config: ProviderConfig<A>): Provide
     ...(config.onCompactionSucceeded
       ? { onCompactionSucceeded: config.onCompactionSucceeded }
       : {}),
+    ...(config.onToolTurnStopped ? { onToolTurnStopped: config.onToolTurnStopped } : {}),
     usageDetails: () => usageDetails,
     beginLogin: () => beginLogin,
     composeForkSystem,

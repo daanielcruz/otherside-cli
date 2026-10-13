@@ -9,6 +9,7 @@ import {
 import { type DesignController } from "@/design/controller.ts";
 import { stopDesign } from "@/design/launcher.ts";
 import { takePendingBrief } from "@/design/pending-brief.ts";
+import { DESIGN_RELAY_SIGNED_OUT } from "@/design/relay/auth-gate.ts";
 import {
   getBySession,
   getLinkExpiresAt,
@@ -504,7 +505,10 @@ class DesignPanel implements StringViewPanel {
     const isUnreachable = snap.attached && snap.unreachable !== null;
     let statusValue: string;
     let statusColor: TerminalColor;
-    if (isUnreachable) {
+    if (snap.unreachable === DESIGN_RELAY_SIGNED_OUT) {
+      statusValue = snap.unreachable;
+      statusColor = Color.warning;
+    } else if (isUnreachable) {
       statusValue = "session unreachable — web may have lost pairing";
       statusColor = Color.warning;
     } else if (snap.attached) {

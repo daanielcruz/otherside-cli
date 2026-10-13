@@ -61,7 +61,7 @@ describe("fetchXaiUsage", () => {
       Authorization: "Bearer xai-access",
       "X-XAI-Token-Auth": "xai-grok-cli",
       "x-userid": "xai-user",
-      "x-grok-client-version": "0.2.102",
+      "x-grok-client-version": "1.0.34",
       "x-grok-client-mode": "headless",
     });
   });
@@ -112,6 +112,102 @@ describe("fetchXaiUsage", () => {
     expect(billingCalls).toBe(2);
     expect(refreshCalls).toBe(1);
     expect(lastAuthorization).toBe("Bearer fresh_access");
+  });
+
+  function periodOnlyCreditsView(): string {
+    return JSON.stringify({
+      config: {
+        currentPeriod: { type: "USAGE_PERIOD_TYPE_WEEKLY", end: "2026-09-21T00:00:00Z" },
+        onDemandCap: { val: 0 },
+        onDemandUsed: { val: 0 },
+        isUnifiedBillingUser: true,
+        prepaidBalance: { val: 0 },
+        billingPeriodEnd: "2026-09-21T00:00:00Z",
+      },
+    });
+  }
+
+  async function withStoredXaiCredentials(): Promise<void> {
+    configDir = mkdtempSync(join(tmpdir(), "xai-usage-test-"));
+    process.env.OTHERSIDE_CONFIG_DIR = configDir;
+    await saveFor("xai", {
+      accessToken: "xai-access",
+      refreshToken: "xai-refresh",
+      expiresAt: Date.now() + 10 * 60_000,
+      accountId: "xai-user",
+    });
+  }
+
+  test("falls back to the monthly view when the credits view carries no percentage", async () => {
+    await withStoredXaiCredentials();
+    const urls: string[] = [];
+    global.fetch = mock((url: string | URL | Request) => {
+      urls.push(String(url));
+      if (String(url).endsWith("?format=credits")) {
+        return Promise.resolve(new Response(periodOnlyCreditsView()));
+      }
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            config: {
+              monthlyLimit: { val: 15000 },
+              used: { val: 3000 },
+              billingPeriodEnd: "2026-10-01T00:00:00+00:00",
+            },
+          }),
+        ),
+      );
+    }) as unknown as typeof fetch;
+
+    const data = await fetchXaiUsage();
+
+    expect(urls).toEqual([
+      "https://cli-chat-proxy.grok.com/v1/billing?format=credits",
+      "https://cli-chat-proxy.grok.com/v1/billing",
+    ]);
+    expect(data?.windows[0]).toMatchObject({
+      label: "Monthly limit",
+      limit: { utilization: 20, resetsAt: "2026-10-01T00:00:00.000Z" },
+      detail: "20% used",
+    });
+  });
+
+  test("does not consult the monthly view when the credits view already answered", async () => {
+    await withStoredXaiCredentials();
+    const urls: string[] = [];
+    global.fetch = mock((url: string | URL | Request) => {
+      urls.push(String(url));
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            config: { creditUsagePercent: 62, currentPeriod: { type: "USAGE_PERIOD_TYPE_WEEKLY" } },
+          }),
+        ),
+      );
+    }) as unknown as typeof fetch;
+
+    await fetchXaiUsage();
+
+    expect(urls).toHaveLength(1);
+  });
+
+  test("reports no quota when the account has no monthly limit either", async () => {
+    await withStoredXaiCredentials();
+    global.fetch = mock((url: string | URL | Request) => {
+      if (String(url).endsWith("?format=credits")) {
+        return Promise.resolve(new Response(periodOnlyCreditsView()));
+      }
+      // Observed live: a unified-billing account with every amount at zero.
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            config: { monthlyLimit: { val: 0 }, used: { val: 2500 }, onDemandCap: { val: 0 } },
+          }),
+        ),
+      );
+    }) as unknown as typeof fetch;
+
+    await expect(fetchXaiUsage()).resolves.toBeNull();
   });
 });
 

@@ -1,5 +1,5 @@
 import { currentSpawnedAgentScope } from "@/engine/agents/agent-context.ts";
-import { defaultEffortForModel, effortLevelsForModel } from "@/engine/model/catalog.ts";
+import { settleEffortForModel } from "@/engine/model/catalog.ts";
 import { resolveModelPin } from "@/engine/model/facts/model-pin.ts";
 import { ask as askPermission, FORK_ROUTE_PERMISSION_TOOL } from "@/kernel/channels/permission.ts";
 import { getRuntimeKind } from "@/kernel/std/proc/runtime-mode.ts";
@@ -121,11 +121,7 @@ export function resolveForkRoutePin(
 }
 
 export function withPinnedForkRoute(ctx: RequestContext, route: ForkRoute): RequestContext {
-  const next: RequestContext = { ...ctx, provider: route.provider, model: route.model };
-  if (next.effort !== null && !effortLevelsForModel(route).includes(next.effort)) {
-    next.effort = defaultEffortForModel(route);
-  }
-  return next;
+  return { ...ctx, ...route, effort: settleEffortForModel(route, ctx.effort) };
 }
 
 // Same rule the tool permission path applies: a headless run, or a detached

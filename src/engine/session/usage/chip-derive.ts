@@ -2,17 +2,17 @@ import { estimateTokensFromChars } from "@/engine/session/compact/token-count.ts
 import { contextWindowWarning } from "@/engine/session/usage/context.ts";
 import type { UsageWarning } from "@/engine/session/usage/limits.ts";
 import type { TokenTotals } from "@/engine/session/usage/provider.ts";
+import {
+  type ContextUsageSnapshot,
+  contextSnapshotWithEstimates,
+  contextUsageTotal,
+} from "@/engine/session/usage/snapshot.ts";
+import type { Message } from "@/kernel/std/types/message.ts";
 import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 
-interface ChipUsageContextSnapshot {
-  inputTokens: number;
-  outputTokens: number;
-  cacheCreationInputTokens: number;
-  cacheReadInputTokens: number;
-}
-
 export interface DeriveChipUsageArgs {
-  mainLastContext: ChipUsageContextSnapshot;
+  mainLastContext: ContextUsageSnapshot;
+  messages?: readonly Message[];
   mainTokenTotals: TokenTotals;
   provider: ProviderId;
   model: string;
@@ -43,14 +43,20 @@ export function deriveChipUsage(args: DeriveChipUsageArgs): ChipUsage {
     queuedText,
     autoCompactRemainingPct,
   } = args;
-  const serverContextTotal =
-    mainLastContext.inputTokens +
-    mainLastContext.cacheCreationInputTokens +
-    mainLastContext.cacheReadInputTokens;
+  const serverContextTotal = contextUsageTotal(mainLastContext) ?? 0;
+  const explicitContextTotal = contextSnapshotWithEstimates(mainLastContext, {
+    provider,
+    model,
+    messages: args.messages,
+    fallbackContextTokens,
+  });
   const contextBanner = contextWindowWarning({
     provider,
     model,
-    totals: mainLastContext,
+    totals:
+      explicitContextTotal !== undefined
+        ? { ...mainLastContext, contextTokens: explicitContextTotal }
+        : mainLastContext,
     suppressed: contextWarningSuppressed,
   });
   const queuedTokens = queuedText.length > 0 ? estimateTokensFromChars(queuedText) : 0;
@@ -60,9 +66,10 @@ export function deriveChipUsage(args: DeriveChipUsageArgs): ChipUsage {
   // subagent output that never enters the main context) would double-count
   // and push the auto-compact percentage to 0% far before the trigger point.
   const serverTokenUsage =
-    serverContextTotal > 0
+    explicitContextTotal ??
+    (serverContextTotal > 0
       ? serverContextTotal + mainLastContext.outputTokens
-      : fallbackContextTokens + mainTokenTotals.outputTokens;
+      : fallbackContextTokens + mainTokenTotals.outputTokens);
   const activeContextTotal = serverTokenUsage + queuedTokens;
   const liveAutoCompactPct = autoCompactRemainingPct(serverTokenUsage);
   const autoCompactWarningPct =

@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { isReadOnlyBashCommand } from "@/engine/tools/_infra/command-analysis/read-only.ts";
 import {
+  containsUnsafeRedirect,
   stripLeadingSafeEnvVars,
   stripSafeWrappers,
   tokenizeRespectingQuotes,
@@ -10,6 +11,8 @@ import {
 import { isSensitiveFilePath, splitBashSubcommands } from "@/kernel/permissions/sensitive-paths.ts";
 import { startsWithDir } from "@/kernel/std/fs/paths.ts";
 import {
+  absoluteFilePath,
+  directoryForPath,
   expandHome,
   filePathRepresentations,
   pathWithinWorkspace,
@@ -383,16 +386,30 @@ export function bashWritePaths(segment: string): BashWritePaths | null {
   };
 }
 
+/** A segment whose command is `cd`. */
+export function isDirectoryChange(segment: string): boolean {
+  return /^cd(?:\s|$)/.test(segment.trim());
+}
+
+// Shell/runtime expansions and write globs cannot be resolved before the command
+// runs, so they must never be authorized by a saved Bash rule or directory grant.
+function isUnresolvableWritePath(filePath: string): boolean {
+  return (
+    filePath.includes("$") ||
+    filePath.includes("%") ||
+    filePath.startsWith("=") ||
+    (filePath.startsWith("~") && filePath !== "~" && !filePath.startsWith("~/")) ||
+    /[*?[\]{}]/.test(filePath)
+  );
+}
+
 export function bashWritePathDecision(
   command: string,
   cwd: string,
   additionalWorkingDirectories: Iterable<string>,
 ): "ask" | null {
-  const segments = splitBashSubcommands(command)
-    .map((segment) => segment.trim())
-    .filter((segment) => segment.length > 0);
-  const compoundHasCd =
-    segments.length > 1 && segments.some((segment) => /^cd(?:\s|$)/.test(segment));
+  const segments = commandSegments(command);
+  const compoundHasCd = segments.length > 1 && segments.some(isDirectoryChange);
   for (const segment of segments) {
     const write = bashWritePaths(segment);
     if (!write) continue;
@@ -400,16 +417,7 @@ export function bashWritePathDecision(
     // similar options can carry a destination outside the positional argv.
     if (write.hasUnsupportedFlags || compoundHasCd) return "ask";
     for (const filePath of write.paths) {
-      // Shell/runtime expansions and write globs cannot be resolved before the
-      // command runs, so they must never be authorized by a saved Bash rule.
-      if (
-        filePath.includes("$") ||
-        filePath.includes("%") ||
-        filePath.startsWith("=") ||
-        (filePath.startsWith("~") && filePath !== "~" && !filePath.startsWith("~/")) ||
-        /[*?[\]{}]/.test(filePath)
-      )
-        return "ask";
+      if (isUnresolvableWritePath(filePath)) return "ask";
       // Check every symlink-chain / best-effort resolved representation, not
       // just the lexical operand — a link into a sensitive directory (e.g.
       // `alias -> .git`) must still trigger a prompt for `touch alias/config`.
@@ -422,23 +430,6 @@ export function bashWritePathDecision(
     }
   }
   return null;
-}
-
-// A coarser signal than `bashWritePathDecision`: whether ANY segment of a
-// (possibly compound) command is a recognized filesystem-mutating command
-// (mkdir/touch/rm/rmdir/mv/cp/sed), regardless of whether its target path is
-// workspace-safe. Used only to gate plan mode's already-granted-allow-rule
-// fast path (MCP-PLAN-001) — a `Bash(mkdir foo:*)` allow rule must still
-// prompt in plan mode even though the path itself would otherwise be a safe,
-// no-`ask` write. Commands outside BASH_WRITE_COMMANDS (e.g. `npm test`) are
-// intentionally NOT treated as writes here: an explicit
-// Bash allow rule for a non-filesystem command still auto-allows in plan
-// mode.
-export function bashHasWriteCommand(command: string): boolean {
-  return splitBashSubcommands(command)
-    .map((segment) => segment.trim())
-    .filter((segment) => segment.length > 0)
-    .some((segment) => bashWritePaths(segment) !== null);
 }
 
 // Root-var expansion pattern: an `rm`/
@@ -531,49 +522,77 @@ export function bashDangerousRmCriticalPathDecision(
   return null;
 }
 
-export function bashReadPathDecision(
+/**
+ * Whether a command does nothing but file writes a grant already covers: every
+ * segment writes through a file command, and every operand names a path known before
+ * the command runs that `covered` accepts. The file rules hold for Bash as they do for
+ * the Edit tools, so a directory opened for edits takes these writes too.
+ */
+export function bashWritesCovered(
   command: string,
-  cwd: string,
-  additionalWorkingDirectories: Iterable<string>,
-): "ask" | null {
-  if (!isReadOnlyBashCommand(command)) return null;
-  for (const segment of splitBashSubcommands(command)) {
-    const paths = bashReadPaths(segment);
-    if (paths === null) continue;
-    for (const filePath of paths) {
-      if (!pathWithinWorkspace(filePath, cwd, realpathSync, additionalWorkingDirectories)) {
-        return "ask";
-      }
-    }
-  }
-  return null;
+  covered: (filePath: string) => boolean,
+): boolean {
+  const segments = commandSegments(command);
+  return segments.length > 0 && segments.every((segment) => segmentWritesCovered(segment, covered));
 }
 
-// `cd` is not a content-reading command, so it never appears in
-// BASH_READ_COMMANDS and isReadOnlyBashCommand() does not classify it —
-// which means bashReadPathDecision's whole-command read-only gate never even
-// looks at a `cd` segment. A compound like `cd <outside> && cat secret`
-// would otherwise reach compoundBashDecision, where separately allow-ruled
-// `cd *` and `cat *` segments combine into an unprompted "allow" even though
-// the `cd` destination itself leaves the workspace and every later relative
-// operand is actually resolved there at runtime, not against the original
-// cwd. Checked independently of isReadOnlyBashCommand so both a bare
-// `cd <outside>` and any compound containing it are covered — the cd target
-// is validated for every Bash call, not only compounds. Multiple `cd`s or
-// unresolvable destinations
-// (globs, `$VAR`, unparseable wrappers) fail closed to "ask" rather than
-// attempt to track an effective cwd across segments.
-export function bashCdPathDecision(
+function segmentWritesCovered(segment: string, covered: (filePath: string) => boolean): boolean {
+  if (containsUnsafeRedirect(segment)) return false;
+  const write = bashWritePaths(segment);
+  if (write === null || write.hasUnsupportedFlags || write.paths.length === 0) return false;
+  return write.paths.every((filePath) => !isUnresolvableWritePath(filePath) && covered(filePath));
+}
+
+/**
+ * The directories a lasting approval of a command's file writes opens: where each
+ * write `covered` does not already allow lands. Null when a write cannot be granted
+ * ahead of time — its target is only known once the command runs, a flag can carry
+ * it elsewhere, a `cd` moves it, or it touches a sensitive path — so the next run
+ * would ask again whatever was saved.
+ */
+export function bashWriteGrantDirectories(
   command: string,
   cwd: string,
-  additionalWorkingDirectories: Iterable<string>,
-): "ask" | null {
+  covered: (filePath: string) => boolean,
+): string[] | null {
+  const segments = commandSegments(command);
+  const compoundHasCd = segments.length > 1 && segments.some(isDirectoryChange);
+  const directories = new Set<string>();
+  for (const segment of segments) {
+    const write = bashWritePaths(segment);
+    if (write === null) continue;
+    if (write.hasUnsupportedFlags || compoundHasCd) return null;
+    for (const filePath of write.paths) {
+      if (isUnresolvableWritePath(filePath)) return null;
+      if (
+        filePathRepresentations(filePath, cwd, true).some((path) => isSensitiveFilePath(path, cwd))
+      )
+        return null;
+      if (covered(filePath)) continue;
+      directories.add(directoryForPath(absoluteFilePath(filePath, cwd)));
+    }
+  }
+  return [...directories];
+}
+
+function commandSegments(command: string): string[] {
+  return splitBashSubcommands(command)
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length > 0);
+}
+
+/**
+ * Where a command's `cd` segments lead, as absolute directories, or null when a
+ * destination cannot be known before the command runs (globs, `$VAR`, unparseable
+ * wrappers) — the command then asks rather than track an effective directory.
+ */
+function cdDestinations(command: string, cwd: string): string[] | null {
+  const destinations: string[] = [];
   for (const segment of splitBashSubcommands(command)) {
     const trimmed = segment.trim();
-    if (!/^cd(?:\s|$)/.test(trimmed)) continue;
+    if (!isDirectoryChange(trimmed)) continue;
     const tokens = unwrapBashPathWrappers(tokenizeRespectingQuotes(trimmed));
-    // An unparseable env/wrapper form leaves the destination unknowable.
-    if (tokens === null || tokens[0] !== "cd") return "ask";
+    if (tokens === null || tokens[0] !== "cd") return null;
     const args = tokens.slice(1);
     const destination = args.length === 0 ? homedir() : args.join(" ");
     if (
@@ -583,10 +602,87 @@ export function bashCdPathDecision(
       (destination.startsWith("~") && destination !== "~" && !destination.startsWith("~/")) ||
       /[*?[\]{}]/.test(destination)
     )
-      return "ask";
-    if (!pathWithinWorkspace(destination, cwd, realpathSync, additionalWorkingDirectories)) {
-      return "ask";
+      return null;
+    destinations.push(absoluteFilePath(destination, cwd));
+  }
+  return destinations;
+}
+
+/**
+ * The paths a command's read-only segments read and its write segments write: each
+ * operand as typed, so a rule written the same way matches, plus its absolute forms.
+ */
+export interface BashPathOperands {
+  reads: string[];
+  writes: string[];
+}
+
+/**
+ * Every path a command reads or writes, resolved against each directory the command
+ * may run in: the working directory and any `cd` destination in it. A relative
+ * operand after `cd <dir>` resolves there at runtime, so it is checked in both places.
+ * Write operands whose target cannot be known before the command runs are left out;
+ * the write check asks for those.
+ */
+export function bashPathOperands(command: string, cwd: string): BashPathOperands {
+  const bases = [cwd, ...(cdDestinations(command, cwd) ?? [])];
+  const resolved = (filePath: string): string[] =>
+    isAbsolute(expandHome(filePath))
+      ? [filePath, absoluteFilePath(filePath, cwd)]
+      : [filePath, ...bases.map((base) => absoluteFilePath(filePath, base))];
+  const reads = new Set<string>();
+  const writes = new Set<string>();
+  for (const segment of splitBashSubcommands(command)) {
+    if (isReadOnlyBashCommand(segment)) {
+      for (const filePath of bashReadPaths(segment) ?? []) {
+        for (const path of resolved(filePath)) reads.add(path);
+      }
+    }
+    for (const filePath of bashWritePaths(segment)?.paths ?? []) {
+      if (isUnresolvableWritePath(filePath)) continue;
+      for (const path of resolved(filePath)) writes.add(path);
     }
   }
-  return null;
+  return { reads: [...reads], writes: [...writes] };
+}
+
+/**
+ * The paths a command reads outside the workspace that no Read allow rule covers;
+ * any of them makes the call ask. Every read-only segment is checked on its own:
+ * another segment an allow rule covers must not let `npm test && cat ~/.ssh/config`
+ * read outside unasked.
+ */
+export function bashBlockedReadPaths(
+  command: string,
+  cwd: string,
+  additionalWorkingDirectories: Iterable<string>,
+  readAllowed: (filePath: string) => boolean,
+): string[] {
+  return bashPathOperands(command, cwd).reads.filter(
+    (filePath) =>
+      !pathWithinWorkspace(filePath, cwd, realpathSync, additionalWorkingDirectories) &&
+      !readAllowed(filePath),
+  );
+}
+
+/**
+ * The `cd` destinations outside the workspace that no Read allow rule opens, or null
+ * when a destination cannot be known. Either makes the call ask: every later relative
+ * operand resolves in that directory at runtime, so leaving the workspace needs the
+ * user unless they already opened the directory for reading. A bare `cd <outside>` is
+ * checked the same way as one inside a compound.
+ */
+export function bashBlockedCdDirectories(
+  command: string,
+  cwd: string,
+  additionalWorkingDirectories: Iterable<string>,
+  readAllowed: (filePath: string) => boolean,
+): string[] | null {
+  const destinations = cdDestinations(command, cwd);
+  if (destinations === null) return null;
+  return destinations.filter(
+    (directory) =>
+      !pathWithinWorkspace(directory, cwd, realpathSync, additionalWorkingDirectories) &&
+      !readAllowed(directory),
+  );
 }

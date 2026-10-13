@@ -11,6 +11,8 @@ export interface ParsedWireError {
   resetEpochMs: number | null;
   quotaId: string;
   domain: string;
+  /** Where the account holder verifies the account before the provider serves it again. */
+  verificationUrl: string;
 }
 
 export function parseWireError(body: string): ParsedWireError {
@@ -26,6 +28,7 @@ export function parseWireError(body: string): ParsedWireError {
     resetEpochMs: null,
     quotaId: "",
     domain: "",
+    verificationUrl: "",
   };
   if (body.trim().length === 0) return empty;
   try {
@@ -47,6 +50,7 @@ export function parseWireError(body: string): ParsedWireError {
     let retryDelayMs: number | null = null;
     let quotaId = "";
     let domain = "";
+    let verificationUrl = "";
     for (const rawDetail of details) {
       const detail = record(rawDetail);
       if (!detail) continue;
@@ -54,6 +58,7 @@ export function parseWireError(body: string): ParsedWireError {
       reason ||= stringValue(detail.reason);
       uiMessage ||= stringValue(detailMetadata.uiMessage);
       domain ||= stringValue(detail.domain);
+      verificationUrl ||= stringValue(detailMetadata.validation_url);
       retryDelayMs ??= durationMs(detail.retryDelay ?? detail.retry_delay);
       const violations = Array.isArray(detail.violations) ? detail.violations : [];
       for (const rawViolation of violations) {
@@ -76,6 +81,7 @@ export function parseWireError(body: string): ParsedWireError {
         resetAt !== null ? resetAt * 1000 : resetsIn !== null ? Date.now() + resetsIn * 1000 : null,
       quotaId,
       domain,
+      verificationUrl,
     };
   } catch {
     return empty;

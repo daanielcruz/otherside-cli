@@ -12,7 +12,7 @@ import type { ComposedHarness, InjectionQueue } from "@/harness/composer/injecti
 import { buildCompactSummaryPrompt } from "@/harness/routines/compact/index.ts";
 import { resolveConfig } from "@/kernel/config/resolver.ts";
 import type { ProviderEvent } from "@/kernel/std/types/events.ts";
-import type { Message } from "@/kernel/std/types/message.ts";
+import type { ContentBlock, Message } from "@/kernel/std/types/message.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 import { groupByApiRound, trimHeadGroupsByCount } from "./grouping.ts";
 import { MICRO_COMPACT_CLEARED_MESSAGE } from "./micro.ts";
@@ -201,6 +201,7 @@ async function summarizeConversationAttempt(
   // Keep the conversation envelope (thinking/effort/agentic) so the summary
   // request reuses the same cached prefix as a normal turn. The compact
   // request sends thinking enabled+summarized — never disableThinking.
+  const compactCtx: RequestContext = { ...ctx, isCompaction: true };
   const compactPrompt = buildCompactSummaryPrompt(customInstructions);
   const harness = resolveSummaryHarness(ctx, messages, harnessOverride);
 
@@ -220,10 +221,10 @@ async function summarizeConversationAttempt(
       const withCache = provider.applyTrailingCacheControl
         ? provider.applyTrailingCacheControl(composed)
         : composed;
-      const body = clampSummaryRequest(provider.translateRequest(ctx, withCache, tools));
+      const body = clampSummaryRequest(provider.translateRequest(compactCtx, withCache, tools));
       let text = "";
       let streamError: string | null = null;
-      for await (const ev of streamWithRetry(ctx, provider, body)) {
+      for await (const ev of streamWithRetry(compactCtx, provider, body)) {
         if (onEvent) onEvent(ev);
         if (ev.kind === "text_delta") text += ev.text;
         if (ev.kind === "stream_reset") {
@@ -320,14 +321,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export function clampSummaryRequest(body: unknown): unknown {
-  if (!isRecord(body)) return body;
-  const next = { ...body };
-  if (typeof next.max_tokens === "number") {
-    next.max_tokens = Math.min(next.max_tokens, COMPACT_MAX_OUTPUT_TOKENS);
+  if (
+    !isRecord(body) ||
+    typeof body.max_tokens !== "number" ||
+    body.max_tokens <= COMPACT_MAX_OUTPUT_TOKENS
+  ) {
+    return body;
   }
-  // Preserve thinking (enabled + display:"summarized" from the model envelope).
-  // Disabling it here was the other half of the prompt-cache bust.
-  return next;
+  return { ...body, max_tokens: COMPACT_MAX_OUTPUT_TOKENS };
 }
 
 function clearOldestToolResultsInSingleRound(messages: Message[]): Message[] | null {
@@ -367,14 +368,35 @@ function isContextOverflowError(err: unknown): boolean {
   return PTL_PATTERNS.some((p) => p.test(msg));
 }
 
-function dropImageBlocksFromMessages(messages: Message[]): Message[] {
+const IMAGE_PLACEHOLDER = "[image]";
+
+/**
+ * The summary only needs to know an image was shared, never its pixels. Images ride
+ * both loose in a message and inside tool results (Read, screenshots, MCP), and either
+ * kind left in place can push the summary request past the provider's size limit.
+ */
+export function dropImageBlocksFromMessages(messages: Message[]): Message[] {
   return messages.map((m) => {
     if (!Array.isArray(m.content)) return m;
-    const next = m.content.map((b) => {
-      if (b.type === "image") return { type: "text" as const, text: "[image]" };
+    let changed = false;
+    const next = m.content.map((b): ContentBlock => {
+      if (b.type === "image") {
+        changed = true;
+        return { type: "text", text: IMAGE_PLACEHOLDER };
+      }
+      if (b.type === "tool_result" && Array.isArray(b.content)) {
+        if (!b.content.some((inner) => inner.type === "image")) return b;
+        changed = true;
+        return {
+          ...b,
+          content: b.content.map((inner) =>
+            inner.type === "image" ? { type: "text" as const, text: IMAGE_PLACEHOLDER } : inner,
+          ),
+        };
+      }
       return b;
     });
-    return { ...m, content: next };
+    return changed ? { ...m, content: next } : m;
   });
 }
 

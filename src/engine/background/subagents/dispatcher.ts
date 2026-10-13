@@ -20,7 +20,12 @@ export {
   resolveToolTierQuotaReroute,
 } from "./fork/routing.ts";
 export { skillMessagesForDef } from "./fork/skill-messages.ts";
-export { dispatchFork, dispatchSkillFork, dispatchSubagent } from "./fork/spawn.ts";
+export {
+  dispatchFork,
+  dispatchSkillFork,
+  dispatchSubagent,
+  withEffortOverride,
+} from "./fork/spawn.ts";
 export {
   FORK_GLYPH,
   formatForkSuccessFeedback,

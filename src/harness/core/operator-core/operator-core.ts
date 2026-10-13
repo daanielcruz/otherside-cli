@@ -5,14 +5,15 @@ import OPERATOR_CORE_LEAN_MD from "@/harness/core/operator-core/lean.md" with { 
 
 const SYSTEM_CHANNEL_TOKEN = "_SYSTEM_CHANNEL_BULLET_";
 
-const INTRO_DEFAULT_MISSION = "helps users with software engineering tasks.";
-const INTRO_STYLED_MISSION =
-  'helps users according to your "Output Style" below, which describes how you should respond to user queries.';
+const INTRO_DEFAULT =
+  "You are an agent working with the user toward their goals, using your own judgment along the way.";
+const INTRO_STYLED =
+  'You are an interactive agent that helps users according to your "Output Style" below, which describes how you should respond to user queries.';
 
 /** With a style active, the intro defers to the style and its coding guidance may leave. */
 function applyOutputStyle(core: string, ctx: LayerContext): string {
   if (ctx.outputStyle === null) return core;
-  const styled = core.replace(INTRO_DEFAULT_MISSION, INTRO_STYLED_MISSION);
+  const styled = core.replace(INTRO_DEFAULT, INTRO_STYLED);
   if (ctx.outputStyle.keepCodingInstructions === true) return styled;
   return stripSection(styled, "# Doing tasks");
 }

@@ -165,21 +165,21 @@ describe("model-scope allocation matching", () => {
 
     // Session on opus: the exhausted Fable family scope must NOT surface, but
     // the shared weekly window (global scope) reaches any model of the provider.
-    setProviderAllocationsSource(() => [{ provider: "anthropic", model: "claude-opus-4-8" }]);
+    setProviderAllocationsSource(() => [{ provider: "anthropic", model: "claude-opus-5-5" }]);
     const opusOnly = worstProviderWarning();
     expect(opusOnly?.severity).toBe("warning");
     expect(opusOnly?.message).toContain("80%");
 
     // A running Fable subagent joins → the family scope becomes viable NOW.
     setProviderAllocationsSource(() => [
-      { provider: "anthropic", model: "claude-opus-4-8" },
+      { provider: "anthropic", model: "claude-opus-5-5" },
       { provider: "anthropic", model: "claude-fable-5-1" },
     ]);
     expect(worstProviderWarning()?.severity).toBe("error");
 
     // Subagent finished → the family warning stops surfacing on the next
     // evaluation (never after the fact).
-    setProviderAllocationsSource(() => [{ provider: "anthropic", model: "claude-opus-4-8" }]);
+    setProviderAllocationsSource(() => [{ provider: "anthropic", model: "claude-opus-5-5" }]);
     expect(worstProviderWarning()?.severity).toBe("warning");
 
     // Explicit surfaces stay unscoped: the panel still sees the worst scope.

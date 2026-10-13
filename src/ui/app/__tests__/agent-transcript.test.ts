@@ -77,11 +77,11 @@ describe("createAgentTranscriptHelpers", () => {
           text: JSON.stringify({ description: "do thing", subagent_type: "explore" }),
         },
       ]);
-      helpers.setAgentBackgrounded("X", { provider: "anthropic", model: "claude-opus-4-8" });
+      helpers.setAgentBackgrounded("X", { provider: "anthropic", model: "claude-opus-5-5" });
       const entry = captured.current[0];
       expect(entry?.id).toBe("b_X");
       expect(entry?.isBackgrounded).toBe(true);
-      expect(entry?.agentModel).toBe("claude-opus-4-8");
+      expect(entry?.agentModel).toBe("claude-opus-5-5");
       expect(entry?.agentProvider).toBe("anthropic");
       expect(JSON.parse(entry?.text ?? "{}")).toEqual({
         status: "backgrounded",
@@ -124,14 +124,14 @@ describe("createAgentTranscriptHelpers", () => {
             description: "recon",
             subagent_type: "explore",
             provider: "xai",
-            model: "grok-4.5",
+            model: "grok-4.6",
           }),
         },
       ]);
       helpers.setAgentBackgrounded("X");
       const entry = captured.current[0];
       expect(entry?.id).toBe("b_X");
-      expect(entry?.agentModel).toBe("grok-4.5");
+      expect(entry?.agentModel).toBe("grok-4.6");
       expect(entry?.agentProvider).toBe("xai");
     });
 
@@ -145,13 +145,13 @@ describe("createAgentTranscriptHelpers", () => {
             description: "recon",
             subagent_type: "explore",
             provider: "xai",
-            model: "grok-4.5",
+            model: "grok-4.6",
           }),
         },
       ]);
-      helpers.setAgentBackgrounded("X", { provider: "anthropic", model: "claude-opus-4-8" });
+      helpers.setAgentBackgrounded("X", { provider: "anthropic", model: "claude-opus-5-5" });
       const entry = captured.current[0];
-      expect(entry?.agentModel).toBe("claude-opus-4-8");
+      expect(entry?.agentModel).toBe("claude-opus-5-5");
       expect(entry?.agentProvider).toBe("anthropic");
     });
   });

@@ -22,9 +22,10 @@ mock.module("@/engine/providers/antigravity/fingerprint.ts", () => ({
   ...realFingerprintModule,
   backendHost: () => "https://daily-cloudcode-pa.googleapis.com",
   userAgent: () =>
-    "antigravity/cli/1.1.13 (aidev_client; os_type=darwin; arch=arm64; auth_method=consumer)",
+    "antigravity/cli/1.3.4 (aidev_client; os_type=darwin; arch=arm64; cl=998275202; auth_method=consumer)",
 }));
 
+import { spyOn } from "bun:test";
 import {
   clearRoutingUsage,
   clearUsageLimits,
@@ -32,6 +33,7 @@ import {
   warningForProvider,
 } from "@/engine/session/usage/limits.ts";
 import { providerRouteability } from "@/engine/session/usage/provider-routeability.ts";
+import * as transport from "@/engine/transport/http1-socket.ts";
 import {
   applyAntigravityQuotaWarning,
   fetchAntigravityUsage,
@@ -39,7 +41,9 @@ import {
   parseQuotaSummary,
 } from "../usage.ts";
 
-const originalFetch = global.fetch;
+async function* bodyBytes(text: string): AsyncIterable<Uint8Array> {
+  yield Buffer.from(text, "utf8");
+}
 
 const QUOTA_SUMMARY_PAYLOAD = {
   groups: [
@@ -69,23 +73,30 @@ const ELIGIBILITY_PAYLOAD = {
 };
 
 describe("antigravity usage", () => {
-  let fetchCalls: Array<{ url: string; init: RequestInit | undefined }> = [];
+  let sizedCalls: Array<{ input: transport.Http1RequestInput; contentLengthAt: number }> = [];
+  let sendSpy: ReturnType<typeof mock> | undefined;
 
   beforeAll(() => registerProviderConfig(antigravityConfig));
 
   beforeEach(() => {
-    fetchCalls = [];
-    global.fetch = mock((url: string | URL | Request, init?: RequestInit) => {
-      fetchCalls.push({ url: String(url), init });
-      const payload = String(url).includes("loadCodeAssist")
-        ? ELIGIBILITY_PAYLOAD
-        : QUOTA_SUMMARY_PAYLOAD;
-      return Promise.resolve(new Response(JSON.stringify(payload), { status: 200 }));
-    }) as unknown as typeof fetch;
+    sizedCalls = [];
+    sendSpy = spyOn(transport, "sendSizedRequest").mockImplementation(
+      async (input, contentLengthAt) => {
+        sizedCalls.push({ input, contentLengthAt });
+        const payload = input.url.pathname.includes("loadCodeAssist")
+          ? ELIGIBILITY_PAYLOAD
+          : QUOTA_SUMMARY_PAYLOAD;
+        return {
+          status: 200,
+          headers: new Map(),
+          body: bodyBytes(JSON.stringify(payload)),
+        };
+      },
+    );
   });
 
   afterEach(() => {
-    global.fetch = originalFetch;
+    sendSpy?.mockRestore();
     clearRoutingUsage();
     clearUsageLimits();
   });
@@ -98,49 +109,56 @@ describe("antigravity usage", () => {
   it("POST retrieveUserQuotaSummary with project, UA, and auth headers", async () => {
     const result = await fetchAntigravityUsage();
     expect(result).not.toBeNull();
-    expect(fetchCalls.length).toBe(2);
+    expect(sizedCalls.length).toBe(2);
 
-    const call = fetchCalls.find((c) => c.url.includes("retrieveUserQuotaSummary"))!;
-    expect(call.url).toBe(
+    const call = sizedCalls.find((c) => c.input.url.pathname.includes("retrieveUserQuotaSummary"))!;
+    expect(call.input.url.toString()).toBe(
       "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
     );
-    expect(call.init?.method).toBe("POST");
+    expect(call.input.method).toBe("POST");
+    expect(call.contentLengthAt).toBe(1);
 
-    const body = JSON.parse(call.init?.body as string);
+    const body = JSON.parse(call.input.payload.toString("utf8"));
     expect(body).toEqual({ project: "mock-project-id" });
 
-    const headers = call.init?.headers as Record<string, string>;
-    expect(headers).toBeDefined();
-    expect(headers.Authorization).toBe("Bearer mock-access-token");
-    expect(headers["User-Agent"]).toBe(
-      "antigravity/cli/1.1.13 (aidev_client; os_type=darwin; arch=arm64; auth_method=consumer)",
-    );
-    expect(headers["User-Agent"]).toMatch(/1\.1\.13/);
+    expect(call.input.headerLines).toEqual([
+      "User-Agent: antigravity/cli/1.3.4 (aidev_client; os_type=darwin; arch=arm64; cl=998275202; auth_method=consumer)",
+      "Authorization: Bearer mock-access-token",
+      "Content-Type: application/json",
+      "Accept-Encoding: gzip",
+    ]);
   });
 
-  it("POST loadCodeAssist eligibility check and surfaces the credit balance", async () => {
+  it("POST loadCodeAssist the way the installed client asks and surfaces the credit balance", async () => {
     const result = await fetchAntigravityUsage();
     expect(result?.creditBalance).toBe(123);
 
-    const call = fetchCalls.find((c) => c.url.includes("loadCodeAssist"))!;
-    expect(call.url).toBe("https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist");
-    expect(call.init?.method).toBe("POST");
-    expect(JSON.parse(call.init?.body as string)).toEqual({
+    const call = sizedCalls.find((c) => c.input.url.pathname.includes("loadCodeAssist"))!;
+    expect(call.input.url.toString()).toBe(
+      "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
+    );
+    expect(call.input.method).toBe("POST");
+    expect(call.contentLengthAt).toBe(1);
+    expect(JSON.parse(call.input.payload.toString("utf8"))).toEqual({
       metadata: { ideType: "ANTIGRAVITY" },
-      mode: "FULL_ELIGIBILITY_CHECK",
     });
-    const headers = call.init?.headers as Record<string, string>;
-    expect(headers.Authorization).toBe("Bearer mock-access-token");
+    expect(call.input.headerLines).toContain("Authorization: Bearer mock-access-token");
   });
 
   it("keeps the quota summary when the credit fetch fails", async () => {
-    global.fetch = mock((url: string | URL | Request, init?: RequestInit) => {
-      fetchCalls.push({ url: String(url), init });
-      if (String(url).includes("loadCodeAssist")) {
-        return Promise.resolve(new Response("boom", { status: 500 }));
-      }
-      return Promise.resolve(new Response(JSON.stringify(QUOTA_SUMMARY_PAYLOAD), { status: 200 }));
-    }) as unknown as typeof fetch;
+    sendSpy?.mockImplementation(
+      async (input: transport.Http1RequestInput, contentLengthAt: number) => {
+        sizedCalls.push({ input, contentLengthAt });
+        if (input.url.pathname.includes("loadCodeAssist")) {
+          return { status: 500, headers: new Map(), body: bodyBytes("boom") };
+        }
+        return {
+          status: 200,
+          headers: new Map(),
+          body: bodyBytes(JSON.stringify(QUOTA_SUMMARY_PAYLOAD)),
+        };
+      },
+    );
 
     const result = await fetchAntigravityUsage();
     expect(result).not.toBeNull();
@@ -185,15 +203,19 @@ describe("antigravity usage", () => {
   });
 
   it("truncates non-2xx HTTP errors", async () => {
-    global.fetch = mock(() => {
-      return Promise.resolve(new Response("a".repeat(300), { status: 500 }));
-    }) as unknown as typeof fetch;
+    sendSpy?.mockResolvedValue({
+      status: 500,
+      headers: new Map(),
+      body: bodyBytes("a".repeat(300)),
+    });
 
     await expect(fetchAntigravityUsage()).rejects.toThrow(`HTTP 500: ${"a".repeat(239)}…`);
 
-    global.fetch = mock(() => {
-      return Promise.resolve(new Response("short error", { status: 400 }));
-    }) as unknown as typeof fetch;
+    sendSpy?.mockResolvedValue({
+      status: 400,
+      headers: new Map(),
+      body: bodyBytes("short error"),
+    });
 
     await expect(fetchAntigravityUsage()).rejects.toThrow("HTTP 400: short error");
   });

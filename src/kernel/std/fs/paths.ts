@@ -8,8 +8,16 @@ export function getDisplayPath(filePath: string): string {
   if (!isAbsolute(filePath)) return filePath;
   const rel = relative(process.cwd(), filePath);
   if (rel.length > 0 && !rel.startsWith("..")) return rel;
+  return homeShortened(filePath);
+}
+
+/** The path with the home folder written as `~`; any other path as it is. */
+export function homeShortened(filePath: string): string {
   const home = homedir();
-  if (filePath.startsWith(home + sep)) return `~${filePath.slice(home.length)}`;
+  if (filePath === home) return "~";
+  if (filePath.startsWith(home + sep) || filePath.startsWith(`${home}/`)) {
+    return `~${filePath.slice(home.length)}`;
+  }
   return filePath;
 }
 

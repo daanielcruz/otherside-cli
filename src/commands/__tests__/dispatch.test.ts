@@ -1,7 +1,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, mock } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import type { LoadedPlugin } from "@/engine/plugins/loader.ts";
 import * as plugins from "@/engine/plugins/registry.ts";
 import { registerAllProviders } from "@/engine/providers/bootstrap.ts";
@@ -12,7 +12,6 @@ import {
   restoreGoalFromRecords,
 } from "@/engine/queue/state.ts";
 import { loadSessionForResume, Session, sessionPathForCwd } from "@/engine/session/index.ts";
-import { activePlanFilePath } from "@/engine/tools/plan-gate.ts";
 import type { UserConfig } from "@/kernel/config/config.ts";
 import {
   _resetAutoMemorySessionForTesting,
@@ -255,6 +254,43 @@ describe("config toggles via slash", () => {
   });
 });
 
+describe("handleModel via dispatch", () => {
+  beforeAll(() => {
+    registerAllProviders();
+  });
+
+  it("parses qualified provider/model arguments without registering a literal slash model id", async () => {
+    const dummyCtx = {
+      broker: {
+        read: () => ({
+          model: "gemini-4-argon",
+          provider: "antigravity",
+          effort: "medium" as const,
+        }),
+        dispatch: () => {},
+      },
+    } as unknown as SlashContext;
+
+    const sameProvider = await dispatch("/model antigravity/gemini-3.8-flash", dummyCtx);
+    expect(sameProvider.feedback).toBe("Set model to Gemini 3.8 Flash");
+    expect(sameProvider.pendingChange).toEqual({
+      kind: "set_model",
+      provider: "antigravity",
+      model: "gemini-3.8-flash",
+      persistDefault: true,
+    });
+
+    const crossProvider = await dispatch("/model deepseek/deepseek-flash", dummyCtx);
+    expect(crossProvider.feedback).toBe("Set model to DeepSeek V4.1 Flash");
+    expect(crossProvider.pendingChange).toEqual({
+      kind: "set_model",
+      provider: "deepseek",
+      model: "deepseek-flash",
+      persistDefault: true,
+    });
+  });
+});
+
 describe("handleEffort via dispatch", () => {
   beforeAll(() => {
     registerAllProviders();
@@ -268,7 +304,7 @@ describe("handleEffort via dispatch", () => {
     const dummyCtx = {
       broker: {
         read: () => ({
-          model: "claude-opus-4-8",
+          model: "claude-opus-5-5",
           provider: "anthropic",
           effort: "high" as const,
         }),
@@ -292,9 +328,9 @@ describe("handleEffort via dispatch", () => {
     const dummyCtx = {
       broker: {
         read: () => ({
-          model: "claude-opus-4-8",
+          model: "claude-opus-5-5",
           provider: "anthropic",
-          effort: "high" as const,
+          effort: "low" as const,
         }),
         dispatch: () => {},
       },
@@ -305,8 +341,8 @@ describe("handleEffort via dispatch", () => {
     const result = await dispatch("/effort auto", dummyCtx);
 
     expect(result.kind).toBe("panel");
-    expect(result.feedback).toBe("Set effort auto (xhigh)");
-    expect(result.pendingChange).toEqual({ kind: "set_effort", effort: "xhigh" });
+    expect(result.feedback).toBe("Set effort auto (high)");
+    expect(result.pendingChange).toEqual({ kind: "set_effort", effort: "high" });
     expectLastUpdatedConfig({});
   });
 
@@ -314,7 +350,7 @@ describe("handleEffort via dispatch", () => {
     const dummyCtx = {
       broker: {
         read: () => ({
-          model: "claude-opus-4-8",
+          model: "claude-opus-5-5",
           provider: "anthropic",
           effort: "high" as const,
         }),
@@ -332,66 +368,6 @@ describe("handleEffort via dispatch", () => {
     expect(result.kind).toBe("panel");
     expect(result.pendingChange).toEqual({ kind: "set_ultracode", enabled: true });
     expectLastUpdatedConfig({ ultracode: true });
-  });
-});
-
-describe("/plan via dispatch", () => {
-  it("enters plan mode when not already active", async () => {
-    const dispatched: unknown[] = [];
-    const dummyCtx = {
-      broker: {
-        read: () => ({ permissionMode: "default" }),
-        dispatch: (event: unknown) => dispatched.push(event),
-      },
-    } as unknown as SlashContext;
-
-    const result = await dispatch("/plan", dummyCtx);
-
-    expect(result.kind).toBe("toggle");
-    expect(result.feedback).toBe("Entered plan mode");
-    expect(dispatched).toEqual([{ kind: "set_permission_mode", mode: "plan" }]);
-  });
-
-  it("renders the current plan locally without exiting or starting an API turn", async () => {
-    const priorConfigDir = process.env.OTHERSIDE_CONFIG_DIR;
-    const configDir = mkdtempSync(join(tmpdir(), "otherside-plan-command-"));
-    process.env.OTHERSIDE_CONFIG_DIR = configDir;
-    const dispatched: unknown[] = [];
-    let modelCalls = 0;
-    const sessionId = "plan-command-session";
-    const planFile = activePlanFilePath(sessionId);
-    mkdirSync(dirname(planFile), { recursive: true });
-    writeFileSync(planFile, "# Captured plan\n\n1. Inspect locally.\n", "utf8");
-    const dummyCtx = {
-      broker: {
-        read: () => ({ permissionMode: "plan", prePlanMode: "default" }),
-        dispatch: (event: unknown) => dispatched.push(event),
-      },
-      session: { id: sessionId },
-      agent: { run: () => (modelCalls += 1) },
-    } as unknown as SlashContext;
-
-    try {
-      const result = await dispatch("/plan", dummyCtx);
-
-      expect(result.kind).toBe("toggle");
-      expect(result.feedback).toBe(
-        [
-          "Current Plan",
-          planFile,
-          "",
-          "# Captured plan\n\n1. Inspect locally.",
-          "",
-          '"/plan open" to edit this plan',
-        ].join("\n"),
-      );
-      expect(dispatched).toEqual([]);
-      expect(modelCalls).toBe(0);
-    } finally {
-      if (priorConfigDir === undefined) delete process.env.OTHERSIDE_CONFIG_DIR;
-      else process.env.OTHERSIDE_CONFIG_DIR = priorConfigDir;
-      rmSync(configDir, { recursive: true, force: true });
-    }
   });
 });
 

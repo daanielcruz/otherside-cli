@@ -141,7 +141,7 @@ describe("account-bound thinking replay", () => {
     expect(thinkingBlocksOnWire(conversationWith({ producedAccount: CURRENT_ACCOUNT }))).toBe(1);
     expect(
       thinkingBlocksOnWire(
-        conversationWith({ producedAccount: CURRENT_ACCOUNT, producedModel: "claude-opus-4-8" }),
+        conversationWith({ producedAccount: CURRENT_ACCOUNT, producedModel: "claude-opus-5-5" }),
       ),
     ).toBe(1);
   });

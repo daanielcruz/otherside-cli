@@ -39,8 +39,10 @@ import {
   setDesignTurnIndex,
 } from "@/design/tool-cards.ts";
 import {
-  drainDesignSteers,
+  drainDesignSteerMessages,
+  ownsDesignTurn,
   registerDesignTurn,
+  setDesignTurnSteerable,
   steerDesignTurn,
   unregisterDesignTurn,
 } from "@/design/turns.ts";
@@ -52,7 +54,7 @@ import { canSendNatively } from "@/engine/model/capabilities-runtime.ts";
 import { makeRequestContext } from "@/engine/queue/runtime/request-context.ts";
 import { describeImageViaProvider } from "@/engine/tools/builtins/parse-image.ts";
 import type { EffortLevel } from "@/kernel/std/types/effort.ts";
-import type { DrainedQueuedMessage, ForkEvent } from "@/kernel/std/types/events.ts";
+import type { ForkEvent } from "@/kernel/std/types/events.ts";
 import type { ImageMediaType } from "@/kernel/std/types/image.ts";
 import type { Message } from "@/kernel/std/types/message.ts";
 import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
@@ -194,10 +196,6 @@ async function handle(params: unknown, ctx: RpcContext, id: number | string | nu
       const images = (parsed.attachments ?? [])
         .map((attachment) => parseImageDataUri(attachment.data))
         .filter((image): image is { mediaType: ImageMediaType; data: string } => image !== null);
-      const toDrainedMessage = (text: string): DrainedQueuedMessage => ({
-        text,
-        blocks: [{ type: "text", text }],
-      });
       const sharedSpec = {
         ctx: requestContext,
         name: "design",
@@ -208,7 +206,7 @@ async function handle(params: unknown, ctx: RpcContext, id: number | string | nu
         description: "Design canvas turn",
         extraDeclarations: toolset.declarations,
         scopedTools: toolset.scopedTools,
-        pendingUserInputDrainer: () => drainDesignSteers(parsed.designId).map(toDrainedMessage),
+        pendingUserInputDrainer: () => drainDesignSteerMessages(parsed.designId),
         streamToolInputFor: DESIGN_STREAM_TOOL_INPUTS,
         sink: (event: ForkEvent) => {
           streamPreview.handle(event);
@@ -272,6 +270,9 @@ async function handle(params: unknown, ctx: RpcContext, id: number | string | nu
         initialMessages: withHistory([{ type: "text", text: promptText }]),
       });
     });
+    // The design fork that drained steers has returned; a message arriving
+    // during verification must start its own turn instead of queueing forever.
+    setDesignTurnSteerable(parsed.designId, abortController, false);
     if (result.isError) {
       writeDebugError("design fork failed", result.output);
       ctx.emit(notify("$/stream", { id: streamId, event: "end" }));
@@ -304,13 +305,15 @@ async function handle(params: unknown, ctx: RpcContext, id: number | string | nu
           designId: parsed.designId,
           streamId,
           requestContext,
+          turnController: abortController,
           toolset,
           turnIndex,
         }),
       );
-    } catch {
-      // Best-effort: the RPC already responded and the stream ended, so a
-      // failed verification pass has no client channel — never fail the turn.
+    } catch (error) {
+      // The RPC already responded and the stream ended: a failed verification
+      // pass has no client channel and never fails the turn.
+      writeDebugError("design verification failed", error);
     }
   } catch (error) {
     writeDebugError("design stream failed", error);
@@ -318,10 +321,14 @@ async function handle(params: unknown, ctx: RpcContext, id: number | string | nu
     ctx.send(fail(id, RPC_INTERNAL_ERROR, "stream failed"));
   } finally {
     streamPreview.rollbackAll();
-    clearDesignTurnIndex(parsed.designId);
-    clearDesignTextSegments(parsed.designId);
-    clearVerificationQueue(parsed.designId);
-    unregisterDesignTurn(parsed.designId, abortController);
+    // A superseding turn already owns the per-design state; clearing it here
+    // would wipe the turn index and text segments of the turn now running.
+    if (ownsDesignTurn(parsed.designId, abortController)) {
+      clearDesignTurnIndex(parsed.designId);
+      clearDesignTextSegments(parsed.designId);
+      clearVerificationQueue(parsed.designId);
+      unregisterDesignTurn(parsed.designId, abortController);
+    }
     if (activeForkId) unregisterDesignFork(activeForkId);
   }
 }

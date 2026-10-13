@@ -118,7 +118,7 @@ function buildAnsiPhysicalRow(
 
 function fitDiffPrefix(prefix: string, marker: "-" | "+" | "", width: number): string {
   if (stringWidth(prefix) <= Math.max(0, width - 2)) return prefix;
-  const compact = marker.length > 0 ? `${marker} ` : "";
+  const compact = marker;
   if (stringWidth(compact) <= Math.max(0, width - 2)) return compact;
   return "";
 }
@@ -294,8 +294,8 @@ export function renderDiffAnsiLines(
           const rem = removedLines[k] ?? "";
           const pair = paired ? (addedLines[k] ?? null) : null;
           const segments = wordSegments(pair, rem, "removed");
-          const prefix = `${padLineNo(oldNo, digits)} - `;
-          const contPrefix = `${" ".repeat(digits)} - `;
+          const prefix = ` ${padLineNo(oldNo, digits)} -`;
+          const contPrefix = ` ${" ".repeat(digits)} -`;
           bodyLines.push(
             ...buildAnsiDiffRow(prefix, contPrefix, segments, rem, remCtx, width, "-"),
           );
@@ -305,8 +305,8 @@ export function renderDiffAnsiLines(
           const add = addedLines[k] ?? "";
           const pair = paired ? (removedLines[k] ?? null) : null;
           const segments = wordSegments(pair, add, "added");
-          const prefix = `${padLineNo(newNo, digits)} + `;
-          const contPrefix = `${" ".repeat(digits)} + `;
+          const prefix = ` ${padLineNo(newNo, digits)} +`;
+          const contPrefix = ` ${" ".repeat(digits)} +`;
           bodyLines.push(
             ...buildAnsiDiffRow(prefix, contPrefix, segments, add, addCtx, width, "+"),
           );
@@ -315,13 +315,13 @@ export function renderDiffAnsiLines(
         i = j;
       } else if (ch === "+") {
         const segments = wordSegments(null, text, "added");
-        const prefix = `${padLineNo(newNo, digits)} + `;
-        const contPrefix = `${" ".repeat(digits)} + `;
+        const prefix = ` ${padLineNo(newNo, digits)} +`;
+        const contPrefix = ` ${" ".repeat(digits)} +`;
         bodyLines.push(...buildAnsiDiffRow(prefix, contPrefix, segments, text, addCtx, width, "+"));
         newNo += 1;
         i += 1;
       } else {
-        const rawCtxPrefix = `${padLineNo(newNo, digits)}   `;
+        const rawCtxPrefix = ` ${padLineNo(newNo, digits)}  `;
         const rawCtxContPrefix = " ".repeat(rawCtxPrefix.length);
         const ctxPrefix = fitDiffPrefix(rawCtxPrefix, "", width);
         const ctxContPrefix = fitDiffPrefix(rawCtxContPrefix, "", width);

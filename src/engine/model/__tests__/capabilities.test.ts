@@ -12,17 +12,19 @@ import type { Message } from "@/kernel/std/types/message.ts";
 describe("isVisionCapable", () => {
   it("returns true for vision providers whose active model accepts images", () => {
     expect(isVisionCapable("anthropic")).toBe(true);
-    expect(isVisionCapable("anthropic", "claude-opus-4-8")).toBe(true);
+    expect(isVisionCapable("anthropic", "claude-opus-5-5")).toBe(true);
     expect(isVisionCapable("antigravity")).toBe(true);
     expect(isVisionCapable("antigravity", "gemini-3.8-flash")).toBe(true);
     expect(isVisionCapable("codex")).toBe(true);
-    expect(isVisionCapable("codex", "gpt-5.5")).toBe(true);
+    expect(isVisionCapable("codex", "gpt-5.6-terra")).toBe(true);
     expect(isVisionCapable("kimi")).toBe(true);
     expect(isVisionCapable("kimi", "k3")).toBe(true);
     expect(isVisionCapable("kimi", "kimi-for-coding")).toBe(true);
     expect(isVisionCapable("kimi", "kimi-for-coding-highspeed")).toBe(true);
     expect(isVisionCapable("glm")).toBe(true);
     expect(isVisionCapable("glm", "glm-5.2")).toBe(true);
+    expect(isVisionCapable("deepseek", "deepseek-flash")).toBe(true);
+    expect(isVisionCapable("deepseek", "deepseek-v4-flash")).toBe(true);
   });
 
   it("returns true for hybrid-kind providers when the parser model is active", () => {
@@ -37,13 +39,12 @@ describe("isVisionCapable", () => {
 
   it("returns false for model-scoped providers when the model is not vision-capable", () => {
     expect(isVisionCapable("glm", "glm-5-turbo")).toBe(false);
+    expect(isVisionCapable("deepseek", "deepseek-v4-pro")).toBe(false);
     expect(isVisionCapable("minimax", "minimax-m2.7")).toBe(false);
     expect(isVisionCapable("xai", "grok-composer-2.5-fast")).toBe(false);
   });
 
   it("returns false for none-kind providers", () => {
-    expect(isVisionCapable("deepseek")).toBe(false);
-    expect(isVisionCapable("deepseek", "deepseek-v4-pro")).toBe(false);
     expect(isVisionCapable("openai")).toBe(false);
     expect(isVisionCapable("openai", "anything")).toBe(false);
   });

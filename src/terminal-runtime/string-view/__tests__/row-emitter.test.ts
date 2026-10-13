@@ -176,14 +176,12 @@ test("document rebuild repaints settled rows and frame after resize", () => {
   const emitter = new InlineRowPainter();
   emitter.paintScrollback(["wide settled"], ["wide prompt"], GEOMETRY);
 
-  const bytes = emitter.paintScrollback(["narrow", "settled"], ["narrow prompt"], {
+  const bytes = emitter.paintScrollback(["narrow", "settled"], ["new prompt"], {
     ...GEOMETRY,
     width: 10,
   }).bytes;
 
-  expect(bytes).toBe(
-    `${BEGIN_SYNC}${FULL_RESET}narrow\r\nsettled\x1b[6;1Hnarrow prompt${END_SYNC}`,
-  );
+  expect(bytes).toBe(`${BEGIN_SYNC}${FULL_RESET}narrow\r\nsettled\x1b[6;1Hnew prompt${END_SYNC}`);
 });
 
 test("surface switches keep short agent frames at the viewport bottom", () => {

@@ -1,10 +1,9 @@
+import { isSchedulingDisabled } from "@/engine/background/cron/index.ts";
 import { hasEnabledPluginLspServers } from "@/engine/plugins/lsp.ts";
 import type { ToolSchema } from "@/engine/tools/contract.ts";
 import CronDeleteSchema from "@/harness/tools/CronDelete/tool.json" with { type: "json" };
 import CronListSchema from "@/harness/tools/CronList/tool.json" with { type: "json" };
-import EnterPlanModeSchema from "@/harness/tools/EnterPlanMode/tool.json" with { type: "json" };
 import EnterWorktreeSchema from "@/harness/tools/EnterWorktree/tool.json" with { type: "json" };
-import ExitPlanModeSchema from "@/harness/tools/ExitPlanMode/tool.json" with { type: "json" };
 import ExitWorktreeSchema from "@/harness/tools/ExitWorktree/tool.json" with { type: "json" };
 import GenerateImageSchema from "@/harness/tools/GenerateImage/tool.json" with { type: "json" };
 import ListMcpResourcesSchema from "@/harness/tools/ListMcpResources/tool.json" with {
@@ -66,6 +65,11 @@ function planningTaskToolsEnabled(): boolean {
   return !isEnvDefinedFalsy(process.env.CLAUDE_CODE_ENABLE_TASKS);
 }
 
+// Scheduled prompts can be switched off; then nothing could ever fire what these tools set up.
+function schedulingEnabled(): boolean {
+  return !isSchedulingDisabled();
+}
+
 interface ToolCatalogEntry {
   schema: ToolSchema;
   kind: ToolCatalogKind;
@@ -84,18 +88,16 @@ const TOOL_CATALOG = [
   { schema: EditTool.schema, kind: "base" },
   { schema: ReadTool.schema, kind: "base" },
   { schema: ReportFindings.schema, kind: "base" },
-  { schema: ScheduleWakeupSchema, kind: "base" },
+  { schema: ScheduleWakeupSchema, kind: "base", isAvailable: schedulingEnabled },
   { schema: SkillTool.schema, kind: "base" },
   { schema: ToolSearchSchema, kind: "base" },
   { schema: WorkflowSchema, kind: "base" },
   { schema: WriteSchema, kind: "base" },
 
-  { schema: CronCreateSchema, kind: "deferred" },
-  { schema: CronDeleteSchema, kind: "deferred" },
-  { schema: CronListSchema, kind: "deferred" },
-  { schema: EnterPlanModeSchema, kind: "deferred" },
+  { schema: CronCreateSchema, kind: "deferred", isAvailable: schedulingEnabled },
+  { schema: CronDeleteSchema, kind: "deferred", isAvailable: schedulingEnabled },
+  { schema: CronListSchema, kind: "deferred", isAvailable: schedulingEnabled },
   { schema: EnterWorktreeSchema, kind: "deferred" },
-  { schema: ExitPlanModeSchema, kind: "deferred" },
   { schema: ExitWorktreeSchema, kind: "deferred" },
   { schema: GenerateImageSchema, kind: "deferred" },
   {

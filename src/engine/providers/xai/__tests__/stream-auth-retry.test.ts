@@ -12,7 +12,7 @@ let configDir: string;
 function ctx(): RequestContext {
   return {
     provider: "xai",
-    model: "grok-4.5",
+    model: "grok-4.6",
     sessionId: "xai-401-stream",
     cwd: "/workspace/fixture",
     permissionMode: "default",
@@ -61,7 +61,7 @@ describe("xai stream 401 refresh-then-retry", () => {
     const chunks: string[] = [];
     for await (const chunk of xaiStream(
       ctx(),
-      { model: "grok-4.5" },
+      { model: "grok-4.6" },
       new AbortController().signal,
     )) {
       chunks.push(new TextDecoder().decode(chunk));
@@ -94,7 +94,7 @@ describe("xai stream 401 refresh-then-retry", () => {
     }) as unknown as typeof fetch;
 
     await expect(async () => {
-      for await (const _ of xaiStream(ctx(), { model: "grok-4.5" }, new AbortController().signal)) {
+      for await (const _ of xaiStream(ctx(), { model: "grok-4.6" }, new AbortController().signal)) {
       }
     }).toThrow("HTTP 401 from grok /v1/responses");
 

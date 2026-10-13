@@ -14,14 +14,24 @@ import {
 } from "@/engine/session/usage/plan-quota.ts";
 import { truncateEllipsis } from "@/kernel/std/text/text.ts";
 
-const BILLING_URL = `${BASE_URL}/billing?format=credits`;
+// The credits view carries the weekly period percentage. Some accounts answer
+// it with period metadata only; the bare view then still reports the monthly
+// included amount, which is the only usage signal such an account exposes.
+const CREDITS_BILLING_URL = `${BASE_URL}/billing?format=credits`;
+const MONTHLY_BILLING_URL = `${BASE_URL}/billing`;
 const FULL_PERCENT = 100;
+
+interface BillingIdentity {
+  accessToken: string;
+  accountId: string;
+}
 
 export async function fetchXaiUsage(): Promise<PlanQuotaData | null> {
   const tokens = await currentTokens();
   if (!tokens.accountId) throw new Error("xai billing requires an account identity");
+  let identity: BillingIdentity = { accessToken: tokens.accessToken, accountId: tokens.accountId };
 
-  let resp = await fetchBilling(BILLING_URL, tokens.accessToken, tokens.accountId);
+  let resp = await fetchBilling(CREDITS_BILLING_URL, identity);
   if (resp.status === 401) {
     // Reload first — another flow may have already refreshed; only hit the
     // OAuth endpoint when the stored token is the one the server rejected.
@@ -30,20 +40,25 @@ export async function fetchXaiUsage(): Promise<PlanQuotaData | null> {
       newTokens = await forceRefreshTokens(tokens).catch(() => null);
     }
     if (newTokens && newTokens.accessToken !== tokens.accessToken && newTokens.accountId) {
-      resp = await fetchBilling(BILLING_URL, newTokens.accessToken, newTokens.accountId);
+      identity = { accessToken: newTokens.accessToken, accountId: newTokens.accountId };
+      resp = await fetchBilling(CREDITS_BILLING_URL, identity);
     }
   }
-  return parseXaiBillingPayload(await parseXaiBillingResponse(resp));
+  const credits = parseXaiBillingPayload(await parseXaiBillingResponse(resp));
+  if (credits) return credits;
+
+  const monthly = await fetchBilling(MONTHLY_BILLING_URL, identity);
+  return parseXaiMonthlyBillingPayload(await parseXaiBillingResponse(monthly));
 }
 
-function fetchBilling(url: string, accessToken: string, accountId: string): Promise<Response> {
+function fetchBilling(url: string, identity: BillingIdentity): Promise<Response> {
   return fetch(url, {
     method: "GET",
     headers: {
-      Authorization: authHeaderValue(accessToken),
+      Authorization: authHeaderValue(identity.accessToken),
       Accept: "application/json",
       "X-XAI-Token-Auth": "xai-grok-cli",
-      "x-userid": accountId,
+      "x-userid": identity.accountId,
       "x-grok-client-version": GROK_CLIENT_VERSION,
       "x-grok-client-identifier": GROK_CLIENT_IDENTIFIER,
       "x-grok-client-mode": "headless",
@@ -72,6 +87,36 @@ export function parseXaiBillingPayload(value: unknown): PlanQuotaData | null {
   const periodWindow = creditsPeriodWindow(config);
   if (!periodWindow) return null;
   return { level: null, windows: [periodWindow] };
+}
+
+/**
+ * The bare billing view: an included monthly amount and what was used of it.
+ * Only consulted once the credits view produced no period percentage, so a
+ * weekly signal is never displaced by the coarser monthly one.
+ */
+export function parseXaiMonthlyBillingPayload(value: unknown): PlanQuotaData | null {
+  const config = objectValue(objectValue(value)?.config);
+  if (!config) return null;
+
+  const limit = amountValue(config.monthlyLimit);
+  const used = amountValue(config.used);
+  if (limit === null || used === null || limit <= 0) return null;
+
+  const percent = (used / limit) * FULL_PERCENT;
+  return {
+    level: null,
+    windows: [
+      {
+        label: "Monthly limit",
+        limit: { utilization: clampPercent(percent), resetsAt: isoOrNull(config.billingPeriodEnd) },
+        detail: `${formatPercent(percent)}% used`,
+      },
+    ],
+  };
+}
+
+function amountValue(value: unknown): number | null {
+  return numberValue(objectValue(value)?.val);
 }
 
 function creditsPeriodWindow(config: Record<string, unknown>): PlanQuotaWindow | null {

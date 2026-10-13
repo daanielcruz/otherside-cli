@@ -4,7 +4,7 @@ exports[`tool catalog golden (gates #3 deterministic catalog) base tools — nam
 [
   {
     "name": "Agent",
-    "schema": "fe025246b470600a",
+    "schema": "19a767ec74fff511",
   },
   {
     "name": "AskUserQuestion",
@@ -12,7 +12,7 @@ exports[`tool catalog golden (gates #3 deterministic catalog) base tools — nam
   },
   {
     "name": "Bash",
-    "schema": "94ffad4822334fdf",
+    "schema": "39e0e38e0907dfcd",
   },
   {
     "name": "Edit",
@@ -20,7 +20,7 @@ exports[`tool catalog golden (gates #3 deterministic catalog) base tools — nam
   },
   {
     "name": "Read",
-    "schema": "b9874f37b6aade6a",
+    "schema": "34ef4c574a752ead",
   },
   {
     "name": "ReportFindings",
@@ -28,7 +28,7 @@ exports[`tool catalog golden (gates #3 deterministic catalog) base tools — nam
   },
   {
     "name": "ScheduleWakeup",
-    "schema": "af1d9e7b1fb28d68",
+    "schema": "94a34dab6c5d1b8b",
   },
   {
     "name": "Skill",
@@ -53,7 +53,7 @@ exports[`tool catalog golden (gates #3 deterministic catalog) deferred tools —
 [
   {
     "name": "CronCreate",
-    "schema": "47d7b5b53c6e5c76",
+    "schema": "8363d600c85fbdde",
   },
   {
     "name": "CronDelete",
@@ -64,16 +64,8 @@ exports[`tool catalog golden (gates #3 deterministic catalog) deferred tools —
     "schema": "3f4edfbdd90fcb23",
   },
   {
-    "name": "EnterPlanMode",
-    "schema": "3f4edfbdd90fcb23",
-  },
-  {
     "name": "EnterWorktree",
     "schema": "b1eec893032bf0ca",
-  },
-  {
-    "name": "ExitPlanMode",
-    "schema": "16b495d639035082",
   },
   {
     "name": "ExitWorktree",
@@ -105,7 +97,7 @@ exports[`tool catalog golden (gates #3 deterministic catalog) deferred tools —
   },
   {
     "name": "TaskCreate",
-    "schema": "8f9ac8fbfa891676",
+    "schema": "785fd56cc4c3c79e",
   },
   {
     "name": "TaskGet",
@@ -125,7 +117,7 @@ exports[`tool catalog golden (gates #3 deterministic catalog) deferred tools —
   },
   {
     "name": "TaskUpdate",
-    "schema": "3df12bd8f2b76742",
+    "schema": "303623bf54b06f42",
   },
   {
     "name": "WebFetch",

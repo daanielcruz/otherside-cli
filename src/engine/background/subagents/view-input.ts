@@ -86,13 +86,7 @@ function routeResumedAgentEvent(
   } else if (event.kind === "fork_start") {
     setRoute(taskId, { provider: event.provider, model: event.model }, event.effort);
   } else if (event.kind === "fork_usage") {
-    const usage = {
-      inputTokens: event.inputTokens,
-      outputTokens: event.outputTokens,
-      cacheCreationInputTokens: event.cacheCreationInputTokens,
-      cacheReadInputTokens: event.cacheReadInputTokens,
-    };
-    event.isSnapshot ? setUsageSnapshot(taskId, usage) : addUsage(taskId, usage);
+    event.isSnapshot ? setUsageSnapshot(taskId, event) : addUsage(taskId, event);
   } else if (event.kind === "fork_text_delta") {
     appendAssistantText(taskId, event.text);
   } else if (event.kind === "fork_stream_reset") {

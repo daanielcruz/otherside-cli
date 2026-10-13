@@ -1,4 +1,6 @@
 import { listCompletions } from "@/commands/index.ts";
+import { TURN_COMPLETION_VERB } from "@/engine/queue/turn/verb.ts";
+import { formatClockTime } from "@/kernel/std/text/clock-time.ts";
 import { stringWidth, type TerminalColor } from "@/terminal-runtime";
 
 const SPINNER_FRAMES = ["◰", "◳", "◲", "◱"] as const;
@@ -97,6 +99,10 @@ export function formatTurnDuration(ms: number): string {
   if (h > 0 || m > 0) parts.push(`${m}m`);
   parts.push(`${s}s`);
   return parts.join(" ");
+}
+
+export function turnCompletionText(durationMs: number, doneAt: Date): string {
+  return `${TURN_COMPLETION_VERB} for ${formatTurnDuration(durationMs)} · done ${formatClockTime(doneAt)}`;
 }
 
 export function tipAt(index: number): string {

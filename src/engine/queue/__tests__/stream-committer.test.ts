@@ -408,13 +408,105 @@ describe("tui observer headline dispatch", () => {
     const handle = makeObserver({
       dispatch: (action) => dispatched.push(action as { type: string; verb?: string }),
       // headline promotion is provider-gated (featureFlags.reasoningHeadlines)
-      turnState: { provider: "codex", model: "gpt-5.6-sol" } as never,
+      turnState: { provider: "codex", model: "gpt-5.6-terra" } as never,
     });
 
     handle.observer.thinking_delta?.({ kind: "thinking_delta", text: "**Reading the code**" });
     handle.observer.thinking_delta?.({ kind: "thinking_delta", text: "\n\nlooking closer" });
 
     expect(dispatched).toContainEqual({ type: "view/setTurnVerb", verb: "Reading the code" });
+  });
+});
+
+describe("tui observer round boundaries", () => {
+  it("settles a finished reply before a round started by input that arrived meanwhile", async () => {
+    let transcript: readonly TranscriptEntry[] = [];
+    const streamingIds: (string | null)[] = [];
+    const handle = makeObserver({
+      setTranscript: (update) => {
+        transcript = typeof update === "function" ? update(transcript) : update;
+      },
+      setStreamingId: (id) => streamingIds.push(id as string | null),
+    });
+    const { observer } = handle;
+    await observer.message_start?.({ kind: "message_start" });
+    observer.text_delta?.({ kind: "text_delta", text: "FIRST-REPLY" });
+    await observer.message_stop?.({ kind: "message_stop", stop_reason: "stop" });
+    await observer.turn_end?.({ kind: "turn_end", turn: 0, stopReason: "stop" });
+    await observer.message_start?.({ kind: "message_start" });
+    observer.text_delta?.({ kind: "text_delta", text: "SECOND-REPLY" });
+    await handle.flushAssistant();
+    const replies = transcript.filter((entry) => entry.kind === "assistant").map((e) => e.text);
+    expect(replies).toEqual(["FIRST-REPLY", "SECOND-REPLY"]);
+    expect(streamingIds.filter(Boolean)).toHaveLength(1);
+  });
+
+  it("keeps an output-limit continuation in the same entry", async () => {
+    let transcript: readonly TranscriptEntry[] = [];
+    const handle = makeObserver({
+      setTranscript: (update) => {
+        transcript = typeof update === "function" ? update(transcript) : update;
+      },
+    });
+    const { observer } = handle;
+    await observer.message_start?.({ kind: "message_start" });
+    observer.text_delta?.({ kind: "text_delta", text: "mid-wor" });
+    await observer.turn_end?.({ kind: "turn_end", turn: 0, stopReason: "length" });
+    await observer.silent_turn_end_recovery?.({
+      kind: "silent_turn_end_recovery",
+      turn: 0,
+      iteration: 1,
+    });
+    await observer.message_start?.({ kind: "message_start" });
+    observer.text_delta?.({ kind: "text_delta", text: "d continues" });
+    await handle.flushAssistant();
+    expect(transcript.filter((entry) => entry.kind === "assistant").map((e) => e.text)).toEqual([
+      "mid-word continues",
+    ]);
+  });
+
+  it("gives the reply after a mid-turn compaction its own live entry", async () => {
+    let transcript: readonly TranscriptEntry[] = [];
+    const streamingIds: (string | null)[] = [];
+    const handle = makeObserver({
+      setTranscript: (update) => {
+        transcript = typeof update === "function" ? update(transcript) : update;
+      },
+      setStreamingId: (id) => streamingIds.push(id as string | null),
+    });
+    const { observer } = handle;
+    await observer.message_start?.({ kind: "message_start" });
+    observer.text_delta?.({ kind: "text_delta", text: "BEFORE-COMPACT" });
+    await observer.turn_end?.({ kind: "turn_end", turn: 0, stopReason: "stop" });
+    await observer.compact_start?.({
+      kind: "compact_start",
+      preTokens: 1,
+      threshold: 1,
+      window: 1,
+    });
+    await observer.message_start?.({ kind: "message_start" });
+    observer.text_delta?.({ kind: "text_delta", text: "AFTER-COMPACT" });
+    await handle.flushAssistant();
+    const replies = transcript.filter((entry) => entry.kind === "assistant");
+    expect(replies.map((e) => e.text)).toEqual(["BEFORE-COMPACT", "AFTER-COMPACT"]);
+    expect(new Set(replies.map((e) => e.id)).size).toBe(2);
+    expect(streamingIds.at(-1)).toBeTruthy();
+  });
+
+  it("keeps one entry when a turn's only round ends", async () => {
+    let transcript: readonly TranscriptEntry[] = [];
+    const handle = makeObserver({
+      setTranscript: (update) => {
+        transcript = typeof update === "function" ? update(transcript) : update;
+      },
+    });
+    await handle.observer.message_start?.({ kind: "message_start" });
+    handle.observer.text_delta?.({ kind: "text_delta", text: "ONLY-REPLY" });
+    await handle.observer.turn_end?.({ kind: "turn_end", turn: 0, stopReason: "stop" });
+    await handle.flushAssistant();
+    expect(transcript.filter((entry) => entry.kind === "assistant").map((e) => e.text)).toEqual([
+      "ONLY-REPLY",
+    ]);
   });
 });
 

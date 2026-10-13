@@ -54,7 +54,7 @@ describe("deferred tool references", () => {
         },
         {
           provider: "anthropic",
-          model: "claude-haiku-4-5",
+          model: "claude-haiku-5-5",
           effort: null,
           permissionMode: "default",
           sessionId: "toolsearch-worktrees",
@@ -101,7 +101,7 @@ describe("MCP catalog permissions", () => {
         { id: "toolsearch-deny", name: "ToolSearch", input: { query: `select:${name}` } },
         {
           provider: "anthropic",
-          model: "claude-opus-4-8",
+          model: "claude-opus-5-5",
           effort: null,
           permissionMode: "default",
           sessionId: "toolsearch-deny",
@@ -118,7 +118,7 @@ describe("MCP catalog permissions", () => {
         { id: "toolsearch-ask", name: "ToolSearch", input: { query: `select:${name}` } },
         {
           provider: "anthropic",
-          model: "claude-opus-4-8",
+          model: "claude-opus-5-5",
           effort: null,
           permissionMode: "default",
           sessionId: "toolsearch-ask",

@@ -45,6 +45,19 @@ describe("Agent description background default", () => {
     expect(description).not.toContain("By default an agent runs in the **foreground**");
   });
 
+  test("never names run_in_background while the schema omits it", () => {
+    for (const lean of [true, false]) {
+      for (const mainAgent of [true, false]) {
+        expect(buildAgentDescription({ lean, mainAgent })).not.toContain("run_in_background");
+      }
+    }
+  });
+
+  test("the lean description keeps the parameter when auto-background is disabled", () => {
+    process.env.OTHERSIDE_DISABLE_AGENT_AUTO_BACKGROUND = "1";
+    expect(buildAgentDescription({ lean: true })).toContain("`run_in_background: true`");
+  });
+
   test("full-tier usage bullet is swapped too", () => {
     const description = buildAgentDescription({ lean: false });
     expect(description).toContain("- **Background execution**:");

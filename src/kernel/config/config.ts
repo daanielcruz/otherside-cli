@@ -16,12 +16,12 @@ import {
   normalizeOrchestrationMode,
   type OrchestrationMode,
 } from "@/kernel/std/types/orchestration-mode.ts";
+import { type PermissionMode, parsePermissionMode } from "@/kernel/std/types/permission-mode.ts";
 import type {
   ImageGeneratorSelection,
   ProviderId,
   VoiceProviderSelection,
 } from "@/kernel/std/types/provider-ids.ts";
-import type { PermissionMode } from "@/kernel/std/types/request.ts";
 
 interface StatuslineCommon {
   padding?: number;
@@ -306,7 +306,7 @@ import {
 
 export const DEFAULT_CONFIG: UserConfig = {
   defaultProvider: "anthropic",
-  defaultModel: "claude-opus-5",
+  defaultModel: "claude-opus-5-5",
   defaultMode: "accept-edits",
   antigravityGoogleOneAi: true,
   outputStyle: "default",
@@ -459,8 +459,6 @@ export function normalizeConfig(
   return cfg as UserConfig;
 }
 
-const PERMISSION_MODES = new Set<PermissionMode>(["default", "accept-edits", "plan", "yolo"]);
-
 // Absent/invalid stays undefined: an unset guideline renders the default
 // (medium) advisory wording, distinct from an explicitly configured value.
 export function normalizeWorkflowSizeClass(value: unknown): WorkflowSizeClass | undefined {
@@ -470,9 +468,8 @@ export function normalizeWorkflowSizeClass(value: unknown): WorkflowSizeClass | 
 }
 
 export function normalizeDefaultMode(value: unknown): PermissionMode | undefined {
-  if (typeof value !== "string") return undefined;
   if (value === "auto") return "accept-edits";
-  return PERMISSION_MODES.has(value as PermissionMode) ? (value as PermissionMode) : undefined;
+  return parsePermissionMode(value);
 }
 
 export function normalizeProviderId(value: unknown): ProviderId {

@@ -82,9 +82,6 @@ export function resolveAllowSetForFork(
     isBuiltIn: (name) => !isMcpToolName(name) && !isSkillToolName(name),
     isBuiltInAgent: def.scope === "builtin",
     spawnDepth: agentSpawnDepth(ctx),
-    // The roster is keyed on the DEFINITION's mode, never the parent's: a
-    // plan-pinned agent carries ExitPlanMode regardless of who spawned it.
-    ...(def.permissionMode !== undefined ? { permissionMode: def.permissionMode } : {}),
     mcpToolNames: registryNames.filter(isMcpToolName),
     skillToolNames: registryNames.filter(isSkillToolName),
   });

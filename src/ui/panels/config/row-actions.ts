@@ -1,6 +1,7 @@
 import { listProviderConfigs } from "@/engine/contract/registry.ts";
 import { availableModelsForProvider, defaultModelForProvider } from "@/engine/model/catalog.ts";
 import {
+  parserModelsFor,
   resolveParserModel,
   visionCapableProviderIds,
 } from "@/engine/model/facts/capabilities-runtime.ts";
@@ -39,7 +40,7 @@ export type PendingProvider = {
   fastMode: boolean;
 };
 
-const PERMISSION_MODES: PermissionMode[] = ["default", "accept-edits", "plan", "yolo"];
+const PERMISSION_MODES: PermissionMode[] = ["default", "accept-edits", "yolo"];
 
 /**
  * What a bool row toggle does beyond the config patch: broker-side effects the
@@ -145,7 +146,7 @@ export function cycledImageParserModelConfig(
 ): UserConfig | null {
   const provider = cfg.imageParserProvider;
   if (!provider) return null;
-  const models = availableModelsForProvider(provider).map((m) => m.id);
+  const models = parserModelsFor(provider);
   if (models.length === 0) return null;
   const current = cfg.imageParserModel ?? resolveParserModel(provider);
   const next = cycle(models, current, direction || 1);

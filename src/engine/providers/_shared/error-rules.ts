@@ -124,7 +124,15 @@ export const QUOTA_CODES = new Set([
   "QUOTA_EXHAUSTED",
   "INSUFFICIENT_G1_CREDITS_BALANCE",
 ]);
-export const CONTEXT_CODES = new Set(["context_length_exceeded", "request_too_large"]);
+export const CONTEXT_CODES = new Set(["context_length_exceeded"]);
+/** A body over the transport limit: its bytes, not its tokens, are the problem. */
+export const REQUEST_TOO_LARGE_CODES = new Set(["request_too_large"]);
+/** A size rejection that still names the context window is a token overflow, not a body overflow. */
+export const CONTEXT_WINDOW_NAMED_PATTERNS: readonly RegExp[] = [
+  /context window/i,
+  /prompt is too long/i,
+  /prompt_too_long/i,
+];
 export const OVERLOAD_CODES = new Set([
   "overloaded_error",
   "server_is_overloaded",
@@ -212,7 +220,7 @@ const PROVIDER_WIRE_RULES: Readonly<Record<string, Readonly<Record<string, Provi
     PREFILL_QUEUE_OVERLOADED: OVERLOADED_RULE,
     QUOTA_EXCEEDED: QUOTA_RULE,
     UNAVAILABLE: SERVER_RULE,
-    VERIFICATION_REQUIRED: AUTH_RULE,
+    VALIDATION_REQUIRED: AUTH_RULE,
   },
   codex: {
     cyber_policy: INVALID_RULE,

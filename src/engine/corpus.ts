@@ -7,6 +7,8 @@ import {
   loadFromDirectory,
 } from "@/engine/agents/loader.ts";
 import * as agentRegistry from "@/engine/agents/registry.ts";
+import { isSchedulingDisabled } from "@/engine/background/cron/index.ts";
+import { loopSkillPrompt } from "@/engine/background/loop/autonomous.ts";
 import { getPluginWorkflows } from "@/engine/background/workflows/runtime/plugins/plugin-workflows.ts";
 import { listPluginInstallations } from "@/engine/plugins/installations.ts";
 import {
@@ -39,7 +41,6 @@ import {
 import { registerPluginUseListener } from "@/engine/plugins/usage.ts";
 import {
   loadProjectCommandsFromDirectory,
-  loadAndRegister as loadSkill,
   loadSkillFromMarkdown,
   readSkillsFromDir,
 } from "@/engine/skills/loader.ts";
@@ -77,11 +78,21 @@ const AGENT_CORPUS: { id: string; src: string }[] = [
   { id: "verifier", src: verifier },
 ];
 
-const SKILL_CORPUS: { name: string; src: string }[] = [
+const SKILL_CORPUS: {
+  name: string;
+  src: string;
+  promptFor?: (body: string, args: string) => string;
+  isAvailable?: () => boolean;
+}[] = [
   { name: "init", src: initSkill },
   { name: "dream", src: dreamSkill },
   { name: "grill-me", src: grillMeSkill },
-  { name: "loop", src: loopSkill },
+  {
+    name: "loop",
+    src: loopSkill,
+    promptFor: (body, args) => loopSkillPrompt(body, args, process.cwd()),
+    isAvailable: () => !isSchedulingDisabled(),
+  },
   { name: "pr-review", src: prReviewSkill },
   { name: "pr-security-review", src: prSecurityReviewSkill },
   { name: "deep-security-review", src: deepSecurityReview },
@@ -417,9 +428,15 @@ export function loadCorpus(options?: CorpusLoadOptions): {
     agentLoadFailureText,
   );
   let skills = 0;
-  for (const { name, src } of SKILL_CORPUS) {
+  for (const { name, src, promptFor, isAvailable } of SKILL_CORPUS) {
+    if (isAvailable !== undefined && !isAvailable()) continue;
     try {
-      loadSkill(name, src, true);
+      const skill = loadSkillFromMarkdown(name, src, true);
+      skillRegistry.register(
+        promptFor === undefined
+          ? skill
+          : { ...skill, promptFor: (args) => promptFor(skill.body, args) },
+      );
       skills += 1;
     } catch {}
   }

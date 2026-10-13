@@ -1,5 +1,5 @@
 import { streamErrorToHttpError } from "@/engine/providers/_shared/retry.ts";
-import { parseJsonWithPartialRecovery } from "@/engine/providers/_shared/streaming-json-repair.ts";
+import { toolArgumentsObject } from "@/engine/providers/_shared/streaming-json-repair.ts";
 import { usageFromOpenAi } from "@/engine/providers/_shared/usage.ts";
 import { parseCodexUsage } from "@/engine/providers/codex/usage.ts";
 import { parseSse } from "@/kernel/std/stream/sse.ts";
@@ -185,42 +185,18 @@ export async function* translateResponseCodex(
           const itemId = String(item.id ?? "") || String(item.call_id ?? "");
           const t = tools.get(itemId);
           if (t) {
-            let parsed: unknown = null;
-            let success = false;
-            if (t.buffer.trim().length > 0) {
-              const result = parseJsonWithPartialRecovery(t.buffer);
-              if (result.ok) {
-                parsed = result.value;
-                success = true;
-              }
-            }
-            if (!success) {
-              const rawArgs = typeof item.arguments === "string" ? item.arguments : "";
-              if (rawArgs.trim().length > 0) {
-                const result = parseJsonWithPartialRecovery(rawArgs);
-                if (result.ok) {
-                  parsed = result.value;
-                  success = true;
-                }
-              }
-            }
-            if (!success) {
-              parsed = {};
-            }
+            const rawArgs = typeof item.arguments === "string" ? item.arguments : "";
+            const input = toolArgumentsObject(t.buffer) ?? toolArgumentsObject(rawArgs) ?? {};
             tools.delete(itemId);
-            yield { kind: "tool_call_complete", id: t.id, name: t.name, input: parsed };
+            yield { kind: "tool_call_complete", id: t.id, name: t.name, input };
           } else {
             const callId = String(item.call_id ?? "") || String(item.id ?? "");
             const name = String(item.name ?? "");
             const rawArgs = typeof item.arguments === "string" ? item.arguments : "";
-            let parsed: unknown = {};
-            if (rawArgs.trim().length > 0) {
-              const result = parseJsonWithPartialRecovery(rawArgs);
-              parsed = result.ok ? result.value : rawArgs;
-            }
             sawTool = true;
             yield { kind: "tool_call_start", id: callId, name };
-            yield { kind: "tool_call_complete", id: callId, name, input: parsed };
+            const input = toolArgumentsObject(rawArgs) ?? {};
+            yield { kind: "tool_call_complete", id: callId, name, input };
           }
         } else if (itype === "web_search_call") {
           const id = String(item.id ?? "") || "web_search";

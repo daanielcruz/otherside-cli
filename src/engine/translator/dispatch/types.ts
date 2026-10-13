@@ -1,4 +1,8 @@
-export type Api = "anthropic-messages" | "openai-completions" | "codex-responses";
+export type Api =
+  | "anthropic-messages"
+  | "openai-completions"
+  | "codex-responses"
+  | "cloud-sessions";
 
 export interface ApiCompatBase {
   readonly api: Api;

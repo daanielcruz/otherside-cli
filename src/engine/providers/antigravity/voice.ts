@@ -3,6 +3,7 @@ import { providerEndpoint } from "@/devtools/config.ts";
 import type { VoiceTranscriber, VoiceTranscriberCallbacks } from "@/engine/voice/index.ts";
 import { currentTokens, resolveProjectId } from "./auth.ts";
 import { backendHost, userAgent } from "./fingerprint.ts";
+import { callCodeAssist, replyJson } from "./rpc.ts";
 import {
   activityEndMessage,
   activityStartMessage,
@@ -21,19 +22,14 @@ async function audioModel(
   project: string,
   signal?: AbortSignal,
 ): Promise<string> {
-  const response = await fetch(`${backendHost()}/v1internal:fetchAvailableModels`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      "User-Agent": userAgent(),
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ project }),
+  const response = await callCodeAssist({
+    url: `${backendHost()}/v1internal:fetchAvailableModels`,
+    accessToken,
+    body: { project },
     ...(signal ? { signal } : {}),
   });
   if (!response.ok) {
-    const body = await response.text().catch(() => "");
-    if (response.status === 403 && /insufficient authentication scopes/i.test(body)) {
+    if (response.status === 403 && /insufficient authentication scopes/i.test(response.text)) {
       throw new Error("Gemini voice needs additional Google authorization.");
     }
     const suffix =
@@ -42,7 +38,7 @@ async function audioModel(
         : "";
     throw new Error(`Gemini voice model discovery failed with HTTP ${response.status}${suffix}`);
   }
-  const payload = (await response.json()) as { audioTranscriptionModelIds?: unknown };
+  const payload = (replyJson(response) ?? {}) as { audioTranscriptionModelIds?: unknown };
   const model = Array.isArray(payload.audioTranscriptionModelIds)
     ? payload.audioTranscriptionModelIds.find(
         (candidate): candidate is string => typeof candidate === "string" && candidate.length > 0,

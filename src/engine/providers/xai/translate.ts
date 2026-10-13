@@ -2,8 +2,9 @@ import {
   accountFingerprint,
   sameAccountFingerprint,
 } from "@/engine/providers/_shared/account-identity.ts";
+import { isReasoningReplayRejected } from "@/engine/providers/_shared/reasoning-replay-state.ts";
 import { streamErrorToHttpError } from "@/engine/providers/_shared/retry.ts";
-import { parseJsonWithPartialRecovery } from "@/engine/providers/_shared/streaming-json-repair.ts";
+import { toolArgumentsObject } from "@/engine/providers/_shared/streaming-json-repair.ts";
 import { thinkingProvenance } from "@/engine/providers/_shared/thinking-provenance.ts";
 import { usageFromOpenAi } from "@/engine/providers/_shared/usage.ts";
 import {
@@ -12,7 +13,6 @@ import {
   modelListsEffort,
   modelSupportsReasoning,
 } from "@/engine/providers/xai/models.ts";
-import { isEncryptedReasoningRejected } from "@/engine/providers/xai/reasoning-state.ts";
 import { parseSse } from "@/kernel/std/stream/sse.ts";
 import type { ProviderEvent } from "@/kernel/std/types/events.ts";
 import type { ContentBlock, Message } from "@/kernel/std/types/message.ts";
@@ -256,7 +256,7 @@ export function translateRequestGrok(
       messages,
       ctx.model,
       accountFingerprint(ctx.provider),
-      !fullThinking || isEncryptedReasoningRejected(ctx.sessionId),
+      !fullThinking || isReasoningReplayRejected(ctx.sessionId, ctx.provider),
     ),
     store: false,
     stream: true,
@@ -440,25 +440,17 @@ export async function* translateResponseGrok(
           const itemId = String(item.id ?? "") || String(item.call_id ?? "");
           const t = tools.get(itemId);
           if (t) {
-            let parsed: unknown = {};
-            if (t.buffer.trim().length > 0) {
-              const result = parseJsonWithPartialRecovery(t.buffer);
-              parsed = result.ok ? result.value : t.buffer;
-            }
             tools.delete(itemId);
-            yield { kind: "tool_call_complete", id: t.id, name: t.name, input: parsed };
+            const input = toolArgumentsObject(t.buffer) ?? {};
+            yield { kind: "tool_call_complete", id: t.id, name: t.name, input };
           } else {
             const callId = String(item.call_id ?? "") || String(item.id ?? "");
             const name = String(item.name ?? "");
             const rawArgs = typeof item.arguments === "string" ? item.arguments : "";
-            let parsed: unknown = {};
-            if (rawArgs.trim().length > 0) {
-              const result = parseJsonWithPartialRecovery(rawArgs);
-              parsed = result.ok ? result.value : rawArgs;
-            }
             sawTool = true;
             yield { kind: "tool_call_start", id: callId, name };
-            yield { kind: "tool_call_complete", id: callId, name, input: parsed };
+            const input = toolArgumentsObject(rawArgs) ?? {};
+            yield { kind: "tool_call_complete", id: callId, name, input };
           }
         } else if (itype === "web_search_call") {
           const id = String(item.id ?? "") || "web_search";

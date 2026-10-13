@@ -1,12 +1,13 @@
+import { parseWireError } from "@/engine/providers/_shared/error-wire.ts";
 import { usageFetchSignal } from "@/engine/providers/_shared/usage-fetch.ts";
 import {
   CODE_ASSIST_METADATA,
-  codeAssistHeaders,
   currentTokens,
   LOAD_CODE_ASSIST_PATH,
   resolveProjectId,
 } from "@/engine/providers/antigravity/auth.ts";
 import { backendHost } from "@/engine/providers/antigravity/fingerprint.ts";
+import { callCodeAssist, replyJson } from "@/engine/providers/antigravity/rpc.ts";
 import { refreshProviderQuota } from "@/engine/providers/quota-refresh.ts";
 import {
   applyScopedQuotaWarnings,
@@ -14,10 +15,10 @@ import {
 } from "@/engine/session/usage/quota-warning.ts";
 import { clamp } from "@/kernel/std/math.ts";
 import { truncateEllipsis } from "@/kernel/std/text/text.ts";
+import { AccountVerificationError } from "@/kernel/std/types/error-meta.ts";
 import { isRecord } from "@/kernel/std/value-guards.ts";
 
 const RETRIEVE_QUOTA_SUMMARY_PATH = "/v1internal:retrieveUserQuotaSummary";
-const FULL_ELIGIBILITY_CHECK_MODE = "FULL_ELIGIBILITY_CHECK";
 const GOOGLE_ONE_CREDIT_TYPE = "GOOGLE_ONE_AI";
 const PERCENT = 100;
 
@@ -51,19 +52,27 @@ export async function fetchAntigravityUsage(): Promise<AntigravityUsage | null> 
   const tokens = await currentTokens();
   const project = await resolveProjectId(tokens);
   const [resp, creditBalance] = await Promise.all([
-    fetch(`${backendHost()}${RETRIEVE_QUOTA_SUMMARY_PATH}`, {
-      method: "POST",
-      headers: codeAssistHeaders(tokens.accessToken),
-      body: JSON.stringify({ project }),
+    callCodeAssist({
+      url: `${backendHost()}${RETRIEVE_QUOTA_SUMMARY_PATH}`,
+      accessToken: tokens.accessToken,
+      body: { project },
       signal: usageFetchSignal(),
     }),
     fetchGoogleOneCredits(tokens.accessToken),
   ]);
   if (!resp.ok) {
-    const text = await resp.text().catch(() => "");
-    throw new Error(`HTTP ${resp.status}: ${truncateEllipsis(text, 240)}`);
+    const parsed = parseWireError(resp.text);
+    // The page that verifies the account is longer than any excerpt of the body.
+    if (parsed.verificationUrl) {
+      throw new AccountVerificationError({
+        provider: "antigravity",
+        reason: parsed.message,
+        verificationUrl: parsed.verificationUrl,
+      });
+    }
+    throw new Error(`HTTP ${resp.status}: ${truncateEllipsis(resp.text, 240)}`);
   }
-  const summary = parseQuotaSummary(await resp.json());
+  const summary = parseQuotaSummary(replyJson(resp));
   if (!summary) return creditBalance === null ? null : { groups: [], creditBalance };
   return { ...summary, creditBalance };
 }
@@ -74,14 +83,14 @@ export async function fetchAntigravityUsage(): Promise<AntigravityUsage | null> 
  */
 async function fetchGoogleOneCredits(accessToken: string): Promise<number | null> {
   try {
-    const resp = await fetch(`${backendHost()}${LOAD_CODE_ASSIST_PATH}`, {
-      method: "POST",
-      headers: codeAssistHeaders(accessToken),
-      body: JSON.stringify({ metadata: CODE_ASSIST_METADATA, mode: FULL_ELIGIBILITY_CHECK_MODE }),
+    const resp = await callCodeAssist({
+      url: `${backendHost()}${LOAD_CODE_ASSIST_PATH}`,
+      accessToken,
+      body: { metadata: CODE_ASSIST_METADATA },
       signal: usageFetchSignal(),
     });
     if (!resp.ok) return null;
-    return parseGoogleOneCredits(await resp.json());
+    return parseGoogleOneCredits(replyJson(resp));
   } catch {
     return null;
   }

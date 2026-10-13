@@ -11,10 +11,14 @@ import { translateResponseCodex } from "../stream.ts";
 import { translateRequestCodex } from "../translate.ts";
 import { clearSessionState } from "../transport/state.ts";
 
+// Every catalog model is Responses Lite. The classic request shape is still
+// what an id outside the catalog resolves to, so this fixture reaches it.
+const CLASSIC_MODEL = "gpt-classic-fixture";
+
 function codexCtx(overrides: Partial<RequestContext>): RequestContext {
   return {
     provider: "codex",
-    model: "gpt-5.5",
+    model: "gpt-5.6-terra",
     sessionId: "session-1",
     cwd: "/workspace/fixture",
     effort: "high",
@@ -90,7 +94,7 @@ describe("translateRequestCodex reasoning transcript", () => {
     expect((maxBody.reasoning as Record<string, unknown>).effort).toBe("max");
 
     const unknownBody = translateRequestCodex(
-      codexCtx({ effort: "beyond" as never }),
+      codexCtx({ model: CLASSIC_MODEL, effort: "beyond" as never }),
       [],
       [],
     ) as Record<string, unknown>;
@@ -234,7 +238,7 @@ describe("codex encrypted_content rejection recovery", () => {
       { role: "user", content: [{ type: "text", text: "hi" }] },
       {
         role: "assistant",
-        producedModel: "gpt-5.5",
+        producedModel: "gpt-5.6-terra",
         producedAccount: accountFingerprint("codex"),
         content: [
           { type: "thinking", text: "prior reasoning", signature: "Ep8I-STALE-BLOB-AQ==" },
@@ -711,7 +715,7 @@ describe("translateRequestCodex images", () => {
 
 describe("translateRequestCodex Lite model formatting & enhancements", () => {
   it("Lite model request has developer-item instructions+tools, no top-level tools, parallel_tool_calls=false, reasoning.context='all_turns'", () => {
-    const ctx = codexCtx({ model: "gpt-5.6-sol" });
+    const ctx = codexCtx({ model: "gpt-5.6-terra" });
     const msgs: Message[] = [
       { role: "system", content: [{ type: "text", text: "sys instructions" }] },
       { role: "user", content: [{ type: "text", text: "user message" }] },
@@ -772,7 +776,7 @@ describe("translateRequestCodex Lite model formatting & enhancements", () => {
   });
 
   it("Lite models replay WebSearch calls and results instead of dropping them", () => {
-    const ctx = codexCtx({ model: "gpt-5.6-sol" });
+    const ctx = codexCtx({ model: "gpt-5.6-terra" });
     const msgs: Message[] = [
       { role: "user", content: [{ type: "text", text: "find docs" }] },
       {
@@ -802,8 +806,8 @@ describe("translateRequestCodex Lite model formatting & enhancements", () => {
     expect(String(output?.output ?? "")).toContain("Codex docs — https://example.com");
   });
 
-  it("gpt-5.5 still drops WebSearch history in hosted mode", () => {
-    const ctx = codexCtx({ model: "gpt-5.5" });
+  it("a classic-shape model still drops WebSearch history in hosted mode", () => {
+    const ctx = codexCtx({ model: CLASSIC_MODEL });
     const msgs: Message[] = [
       {
         role: "assistant",
@@ -824,8 +828,8 @@ describe("translateRequestCodex Lite model formatting & enhancements", () => {
     expect(input.find((item) => item.type === "function_call_output")).toBeUndefined();
   });
 
-  it("gpt-5.5 request is unchanged from classic shape", () => {
-    const ctx = codexCtx({ model: "gpt-5.5" });
+  it("a model outside the catalog keeps the classic request shape", () => {
+    const ctx = codexCtx({ model: CLASSIC_MODEL });
     const msgs: Message[] = [
       { role: "system", content: [{ type: "text", text: "sys instructions" }] },
       { role: "user", content: [{ type: "text", text: "user message" }] },
@@ -874,13 +878,13 @@ describe("translateRequestCodex Lite model formatting & enhancements", () => {
   });
 
   it("fast mode on a model without priority tier omits service_tier, and emits it on one that has it", () => {
-    // Model "gpt-5.3-codex-spark" does not have priority service tier (serviceTiers: [])
-    const ctxNoPriority = codexCtx({ model: "gpt-5.3-codex-spark", fastMode: true });
+    // A model the catalog does not know carries no service tiers at all.
+    const ctxNoPriority = codexCtx({ model: CLASSIC_MODEL, fastMode: true });
     const reqNoPriority = translateRequestCodex(ctxNoPriority, [], []) as Record<string, unknown>;
     expect(reqNoPriority.service_tier).toBeUndefined();
 
-    // Model "gpt-5.5" has priority service tier (serviceTiers: ["priority"])
-    const ctxWithPriority = codexCtx({ model: "gpt-5.5", fastMode: true });
+    // Model "gpt-5.6-terra" has priority service tier (serviceTiers: ["priority"])
+    const ctxWithPriority = codexCtx({ model: "gpt-5.6-terra", fastMode: true });
     const reqWithPriority = translateRequestCodex(ctxWithPriority, [], []) as Record<
       string,
       unknown
@@ -889,12 +893,12 @@ describe("translateRequestCodex Lite model formatting & enhancements", () => {
   });
 
   it("reasoning item replayed across codex model switch, still dropped on account mismatch", () => {
-    // Replayed across model switch: e.g. producedModel = "gpt-5.5", currentModel = "gpt-5.6-sol"
+    // Replayed across model switch: e.g. producedModel = "gpt-5.6-terra", currentModel = "gpt-5.6-terra"
     const currentAccount = accountFingerprint("codex");
     const msgs: Message[] = [
       {
         role: "assistant",
-        producedModel: "gpt-5.5",
+        producedModel: "gpt-5.6-terra",
         producedBy: "codex",
         producedAccount: currentAccount,
         content: [{ type: "thinking", text: "prior reasoning", signature: "signature-123" }],
@@ -902,7 +906,7 @@ describe("translateRequestCodex Lite model formatting & enhancements", () => {
     ];
 
     // Case 1: same account, different model -> should be replayed (since both are codex)
-    const ctx = codexCtx({ model: "gpt-5.6-sol" });
+    const ctx = codexCtx({ model: "gpt-5.6-terra" });
     const request1 = translateRequestCodex(ctx, msgs, []) as Record<string, unknown>;
     const input1 = request1.input as Array<Record<string, unknown>>;
     const reasoning1 = input1.find((item) => item.type === "reasoning");
@@ -925,7 +929,7 @@ describe("translateRequestCodex Lite model formatting & enhancements", () => {
     const msgsAccountMismatch: Message[] = [
       {
         role: "assistant",
-        producedModel: "gpt-5.5",
+        producedModel: "gpt-5.6-terra",
         producedBy: "codex",
         producedAccount: "other-account",
         content: [{ type: "thinking", text: "prior reasoning", signature: "signature-123" }],

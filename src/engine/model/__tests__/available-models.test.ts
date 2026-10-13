@@ -49,20 +49,16 @@ describe("availableModelListing", () => {
     expect(listing.map((row) => row.provider)).toEqual(["anthropic", "codex"]);
     expect(listing.find((row) => row.provider === "codex")?.models.map((m) => m.id)).toEqual([
       "gpt-6-astra",
-      "gpt-5.6-sol",
+      "gpt-6.1-sol",
+      "gpt-daybreak-blue-latest",
       "gpt-5.6-terra",
       "gpt-5.6-luna",
-      "gpt-5.5",
-      "gpt-5.4",
-      "gpt-5.4-mini",
-      "gpt-5.3-codex-spark",
     ]);
     expect(listing.find((row) => row.provider === "anthropic")?.models.map((m) => m.id)).toEqual([
-      "claude-opus-5",
+      "claude-opus-5-5",
       "claude-fable-5-1",
-      "claude-opus-4-8",
-      "claude-sonnet-5",
-      "claude-haiku-4-5",
+      "claude-sonnet-5-5",
+      "claude-haiku-5-5",
     ]);
   });
 
@@ -75,8 +71,8 @@ describe("availableModelListing", () => {
   it("includes catalog models that belong to no tier roster", () => {
     const listing = availableModelListing();
     const codexIds = listing.find((row) => row.provider === "codex")?.models.map((m) => m.id);
-    // gpt-5.5 is not a tier member; the listing must still surface it.
-    expect(codexIds).toContain("gpt-5.5");
+    // gpt-5.6-terra is not a tier member; the listing must still surface it.
+    expect(codexIds).toContain("gpt-5.6-terra");
   });
 
   it("dedupes the same base model id across tiers (glm-5-turbo once)", () => {
@@ -116,6 +112,6 @@ describe("availableModelListing", () => {
     expect(anthropic).toBeDefined();
     const ids = anthropic?.models.map((m) => m.id) ?? [];
     expect(ids).not.toContain("claude-fable-5-1");
-    expect(ids).toContain("claude-opus-4-8");
+    expect(ids).toContain("claude-opus-5-5");
   });
 });

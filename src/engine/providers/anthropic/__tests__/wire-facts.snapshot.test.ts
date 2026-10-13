@@ -39,7 +39,7 @@ const TOOLS: unknown[] = [
 function context(overrides: Partial<RequestContext>): RequestContext {
   return {
     provider: "anthropic",
-    model: "claude-opus-4-8",
+    model: "claude-opus-5-5",
     effort: null,
     permissionMode: "default",
     sessionId: "sess-fixture-00000000-0000-0000-0000-000000000000",
@@ -102,11 +102,21 @@ const MATRIX: ReadonlyArray<{ label: string; ctx: RequestContext }> = [
   })),
   {
     label: "haiku / title (non-agentic, structured)",
-    ctx: context({ model: "claude-haiku-4-5", agentic: false, cacheRole: "title" }),
+    ctx: context({
+      model: "claude-haiku-5-5",
+      agentic: false,
+      disableThinking: true,
+      cacheRole: "title",
+    }),
   },
   {
     label: "haiku / memory recall (non-agentic, extended cache)",
-    ctx: context({ model: "claude-haiku-4-5", agentic: false, requestRole: "memory_recall" }),
+    ctx: context({
+      model: "claude-haiku-5-5",
+      agentic: false,
+      disableThinking: true,
+      requestRole: "memory_recall",
+    }),
   },
   {
     label: "opus / sub-agent (suppressThinkingSummary → bare adaptive, no display)",
@@ -114,7 +124,7 @@ const MATRIX: ReadonlyArray<{ label: string; ctx: RequestContext }> = [
   },
   {
     label: "haiku / nested agent",
-    ctx: context({ model: "claude-haiku-4-5", agentOwnerId: "nested-fixture" }),
+    ctx: context({ model: "claude-haiku-5-5", agentOwnerId: "nested-fixture" }),
   },
 ];
 

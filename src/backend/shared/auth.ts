@@ -194,6 +194,15 @@ export function isRefreshRejected(): boolean {
   return refreshRejected;
 }
 
+export type AuthUnavailableReason = "signed_out" | "rejected" | "refresh_pending";
+
+/** Why fresh auth is unavailable right now; meaningful right after loadFreshAuth() returned null. */
+export function authUnavailableReason(): AuthUnavailableReason {
+  if (!loadAuth()) return "signed_out";
+  if (refreshRejected) return "rejected";
+  return "refresh_pending";
+}
+
 async function requestRefresh(refreshToken: string, signal: AbortSignal): Promise<TokenResponse> {
   try {
     const data = await cortexFetch<TokenResponse>("/v1/auth/refresh", {

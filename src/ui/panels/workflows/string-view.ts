@@ -60,9 +60,10 @@ type ViewMode =
   | { mode: "saved"; path: string }
   | { mode: "save-error"; itemId: string; path: string };
 
-type PanelProps = {
+export type WorkflowsPanelProps = {
   sessionId?: string;
   cwd?: string;
+  /** Open straight on this workflow's detail; leaving it closes the panel. */
   initialDetailItemId?: string;
 };
 
@@ -88,6 +89,8 @@ class WorkflowsPanel implements StringViewPanel {
   private phaseCursor = 0;
   private agentCursor = 0;
   private cardScroll = 0;
+  private phaseListStart = 0;
+  private agentListStart = 0;
   private agentFilter: AgentFilter = "all";
   private expandedPrompts = new Set<string>();
   private autoOpened = false;
@@ -186,6 +189,8 @@ class WorkflowsPanel implements StringViewPanel {
           cardScroll: this.cardScroll,
           expandedPrompts: this.expandedPrompts,
           agentFilter: this.agentFilter,
+          phaseListStart: this.phaseListStart,
+          agentListStart: this.agentListStart,
         },
         terminalRows: rows,
         width,
@@ -193,6 +198,8 @@ class WorkflowsPanel implements StringViewPanel {
       this.phaseCursor = detail.phaseCursor;
       this.agentCursor = detail.agentCursor;
       this.cardScroll = detail.cardScroll;
+      this.phaseListStart = detail.phaseListStart;
+      this.agentListStart = detail.agentListStart;
       return detail.lines;
     }
     const list = { items, cursor: this.cursor, loading: this.loading, terminalRows: rows };
@@ -444,6 +451,8 @@ class WorkflowsPanel implements StringViewPanel {
     this.phaseCursor = 0;
     this.agentCursor = 0;
     this.cardScroll = 0;
+    this.phaseListStart = 0;
+    this.agentListStart = 0;
     this.ctx?.requestRender();
   }
 
@@ -559,10 +568,10 @@ class WorkflowsPanel implements StringViewPanel {
   }
 }
 
-function narrowProps(props: unknown): PanelProps {
+function narrowProps(props: unknown): WorkflowsPanelProps {
   if (!props || typeof props !== "object") return {};
   const record = props as Record<string, unknown>;
-  const out: PanelProps = {};
+  const out: WorkflowsPanelProps = {};
   if (typeof record.sessionId === "string") out.sessionId = record.sessionId;
   if (typeof record.cwd === "string") out.cwd = record.cwd;
   if (typeof record.initialDetailItemId === "string") {

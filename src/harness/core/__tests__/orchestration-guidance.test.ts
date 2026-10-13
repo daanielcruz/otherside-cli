@@ -12,11 +12,11 @@ function context(orchestrationMode: "disabled" | "default" | "feudalism"): Layer
     availableModels: [
       {
         provider: "anthropic",
-        models: [{ id: "claude-opus-4-8", display: "Opus 4.8" }],
+        models: [{ id: "claude-opus-5-5", display: "Opus 5.5" }],
       },
       {
         provider: "codex",
-        models: [{ id: "gpt-5.5", display: "GPT-5.5" }],
+        models: [{ id: "gpt-5.6-terra", display: "GPT-5.6 Terra" }],
       },
     ],
   } as unknown as LayerContext;

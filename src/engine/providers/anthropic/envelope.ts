@@ -38,6 +38,7 @@ export function applyAnthropicThinkingDisplay(
 
 export function maxOutputTokensForModel(model: string): number {
   const m = model.toLowerCase();
+  if (m.includes("opus-5-5") || m.includes("sonnet-5-5") || m.includes("haiku-5-5")) return 128_000;
   if (
     m.includes("fable-5") ||
     m.includes("opus-5") ||

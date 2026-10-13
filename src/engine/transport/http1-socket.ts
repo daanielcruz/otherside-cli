@@ -23,10 +23,19 @@ export interface Http1Response {
 
 export interface Http1RequestInput {
   url: URL;
+  /** POST unless given; a GET goes out with no body. */
+  method?: "GET" | "POST";
   headerLines: string[];
   payload: Buffer;
   abortSignal?: AbortSignal;
 }
+
+/**
+ * How the body is framed: chunked (the streaming call; its headers already name
+ * `Transfer-Encoding`), or sized, with `Content-Length` written at `contentLengthAt`
+ * in `headerLines`.
+ */
+type Http1BodyFraming = { kind: "chunked" } | { kind: "sized"; contentLengthAt: number };
 
 function proxyUrl(): URL | null {
   const proxy = process.env.HTTPS_PROXY || process.env.https_proxy;
@@ -78,9 +87,28 @@ async function openSocket(url: URL): Promise<TLSSocket> {
 // wire, but no Buffer.concat materializing a full second copy of the payload
 // (the request body is 1-2MB of history JSON; the copy was the dominant
 // per-request allocation on this transport).
-function writeRequest(socket: TLSSocket, url: URL, headerLines: string[], payload: Buffer): void {
-  const requestLine = `POST ${url.pathname}${url.search} HTTP/1.1`;
-  const head = [requestLine, `Host: ${url.hostname}`, ...headerLines, "", ""].join(CRLF);
+function writeRequest(
+  socket: TLSSocket,
+  input: Http1RequestInput,
+  framing: Http1BodyFraming,
+): void {
+  const { url, headerLines, payload } = input;
+  const method = input.method ?? "POST";
+  const requestLine = `${method} ${url.pathname}${url.search} HTTP/1.1`;
+  const lines =
+    framing.kind === "sized" && method === "POST"
+      ? [
+          ...headerLines.slice(0, framing.contentLengthAt),
+          `Content-Length: ${payload.length}`,
+          ...headerLines.slice(framing.contentLengthAt),
+        ]
+      : headerLines;
+  const head = [requestLine, `Host: ${url.hostname}`, ...lines, "", ""].join(CRLF);
+  if (framing.kind === "sized") {
+    socket.write(Buffer.from(head, "latin1"));
+    socket.write(payload);
+    return;
+  }
   const size = payload.length.toString(16);
   socket.write(Buffer.from(`${head}${size}${CRLF}`, "latin1"));
   socket.write(payload);
@@ -156,6 +184,19 @@ async function* rawBody(rest: Buffer, it: AsyncIterator<Buffer>): AsyncGenerator
   }
 }
 
+async function* takeBytes(src: AsyncIterable<Buffer>, length: number): AsyncGenerator<Buffer> {
+  let remaining = length;
+  if (remaining <= 0) return;
+  for await (const chunk of src) {
+    if (chunk.length >= remaining) {
+      yield chunk.subarray(0, remaining);
+      return;
+    }
+    yield chunk;
+    remaining -= chunk.length;
+  }
+}
+
 // Destroy the socket whenever the body iteration ends — done, early break, or
 // throw. Without this the socket only closes on abort, so a consumer that stops
 // reading after the final SSE event leaks the socket + its buffers per request.
@@ -187,11 +228,31 @@ function decodeBody(
   it: AsyncIterator<Buffer>,
 ): AsyncIterable<Buffer> {
   const raw = rawBody(rest, it);
-  const dechunked = headers.get("transfer-encoding")?.includes("chunked") ? dechunk(raw) : raw;
-  return headers.get("content-encoding")?.includes("gzip") ? gunzip(dechunked) : dechunked;
+  const lengthHeader = headers.get("content-length");
+  const contentLength = lengthHeader !== undefined ? Number.parseInt(lengthHeader, 10) : Number.NaN;
+  const framed = headers.get("transfer-encoding")?.includes("chunked")
+    ? dechunk(raw)
+    : Number.isFinite(contentLength) && contentLength >= 0
+      ? takeBytes(raw, contentLength)
+      : raw;
+  return headers.get("content-encoding")?.includes("gzip") ? gunzip(framed) : framed;
 }
 
-export async function sendChunkedRequest(input: Http1RequestInput): Promise<Http1Response> {
+export function sendChunkedRequest(input: Http1RequestInput): Promise<Http1Response> {
+  return sendRequest(input, { kind: "chunked" });
+}
+
+export function sendSizedRequest(
+  input: Http1RequestInput,
+  contentLengthAt: number,
+): Promise<Http1Response> {
+  return sendRequest(input, { kind: "sized", contentLengthAt });
+}
+
+async function sendRequest(
+  input: Http1RequestInput,
+  framing: Http1BodyFraming,
+): Promise<Http1Response> {
   const socket = await openSocket(input.url);
   const signal = input.abortSignal;
   if (signal) {
@@ -201,7 +262,7 @@ export async function sendChunkedRequest(input: Http1RequestInput): Promise<Http
     signal.addEventListener("abort", onAbort, { once: true });
     socket.once("close", () => signal.removeEventListener("abort", onAbort));
   }
-  writeRequest(socket, input.url, input.headerLines, input.payload);
+  writeRequest(socket, input, framing);
   const it = socket[Symbol.asyncIterator]() as AsyncIterator<Buffer>;
   try {
     const { head, rest } = await readUntilHeadersEnd(it);

@@ -40,11 +40,11 @@ afterEach(() => {
 
 describe("resolveModelPin", () => {
   it("resolves a model carried by the named provider", () => {
-    const result = resolveModelPin("codex", "gpt-5.5");
+    const result = resolveModelPin("codex", "gpt-5.6-terra");
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.resolution.provider).toBe("codex");
-      expect(result.resolution.model).toBe("gpt-5.5");
+      expect(result.resolution.model).toBe("gpt-5.6-terra");
     }
   });
 
@@ -55,8 +55,8 @@ describe("resolveModelPin", () => {
   });
 
   it.each([
-    ["anthropic", "claude-fable-5"],
-    ["anthropic", "fable-5"],
+    ["anthropic", "claude-fable-4"],
+    ["anthropic", "fable-4"],
     ["anthropic", "claude-opus-4-7"],
     ["anthropic", "opus-4-7"],
     ["antigravity", "gemini-3-flash"],
@@ -66,13 +66,13 @@ describe("resolveModelPin", () => {
   });
 
   it("rejects an unknown provider id", () => {
-    const result = resolveModelPin("not-a-provider", "gpt-5.5");
+    const result = resolveModelPin("not-a-provider", "gpt-5.6-terra");
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toContain('unknown provider "not-a-provider"');
   });
 
   it("rejects a model the named provider does not carry, hinting at carriers", () => {
-    const result = resolveModelPin("anthropic", "gpt-5.5", undefined, "default");
+    const result = resolveModelPin("anthropic", "gpt-5.6-terra", undefined, "default");
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error).toContain('not available on provider "anthropic"');
@@ -84,7 +84,7 @@ describe("resolveModelPin", () => {
     setCredentialsLoaderForTests(
       () => ({ anthropic: { accessToken: "x" } }) as unknown as CredentialsBundle,
     );
-    const result = resolveModelPin("codex", "gpt-5.5");
+    const result = resolveModelPin("codex", "gpt-5.6-terra");
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error).toContain("no configured credentials");
@@ -94,7 +94,7 @@ describe("resolveModelPin", () => {
 
   it("reports the real blocked reason when credentials exist but the provider is unavailable", () => {
     markProviderCooldown("codex", Date.now() + 60_000, "rate_limited");
-    const result = resolveModelPin("codex", "gpt-5.5");
+    const result = resolveModelPin("codex", "gpt-5.6-terra");
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error).toContain("temporarily unavailable");
@@ -109,8 +109,8 @@ describe("resolveModelPin", () => {
       balanceStatus: "available",
       utilizationPct: 99,
     });
-    expect(resolveModelPin("anthropic", "claude-opus-4-8").ok).toBe(true);
-    expect(resolveModelPin("anthropic", "claude-opus-4-8", "anthropic").ok).toBe(true);
+    expect(resolveModelPin("anthropic", "claude-opus-5-5").ok).toBe(true);
+    expect(resolveModelPin("anthropic", "claude-opus-5-5", "anthropic").ok).toBe(true);
   });
 
   it("refuses a pin to an exhausted provider — even the caller's own session provider", () => {
@@ -122,7 +122,7 @@ describe("resolveModelPin", () => {
       resetsAtEpochMs,
     });
     for (const activeProvider of [undefined, "anthropic" as const]) {
-      const refused = resolveModelPin("anthropic", "claude-opus-4-8", activeProvider);
+      const refused = resolveModelPin("anthropic", "claude-opus-5-5", activeProvider);
       expect(refused.ok).toBe(false);
       if (!refused.ok) {
         expect(refused.error).toContain("QuotaExhaustedError");
@@ -137,7 +137,7 @@ describe("resolveModelPin", () => {
       balanceStatus: "available",
       utilizationPct: 10,
     });
-    expect(resolveModelPin("anthropic", "claude-opus-4-8", "anthropic").ok).toBe(true);
+    expect(resolveModelPin("anthropic", "claude-opus-5-5", "anthropic").ok).toBe(true);
   });
 
   it("resolves a unique family shorthand to its catalog id", () => {
@@ -149,13 +149,13 @@ describe("resolveModelPin", () => {
   it("resolves a bare family name with no version to its catalog id", () => {
     const result = resolveModelPin("anthropic", "sonnet");
     expect(result.ok).toBe(true);
-    if (result.ok) expect(result.resolution.model).toBe("claude-sonnet-5");
+    if (result.ok) expect(result.resolution.model).toBe("claude-sonnet-5-5");
   });
 
   it("resolves another bare family name with no version to its catalog id", () => {
     const result = resolveModelPin("anthropic", "haiku");
     expect(result.ok).toBe(true);
-    if (result.ok) expect(result.resolution.model).toBe("claude-haiku-4-5");
+    if (result.ok) expect(result.resolution.model).toBe("claude-haiku-5-5");
   });
 
   it("fails a fabricated family name that names more than one model in the provider's catalog", () => {
@@ -240,8 +240,8 @@ describe("resolveModelPin", () => {
   });
 
   it("normalizes a context-window variant to its catalog id", () => {
-    const result = resolveModelPin("anthropic", "claude-opus-4-8[1m]");
+    const result = resolveModelPin("anthropic", "claude-opus-5-5[1m]");
     expect(result.ok).toBe(true);
-    if (result.ok) expect(result.resolution.model).toBe("claude-opus-4-8");
+    if (result.ok) expect(result.resolution.model).toBe("claude-opus-5-5");
   });
 });

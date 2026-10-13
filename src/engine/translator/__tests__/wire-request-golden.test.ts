@@ -158,7 +158,7 @@ const HARNESS_PLAIN: ComposedHarness = {
 function context(overrides: Partial<RequestContext>): RequestContext {
   return {
     provider: "anthropic",
-    model: "claude-opus-4-8",
+    model: "claude-opus-5-5",
     effort: null,
     permissionMode: "default",
     sessionId: "sess-fixture-00000000-0000-0000-0000-000000000000",
@@ -315,7 +315,7 @@ const ANTHROPIC_MATRIX: ReadonlyArray<{
   },
   {
     label: "opus[1m] / agentic",
-    ctx: context({ model: "claude-opus-4-8[1m]" }),
+    ctx: context({ model: "claude-opus-5-5[1m]" }),
     harness: HARNESS_FLAGSHIP,
   },
   {
@@ -325,13 +325,13 @@ const ANTHROPIC_MATRIX: ReadonlyArray<{
   },
   {
     label: "haiku / agentic / plain",
-    ctx: context({ model: "claude-haiku-4-5" }),
+    ctx: context({ model: "claude-haiku-5-5" }),
     harness: HARNESS_PLAIN,
   },
   {
-    label: "haiku / subagent (agentic, sidechain → dated id)",
+    label: "haiku / subagent (agentic, sidechain)",
     ctx: context({
-      model: "claude-haiku-4-5",
+      model: "claude-haiku-5-5",
       parentThreadId: "sub-fixture-0000",
     }),
     harness: HARNESS_PLAIN,
@@ -339,8 +339,9 @@ const ANTHROPIC_MATRIX: ReadonlyArray<{
   {
     label: "haiku / title (non-agentic, structured)",
     ctx: context({
-      model: "claude-haiku-4-5",
+      model: "claude-haiku-5-5",
       agentic: false,
+      disableThinking: true,
       cacheRole: "title",
     }),
     harness: HARNESS_PLAIN,

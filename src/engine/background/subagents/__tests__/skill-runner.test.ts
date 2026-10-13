@@ -82,7 +82,7 @@ function harness() {
   const broker = {
     read: () => ({
       provider: "codex",
-      model: "gpt-5.6-sol",
+      model: "gpt-5.6-terra",
       effort: "high",
       fastMode: false,
       permissionMode: "default",

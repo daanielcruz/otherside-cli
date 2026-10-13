@@ -170,7 +170,10 @@ export class PanelActions {
       if (marketplace?.sourceType === "file") {
         this.host.setState((state) =>
           withInstalled(state, {
-            notice: `Local plugins cannot be updated remotely. To update, modify the source at: ./plugins/${plugin.manifest.name}`,
+            notice: {
+              text: `Local plugins cannot be updated remotely. To update, modify the source at: ./plugins/${plugin.manifest.name}`,
+              isError: false,
+            },
           }),
         );
         this.host.requestRender();
@@ -180,9 +183,14 @@ export class PanelActions {
     if (actionId === "update") {
       const installation = findPluginInstallation(pluginId);
       setPanelBusy(this.host, `Updating ${pluginId}`);
-      const res = updateMarketplacePlugin(pluginId, undefined, installation?.installationId);
+      const res = await updateMarketplacePlugin(pluginId, undefined, installation?.installationId);
+      if (this.host.isCancelled()) return;
       setPanelBusy(this.host, null);
-      publishPluginResult(withReloadHint(res.message, res.success), !res.success);
+      const message = withReloadHint(res.message, res.success && res.changed !== false);
+      publishPluginResult(message, !res.success);
+      this.host.setState((state) =>
+        withInstalled(state, { notice: { text: message, isError: !res.success } }),
+      );
       this.bump();
       return;
     }

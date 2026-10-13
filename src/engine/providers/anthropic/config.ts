@@ -2,6 +2,7 @@ import type { ApiProvider, ForkSystemInput, ProviderConfig } from "@/engine/cont
 import type { CatalogModel } from "@/engine/model/catalog.ts";
 import { parseModelId } from "@/engine/model/catalog.ts";
 import { PERMISSIVE_DEFERRED } from "@/engine/providers/_shared/effort-defaults.ts";
+import { markReasoningReplayRejected } from "@/engine/providers/_shared/reasoning-replay-state.ts";
 import { ProviderHttpError } from "@/engine/providers/_shared/retry.ts";
 import { fingerprint } from "@/engine/providers/anthropic/_infra/fingerprint.ts";
 import { checkOpus1mAccess, checkSonnet1mAccess } from "@/engine/providers/anthropic/access.ts";
@@ -12,7 +13,6 @@ import {
 } from "@/engine/providers/anthropic/compose.ts";
 import { SUBAGENT_OPENER, subagentBillingHeader } from "@/engine/providers/anthropic/preamble.ts";
 import { anthropicPromptAdapter } from "@/engine/providers/anthropic/prompt-adapter.ts";
-import { markThinkingReplayRejected } from "@/engine/providers/anthropic/reasoning-state.ts";
 import { anthropicStream } from "@/engine/providers/anthropic/stream.ts";
 import {
   translateRequestAnthropic as translateRequest,
@@ -39,8 +39,8 @@ export type AnthropicModelAugment = { cacheBreakpoints?: number };
 
 export const MODELS: readonly CatalogModel<AnthropicModelAugment>[] = [
   {
-    id: "claude-opus-5",
-    displayName: "Opus 5",
+    id: "claude-opus-5-5",
+    displayName: "Opus 5.5",
     contextWindow: 1_000_000,
     autoCompactTokenLimit: 967_000,
     provider: "anthropic",
@@ -60,19 +60,8 @@ export const MODELS: readonly CatalogModel<AnthropicModelAugment>[] = [
     defaultEffort: "high",
   },
   {
-    id: "claude-opus-4-8",
-    displayName: "Opus 4.8",
-    contextWindow: 1_000_000,
-    autoCompactTokenLimit: 967_000,
-    provider: "anthropic",
-    supportsPdf: true,
-    supports1m: true,
-    efforts: ["low", "medium", "high", "xhigh", "max"],
-    defaultEffort: "xhigh",
-  },
-  {
-    id: "claude-sonnet-5",
-    displayName: "Sonnet 5",
+    id: "claude-sonnet-5-5",
+    displayName: "Sonnet 5.5",
     contextWindow: 1_000_000,
     autoCompactTokenLimit: 967_000,
     provider: "anthropic",
@@ -81,15 +70,15 @@ export const MODELS: readonly CatalogModel<AnthropicModelAugment>[] = [
     defaultEffort: "high",
   },
   {
-    id: "claude-haiku-4-5",
-    displayName: "Haiku 4.5",
-    contextWindow: 200_000,
-    autoCompactTokenLimit: 167_000,
+    id: "claude-haiku-5-5",
+    displayName: "Haiku 5.5",
+    contextWindow: 1_000_000,
+    autoCompactTokenLimit: 967_000,
     provider: "anthropic",
     supportsPdf: true,
     onDemand: true,
-    efforts: [],
-    defaultEffort: null,
+    efforts: ["low", "medium", "high", "xhigh", "max"],
+    defaultEffort: "high",
   },
 ];
 
@@ -138,7 +127,7 @@ export const config: ProviderConfig<"anthropic-messages"> = {
     thinkingSuffix: true,
     supportsImages: true,
   },
-  defaultModelId: () => "claude-opus-5",
+  defaultModelId: () => "claude-opus-5-5",
   fallbackEfforts: {
     levels: ["low", "medium", "high", "xhigh", "max"],
     default: "high",
@@ -150,7 +139,10 @@ export const config: ProviderConfig<"anthropic-messages"> = {
     // A replayed thinking block was rejected. Drop thinking replay for the rest
     // of the session and retry once — the rebuilt body omits it. Only the first
     // hit retries; a still-failing turn falls through to a normal failure.
-    if (carriesThinkingReplayRejection(err, body) && markThinkingReplayRejected(ctx.sessionId)) {
+    if (
+      carriesThinkingReplayRejection(err, body) &&
+      markReasoningReplayRejected(ctx.sessionId, ctx.provider)
+    ) {
       return { kind: "retry", delayMs: 0, reason: "dropped stale thinking replay" };
     }
     const decision = classifyProviderError(err, {

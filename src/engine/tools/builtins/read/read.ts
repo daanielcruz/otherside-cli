@@ -12,6 +12,15 @@ import { filePathSegment } from "@/engine/tools/contract.ts";
 import ReadSchema from "@/harness/tools/Read/tool.json" with { type: "json" };
 import type { ToolCall, ToolResult } from "@/kernel/std/types/message.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
+import {
+  allowLargeHint,
+  fileTooLargeMessage,
+  type LiftedRoom,
+  liftedRoom,
+  type ReadLimits,
+  STANDARD_READ_LIMITS,
+  tooManyTokensMessage,
+} from "./limits.ts";
 import { readImageBranch, readPdfBranch } from "./read-media.ts";
 import { readScopeKey, readSetInsert, readState } from "./state.ts";
 
@@ -21,9 +30,7 @@ export function getReadToolDescription(opts: { lean?: boolean } = {}): string {
 
 const DEFAULT_LIMIT = 2000;
 const MAX_LINE_CHARS = 2000;
-const MAX_FILE_SIZE = 256 * 1024;
-const MAX_OUTPUT_TOKENS = 25000;
-const FILE_UNCHANGED_STUB =
+export const FILE_UNCHANGED_STUB =
   "File unchanged since last read. The content from the earlier Read tool_result in this conversation is still current — refer to that instead of re-reading.";
 
 function bytesPerTokenForExt(ext: string): number {
@@ -34,10 +41,52 @@ function roughTokenCount(content: string, ext: string): number {
   return Math.round(content.length / bytesPerTokenForExt(ext));
 }
 
-function tokenCapError(toolUseId: string, tokenCount: number): ToolResult {
+/**
+ * The limits one read runs under. allow_large raises them up to the room left in
+ * the context; the room is read only when the read asks for it or overflows.
+ */
+class ReadBudget {
+  private room: LiftedRoom | undefined | null = null;
+
+  constructor(
+    private readonly ctx: RequestContext,
+    private readonly ext: string,
+    readonly optedIn: boolean,
+  ) {}
+
+  private lifted(): LiftedRoom | undefined {
+    if (this.room === null) {
+      this.room =
+        this.ctx.contextRoom === undefined
+          ? undefined
+          : liftedRoom(this.ctx.contextRoom, bytesPerTokenForExt(this.ext));
+    }
+    return this.room;
+  }
+
+  limits(): ReadLimits {
+    if (!this.optedIn) return STANDARD_READ_LIMITS;
+    return this.lifted()?.raised ?? STANDARD_READ_LIMITS;
+  }
+
+  hint(size: { bytes?: number; tokens?: number }): string {
+    return allowLargeHint(this.lifted(), this.optedIn, size);
+  }
+
+  /** A lifted read keeps the room it took, so later reads this round see less. */
+  claim(tokens: number): void {
+    if (this.optedIn && this.lifted()?.raised !== undefined) this.ctx.contextRoom?.claim(tokens);
+  }
+}
+
+function tokenCapError(toolUseId: string, tokenCount: number, budget: ReadBudget): ToolResult {
   return err(
     toolUseId,
-    `File content (${tokenCount} tokens) exceeds maximum allowed tokens (${MAX_OUTPUT_TOKENS}). Use offset and limit parameters to read specific portions of the file, or search for specific content instead of reading the whole file.`,
+    tooManyTokensMessage(
+      tokenCount,
+      budget.limits().maxTokens,
+      budget.hint({ tokens: tokenCount }),
+    ),
   );
 }
 
@@ -148,6 +197,11 @@ interface ReadInput {
   offset?: unknown;
   limit?: unknown;
   pages?: unknown;
+  allow_large?: unknown;
+}
+
+function optsIntoLargeRead(value: unknown): boolean {
+  return value === true || value === "true";
 }
 
 function err(toolUseId: string, msg: string): ToolResult {
@@ -216,7 +270,14 @@ export const Read: ToolHandler = {
         const pages = typeof args.pages === "string" ? args.pages : null;
         return readPdfBranch(call, ctx, filePath, pages);
       }
-      if (ext === "ipynb") return readNotebookBranch(call, ctx, filePath);
+      if (ext === "ipynb") {
+        return readNotebookBranch(
+          call,
+          ctx,
+          filePath,
+          new ReadBudget(ctx, ext, optsIntoLargeRead(args.allow_large)),
+        );
+      }
       if (BLOCKED_EXTENSIONS.has(ext)) {
         return err(call.id, `binary extension .${ext} cannot be read as text`);
       }
@@ -227,6 +288,7 @@ export const Read: ToolHandler = {
       const tail = suggestion ? ` Did you mean ${suggestion}?` : "";
       return err(call.id, `File does not exist: ${filePath}.${tail}`);
     }
+    const budget = new ReadBudget(ctx, ext, optsIntoLargeRead(args.allow_large));
     let oversizedBytes = 0;
     try {
       const meta = statSync(filePath);
@@ -236,14 +298,18 @@ export const Read: ToolHandler = {
           `${filePath} is a directory, not a file. Use the Bash tool (ls) to list directory contents.`,
         );
       }
-      if (meta.size > MAX_FILE_SIZE) oversizedBytes = meta.size;
+      if (meta.size > budget.limits().maxSizeBytes) oversizedBytes = meta.size;
     } catch {}
 
     const hasExplicitRange = typeof args.offset === "number" || typeof args.limit === "number";
     if (oversizedBytes > 0 && !hasExplicitRange) {
       return err(
         call.id,
-        `file too large: ${oversizedBytes} bytes (max ${MAX_FILE_SIZE}). Pass offset and limit to read a specific range.`,
+        fileTooLargeMessage(
+          oversizedBytes,
+          budget.limits().maxSizeBytes,
+          budget.hint({ bytes: oversizedBytes }),
+        ),
       );
     }
 
@@ -294,7 +360,8 @@ export const Read: ToolHandler = {
     const startLine = offset + 1;
 
     const tokenCount = roughTokenCount(rawContent, ext);
-    if (tokenCount > MAX_OUTPUT_TOKENS) return tokenCapError(call.id, tokenCount);
+    if (tokenCount > budget.limits().maxTokens) return tokenCapError(call.id, tokenCount, budget);
+    budget.claim(tokenCount);
 
     readSetInsert(scope, filePath, stateContent, offset, limit);
 
@@ -356,7 +423,7 @@ function truncateLine(lineText: string): string {
 // so the rest of an oversized single line can be dropped while streaming.
 const CARRY_CAP_CHARS = MAX_LINE_CHARS + 8;
 
-// Range read for files above MAX_FILE_SIZE: lines outside offset/limit are
+// Range read for files above the size limit: lines outside offset/limit are
 // counted and discarded, so memory stays bounded to a chunk plus one line.
 export async function numberLinesFromStream(
   filePath: string,
@@ -405,20 +472,26 @@ export async function numberLinesFromStream(
   return { output: numbered.join("\n"), rawContent, emitted, totalLines: lineIndex };
 }
 
-function readNotebookBranch(call: ToolCall, ctx: RequestContext, filePath: string): ToolResult {
+function readNotebookBranch(
+  call: ToolCall,
+  ctx: RequestContext,
+  filePath: string,
+  budget: ReadBudget,
+): ToolResult {
   const result = readNotebookBlocks(filePath);
   if (typeof result === "string") return err(call.id, result);
 
   const byteLength = Buffer.byteLength(result.serialized);
-  if (byteLength > MAX_FILE_SIZE) {
+  if (byteLength > budget.limits().maxSizeBytes) {
     return err(
       call.id,
-      `Notebook content (${byteLength} bytes) exceeds maximum allowed size (${MAX_FILE_SIZE} bytes). Use the Bash tool with jq to read specific portions:\n  cat "${filePath}" | jq '.cells[:20]'  # first 20 cells\n  cat "${filePath}" | jq '.cells | length'  # count cells`,
+      `Notebook content (${byteLength} bytes) exceeds maximum allowed size (${budget.limits().maxSizeBytes} bytes). Use the Bash tool with jq to read specific portions:\n  cat "${filePath}" | jq '.cells[:20]'  # first 20 cells\n  cat "${filePath}" | jq '.cells | length'  # count cells`,
     );
   }
 
   const tokenCount = roughTokenCount(result.serialized, "ipynb");
-  if (tokenCount > MAX_OUTPUT_TOKENS) return tokenCapError(call.id, tokenCount);
+  if (tokenCount > budget.limits().maxTokens) return tokenCapError(call.id, tokenCount, budget);
+  budget.claim(tokenCount);
 
   readSetInsert(readScopeKey(ctx), filePath, result.serialized);
 

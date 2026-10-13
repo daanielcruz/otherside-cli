@@ -122,7 +122,7 @@ export function resolveTier(
 
 /**
  * Is (provider, model) one of the models that defines this tier? Compared on the
- * base model id so a context-window variant (e.g. `claude-opus-4-8[1m]`) matches its
+ * base model id so a context-window variant (e.g. `claude-opus-5-5[1m]`) matches its
  * roster entry. Used to keep an agent on the caller's own model when the caller
  * already belongs to the tier it is routing to, instead of escalating to top-1.
  */

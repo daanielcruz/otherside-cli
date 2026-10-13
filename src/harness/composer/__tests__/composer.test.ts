@@ -16,7 +16,7 @@ let priorScratchpadDir: string | undefined;
 function sampleContext(): LayerContext {
   return {
     provider: "anthropic",
-    model: "claude-opus-4-8",
+    model: "claude-opus-5-5",
     effort: null,
     permissionMode: "default",
     sessionId: "sess-fixture",
@@ -35,12 +35,12 @@ function sampleContext(): LayerContext {
     modelFamily: "other" as const,
     currentDate: "2026-06-22",
     gitStatus: "On branch main",
-    modelDisplayName: "Opus 4.8",
+    modelDisplayName: "Opus 5.5",
     availableModels: [
       {
         provider: "codex",
         models: [
-          { id: "gpt-5.6-sol", display: "GPT-5.6 Sol" },
+          { id: "gpt-5.6-terra", display: "GPT-5.6 Terra" },
           { id: "gpt-5.6-terra", display: "GPT-5.6 Terra" },
           { id: "gpt-5.6-luna", display: "GPT-5.6 Luna" },
         ],
@@ -49,13 +49,13 @@ function sampleContext(): LayerContext {
         provider: "anthropic",
         models: [
           { id: "claude-fable-5-1", display: "Fable 5.1" },
-          { id: "claude-opus-4-8", display: "Opus 4.8" },
+          { id: "claude-opus-5-5", display: "Opus 5.5" },
           { id: "claude-sonnet-5", display: "Sonnet 5" },
-          { id: "claude-haiku-4-5", display: "Haiku 4.5" },
+          { id: "claude-haiku-5-5", display: "Haiku 5.5" },
         ],
       },
     ],
-    knowledgeCutoff: "January 2026",
+    knowledgeCutoff: "June 2026",
     agentRows: [
       {
         agentType: "Explore",
@@ -128,8 +128,23 @@ describe("harness composer purity and golden", () => {
     });
     const system = JSON.stringify(harness.systemBlocks);
     expect(system).toContain("Lead with the outcome.");
-    expect(system).not.toContain("This iteration of Claude is Claude Fable 5,");
+    expect(system).not.toContain("This iteration of Claude is Claude Fable 5.1,");
     expect(system).not.toContain("Claude Mythos 5");
+  });
+
+  it("gives Haiku the guidance on when a turn should end, and only Haiku", () => {
+    const turnEnd = "Ending your turn stops all work until the user replies";
+    const haiku = compose(defaultStack(), {
+      ...sampleContext(),
+      model: "claude-haiku-5-5",
+      modelDisplayName: "Haiku 5.5",
+      modelFamily: "haiku",
+      lean: true,
+    });
+    expect(JSON.stringify(haiku.systemBlocks)).toContain(turnEnd);
+    expect(JSON.stringify(compose(defaultStack(), sampleContext()).systemBlocks)).not.toContain(
+      turnEnd,
+    );
   });
 
   it("golden: compose defaultStack across 36 matrix combos", () => {

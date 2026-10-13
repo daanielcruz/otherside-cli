@@ -67,42 +67,38 @@ export function createRecordProviderUsage(deps: RecordProviderUsageDeps): Record
       cacheCreationInputTokens: Math.max(0, Math.floor(cacheCreationInputTokens)),
       cacheReadInputTokens: Math.max(0, Math.floor(cacheReadInputTokens)),
     };
+    if (!isFork && hasTokenUsage(usage)) {
+      setMainTokenTotals((current) => ({
+        inputTokens: current.inputTokens + usage.inputTokens,
+        outputTokens: current.outputTokens + usage.outputTokens,
+        thoughtTokens: current.thoughtTokens + usage.thoughtTokens,
+        cacheCreationInputTokens: current.cacheCreationInputTokens + usage.cacheCreationInputTokens,
+        cacheReadInputTokens: current.cacheReadInputTokens + usage.cacheReadInputTokens,
+      }));
+    }
+    const contextUsage: ContextUsageSnapshot = options?.contextUsage ?? usage;
+    if (
+      !isFork &&
+      (contextUsage.contextTokens !== undefined ||
+        usage.inputTokens > 0 ||
+        usage.cacheReadInputTokens > 0 ||
+        usage.cacheCreationInputTokens > 0)
+    ) {
+      const snapshot: ContextUsageSnapshot = {
+        inputTokens: contextUsage.inputTokens,
+        outputTokens: contextUsage.outputTokens,
+        cacheCreationInputTokens: contextUsage.cacheCreationInputTokens,
+        cacheReadInputTokens: contextUsage.cacheReadInputTokens,
+        ...(contextUsage.contextTokens !== undefined
+          ? { contextTokens: contextUsage.contextTokens }
+          : {}),
+      };
+      setMainLastContext(snapshot);
+      setLastUsage(snapshot);
+      if (!options?.estimated) setContextWarningSuppressed(false);
+    }
     const requestCount = countRequest ? 1 : 0;
     if (requestCount === 0 && !hasTokenUsage(usage)) return;
-    if (hasTokenUsage(usage)) {
-      if (!isFork) {
-        setMainTokenTotals((current) => ({
-          inputTokens: current.inputTokens + usage.inputTokens,
-          outputTokens: current.outputTokens + usage.outputTokens,
-          thoughtTokens: current.thoughtTokens + usage.thoughtTokens,
-          cacheCreationInputTokens:
-            current.cacheCreationInputTokens + usage.cacheCreationInputTokens,
-          cacheReadInputTokens: current.cacheReadInputTokens + usage.cacheReadInputTokens,
-        }));
-        if (
-          usage.inputTokens > 0 ||
-          usage.cacheReadInputTokens > 0 ||
-          usage.cacheCreationInputTokens > 0
-        ) {
-          const contextUsage = options?.contextUsage ?? usage;
-          setMainLastContext({
-            inputTokens: contextUsage.inputTokens,
-            outputTokens: contextUsage.outputTokens,
-            cacheCreationInputTokens: contextUsage.cacheCreationInputTokens,
-            cacheReadInputTokens: contextUsage.cacheReadInputTokens,
-          });
-          setLastUsage({
-            inputTokens: contextUsage.inputTokens,
-            outputTokens: contextUsage.outputTokens,
-            cacheCreationInputTokens: contextUsage.cacheCreationInputTokens,
-            cacheReadInputTokens: contextUsage.cacheReadInputTokens,
-          });
-          if (!options?.estimated) {
-            setContextWarningSuppressed(false);
-          }
-        }
-      }
-    }
     const addToProviderMap = (prev: UsageByProvider): UsageByProvider => {
       const current = prev[provider] ?? emptyProviderUsage();
       return {

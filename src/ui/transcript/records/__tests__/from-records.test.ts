@@ -84,3 +84,50 @@ describe("sessionRecordsToTranscript — replayed reasoning", () => {
     expect(entries[0]?.detailOnly).toBeUndefined();
   });
 });
+
+describe("sessionRecordsToTranscript — /loop ticks", () => {
+  function tickRecord(ts: string, quiet?: { streak: number; since: string }): SessionRecord {
+    return {
+      type: "attachment",
+      ts,
+      attachment: {
+        type: "loop_tick",
+        prompt: "check the deploy",
+        ...(quiet ? { quietStreak: quiet.streak, quietSince: quiet.since } : {}),
+      },
+    };
+  }
+
+  it("folds quiet ticks into the tick that follows them, as the live view did", () => {
+    const first = "2026-09-25T10:01:00.000Z";
+    const entries = sessionRecordsToTranscript([
+      userRecord("/loop check the deploy"),
+      assistantRecord("loop started"),
+      tickRecord(first),
+      assistantRecord("nothing new"),
+      tickRecord("2026-09-25T10:02:00.000Z", { streak: 1, since: first }),
+      assistantRecord("still nothing"),
+      tickRecord("2026-09-25T10:03:00.000Z", { streak: 2, since: first }),
+      assistantRecord("the deploy finished"),
+    ]);
+
+    expect(entries.map((entry) => entry.text)).toEqual([
+      "/loop check the deploy",
+      "loop started",
+      expect.stringMatching(/^Resuming \/loop wakeup \(.+\) · 2 no-op ticks since /),
+      "the deploy finished",
+    ]);
+    expect(entries[2]?.loopTick).toBe(true);
+  });
+
+  it("keeps every tick that did not fold", () => {
+    const entries = sessionRecordsToTranscript([
+      tickRecord("2026-09-25T10:01:00.000Z"),
+      assistantRecord("deploy started"),
+      tickRecord("2026-09-25T10:02:00.000Z"),
+      assistantRecord("deploy finished"),
+    ]);
+    expect(entries.filter((entry) => entry.loopTick === true)).toHaveLength(2);
+    expect(entries).toHaveLength(4);
+  });
+});

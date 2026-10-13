@@ -23,6 +23,60 @@ async function* providerEvents(): AsyncIterable<ProviderEvent> {
   yield { kind: "message_stop", stop_reason: "tool_use" };
 }
 
+it("keeps the fork's latest context snapshot separate from its billed usage", async () => {
+  const emitted: ForkEvent[] = [];
+  async function* events(): AsyncIterable<ProviderEvent> {
+    yield { kind: "usage", inputTokens: 190_000, outputTokens: 10_000, contextTokens: 50_000 };
+    yield { kind: "usage", contextTokens: 40_000 };
+    yield { kind: "usage", outputTokens: 10_000 };
+    yield { kind: "usage", contextTokens: null };
+    yield { kind: "usage", outputTokens: 10_000 };
+    yield { kind: "usage", contextTokens: 0 };
+    yield { kind: "message_stop", stop_reason: "stop" };
+  }
+  const outcome = await consumeForkStream({
+    stream: events(),
+    ctx: {
+      provider: "anthropic-cloud",
+      model: "claude-sonnet-5-5",
+      effort: null,
+      permissionMode: "default",
+      sessionId: "session",
+      cwd: "/workspace",
+    },
+    forkId: "child",
+    parentRef: { parentToolCallId: "parent" },
+    emit: (event) => emitted.push(event),
+    finish: async (_event, result) => result,
+    appendSidechainRecord: () => {},
+  });
+  expect(outcome.kind).toBe("ready");
+  if (outcome.kind !== "ready") throw new Error("fork stream failed");
+  expect(outcome.usage).toEqual({
+    inputTokens: 190_000,
+    outputTokens: 10_000,
+    thoughtTokens: 0,
+    cacheCreationInputTokens: 0,
+    cacheReadInputTokens: 0,
+    contextTokens: 0,
+  });
+  const usageEvents = emitted.filter((event) => event.kind === "fork_usage");
+  expect(usageEvents.map((event) => event.contextTokens)).toEqual([
+    50_000,
+    40_000,
+    40_000,
+    null,
+    null,
+    0,
+  ]);
+  for (const event of usageEvents) {
+    expect(event.inputTokens + event.outputTokens).toBe(200_000);
+    expect(event.forkId).toBe("child");
+    expect(event.parentToolCallId).toBe("parent");
+    expect(event.isSnapshot).toBe(true);
+  }
+});
+
 it("emits streamed tool input only for explicitly allowed tool names", async () => {
   const emitted: ForkEvent[] = [];
   const controller = new AbortController();

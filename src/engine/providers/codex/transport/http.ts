@@ -49,16 +49,12 @@ function buildPrewarmBody(
   body: unknown,
   requestMetadata: CodexRequestMetadata,
 ): Record<string, unknown> {
-  const src = (body ?? {}) as Record<string, unknown>;
-  const out: Record<string, unknown> = { type: "response.create" };
-  if (src.model !== undefined) out.model = src.model;
-  if (src.instructions !== undefined) out.instructions = src.instructions;
-  if (src.tools !== undefined) out.tools = src.tools;
-  out.generate = false;
-  out.input = [];
-  if (src.prompt_cache_key !== undefined) out.prompt_cache_key = src.prompt_cache_key;
-  out.client_metadata = requestMetadata.clientMetadata;
-  return out;
+  return {
+    ...buildHttpBody(body, requestMetadata),
+    type: "response.create",
+    generate: false,
+    input: [],
+  };
 }
 
 async function readBodySnippet(res: Response, maxBytes = 4096): Promise<string> {
@@ -87,6 +83,7 @@ export async function* streamHttp(ctx: RequestContext, body: unknown): AsyncIter
     accountId: tokens.accountId,
     requestMetadata: turnMetadata,
     transport: "http",
+    model: ctx.model,
   });
   const payload = buildHttpBody(body, turnMetadata);
 
@@ -106,6 +103,7 @@ export async function* streamHttp(ctx: RequestContext, body: unknown): AsyncIter
       accountId: tokens.accountId,
       requestMetadata: prewarmMetadata,
       transport: "http",
+      model: ctx.model,
     });
     const prewarmBody = buildPrewarmBody(body, prewarmMetadata);
     const prewarmDeadline = createCodexStreamDeadline(ctx.abortSignal);
@@ -148,6 +146,7 @@ export async function* streamHttp(ctx: RequestContext, body: unknown): AsyncIter
           accountId: newTokens.accountId,
           requestMetadata: turnMetadata,
           transport: "http",
+          model: ctx.model,
         });
         const retryInit: RequestInit = {
           method: "POST",

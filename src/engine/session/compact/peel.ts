@@ -39,10 +39,13 @@ export function nextPeelAdvance(
 
 export function scrubCarriedAssistantUsage(message: Message): Message {
   if (message.role !== "assistant" || message.usage === undefined) return message;
+  // The preserved tail now follows a different prefix, so its snapshot is no
+  // longer authoritative. Dropping it (not setting zero) enables re-estimation.
+  const { contextTokens: _contextTokens, ...usage } = message.usage;
   return {
     ...message,
     usage: {
-      ...message.usage,
+      ...usage,
       inputTokens: 0,
       outputTokens: 0,
       thoughtTokens: 0,

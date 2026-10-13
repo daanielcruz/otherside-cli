@@ -1,4 +1,5 @@
 import { dequeue } from "@/engine/agents/inbox.ts";
+import { beginUserTurnOnBoard } from "@/engine/background/tasks/board-turns.ts";
 import {
   isWorkflowEnabled,
   isWorkflowKeywordTriggerEnabled,
@@ -20,7 +21,6 @@ import { appendRecord } from "@/engine/session/index.ts";
 import { outputStyleTurnReminder } from "@/harness/routines/output-styles/built-in.ts";
 import type { AgentEvent, DrainedQueuedMessage } from "@/kernel/std/types/events.ts";
 import type { ContentBlock } from "@/kernel/std/types/message.ts";
-import { planModeReminder } from "./plan-reminders.ts";
 import type { TurnLoopHost } from "./types.ts";
 
 export interface TurnOpening {
@@ -32,7 +32,7 @@ export interface TurnOpening {
 
 /**
  * Assembles the turn's opening user message: queued input, inbox and pending
- * injections, the plan-mode reminder, the typed prompt, ultracode reminders,
+ * injections, the typed prompt, ultracode reminders,
  * and the memory-recall prefetch keyed off the prompt text. Pushes everything
  * onto the session and reports whether the turn owes the model a response.
  */
@@ -51,11 +51,6 @@ export function* openTurnPrompt(input: {
   drainInbox(host);
   const pendingInjections = host.injections.drain();
   const turnState = host.deps.broker.read();
-  if (turnState.permissionMode === "plan") {
-    pendingInjections.unshift(
-      `<system-reminder>\n${planModeReminder(host.deps.session.id)}\n</system-reminder>`,
-    );
-  }
   const rawInput: ContentBlock[] =
     typeof userInput === "string"
       ? userInput.length > 0
@@ -96,6 +91,12 @@ export function* openTurnPrompt(input: {
       reminderTexts.push(ULTRACODE_EXIT);
       if (exitRecord) appendRecord(host.deps.session, exitRecord).catch(() => {});
     }
+  }
+  // A turn the user started — typed, or queued while the last one ran — advances the
+  // task board: settled tasks retire and open ones left idle are named to the model.
+  if (inputBlocks.length > 0 || initialQueuedMessages.length > 0) {
+    const idleTasks = beginUserTurnOnBoard();
+    if (idleTasks !== null) reminderTexts.push(idleTasks);
   }
   // The active style restates itself on every typed turn; built-ins only.
   if (inputBlocks.length > 0) {

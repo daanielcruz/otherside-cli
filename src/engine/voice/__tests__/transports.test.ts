@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
 import { EventEmitter } from "node:events";
 import * as realHttp2Module from "node:http2";
 import * as realWeriftModule from "werift";
@@ -18,6 +18,7 @@ import * as realCodexAuthModule from "@/engine/providers/codex/auth.ts";
 import { userAgent as codexUserAgent } from "@/engine/providers/codex/fingerprint.ts";
 import * as realXaiAuthModule from "@/engine/providers/xai/auth.ts";
 import { userAgent as xaiUserAgent } from "@/engine/providers/xai/fingerprint.ts";
+import * as transport from "@/engine/transport/http1-socket.ts";
 
 const realAnthropicAuth = { ...realAnthropicAuthModule };
 const realAntigravityAuth = { ...realAntigravityAuthModule };
@@ -521,70 +522,79 @@ describe("voice provider transports", () => {
 
   it("discovers the Gemini model and drives framed HTTP/2 voice activity", async () => {
     const observed = callbacks();
-    const fetchCalls: Array<{ url: string; init: RequestInit | undefined }> = [];
-    global.fetch = mock((input: string | URL | Request, init?: RequestInit) => {
-      fetchCalls.push({ url: String(input), init });
-      return Promise.resolve(
-        new Response(JSON.stringify({ audioTranscriptionModelIds: ["gemini-audio-test"] }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        }),
-      );
-    }) as unknown as typeof fetch;
-
-    const connection = connectAntigravityVoice(observed.callbacks);
-    const client = await waitForHttp2Client();
-    const stream = client.stream;
-    expect(fetchCalls).toHaveLength(1);
-    expect(fetchCalls[0]?.url).toBe(
-      "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
-    );
-    expect(fetchCalls[0]?.init).toMatchObject({
-      method: "POST",
-      headers: {
-        Authorization: "Bearer google-access",
-        "User-Agent": antigravityUserAgent(),
-        "Content-Type": "application/json",
+    const sizedCalls: Array<{ input: transport.Http1RequestInput; contentLengthAt: number }> = [];
+    const sendSpy = spyOn(transport, "sendSizedRequest").mockImplementation(
+      async (input, contentLengthAt) => {
+        sizedCalls.push({ input, contentLengthAt });
+        async function* bodyBytes(): AsyncIterable<Uint8Array> {
+          yield Buffer.from(
+            JSON.stringify({ audioTranscriptionModelIds: ["gemini-audio-test"] }),
+            "utf8",
+          );
+        }
+        return { status: 200, headers: new Map(), body: bodyBytes() };
       },
-      body: JSON.stringify({ project: "project-123" }),
-    });
-    expect(client.origin).toBe("https://aicode.googleapis.com");
-    expect(client.requestHeaders).toEqual({
-      ":method": "POST",
-      ":path": "/google.gca.aicode.v1alpha.PredictionService/BidiGenerateContent",
-      "content-type": "application/grpc",
-      te: "trailers",
-      authorization: "Bearer google-access",
-      "user-agent": antigravityUserAgent(),
-    });
-    expect(stream.writes).toEqual([grpcFrame(setupMessage("gemini-audio-test"))]);
+    );
 
-    stream.emit("data", grpcFrame(Buffer.from([0x0a, 0x00])));
-    const transcriber = await connection;
-    expect(stream.writes).toEqual([
-      grpcFrame(setupMessage("gemini-audio-test")),
-      grpcFrame(activityStartMessage()),
-    ]);
+    try {
+      const connection = connectAntigravityVoice(observed.callbacks);
+      const client = await waitForHttp2Client();
+      const stream = client.stream;
+      expect(sizedCalls).toHaveLength(1);
+      expect(sizedCalls[0]?.input.url.toString()).toBe(
+        "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
+      );
+      expect(sizedCalls[0]?.input.method).toBe("POST");
+      expect(sizedCalls[0]?.contentLengthAt).toBe(1);
+      expect(sizedCalls[0]?.input.headerLines).toEqual([
+        `User-Agent: ${antigravityUserAgent()}`,
+        "Authorization: Bearer google-access",
+        "Content-Type: application/json",
+        "Accept-Encoding: gzip",
+      ]);
+      expect(sizedCalls[0]?.input.payload.toString("utf8")).toBe(
+        JSON.stringify({ project: "project-123" }),
+      );
+      expect(client.origin).toBe("https://aicode.googleapis.com");
+      expect(client.requestHeaders).toEqual({
+        ":method": "POST",
+        ":path": "/google.gca.aicode.v1alpha.PredictionService/BidiGenerateContent",
+        "content-type": "application/grpc",
+        te: "trailers",
+        authorization: "Bearer google-access",
+        "user-agent": antigravityUserAgent(),
+      });
+      expect(stream.writes).toEqual([grpcFrame(setupMessage("gemini-audio-test"))]);
 
-    const pcm = Buffer.from([10, 11, 12]);
-    transcriber.send(pcm);
-    expect(stream.writes[2]).toEqual(grpcFrame(audioMessage(pcm)));
+      stream.emit("data", grpcFrame(Buffer.from([0x0a, 0x00])));
+      const transcriber = await connection;
+      expect(stream.writes).toEqual([
+        grpcFrame(setupMessage("gemini-audio-test")),
+        grpcFrame(activityStartMessage()),
+      ]);
 
-    const finish = transcriber.finish();
-    const latePcm = Buffer.from([13, 14]);
-    transcriber.send(latePcm);
-    await Bun.sleep(5);
-    expect(stream.writes[3]).toEqual(grpcFrame(audioMessage(latePcm)));
-    expect(stream.writes[4]).toEqual(grpcFrame(activityEndMessage()));
-    expect(stream.ended).toBe(true);
-    transcriber.send(Buffer.from([15, 16]));
-    expect(stream.writes).toHaveLength(5);
-    stream.emit("data", grpcFrame(finalTranscriptMessage("gemini transcript")));
+      const pcm = Buffer.from([10, 11, 12]);
+      transcriber.send(pcm);
+      expect(stream.writes[2]).toEqual(grpcFrame(audioMessage(pcm)));
 
-    await expect(finish).resolves.toBe("gemini transcript");
-    expect(observed.final).toEqual(["gemini transcript"]);
-    expect(stream.closed).toBe(true);
-    expect(client.closed).toBe(true);
+      const finish = transcriber.finish();
+      const latePcm = Buffer.from([13, 14]);
+      transcriber.send(latePcm);
+      await Bun.sleep(5);
+      expect(stream.writes[3]).toEqual(grpcFrame(audioMessage(latePcm)));
+      expect(stream.writes[4]).toEqual(grpcFrame(activityEndMessage()));
+      expect(stream.ended).toBe(true);
+      transcriber.send(Buffer.from([15, 16]));
+      expect(stream.writes).toHaveLength(5);
+      stream.emit("data", grpcFrame(finalTranscriptMessage("gemini transcript")));
+
+      await expect(finish).resolves.toBe("gemini transcript");
+      expect(observed.final).toEqual(["gemini transcript"]);
+      expect(stream.closed).toBe(true);
+      expect(client.closed).toBe(true);
+    } finally {
+      sendSpy.mockRestore();
+    }
   });
 
   it("surfaces setup aborts and closes the Anthropic transport", async () => {

@@ -21,7 +21,7 @@ function openAgent(overrides: { agentName?: string; agentId?: string } = {}): st
     ...(overrides.agentId === undefined ? {} : { agentId: overrides.agentId }),
     isBackgrounded: true,
   });
-  setRoute(task.id, { provider: "anthropic", model: "claude-opus-5" }, "xhigh");
+  setRoute(task.id, { provider: "anthropic", model: "claude-opus-5-5" }, "xhigh");
   dispatch({ type: "view/setViewingAgent", id: task.id });
   return task.id;
 }
@@ -54,14 +54,14 @@ describe("openAgentAddressee", () => {
 
     const addressee = openAgentAddressee();
 
-    expect(addressee?.identity).toBe("review-the-auth - Opus 5 xHigh");
+    expect(addressee?.identity).toBe("review-the-auth - Opus 5.5 xHigh");
     expect(addressee?.placeholder).toBe("Message @review-the-auth…");
   });
 
   it("leads with the agent type when the task carries one", () => {
     openAgent({ agentName: "sweep-the-logs", agentId: "general-purpose" });
 
-    expect(openAgentAddressee()?.identity).toContain("- Opus 5 xHigh");
+    expect(openAgentAddressee()?.identity).toContain("- Opus 5.5 xHigh");
     expect(openAgentAddressee()?.identity).not.toStartWith("sweep-the-logs");
   });
 
@@ -92,7 +92,7 @@ describe("the promptbar while an agent document is open", () => {
     openAgent();
     const [topRule] = prompt.render(WIDTH).map(stripAnsi);
 
-    expect(topRule).toContain("review-the-auth - Opus 5 xHigh");
+    expect(topRule).toContain("review-the-auth - Opus 5.5 xHigh");
   });
 
   it("stands an empty prompt in with who the message reaches", () => {
@@ -128,7 +128,7 @@ describe("the promptbar while an agent document is open", () => {
 
   it("returns the top rule to the effort badge once the document closes", () => {
     openAgent();
-    expect(stripAnsi(prompt.render(WIDTH)[0] ?? "")).toContain("Opus 5 xHigh");
+    expect(stripAnsi(prompt.render(WIDTH)[0] ?? "")).toContain("Opus 5.5 xHigh");
 
     dispatch({ type: "view/setViewingAgent", id: null });
     const [topRule] = prompt.render(WIDTH).map(stripAnsi);

@@ -1,4 +1,8 @@
-import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
+import {
+  isProviderId,
+  PROVIDER_ID_VALUES,
+  type ProviderId,
+} from "@/kernel/std/types/provider-ids.ts";
 import { deleteFor } from "@/kernel/storage/credentials.ts";
 
 export type ValidationIntent = "verify" | "change_auth" | "cancel";
@@ -29,24 +33,14 @@ export type LoginFlow =
 
 export function normalizeLoginProvider(input: string | null): ProviderId | null {
   const provider = input?.trim().toLowerCase();
-  if (!provider) return null;
-  if (provider === "anthropic") return "anthropic";
-  if (provider === "codex") return "codex";
-  if (provider === "xai") return "xai";
-  if (provider === "antigravity") return "antigravity";
-  if (provider === "kimi") return "kimi";
-  if (provider === "deepseek") return "deepseek";
-  if (provider === "minimax") return "minimax";
-  if (provider === "glm") return "glm";
-  if (provider === "openai") return "openai";
-  return null;
+  return isProviderId(provider) ? provider : null;
 }
 
 export async function runLogout(providerInput: string | null): Promise<string[]> {
   const provider = normalizeLoginProvider(providerInput);
   if (!provider) {
     throw new Error(
-      `unknown provider ${JSON.stringify(providerInput)} — use anthropic, codex, xai, kimi, minimax, glm, antigravity, deepseek, or openai`,
+      `unknown provider ${JSON.stringify(providerInput)} — use ${PROVIDER_ID_VALUES.join(", ")}`,
     );
   }
   await deleteFor(provider);

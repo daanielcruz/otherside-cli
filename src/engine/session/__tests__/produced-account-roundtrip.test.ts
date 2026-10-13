@@ -13,7 +13,7 @@ const RECORD: AssistantMessageRecord = {
   thinking: "reasoning",
   thinkingSignature: "B".repeat(420),
   provider: "anthropic",
-  model: "claude-fable-5",
+  model: "claude-fable-5-1",
   producedAccount: "acct-uuid-1",
 };
 
@@ -113,7 +113,7 @@ describe("producedAccount persistence round-trip", () => {
     expect(
       buildAnthropicMessages(messages, {
         provider: "anthropic",
-        model: "claude-opus-4-8",
+        model: "claude-opus-5-5",
       } as Parameters<typeof buildAnthropicMessages>[1]).out[1]?.content,
     ).toEqual([
       {

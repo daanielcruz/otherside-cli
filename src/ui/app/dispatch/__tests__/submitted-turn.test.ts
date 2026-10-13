@@ -1,6 +1,9 @@
 import { describe, expect, it } from "bun:test";
 import { TurnGuard } from "@/engine/queue/runtime/turn/guard.ts";
-import { createRunSubmittedTurn } from "@/ui/app/dispatch/submitted-turn.ts";
+import {
+  createRunSubmittedTurn,
+  turnEndsWithCompletionLine,
+} from "@/ui/app/dispatch/submitted-turn.ts";
 import type { DispatchLoopDeps } from "@/ui/app/dispatch/types.ts";
 
 // Everything past the guard check is unreachable when claim() fails, so the rest
@@ -87,5 +90,21 @@ describe("runSubmittedTurn guard enforcement (D1)", () => {
     await runSubmittedTurn("");
 
     expect(flushed).toBe(true);
+  });
+});
+
+describe("the completion line of a turn", () => {
+  it("closes a turn whose rows already settled, as when a rejected call ended it", () => {
+    expect(turnEndsWithCompletionLine({ unflushedText: "", showedOutput: true })).toBe(true);
+  });
+
+  it("closes a turn whose last words are still streaming", () => {
+    expect(turnEndsWithCompletionLine({ unflushedText: "<reply>", showedOutput: false })).toBe(
+      true,
+    );
+  });
+
+  it("leaves a turn that showed nothing without one", () => {
+    expect(turnEndsWithCompletionLine({ unflushedText: " ", showedOutput: false })).toBe(false);
   });
 });

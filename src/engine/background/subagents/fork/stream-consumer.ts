@@ -114,6 +114,7 @@ export async function consumeForkStream(args: {
         streamedToolNames.clear();
         stopReason = "stop";
         refusalExplanation = undefined;
+        delete usage.contextTokens;
       } else if (ev.kind === "quota_exhausted") {
         return await finishQuotaExhausted(args, ev);
       } else if (ev.kind === "error") {
@@ -151,6 +152,7 @@ function updateUsage(usage: UsageSnapshot, ev: Extract<ProviderEvent, { kind: "u
   if (ev.inputTokens !== undefined) usage.inputTokens = ev.inputTokens;
   if (ev.outputTokens !== undefined) usage.outputTokens = ev.outputTokens;
   if (ev.thoughtTokens !== undefined) usage.thoughtTokens = ev.thoughtTokens;
+  if (ev.contextTokens !== undefined) usage.contextTokens = ev.contextTokens;
   if (ev.cacheCreationInputTokens !== undefined)
     usage.cacheCreationInputTokens = ev.cacheCreationInputTokens;
   if (ev.cacheReadInputTokens !== undefined) usage.cacheReadInputTokens = ev.cacheReadInputTokens;
@@ -176,6 +178,7 @@ function emitUsageSnapshot(
     cacheCreationInputTokens: usage.cacheCreationInputTokens ?? 0,
     cacheReadInputTokens: usage.cacheReadInputTokens ?? 0,
     isSnapshot: true,
+    ...(usage.contextTokens !== undefined ? { contextTokens: usage.contextTokens } : {}),
     ...args.parentRef,
   });
 }

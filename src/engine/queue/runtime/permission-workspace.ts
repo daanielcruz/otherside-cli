@@ -1,11 +1,12 @@
-import { lstatSync, readlinkSync, realpathSync } from "node:fs";
+import { lstatSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { resolveManagedSessionWorktreePath } from "@/engine/session/worktree.ts";
 import { isReadOnlyBashCommand } from "@/engine/tools/_infra/command-analysis/read-only.ts";
+import { directoryPathPattern } from "@/kernel/permissions/path-rules.ts";
 import { loadAdditionalDirectories } from "@/kernel/permissions/persist.ts";
 import { isAcceptEditsBash, isAcceptEditsTool } from "@/kernel/permissions/sensitive-paths.ts";
-import { type PermissionUpdate, permissionDirectoryGlob } from "@/kernel/permissions/types.ts";
+import type { PermissionUpdate } from "@/kernel/permissions/types.ts";
 import { canonicalizeCwd, startsWithDir } from "@/kernel/std/fs/paths.ts";
 import { isRecord } from "@/kernel/std/value-guards.ts";
 import { autoMemDir } from "@/kernel/storage/memory/entrypoint.ts";
@@ -73,13 +74,17 @@ export function canonicalizeBestEffort(
   }
 }
 
+export function absoluteFilePath(filePath: string, cwd: string): string {
+  const expanded = expandHome(filePath);
+  return isAbsolute(expanded) ? resolve(expanded) : resolve(cwd, expanded);
+}
+
 export function filePathRepresentations(
   filePath: string,
   cwd: string,
   includeIntermediateSymlinkTargets: boolean,
 ): string[] {
-  const expanded = expandHome(filePath);
-  const absolute = isAbsolute(expanded) ? resolve(expanded) : resolve(cwd, expanded);
+  const absolute = absoluteFilePath(filePath, cwd);
   const paths = new Set([filePath, absolute]);
 
   // A final realpath loses links in a chain (e.g. a -> b -> /etc/passwd). Rule
@@ -110,33 +115,53 @@ export function filePathRepresentations(
   return [...paths];
 }
 
-export function filesystemReadSessionSuggestions(
-  filePath: string | null,
+/** The outside directories some reads need, and the grant that opens them. */
+export interface ReadDirectoryGrant {
+  directories: string[];
+  updates: PermissionUpdate[];
+}
+
+/** The directory a path names: itself when it is one, otherwise the one holding it. */
+export function directoryForPath(path: string): string {
+  try {
+    if (statSync(path).isDirectory()) return path;
+  } catch {
+    // A path that does not exist yet names its parent.
+  }
+  return dirname(path);
+}
+
+export function readDirectoryGrant(
+  paths: readonly string[],
   cwd: string,
   additionalWorkingDirectories: Iterable<string>,
-): PermissionUpdate[] {
-  if (
-    filePath === null ||
-    pathWithinWorkspace(filePath, cwd, realpathSync, additionalWorkingDirectories)
-  )
-    return [];
-  const directories = new Set(
-    filePathRepresentations(filePath, cwd, false).map((path) => dirname(path)),
+  destination: "session" | "localSettings",
+): ReadDirectoryGrant {
+  const outside = paths.filter(
+    (path) => !pathWithinWorkspace(path, cwd, realpathSync, additionalWorkingDirectories),
   );
-  return [
-    {
-      type: "addRules",
-      destination: "session",
-      rules: [...directories].map((directory) => ({
-        source: "session",
-        ruleBehavior: "allow",
-        ruleValue: {
-          toolName: "Read",
-          ruleContent: permissionDirectoryGlob(directory),
-        },
-      })),
-    },
-  ];
+  if (outside.length === 0) return { directories: [], updates: [] };
+  const directoryOf = (path: string) => (isAbsolute(path) ? directoryForPath(path) : dirname(path));
+  const granted = new Set(
+    outside.flatMap((path) => filePathRepresentations(path, cwd, false).map(directoryOf)),
+  );
+  return {
+    directories: [...new Set(outside.map((path) => directoryOf(absoluteFilePath(path, cwd))))],
+    updates: [
+      {
+        type: "addRules",
+        destination,
+        rules: [...granted].map((directory) => ({
+          source: destination,
+          ruleBehavior: "allow",
+          ruleValue: {
+            toolName: "Read",
+            ruleContent: directoryPathPattern(directory),
+          },
+        })),
+      },
+    ],
+  };
 }
 
 export function pathWithinWorkspace(
@@ -206,8 +231,7 @@ export function outsideEditDirectory(
     pathWithinWorkspace(filePath, cwd, realpathSync, additionalWorkingDirectories)
   )
     return null;
-  const expanded = expandHome(filePath);
-  return dirname(isAbsolute(expanded) ? resolve(expanded) : resolve(cwd, expanded));
+  return dirname(absoluteFilePath(filePath, cwd));
 }
 
 export function isAcceptEditsBashInWorkingDirectories(

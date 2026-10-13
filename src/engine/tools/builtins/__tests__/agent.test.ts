@@ -44,7 +44,6 @@ const childAgentContext: AgentContext = {
   parentSessionId: "session-test",
   agentType: "subagent",
   subagentName: "general-purpose",
-  sessionAllowedToolPatterns: new Set<string>(),
 };
 
 function makeCall(input: Record<string, unknown>): ToolCall {
@@ -101,6 +100,25 @@ describe("Agent tool fork vs named subagent", () => {
     if (!args) throw new Error("expected dispatchSubagent call");
     expect(args.subagentType).toBe("explore");
     expect(args.tierOverride).toBe("daimyo");
+  });
+
+  test("forwards a named effort to the subagent and drops an unknown one", async () => {
+    await Agent.run(makeCall({ description: "test", prompt: "do it", effort: "low" }), baseCtx);
+    await Agent.run(makeCall({ description: "test", prompt: "do it", effort: "ultra" }), baseCtx);
+
+    expect(dispatchSubagent.mock.calls[0]?.[0]?.effortOverride).toBe("low");
+    expect(dispatchSubagent.mock.calls[1]?.[0]).not.toHaveProperty("effortOverride");
+  });
+
+  test("a fork ignores the effort parameter and runs at the parent's", async () => {
+    await Agent.run(
+      makeCall({ description: "test", prompt: "do it", subagent_type: "fork", effort: "low" }),
+      baseCtx,
+    );
+
+    expect(dispatchFork).toHaveBeenCalledTimes(1);
+    expect(dispatchFork.mock.calls[0]?.[0]).not.toHaveProperty("effort");
+    expect(dispatchFork.mock.calls[0]?.[0]).not.toHaveProperty("effortOverride");
   });
 
   test("allows a named child to launch another named agent", async () => {
@@ -203,7 +221,7 @@ describe("Agent tool fork vs named subagent", () => {
         prompt: "do it",
         subagent_type: "fork",
         provider: "codex",
-        model: "gpt-5.5",
+        model: "gpt-5.6-terra",
       }),
       { ...baseCtx, orchestrationMode },
     );
@@ -211,7 +229,7 @@ describe("Agent tool fork vs named subagent", () => {
     expect(dispatchFork).toHaveBeenCalledTimes(1);
     const args = dispatchFork.mock.calls[0]?.[0];
     if (!args) throw new Error("expected dispatchFork call");
-    expect(args.route).toEqual({ provider: "codex", model: "gpt-5.5" });
+    expect(args.route).toEqual({ provider: "codex", model: "gpt-5.6-terra" });
     expect(dispatchSubagent).toHaveBeenCalledTimes(0);
   });
 
@@ -222,7 +240,7 @@ describe("Agent tool fork vs named subagent", () => {
         prompt: "do it",
         subagent_type: "fork",
         provider: "codex",
-        model: "gpt-5.5",
+        model: "gpt-5.6-terra",
       }),
       { ...baseCtx, orchestrationMode: "disabled" },
     );
@@ -344,7 +362,7 @@ describe("Agent option descriptor SoT", () => {
 
     expect(properties.model?.description).toContain("subagent_type");
     expect(properties.provider?.description).toContain("subagent_type");
-    expect(properties.model?.description).not.toContain("gpt-5.5");
+    expect(properties.model?.description).not.toContain("gpt-5.6-terra");
     expect(properties.provider?.description).not.toContain("codex");
   });
 

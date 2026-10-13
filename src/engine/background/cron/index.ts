@@ -1,10 +1,21 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { configRoot } from "@/kernel/std/fs/paths.ts";
+import { withFileLockSync } from "@/kernel/std/fs/file-lock.ts";
+import { atomicWriteFileSync } from "@/kernel/std/fs/secure-fs.ts";
+import { isEnvTruthy } from "@/kernel/std/proc/env.ts";
+import { isRecord } from "@/kernel/std/value-guards.ts";
 import { computeNextCronRun, cronToHuman, parseCronExpression } from "./parser.ts";
 
 export const MAX_JOBS = 50;
 export const DEFAULT_MAX_AGE_DAYS = 7;
+
+/** The project file durable tasks are saved in, relative to the project. */
+export const SAVED_SCHEDULE_FILE = ".otherside/scheduled_tasks.json";
+
+/** Scheduling is switched off for this process: no cron tool is offered and nothing fires. */
+export function isSchedulingDisabled(): boolean {
+  return isEnvTruthy(process.env.OTHERSIDE_DISABLE_CRON);
+}
 
 export interface ScheduledTask {
   id: string;
@@ -14,15 +25,15 @@ export interface ScheduledTask {
   durable: boolean;
   createdAt: number;
   lastFiredAt: number | null;
+  /** The process that saved a durable task; it fires the task while it runs. */
+  ownerPid?: number;
   kind?: "loop";
+  /** The exact moment a /loop wakeup fires; its minute-only cron also matches earlier days. */
   scheduledFor?: number;
-}
-
-export interface CreateOutput {
-  id: string;
-  humanSchedule: string;
-  recurring: boolean;
-  durable?: boolean;
+  /** Why the model picked a /loop wakeup's delay. */
+  reason?: string;
+  /** A /loop wakeup the runtime armed because the model did not schedule one. */
+  keepalive?: true;
 }
 
 export interface ListJob {
@@ -36,53 +47,132 @@ export interface ListJob {
   scheduledFor?: number;
 }
 
+interface SavedTask {
+  id: string;
+  cron: string;
+  prompt: string;
+  createdAt: number;
+  recurring?: true;
+  lastFiredAt?: number;
+  ownerPid?: number;
+}
+
+interface SavedRead {
+  path: string;
+  mtimeMs: number;
+  size: number;
+  tasks: readonly ScheduledTask[];
+}
+
 const sessionStore = new Map<string, ScheduledTask>();
-let counter = 1;
-let durableLoaded = false;
-const durableStore = new Map<string, ScheduledTask>();
+let savedRead: SavedRead | null = null;
+let projectRootForTests: string | null = null;
 
-function nextId(): string {
-  const n = counter++;
-  return `cron-${n.toString().padStart(4, "0")}`;
+// otherside never changes its working directory, so this stays the project it was launched in.
+function projectRoot(): string {
+  return projectRootForTests ?? process.cwd();
 }
 
-function durableFilePath(): string {
-  return join(configRoot(), "scheduled_tasks.json");
+/** Where the project's durable tasks live; every session opened in the project shares them. */
+export function savedSchedulePath(): string {
+  return join(projectRoot(), SAVED_SCHEDULE_FILE);
 }
 
-function loadDurable(): void {
-  if (durableLoaded) return;
-  durableLoaded = true;
-  const path = durableFilePath();
-  if (!existsSync(path)) return;
+function fromSaved(entry: unknown): ScheduledTask | null {
+  if (!isRecord(entry)) return null;
+  const { id, cron, prompt, createdAt, recurring, lastFiredAt, ownerPid } = entry;
+  if (typeof id !== "string" || typeof cron !== "string" || typeof prompt !== "string") return null;
+  if (typeof createdAt !== "number" || parseCronExpression(cron) === null) return null;
+  return {
+    id,
+    cron,
+    prompt,
+    recurring: recurring === true,
+    durable: true,
+    createdAt,
+    lastFiredAt: typeof lastFiredAt === "number" ? lastFiredAt : null,
+    ...(typeof ownerPid === "number" ? { ownerPid } : {}),
+  };
+}
+
+function toSaved(task: ScheduledTask): SavedTask {
+  return {
+    id: task.id,
+    cron: task.cron,
+    prompt: task.prompt,
+    createdAt: task.createdAt,
+    ...(task.recurring ? { recurring: true } : {}),
+    ...(task.lastFiredAt !== null ? { lastFiredAt: task.lastFiredAt } : {}),
+    ...(task.ownerPid !== undefined ? { ownerPid: task.ownerPid } : {}),
+  };
+}
+
+function parseSaved(raw: string): ScheduledTask[] {
   try {
-    const raw = readFileSync(path, "utf8");
-    const parsed = JSON.parse(raw) as { tasks?: ScheduledTask[] };
-    if (!parsed?.tasks) return;
-    for (const t of parsed.tasks) {
-      if (typeof t?.id !== "string") continue;
-      durableStore.set(t.id, t);
-      const tail = t.id.match(/cron-(\d+)/);
-      if (tail) {
-        const n = Number.parseInt(tail[1] ?? "", 10);
-        if (Number.isFinite(n) && n >= counter) counter = n + 1;
-      }
-    }
-  } catch {}
+    const parsed: unknown = JSON.parse(raw);
+    if (!isRecord(parsed) || !Array.isArray(parsed.tasks)) return [];
+    return parsed.tasks.map(fromSaved).filter((task) => task !== null);
+  } catch {
+    return [];
+  }
 }
 
-function persistDurable(): void {
-  const path = durableFilePath();
-  const tasks = [...durableStore.values()];
+/**
+ * The project's durable tasks as the file holds them now. Another session may have
+ * changed the file, so it is read again whenever it changed since the last read.
+ */
+function savedTasks(): readonly ScheduledTask[] {
+  const path = savedSchedulePath();
+  let stat: { mtimeMs: number; size: number };
   try {
-    mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, JSON.stringify({ tasks }, null, 2));
+    stat = statSync(path);
+  } catch {
+    savedRead = null;
+    return [];
+  }
+  if (
+    savedRead?.path === path &&
+    savedRead.mtimeMs === stat.mtimeMs &&
+    savedRead.size === stat.size
+  ) {
+    return savedRead.tasks;
+  }
+  let tasks: ScheduledTask[] = [];
+  try {
+    tasks = parseSaved(readFileSync(path, "utf8"));
   } catch {}
+  savedRead = { path, mtimeMs: stat.mtimeMs, size: stat.size, tasks };
+  return tasks;
 }
 
-function allTasks(): ScheduledTask[] {
-  loadDurable();
-  return [...durableStore.values(), ...sessionStore.values()];
+/** Rewrites the durable tasks under the file's lock, from what the file holds at that moment. */
+function updateSaved(change: (tasks: ScheduledTask[]) => ScheduledTask[] | null): void {
+  const path = savedSchedulePath();
+  mkdirSync(dirname(path), { recursive: true });
+  withFileLockSync(path, () => {
+    savedRead = null;
+    const next = change(savedTasks().map((task) => ({ ...task })));
+    if (next === null) return;
+    atomicWriteFileSync(path, `${JSON.stringify({ tasks: next.map(toSaved) }, null, 2)}\n`);
+    savedRead = null;
+  });
+}
+
+/** Every task, durable and session-only, in creation order. */
+export function tasks(): ScheduledTask[] {
+  return [...savedTasks(), ...sessionStore.values()].sort((a, b) => a.createdAt - b.createdAt);
+}
+
+/** Eight hex digits: short enough to read back, and a stable seed for the task's jitter. */
+function newTaskId(): string {
+  const taken = new Set(tasks().map((task) => task.id));
+  let id: string;
+  do {
+    id = Math.floor(Math.random() * 0xffff_ffff)
+      .toString(16)
+      .padStart(8, "0");
+  } while (taken.has(id));
+  return id;
 }
 
 export interface ValidationError {
@@ -90,7 +180,7 @@ export interface ValidationError {
   errorCode: number;
 }
 
-export function validateCreate(input: { cron: string; durable: boolean }): ValidationError | null {
+export function validateCreate(input: { cron: string }): ValidationError | null {
   const fields = parseCronExpression(input.cron);
   if (!fields) {
     return {
@@ -98,14 +188,13 @@ export function validateCreate(input: { cron: string; durable: boolean }): Valid
       errorCode: 1,
     };
   }
-  const next = computeNextCronRun(fields, new Date());
-  if (next === null) {
+  if (computeNextCronRun(fields, new Date()) === null) {
     return {
       message: `Cron expression '${input.cron}' does not match any calendar date in the next year.`,
       errorCode: 2,
     };
   }
-  if (allTasks().length >= MAX_JOBS) {
+  if (tasks().length >= MAX_JOBS) {
     return {
       message: `Too many scheduled jobs (max ${MAX_JOBS}). Cancel one first.`,
       errorCode: 3,
@@ -114,6 +203,7 @@ export function validateCreate(input: { cron: string; durable: boolean }): Valid
   return null;
 }
 
+/** Adds a task. A durable one is saved for the project, and saving it can throw. */
 export function create(input: {
   cron: string;
   prompt: string;
@@ -121,103 +211,84 @@ export function create(input: {
   durable?: boolean;
   kind?: "loop";
   scheduledFor?: number;
-}): CreateOutput {
-  loadDurable();
-  const recurring = input.recurring ?? true;
+  reason?: string;
+  keepalive?: true;
+  createdAt?: number;
+  /** The id a task restored from a resumed conversation keeps. */
+  id?: string;
+}): ScheduledTask {
   const durable = input.durable ?? false;
   const task: ScheduledTask = {
-    id: nextId(),
+    id: input.id ?? newTaskId(),
     cron: input.cron,
     prompt: input.prompt,
-    recurring,
+    recurring: input.recurring ?? true,
     durable,
-    createdAt: Date.now(),
+    createdAt: input.createdAt ?? Date.now(),
     lastFiredAt: null,
+    ...(durable ? { ownerPid: process.pid } : {}),
     ...(input.kind !== undefined ? { kind: input.kind } : {}),
     ...(input.scheduledFor !== undefined ? { scheduledFor: input.scheduledFor } : {}),
+    ...(input.reason !== undefined ? { reason: input.reason } : {}),
+    ...(input.keepalive !== undefined ? { keepalive: input.keepalive } : {}),
   };
-  if (durable) {
-    durableStore.set(task.id, task);
-    persistDurable();
-  } else {
-    sessionStore.set(task.id, task);
-  }
-  const out: CreateOutput = {
-    id: task.id,
-    humanSchedule: cronToHuman(task.cron),
-    recurring,
-  };
-  if (durable) out.durable = true;
-  return out;
+  if (durable) updateSaved((saved) => [...saved, task]);
+  else sessionStore.set(task.id, task);
+  return task;
 }
 
 export function list(): ListJob[] {
-  return allTasks()
-    .sort((a, b) => a.id.localeCompare(b.id))
-    .map((t) => {
-      const job: ListJob = {
-        id: t.id,
-        cron: t.cron,
-        humanSchedule: cronToHuman(t.cron),
-        prompt: t.prompt,
-      };
-      if (t.recurring) job.recurring = true;
-      if (t.durable === false) job.durable = false;
-      if (t.kind !== undefined) job.kind = t.kind;
-      if (t.scheduledFor !== undefined) job.scheduledFor = t.scheduledFor;
-      return job;
-    });
-}
-
-export function remove(id: string): boolean {
-  loadDurable();
-  if (durableStore.delete(id)) {
-    persistDurable();
-    return true;
-  }
-  return sessionStore.delete(id);
+  return tasks().map((task) => ({
+    id: task.id,
+    cron: task.cron,
+    humanSchedule: cronToHuman(task.cron),
+    prompt: task.prompt,
+    ...(task.recurring ? { recurring: true } : {}),
+    ...(task.durable ? {} : { durable: false }),
+    ...(task.kind !== undefined ? { kind: task.kind } : {}),
+    ...(task.scheduledFor !== undefined ? { scheduledFor: task.scheduledFor } : {}),
+  }));
 }
 
 export function get(id: string): ScheduledTask | undefined {
-  loadDurable();
-  return durableStore.get(id) ?? sessionStore.get(id);
+  return sessionStore.get(id) ?? savedTasks().find((task) => task.id === id);
 }
 
-export function clear(): void {
+export function remove(id: string): boolean {
+  return removeMany([id]) > 0;
+}
+
+export function removeMany(ids: readonly string[]): number {
+  let removed = 0;
+  const remaining = new Set<string>();
+  for (const id of ids) {
+    if (sessionStore.delete(id)) removed += 1;
+    else remaining.add(id);
+  }
+  if (remaining.size === 0 || !savedTasks().some((task) => remaining.has(task.id))) return removed;
+  updateSaved((saved) => {
+    const kept = saved.filter((task) => !remaining.has(task.id));
+    removed += saved.length - kept.length;
+    return kept.length === saved.length ? null : kept;
+  });
+  return removed;
+}
+
+/** Records a durable recurring task's fire, so a restart schedules its next fire from there. */
+export function markFired(id: string, at: number): void {
+  updateSaved((saved) => {
+    const task = saved.find((entry) => entry.id === id);
+    if (task === undefined) return null;
+    task.lastFiredAt = at;
+    return saved;
+  });
+}
+
+/** Points the durable store at a scratch project, or back at the real one with null; forgets session tasks. */
+export function useProjectRootForTests(root: string | null): void {
+  projectRootForTests = root;
+  savedRead = null;
   sessionStore.clear();
-  durableStore.clear();
-  durableLoaded = false;
-  counter = 1;
-}
-
-export function parseInterval(s: string): number | null {
-  const trimmed = s.trim();
-  if (!trimmed) return null;
-  const match = trimmed.match(/^(\d+)\s*([a-z]*)$/i);
-  if (!match) return null;
-  const n = Number.parseInt(match[1] ?? "", 10);
-  if (!Number.isFinite(n) || n <= 0) return null;
-  const unit = (match[2] ?? "").toLowerCase().trim();
-  const factor: Record<string, number> = {
-    "": 60_000,
-    m: 60_000,
-    min: 60_000,
-    mins: 60_000,
-    minute: 60_000,
-    minutes: 60_000,
-    s: 1_000,
-    sec: 1_000,
-    secs: 1_000,
-    second: 1_000,
-    seconds: 1_000,
-    h: 3_600_000,
-    hr: 3_600_000,
-    hour: 3_600_000,
-    hours: 3_600_000,
-  };
-  const f = factor[unit];
-  if (f === undefined) return null;
-  return n * f;
 }
 
 export { computeNextCronRun, cronToHuman, parseCronExpression };

@@ -43,7 +43,6 @@ function nestedContext(): AgentContext {
     parentSessionId: "tier-ceiling-session",
     agentType: "subagent",
     subagentName: "tier-ceiling-parent",
-    sessionAllowedToolPatterns: new Set<string>(),
   };
 }
 
@@ -103,7 +102,7 @@ describe("nested tier ceiling", () => {
     const result = await resolveNested({
       ...BASE_INVOCATION,
       providerOverride: "codex",
-      modelOverride: "gpt-5.6-sol",
+      modelOverride: "gpt-5.6-terra",
     });
 
     expect(result.ok).toBe(false);
@@ -119,7 +118,7 @@ describe("nested tier ceiling", () => {
     const result = await resolveNested({
       ...BASE_INVOCATION,
       providerOverride: "codex",
-      modelOverride: "gpt-5.5",
+      modelOverride: "gpt-5.6-terra",
     });
 
     expect(result.ok).toBe(false);

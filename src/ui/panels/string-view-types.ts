@@ -7,6 +7,7 @@ import type { LogoutPanelProps } from "@/ui/panels/logout/string-view.ts";
 import type { PluginsOverlayProps } from "@/ui/panels/plugins/types.ts";
 import type { ResumePanelProps } from "@/ui/panels/resume/string-view.ts";
 import type { RewindPanelProps } from "@/ui/panels/rewind/string-view.ts";
+import type { WorkflowsPanelProps } from "@/ui/panels/workflows/string-view.ts";
 
 /**
  * A string-view footer panel: a renderable that also owns keyboard input while it
@@ -36,6 +37,7 @@ export interface StringViewPanel extends StringComponent {
  * - rewind → `onRewind` from `createRewindToTranscriptId` (session-ops), optional turns
  * - plugins → optional `commandResult`
  * - btw → `forkAnswer` + `abortPending` from the dispatch's side-question controller
+ * - workflows → optional `initialDetailItemId` from the running-agents strip
  */
 export type OverlayProps = {
   login: LoginPanelProps;
@@ -44,6 +46,7 @@ export type OverlayProps = {
   rewind: RewindPanelProps;
   plugins: PluginsOverlayProps;
   btw: BtwPanelProps;
+  workflows: WorkflowsPanelProps;
 };
 
 /** Props accepted when opening overlay `N` (unknown when `N` has no OverlayProps entry). */

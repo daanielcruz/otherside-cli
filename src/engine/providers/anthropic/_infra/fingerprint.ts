@@ -10,7 +10,8 @@ import {
 } from "@/engine/contract/wire-version.ts";
 import { parseModelId } from "@/engine/model/catalog.ts";
 import {
-  isHaikuModel,
+  isEffortlessHaiku,
+  isHaikuFamily,
   modelSupportsMidConversationSystemBeta,
 } from "@/engine/model/facts/model-family.ts";
 import { latchFastModeIf } from "@/engine/providers/anthropic/_infra/wire-latches.ts";
@@ -77,6 +78,10 @@ const EFFORT_BETA = "effort-2025-11-24";
 export const EXTENDED_CACHE_TTL_BETA = "extended-cache-ttl-2025-04-11";
 export const STRUCTURED_OUTPUTS_BETA = "structured-outputs-2025-12-15";
 export const FAST_MODE_BETA = "fast-mode-2026-02-01";
+const THINKING_BINDING_BETA = "thinking-binding-controls-2026-08-01";
+
+const REQUEST_CLASS_HEADER = "x-claude-code-request-class";
+type RequestClass = "main" | "subagent" | "compaction" | "auxiliary";
 
 // First-party Haiku wire id is always the dated config string.
 // Catalog may still list the undated alias.
@@ -97,18 +102,21 @@ function buildModelBetas(
   deferredToolLoading: boolean,
   extendedCacheTtl: boolean,
   redactThinking: boolean,
+  thinkingBinding: boolean,
+  outputEffort: boolean,
 ): string[] {
-  const haiku = isHaikuModel(base);
+  const haiku = isHaikuFamily(base);
+  const effortlessHaiku = isEffortlessHaiku(base);
   const supportsMidConvSystem = modelSupportsMidConversationSystemBeta(base);
-  // Non-agentic side queries omit request-feature betas. Structured output tracks
-  // the request body, while the quota probe omits it.
+  // Non-agentic side queries omit request-feature betas. Effort and structured
+  // output track the request body, while the quota probe omits both.
   const sideQueryPath = !agentic;
   const out: string[] = [];
   if (!haiku) out.push(CLAUDE_CODE_BETA);
   out.push(OAUTH_BETA);
   if (is1m) out.push(BETA_CONTEXT_1M);
   out.push(INTERLEAVED_THINKING_BETA);
-  if (!haiku && redactThinking) out.push(REDACT_THINKING_BETA);
+  if (!effortlessHaiku && redactThinking) out.push(REDACT_THINKING_BETA);
   out.push(THINKING_TOKEN_COUNT_BETA);
   out.push(CONTEXT_MANAGEMENT_BETA);
   out.push(PROMPT_CACHING_SCOPE_BETA);
@@ -116,13 +124,16 @@ function buildModelBetas(
   // Agentic haiku carries the CLI beta header after the cache headers rather than before them, unlike opus and sonnet.
   if (haiku && agentic) out.push(CLAUDE_CODE_BETA);
   if (sideQueryPath) {
+    if (outputEffort) out.push(EFFORT_BETA);
     if (structuredOutput) out.push(STRUCTURED_OUTPUTS_BETA);
+    if (thinkingBinding) out.push(THINKING_BINDING_BETA);
     if (extendedCacheTtl) out.push(EXTENDED_CACHE_TTL_BETA);
     return out;
   }
   if (deferredToolLoading) out.push(ADVANCED_TOOL_USE_BETA);
-  if (!haiku) out.push(EFFORT_BETA);
+  if (!effortlessHaiku) out.push(EFFORT_BETA);
   if (structuredOutput) out.push(STRUCTURED_OUTPUTS_BETA);
+  if (thinkingBinding) out.push(THINKING_BINDING_BETA);
   if (fastModeLatched) out.push(FAST_MODE_BETA);
   if (extendedCacheTtl) out.push(EXTENDED_CACHE_TTL_BETA);
   return out;
@@ -201,26 +212,41 @@ function requestUsesDeferredToolLoading(body: unknown): boolean {
   );
 }
 
-function requestUsesStructuredOutput(body: unknown): boolean {
+function requestOutputConfigHas(body: unknown, field: "format" | "effort"): boolean {
   if (typeof body !== "object" || body === null || Array.isArray(body)) return false;
   const outputConfig = (body as Record<string, unknown>).output_config;
   return (
     typeof outputConfig === "object" &&
     outputConfig !== null &&
     !Array.isArray(outputConfig) &&
-    "format" in outputConfig
+    field in outputConfig
   );
 }
 
-function requestUsesAdaptiveThinking(body: unknown): boolean {
-  if (typeof body !== "object" || body === null || Array.isArray(body)) return false;
+function requestThinkingType(body: unknown): unknown {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) return undefined;
   const thinking = (body as Record<string, unknown>).thinking;
-  return (
-    typeof thinking === "object" &&
-    thinking !== null &&
-    !Array.isArray(thinking) &&
-    (thinking as Record<string, unknown>).type === "adaptive"
-  );
+  if (typeof thinking !== "object" || thinking === null || Array.isArray(thinking))
+    return undefined;
+  return (thinking as Record<string, unknown>).type;
+}
+
+function requestUsesAdaptiveThinking(body: unknown): boolean {
+  return requestThinkingType(body) === "adaptive";
+}
+
+// Every request that reasons opts into the server dropping replayed thinking
+// that no longer matches its context, instead of rejecting the request.
+function requestUsesThinking(body: unknown): boolean {
+  const type = requestThinkingType(body);
+  return type === "adaptive" || type === "enabled";
+}
+
+function requestClass(ctx: RequestContext): RequestClass {
+  if (ctx.isCompaction === true) return "compaction";
+  if (ctx.agentic === false || ctx.cacheRole === "side-question") return "auxiliary";
+  if (ctx.agentOwnerId !== undefined || ctx.isForkChild === true) return "subagent";
+  return "main";
 }
 
 // Extended (1h) cache TTL is negotiated per request: the beta header and the
@@ -251,10 +277,12 @@ export function fingerprint(ctx: RequestContext, body?: unknown): WireFingerprin
     parsed.is1m,
     agentic,
     fastModeLatched,
-    ctx.cacheRole === "title" || requestUsesStructuredOutput(body),
+    ctx.cacheRole === "title" || requestOutputConfigHas(body, "format"),
     requestUsesDeferredToolLoading(body),
     extendedCacheTtl,
     redactThinking,
+    requestUsesThinking(body) && ctx.disableThinking !== true,
+    requestOutputConfigHas(body, "effort"),
   );
   const userAgent = uaCli();
 
@@ -282,6 +310,8 @@ export function fingerprint(ctx: RequestContext, body?: unknown): WireFingerprin
   if (ctx.parentAgentOwnerId !== undefined) {
     extraHeaders["x-claude-code-parent-agent-id"] = subagentWireId(ctx.parentAgentOwnerId);
   }
+
+  extraHeaders[REQUEST_CLASS_HEADER] = requestClass(ctx);
 
   return {
     userAgent,

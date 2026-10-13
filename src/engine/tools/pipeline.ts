@@ -3,6 +3,7 @@ import { recordCodexRawReplayDiagnostic } from "@/devtools/codex-raw-stream.ts";
 import { devtoolBoolean } from "@/devtools/settings.ts";
 import { isWriteEscapingWorktree } from "@/engine/background/subagents/worktree.ts";
 import { QuotaExhaustedError } from "@/engine/providers/_shared/retry.ts";
+import { TOOL_RESULT_INTERRUPTED } from "@/engine/queue/runtime/interruption-text.ts";
 import { formatValidationError } from "@/engine/tools/_infra/format.ts";
 import { validateToolInput } from "@/engine/tools/_infra/validate.ts";
 import { appendPostToolUseFeedback } from "@/kernel/hooks/handler.ts";
@@ -18,14 +19,23 @@ import {
 } from "./pretooluse-hook-permission-context.ts";
 import * as registry from "./registry.ts";
 
-export type PermissionDecision = "allow" | "deny" | "ask" | { kind: "deny"; message: string };
+export type PermissionDecision =
+  | "allow"
+  | "deny"
+  | "ask"
+  | {
+      kind: "deny";
+      message: string;
+      /** The user turned the call down without directions: the turn stops with it. */
+      stopsTurn?: true;
+    };
 
 export interface PipelineDeps {
   permission: (call: ToolCall, ctx: RequestContext) => Promise<PermissionDecision>;
   hooks: HookHandler[];
 }
 
-type Verdict = { kind: "allow" } | { kind: "deny"; message: string };
+type Verdict = { kind: "allow" } | { kind: "deny"; message: string; stopsTurn?: true };
 
 type PreToolUseHookOutcome = Awaited<ReturnType<NonNullable<HookHandler["preToolUse"]>>>;
 
@@ -59,13 +69,16 @@ function combineHookPermission(
   return a === "ask" || b === "ask" ? "ask" : (a ?? b);
 }
 
+/** What a tool call a rule refused returns. */
+export const PERMISSION_DENIED_MESSAGE = "permission denied";
+
 function handlerFor(callName: string, ctx: RequestContext): ScopedToolHandler | undefined {
   return ctx.scopedToolHandlers?.get(callName) ?? registry.get(callName);
 }
 
 async function decide(call: ToolCall, ctx: RequestContext, deps: PipelineDeps): Promise<Verdict> {
   const d = await deps.permission(call, ctx);
-  if (d === "deny") return { kind: "deny", message: "permission denied" };
+  if (d === "deny") return { kind: "deny", message: PERMISSION_DENIED_MESSAGE };
   if (typeof d === "object" && d.kind === "deny") return d;
   return { kind: "allow" };
 }
@@ -154,12 +167,17 @@ async function resolvePermissionDecision(
     runWithPreToolUseHookPermissionSignal(hookPermission, () => decide(call, ctx, deps)),
   );
   if (verdict.kind === "deny") {
-    return { tool_use_id: call.id, content: verdict.message, is_error: true };
+    return {
+      tool_use_id: call.id,
+      content: verdict.message,
+      is_error: true,
+      ...(verdict.stopsTurn ? { stopsTurn: true as const } : {}),
+    };
   }
   // Permission can resolve at the same time as turn cancellation. Never let an
   // approval that lost that race reach a mutating tool handler.
   if (ctx.abortSignal?.aborted) {
-    return { tool_use_id: call.id, content: "Interrupted by user", is_error: true };
+    return { tool_use_id: call.id, content: TOOL_RESULT_INTERRUPTED, is_error: true };
   }
   return null;
 }

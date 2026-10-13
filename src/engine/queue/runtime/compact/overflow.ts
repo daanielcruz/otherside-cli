@@ -31,9 +31,11 @@ function computePrefixOverflowTokens(deps: CompactOrchestrationDeps): number | n
   const lastUsage = deps.agentDeps.getLastUsage?.() ?? null;
   const usage = getAuthoritativeUsage(deps.agentDeps.session.messages, lastUsage);
   if (!usage) return null;
-  const totalInputTokens = totalInputTokensFromUsage(usage);
+  // An explicit snapshot already includes output; its billing input/output may
+  // span other inferences and cannot describe the incompressible prefix.
+  const contextTokens = usage.contextTokens ?? totalInputTokensFromUsage(usage);
   const messagesEstimate = estimateConversationTokens(deps.agentDeps.session.messages);
-  return Math.max(0, totalInputTokens - messagesEstimate);
+  return Math.max(0, contextTokens - messagesEstimate);
 }
 
 export function checkContextOverflow(deps: CompactOrchestrationDeps): ContextOverflow | null {

@@ -1,3 +1,5 @@
+import { readScheduledTaskFire } from "@/engine/background/cron/fire-record.ts";
+import { loopTickUserBlocks, readLoopTick } from "@/engine/background/loop/tick.ts";
 import { wrapNotificationForModel } from "@/engine/background/tasks/notification.ts";
 import { buildPostCompactRehydration } from "@/engine/queue/index.ts";
 import { isPreservedImageBlock } from "@/engine/session/compact/preserved-image-ledger.ts";
@@ -14,6 +16,7 @@ import {
   isFoldableToolResult,
   type ToolResultBlock,
 } from "@/engine/session/transcript/tool-result-fold.ts";
+import { mergeContextUsageSnapshot } from "@/engine/session/usage/snapshot.ts";
 import { compactSummaryUserMessage } from "@/harness/routines/compact/index.ts";
 import type { ImageDimensions, ImageMediaType } from "@/kernel/std/types/image.ts";
 import type {
@@ -70,7 +73,11 @@ export function sessionRecordsToMessages(records: SessionRecord[]): Message[] {
         ? pendingToolCalls.map((entry) => entry.block)
         : [];
     pendingAssistantText = [];
-    if (textBlocksToFlush.length > 0 || toolBlocks.length > 0) {
+    if (
+      textBlocksToFlush.length > 0 ||
+      toolBlocks.length > 0 ||
+      pendingUsage?.contextTokens !== undefined
+    ) {
       const last = messages[messages.length - 1];
       const combined = [...textBlocksToFlush, ...toolBlocks];
       if (last && last.role === "assistant") {
@@ -78,7 +85,7 @@ export function sessionRecordsToMessages(records: SessionRecord[]): Message[] {
         if (pendingProducedBy) last.producedBy = pendingProducedBy;
         if (pendingProducedModel) last.producedModel = pendingProducedModel;
         if (pendingProducedAccount) last.producedAccount = pendingProducedAccount;
-        if (pendingUsage) last.usage = pendingUsage;
+        if (pendingUsage) last.usage = mergeRestoredUsage(last.usage, pendingUsage);
       } else {
         const msg: Message = { role: "assistant", content: combined };
         if (pendingProducedBy) msg.producedBy = pendingProducedBy;
@@ -103,7 +110,12 @@ export function sessionRecordsToMessages(records: SessionRecord[]): Message[] {
   const stampTrailingAssistantUsage = (record: AssistantMessageRecord): void => {
     const last = messages[messages.length - 1];
     if (!last || last.role !== "assistant") return;
-    if (!last.usage && record.usage) last.usage = usageSnapshotFromAssistantUsage(record.usage);
+    if (record.usage) {
+      const usage = usageSnapshotFromAssistantUsage(record.usage);
+      if (!last.usage) last.usage = usage;
+      else if (usage.contextTokens !== undefined)
+        last.usage = { ...last.usage, contextTokens: usage.contextTokens };
+    }
     if (!last.producedBy && isProviderId(record.provider)) last.producedBy = record.provider;
     if (!last.producedModel && record.model) last.producedModel = record.model;
     if (!last.producedAccount && record.producedAccount)
@@ -128,7 +140,12 @@ export function sessionRecordsToMessages(records: SessionRecord[]): Message[] {
       if (pendingToolCalls && pendingToolCalls.length > 0) flushAssistantTurn();
       const blocks = assistantRecordBlocks(record);
       if (blocks.length === 0) {
-        if (pendingAssistantText.length === 0) stampTrailingAssistantUsage(record);
+        const usage = record.usage ? usageSnapshotFromAssistantUsage(record.usage) : undefined;
+        if (pendingAssistantText.length === 0 && messages.at(-1)?.role === "assistant") {
+          stampTrailingAssistantUsage(record);
+        } else if (usage?.contextTokens !== undefined) {
+          pendingUsage = { ...(pendingUsage ?? usage), contextTokens: usage.contextTokens };
+        }
         continue;
       }
       flushUserBlocks();
@@ -136,7 +153,12 @@ export function sessionRecordsToMessages(records: SessionRecord[]): Message[] {
       if (isProviderId(record.provider)) pendingProducedBy = record.provider;
       if (record.model) pendingProducedModel = record.model;
       if (record.producedAccount) pendingProducedAccount = record.producedAccount;
-      if (record.usage) pendingUsage = usageSnapshotFromAssistantUsage(record.usage);
+      if (record.usage) {
+        pendingUsage = mergeRestoredUsage(
+          pendingUsage,
+          usageSnapshotFromAssistantUsage(record.usage),
+        );
+      }
       continue;
     }
     flushAssistantTurn();
@@ -152,6 +174,18 @@ export function sessionRecordsToMessages(records: SessionRecord[]): Message[] {
         flushUserBlocks();
       }
     } else if (record.type === "attachment") {
+      const loopTick = readLoopTick(record.attachment);
+      if (loopTick !== null) {
+        pendingUserBlocks.push(...loopTickUserBlocks(loopTick));
+        flushUserBlocks();
+        continue;
+      }
+      const scheduledFire = readScheduledTaskFire(record.attachment);
+      if (scheduledFire !== null) {
+        pendingUserBlocks.push({ type: "text", text: scheduledFire.prompt });
+        flushUserBlocks();
+        continue;
+      }
       const notification = taskNotificationFromAttachment(record.attachment);
       if (notification !== null) {
         const notifText = wrapNotificationForModel(notification);
@@ -185,7 +219,7 @@ export function sessionRecordsToMessages(records: SessionRecord[]): Message[] {
       const preserved = Array.isArray(record.preservedImages)
         ? record.preservedImages.filter(isPreservedImageBlock)
         : [];
-      const { blocks: rehydrationBlocks } = buildPostCompactRehydration("default", preserved);
+      const { blocks: rehydrationBlocks } = buildPostCompactRehydration(preserved);
       if (rehydrationBlocks.length > 0) {
         messages.push({ role: "user", content: rehydrationBlocks });
       }
@@ -194,6 +228,13 @@ export function sessionRecordsToMessages(records: SessionRecord[]): Message[] {
   flushAssistantTurn();
   flushUserBlocks();
   return padOrphanToolCalls(coalesceConsecutiveSameRole(messages));
+}
+
+function mergeRestoredUsage(
+  previous: MessageUsageSnapshot | undefined,
+  next: MessageUsageSnapshot,
+): MessageUsageSnapshot {
+  return { ...next, ...mergeContextUsageSnapshot(previous ?? next, next) };
 }
 
 function coalesceConsecutiveSameRole(messages: Message[]): Message[] {
@@ -205,6 +246,9 @@ function coalesceConsecutiveSameRole(messages: Message[]): Message[] {
       out[out.length - 1] = {
         ...last,
         content: [...last.content, ...msg.content],
+        ...(msg.usage?.contextTokens !== undefined
+          ? { usage: { ...(last.usage ?? msg.usage), contextTokens: msg.usage.contextTokens } }
+          : {}),
       };
     } else {
       out.push(msg);

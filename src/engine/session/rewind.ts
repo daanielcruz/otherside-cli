@@ -6,7 +6,9 @@ import { restoreGoalFromRecords } from "@/engine/queue/state.ts";
 import { estimateHarnessTokens } from "@/engine/session/compact/harness-baseline.ts";
 import { hydratePreservedImages } from "@/engine/session/compact/preserved-image-ledger.ts";
 import {
+  appendRecord,
   latestContextUsageSnapshotFromSessionRecords,
+  nowIso,
   resolveSessionBrokerState,
   type Session,
   type SessionBrokerState,
@@ -15,9 +17,13 @@ import {
   sessionBrokerStateKey,
   sessionPathForCwd,
 } from "@/engine/session/index.ts";
-import type { ToolOutputArchiveSessionRecord } from "@/engine/session/record/schema.ts";
+import type {
+  InjectionQueuedRecord,
+  ToolOutputArchiveSessionRecord,
+} from "@/engine/session/record/schema.ts";
 import type { TranscriptEntry } from "@/engine/session/record/types.ts";
-import { replayInjectionsFromRecords } from "@/engine/session/resume.ts";
+import { pendingQueuedInput, replaySystemInjectionsFromRecords } from "@/engine/session/resume.ts";
+import { rewriteSession } from "@/engine/session/rewrite.ts";
 import { sessionRecordsToMessages } from "@/engine/session/transcript/to-messages.ts";
 import type { ContextUsageSnapshot } from "@/engine/session/usage/snapshot.ts";
 import { restoreToolOutputArchive } from "@/engine/tool-output-archive/index.ts";
@@ -29,7 +35,8 @@ import {
 } from "@/kernel/config/config.ts";
 import type { ImageMediaType } from "@/kernel/std/types/image.ts";
 import type { PasteStore } from "@/kernel/std/types/paste.ts";
-import type { BrokerHandle, PermissionMode } from "@/kernel/std/types/request.ts";
+import { type PermissionMode, parsePermissionMode } from "@/kernel/std/types/permission-mode.ts";
+import type { BrokerHandle } from "@/kernel/std/types/request.ts";
 import type { MutableRef } from "@/kernel/std/types/state.ts";
 import { restoreFilesForRewind } from "@/kernel/storage/file-history.ts";
 import {
@@ -47,15 +54,6 @@ import {
 
 export type RewindMode = "conversation" | "code" | "both";
 
-export interface PendingRewindPersist {
-  id: string;
-  mode: string;
-  kept: number;
-  dropped: number;
-  anchorUuid: string | null;
-  preservedFromByte: number;
-}
-
 export interface RewindToTranscriptIdDeps {
   session: Session;
   broker: BrokerHandle;
@@ -72,7 +70,6 @@ export interface RewindToTranscriptIdDeps {
   pasteStoreRef: MutableRef<PasteStore>;
   suppressBrokerPersistenceRef: MutableRef<boolean>;
   persistedSessionBrokerStateRef: MutableRef<string>;
-  pendingRewindPersistRef: MutableRef<PendingRewindPersist | null>;
   pendingBrokerMetaRef: MutableRef<SessionMetaRecord | null>;
   overlayStack: { closeTop: () => void };
   transcriptBatch: { flushNow: () => void };
@@ -153,7 +150,6 @@ function applyConversationRewind(
     pasteStoreRef,
     suppressBrokerPersistenceRef,
     persistedSessionBrokerStateRef,
-    pendingRewindPersistRef,
     pendingBrokerMetaRef,
     transcriptBatch,
     resetRenderSurface,
@@ -169,15 +165,7 @@ function applyConversationRewind(
   let restoredImages: { id: number; data: string; mediaType: string }[] = [];
   const cutRecord = session.records[cutAt];
   if (cutRecord && cutRecord.type === "user_message") {
-    const cutMode = cutRecord.permissionMode;
-    if (
-      cutMode === "default" ||
-      cutMode === "accept-edits" ||
-      cutMode === "plan" ||
-      cutMode === "yolo"
-    ) {
-      restoredPermissionMode = cutMode;
-    }
+    restoredPermissionMode = parsePermissionMode(cutRecord.permissionMode) ?? null;
     if (Array.isArray(cutRecord.pastedImages)) {
       restoredImages = cutRecord.pastedImages;
     }
@@ -200,12 +188,13 @@ function applyConversationRewind(
   });
   agent.resetMicrocompactState();
   agent.resetSessionScopedPermissions();
-  // Queued inputs and injections carry copies of messages the cut just
-  // dropped; left alone they re-deliver removed content into the next turn
-  // (same discipline as /clear). Injections are then re-derived from the KEPT
-  // records only, mirroring resume.
+  // Queued input belongs to the conversation being cut, including input queued
+  // before the cut whose delivery the cut removes. None of it may reach the next
+  // turn, so the live queue empties, the pending durable entries are withdrawn,
+  // and only the system's injections are re-derived from the kept records.
   queueActions.clear();
-  replayInjectionsFromRecords(session.records, agent, session.systemInjections);
+  const withdrawnInput = pendingQueuedInput(session.records);
+  replaySystemInjectionsFromRecords(session.records, agent, session.systemInjections);
   // Rebuild the active goal from the retained transcript so cutting its status
   // marker clears it while rewinding later work keeps it active.
   restoreGoalFromRecords(session.id, keptRecords);
@@ -232,17 +221,14 @@ function applyConversationRewind(
   try {
     sessionFileSize = statSync(sessionPathForCwd(session.storageCwd, session.id)).size;
   } catch {}
-  pendingRewindPersistRef.current = {
-    id,
-    mode,
-    kept: kept.length,
-    dropped: entries.length - kept.length,
-    anchorUuid: rewindAnchorUuid,
-    preservedFromByte: sessionFileSize,
-  };
   pendingBrokerMetaRef.current = null;
   session.pendingMeta = null;
-  session.chain.headUuid = null;
+  persistRewind(session, {
+    anchorUuid: rewindAnchorUuid,
+    preservedFromByte: sessionFileSize,
+    headBeforeRewind: session.chain.headUuid,
+    withdrawnInput,
+  });
   applyRewindContextUsage({
     keptRecords,
     target: historicBrokerState,
@@ -343,6 +329,15 @@ function applyRewindContextUsage(args: {
   });
 }
 
+/** Consumes each withdrawn entry with a dequeue marker, so a resume never delivers it. */
+function withdrawQueuedInput(s: Session, withdrawn: readonly InjectionQueuedRecord[]): void {
+  for (const entry of withdrawn) {
+    void appendRecord(s, { type: "injection_dequeued", ts: nowIso(), text: entry.text }).catch(
+      () => {},
+    );
+  }
+}
+
 function restoreImagesToPromptPrefix(
   pasteStore: PasteStore,
   images: { id: number; data: string; mediaType: string }[],
@@ -364,53 +359,107 @@ export interface RewindTruncateRequest {
   preservedFromByte: number;
 }
 
-export function truncateRewoundTail(s: Session, request: RewindTruncateRequest): Promise<boolean> {
+interface RewindPersistRequest {
+  anchorUuid: string | null;
+  preservedFromByte: number;
+  headBeforeRewind: string | null;
+  withdrawnInput: readonly InjectionQueuedRecord[];
+}
+
+/**
+ * Drops the rewound turns from the transcript. The chain head is settled inside the
+ * same write queue every later append waits on, so nothing appended after the rewind
+ * can ever be written without a parent. When the file cannot drop the turns — a
+ * reduced large-resume view refuses a rewrite — the head stays on the chain the file
+ * holds: the turns come back on resume instead of the history before them vanishing.
+ * The withdrawal markers are queued only once the file has settled, so a fallback
+ * rewrite can never overwrite them.
+ */
+function persistRewind(s: Session, request: RewindPersistRequest): void {
+  s.chain.headUuid = null;
+  const settle = (): void => {
+    if (s.chain.headUuid !== null) return;
+    if (s.recordsArePartial) {
+      s.chain.headUuid = request.headBeforeRewind;
+      return;
+    }
+    void rewriteSession(s).catch(() => {});
+  };
+  const withdraw = (): void => withdrawQueuedInput(s, request.withdrawnInput);
+  if (request.anchorUuid === null) {
+    settle();
+    withdraw();
+    return;
+  }
+  void truncateRewoundTail(s, {
+    anchorUuid: request.anchorUuid,
+    preservedFromByte: request.preservedFromByte,
+    onFailure: settle,
+  })
+    .catch(settle)
+    .then(withdraw);
+}
+
+export function truncateRewoundTail(
+  s: Session,
+  request: RewindTruncateRequest & { onFailure?: () => void },
+): Promise<boolean> {
   const path = sessionPathForCwd(s.storageCwd, s.id);
   return enqueueWrite(path, async () => {
-    let handle: FileHandle;
-    try {
-      handle = await open(path, "r+");
-    } catch {
-      return false;
-    }
-    try {
-      const { size } = await handle.stat();
-      if (request.preservedFromByte > size) return false;
-      const anchor =
-        (await anchorFromIndex(handle, {
-          path,
-          anchorUuid: request.anchorUuid,
-          fileSize: size,
-        })) ?? (await findAnchorLine(handle, { fileSize: size, anchorUuid: request.anchorUuid }));
-      if (anchor === null) return false;
-      if (anchor.lineStart >= request.preservedFromByte) return false;
-      invalidateOffsetIndex(path);
-      const titles = await collectTitleLines(handle, {
-        start: Math.min(anchor.lineEnd + 1, request.preservedFromByte),
-        end: request.preservedFromByte,
-      });
-      const titleBlock = Buffer.from(titles.map((line) => `${line}\n`).join(""), "utf8");
-      if (size - request.preservedFromByte > KEPT_TAIL_MAX_BYTES) {
-        await spliceTailStreaming(handle, {
-          path,
-          truncateAt: anchor.lineStart,
-          head: titleBlock,
-          tailStart: request.preservedFromByte,
-          fileSize: size,
-        });
-      } else {
-        const appended = await readRange(handle, { start: request.preservedFromByte, end: size });
-        const kept = Buffer.concat([titleBlock, appended]);
-        await handle.truncate(anchor.lineStart);
-        if (kept.length > 0) await handle.write(kept, 0, kept.length, anchor.lineStart);
-      }
-      if (s.chain.headUuid === null) s.chain.headUuid = anchor.parentUuid;
-      // The truncated region may have held the only full copy of an image a
-      // later mark references; rebuild the ledger from what survived.
-      s.preservedImageLedger = hydratePreservedImages([s.records]);
-      return true;
-    } finally {
-      await handle.close();
-    }
+    const truncated = await truncateInQueue(s, path, request);
+    if (!truncated) request.onFailure?.();
+    return truncated;
   });
+}
+
+async function truncateInQueue(
+  s: Session,
+  path: string,
+  request: RewindTruncateRequest,
+): Promise<boolean> {
+  let handle: FileHandle;
+  try {
+    handle = await open(path, "r+");
+  } catch {
+    return false;
+  }
+  try {
+    const { size } = await handle.stat();
+    if (request.preservedFromByte > size) return false;
+    const anchor =
+      (await anchorFromIndex(handle, {
+        path,
+        anchorUuid: request.anchorUuid,
+        fileSize: size,
+      })) ?? (await findAnchorLine(handle, { fileSize: size, anchorUuid: request.anchorUuid }));
+    if (anchor === null) return false;
+    if (anchor.lineStart >= request.preservedFromByte) return false;
+    invalidateOffsetIndex(path);
+    const titles = await collectTitleLines(handle, {
+      start: Math.min(anchor.lineEnd + 1, request.preservedFromByte),
+      end: request.preservedFromByte,
+    });
+    const titleBlock = Buffer.from(titles.map((line) => `${line}\n`).join(""), "utf8");
+    if (size - request.preservedFromByte > KEPT_TAIL_MAX_BYTES) {
+      await spliceTailStreaming(handle, {
+        path,
+        truncateAt: anchor.lineStart,
+        head: titleBlock,
+        tailStart: request.preservedFromByte,
+        fileSize: size,
+      });
+    } else {
+      const appended = await readRange(handle, { start: request.preservedFromByte, end: size });
+      const kept = Buffer.concat([titleBlock, appended]);
+      await handle.truncate(anchor.lineStart);
+      if (kept.length > 0) await handle.write(kept, 0, kept.length, anchor.lineStart);
+    }
+    if (s.chain.headUuid === null) s.chain.headUuid = anchor.parentUuid;
+    // The truncated region may have held the only full copy of an image a
+    // later mark references; rebuild the ledger from what survived.
+    s.preservedImageLedger = hydratePreservedImages([s.records]);
+    return true;
+  } finally {
+    await handle.close();
+  }
 }

@@ -19,9 +19,12 @@ import * as bgControllers from "@/engine/background/tasks/background-controllers
 import { wrapNotificationForModel } from "@/engine/background/tasks/notification.ts";
 import { listEnabledHookHandlers } from "@/engine/plugins/registry.ts";
 import { QuotaExhaustedError } from "@/engine/providers/_shared/retry.ts";
+import { get as getProvider } from "@/engine/providers/registry.ts";
 import { emitQueue } from "@/engine/queue/emit.ts";
 import { previewArgs } from "@/engine/queue/runtime/args-preview.ts";
+import { contextRoomFor } from "@/engine/queue/runtime/compact/support.ts";
 import { partitionForConcurrency } from "@/engine/queue/runtime/concurrency.ts";
+import { TOOL_RESULT_INTERRUPTED } from "@/engine/queue/runtime/interruption-text.ts";
 import { mergeAsyncStreams } from "@/engine/queue/runtime/merge-async-streams.ts";
 import { collectNestedMemoryForTool } from "@/engine/queue/runtime/nested-memory.ts";
 import { drainOrphanInterrupts } from "@/engine/queue/runtime/orphan-synth.ts";
@@ -102,11 +105,21 @@ export async function* dispatchTurnToolCalls(args: {
   toolCalls: ToolCall[];
   ctx: RequestContext;
 }): AsyncGenerator<AgentEvent, "continue" | "stop"> {
-  const { host, controller, toolCalls, ctx } = args;
+  const { host, controller, toolCalls } = args;
+  const contextRoom = contextRoomFor(
+    host.deps.session.messages,
+    () => host.deps.getLastUsage?.() ?? null,
+    args.ctx,
+  );
+  const ctx: RequestContext = contextRoom === undefined ? args.ctx : { ...args.ctx, contextRoom };
   const resultBlocks: ContentBlock[] = [];
   const taskBoundaryEntries: DispatchEntry[] = [];
+  // A call the user turned down at its prompt ends the turn: the calls queued
+  // behind it never start and the model is not asked to go on.
+  let stopsTurn = false;
   try {
     for (const group of partitionForConcurrency(toolCalls)) {
+      if (stopsTurn) break;
       const dispatchEntries: DispatchEntry[] = [];
       const runInWindow = createConcurrencyWindow(maxConcurrentToolUses());
       for (const call of group) {
@@ -114,7 +127,7 @@ export async function* dispatchTurnToolCalls(args: {
           resultBlocks.push({
             type: "tool_result",
             tool_use_id: call.id,
-            content: "Interrupted by user",
+            content: TOOL_RESULT_INTERRUPTED,
             is_error: true,
           });
           continue;
@@ -213,19 +226,9 @@ export async function* dispatchTurnToolCalls(args: {
                 bgSetModel(resolvedTaskId, event.model, event.effort, event.provider);
               } else if (event.kind === "fork_usage") {
                 if (event.isSnapshot) {
-                  bgSetUsageSnapshot(resolvedTaskId, {
-                    inputTokens: event.inputTokens,
-                    outputTokens: event.outputTokens,
-                    cacheCreationInputTokens: event.cacheCreationInputTokens,
-                    cacheReadInputTokens: event.cacheReadInputTokens,
-                  });
+                  bgSetUsageSnapshot(resolvedTaskId, event);
                 } else {
-                  bgAddUsage(resolvedTaskId, {
-                    inputTokens: event.inputTokens,
-                    outputTokens: event.outputTokens,
-                    cacheCreationInputTokens: event.cacheCreationInputTokens,
-                    cacheReadInputTokens: event.cacheReadInputTokens,
-                  });
+                  bgAddUsage(resolvedTaskId, event);
                 }
               } else if (event.kind === "fork_text_delta") {
                 bgAppendAssistantText(resolvedTaskId, event.text);
@@ -318,6 +321,7 @@ export async function* dispatchTurnToolCalls(args: {
           continue;
         }
         resultBlocks.push(outcome.block);
+        if (outcome.stopsTurn) stopsTurn = true;
         collectNestedMemoryForTool(
           host.deps,
           {
@@ -330,10 +334,21 @@ export async function* dispatchTurnToolCalls(args: {
     }
   } finally {
     try {
-      yield* finalizeToolDispatchBatch({ host, controller, toolCalls, ctx, resultBlocks });
+      yield* finalizeToolDispatchBatch({
+        host,
+        controller,
+        toolCalls,
+        ctx,
+        resultBlocks,
+        stopsTurn,
+      });
     } finally {
       for (const entry of taskBoundaryEntries) commitDispatchToolResult(entry);
     }
+  }
+  if (stopsTurn) {
+    await getProvider(ctx.provider).onToolTurnStopped?.(ctx);
+    return "stop";
   }
   return "continue";
 }
@@ -350,7 +365,7 @@ function* handleFailedDispatch(args: {
   if (entry.bgTaskId) {
     stageDispatchTaskCompletion(entry, {
       content: interrupted
-        ? "Interrupted by user"
+        ? TOOL_RESULT_INTERRUPTED
         : `error: ${err instanceof Error ? err.message : String(err)}`,
       isError: true,
       ...(interrupted ? { killed: true, userInitiated: true } : {}),
@@ -360,14 +375,14 @@ function* handleFailedDispatch(args: {
     resultBlocks.push({
       type: "tool_result",
       tool_use_id: entry.call.id,
-      content: "Interrupted by user",
+      content: TOOL_RESULT_INTERRUPTED,
       is_error: true,
     });
     appendRecord(host.deps.session, {
       type: "tool_result",
       ts: nowIso(),
       call_id: entry.call.id,
-      result: "Interrupted by user",
+      result: TOOL_RESULT_INTERRUPTED,
       is_error: true,
     }).catch(() => {});
     return "continue";
@@ -392,12 +407,16 @@ async function* finalizeToolDispatchBatch(args: {
   toolCalls: ToolCall[];
   ctx: RequestContext;
   resultBlocks: ContentBlock[];
+  /** Messages typed meanwhile stay queued: they open the next turn instead. */
+  stopsTurn: boolean;
 }): AsyncGenerator<AgentEvent> {
-  const { host, controller, toolCalls, ctx, resultBlocks } = args;
+  const { host, controller, toolCalls, ctx, resultBlocks, stopsTurn } = args;
   const seen = new Set(resultBlocks.map((b) => (b as { tool_use_id: string }).tool_use_id));
   for (const item of drainOrphanInterrupts({ toolCalls, seen })) emitQueue.emit(item);
   const queuedMessages =
-    host.cancelled || controller.signal.aborted ? [] : (host.pendingUserInputDrainer?.() ?? []);
+    host.cancelled || controller.signal.aborted || stopsTurn
+      ? []
+      : (host.pendingUserInputDrainer?.() ?? []);
   if (queuedMessages.length > 0) resultBlocks.push(...queuedInputBlocks(queuedMessages));
   const toolLoopEndDrain = emitQueue.drainForBoundary("tool_loop_end");
   const notificationBlockTexts = new Set(
@@ -426,7 +445,7 @@ async function* finalizeToolDispatchBatch(args: {
     resultBlocks.push({
       type: "tool_result",
       tool_use_id: call.id,
-      content: "Interrupted by user",
+      content: TOOL_RESULT_INTERRUPTED,
       is_error: true,
     });
   }

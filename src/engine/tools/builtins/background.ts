@@ -12,6 +12,7 @@ import {
   taskResultCharacterBudget,
 } from "@/engine/background/tasks/output-files.ts";
 import { startPressureReap } from "@/engine/background/tasks/pressure-reap.ts";
+import { startShellDeadline } from "@/engine/background/tasks/shell-deadline.ts";
 import { watchForInteractiveWait } from "@/engine/background/tasks/stall-watchdog.ts";
 import { startSubagentShellCap } from "@/engine/background/tasks/subagent-shell-cap.ts";
 import { SpillBuffer } from "@/engine/tools/_infra/spill-buffer.ts";
@@ -51,6 +52,7 @@ export interface BackgroundShell {
   stopWatchdog?: () => void;
   stopPressureReap?: () => void;
   stopSubagentCap?: () => void;
+  stopDeadline?: () => void;
   terminate?: () => void;
 }
 
@@ -92,6 +94,7 @@ export function disposeShellStreams(shell: BackgroundShell): void {
   shell.stopWatchdog?.();
   shell.stopPressureReap?.();
   shell.stopSubagentCap?.();
+  shell.stopDeadline?.();
   shell.stdout.buffer.dispose();
   shell.stderr.buffer.dispose();
 }
@@ -128,6 +131,9 @@ interface SpawnBackgroundInput {
   sessionId?: string;
   cwd: string;
   login?: boolean | undefined;
+  // How long the shell may run before it is stopped at its deadline; absent,
+  // it runs until it exits or is stopped.
+  timeoutMs?: number;
 }
 
 export function spawnBackground(input: SpawnBackgroundInput): { id: string } | { error: string } {
@@ -177,6 +183,15 @@ export function spawnBackground(input: SpawnBackgroundInput): { id: string } | {
       killBackground(id);
     },
   });
+  if (input.timeoutMs !== undefined) {
+    shell.stopDeadline = startShellDeadline({
+      taskId: id,
+      limitMs: input.timeoutMs,
+      kill: () => {
+        killBackground(id);
+      },
+    });
+  }
   const log = makeTaskLogAppender(resolveTaskLogPath(id));
   let outputOpen = true;
   let terminationRequested = false;
@@ -223,6 +238,8 @@ export function spawnBackground(input: SpawnBackgroundInput): { id: string } | {
     delete shell.stopPressureReap;
     shell.stopSubagentCap?.();
     delete shell.stopSubagentCap;
+    shell.stopDeadline?.();
+    delete shell.stopDeadline;
     await Promise.allSettled([stdoutDrain, stderrDrain]);
     stopOutput();
     shell.status = "exited";

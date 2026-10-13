@@ -1,3 +1,4 @@
+import { foldLoopTick } from "@/engine/background/loop/tick.ts";
 import { getProviderConfig } from "@/engine/contract/registry.ts";
 import { applyCodexQuotaWarning, type CodexUsage } from "@/engine/providers/codex/usage.ts";
 import { createGoalEventHandlers } from "@/engine/queue/turn/goal-events.ts";
@@ -71,12 +72,7 @@ export interface TuiTurnObserverDeps {
   ) => void;
   mergeContextUsageSnapshot: (
     previous: ContextUsageSnapshot,
-    event: {
-      inputTokens?: number | undefined;
-      outputTokens?: number | undefined;
-      cacheCreationInputTokens?: number | undefined;
-      cacheReadInputTokens?: number | undefined;
-    },
+    event: Partial<ContextUsageSnapshot>,
   ) => ContextUsageSnapshot;
   setStreamingText: SetState<string>;
   setStreamingThinking: SetState<string>;
@@ -175,6 +171,7 @@ export function makeTuiTurnObserver(deps: TuiTurnObserverDeps): TuiTurnHandle {
   // message_start). Defaults to the turn-start snapshot until the first
   // attempt reports in.
   let attemptProvider = turnState.provider as ProviderId;
+  let settleBeforeNextRound = false;
 
   const usageTracker = createTurnUsageTracker({
     session,
@@ -204,6 +201,13 @@ export function makeTuiTurnObserver(deps: TuiTurnObserverDeps): TuiTurnHandle {
     reasoningHeadlinesEnabled: () =>
       getProviderConfig(attemptProvider)?.featureFlags?.reasoningHeadlines === true,
   });
+  // Settle the live reply and give whatever streams next its own transcript entry.
+  const settleIntoNextEntry = async (nextId: string): Promise<void> => {
+    const flushed = await committer.flushAssistant();
+    if (flushed.length === 0) return;
+    committer.setCurId(nextId);
+    setStreamingId(nextId);
+  };
   const toolHandlers = createToolDispatchHandlers({
     session,
     turnState,
@@ -252,7 +256,14 @@ export function makeTuiTurnObserver(deps: TuiTurnObserverDeps): TuiTurnHandle {
     thinking_signature: (ev) => {
       committer.setSignature(ev.signature);
     },
-    message_start: (ev) => {
+    message_start: async (ev) => {
+      // A round that ended without tool calls continues only on new model input (a
+      // completion notification, a queued message, a goal or stop-hook prompt); that
+      // reply is its own entry.
+      if (settleBeforeNextRound) {
+        settleBeforeNextRound = false;
+        await settleIntoNextEntry(`a_${session.eventSeq}_${Date.now()}`);
+      }
       const previousAttemptProvider = attemptProvider;
       if (ev.provider !== undefined) attemptProvider = ev.provider;
       // A route switch away from a headline-promoting provider strands its
@@ -294,8 +305,7 @@ export function makeTuiTurnObserver(deps: TuiTurnObserverDeps): TuiTurnHandle {
     },
     compact_start: async () => {
       endThinkingStatus();
-      const flushed = await committer.flushAssistant();
-      if (flushed.length > 0) setStreamingId(null);
+      await settleIntoNextEntry(`a_${session.eventSeq}_${Date.now()}`);
       setProgressStartedAt(Date.now());
       dispatch({ type: "view/setTurnVerb", verb: "Compacting conversation" });
     },
@@ -344,14 +354,24 @@ export function makeTuiTurnObserver(deps: TuiTurnObserverDeps): TuiTurnHandle {
       ]);
     },
     ...goalHandlers,
+    loop_tick: (ev) => {
+      const line: TranscriptEntry = {
+        id: `loop_tick_${ev.firedAt}`,
+        kind: "system",
+        text: ev.text,
+        loopTick: true,
+      };
+      setTranscript((t) => foldLoopTick(t, line, ev.folds));
+    },
+    scheduled_task_fire: (ev) => {
+      setTranscript((t) => [
+        ...t,
+        { id: `scheduled_task_fire_${ev.firedAt}`, kind: "system", text: ev.text },
+      ]);
+    },
     queued_input_drained: async (ev) => {
       emitQueuedInputDrained(ev.messages);
-      const flushed = await committer.flushAssistant();
-      if (flushed.length > 0) {
-        const nextId = `a_${session.eventSeq}_${Date.now()}`;
-        committer.setCurId(nextId);
-        setStreamingId(nextId);
-      }
+      await settleIntoNextEntry(`a_${session.eventSeq}_${Date.now()}`);
       const baseId = `qmid_${Date.now()}`;
       setTranscript((t) => [
         ...t,
@@ -464,8 +484,15 @@ export function makeTuiTurnObserver(deps: TuiTurnObserverDeps): TuiTurnHandle {
         { isFork: true },
       );
     },
+    // An output-limit continuation resumes mid-thought, so it stays in the same entry.
+    silent_turn_end_recovery: () => {
+      settleBeforeNextRound = false;
+    },
     turn_end: async (ev) => {
-      if (ev.stopReason !== "tool_calls") return;
+      if (ev.stopReason !== "tool_calls") {
+        settleBeforeNextRound = true;
+        return;
+      }
       endThinkingStatus();
       // Settle under the current ID before handing the live slot to the response
       // that follows tool execution. A later tool_dispatch_start flush is empty.

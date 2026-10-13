@@ -51,7 +51,7 @@ describe("normalizeGrokBody", () => {
 
   test("does not touch a clean main-turn body", () => {
     const mainBody = {
-      model: "grok-4.5",
+      model: "grok-4.6",
       input: [{ type: "message", role: "user", content: "hi" }],
       store: false,
       include: ["reasoning.encrypted_content"],

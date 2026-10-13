@@ -7,6 +7,9 @@ export interface MessageUsageSnapshot {
   thoughtTokens?: number;
   cacheCreationInputTokens: number;
   cacheReadInputTokens: number;
+  /** Total active context including output, finite and nonnegative; never billing.
+   * null invalidates an earlier snapshot and requires estimation; absent leaves it unchanged. */
+  contextTokens?: number | null;
 }
 
 export interface Message {
@@ -127,13 +130,16 @@ export type ToolResultMeta =
   | { kind: "read"; numLines: number; startLine: number; totalLines: number }
   | { kind: "image"; bytes: number; visionModel?: string }
   | { kind: "ask"; declined: true }
-  | { kind: "ask"; declined: false; answers: { question: string; answer: string }[] };
+  | { kind: "ask"; declined: false; answers: { question: string; answer: string }[] }
+  | { kind: "scheduled_task"; id: string; recurring: boolean; durable: boolean };
 
 export interface ToolResult {
   tool_use_id: string;
   content: string | ToolResultContentBlock[];
   is_error?: boolean;
   meta?: ToolResultMeta;
+  /** The user turned the call down at its prompt: the turn stops once its batch settles. */
+  stopsTurn?: true;
 }
 
 export function toolResultIsErrorField(

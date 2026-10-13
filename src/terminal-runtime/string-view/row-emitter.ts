@@ -11,6 +11,7 @@ import {
   ERASE_SCREEN,
   ERASE_SCROLLBACK,
 } from "@/terminal-runtime/terminal/control-sequences.js";
+import { cellClip } from "@/terminal-runtime/text/cell-clip.js";
 
 export type InlinePaintGeometry = {
   width: number;
@@ -82,7 +83,7 @@ export class InlineRowPainter {
     options: InlinePaintGeometry,
   ): InlinePaint {
     const result = this.emitRows([...historyRows, ...liveRows], options, historyRows.length);
-    this.rebaseToLiveRows(liveRows, options, historyRows.length);
+    this.rebaseToLiveRows(options, historyRows.length);
     return result;
   }
 
@@ -105,27 +106,27 @@ export class InlineRowPainter {
       { ...options, reseed: establishSurface && terminalHasRows },
       historyRows.length,
     );
-    this.rebaseToLiveRows(liveRows, options, historyRows.length);
+    this.rebaseToLiveRows(options, historyRows.length);
     return result;
   }
 
   /** `liveRowOffset` places the caller's frame-relative caret among `nextLines`. */
   private emitRows(
-    nextLines: readonly string[],
+    requestedLines: readonly string[],
     options: InlinePaintGeometry,
     liveRowOffset: number,
   ): InlinePaint {
     const width = Math.max(1, options.width);
     const height = Math.max(0, options.height);
     const previous = this.memory;
-    const rowsToRemember = nextLines.slice();
+    const nextLines = fitRowsToWidth(requestedLines, width);
     const reseed = options.reseed === true || this.reseedNextPaint;
     this.reseedNextPaint = false;
 
     const caret = offsetCaret(options.caret, liveRowOffset);
     const completePaint = (packet: PaintPacket): InlinePaint => {
       const withCaret = placeCaret(packet, caret, height);
-      this.recordPaint(rowsToRemember, width, height, withCaret.historyDepth, withCaret.penRow);
+      this.recordPaint(nextLines, width, height, withCaret.historyDepth, withCaret.penRow);
       return { bytes: withCaret.bytes + (withCaret.atomicPending ? END_SYNCHRONIZED_OUTPUT : "") };
     };
 
@@ -150,7 +151,7 @@ export class InlineRowPainter {
     // Identical rows leave the cursor where the last paint parked it, which is already
     // the caret: nothing on screen moved, so re-parking would emit bytes for no reason.
     if (rowsUnchanged(previous.lines, nextLines, this.hooks.onCompareRow)) {
-      this.recordPaint(rowsToRemember, width, height, previous.historyDepth, previous.penRow);
+      this.recordPaint(nextLines, width, height, previous.historyDepth, previous.penRow);
       return { bytes: "" };
     }
 
@@ -168,7 +169,7 @@ export class InlineRowPainter {
 
     const changedSpan = changedSpanBounds(previous.lines, nextLines, this.hooks.onCompareRow);
     if (changedSpan.start === -1) {
-      this.recordPaint(rowsToRemember, width, height, previous.historyDepth, previous.penRow);
+      this.recordPaint(nextLines, width, height, previous.historyDepth, previous.penRow);
       return { bytes: "" };
     }
 
@@ -190,7 +191,7 @@ export class InlineRowPainter {
       );
     }
     if (historyPolicy === "leave-in-history") {
-      this.recordPaint(rowsToRemember, width, height, previous.historyDepth, previous.penRow);
+      this.recordPaint(nextLines, width, height, previous.historyDepth, previous.penRow);
       return { bytes: "" };
     }
 
@@ -212,16 +213,12 @@ export class InlineRowPainter {
   // before it are committed and stop being addressable. Both positions shift by the same
   // amount, which is what keeps `row - historyDepth` equal to the real screen row; clamping
   // either one at zero would break that relation and every later move would land wrong.
-  private rebaseToLiveRows(
-    liveRows: readonly string[],
-    options: InlinePaintGeometry,
-    archivedRowCount: number,
-  ): void {
+  private rebaseToLiveRows(options: InlinePaintGeometry, archivedRowCount: number): void {
     const painted = this.memory;
     const width = Math.max(1, options.width);
     const height = Math.max(0, options.height);
     this.recordPaint(
-      liveRows.slice(),
+      painted?.lines.slice(archivedRowCount) ?? [],
       width,
       height,
       (painted?.historyDepth ?? 0) - archivedRowCount,
@@ -533,6 +530,15 @@ function rowsUnchanged(
     if (previousLines[row] !== nextLines[row]) return false;
   }
   return true;
+}
+
+/**
+ * Every row goes out as exactly one physical row. A row wider than the terminal
+ * soft-wraps onto a row no move here counts, so each later repaint lands one row
+ * off: the stale copy stays above and the overflow overwrites the row below.
+ */
+function fitRowsToWidth(lines: readonly string[], width: number): string[] {
+  return lines.map((line) => cellClip(line, width));
 }
 
 function serializeRows(lines: readonly string[]): string {

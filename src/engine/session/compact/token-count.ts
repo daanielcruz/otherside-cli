@@ -1,12 +1,6 @@
-import type { ContentBlock, Message } from "@/kernel/std/types/message.ts";
+import type { ContentBlock, Message, MessageUsageSnapshot } from "@/kernel/std/types/message.ts";
 
-export interface UsageSnapshot {
-  inputTokens: number;
-  outputTokens: number;
-  thoughtTokens?: number;
-  cacheCreationInputTokens: number;
-  cacheReadInputTokens: number;
-}
+export type UsageSnapshot = MessageUsageSnapshot;
 
 export const IMAGE_BLOCK_TOKEN_ESTIMATE = 2_000;
 
@@ -80,12 +74,15 @@ export function estimateConversationTokens(messages: readonly Message[]): number
   return total;
 }
 
-export function sumUsageTokens(usage: UsageSnapshot): number {
+/** Context occupancy, not billable token totals. */
+export function sumUsageTokens(usage: UsageSnapshot): number | null {
+  if (usage.contextTokens === null) return null;
   return (
+    usage.contextTokens ??
     usage.inputTokens +
-    usage.cacheCreationInputTokens +
-    usage.cacheReadInputTokens +
-    usage.outputTokens
+      usage.cacheCreationInputTokens +
+      usage.cacheReadInputTokens +
+      usage.outputTokens
   );
 }
 
@@ -97,12 +94,16 @@ export function getAuthoritativeUsage(
   messages: readonly Message[],
   lastUsage: UsageSnapshot | null | undefined,
 ): UsageSnapshot | null {
+  if (lastUsage?.contextTokens === null) return null;
   const lastWithUsage = findLastMessageWithUsage(messages);
   if (lastWithUsage >= 0) {
     const usage = messages[lastWithUsage]?.usage;
-    if (usage && sumUsageTokens(usage) > 0) return usage;
+    if (usage?.contextTokens === null) return null;
+    if (usage && (usage.contextTokens !== undefined || (sumUsageTokens(usage) ?? 0) > 0))
+      return usage;
   }
-  if (lastUsage && sumUsageTokens(lastUsage) > 0) return lastUsage;
+  if (lastUsage && (lastUsage.contextTokens !== undefined || (sumUsageTokens(lastUsage) ?? 0) > 0))
+    return lastUsage;
   return null;
 }
 
@@ -110,18 +111,22 @@ export function countTokensWithEstimates(
   messages: readonly Message[],
   lastUsage: UsageSnapshot | null | undefined,
 ): number {
+  if (lastUsage?.contextTokens === null) return estimateConversationTokens(messages);
   const lastWithUsage = findLastMessageWithUsage(messages);
   if (lastWithUsage >= 0) {
     const usage = messages[lastWithUsage]?.usage;
-    if (usage && sumUsageTokens(usage) > 0) {
-      return sumUsageTokens(usage) + estimateConversationTokens(messages.slice(lastWithUsage + 1));
+    if (usage?.contextTokens === null) return estimateConversationTokens(messages);
+    const total = usage ? sumUsageTokens(usage) : null;
+    if (total !== null && (usage?.contextTokens !== undefined || total > 0)) {
+      return total + estimateConversationTokens(messages.slice(lastWithUsage + 1));
     }
   }
-  if (lastUsage && sumUsageTokens(lastUsage) > 0) {
+  const total = lastUsage ? sumUsageTokens(lastUsage) : null;
+  if (total !== null && (lastUsage?.contextTokens !== undefined || total > 0)) {
     const lastAssistantIdx = findLastAssistantIndex(messages);
     return lastAssistantIdx >= 0
-      ? sumUsageTokens(lastUsage) + estimateConversationTokens(messages.slice(lastAssistantIdx + 1))
-      : sumUsageTokens(lastUsage);
+      ? total + estimateConversationTokens(messages.slice(lastAssistantIdx + 1))
+      : total;
   }
   return estimateConversationTokens(messages);
 }

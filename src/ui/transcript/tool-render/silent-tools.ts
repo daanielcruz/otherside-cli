@@ -4,8 +4,6 @@ export const SILENT_TOOL_NAMES = [
   "TaskList",
   "TaskUpdate",
   "AskUserQuestion",
-  "EnterPlanMode",
-  "ExitPlanMode",
   "ToolSearch",
 ] as const;
 

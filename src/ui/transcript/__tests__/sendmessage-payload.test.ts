@@ -12,7 +12,7 @@ function sendMessagePayload(result: unknown): ReturnType<typeof payloadFromResul
 describe("SendMessage transcript payload", () => {
   it("shows the routing warning instead of a field count", () => {
     const warning =
-      "routing ignored: agent fork-1 already runs codex/gpt-5.5. Omit `routing` unless the agent must move to a different provider/model.";
+      "routing ignored: agent fork-1 already runs codex/gpt-5.6-terra. Omit `routing` unless the agent must move to a different provider/model.";
     expect(sendMessagePayload({ delivered: true, to: "fork-1", resumed: false, warning })).toEqual({
       kind: "preview",
       text: warning,

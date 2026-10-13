@@ -1,12 +1,7 @@
-import type { ToolCall } from "@/kernel/std/types/message.ts";
+import type { MessageUsageSnapshot, ToolCall } from "@/kernel/std/types/message.ts";
 import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 
-export interface AttemptUsage {
-  inputTokens: number;
-  outputTokens: number;
-  cacheCreationInputTokens: number;
-  cacheReadInputTokens: number;
-}
+export type AttemptUsage = MessageUsageSnapshot;
 
 /**
  * Everything one request to the provider produced.

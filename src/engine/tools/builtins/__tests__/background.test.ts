@@ -3,10 +3,12 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  type BackgroundTask,
   SHELL_OUTPUT_TAIL_CAP,
   subscribeCompletion,
 } from "@/engine/background/tasks/background.ts";
 import { resolveTaskLogPath } from "@/engine/background/tasks/output-files.ts";
+import { emitQueue } from "@/engine/queue/emit.ts";
 import { SpillBuffer } from "@/engine/tools/_infra/spill-buffer.ts";
 import {
   type BackgroundShell,
@@ -21,6 +23,8 @@ import {
 import { createBackgroundOutputLimiter } from "../background-output-limit.ts";
 import { drainStream } from "../exec.ts";
 
+const UNREACHED_DEADLINE_MS = 60_000;
+const SHORT_DEADLINE_MS = 50;
 const LOW_SURROGATE_MIN = 0xdc00;
 const LOW_SURROGATE_MAX = 0xdfff;
 
@@ -199,6 +203,7 @@ describe("spawnBackground completion", () => {
         displayCommand: "post-exit drain test",
         parentToolCallId: "call-post-exit-drain",
         cwd: process.cwd(),
+        timeoutMs: UNREACHED_DEADLINE_MS,
       });
       expect("error" in spawned).toBe(false);
       if ("error" in spawned) return;
@@ -252,6 +257,7 @@ describe("spawnBackground completion", () => {
         parentToolCallId: "call-owner-cleanup-drain",
         ownerId: "owner-cleanup-test",
         cwd: process.cwd(),
+        timeoutMs: UNREACHED_DEADLINE_MS,
       });
       expect("error" in spawned).toBe(false);
       if ("error" in spawned) return;
@@ -268,6 +274,75 @@ describe("spawnBackground completion", () => {
       unsubscribe();
       spawnSpy.mockRestore();
     }
+  });
+});
+
+describe("spawnBackground deadline", () => {
+  afterEach(() => {
+    emitQueue._resetForTests();
+  });
+
+  function spawnUntilCompletion(command: string, timeoutMs: number) {
+    let taskId = "";
+    let unsubscribe = () => {};
+    const completed = new Promise<BackgroundTask>((resolve) => {
+      unsubscribe = subscribeCompletion((task) => {
+        if (task.id !== taskId) return;
+        unsubscribe();
+        resolve(task);
+      });
+    });
+    const spawned = spawnBackground({
+      execCommand: command,
+      command,
+      displayCommand: "<description>",
+      parentToolCallId: `call-${crypto.randomUUID()}`,
+      cwd: process.cwd(),
+      timeoutMs,
+    });
+    if ("error" in spawned) throw new Error(spawned.error);
+    taskId = spawned.id;
+    shellIds.push(taskId);
+    return { taskId, completed };
+  }
+
+  function notificationText(taskId: string): string | undefined {
+    const item = emitQueue
+      .peek({ class: "deferred_output" })
+      .find((queued) => queued.replayKey?.startsWith(`bg:${taskId}:`));
+    return item?.payload.kind === "task_notification_xml" ? item.payload.text : undefined;
+  }
+
+  it("stops a shell still running when its deadline passes", async () => {
+    const { completed } = spawnUntilCompletion("sleep 30", SHORT_DEADLINE_MS);
+
+    const task = await completed;
+
+    expect(task.status).toBe("killed");
+    expect(task.stopCause).toBe("deadline");
+  });
+
+  it("notifies the deadline stop with its summary and note", async () => {
+    const { taskId, completed } = spawnUntilCompletion("sleep 30", SHORT_DEADLINE_MS);
+
+    await completed;
+
+    const text = notificationText(taskId);
+    expect(text).toContain(
+      '<summary>Background command "&lt;description&gt;" was stopped after reaching its background time limit</summary>',
+    );
+    expect(text).toContain(
+      "<note>If the work in progress still needs it, start it again with `run_in_background` and a longer `timeout`. If it already had the longest `timeout` allowed, do not restart it. Either way, report that it was stopped.</note>",
+    );
+  });
+
+  it("clears the deadline when the shell exits first", async () => {
+    const { taskId, completed } = spawnUntilCompletion("true", UNREACHED_DEADLINE_MS);
+
+    const task = await completed;
+
+    expect(task.status).toBe("completed");
+    expect(SHELLS.get(taskId)?.stopDeadline).toBeUndefined();
   });
 });
 

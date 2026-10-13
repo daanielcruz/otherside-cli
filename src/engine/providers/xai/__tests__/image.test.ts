@@ -49,7 +49,7 @@ describe("xai image generation", () => {
     expect(capturedInit?.method).toBe("POST");
     expect(capturedInit?.headers).toMatchObject({
       Authorization: "Bearer xai-access",
-      "User-Agent": "xai-grok-build/0.2.102",
+      "User-Agent": "xai-grok-build/1.0.34",
       Accept: "application/json",
     });
     expect(JSON.parse(String(capturedInit?.body))).toEqual({

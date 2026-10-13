@@ -7,6 +7,7 @@ import {
   type EmitBoundary,
   type EmitItem,
   ProjectionError,
+  type ScheduledFire,
 } from "@/engine/queue/priority.ts";
 import type { TranscriptEntry } from "@/engine/session/record/types.ts";
 import type { ContentBlock, ToolResultContentBlock } from "@/kernel/std/types/message.ts";
@@ -166,10 +167,18 @@ export function projectDrain(items: readonly EmitItem[], boundary: EmitBoundary)
   const transcriptEntries: TranscriptEntry[] = [];
   const consumedIds: string[] = [];
   const notificationTexts: string[] = [];
+  const scheduledFires: ScheduledFire[] = [];
   for (const item of items) {
     const projected = projectItem(item, boundary);
     if (item.payload.kind === "task_notification_xml" && projected.llm.length > 0) {
       notificationTexts.push(item.payload.text);
+    }
+    if (
+      item.payload.kind === "user_interrupt_message" &&
+      item.payload.scheduledFire !== undefined &&
+      projected.llm.length > 0
+    ) {
+      scheduledFires.push({ kind: item.payload.scheduledFire, prompt: item.payload.text });
     }
     for (const block of projected.llm) llmBlocks.push(block);
     for (const entry of projected.transcript) transcriptEntries.push(entry);
@@ -180,5 +189,6 @@ export function projectDrain(items: readonly EmitItem[], boundary: EmitBoundary)
     transcriptEntries,
     consumedIds,
     notificationTexts,
+    ...(scheduledFires.length > 0 ? { scheduledFires } : {}),
   };
 }

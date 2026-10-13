@@ -43,7 +43,6 @@ export function collectImageBlocks(messages: { content: ContentBlock[] }[]): Con
 }
 
 export function buildPostCompactRehydration(
-  permissionMode: string,
   preservedImages: PreservedImageEntry[] = [],
 ): PostCompactRehydration {
   const blocks: ContentBlock[] = [];
@@ -51,12 +50,6 @@ export function buildPostCompactRehydration(
   if (recent) blocks.push(recent.block);
   const bgInventory = buildBgAgentInventoryBlock();
   if (bgInventory) blocks.push({ type: "text", text: bgInventory });
-  if (permissionMode === "plan") {
-    blocks.push({
-      type: "text",
-      text: "<plan-mode>active — propose changes via ExitPlanMode before editing files.</plan-mode>",
-    });
-  }
   // Unresolved references never reach the model: only full image blocks pass.
   const fullImages = preservedImages.filter(isPreservedImageBlock);
   const keptImages =

@@ -10,6 +10,7 @@ import { renderTextWithStyles } from "@/terminal-runtime/text/color-codes.js";
 import { type FooterPanelSpec, renderFooterPanel } from "@/ui/chrome/string-view-panel.ts";
 import type { StringViewPanel } from "@/ui/panels/string-view-types.ts";
 import { Color, Glyph } from "@/ui/theme/theme.ts";
+import { withUrlLinks } from "@/ui/transcript/entry-text.ts";
 
 const RAW_DETAIL_CAP = 4000;
 const CONTENT_PAD = 2;
@@ -71,7 +72,8 @@ class ErrorPanel implements StringViewPanel {
     const contentWidth = Math.max(1, width - CONTENT_PAD * 2);
     const body: string[] = [];
 
-    for (const line of wrapPlain(meta.summary, contentWidth)) {
+    // A summary can name the page that resolves the error (an account to verify).
+    for (const line of wrapPlain(withUrlLinks(meta.summary), contentWidth)) {
       body.push(renderTextWithStyles(line, { color: Color.text }));
     }
     body.push("");

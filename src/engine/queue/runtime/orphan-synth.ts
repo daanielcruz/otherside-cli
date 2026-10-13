@@ -1,4 +1,5 @@
 import type { EmitItemInput } from "@/engine/queue/priority.ts";
+import { TOOL_RESULT_INTERRUPTED } from "@/engine/queue/runtime/interruption-text.ts";
 import type { ContentBlock, ToolCall } from "@/kernel/std/types/message.ts";
 import type { AgentDeps } from "./turn/types.ts";
 
@@ -8,10 +9,8 @@ export interface OrphanSynthInput {
   readonly content?: string;
 }
 
-const DEFAULT_CONTENT = "Interrupted by user";
-
 export function drainOrphanInterrupts(input: OrphanSynthInput): EmitItemInput[] {
-  const content = input.content ?? DEFAULT_CONTENT;
+  const content = input.content ?? TOOL_RESULT_INTERRUPTED;
   const out: EmitItemInput[] = [];
   for (const call of input.toolCalls) {
     if (input.seen.has(call.id)) continue;

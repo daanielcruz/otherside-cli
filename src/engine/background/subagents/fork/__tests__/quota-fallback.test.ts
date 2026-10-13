@@ -39,7 +39,7 @@ const CODEX_AND_ANTHROPIC = (): CredentialsBundle =>
 function ctxWith(quotaFallbackEnabled: boolean | undefined): RequestContext {
   return {
     provider: "anthropic",
-    model: "claude-haiku-4-5",
+    model: "claude-haiku-5-5",
     effort: null,
     permissionMode: "default",
     orchestrationMode: "feudalism",
@@ -137,7 +137,7 @@ describe("quota refusal for inherited provider routes", () => {
 
     const disabled = resolveToolModelOverride(
       { ...ctxWith(undefined), orchestrationMode: "disabled" as const },
-      "claude-haiku-4-5",
+      "claude-haiku-5-5",
     );
     expect(disabled.ok).toBe(false);
     if (!disabled.ok) {
@@ -148,7 +148,7 @@ describe("quota refusal for inherited provider routes", () => {
 
     const defaultMode = resolveToolModelOverride(
       { ...ctxWith(undefined), orchestrationMode: "default" as const },
-      "claude-haiku-4-5",
+      "claude-haiku-5-5",
     );
     expect(defaultMode.ok).toBe(false);
     if (!defaultMode.ok) {
@@ -156,7 +156,7 @@ describe("quota refusal for inherited provider routes", () => {
       expect(defaultMode.error).not.toContain("tier");
     }
 
-    const experimental = resolveToolModelOverride(ctxWith(undefined), "claude-haiku-4-5");
+    const experimental = resolveToolModelOverride(ctxWith(undefined), "claude-haiku-5-5");
     expect(experimental.ok).toBe(false);
     if (!experimental.ok) {
       expect(experimental.error).toContain("tier");
@@ -192,7 +192,7 @@ describe("quota fallback gate (bare tier dispatch)", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error).toContain("Quota fallback is disabled");
-      expect(result.error).toContain("anthropic/claude-opus-5");
+      expect(result.error).toContain("anthropic/claude-opus-5-5");
       expect(result.error).not.toContain("provider/model");
     }
   });
@@ -269,7 +269,7 @@ describe("quota fallback gate (verify-panel regressions)", () => {
       {
         scopeKey: "weekly_opus_5",
         displayLabel: "Anthropic Opus limit",
-        applicability: { type: "model", id: "claude-opus-5" },
+        applicability: { type: "model", id: "claude-opus-5-5" },
         warning: null,
         routing: {
           trackingStatus: "tracked",
@@ -282,13 +282,13 @@ describe("quota fallback gate (verify-panel regressions)", () => {
     const ctx = {
       ...ctxWith(false),
       provider: "anthropic",
-      model: "claude-opus-5",
+      model: "claude-opus-5-5",
     } as RequestContext;
     const result = resolveToolTierOverride(ctx, "emperor");
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.gated).toBe(true);
-      expect(result.error).toContain("anthropic/claude-opus-5");
+      expect(result.error).toContain("anthropic/claude-opus-5-5");
     }
   });
 
@@ -303,7 +303,7 @@ describe("quota fallback gate (verify-panel regressions)", () => {
     const ctx = {
       ...ctxWith(false),
       provider: "anthropic",
-      model: "claude-opus-5",
+      model: "claude-opus-5-5",
     } as RequestContext;
     const result = resolveToolTierOverride(ctx, "emperor");
     expect(result.ok).toBe(true);
@@ -319,7 +319,7 @@ describe("quota fallback gate (workflow bridge)", () => {
     const result = resolveWorkflowAgentModelContextDetailed(ctxWith(false), bridgeOpts);
     expect(result.ok).toBe(false);
     expect(result.error).toContain("Quota fallback is disabled");
-    expect(result.error).toContain("anthropic/claude-opus-5");
+    expect(result.error).toContain("anthropic/claude-opus-5-5");
     expect(result.error).not.toContain("provider/model");
   });
 

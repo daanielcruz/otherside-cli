@@ -11,6 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { getSandboxSettings, resetSandboxState } from "@/engine/sandbox/manager.ts";
+import { appendRecord } from "@/engine/session/append.ts";
 import { sessionPathForCwd } from "@/engine/session/paths.ts";
 import { Session } from "@/engine/session/record/state.ts";
 import {
@@ -90,6 +91,44 @@ describe("session cwd relocation", () => {
     expect(getSandboxSettings().enabled).toBe(true);
     expect(result.modelMessage).toContain("destination instruction");
     expect(result.modelMessage).toContain("via /cd");
+  });
+
+  it("keeps the destination when a meta recorded before the move is written after it", async () => {
+    const session = new Session("relocate-pending-meta", source);
+    session.pendingMeta = {
+      type: "session_meta",
+      ts: new Date().toISOString(),
+      cwd: session.storageCwd,
+      provider: "anthropic",
+      model: "claude-sonnet-5",
+    };
+
+    await relocateSession(session, destination, "cd_command");
+    await appendRecord(session, {
+      type: "user_message",
+      ts: new Date().toISOString(),
+      content: "after the move",
+    });
+
+    expect(session.cwd).toBe(destination);
+    expect(existsSync(sessionPathForCwd(source, session.id))).toBe(false);
+    expect(readFileSync(sessionPathForCwd(destination, session.id), "utf8")).toContain(
+      "after the move",
+    );
+  });
+
+  it("keeps the active cwd when resumed records name an earlier storage home", () => {
+    const session = new Session("relocate-resumed-meta", destination);
+    session.pushRecord({
+      type: "session_meta",
+      ts: new Date().toISOString(),
+      cwd: source,
+      provider: "anthropic",
+      model: "claude-sonnet-5",
+    });
+
+    expect(session.cwd).toBe(destination);
+    expect(session.storageCwd).toBe(destination);
   });
 
   it("honors the project-memory reload gate", async () => {

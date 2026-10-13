@@ -3,6 +3,7 @@ import { mkdir, stat, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { shellSnapshotsDir } from "@/kernel/std/fs/paths.ts";
+import { interruptIsClaimed } from "@/kernel/std/proc/interrupt-claim.ts";
 import { isWindows } from "@/kernel/std/proc/platform.ts";
 import { findShell } from "@/kernel/std/proc/shell.ts";
 
@@ -135,6 +136,7 @@ function registerCleanupOnce(): void {
   };
   process.on("exit", cleanup);
   process.on("SIGINT", () => {
+    if (interruptIsClaimed()) return;
     cleanup();
     process.exit(130);
   });

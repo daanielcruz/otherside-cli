@@ -1,6 +1,7 @@
 import { isImmediateSlash } from "@/commands/immediate.ts";
 import { createDesignController, type DesignController } from "@/design/controller.ts";
 import type { PermissionResolver } from "@/engine/agents/agent-context.ts";
+import { endDynamicLoop } from "@/engine/background/loop/dynamic.ts";
 import {
   formatForkSuccessFeedback,
   launchForkFromDirective,
@@ -43,7 +44,6 @@ import { createPasteStore } from "@/store/paste-store/index.ts";
 import { setPromptText } from "@/store/prompt/index.ts";
 import {
   pendingBrokerMetaRef,
-  pendingRewindPersistRef,
   sessionFinalizersRef,
   suppressBrokerPersistenceRef,
 } from "@/store/session-lifecycle/index.ts";
@@ -125,6 +125,11 @@ export interface StringViewDispatch {
    * key can tell acting apart from doing nothing.
    */
   cancel: () => boolean;
+  /**
+   * Ends a dynamic /loop the user interrupts, so no pending wakeup starts another
+   * tick. Answers whether a wakeup was pending.
+   */
+  cancelLoop: () => boolean;
   requestBackgroundResume: () => void;
   backgroundCurrentTool: () => boolean;
   restoreQueued: () => string | null;
@@ -275,7 +280,6 @@ export function createStringViewSubmit(deps: StringViewDispatchDeps): StringView
     pasteStoreRef,
     suppressBrokerPersistenceRef,
     persistedSessionBrokerStateRef,
-    pendingRewindPersistRef,
     pendingBrokerMetaRef,
     overlayStack,
     transcriptBatch,
@@ -492,6 +496,20 @@ export function createStringViewSubmit(deps: StringViewDispatchDeps): StringView
     setTranscript: setters.setTranscript,
   });
 
+  const cancelLoop = (): boolean => {
+    const cancelled = endDynamicLoop();
+    if (cancelled === 0) return false;
+    setters.setTranscript((t) => [
+      ...t,
+      {
+        id: nextTranscriptId("sys"),
+        kind: "system",
+        text: "Loop stopped — the pending wakeup was cancelled.",
+      },
+    ]);
+    return true;
+  };
+
   const cancelTurn = (): boolean => {
     if (!turnGuard.active) return false;
     transcriptBatch.flushNow();
@@ -629,6 +647,7 @@ export function createStringViewSubmit(deps: StringViewDispatchDeps): StringView
       })();
     },
     cancel: cancelTurn,
+    cancelLoop,
     requestBackgroundResume,
     backgroundCurrentTool: agentTranscript.backgroundCurrentAgent,
     restoreQueued: popAllQueued,

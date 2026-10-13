@@ -141,7 +141,7 @@ describe("codex wire-request-golden", () => {
   it("main", () => {
     const ctx: RequestContext = {
       provider: "codex",
-      model: "gpt-5.6-sol",
+      model: "gpt-5.6-terra",
       effort: "high",
       permissionMode: "default",
       sessionId: "session-fixture",
@@ -233,7 +233,7 @@ describe("codex wire-request-golden", () => {
   it("fork", () => {
     const ctx: RequestContext = {
       provider: "codex",
-      model: "gpt-5.6-sol",
+      model: "gpt-5.6-terra",
       effort: "high",
       permissionMode: "default",
       sessionId: "session-fixture",
@@ -339,7 +339,7 @@ describe("codex wire-request-golden", () => {
   it("keeps prewarm in the current window without a turn identity", () => {
     const ctx: RequestContext = {
       provider: "codex",
-      model: "gpt-5.6-sol",
+      model: "gpt-5.6-terra",
       effort: "medium",
       permissionMode: "default",
       sessionId: "prewarm-session-fixture",
@@ -416,7 +416,7 @@ describe("codex wire-request-golden", () => {
     const sessionId = `window-fixture-${crypto.randomUUID()}`;
     const ctx: RequestContext = {
       provider: "codex",
-      model: "gpt-5.6-sol",
+      model: "gpt-5.6-terra",
       effort: "medium",
       permissionMode: "default",
       sessionId,

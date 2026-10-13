@@ -76,6 +76,8 @@ export interface TranscriptEntry {
   muted?: boolean;
   /** Rendered only on the detailed transcript screen (replayed reasoning). */
   detailOnly?: boolean;
+  /** The line a /loop wakeup opens its turn with; a quiet tick folds back to it. */
+  loopTick?: true;
   continuation?: boolean;
   nested?: NestedToolEntry[];
   /** Atomic agent identity when known. Prefer over bare agentModel/agentProvider. */

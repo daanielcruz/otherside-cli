@@ -8,6 +8,8 @@ import {
   routingHint,
 } from "@/engine/providers/codex/fingerprint.ts";
 import { buildCodexRequestMetadata } from "@/engine/providers/codex/metadata.ts";
+import { MODELS } from "@/engine/providers/codex/models.ts";
+import { buildWsFrame, buildWsPrewarmFrame } from "@/engine/providers/codex/transport/ws-frames.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 
 /**
@@ -98,14 +100,66 @@ describe("codex responses upgrade fingerprint", () => {
     const headers = upgradeHeaders();
 
     expect(headers.version).toBe(CODEX_CLI_VERSION);
-    expect(CODEX_CLI_VERSION).toBe("0.153.4");
+    expect(CODEX_CLI_VERSION).toBe("0.159.2");
     expect(headers["x-codex-beta-features"]).toBe("remote_compaction_v2");
     expect(BETA_FEATURES).toBe("remote_compaction_v2");
   });
 
+  it.each([
+    ...MODELS.map((model) => model.id),
+    "classic-model",
+  ])("signals the request protocol for %s in HTTP and WebSocket turns", (model) => {
+    const ctx = { ...CTX, model };
+    const metadata = buildCodexRequestMetadata({
+      ctx,
+      installationId: "installation-fixture",
+      mainSessionId: ctx.sessionId,
+      mainThreadId: "thread-fixture",
+      windowGeneration: 0,
+      requestKind: "turn",
+    });
+    const expected = model === "classic-model" ? undefined : "true";
+    const headers = buildHeaders({
+      bearer: "Bearer fixture-token",
+      requestMetadata: metadata,
+      transport: "http",
+      model,
+    });
+    expect(headers["x-openai-internal-codex-responses-lite"]).toBe(expected);
+    expect(upgradeHeaders(ctx)["x-openai-internal-codex-responses-lite"]).toBeUndefined();
+    const body = {
+      model,
+      parallel_tool_calls: false,
+      reasoning: { effort: "high", ...(expected ? { context: "all_turns" } : {}) },
+      input: [{ role: "user", content: "hello" }],
+    };
+    const frame = buildWsFrame(body, metadata);
+    if (expected === undefined) {
+      expect(frame.client_metadata).not.toHaveProperty(
+        "ws_request_header_x_openai_internal_codex_responses_lite",
+      );
+    } else {
+      expect(frame.client_metadata).toMatchObject({
+        ws_request_header_x_openai_internal_codex_responses_lite: expected,
+      });
+    }
+    expect(metadata.clientMetadata).not.toHaveProperty(
+      "ws_request_header_x_openai_internal_codex_responses_lite",
+    );
+    const prewarm = buildWsPrewarmFrame(body, metadata);
+    expect(prewarm).toMatchObject({
+      generate: false,
+      input: [],
+      reasoning: body.reasoning,
+      parallel_tool_calls: false,
+    });
+    expect(prewarm.client_metadata).toEqual(frame.client_metadata);
+    expect(body.input).toHaveLength(1);
+  });
+
   it("routes on the wire model", () => {
     expect(upgradeHeaders()["x-codex-routing-hint"]).toBe("model=gpt-6-astra");
-    expect(routingHint("gpt-5.5")).toBe("model=gpt-5.5");
+    expect(routingHint("gpt-5.6-terra")).toBe("model=gpt-5.6-terra");
   });
 
   it("keeps the Desktop identity in the originator and user agent", () => {
@@ -114,7 +168,7 @@ describe("codex responses upgrade fingerprint", () => {
     expect(headers.originator).toBe(ORIGINATOR_HTTP);
     expect(headers["User-Agent"]).toContain(`${ORIGINATOR_HTTP}/${CODEX_CLI_VERSION}`);
     expect(headers["User-Agent"]).toContain(`(${ORIGINATOR_HTTP}; ${CODEX_APP_VERSION})`);
-    expect(CODEX_APP_VERSION).toBe("26.901.51231");
+    expect(CODEX_APP_VERSION).toBe("26.928.40906");
   });
 
   it("carries hyphenated identity headers and no installation id", () => {
@@ -144,7 +198,6 @@ describe("codex responses upgrade fingerprint", () => {
       JSON.parse(upgradeHeaders({ ...CTX, permissionMode })["x-codex-turn-metadata"] as string)
         .sandbox_mode;
 
-    expect(modeFor("plan")).toBe("read-only");
     expect(modeFor("default")).toBe("workspace-write");
     expect(modeFor("accept-edits")).toBe("workspace-write");
     expect(modeFor("yolo")).toBe("danger-full-access");

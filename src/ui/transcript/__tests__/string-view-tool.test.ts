@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { join } from "node:path";
 import chalk from "chalk";
 import type { WorkflowTaskLifecycle } from "@/engine/background/workflows/runtime/store/types.ts";
 import { INTERRUPTED_FEEDBACK } from "@/engine/queue/runtime/interruption-text.ts";
@@ -692,5 +693,24 @@ describe("MCP tool header", () => {
     );
 
     expect(lines.length).toBeGreaterThan(1);
+  });
+});
+
+describe("file tool headers", () => {
+  it("name a file inside the working directory by its relative path, on one row", () => {
+    for (const name of ["Write", "Edit", "Read"]) {
+      const lines = formatToolLines(
+        {
+          name,
+          args: { file_path: `${process.cwd()}/<dir>/<file>.txt`, content: "", old_string: "" },
+          status: "queued",
+          payload: null,
+        },
+        100,
+      );
+
+      expect(plain(lines)[0]).toEndWith(`(${join("<dir>", "<file>.txt")})`);
+      expect(lines).toHaveLength(1);
+    }
   });
 });

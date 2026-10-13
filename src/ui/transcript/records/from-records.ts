@@ -1,4 +1,14 @@
 import {
+  readScheduledTaskFire,
+  scheduledTaskFireText,
+} from "@/engine/background/cron/fire-record.ts";
+import {
+  foldLoopTick,
+  loopTickFireText,
+  loopTickFolds,
+  readLoopTick,
+} from "@/engine/background/loop/tick.ts";
+import {
   isInterruptionMessage,
   TOOL_INTERRUPT_MESSAGE,
 } from "@/engine/queue/runtime/interruption-text.ts";
@@ -6,11 +16,7 @@ import { parseBashTurnText } from "@/engine/queue/turn/bash-input.ts";
 import { isCompactionBoundary, type SessionRecord } from "@/engine/session/index.ts";
 import type { McpCallIdentity } from "@/kernel/mcp/index.ts";
 import { isProviderId, type ProviderModelRoute } from "@/kernel/std/types/provider-ids.ts";
-import {
-  formatElapsed,
-  formatTurnDuration,
-  TURN_COMPLETION_VERB,
-} from "@/ui/chrome/progress/index.ts";
+import { formatElapsed, turnCompletionText } from "@/ui/chrome/progress/index.ts";
 import {
   askAnswerEntry,
   augmentAgentResult,
@@ -236,6 +242,21 @@ export function sessionRecordsToTranscript(
       return;
     }
     if (record.type === "attachment") {
+      const loopTick = readLoopTick(record.attachment);
+      if (loopTick !== null) {
+        const line: TranscriptEntry = {
+          id,
+          kind: "system",
+          text: loopTickFireText(loopTick, new Date(record.ts)),
+          loopTick: true,
+        };
+        entries.splice(0, entries.length, ...foldLoopTick(entries, line, loopTickFolds(loopTick)));
+        return;
+      }
+      if (readScheduledTaskFire(record.attachment) !== null) {
+        entries.push({ id, kind: "system", text: scheduledTaskFireText(new Date(record.ts)) });
+        return;
+      }
       const notification = taskNotificationFromAttachment(record.attachment);
       if (notification !== null) {
         entries.push({
@@ -279,7 +300,7 @@ export function sessionRecordsToTranscript(
       entries.push({
         id,
         kind: "compact_done",
-        text: `${TURN_COMPLETION_VERB} for ${formatTurnDuration(record.durationMs)}`,
+        text: turnCompletionText(record.durationMs, new Date(record.ts)),
         muted: true,
       });
     }

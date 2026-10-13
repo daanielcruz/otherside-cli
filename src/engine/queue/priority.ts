@@ -31,7 +31,15 @@ export type EmitPayload =
   | { kind: "tool_result_interrupt"; toolUseId: string; content: string }
   | { kind: "task_notification_xml"; text: string; summary?: string; isError?: boolean }
   | { kind: "fork_event"; event: unknown }
-  | { kind: "user_interrupt_message"; text: string };
+  | { kind: "user_interrupt_message"; text: string; scheduledFire?: ScheduledFireKind };
+
+/** A scheduled prompt firing: a dynamic /loop wakeup, or a cron task. */
+export type ScheduledFireKind = "loop" | "task";
+
+export interface ScheduledFire {
+  kind: ScheduledFireKind;
+  prompt: string;
+}
 
 export interface EmitItemInput {
   class: EmitClass;
@@ -72,6 +80,8 @@ export interface DrainResult {
   notificationTexts: readonly string[];
   /** True when a consumed item was a stop-hook rewake (see EmitItemInput). */
   stopHookActive?: boolean;
+  /** Scheduled prompts delivered to the LLM in this drain, in delivery order. */
+  scheduledFires?: readonly ScheduledFire[];
 }
 
 export interface CancelResult {

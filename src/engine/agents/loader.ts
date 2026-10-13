@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { parseMcpServerSpec } from "@/kernel/mcp/config.ts";
 import type { McpServerSpec } from "@/kernel/mcp/index.ts";
 import { errorMessage } from "@/kernel/std/errno.ts";
-import { PERMISSION_MODES } from "@/kernel/std/types/permission-mode.ts";
+import { parsePermissionMode } from "@/kernel/std/types/permission-mode.ts";
 import { integerFromStringOrUndefined } from "@/kernel/std/value-guards.ts";
 import {
   FrontmatterError,
@@ -99,7 +99,7 @@ function defFromParsed({ id, parsed, scope, sourcePath }: DefSource): SubagentDe
   const maxTurnsRaw = integerFromStringOrUndefined(parsed.fields.maxTurns);
   const maxTurns = maxTurnsRaw !== undefined && maxTurnsRaw > 0 ? maxTurnsRaw : undefined;
   const permissionModeRaw = parsed.fields.permissionMode?.trim();
-  const permissionMode = PERMISSION_MODES.find((m) => m === permissionModeRaw);
+  const permissionMode = parsePermissionMode(permissionModeRaw);
   return {
     id,
     name: parsed.fields.name ?? id,

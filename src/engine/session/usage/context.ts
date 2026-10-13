@@ -2,9 +2,14 @@ import * as agentsRegistry from "@/engine/agents/registry.ts";
 import { getProviderConfig } from "@/engine/contract/registry.ts";
 import { findModel } from "@/engine/model/catalog.ts";
 import { harnessBaselineBreakdown } from "@/engine/session/compact/harness-baseline.ts";
-import { estimateTokens } from "@/engine/session/compact/token-count.ts";
+import {
+  countTokensWithEstimates,
+  estimateTokens,
+  getAuthoritativeUsage,
+} from "@/engine/session/compact/token-count.ts";
 import type { UsageWarning } from "@/engine/session/usage/limits.ts";
 import { providerContextWarning } from "@/engine/session/usage/provider.ts";
+import { contextUsageTotal } from "@/engine/session/usage/snapshot.ts";
 import { list as listSkills } from "@/engine/skills/registry.ts";
 import { renderMemorySection } from "@/harness/core/memory-section.ts";
 import { renderSkillsReminder } from "@/harness/reminders/reminders.ts";
@@ -40,11 +45,7 @@ export interface ContextUsageData {
 interface ContextWindowWarningArgs {
   provider: ProviderId;
   model: string;
-  totals: {
-    inputTokens: number;
-    cacheReadInputTokens: number;
-    cacheCreationInputTokens: number;
-  };
+  totals: Parameters<typeof contextUsageTotal>[0];
   suppressed: boolean;
 }
 
@@ -56,9 +57,8 @@ export function contextWindowWarning({
 }: ContextWindowWarningArgs): UsageWarning | null {
   if (suppressed) return null;
   if (getProviderConfig(provider)?.usageDetails?.hasPlanPanel) return null;
-  const contextTokens =
-    totals.inputTokens + totals.cacheReadInputTokens + totals.cacheCreationInputTokens;
-  if (contextTokens <= 0) return null;
+  const contextTokens = contextUsageTotal(totals);
+  if (contextTokens === null || contextTokens <= 0) return null;
   return providerContextWarning(provider, model, contextTokens);
 }
 
@@ -93,7 +93,13 @@ export function getContextBreakdown(input: ContextBreakdownInput): ContextUsageD
     auxiliary.customAgents +
     auxiliary.memoryFiles +
     auxiliary.skills;
-  const totalTokens = serverInputTokens > 0 ? serverInputTokens : estimatedTotal;
+  const snapshot = getAuthoritativeUsage(messages, null);
+  const totalTokens =
+    snapshot?.contextTokens !== undefined && snapshot.contextTokens === serverInputTokens
+      ? countTokensWithEstimates(messages, snapshot)
+      : serverInputTokens > 0
+        ? serverInputTokens
+        : estimatedTotal;
   const free = Math.max(0, window - totalTokens);
   const modelLabel = model
     ? model.id.endsWith("[1m]")

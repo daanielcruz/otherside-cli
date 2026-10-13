@@ -1,4 +1,4 @@
-import { stripNonVisionImages } from "@/engine/model/facts/capabilities.ts";
+import { isVisionCapable, stripNonVisionImages } from "@/engine/model/facts/capabilities.ts";
 import {
   translateRequestAnthropic,
   translateResponseAnthropic,
@@ -11,8 +11,10 @@ export function translateRequestDeepseek(
   messages: Message[],
   tools: unknown[],
 ): unknown {
-  const stripped = stripNonVisionImages(messages);
-  const body = translateRequestAnthropic(ctx, stripped, tools) as Record<string, unknown>;
+  const wireInputMessages = isVisionCapable(ctx.provider, ctx.model)
+    ? messages
+    : stripNonVisionImages(messages);
+  const body = translateRequestAnthropic(ctx, wireInputMessages, tools) as Record<string, unknown>;
   const thinkingDisabled = ctx.disableThinking === true;
   if (thinkingDisabled) {
     body.thinking = { type: "disabled" };

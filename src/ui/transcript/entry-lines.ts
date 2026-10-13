@@ -1,8 +1,10 @@
 import {
+  asTaskStopCause,
   buildAgentSummary,
   buildBashSummary,
   buildWorkflowSummary,
   type TaskNotificationStatus,
+  type TaskStopCause,
 } from "@/engine/background/tasks/notification.ts";
 import {
   INTERRUPTED_FEEDBACK,
@@ -20,6 +22,7 @@ import {
   demoteThinkingHeadlines,
   imageRefLink,
   withReportLink,
+  withUrlLinks,
 } from "@/ui/transcript/entry-text.ts";
 import { renderMarkdownLines } from "@/ui/transcript/markdown/string-view-markdown.ts";
 import { colorFor, prefixFor } from "@/ui/transcript/message-presentation.ts";
@@ -171,7 +174,8 @@ function errorEntryLines(
   const trimmed = text.trim();
   const truncated = presentation === "compact" && trimmed.length > COMPACT_API_ERROR_CHARS;
   const body = truncated ? `${trimmed.slice(0, COMPACT_API_ERROR_CHARS)}…` : trimmed;
-  const rows = plainEntryLines(body, width, prefix, Color.error, Color.error);
+  // A provider error can carry the page that resolves it (an account to verify).
+  const rows = plainEntryLines(withUrlLinks(body), width, prefix, Color.error, Color.error);
   if (truncated) {
     rows.push(
       ...plainEntryLines(
@@ -282,8 +286,8 @@ function askAnswerEntryLines(
     "User answered Otherside's questions:",
     width,
     `${Glyph.bullet} `,
-    Color.text,
-    Color.text,
+    Color.muted,
+    undefined,
   );
   const branch = `  ${Glyph.boxSharpBottomLeft} `;
   const continuation = " ".repeat(stringWidth(branch));
@@ -313,6 +317,7 @@ interface TaskNoticeData {
   exitCode?: number;
   error?: string;
   taskId?: string;
+  stopCause?: TaskStopCause;
 }
 
 function taskNoticeEntryLines(
@@ -334,11 +339,10 @@ function taskNoticeEntryLines(
   const options = notice.error ? { error: notice.error } : {};
   let text =
     notice.taskKind === "shell"
-      ? buildBashSummary(
-          notice.description,
-          notice.status,
-          notice.exitCode !== undefined ? { exitCode: notice.exitCode } : {},
-        )
+      ? buildBashSummary(notice.description, notice.status, {
+          ...(notice.exitCode !== undefined ? { exitCode: notice.exitCode } : {}),
+          ...(notice.stopCause !== undefined ? { stopCause: notice.stopCause } : {}),
+        })
       : notice.taskKind === "workflow"
         ? buildWorkflowSummary(notice.description, notice.status, options)
         : buildAgentSummary(notice.description, notice.status, options);
@@ -369,6 +373,7 @@ function parseTaskNotice(text: string): TaskNoticeData | null {
     record.taskKind === "shell" ? "shell" : record.taskKind === "workflow" ? "workflow" : "agent";
   const status =
     record.status === "failed" ? "failed" : record.status === "killed" ? "killed" : "completed";
+  const stopCause = asTaskStopCause(record.stopCause);
   return {
     taskKind,
     status,
@@ -377,6 +382,7 @@ function parseTaskNotice(text: string): TaskNoticeData | null {
     ...(typeof record.exitCode === "number" ? { exitCode: record.exitCode } : {}),
     ...(typeof record.error === "string" ? { error: record.error } : {}),
     ...(typeof record.taskId === "string" ? { taskId: record.taskId } : {}),
+    ...(stopCause !== undefined ? { stopCause } : {}),
   };
 }
 

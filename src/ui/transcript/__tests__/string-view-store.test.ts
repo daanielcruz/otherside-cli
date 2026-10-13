@@ -216,6 +216,14 @@ describe("specialized string-view transcript entries", () => {
     expect(answer?.plain.join("\n")).toContain("· Continue? → Yes");
   });
 
+  it("heads the answers with a muted bullet and a headline in the terminal's own color", () => {
+    const answer = renderEntry(mapTranscriptEntries(entries)[3]);
+
+    expect(answer.raw[0]).toBe(
+      `${renderTextWithStyles(`${Glyph.bullet} `, { color: Color.muted })}User answered Otherside's questions:`,
+    );
+  });
+
   it("renders interruption feedback instead of the conversation marker", () => {
     const view = new StringViewTranscript();
     view.setEntries([{ kind: "system", text: INTERRUPT_MESSAGE, isError: false }]);

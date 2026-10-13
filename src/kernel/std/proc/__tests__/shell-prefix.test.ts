@@ -1,5 +1,14 @@
 import { describe, expect, it } from "bun:test";
-import { expandShellPrefix } from "@/kernel/std/proc/shell-prefix.ts";
+import { expandShellPrefix, hasShellPrefix } from "@/kernel/std/proc/shell-prefix.ts";
+
+describe("hasShellPrefix", () => {
+  it("finds inline and block commands, and nothing in plain text", () => {
+    expect(hasShellPrefix("Branch: !`git branch`")).toBe(true);
+    expect(hasShellPrefix("```!\ngit status\n```")).toBe(true);
+    expect(hasShellPrefix("Say hi! Then `run tests`.")).toBe(false);
+    expect(hasShellPrefix("Plain instructions.")).toBe(false);
+  });
+});
 
 describe("expandShellPrefix", () => {
   it("inserts command output verbatim even when it contains $-substitution patterns", async () => {

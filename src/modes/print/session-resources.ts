@@ -1,7 +1,7 @@
 import type { SubagentDef } from "@/engine/agents/registry.ts";
 import * as agentRegistry from "@/engine/agents/registry.ts";
 import { getProviderConfig } from "@/engine/contract/registry.ts";
-import { findUniqueModel } from "@/engine/model/catalog.ts";
+import { findUniqueModel, parseQualifiedRoute } from "@/engine/model/catalog.ts";
 import type { NamespaceLabel } from "@/engine/tools/registry.ts";
 import * as toolRegistry from "@/engine/tools/registry.ts";
 import { loadFlagMcpServers } from "@/kernel/mcp/config.ts";
@@ -43,26 +43,8 @@ function modelMapForInlineAgent(model: string | undefined): SubagentDef["model"]
     return pinForProvider(unique.provider, unique.id);
   }
   throw new Error(
-    `model "${raw}" is not a unique catalog id; use "provider/model" (e.g. "anthropic/claude-opus-4-8")`,
+    `model "${raw}" is not a unique catalog id; use "provider/model" (e.g. "anthropic/claude-opus-5-5")`,
   );
-}
-
-function parseQualifiedRoute(raw: string): { provider: string; model: string } | null {
-  const slash = raw.indexOf("/");
-  const colon = raw.indexOf(":");
-  const sep =
-    slash >= 0 && colon >= 0
-      ? Math.min(slash, colon)
-      : slash >= 0
-        ? slash
-        : colon >= 0
-          ? colon
-          : -1;
-  if (sep <= 0 || sep === raw.length - 1) return null;
-  const provider = raw.slice(0, sep).trim();
-  const model = raw.slice(sep + 1).trim();
-  if (!isProviderId(provider) || model.length === 0) return null;
-  return { provider, model };
 }
 
 function pinForProvider(provider: string, model: string): SubagentDef["model"] {

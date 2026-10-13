@@ -7,6 +7,7 @@ import {
   recordCodexRawReplayDiagnostic,
 } from "@/devtools/codex-raw-stream.ts";
 import type { CodexRequestMetadata } from "@/engine/providers/codex/metadata.ts";
+import { MODELS } from "@/engine/providers/codex/models.ts";
 
 /**
  * Outbound frame path: request-frame construction, send-buffer drain guard,
@@ -82,6 +83,17 @@ export function sendWsJsonFrame(
   return drain.then(send);
 }
 
+function buildWsClientMetadata(
+  model: unknown,
+  requestMetadata: CodexRequestMetadata,
+): Record<string, string> {
+  const metadata = { ...requestMetadata.clientMetadata };
+  if (MODELS.find((entry) => entry.id === model)?.augment?.useResponsesLite) {
+    metadata.ws_request_header_x_openai_internal_codex_responses_lite = "true";
+  }
+  return metadata;
+}
+
 export function buildWsFrame(
   body: unknown,
   requestMetadata: CodexRequestMetadata,
@@ -101,6 +113,13 @@ export function buildWsFrame(
   if (src.service_tier !== undefined) frame.service_tier = src.service_tier;
   if (src.prompt_cache_key !== undefined) frame.prompt_cache_key = src.prompt_cache_key;
   if (src.text !== undefined) frame.text = src.text;
-  frame.client_metadata = requestMetadata.clientMetadata;
+  frame.client_metadata = buildWsClientMetadata(src.model, requestMetadata);
   return frame;
+}
+
+export function buildWsPrewarmFrame(
+  body: unknown,
+  requestMetadata: CodexRequestMetadata,
+): Record<string, unknown> {
+  return { ...buildWsFrame(body, requestMetadata), generate: false, input: [] };
 }

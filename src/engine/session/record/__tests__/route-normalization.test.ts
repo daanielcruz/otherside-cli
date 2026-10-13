@@ -3,31 +3,31 @@ import { normalizeRecordRoute } from "@/engine/session/record/schema.ts";
 
 describe("record route normalization", () => {
   it("forms a route from the separate fields a record written before routes carries", () => {
-    expect(normalizeRecordRoute({ provider: "anthropic", model: "claude-opus-5" })).toEqual({
-      route: { provider: "anthropic", model: "claude-opus-5" },
+    expect(normalizeRecordRoute({ provider: "anthropic", model: "claude-opus-5-5" })).toEqual({
+      route: { provider: "anthropic", model: "claude-opus-5-5" },
       provider: "anthropic",
-      model: "claude-opus-5",
+      model: "claude-opus-5-5",
     });
   });
 
   it("lets an explicit route settle a disagreement with the separate fields", () => {
     expect(
       normalizeRecordRoute({
-        route: { provider: "codex", model: "gpt-5.6-sol" },
+        route: { provider: "codex", model: "gpt-5.6-terra" },
         provider: "anthropic",
-        model: "claude-opus-5",
+        model: "claude-opus-5-5",
       }),
     ).toEqual({
-      route: { provider: "codex", model: "gpt-5.6-sol" },
+      route: { provider: "codex", model: "gpt-5.6-terra" },
       provider: "codex",
-      model: "gpt-5.6-sol",
+      model: "gpt-5.6-terra",
     });
   });
 
   it("keeps what it was given when the pair is incomplete", () => {
     // A model with no provider names nothing on its own, so no route is invented.
-    expect(normalizeRecordRoute({ model: "claude-opus-5" })).toEqual({
-      model: "claude-opus-5",
+    expect(normalizeRecordRoute({ model: "claude-opus-5-5" })).toEqual({
+      model: "claude-opus-5-5",
     });
     expect(normalizeRecordRoute({ provider: "anthropic" })).toEqual({
       provider: "anthropic",

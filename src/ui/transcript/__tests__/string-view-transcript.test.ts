@@ -159,4 +159,29 @@ describe("StringViewTranscript", () => {
       expect(stripAnsi(row)).toContain("[Image #1]");
     });
   });
+
+  // An error can name the page that resolves it; that page opens from every row it wraps onto.
+  describe("a page an error names", () => {
+    const previousForceHyperlink = process.env.FORCE_HYPERLINK;
+
+    beforeAll(() => {
+      process.env.FORCE_HYPERLINK = "1";
+    });
+
+    afterAll(() => {
+      if (previousForceHyperlink === undefined) delete process.env.FORCE_HYPERLINK;
+      else process.env.FORCE_HYPERLINK = previousForceHyperlink;
+    });
+
+    it("links every row it wraps onto", () => {
+      const verifyAt = `https://accounts.google.com/signin/continue?plt=${"z".repeat(90)}`;
+      const transcript = new StringViewTranscript();
+      transcript.setEntries([
+        { kind: "api_error", text: `Verify your account to continue. — verify at ${verifyAt}` },
+      ]);
+      const urlRows = transcript.render(60).filter((line) => /accounts\.google|z{10}/.test(line));
+      expect(urlRows.length).toBeGreaterThan(1);
+      for (const row of urlRows) expect(row).toContain(`\x1b]8;;${verifyAt}`);
+    });
+  });
 });

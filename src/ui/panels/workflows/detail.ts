@@ -30,6 +30,7 @@ import {
   BOX_RULE_ROWS as BOX_RULES,
   canSplitDetail,
   cardPaneWidth,
+  fitListRows,
   PHASE_PANE_WIDTH,
   phasePaneRows,
   phasePaneTitle,
@@ -53,6 +54,8 @@ const DETAIL_ROW_WIDTH = 16;
 const ACTIVITY_TAIL_COUNT = 3;
 /** Agents previewed under the phase list; the agent level carries the whole set. */
 const PHASE_AGENT_PREVIEW_COUNT = 4;
+/** Rows above a stacked agent list: the phase heading and the blank beneath it. */
+const PHASE_AGENT_HEADING_ROWS = 2;
 const PROMPT_CLIP = 1200;
 const OUTCOME_CLIP = 800;
 
@@ -73,6 +76,9 @@ export interface DetailViewState {
   cardScroll: number;
   expandedPrompts: ReadonlySet<string>;
   agentFilter: AgentFilter;
+  /** First row each list column showed last frame; a column slides only to follow its cursor. */
+  phaseListStart: number;
+  agentListStart: number;
 }
 
 /** Cursors come back clamped to what this workflow actually holds. */
@@ -81,6 +87,8 @@ export interface DetailRender {
   phaseCursor: number;
   agentCursor: number;
   cardScroll: number;
+  phaseListStart: number;
+  agentListStart: number;
 }
 
 export function renderWorkflowDetail(input: {
@@ -125,6 +133,8 @@ export function renderWorkflowDetail(input: {
 
   const body = headerLines(item, phases, workflowActive);
   let cardScroll = state.cardScroll;
+  let phaseListStart = state.phaseListStart;
+  let agentListStart = state.agentListStart;
   const budget = Math.max(
     1,
     footerPanelBodyBudget({ ...frame, body }, input.terminalRows, input.width),
@@ -132,6 +142,17 @@ export function renderWorkflowDetail(input: {
   // The box takes every row the header leaves, so the frame reads the same height
   // whether a phase holds two agents or thirty.
   const paneRows = Math.max(1, budget - body.length);
+  // A column holds one row per entry, so a long phase slides to keep its cursor in the box.
+  const fitAgents = (rows: readonly string[], height: number): string[] => {
+    const fitted = fitListRows({
+      rows,
+      cursor: agentCursor,
+      height,
+      previousStart: agentListStart,
+    });
+    agentListStart = fitted.start;
+    return fitted.rows;
+  };
 
   if (phases.length === 0) {
     body.push(renderTextWithStyles("No agents yet.", { color: Color.muted }));
@@ -150,13 +171,16 @@ export function renderWorkflowDetail(input: {
           {
             left: {
               title: phase.title,
-              rows: agentPaneRows({
-                agents,
-                cursor: agentCursor,
-                focused: true,
-                workflowActive,
-                withMeta: false,
-              }),
+              rows: fitAgents(
+                agentPaneRows({
+                  agents,
+                  cursor: agentCursor,
+                  focused: true,
+                  workflowActive,
+                  withMeta: false,
+                }),
+                paneRows - BOX_RULES,
+              ),
             },
             right: { title: agent.label, rows: windowed.lines },
             leftWidth: AGENT_PANE_WIDTH,
@@ -168,32 +192,45 @@ export function renderWorkflowDetail(input: {
     for (const line of panes ?? windowed.lines) body.push(line);
   } else {
     const inAgents = state.detailLevel === "agents";
+    const columnRows = paneRows - BOX_RULES;
+    const phaseColumn = fitListRows({
+      rows: phasePaneRows(phases, phaseCursor, !inAgents),
+      cursor: phaseCursor,
+      height: columnRows,
+      previousStart: phaseListStart,
+    });
     const panes = renderDetailPanes(
       {
-        left: { title: "Phases", rows: phasePaneRows(phases, phaseCursor, !inAgents) },
+        left: { title: "Phases", rows: phaseColumn.rows },
         right: {
           title: phasePaneTitle(phase),
-          rows: agentPaneRows({
-            agents,
-            cursor: agentCursor,
-            focused: inAgents,
-            workflowActive,
-            withMeta: true,
-          }),
+          rows: fitAgents(
+            agentPaneRows({
+              agents,
+              cursor: agentCursor,
+              focused: inAgents,
+              workflowActive,
+              withMeta: true,
+            }),
+            columnRows,
+          ),
         },
         leftWidth: PHASE_PANE_WIDTH,
       },
       contentWidth,
       paneRows,
     );
-    if (panes) for (const line of panes) body.push(line);
-    else if (inAgents && phase) {
+    if (panes) {
+      phaseListStart = phaseColumn.start;
+      for (const line of panes) body.push(line);
+    } else if (inAgents && phase) {
       for (const line of phaseAgentLines({
         phase,
         agents,
         agentCursor,
         workflowActive,
         filterLabel: agentFilterLabel(state.agentFilter),
+        fit: (rows) => fitAgents(rows, paneRows - PHASE_AGENT_HEADING_ROWS),
       })) {
         body.push(line);
       }
@@ -209,6 +246,8 @@ export function renderWorkflowDetail(input: {
     phaseCursor,
     agentCursor,
     cardScroll,
+    phaseListStart,
+    agentListStart,
   };
 }
 
@@ -309,8 +348,10 @@ function phaseAgentLines(input: {
   agentCursor: number;
   workflowActive: boolean;
   filterLabel: string | undefined;
+  /** Cuts the agent rows to the height left under the heading. */
+  fit: (rows: readonly string[]) => string[];
 }): string[] {
-  const { phase, agents, agentCursor, workflowActive, filterLabel } = input;
+  const { phase, agents, agentCursor, workflowActive, filterLabel, fit } = input;
   // A narrowed list says what it is showing, so a short count never reads as a
   // phase that lost its agents.
   const count =
@@ -334,11 +375,10 @@ function phaseAgentLines(input: {
     );
     return lines;
   }
-  for (let index = 0; index < agents.length; index++) {
-    lines.push(
-      agentRowLine({ agent: agents[index]!, selected: index === agentCursor, workflowActive }),
-    );
-  }
+  const rows = agents.map((agent, index) =>
+    agentRowLine({ agent, selected: index === agentCursor, workflowActive }),
+  );
+  lines.push(...fit(rows));
   return lines;
 }
 

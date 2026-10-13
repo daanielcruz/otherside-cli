@@ -9,15 +9,15 @@ import {
 
 function ctx(orchestrationMode: "disabled" | "feudalism"): LayerContext {
   return {
-    model: "claude-opus-4-8",
-    modelDisplayName: "Opus 4.8",
-    knowledgeCutoff: "January 2026",
+    model: "claude-opus-5-5",
+    modelDisplayName: "Opus 5.5",
+    knowledgeCutoff: "June 2026",
     orchestrationMode,
   } as unknown as LayerContext;
 }
 
 const ROSTER: ResolvedTierRoster = {
-  emperor: [{ provider: "anthropic", display: "Opus 4.8" }],
+  emperor: [{ provider: "anthropic", display: "Opus 5.5" }],
   shogun: [{ provider: "xai", display: "Grok-x" }],
   daimyo: [
     { provider: "anthropic", display: "Sonnet 4.6" },
@@ -30,13 +30,13 @@ describe("orchestration prompt boundaries", () => {
   test("env-info withholds tier doctrine in Disabled mode", () => {
     const out = envInfoLayer.render(ctx("disabled"));
     expect(out).not.toContain("Models on this provider, by tier");
-    expect(out).toContain("You are powered by the model named Opus 4.8");
+    expect(out).toContain("You are powered by the model named Opus 5.5");
   });
 
   test("env-info withholds concrete model-family guidance in feudalism", () => {
     const out = envInfoLayer.render(ctx("feudalism"));
     expect(out).not.toContain("Models on this provider, by tier");
-    expect(out).toContain("You are powered by the model named Opus 4.8");
+    expect(out).toContain("You are powered by the model named Opus 5.5");
   });
 
   test("tool section withholds concrete roster entries but keeps tier briefs + availability", () => {

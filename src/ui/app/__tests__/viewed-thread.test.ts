@@ -40,7 +40,7 @@ beforeEach(() => {
     key: "broker",
     value: {
       provider: "anthropic",
-      model: "claude-opus-5",
+      model: "claude-opus-5-5",
       effort: "high",
       fastMode: false,
       permissionMode: "yolo",
@@ -74,7 +74,7 @@ function openAgent(): string {
     isBackgrounded: true,
   });
   setForkId(task.id, AGENT_FORK);
-  setRoute(task.id, { provider: "codex", model: "gpt-5.6-sol" }, "low");
+  setRoute(task.id, { provider: "codex", model: "gpt-5.6-terra" }, "low");
   setUsageSnapshot(task.id, { inputTokens: 400, outputTokens: 90 });
   dispatch({ type: "view/setViewingAgent", id: task.id });
   return task.id;
@@ -86,7 +86,7 @@ describe("the thread the chrome is describing", () => {
     const thread = viewedThread();
 
     expect(thread.agent).toBeNull();
-    expect(thread.broker.model).toBe("claude-opus-5");
+    expect(thread.broker.model).toBe("claude-opus-5-5");
     expect(thread.context).toBe(appStore.getState().usage.mainLastContext);
     expect(thread.queued).toHaveLength(1);
   });
@@ -96,7 +96,7 @@ describe("the thread the chrome is describing", () => {
     const thread = viewedThread();
 
     expect(thread.broker.provider).toBe("codex");
-    expect(thread.broker.model).toBe("gpt-5.6-sol");
+    expect(thread.broker.model).toBe("gpt-5.6-terra");
     expect(thread.broker.effort).toBe("low");
     // Permission and orchestration govern the session, not the thread inside it.
     expect(thread.broker.permissionMode).toBe("yolo");
@@ -120,6 +120,32 @@ describe("the thread the chrome is describing", () => {
     expect(thread.context.outputTokens).toBe(90);
     expect(thread.context.cacheCreationInputTokens).toBe(0);
     expect(thread.context.cacheReadInputTokens).toBe(0);
+  });
+
+  it("keeps a fork context snapshot out of the parent's context and billing totals", () => {
+    const parent = {
+      inputTokens: 190_000,
+      outputTokens: 10_000,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0,
+      contextTokens: 50_000,
+    };
+    dispatch({ type: "usage/setMainLastContext", value: parent });
+    const mainTotals = appStore.getState().usage.mainTotals;
+    const id = openAgent();
+    setUsageSnapshot(id, { inputTokens: 290_000, outputTokens: 10_000, contextTokens: 75_000 });
+    expect(viewedThread().context.contextTokens).toBe(75_000);
+    expect(viewedThread().context.inputTokens).toBe(290_000);
+    setUsageSnapshot(id, { inputTokens: 290_000, outputTokens: 10_000, contextTokens: null });
+    setUsageSnapshot(id, { inputTokens: 290_000, outputTokens: 10_000 });
+    expect(viewedThread().context.contextTokens).toBeNull();
+    expect(appStore.getState().usage.mainLastContext).toEqual(parent);
+    setUsageSnapshot(id, { inputTokens: 290_000, outputTokens: 10_000, contextTokens: 0 });
+    expect(viewedThread().context.contextTokens).toBe(0);
+    expect(appStore.getState().usage.mainLastContext).toEqual(parent);
+    expect(appStore.getState().usage.mainTotals).toBe(mainTotals);
+    dispatch({ type: "view/setViewingAgent", id: null });
+    expect(viewedThread().context.contextTokens).toBe(50_000);
   });
 
   it("follows the open agent's own run state and start time", () => {
@@ -180,7 +206,7 @@ describe("the thread the chrome is describing", () => {
 
     const thread = viewedThread();
     expect(thread.agent).toBeNull();
-    expect(thread.broker.model).toBe("claude-opus-5");
+    expect(thread.broker.model).toBe("claude-opus-5-5");
     expect(thread.queued).toHaveLength(1);
     expect(thread.tasks).toHaveLength(1);
   });

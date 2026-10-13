@@ -57,10 +57,13 @@ describe("resolveToolResultImagesForNonVision", () => {
     ).toBe(false);
   });
 
-  it("returns blocks unchanged if the provider supports native vision", async () => {
+  it.each([
+    "anthropic",
+    "anthropic-cloud",
+  ] as const)("returns native image blocks unchanged for %s", async (provider) => {
     const ctx: RequestContext = {
-      provider: "anthropic",
-      model: "claude-3-opus-20240229",
+      provider,
+      model: "claude-opus-5-5",
       effort: null,
       permissionMode: "default",
       sessionId: "test-session",
@@ -85,8 +88,8 @@ describe("resolveToolResultImagesForNonVision", () => {
 
   it("translates or redacts image blocks if the provider does not support native vision", async () => {
     const ctx: RequestContext = {
-      provider: "deepseek",
-      model: "deepseek-coder",
+      provider: "openai",
+      model: "text-only-fixture",
       effort: null,
       permissionMode: "default",
       sessionId: "test-session",

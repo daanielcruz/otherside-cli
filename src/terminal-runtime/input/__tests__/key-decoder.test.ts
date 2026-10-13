@@ -32,6 +32,15 @@ describe("terminal input decoding", () => {
     ]);
   });
 
+  it("decodes a reported Shift+Return as a modified return", () => {
+    for (const sequence of ["\x1b[13;2u", "\x1b[27;2;13~"]) {
+      const [events] = decodeTerminalInput(FRESH_INPUT_DECODE_STATE, sequence);
+      expect(events).toEqual([
+        expect.objectContaining({ kind: "key", name: "return", shift: true, sequence }),
+      ]);
+    }
+  });
+
   it("retains split control input and drains a lone escape", () => {
     const [partialEvents, partialState] = decodeTerminalInput(FRESH_INPUT_DECODE_STATE, "\x1b[");
     expect(partialEvents).toEqual([]);

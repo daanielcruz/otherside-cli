@@ -12,7 +12,7 @@ import type { TranscriptEntry } from "@/engine/session/record/types.ts";
 import { userMayInvokeSkill } from "@/engine/skills/overrides.ts";
 import { get as getSkill } from "@/engine/skills/registry.ts";
 import { recordSkillUse } from "@/engine/skills/usage.ts";
-import { renderSkillBody } from "@/engine/tools/builtins/skill.ts";
+import { skillInstructions } from "@/engine/tools/builtins/skill.ts";
 import type { ForkEvent } from "@/kernel/std/types/events.ts";
 import type { BrokerHandle, RequestContext } from "@/kernel/std/types/request.ts";
 import type { MutableRef } from "@/kernel/std/types/state.ts";
@@ -99,7 +99,7 @@ export function createRunSkill(deps: RunSkillDeps): RunSkillFn {
     if (skill.source === "plugin")
       recordPluginUse(skill.name.slice(0, skill.name.lastIndexOf(":")));
     if (skill.context !== "fork") {
-      await submitInline(renderSkillBody(skill.body));
+      await submitInline(skillInstructions(skill, args));
       return;
     }
 
@@ -136,7 +136,7 @@ export function createRunSkill(deps: RunSkillDeps): RunSkillFn {
       abortSignal: skillAbort.signal,
     };
 
-    const body = renderSkillBody(skill.body);
+    const body = skillInstructions(skill, args);
 
     const skillPermissionResolver: PermissionResolver = (toolCall) =>
       resolvePermission(

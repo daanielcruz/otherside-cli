@@ -96,6 +96,7 @@ export interface ProviderConfig<A extends Api> {
   readonly composeForkSystem?: (input: ForkSystemInput) => ContentBlock[];
   readonly composeForkUserBlock?: (prompt: string) => ContentBlock;
   readonly onCompactionSucceeded?: (ctx: RequestContext) => void;
+  readonly onToolTurnStopped?: (ctx: RequestContext) => Promise<void>;
   readonly streamEmitsKeepalive?: boolean;
   // Content-progress deadline override for providers whose healthy streams can stay event-silent longer than the default (they must carry their own transport-level stall protection).
   readonly contentIdleTimeoutMs?: number;
@@ -147,4 +148,5 @@ export interface Provider {
   composeMessages(harness: ComposedHarness, history: Message[]): Message[];
   applyTrailingCacheControl?(messages: Message[]): Message[];
   onCompactionSucceeded?(ctx: RequestContext): void;
+  onToolTurnStopped?(ctx: RequestContext): Promise<void>;
 }

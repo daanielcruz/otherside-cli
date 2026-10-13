@@ -5,7 +5,6 @@ import type {
   StringViewContext,
 } from "@/terminal-runtime/string-view/component.js";
 import type { StringFocusTarget } from "@/terminal-runtime/string-view/focus.js";
-import { noteDismissal } from "@/ui/panels/dismissal-notice.ts";
 import { createStringViewPanel, isPortedOverlay } from "@/ui/panels/string-view-registry.ts";
 import type { OverlayOpenProps, StringViewPanel } from "@/ui/panels/string-view-types.ts";
 
@@ -57,13 +56,7 @@ export class StringViewOverlayHost implements StringComponent, StringFocusTarget
     const entry = stack[stack.length - 1];
     const top = entry !== undefined && isPortedOverlay(entry.name) ? entry.name : undefined;
     if (top === this.active?.name) return;
-    // Only a panel that LEFT the stack was dismissed. One still on it was pushed
-    // under a deeper panel, and the reader will come back to it.
-    const closing = this.active?.name;
-    const dismissed =
-      closing !== undefined && !stack.some((open) => open.name === closing) ? closing : undefined;
     this.teardown();
-    if (dismissed !== undefined) noteDismissal(dismissed);
     if (top !== undefined && this.ctx !== undefined) {
       const props = entry?.props as OverlayOpenProps<typeof top> | undefined;
       const panel = createStringViewPanel(top, () => overlayStack.closeTop(), props);

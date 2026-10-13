@@ -71,6 +71,7 @@ function contextFor(task: BackgroundTask): ContextUsageSnapshot {
     outputTokens: task.outputTokens,
     cacheCreationInputTokens: 0,
     cacheReadInputTokens: 0,
+    ...(task.contextTokens !== undefined ? { contextTokens: task.contextTokens } : {}),
   };
 }
 

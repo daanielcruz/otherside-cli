@@ -16,7 +16,7 @@ describe("the effort badge", () => {
       effortStatuslineSuffix({ provider: "antigravity", model: "gemini-3.1-pro", effort: "high" }),
     ).toBe("High");
     expect(
-      effortStatuslineSuffix({ provider: "anthropic", model: "claude-opus-5", effort: "xhigh" }),
+      effortStatuslineSuffix({ provider: "anthropic", model: "claude-opus-5-5", effort: "xhigh" }),
     ).toBe("xHigh");
   });
 

@@ -13,6 +13,7 @@ import { setRuntimeKind } from "@/kernel/std/proc/runtime-mode.ts";
 import type { ToolCall } from "@/kernel/std/types/message.ts";
 import { recordHeadlessDenial, takeHeadlessDenials } from "../headless-denials.ts";
 import { type PermissionResolutionDeps, resolvePermission } from "../permission-resolution.ts";
+import { USER_REJECTED_TOOL_RESULT } from "../rejection-text.ts";
 
 describe("headless denials collector", () => {
   it("accumulates per session and drains once", () => {
@@ -71,15 +72,6 @@ describe("resolvePermission headless auto-deny", () => {
     expect(denials[0]?.tool_input).toMatchObject({
       command: "rm -rf /tmp/otherside-headless-test/x",
     });
-  });
-
-  it("allows EnterPlanMode silently in print mode", async () => {
-    setRuntimeKind("print");
-    const call: ToolCall = { name: "EnterPlanMode", id: "call-enter-plan", input: {} };
-    const decision = await resolvePermission(makeDeps(), call);
-
-    expect(decision).toBe("allow");
-    expect(takeHeadlessDenials("sess-headless")).toEqual([]);
   });
 
   it("denies AskUserQuestion before its dialog can hang in print mode, even in yolo", async () => {
@@ -163,7 +155,11 @@ describe("resolvePermission headless auto-deny", () => {
       const pending = await waitForPermission();
       expect(pending.toolName).toBe("AskUserQuestion");
       answerPermission(pending.id, { decision: "deny", updates: [] });
-      expect(await decision).toBe("deny");
+      expect(await decision).toEqual({
+        kind: "deny",
+        message: USER_REJECTED_TOOL_RESULT,
+        stopsTurn: true,
+      });
     } finally {
       if (previousConfigDir === undefined) delete process.env.OTHERSIDE_CONFIG_DIR;
       else process.env.OTHERSIDE_CONFIG_DIR = previousConfigDir;

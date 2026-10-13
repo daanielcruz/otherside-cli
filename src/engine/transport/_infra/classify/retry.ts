@@ -14,8 +14,15 @@ import {
   getRetryDelay,
 } from "@/engine/providers/_shared/retry.ts";
 import { markProviderCooldown } from "@/engine/session/usage/provider-health.ts";
-import { classifyProviderError } from "@/engine/transport/_infra/classify/classify.ts";
+import {
+  classifyProviderError,
+  type RetryDecisionDetailed,
+} from "@/engine/transport/_infra/classify/classify.ts";
 import { classifyError } from "@/engine/transport/_infra/classify/error-classifier.ts";
+import {
+  assessRequestBody,
+  requestTooLargeMessage,
+} from "@/engine/transport/_infra/classify/request-size.ts";
 import { StreamSilenceError } from "@/kernel/std/stream/idle-timeout.ts";
 import { ProviderHttpError } from "@/kernel/std/types/error-meta.ts";
 import type { ProviderEvent } from "@/kernel/std/types/events.ts";
@@ -271,15 +278,34 @@ export async function* streamWithRetry(
           quotaResetEpochMs?: number | null;
         };
         const errMsg = err instanceof Error ? err.message : String(err);
-        const surfaceMessage = detail.userMessage ?? detail.message ?? errMsg;
         const detailed = classifyProviderError(err, {
           attempt: attempts + 1,
           provider: ctx.provider,
           model: ctx.model,
         });
+        // A size refusal is explained by the body that was refused: how big it was, how
+        // much of it media, and so whether compacting can bring it under.
+        const sizeGuidance =
+          detailed.kind === "fail" && detailed.reason === "request_too_large"
+            ? requestTooLargeMessage(assessRequestBody(body, ctx.provider))
+            : undefined;
+        const guidance = sizeGuidance ?? detail.userMessage;
+        const surfaceMessage = guidance ?? detail.message ?? errMsg;
+        // The provider decided this attempt is final; its guidance (what to do next) outranks
+        // a generic classification of the raw error, even one that would have retried.
+        const decided: RetryDecisionDetailed =
+          guidance === undefined
+            ? detailed
+            : {
+                kind: "fail",
+                reason: sizeGuidance === undefined ? effectiveDecision.reason : detailed.reason,
+                userMessage: guidance,
+                ...(detailed.status !== undefined ? { status: detailed.status } : {}),
+                ...(detailed.message !== undefined ? { message: detailed.message } : {}),
+              };
         const meta = classifyError({
           err,
-          decision: detailed,
+          decision: decided,
           provider: ctx.provider,
           model: ctx.model,
           attempt: attempts + 1,

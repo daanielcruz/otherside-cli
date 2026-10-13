@@ -12,7 +12,7 @@ const SESSION_ID = "session-under-test";
 function assistantLine(
   ts: string,
   tokens: { input: number; output: number; cacheRead?: number },
-  route: { provider: string; model: string } = { provider: "anthropic", model: "claude-opus-5" },
+  route: { provider: string; model: string } = { provider: "anthropic", model: "claude-opus-5-5" },
 ): AssistantMessageRecord {
   return {
     type: "assistant_message",
@@ -87,7 +87,7 @@ describe("discarded history aggregates", () => {
     const { records } = aggregateDiscardedHistory(region, SESSION_ID);
     const snapshot = latestContextUsageSnapshotFromSessionRecords(records, {
       provider: "anthropic",
-      model: "claude-opus-5",
+      model: "claude-opus-5-5",
     });
     expect(snapshot).not.toBeNull();
     const context =
@@ -105,7 +105,7 @@ describe("discarded history aggregates", () => {
     const { records } = aggregateDiscardedHistory(region, SESSION_ID);
     const snapshot = latestContextUsageSnapshotFromSessionRecords(records, {
       provider: "anthropic",
-      model: "claude-opus-5",
+      model: "claude-opus-5-5",
     });
     expect((snapshot?.inputTokens ?? 0) + (snapshot?.cacheReadInputTokens ?? 0)).toBe(920);
   });
@@ -118,7 +118,7 @@ describe("discarded history aggregates", () => {
         { input: 7, output: 3 },
         {
           provider: "codex",
-          model: "gpt-5.6-sol",
+          model: "gpt-5.6-terra",
         },
       ),
       assistantLine("2026-07-31T00:00:03.000Z", { input: 10, output: 5 }),

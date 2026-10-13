@@ -1,4 +1,5 @@
 import { compactionSummaryRefFromUnknown } from "@/engine/session/compact/summary-spill.ts";
+import { nullableNonNegativeFiniteOrUndefined } from "@/kernel/std/value-guards.ts";
 import {
   compactionSummaryFromEnvelope,
   nonNegativeInt,
@@ -270,7 +271,12 @@ function upstreamUsageToStamp(usage: unknown): { usage: AssistantRequestUsage } 
     stamp.output_tokens > 0 ||
     stamp.cache_creation_input_tokens > 0 ||
     stamp.cache_read_input_tokens > 0;
-  return hasTokens ? { usage: stamp } : undefined;
+  const contextTokens = nullableNonNegativeFiniteOrUndefined(raw.contextTokens);
+  if (contextTokens !== undefined) {
+    stamp.contextTokens = contextTokens;
+    if (!hasTokens) stamp.request_count = 0;
+  }
+  return hasTokens || contextTokens !== undefined ? { usage: stamp } : undefined;
 }
 
 function isApiErrorBlob(text: string): boolean {

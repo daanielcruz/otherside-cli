@@ -436,6 +436,9 @@ export const emitQueue = {
       consumedIds: Array.from(plan.consumedIds).filter((id) => !awaiterDelivered.has(id)),
       notificationTexts: projected.notificationTexts,
       ...(stopHookActive ? { stopHookActive: true } : {}),
+      ...(projected.scheduledFires !== undefined
+        ? { scheduledFires: projected.scheduledFires }
+        : {}),
     };
     fireNotificationHooksForDrain(plan.picked);
     for (const listener of drainListeners) {

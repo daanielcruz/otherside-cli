@@ -5,18 +5,20 @@ export type ProviderVisionKind = "vision" | "hybrid" | "none";
 
 export const PROVIDER_VISION: Record<ProviderId, ProviderVisionKind> = {
   anthropic: "vision",
+  "anthropic-cloud": "vision",
   antigravity: "vision",
   codex: "vision",
   kimi: "vision",
   glm: "vision",
   xai: "hybrid",
   minimax: "hybrid",
-  deepseek: "none",
+  deepseek: "vision",
   openai: "none",
 };
 
 const NATIVE_VISION_MODELS: Partial<Record<ProviderId, readonly string[]>> = {
   glm: ["glm-5.2"],
+  deepseek: ["deepseek-flash", "deepseek-v4-flash"],
 };
 
 const HYBRID_PARSER_MODELS: Partial<Record<ProviderId, string>> = {

@@ -39,7 +39,6 @@ export interface PanelViewState {
   readonly errorPanel: ErrorPanelState | null;
   readonly usageWarning: UsageWarning | null;
   readonly panelFocus: string | null;
-  readonly workflowDetailTargetId: string | null;
   readonly workflowDetailOpen: boolean;
   readonly bgPillFocused: boolean;
   readonly panelFocused: boolean;
@@ -87,7 +86,6 @@ export const initialViewSlice: ViewSlice = {
   contextWarningSuppressed: false,
   turnTipIndex: null,
   panelFocus: null,
-  workflowDetailTargetId: null,
   workflowDetailOpen: false,
   bgPillFocused: false,
   panelFocused: false,
@@ -189,10 +187,6 @@ export function viewReducer(prev: ViewSlice, action: AppAction): ViewSlice {
       return prev.turnTipIndex === action.index ? prev : { ...prev, turnTipIndex: action.index };
     case "view/setPanelFocus":
       return prev.panelFocus === action.focus ? prev : { ...prev, panelFocus: action.focus };
-    case "view/setWorkflowDetailTarget":
-      return prev.workflowDetailTargetId === action.id
-        ? prev
-        : { ...prev, workflowDetailTargetId: action.id };
     case "view/setWorkflowDetailOpen":
       return prev.workflowDetailOpen === action.open
         ? prev

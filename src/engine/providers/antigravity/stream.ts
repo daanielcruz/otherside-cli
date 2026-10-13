@@ -10,7 +10,7 @@ import {
   streamGenerateContentUrl,
 } from "@/engine/providers/antigravity/fingerprint.ts";
 import { resolveAntigravityModel } from "@/engine/providers/antigravity/models.ts";
-import { trajectoryStepCount, turnIds } from "@/engine/providers/antigravity/turn.ts";
+import { lastStepIndex, turnIds } from "@/engine/providers/antigravity/turn.ts";
 import { refreshAntigravityQuotaWarning } from "@/engine/providers/antigravity/usage.ts";
 import type { StreamFn } from "@/engine/transport/_infra/classify/types.ts";
 import {
@@ -72,7 +72,7 @@ export const antigravityStream: StreamFn = async function* antigravityStreamFn(
     requestId: buildRequestId({
       conversationId: ids.conversationId,
       trajectoryId: ids.trajectoryId,
-      turn: trajectoryStepCount(request) + 1,
+      turn: lastStepIndex(request) + 1,
     }),
     request,
     googleOneAi: config.antigravityGoogleOneAi !== false,

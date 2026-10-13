@@ -1,5 +1,6 @@
 export const PROVIDER_ID_VALUES = [
   "anthropic",
+  "anthropic-cloud",
   "antigravity",
   "codex",
   "deepseek",
@@ -14,6 +15,7 @@ export type ProviderId = (typeof PROVIDER_ID_VALUES)[number];
 
 export const PROVIDER_LABELS = {
   anthropic: "Anthropic",
+  "anthropic-cloud": "Anthropic Cloud",
   antigravity: "Antigravity",
   codex: "Codex",
   deepseek: "DeepSeek",

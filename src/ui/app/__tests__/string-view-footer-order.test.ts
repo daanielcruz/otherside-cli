@@ -9,10 +9,12 @@ import {
   startTask,
 } from "@/engine/background/tasks/background.ts";
 import { agentTranscriptPathForCwd } from "@/engine/session/paths.ts";
+import { askGroup, clear as clearQuestions } from "@/kernel/channels/ask.ts";
+import { ask, clear as clearPermissions } from "@/kernel/channels/permission.ts";
 import { appStore, dispatch } from "@/store/app-store/index.ts";
 import { transcriptActions } from "@/store/transcript/index.ts";
 import type { KeyEventData } from "@/terminal-runtime/input/key-decoder.js";
-import { StringContainer } from "@/terminal-runtime/string-view/component.js";
+import { type StringComponent, StringContainer } from "@/terminal-runtime/string-view/component.js";
 import { stripAnsi } from "@/terminal-runtime/text/presentation-sequences.js";
 import { StringViewAgentDocument } from "@/ui/app/string-view-agent-document.ts";
 import { buildStringViewRoot, StringViewRoot } from "@/ui/app/string-view-root.ts";
@@ -60,6 +62,57 @@ describe("string-view footer order", () => {
     expect(promptRule).toBeGreaterThanOrEqual(0);
     expect(status).toBeGreaterThan(promptRule);
     expect(agents).toBeGreaterThan(status);
+  });
+});
+
+describe("decision prompts over the footer", () => {
+  function mountedRoot(): StringComponent {
+    const root = buildStringViewRoot();
+    root.mount?.({
+      requestRender: () => {},
+      pushFocus: () => {},
+      popFocus: () => {},
+      terminalRows: () => 40,
+    });
+    return root;
+  }
+
+  function screen(root: StringComponent): string[] {
+    return root.render(WIDTH).map((row) => stripAnsi(row).trimEnd());
+  }
+
+  test("a permission request stows the prompt bar and status rows until it closes", () => {
+    const root = mountedRoot();
+    expect(indexContaining(screen(root), "available")).toBeGreaterThanOrEqual(0);
+
+    void ask({ toolName: "Bash", argsPreview: "ls", rule: null, input: { command: "ls" } });
+    const open = screen(root);
+    expect(indexContaining(open, "Esc to cancel")).toBeGreaterThanOrEqual(0);
+    expect(indexContaining(open, "available")).toBe(-1);
+
+    clearPermissions();
+    expect(indexContaining(screen(root), "available")).toBeGreaterThanOrEqual(0);
+    root.unmount?.();
+  });
+
+  test("a question stows them the same way", () => {
+    const root = mountedRoot();
+
+    void askGroup([
+      {
+        question: "Pick one?",
+        header: "Pick",
+        options: [{ label: "Alpha", description: "" }],
+        multiSelect: false,
+      },
+    ]);
+    const open = screen(root);
+    expect(indexContaining(open, "Pick one?")).toBeGreaterThanOrEqual(0);
+    expect(indexContaining(open, "available")).toBe(-1);
+
+    clearQuestions();
+    expect(indexContaining(screen(root), "available")).toBeGreaterThanOrEqual(0);
+    root.unmount?.();
   });
 });
 

@@ -1,4 +1,6 @@
-import { relative } from "node:path";
+import { readFileSync } from "node:fs";
+import { basename, relative } from "node:path";
+import { createPatch } from "diff";
 import { parseWorkflowScript } from "@/engine/background/workflows/runtime/parser/meta.ts";
 import type { WorkflowPhaseSpec } from "@/engine/background/workflows/runtime/parser/types.ts";
 import { destructiveCommandWarning } from "@/engine/tools/index.ts";
@@ -12,12 +14,18 @@ import { isMcpToolName } from "@/kernel/mcp/index.ts";
 import { truncateEllipsis } from "@/kernel/std/text/text.ts";
 import { wrapAnsi, wrapProse } from "@/terminal-runtime/text/ansi-wrap.js";
 import { renderTextWithStyles } from "@/terminal-runtime/text/color-codes.js";
+import type { LabelSegment } from "@/ui/panels/permission/options.ts";
 import { Color, Glyph } from "@/ui/theme/theme.ts";
+import { displayNameFor } from "@/ui/transcript/tool-render/args.ts";
+import { renderDiffAnsiLines } from "@/ui/transcript/tool-render/diff.ts";
+import { expandTabsForRender } from "@/ui/transcript/tool-render/format.ts";
 
 /** Phases shown before the prompt; a deeper script reports the count it withholds. */
 const WORKFLOW_PHASE_PREVIEW = 6;
 const WORKFLOW_DETAIL_CLIP = 72;
 const WORKFLOW_ARGS_CLIP = 120;
+/** Rows of a file preview shown before the question; a longer one reports the rest. */
+const FILE_PREVIEW_ROWS = 20;
 
 /**
  * What a workflow costs, stated before it is approved. A run spawns subagents in
@@ -33,14 +41,63 @@ interface McpDisplay {
   description: string;
 }
 
-interface ToolPresentation {
+/** Columns a command, request or other call sits in from the prompt's own rows. */
+const CALL_INSET = 2;
+/** Columns a file read sits in: one closer to the rows, since it names a path, not a command. */
+const READ_INSET = 1;
+
+export interface ToolPresentation {
   title: string;
-  question: string;
+  /** Asked right above the choices; a file the call touches is set bold. */
+  question: readonly LabelSegment[];
+  /** The call itself: a command, a request, a file's path. */
   body: string[];
+  /** Columns the body sits in from the prompt's own rows. */
+  bodyInset: number;
+  /**
+   * A file's new lines or its diff. The body then hugs the title, and the preview
+   * runs edge to edge in a dashed frame directly over the question.
+   */
+  preview: string[] | null;
+  /** Why this call needs approval, stated between the call and the question. */
+  reason: string | null;
   warning: string | null;
 }
 
 export function toolPresentation(pending: PendingPermission, width: number): ToolPresentation {
+  return { ...callPresentation(pending, width), reason: pending.reason ?? null };
+}
+
+/**
+ * A fetch is answered by its choices alone: its "No" already says how to go on, so
+ * no note rides on an answer and no key hints sit under the choices.
+ */
+export function answeredByChoicesAlone(pending: PendingPermission): boolean {
+  return pending.toolName === "WebFetch";
+}
+
+function plainQuestion(text: string): readonly LabelSegment[] {
+  return [{ text }];
+}
+
+type CallPresentation = Omit<ToolPresentation, "reason">;
+
+function callShape(
+  title: string,
+  body: string[],
+  options: { question?: string; bodyInset?: number; warning?: string | null } = {},
+): CallPresentation {
+  return {
+    title,
+    question: plainQuestion(options.question ?? "Do you want to proceed?"),
+    body,
+    bodyInset: options.bodyInset ?? CALL_INSET,
+    preview: null,
+    warning: options.warning ?? null,
+  };
+}
+
+function callPresentation(pending: PendingPermission, width: number): CallPresentation {
   const input = inputRecord(pending.input);
   const signature = toolSignature(pending);
   const mcp = mcpDisplayFor(pending);
@@ -53,7 +110,7 @@ export function toolPresentation(pending: PendingPermission, width: number): Too
     if (mcp.description.length > 0) {
       body.push(...styledProseLines(clipLines(mcp.description, 3), width, Color.muted));
     }
-    return { title: "Tool use", question: "Do you want to proceed?", body, warning: null };
+    return callShape("Tool use", body);
   }
 
   switch (pending.toolName) {
@@ -64,79 +121,230 @@ export function toolPresentation(pending: PendingPermission, width: number): Too
       if (description.length > 0) {
         body.push(...styledProseLines(description, width, Color.muted));
       }
-      return {
-        title: "Bash command",
-        question: "Do you want to proceed?",
-        body,
+      return callShape("Bash command", body, {
         warning: command.length > 0 ? destructiveCommandWarning(command) : null,
-      };
+      });
     }
     case "Edit":
-    case "MultiEdit": {
-      const file = displayPath(inputString(input, "file_path"));
-      return {
-        title: "Edit file",
-        question:
-          file.length > 0 ? `Do you want to make this edit to ${file}?` : "Do you want to proceed?",
-        body: styledRawLines(file.length > 0 ? file : signature, width, Color.text),
-        warning: null,
-      };
-    }
+    case "MultiEdit":
     case "Write": {
-      const file = displayPath(inputString(input, "file_path"));
+      const filePath = inputString(input, "file_path");
+      if (filePath.length === 0) break;
+      const preview = filePreview(pending.toolName, input, filePath);
       return {
-        title: "Write file",
-        question: file.length > 0 ? `Do you want to write ${file}?` : "Do you want to proceed?",
-        body: styledRawLines(file.length > 0 ? file : signature, width, Color.text),
+        title: preview.title,
+        question: [
+          { text: `Do you want to ${preview.action} ` },
+          { text: basename(filePath), bold: true },
+          { text: "?" },
+        ],
+        body: styledRawLines(displayPath(filePath), width, Color.muted),
+        bodyInset: 0,
+        preview: previewRows(preview, filePath, width),
         warning: null,
       };
     }
     case "Read": {
       const file = displayPath(inputString(input, "file_path"));
-      return {
-        title: "Read file",
-        question: "Do you want to proceed?",
-        body: styledRawLines(file.length > 0 ? file : signature, width, Color.text),
-        warning: null,
-      };
+      return callShape(
+        "Read file",
+        styledRawLines(file.length > 0 ? `Read(${file})` : signature, width, Color.text),
+        { bodyInset: READ_INSET },
+      );
     }
     case FORK_ROUTE_PERMISSION_TOOL: {
       const requested = `${inputString(input, "requested_provider")}/${inputString(input, "requested_model")}`;
       const session = `${inputString(input, "session_provider")}/${inputString(input, "session_model")}`;
       const costWarning = inputString(input, "warning");
-      return {
-        title: "Agent model route",
-        question: `Run this agent on ${requested} instead of ${session}?`,
-        body: styledRawLines(`agent: ${requested}\nsession: ${session}`, width, Color.text),
-        warning: costWarning.length > 0 ? costWarning : null,
-      };
+      return callShape(
+        "Agent model route",
+        styledRawLines(`agent: ${requested}\nsession: ${session}`, width, Color.text),
+        {
+          question: `Run this agent on ${requested} instead of ${session}?`,
+          warning: costWarning.length > 0 ? costWarning : null,
+        },
+      );
     }
     case "Workflow":
-      return {
-        title: "Dynamic workflow",
+      return callShape("Dynamic workflow", workflowBody(input, signature, width), {
         question: "Do you want to run it?",
-        body: workflowBody(input, signature, width),
         warning: WORKFLOW_USAGE_WARNING,
-      };
+      });
     case "WebFetch": {
       const url = inputString(input, "url");
       const prompt = inputString(input, "prompt");
-      const body = styledRawLines(url.length > 0 ? url : signature, width, Color.text);
-      if (prompt.length > 0) body.push(...styledProseLines(prompt, width, Color.muted));
-      return {
-        title: "Fetch",
-        question: "Do you want to allow Otherside to fetch this content?",
-        body,
-        warning: null,
-      };
+      const request = [
+        `url: ${normalizedUrl(url)}`,
+        ...(prompt.length > 0 ? [`prompt: ${prompt}`] : []),
+      ];
+      return callShape(
+        "Fetch",
+        [
+          ...styledRawLines(request.join("\n"), width, Color.text),
+          ...styledProseLines(
+            `Otherside wants to fetch content from ${hostOf(url)}`,
+            width,
+            Color.muted,
+          ),
+        ],
+        { question: "Do you want to allow Otherside to fetch this content?" },
+      );
     }
-    default:
-      return {
-        title: "Tool use",
-        question: "Do you want to proceed?",
-        body: styledRawLines(signature, width, Color.text),
-        warning: null,
-      };
+    case "WebSearch": {
+      const query = inputString(input, "query");
+      const description = `Otherside wants to search the web for: ${query}`;
+      return callShape("Tool use", [
+        ...styledRawLines(
+          `${displayNameFor(pending.toolName, input)}("${query}")`,
+          width,
+          Color.text,
+        ),
+        ...wrapProse(description, Math.max(1, width - 2)).map(
+          (line) =>
+            `${renderTextWithStyles(Glyph.boxPipe, { dim: true })} ${renderTextWithStyles(line, { color: Color.muted })}`,
+        ),
+      ]);
+    }
+  }
+  return callShape("Tool use", styledRawLines(signature, width, Color.text));
+}
+
+/** What an edit will do to its file, read once per call at the moment it is asked. */
+type FilePreview =
+  | { title: "Create file"; action: "create"; content: string }
+  | {
+      title: "Overwrite file" | "Edit file";
+      action: "overwrite" | "make this edit to";
+      patch: string;
+    };
+
+const filePreviews = new WeakMap<object, FilePreview>();
+
+function filePreview(
+  toolName: string,
+  input: Record<string, unknown>,
+  filePath: string,
+): FilePreview {
+  const cached = filePreviews.get(input);
+  if (cached !== undefined) return cached;
+  const preview = computeFilePreview(toolName, input, filePath);
+  filePreviews.set(input, preview);
+  return preview;
+}
+
+function computeFilePreview(
+  toolName: string,
+  input: Record<string, unknown>,
+  filePath: string,
+): FilePreview {
+  const name = basename(filePath);
+  const prior = fileContent(filePath);
+  if (toolName === "Write") {
+    const content = inputString(input, "content");
+    if (prior === null) return { title: "Create file", action: "create", content };
+    return {
+      title: "Overwrite file",
+      action: "overwrite",
+      patch: createPatch(name, prior, content, "", "", { context: 3 }),
+    };
+  }
+  const edits = editsOf(input);
+  const edited = prior === null ? null : applyEdits(prior, edits);
+  // An edit whose text is not in the file yet still shows the change it asks for.
+  const patch =
+    prior !== null && edited !== null
+      ? createPatch(name, prior, edited, "", "", { context: 3 })
+      : createPatch(
+          name,
+          edits.map((edit) => edit.oldString).join("\n"),
+          edits.map((edit) => edit.newString).join("\n"),
+          "",
+          "",
+          { context: 3 },
+        );
+  return { title: "Edit file", action: "make this edit to", patch };
+}
+
+interface TextEdit {
+  oldString: string;
+  newString: string;
+  replaceAll: boolean;
+}
+
+function editsOf(input: Record<string, unknown>): TextEdit[] {
+  const entries = Array.isArray(input.edits) ? input.edits : [input];
+  return entries.map((entry) => {
+    const edit = inputRecord(entry);
+    return {
+      oldString: inputString(edit, "old_string"),
+      newString: inputString(edit, "new_string"),
+      replaceAll: edit.replace_all === true,
+    };
+  });
+}
+
+function applyEdits(content: string, edits: readonly TextEdit[]): string | null {
+  let result = content;
+  for (const edit of edits) {
+    if (edit.oldString.length === 0 || !result.includes(edit.oldString)) return null;
+    result = edit.replaceAll
+      ? result.split(edit.oldString).join(edit.newString)
+      : result.replace(edit.oldString, () => edit.newString);
+  }
+  return result;
+}
+
+function fileContent(filePath: string): string | null {
+  try {
+    return readFileSync(filePath, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+function previewRows(preview: FilePreview, filePath: string, width: number): string[] {
+  const rows =
+    "content" in preview
+      ? numberedRows(preview.content, width)
+      : (renderDiffAnsiLines(preview.patch, width, filePath)?.bodyLines ?? []);
+  if (rows.length <= FILE_PREVIEW_ROWS) return rows;
+  const withheld = rows.length - FILE_PREVIEW_ROWS;
+  return [
+    ...rows.slice(0, FILE_PREVIEW_ROWS),
+    renderTextWithStyles(`… +${withheld} line${withheld === 1 ? "" : "s"}`, { color: Color.muted }),
+  ];
+}
+
+/** A new file's lines under dim line numbers, each cut to one row. */
+function numberedRows(content: string, width: number): string[] {
+  const lines = content.split("\n");
+  if (lines.length > 1 && lines.at(-1) === "") lines.pop();
+  const digits = String(lines.length).length;
+  return lines.map((line, index) => {
+    const number = ` ${String(index + 1).padStart(digits)} `;
+    const text = truncateEllipsis(expandTabsForRender(line), Math.max(1, width - number.length));
+    return (
+      renderTextWithStyles(number, { color: Color.text, dim: true }) +
+      renderTextWithStyles(text, { color: Color.text })
+    );
+  });
+}
+
+/** Rows set between two dashed rules, apart from the prompt's own text. */
+/** The address as it will be requested, e.g. with the path `/` a bare host implies. */
+function normalizedUrl(url: string): string {
+  try {
+    return new URL(url).href;
+  } catch {
+    return url;
+  }
+}
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return url;
   }
 }
 
@@ -258,12 +466,6 @@ function clipLines(text: string, maxLines: number): string {
   const lines = text.split("\n");
   if (lines.length <= maxLines) return text;
   return `${lines.slice(0, maxLines).join("\n")}…`;
-}
-
-export function extractPlan(input: unknown): string | null {
-  if (input === null || typeof input !== "object") return null;
-  const plan = (input as Record<string, unknown>).plan;
-  return typeof plan === "string" && plan.length > 0 ? plan : null;
 }
 
 export function styledRawLines(text: string, width: number, color: typeof Color.text): string[] {

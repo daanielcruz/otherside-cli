@@ -1,3 +1,5 @@
+import TaskUpdateSchema from "@/harness/tools/TaskUpdate/tool.json" with { type: "json" };
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -37,14 +39,13 @@ export function coerceTaskCreateInput(raw: unknown): unknown {
   applyAlias(obj, "title", "subject");
   applyAlias(obj, "name", "subject");
   applyAlias(obj, "content", "description");
-  applyAlias(obj, "active_form", "activeForm");
   if (obj.subject === undefined && typeof obj.description === "string") {
     obj.subject = obj.description;
   }
   if (obj.description === undefined && typeof obj.subject === "string") {
     obj.description = obj.subject;
   }
-  const allowed = new Set(["subject", "description", "activeForm", "metadata"]);
+  const allowed = new Set(["subject", "description", "metadata"]);
   const out: Record<string, unknown> = {};
   for (const key of allowed) {
     if (obj[key] !== undefined) out[key] = obj[key];
@@ -86,8 +87,11 @@ export function coerceTaskUpdateInput(raw: unknown): unknown {
   if (!isRecord(raw)) return raw;
   const obj = { ...raw };
   normalizeTaskId(obj, "taskId");
-  applyAlias(obj, "active_form", "activeForm");
-  return obj;
+  const out: Record<string, unknown> = {};
+  for (const key of Object.keys(TaskUpdateSchema.inputSchema.properties)) {
+    if (obj[key] !== undefined) out[key] = obj[key];
+  }
+  return out;
 }
 
 export function coerceTaskStopInput(raw: unknown): unknown {

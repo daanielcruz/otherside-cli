@@ -1,5 +1,9 @@
 import { recordCodexRawReplayDiagnostic } from "@/devtools/codex-raw-stream.ts";
 import { auxiliaryModelFor } from "@/engine/model/tier/tiers.ts";
+import {
+  KEPT_THINKING_HEADROOM_TOKENS,
+  requestNoThinking,
+} from "@/engine/providers/_shared/thinking-off.ts";
 import * as providers from "@/engine/providers/registry.ts";
 import { sanitizeMessages } from "@/engine/translator/index.ts";
 import { streamWithRetry } from "@/engine/transport/_infra/classify/retry.ts";
@@ -101,11 +105,10 @@ export function clampSelectionRequest(body: unknown): unknown {
     return next;
   }
 
-  next.max_tokens =
-    typeof next.max_tokens === "number"
-      ? Math.min(next.max_tokens, SELECTION_MAX_TOKENS)
-      : SELECTION_MAX_TOKENS;
-  next.thinking = { type: "disabled" };
+  const cap = requestNoThinking(next)
+    ? SELECTION_MAX_TOKENS
+    : SELECTION_MAX_TOKENS + KEPT_THINKING_HEADROOM_TOKENS;
+  next.max_tokens = typeof next.max_tokens === "number" ? Math.min(next.max_tokens, cap) : cap;
   next.tools = [];
   next.output_config = SELECTION_OUTPUT_CONFIG;
   return next;

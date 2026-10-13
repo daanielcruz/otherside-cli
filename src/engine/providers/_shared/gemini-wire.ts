@@ -3,6 +3,7 @@ import {
   sameAccountFingerprint,
 } from "@/engine/providers/_shared/account-identity.ts";
 import { isGeminiFamily } from "@/engine/providers/_shared/families.ts";
+import { isReasoningReplayRejected } from "@/engine/providers/_shared/reasoning-replay-state.ts";
 import { streamErrorToHttpError } from "@/engine/providers/_shared/retry.ts";
 import { thinkingProvenance } from "@/engine/providers/_shared/thinking-provenance.ts";
 import { readRawToolDecl } from "@/engine/providers/_shared/tool-decl.ts";
@@ -166,34 +167,57 @@ function geminiToolResponsePart(
   };
 }
 
-function appendPdfParts(
-  target: GeminiPart[],
+// The PDFs and images a tool result carries, as inline data parts.
+function toolResultMediaParts(
   result: Extract<ContentBlock, { type: "tool_result" }>,
   supportsPdf: boolean,
-): void {
-  if (!supportsPdf || !Array.isArray(result.content)) return;
-  const parts = result.content
-    .filter((part): part is Extract<typeof part, { type: "pdf" }> => part.type === "pdf")
-    .map((part) => ({
-      inlineData: { mimeType: "application/pdf", data: part.source.data },
-    }));
-  target.push(...parts);
-}
-
-function appendImageParts(
-  target: GeminiPart[],
-  result: Extract<ContentBlock, { type: "tool_result" }>,
-): void {
-  if (!Array.isArray(result.content)) return;
-  const parts = result.content
+): GeminiPart[] {
+  if (!Array.isArray(result.content)) return [];
+  const pdfs = supportsPdf
+    ? result.content
+        .filter((part): part is Extract<typeof part, { type: "pdf" }> => part.type === "pdf")
+        .map((part) => ({ inlineData: { mimeType: "application/pdf", data: part.source.data } }))
+    : [];
+  const images = result.content
     .filter((part): part is Extract<typeof part, { type: "image" }> => part.type === "image")
     .map((part) => ({ inlineData: { mimeType: part.source.media_type, data: part.source.data } }));
-  target.push(...parts);
+  return [...pdfs, ...images];
 }
 
-function appendToolResponse(contents: GeminiContent[], response: GeminiPart): GeminiContent {
+/**
+ * Adds a tool result to the history. Results of one turn share a content; on a
+ * model-authored layout they ride in a `model` content with their media nested
+ * inside the response, otherwise in a `user` content with the media beside it.
+ */
+function appendToolResult(
+  contents: GeminiContent[],
+  result: Extract<ContentBlock, { type: "tool_result" }>,
+  toolNames: Map<string, string>,
+  framing: GeminiFraming | undefined,
+): void {
+  const supportsPdf = framing?.supportsPdf ?? false;
+  const response = geminiToolResponsePart(
+    result,
+    toolNames,
+    framing?.wrapToolOutput ?? false,
+    supportsPdf,
+  );
+  const media = toolResultMediaParts(result, supportsPdf);
+  if (framing?.toolResultsAsModel) {
+    if (media.length > 0) (response.functionResponse as Record<string, unknown>).parts = media;
+    appendToolResponse(contents, response, "model");
+    return;
+  }
+  appendToolResponse(contents, response, "user").parts.push(...media);
+}
+
+function appendToolResponse(
+  contents: GeminiContent[],
+  response: GeminiPart,
+  role: GeminiContent["role"],
+): GeminiContent {
   const last = contents[contents.length - 1];
-  if (last && last.role === "user") {
+  if (last && last.role === role) {
     const containsOnlyToolResponses =
       last.parts.length > 0 &&
       last.parts.every(
@@ -204,7 +228,7 @@ function appendToolResponse(contents: GeminiContent[], response: GeminiPart): Ge
       return last;
     }
   }
-  const content: GeminiContent = { role: "user", parts: [response] };
+  const content: GeminiContent = { role, parts: [response] };
   contents.push(content);
   return content;
 }
@@ -222,8 +246,6 @@ export function geminiBuildContents(
   const contents: GeminiContent[] = [];
   let systemText = "";
   const toolNames = geminiCollectToolUseNames(messages);
-  const wrapOutput = framing?.wrapToolOutput ?? false;
-  const supportsPdf = framing?.supportsPdf ?? false;
 
   if (sessionContext && sessionContext.length > 0) {
     contents.push({ role: "user", parts: [{ text: sessionContext }] });
@@ -251,14 +273,7 @@ export function geminiBuildContents(
       const toolResults = msg.content.filter(
         (b): b is Extract<ContentBlock, { type: "tool_result" }> => b.type === "tool_result",
       );
-      for (const r of toolResults) {
-        const resultContent = appendToolResponse(
-          contents,
-          geminiToolResponsePart(r, toolNames, wrapOutput, supportsPdf),
-        );
-        appendPdfParts(resultContent.parts, r, supportsPdf);
-        appendImageParts(resultContent.parts, r);
-      }
+      for (const r of toolResults) appendToolResult(contents, r, toolNames, framing);
       if (parts.length > 0) {
         contents.push({ role: "user", parts });
       }
@@ -285,7 +300,12 @@ export function geminiBuildContents(
       // A stored thought signature only replays when produced by the same
       // credential that signs this request; cross-account replay is invalid.
       const sameAccount = sameAccountFingerprint(produced.producedAccount, framing?.currentAccount);
+      // Provenance cannot tell whether the context a signature was bound to
+      // still exists — compaction and turns from another route rewrite it.
+      // The API says so instead, and the guard carries that answer back here.
+      const suppressReplay = framing?.suppressReasoningReplay ?? false;
       const thinkingSignature =
+        !suppressReplay &&
         sameFamily &&
         sameModel &&
         sameAccount &&
@@ -299,6 +319,8 @@ export function geminiBuildContents(
         thinkingSignature ?? (targetUsedClaude ? undefined : SYNTHETIC_THOUGHT_SIGNATURE);
       if (
         framing?.replayThinking &&
+        !(framing.signFinalText ?? false) &&
+        !suppressReplay &&
         sameFamily &&
         thinkingBlock &&
         thinkingBlock.text.length > 0 &&
@@ -311,10 +333,17 @@ export function geminiBuildContents(
         });
       }
       const text = geminiBlockText(msg.content);
-      if (text.length > 0) parts.push({ text });
       const toolUses = msg.content.filter(
         (b): b is Extract<ContentBlock, { type: "tool_use" }> => b.type === "tool_use",
       );
+      // A reply with no tool call carries its signature on the final text.
+      const signsText =
+        (framing?.signFinalText ?? false) &&
+        toolUses.length === 0 &&
+        thinkingSignature !== undefined;
+      if (text.length > 0) {
+        parts.push(signsText ? { text, thoughtSignature: thinkingSignature } : { text });
+      }
       const attachSignature = sameFamily || (framing?.alwaysSignFunctionCall ?? false);
       let attachedThoughtSignature = false;
       for (const tu of toolUses) {
@@ -339,14 +368,7 @@ export function geminiBuildContents(
       const toolResults = msg.content.filter(
         (b): b is Extract<ContentBlock, { type: "tool_result" }> => b.type === "tool_result",
       );
-      for (const r of toolResults) {
-        const resultContent = appendToolResponse(
-          contents,
-          geminiToolResponsePart(r, toolNames, wrapOutput, supportsPdf),
-        );
-        appendPdfParts(resultContent.parts, r, supportsPdf);
-        appendImageParts(resultContent.parts, r);
-      }
+      for (const r of toolResults) appendToolResult(contents, r, toolNames, framing);
     }
   }
 
@@ -355,8 +377,17 @@ export function geminiBuildContents(
 
 export interface GeminiFraming {
   replayThinking?: boolean;
+  /** Tool results ride in `model` contents, with their media nested in the response. */
+  toolResultsAsModel?: boolean;
+  /**
+   * The thought text is not replayed; the signature rides on the first tool call,
+   * or on the final text when the reply called no tool.
+   */
+  signFinalText?: boolean;
   wrapToolOutput?: boolean;
   alwaysSignFunctionCall?: boolean;
+  /** Set once the API rejected a replayed signature: only the placeholder ships. */
+  suppressReasoningReplay?: boolean;
   currentModel?: string;
   currentAccount?: string;
   targetUsedClaude?: boolean;
@@ -382,6 +413,7 @@ export function buildGeminiRequest(input: GeminiRequestInput): GeminiContentsRes
     ...input.framing,
     currentModel: input.ctx.model,
     ...(currentAccount ? { currentAccount } : {}),
+    suppressReasoningReplay: isReasoningReplayRejected(input.ctx.sessionId, input.ctx.provider),
   };
   const { systemText, contents } = geminiBuildContents(
     input.messages,
@@ -469,6 +501,7 @@ async function* geminiResponseGenerator(
   let sawTool = false;
   let sawContent = false;
   let toolCounter = 0;
+  let lastUsageMetadata: Record<string, unknown> | undefined;
   const tools = new Map<string, GeminiToolBuf>();
 
   for await (const ev of parseSse(raw)) {
@@ -487,8 +520,12 @@ async function* geminiResponseGenerator(
       yield { kind: "message_start" };
     }
 
-    const usage = usageFromGemini(response.usageMetadata);
-    if (usage) yield usage;
+    if (typeof response.usageMetadata === "object" && response.usageMetadata !== null) {
+      lastUsageMetadata = {
+        ...lastUsageMetadata,
+        ...(response.usageMetadata as Record<string, unknown>),
+      };
+    }
 
     if (typeof payload.error === "object" && payload.error !== null) {
       const err = payload.error as Record<string, unknown>;
@@ -545,6 +582,8 @@ async function* geminiResponseGenerator(
       const fr = typeof cand.finishReason === "string" ? cand.finishReason : "";
       if (fr && fr !== "FINISH_REASON_UNSPECIFIED") {
         finished = true;
+        const usage = usageFromGemini(lastUsageMetadata);
+        if (usage) yield usage;
         yield { kind: "message_stop", stop_reason: mapGeminiFinishReason(fr, sawTool) };
         break;
       }
@@ -561,6 +600,8 @@ async function* geminiResponseGenerator(
         fallbackStatus: 500,
       });
     }
+    const usage = usageFromGemini(lastUsageMetadata);
+    if (usage) yield usage;
     yield { kind: "message_stop", stop_reason: sawTool ? "tool_calls" : "stop" };
   }
 }

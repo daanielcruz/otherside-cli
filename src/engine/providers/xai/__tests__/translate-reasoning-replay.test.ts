@@ -7,7 +7,7 @@ import type { RequestContext } from "@/kernel/std/types/request.ts";
 function ctx(over: Partial<RequestContext> = {}): RequestContext {
   return {
     provider: "xai",
-    model: "grok-4.5",
+    model: "grok-4.6",
     effort: "high",
     permissionMode: "default",
     sessionId: "replay-gate",
@@ -23,7 +23,7 @@ function conversationWith(assistant: Partial<Message>): Message[] {
     {
       role: "assistant",
       producedBy: "xai",
-      producedModel: "grok-4.5",
+      producedModel: "grok-4.6",
       ...(account ? { producedAccount: account } : {}),
       content: [
         { type: "thinking", text: "prior reasoning", signature: "ENC-BLOB" },

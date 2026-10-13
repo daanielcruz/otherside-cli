@@ -1,6 +1,7 @@
 import { computeListWindow } from "@/kernel/std/list-window.ts";
 import { clamp } from "@/kernel/std/math.ts";
 import { truncateEllipsis } from "@/kernel/std/text/text.ts";
+import { wrapProse } from "@/terminal-runtime/text/ansi-wrap.js";
 import { cellClip } from "@/terminal-runtime/text/cell-clip.ts";
 import { stringWidth } from "@/terminal-runtime/text/cell-width.js";
 import { renderTextWithStyles } from "@/terminal-runtime/text/color-codes.js";
@@ -100,10 +101,22 @@ export interface FooterPanelSpec extends PanelHeader {
   footerHints?: [string, string][] | undefined;
   footerPaddingX?: number | undefined;
   footerMarginTop?: number | undefined;
+  /** Absent, hints render italic; a prompt awaiting a decision sets them upright. */
+  footerItalic?: boolean | undefined;
   inputGuide?: string | undefined;
   accent?: TerminalColor | undefined;
   titleColor?: TerminalColor | undefined;
   flushTop?: boolean | undefined;
+  /**
+   * Columns every row under the rule sits in from the frame's left edge; the rule
+   * itself always spans the frame. Absent, rows take the shared two-column inset.
+   */
+  paddingX?: number | undefined;
+  /**
+   * Columns body rows sit in; absent, the same as `paddingX`. A body that runs some
+   * rows edge to edge sets it to 0 and places the others itself.
+   */
+  bodyPaddingX?: number | undefined;
   /**
    * Rows the panel may occupy. A body longer than the frame allows is clipped with an
    * overflow marker; without it, a long body pushes the frame off screen and the rows
@@ -141,6 +154,8 @@ export function renderFooterPanel(spec: FooterPanelSpec, width: number): string[
   const w = Math.max(1, Math.floor(width));
   const hue = spec.accent ?? Color.panelAccent;
   const headlineColor = spec.titleColor ?? hue;
+  const paddingX = spec.paddingX ?? CONTENT_PAD_X;
+  const indent = " ".repeat(paddingX);
   const lines: string[] = [];
 
   if (spec.command !== undefined) {
@@ -151,13 +166,13 @@ export function renderFooterPanel(spec: FooterPanelSpec, width: number): string[
   lines.push(renderTextWithStyles(Glyph.boxHLine.repeat(w), { color: hue }));
 
   if (spec.title !== undefined || panelHasTabs(spec)) {
-    lines.push(panelTitleRowLine(spec, headlineColor, CONTENT_INDENT));
+    lines.push(panelTitleRowLine(spec, headlineColor, indent));
   }
 
   if (spec.subtitle) {
     lines.push("");
     lines.push(
-      CONTENT_INDENT +
+      indent +
         renderTextWithStyles(spec.subtitle, { bold: true }) +
         (spec.subtitleSuffix === undefined
           ? ""
@@ -167,19 +182,20 @@ export function renderFooterPanel(spec: FooterPanelSpec, width: number): string[
 
   if (spec.search !== undefined) {
     for (let row = 0; row < (spec.searchMarginTop ?? 0); row++) lines.push("");
-    for (const line of searchBoxLines(spec.search, w)) lines.push(line);
+    for (const line of searchBoxLines(spec.search, w, paddingX)) lines.push(line);
     for (let row = 0; row < (spec.searchMarginBottom ?? 1); row++) lines.push("");
   }
 
   const contentMargin = contentMarginRows(spec);
   for (let row = 0; row < contentMargin; row++) lines.push("");
-  for (const line of fittedBody(spec, contentMargin, w)) lines.push(CONTENT_INDENT + line);
+  const bodyIndent = " ".repeat(spec.bodyPaddingX ?? paddingX);
+  for (const line of fittedBody(spec, contentMargin, w)) lines.push(bodyIndent + line);
 
   if (spec.inputGuide) {
     lines.push("");
     lines.push(
-      CONTENT_INDENT +
-        renderTextWithStyles(truncateEllipsis(spec.inputGuide, w - CONTENT_PAD_X * 2), {
+      indent +
+        renderTextWithStyles(truncateEllipsis(spec.inputGuide, w - paddingX * 2), {
           color: Color.muted,
           italic: true,
         }),
@@ -189,7 +205,7 @@ export function renderFooterPanel(spec: FooterPanelSpec, width: number): string[
   if (spec.footerHints && spec.footerHints.length > 0) {
     const marginTop = spec.footerMarginTop ?? 1;
     for (let row = 0; row < marginTop; row++) lines.push("");
-    lines.push(...footerHintsLines(spec.footerHints, spec.footerPaddingX ?? CONTENT_PAD_X, w));
+    lines.push(...footerHintsLines(spec, w));
   }
 
   lines.push("");
@@ -215,9 +231,7 @@ function footerPanelChromeRows(
   if (spec.footerHints && spec.footerHints.length > 0) {
     // Hints wrap rather than clip, so how many rows they take is a question about
     // the width. Counting them as one would spend rows the frame does not have.
-    rows +=
-      (spec.footerMarginTop ?? 1) +
-      footerHintsLines(spec.footerHints, spec.footerPaddingX ?? CONTENT_PAD_X, width).length;
+    rows += (spec.footerMarginTop ?? 1) + footerHintsLines(spec, width).length;
   }
   return rows;
 }
@@ -458,6 +472,41 @@ export function renderPanelPickerRowLines(spec: PanelPickerRowSpec, width: numbe
   return lines.slice(0, rows);
 }
 
+export interface PanelChoiceRowSpec {
+  /** What the reader types to pick the row; shown dim ahead of the label. */
+  key: string;
+  label: string;
+  /** Pre-styled label placed verbatim, for a label that carries a field of its own. */
+  styledLabel?: string | undefined;
+  selected: boolean;
+  /** Keep a plain label to one row, cut with an ellipsis, instead of wrapping it. */
+  singleLine?: boolean | undefined;
+}
+
+/**
+ * A numbered choice: the pointer marks the selected row in the accent, the number
+ * sits dim, and a long label wraps under its own first column, never under the number.
+ */
+export function renderPanelChoiceRowLines(spec: PanelChoiceRowSpec, width: number): string[] {
+  const pointer = spec.selected
+    ? renderTextWithStyles(Glyph.chevron, { color: Color.panelAccent })
+    : " ".repeat(stringWidth(Glyph.chevron));
+  const number = `${spec.key}.`;
+  const prefixWidth = stringWidth(Glyph.chevron) + stringWidth(number) + 1;
+  const labelWidth = Math.max(1, width - prefixWidth);
+  const label =
+    spec.styledLabel ??
+    renderTextWithStyles(spec.singleLine ? truncateEllipsis(spec.label, labelWidth) : spec.label, {
+      color: spec.selected ? Color.panelAccent : Color.text,
+    });
+  const [first = "", ...rest] = wrapProse(label, labelWidth);
+  const continuation = " ".repeat(prefixWidth);
+  return [
+    `${pointer}${renderTextWithStyles(number, { color: Color.muted })} ${first}`,
+    ...rest.map((line) => continuation + line),
+  ];
+}
+
 export function listOverflowLine(
   direction: "up" | "down",
   count: number | undefined,
@@ -475,6 +524,13 @@ export function panelDividerLine(width: number): string {
   return renderTextWithStyles(Glyph.boxHLine.repeat(Math.max(0, width)), { color: Color.border });
 }
 
+/** A dashed rule of `width` cells: the frame drawn around a preview inside a panel. */
+export function panelDashedRuleLine(width: number): string {
+  return renderTextWithStyles(Glyph.boxHLineDashed.repeat(Math.max(0, width)), {
+    color: Color.border,
+  });
+}
+
 /**
  * Bare horizontal rule of `width` cells, uncolored. Frames that compose a rule out
  * of segments — a boxed pane with its title inset into the top edge — take the run
@@ -488,12 +544,13 @@ export function panelRuleSegment(width: number): string {
  * Hints pack greedily into rows that fit the frame; a narrow terminal wraps the
  * overflow onto following rows instead of clipping the trailing hints away.
  */
-function footerHintsLines(hints: [string, string][], paddingX: number, width: number): string[] {
+function footerHintsLines(spec: FooterPanelSpec, width: number): string[] {
+  const paddingX = spec.footerPaddingX ?? spec.paddingX ?? CONTENT_PAD_X;
   const budget = Math.max(1, width - paddingX);
   const rows: string[][] = [];
   let current: string[] = [];
   let currentWidth = 0;
-  for (const [key, label] of hints) {
+  for (const [key, label] of spec.footerHints ?? []) {
     const text = `${key} ${label}`;
     const added = (current.length > 0 ? stringWidth(HINT_JOINER) : 0) + stringWidth(text);
     if (current.length > 0 && currentWidth + added > budget) {
@@ -505,28 +562,29 @@ function footerHintsLines(hints: [string, string][], paddingX: number, width: nu
     current.push(text);
   }
   if (current.length > 0) rows.push(current);
+  const italic = spec.footerItalic ?? true;
   return rows.map(
     (row) =>
       " ".repeat(paddingX) +
-      renderTextWithStyles(row.join(HINT_JOINER), { color: Color.muted, italic: true }),
+      renderTextWithStyles(row.join(HINT_JOINER), { color: Color.muted, italic }),
   );
 }
 
-function searchBoxLines(search: PanelSearch, width: number): string[] {
-  const outerWidth = Math.max(3, width - CONTENT_PAD_X * 2);
+function searchBoxLines(search: PanelSearch, width: number, paddingX: number): string[] {
+  const indent = " ".repeat(paddingX);
+  const outerWidth = Math.max(3, width - paddingX * 2);
   const innerWidth = Math.max(1, outerWidth - 4);
   const borderStyle = search.focused
     ? { color: Color.panelAccent }
     : { color: Color.border, dim: true };
   const rule = Glyph.boxHLine.repeat(outerWidth - 2);
   const top =
-    CONTENT_INDENT + renderTextWithStyles(Glyph.boxTopLeft + rule + Glyph.boxTopRight, borderStyle);
+    indent + renderTextWithStyles(Glyph.boxTopLeft + rule + Glyph.boxTopRight, borderStyle);
   const bottom =
-    CONTENT_INDENT +
-    renderTextWithStyles(Glyph.boxBottomLeft + rule + Glyph.boxBottomRight, borderStyle);
+    indent + renderTextWithStyles(Glyph.boxBottomLeft + rule + Glyph.boxBottomRight, borderStyle);
   const content = searchContent(search, innerWidth);
   const mid =
-    CONTENT_INDENT +
+    indent +
     renderTextWithStyles(Glyph.boxPipe, borderStyle) +
     " " +
     content +

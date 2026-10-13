@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import {
   autoRoutesNonVision,
   canSendNatively,
+  parserModelsFor,
   resolveParserModel,
   visionCapableProviderIds,
 } from "@/engine/model/facts/capabilities-runtime.ts";
@@ -22,9 +23,12 @@ describe("canSendNatively", () => {
     expect(canSendNatively("glm", "glm-5-turbo")).toBe(false);
   });
 
-  it("returns false for none-kind providers regardless of model", () => {
-    expect(canSendNatively("deepseek")).toBe(false);
+  it("follows the model on a provider where only some models read images", () => {
+    expect(canSendNatively("deepseek", "deepseek-flash")).toBe(true);
     expect(canSendNatively("deepseek", "deepseek-v4-pro")).toBe(false);
+  });
+
+  it("returns false for none-kind providers regardless of model", () => {
     expect(canSendNatively("openai")).toBe(false);
     expect(canSendNatively("openai", "anything")).toBe(false);
   });
@@ -49,9 +53,10 @@ describe("resolveParserModel", () => {
     expect(resolveParserModel("anthropic").length).toBeGreaterThan(0);
   });
 
-  it("falls back to the provider default model id for deepseek", () => {
-    const deepseekDefault = registry.get("deepseek").defaultModelId();
-    expect(resolveParserModel("deepseek")).toBe(deepseekDefault);
+  it("skips a default that cannot read images for the provider's vision model", () => {
+    expect(registry.get("deepseek").defaultModelId()).toBe("deepseek-v4-pro");
+    expect(resolveParserModel("deepseek")).toBe("deepseek-flash");
+    expect(parserModelsFor("deepseek")).toEqual(["deepseek-flash", "deepseek-v4-flash"]);
   });
 });
 
@@ -75,9 +80,9 @@ describe("visionCapableProviderIds", () => {
 
   it("does not contain providers that fail canSendNatively", () => {
     const ids = visionCapableProviderIds();
-    expect(ids).not.toContain("deepseek");
     expect(ids).not.toContain("openai");
     expect(ids).toContain("glm");
+    expect(ids).toContain("deepseek");
     expect(ids).not.toContain("minimax");
     expect(ids).not.toContain("xai");
   });

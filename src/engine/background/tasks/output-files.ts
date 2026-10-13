@@ -3,6 +3,7 @@ import { mkdir, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, normalize, sep } from "node:path";
 import { projectSlug } from "@/kernel/std/fs/paths.ts";
+import { interruptIsClaimed } from "@/kernel/std/proc/interrupt-claim.ts";
 
 const artifactState = {
   selectedFolder: null as string | null,
@@ -46,7 +47,9 @@ function installArtifactCleanup(): void {
   if (artifactState.cleanupReady) return;
   artifactState.cleanupReady = true;
   process.on("exit", removeSelectedArtifacts);
-  process.on("SIGINT", () => exitAfterCleanup(130));
+  process.on("SIGINT", () => {
+    if (!interruptIsClaimed()) exitAfterCleanup(130);
+  });
   process.on("SIGTERM", () => exitAfterCleanup(143));
 }
 

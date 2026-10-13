@@ -33,7 +33,7 @@ afterEach(() => {
 function ctx(over: Partial<RequestContext>): RequestContext {
   return {
     provider: "xai",
-    model: "grok-4.5",
+    model: "grok-4.6",
     sessionId: "s1",
     cwd: "/tmp",
     effort: null,
@@ -59,7 +59,7 @@ function htmlResponse(): Response {
 describe("WebFetch gate model selection", () => {
   it("uses the active provider's daimyo model for the gate", async () => {
     global.fetch = mock(async () => htmlResponse()) as unknown as typeof fetch;
-    const res = await WebFetch.run(call(), ctx({ provider: "xai", model: "grok-4.5" }));
+    const res = await WebFetch.run(call(), ctx({ provider: "xai", model: "grok-4.6" }));
     expect(res.is_error).toBeFalsy();
     expect(capturedModel).toBe("grok-composer-2.5-fast");
   });

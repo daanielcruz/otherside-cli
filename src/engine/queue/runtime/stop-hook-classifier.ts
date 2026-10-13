@@ -1,3 +1,5 @@
+import { requestNoThinking } from "@/engine/providers/_shared/thinking-off.ts";
+
 export const STOP_CONDITION_SYSTEM_PROMPT = `You are evaluating a stop-condition hook in Otherside CLI. Read the conversation transcript carefully, then judge whether the user-provided condition is satisfied.
 
 Your response must be a JSON object with one of these shapes:
@@ -87,7 +89,7 @@ export function clampVerdictRequest(body: unknown): unknown {
     return next;
   }
 
-  next.thinking = { type: "disabled" };
+  requestNoThinking(next);
   next.tools = [];
   next.output_config = VERDICT_OUTPUT_CONFIG;
   return next;

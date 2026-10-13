@@ -254,7 +254,7 @@ describe("applyAnthropicUsageLimits (provider+scope SoT: routeability)", () => {
       }),
     );
     expect(providerRouteability("anthropic", undefined, "claude-fable-5-1").usable).toBe(false);
-    expect(providerRouteability("anthropic", undefined, "claude-opus-4-8").usable).toBe(true);
+    expect(providerRouteability("anthropic", undefined, "claude-opus-5-5").usable).toBe(true);
     clearUsageLimits();
   });
 
@@ -266,7 +266,7 @@ describe("applyAnthropicUsageLimits (provider+scope SoT: routeability)", () => {
         limits: [{ kind: "session", percent: 100, resets_at: futureIso(), scope: null }],
       }),
     );
-    expect(providerRouteability("anthropic", undefined, "claude-opus-4-8").usable).toBe(false);
+    expect(providerRouteability("anthropic", undefined, "claude-opus-5-5").usable).toBe(false);
     expect(providerRouteability("anthropic", undefined, "claude-fable-5-1").usable).toBe(false);
     clearUsageLimits();
   });
@@ -282,7 +282,7 @@ describe("applyAnthropicUsageLimits (provider+scope SoT: routeability)", () => {
     expect(warningForProvider("anthropic")?.message).toBe(
       "[Anthropic] 100% Extra usage · resets unknown",
     );
-    expect(providerRouteability("anthropic", undefined, "claude-opus-4-8").usable).toBe(false);
+    expect(providerRouteability("anthropic", undefined, "claude-opus-5-5").usable).toBe(false);
     clearUsageLimits();
   });
 
@@ -309,7 +309,7 @@ describe("applyAnthropicUsageLimits (provider+scope SoT: routeability)", () => {
       }),
     );
     expect(providerRouteability("anthropic", undefined, "claude-fable-5-1").usable).toBe(true);
-    expect(providerRouteability("anthropic", undefined, "claude-opus-4-8").usable).toBe(true);
+    expect(providerRouteability("anthropic", undefined, "claude-opus-5-5").usable).toBe(true);
     clearUsageLimits();
   });
 
@@ -318,11 +318,11 @@ describe("applyAnthropicUsageLimits (provider+scope SoT: routeability)", () => {
     applyAnthropicUsageLimits({
       fiveHour: { utilization: 100, resetsAt: futureIso() },
     });
-    expect(providerRouteability("anthropic", undefined, "claude-opus-4-8").usable).toBe(false);
+    expect(providerRouteability("anthropic", undefined, "claude-opus-5-5").usable).toBe(false);
 
     applyAnthropicUsageLimits({});
     expect(getRoutingUsageSnapshot().byProviderScope?.anthropic).toBeUndefined();
-    expect(providerRouteability("anthropic", undefined, "claude-opus-4-8").usable).toBe(true);
+    expect(providerRouteability("anthropic", undefined, "claude-opus-5-5").usable).toBe(true);
     clearUsageLimits();
   });
 
@@ -331,11 +331,11 @@ describe("applyAnthropicUsageLimits (provider+scope SoT: routeability)", () => {
     applyAnthropicUsageLimits({
       fiveHour: { utilization: 100, resetsAt: futureIso() },
     });
-    expect(providerRouteability("anthropic", undefined, "claude-opus-4-8").usable).toBe(false);
+    expect(providerRouteability("anthropic", undefined, "claude-opus-5-5").usable).toBe(false);
 
     applyAnthropicUsageLimits(null);
     expect(getRoutingUsageSnapshot().byProviderScope?.anthropic).toBeDefined();
-    expect(providerRouteability("anthropic", undefined, "claude-opus-4-8").usable).toBe(false);
+    expect(providerRouteability("anthropic", undefined, "claude-opus-5-5").usable).toBe(false);
     clearUsageLimits();
   });
 });

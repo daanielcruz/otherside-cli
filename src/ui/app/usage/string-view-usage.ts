@@ -82,11 +82,19 @@ export function activateStringViewUsage(deps: StringViewUsageDeps): () => void {
       outputTokens: latestContextUsage.outputTokens,
       cacheReadInputTokens: latestContextUsage.cacheReadInputTokens,
       cacheCreationInputTokens: latestContextUsage.cacheCreationInputTokens,
+      ...(latestContextUsage.contextTokens !== undefined
+        ? { contextTokens: latestContextUsage.contextTokens }
+        : {}),
     });
     setLastUsage(latestContextUsage);
   } else {
     const existing = getLastUsage();
-    if (!existing || (existing.inputTokens === 0 && existing.outputTokens === 0)) {
+    if (
+      !existing ||
+      (existing.contextTokens === undefined &&
+        existing.inputTokens === 0 &&
+        existing.outputTokens === 0)
+    ) {
       const baseline =
         estimateConversationTokens(session.messages) +
         estimateHarnessTokens(brokerNow.provider, brokerNow.model);
@@ -146,6 +154,7 @@ export function activateStringViewUsage(deps: StringViewUsageDeps): () => void {
     const brokerState = broker.read();
     const { contextBanner, activeContextTotal, autoCompactWarningPct } = deriveChipUsage({
       mainLastContext: appState.usage.mainLastContext,
+      messages: session.messages,
       mainTokenTotals: appState.usage.mainTotals,
       provider: brokerState.provider,
       model: brokerState.model,

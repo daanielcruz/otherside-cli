@@ -60,7 +60,7 @@ describe("resolveConfig", () => {
   test("precedence override + set-union + policy ceiling", () => {
     writeJson(join(USER_DIR, "settings.json"), {
       defaultProvider: "anthropic",
-      defaultModel: "claude-opus-4-8",
+      defaultModel: "claude-opus-5-5",
       defaultMode: "default",
       disabledMcpServers: ["a"],
     });
@@ -71,12 +71,12 @@ describe("resolveConfig", () => {
     writeJson(join(CWD, ".otherside", "settings.local.json"), {
       disabledMcpServers: ["c"],
     });
-    writeJson(join(USER_DIR, "managed-settings.json"), { defaultMode: "plan" });
+    writeJson(join(USER_DIR, "managed-settings.json"), { defaultMode: "yolo" });
 
     const resolved = resolveConfig(CWD);
 
     // policy is last in precedence → its defaultMode beats the project override
-    expect(resolved.defaultMode).toBe("plan");
+    expect(resolved.defaultMode).toBe("yolo");
     // union across user + project + local, deduped
     expect(new Set(resolved.disabledMcpServers)).toEqual(new Set(["a", "b", "c"]));
     // scalar only present at user scope is untouched
@@ -84,10 +84,10 @@ describe("resolveConfig", () => {
   });
 
   test("garbage value at project scope is skipped, user base wins", () => {
-    writeJson(join(USER_DIR, "settings.json"), { defaultMode: "plan" });
+    writeJson(join(USER_DIR, "settings.json"), { defaultMode: "yolo" });
     writeJson(join(CWD, ".otherside", "settings.json"), { defaultMode: "garbage" });
 
-    expect(resolveConfig(CWD).defaultMode).toBe("plan");
+    expect(resolveConfig(CWD).defaultMode).toBe("yolo");
   });
 
   test("applies the thinking-summary CLI override only to the resolved session", () => {

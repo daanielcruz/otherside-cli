@@ -28,7 +28,8 @@ import {
   setMcpClientSpawnerForTests,
 } from "@/kernel/mcp/client/registry.ts";
 import type { McpClient, McpToolInfo } from "@/kernel/mcp/protocol/types.ts";
-import { permissionDirectoryGlob, serializeRuleValue } from "@/kernel/permissions/types.ts";
+import { directoryPathPattern } from "@/kernel/permissions/path-rules.ts";
+import { serializeRuleValue } from "@/kernel/permissions/types.ts";
 import type { AgentEvent } from "@/kernel/std/types/events.ts";
 import { runPrintMode } from "@/modes/print/index.ts";
 import type { PrintRuntime } from "@/modes/print/types.ts";
@@ -565,19 +566,9 @@ describe("runPrintMode G7 flag effects", () => {
       process.env.OTHERSIDE_CLI_ADD_DIRS = JSON.stringify([dir]);
       const agent = sessionFakeAgent(HELLO_TURN);
       await captureStdout(() => runPrintMode(agent, "hi", "json", BASE_RUNTIME));
-      expect(
-        agent.sessionAllowedToolPatterns.has(
-          serializeRuleValue({ toolName: "Read", ruleContent: dir }),
-        ),
-      ).toBe(true);
-      expect(
-        agent.sessionAllowedToolPatterns.has(
-          serializeRuleValue({
-            toolName: "Read",
-            ruleContent: permissionDirectoryGlob(dir),
-          }),
-        ),
-      ).toBe(true);
+      expect([...agent.sessionAllowedToolPatterns]).toEqual([
+        serializeRuleValue({ toolName: "Read", ruleContent: directoryPathPattern(dir) }),
+      ]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

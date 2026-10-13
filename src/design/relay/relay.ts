@@ -13,6 +13,7 @@ import {
   listSessionEvents,
   registerEnvironment,
   type SessionEventCursor,
+  withAccessToken,
 } from "@/backend/shared/api.ts";
 import { currentUserId, loadFreshAuth } from "@/backend/shared/auth.ts";
 import { deviceFingerprint, ensureDevice } from "@/backend/shared/device.ts";
@@ -28,14 +29,17 @@ import { scrub } from "@/design/bridge/scrubber.ts";
 import { providers } from "@/design/capabilities/meta-list.ts";
 import { DESIGN_CAPABILITIES } from "@/design/capabilities.ts";
 import { setDesignPushHook } from "@/design/push-hook.ts";
+import { createRelayAuthGate } from "@/design/relay/auth-gate.ts";
 import { startDurablePoll } from "@/design/relay/durable-poll.ts";
 import { createInboundState, handleRelayRow } from "@/design/relay/inbound.ts";
+import { createRelayNotice, errorMessage } from "@/design/relay/notice.ts";
 import { createOutbound } from "@/design/relay/outbound.ts";
 import { createTokenRefresher } from "@/design/relay/token-refresh.ts";
 import { createDesignSnapshot } from "@/design/snapshot.ts";
 import {
   markAttached,
   markLinkExpired,
+  markReachable,
   markUnreachable,
   setSpawnLink,
 } from "@/design/spawn-registry.ts";
@@ -193,16 +197,17 @@ export async function startDesignRelay(args: StartRelayArgs): Promise<StartRelay
   // after 5 minutes, so re-mint in place and push the new URL through the
   // spawn registry (the overlay swaps it live and restarts its countdown).
   let attached = false;
+  const notice = createRelayNotice();
+  const authGate = createRelayAuthGate({
+    onSignedOut: (reason) => markUnreachable(args.spawnId, reason),
+    onRestored: () => markReachable(args.spawnId),
+  });
   const linkRefresher = createTokenRefresher({
     mint: mintLink,
     isAttached: () => attached,
     onUpdate: (nextUrl, expiresAt) => setSpawnLink(args.spawnId, nextUrl, expiresAt),
     onExhausted: () => markLinkExpired(args.spawnId),
-    onError: (err) => {
-      process.stderr.write(
-        `design relay: link re-mint failed: ${err instanceof Error ? err.message : String(err)}\n`,
-      );
-    },
+    onError: (err) => notice.report(`link re-mint failed: ${errorMessage(err)}`),
   });
   setSpawnLink(args.spawnId, initialLink.url, initialLink.expiresAt);
   linkRefresher.schedule(initialLink.expiresAt);
@@ -222,11 +227,7 @@ export async function startDesignRelay(args: StartRelayArgs): Promise<StartRelay
         linkRefresher.stop();
         markAttached(args.spawnId);
       })
-      .catch((err) => {
-        process.stderr.write(
-          `design relay: key share failed: ${err instanceof Error ? err.message : String(err)}\n`,
-        );
-      });
+      .catch((err) => notice.report(`key share failed: ${errorMessage(err)}`));
   };
 
   await outbound.postBootstrap(b64uEncode(device.pub));
@@ -243,6 +244,7 @@ export async function startDesignRelay(args: StartRelayArgs): Promise<StartRelay
     }
     pollActive = true;
     try {
+      if (!(await authGate.ready())) return;
       for (;;) {
         const rows = await listSessionEvents(sessionHash, {
           limit: DESIGN_EVENT_PAGE_SIZE,
@@ -257,6 +259,7 @@ export async function startDesignRelay(args: StartRelayArgs): Promise<StartRelay
         const latest = rows[rows.length - 1];
         if (!latest) return;
         eventCursor = { ts: latest.ts, id: latest.id };
+        notice.settle();
         for (const row of rows) {
           await handleRelayRow(row as unknown as Record<string, unknown>, {
             state: inboundState,
@@ -271,9 +274,7 @@ export async function startDesignRelay(args: StartRelayArgs): Promise<StartRelay
         if (rows.length < DESIGN_EVENT_PAGE_SIZE) return;
       }
     } catch (err) {
-      process.stderr.write(
-        `design relay: event poll failed: ${err instanceof Error ? err.message : String(err)}\n`,
-      );
+      notice.report(`event poll failed: ${errorMessage(err)}`);
     } finally {
       pollActive = false;
       if (pollQueued) {
@@ -285,8 +286,8 @@ export async function startDesignRelay(args: StartRelayArgs): Promise<StartRelay
 
   const channelToken = async (): Promise<string> => {
     const freshAuth = await loadFreshAuth();
-    if (freshAuth) return freshAuth.accessToken;
-    return auth.accessToken;
+    if (!freshAuth) throw new Error("design relay: sign-in unavailable for channel join");
+    return freshAuth.accessToken;
   };
 
   const channel: RealtimeChannel = await subscribeChannel({
@@ -323,9 +324,10 @@ export async function startDesignRelay(args: StartRelayArgs): Promise<StartRelay
   const heartbeat = setInterval(() => {
     void (async () => {
       try {
-        const freshAuth = await loadFreshAuth();
-        const token = freshAuth?.accessToken ?? auth.accessToken;
-        const lease = await refreshDesignSessionLease({ accessToken: token, sessionHash });
+        if (!(await authGate.ready())) return;
+        const lease = await withAccessToken((accessToken) =>
+          refreshDesignSessionLease({ accessToken, sessionHash }),
+        );
         if (lease === "terminal") {
           pollTerminated = true;
           stopDurablePoll();
@@ -333,10 +335,9 @@ export async function startDesignRelay(args: StartRelayArgs): Promise<StartRelay
           markUnreachable(args.spawnId, "session ended");
           return;
         }
+        notice.settle();
       } catch (error) {
-        process.stderr.write(
-          `design relay: heartbeat failed: ${error instanceof Error ? error.message : String(error)}\n`,
-        );
+        notice.report(`heartbeat failed: ${errorMessage(error)}`);
       }
     })();
   }, DESIGN_HEARTBEAT_INTERVAL_MS);
@@ -345,11 +346,9 @@ export async function startDesignRelay(args: StartRelayArgs): Promise<StartRelay
   setDesignPushHook((_cwd, snapshot) => {
     if (snapshot.designId !== args.designId) return;
     version += 1;
-    void patchProjectVersion({
-      accessToken: auth.accessToken,
-      designProjectId,
-      version,
-    });
+    void withAccessToken((accessToken) =>
+      patchProjectVersion({ accessToken, designProjectId, version }),
+    ).catch(() => {});
   });
 
   const unsubscribeBroker = args.broker.subscribe(async (next) => {
@@ -384,11 +383,9 @@ export async function startDesignRelay(args: StartRelayArgs): Promise<StartRelay
     try {
       pairChannel.close();
     } catch {}
-    await setDesignSessionStatus({
-      accessToken: auth.accessToken,
-      sessionHash,
-      status: "ended",
-    });
+    await withAccessToken((accessToken) =>
+      setDesignSessionStatus({ accessToken, sessionHash, status: "ended" }),
+    ).catch(() => {});
   };
 
   const spawn: DesignSpawn = {

@@ -10,9 +10,19 @@ const DEFAULT_BYTE_SILENCE_LIMIT_MS = 300_000;
 
 // Keepalive streams carry a ping frame about every 25 seconds. Ninety seconds
 // therefore tolerates three missed pings while still recovering a dead socket.
-// The same window covers request upload because observation starts before the
-// first response byte arrives.
 export const KEEPALIVE_BYTE_SILENCE_LIMIT_MS = 90_000;
+
+// Observation starts before the request body is sent, so the wait for the first
+// response byte also covers the upload. A large body (many images) earns one extra
+// second per 32 KiB, so a slow link is not mistaken for a dead socket and re-sent.
+const UPLOAD_BYTES_PER_SECOND = 32_768;
+const FIRST_BYTE_WINDOW_CAP_MS = 599_000;
+
+/** How long to wait for the first response byte after sending `uploadBytes`. */
+export function firstByteWindowMs(limitMs: number, uploadBytes: number): number {
+  const allowanceMs = Math.ceil(Math.max(0, uploadBytes) / UPLOAD_BYTES_PER_SECOND) * 1_000;
+  return Math.max(limitMs, Math.min(limitMs + allowanceMs, FIRST_BYTE_WINDOW_CAP_MS));
+}
 
 export type StreamSilenceScope = "byte" | "content";
 
@@ -128,12 +138,17 @@ class ByteSilenceGuard {
   private noticeCursor = 0;
   private bytesObserved = 0;
   private latestByteMark = 0;
+  /** The current deadline: the first-byte window until a byte arrives, then the limit. */
+  private windowMs: number;
   private readonly transportStop = new AbortController();
 
   constructor(
     private readonly limitMs: number,
     private readonly onSilence?: (error: StreamSilenceError) => void,
-  ) {}
+    firstWindowMs: number = limitMs,
+  ) {
+    this.windowMs = firstWindowMs;
+  }
 
   get signal(): AbortSignal {
     return this.transportStop.signal;
@@ -145,6 +160,7 @@ class ByteSilenceGuard {
 
   accept(byteCount: number, output: BytePipeController): void {
     this.bytesObserved += byteCount;
+    this.windowMs = this.limitMs;
     this.observeFromNow(output);
   }
 
@@ -201,27 +217,27 @@ class ByteSilenceGuard {
   }
 
   private planExpiry(output: BytePipeController): void {
-    const alarm = setTimeout(() => this.expire(output), this.limitMs);
+    const alarm = setTimeout(() => this.expire(output), this.windowMs);
     this.expiryAlarm = alarm;
     detachTimer(alarm);
   }
 
   private expire(output: BytePipeController): void {
     this.expiryAlarm = null;
-    const delayedByMs = Math.round(this.silenceAgeMs() - this.limitMs);
+    const delayedByMs = Math.round(this.silenceAgeMs() - this.windowMs);
     const outputClosed = output.desiredSize === null;
 
-    if (delayedByMs < -this.limitMs / 2) {
+    if (delayedByMs < -this.windowMs / 2) {
       appendTrace(`[byte-watchdog] suppressed: late=${delayedByMs}ms (sleep/suspend), re-arming`);
       this.observeFromNow(output);
       return;
     }
 
     appendTrace(
-      `[byte-watchdog] firing: idle=${this.limitMs}ms late=${delayedByMs}ms errored=${outputClosed} bytesTotal=${this.bytesObserved}`,
+      `[byte-watchdog] firing: idle=${this.windowMs}ms late=${delayedByMs}ms errored=${outputClosed} bytesTotal=${this.bytesObserved}`,
     );
     const event: ByteSilenceEvent = {
-      limitMs: this.limitMs,
+      limitMs: this.windowMs,
       delayedByMs,
       bytesSeen: this.bytesObserved,
       outputClosed,
@@ -231,7 +247,7 @@ class ByteSilenceGuard {
       ignoreFailure(() => delayedByteSilenceListener?.(event));
     }
 
-    const error = new StreamSilenceError(this.limitMs);
+    const error = new StreamSilenceError(this.windowMs);
     ignoreFailure(() => this.onSilence?.(error));
     ignoreFailure(() => output.error(error));
     // A transform error alone does not reliably release Bun's fetch body. The
@@ -301,8 +317,9 @@ export function guardReadableByteSilence(
   source: ReadableStream<Uint8Array>,
   limitMs: number,
   onSilence?: (error: StreamSilenceError) => void,
+  uploadBytes = 0,
 ): ReadableStream<Uint8Array> {
-  const guard = new ByteSilenceGuard(limitMs, onSilence);
+  const guard = new ByteSilenceGuard(limitMs, onSilence, firstByteWindowMs(limitMs, uploadBytes));
   const monitored = source.pipeThrough(new TransformStream(bytePassThrough(guard)), {
     signal: guard.signal,
   });
@@ -344,8 +361,14 @@ export async function* guardByteIterableSilence(
   source: AsyncIterable<Uint8Array>,
   limitMs: number,
   onSilence?: (error: StreamSilenceError) => void,
+  uploadBytes = 0,
 ): AsyncIterable<Uint8Array> {
-  const guarded = guardReadableByteSilence(readableFromByteIterable(source), limitMs, onSilence);
+  const guarded = guardReadableByteSilence(
+    readableFromByteIterable(source),
+    limitMs,
+    onSilence,
+    uploadBytes,
+  );
   for await (const bytes of guarded as unknown as AsyncIterable<Uint8Array>) {
     yield bytes;
   }
@@ -355,7 +378,13 @@ export function maybeGuardByteIterableSilence(
   source: AsyncIterable<Uint8Array>,
   defaultLimitMs?: number,
   onSilence?: (error: StreamSilenceError) => void,
+  uploadBytes = 0,
 ): AsyncIterable<Uint8Array> {
   if (!byteSilenceGuardEnabled()) return source;
-  return guardByteIterableSilence(source, byteSilenceLimitMs(defaultLimitMs), onSilence);
+  return guardByteIterableSilence(
+    source,
+    byteSilenceLimitMs(defaultLimitMs),
+    onSilence,
+    uploadBytes,
+  );
 }

@@ -108,32 +108,37 @@ describe("anthropic stream 401 refresh-then-retry", () => {
     expect(chunks.join("")).toContain("data: ok");
   });
 
-  it("fails without a second messages call when refresh cannot rotate the token", async () => {
-    let messagesCalls = 0;
-    let tokenCalls = 0;
+  for (const refreshStatus of [400, 500]) {
+    it(`fails without a second messages call when refresh fails with HTTP ${refreshStatus}`, async () => {
+      let messagesCalls = 0;
+      let tokenCalls = 0;
 
-    globalThis.fetch = mock(async (input) => {
-      const url = String(input);
-      if (url.includes("/oauth/token")) {
-        tokenCalls += 1;
-        return new Response("refresh failed", { status: 500 });
-      }
-      messagesCalls += 1;
-      return new Response("unauthorized", { status: 401 });
-    }) as unknown as typeof fetch;
+      globalThis.fetch = mock(async (input) => {
+        const url = String(input);
+        if (url.includes("/oauth/token")) {
+          tokenCalls += 1;
+          return new Response(
+            refreshStatus === 400 ? '{"error":"invalid_grant"}' : "refresh failed",
+            { status: refreshStatus },
+          );
+        }
+        messagesCalls += 1;
+        return new Response("unauthorized", { status: 401 });
+      }) as unknown as typeof fetch;
 
-    await expect(async () => {
-      for await (const _ of anthropicStream(
-        ctx(),
-        { model: "claude-fable-5-1" },
-        new AbortController().signal,
-      )) {
-      }
-    }).toThrow(/HTTP 401 from \/v1\/messages/);
+      await expect(async () => {
+        for await (const _ of anthropicStream(
+          ctx(),
+          { model: "claude-fable-5-1" },
+          new AbortController().signal,
+        )) {
+        }
+      }).toThrow(/HTTP 401 from \/v1\/messages/);
 
-    expect(messagesCalls).toBe(1);
-    expect(tokenCalls).toBe(1);
-  });
+      expect(messagesCalls).toBe(1);
+      expect(tokenCalls).toBe(1);
+    });
+  }
 
   it("uses the winner's persisted tokens after invalid_grant during refresh", async () => {
     let messagesCalls = 0;

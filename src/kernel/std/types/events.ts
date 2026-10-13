@@ -1,6 +1,10 @@
 import type { EffortLevel } from "@/kernel/std/types/effort.ts";
 import type { ErrorMeta } from "@/kernel/std/types/error-meta.ts";
-import type { ContentBlock, ToolResultMeta } from "@/kernel/std/types/message.ts";
+import type {
+  ContentBlock,
+  MessageUsageSnapshot,
+  ToolResultMeta,
+} from "@/kernel/std/types/message.ts";
 import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 
 export type ToolProgress =
@@ -19,14 +23,7 @@ export type ProviderEvent =
       provider?: ProviderId;
       model?: string;
     }
-  | {
-      kind: "usage";
-      inputTokens?: number;
-      outputTokens?: number;
-      thoughtTokens?: number;
-      cacheCreationInputTokens?: number;
-      cacheReadInputTokens?: number;
-    }
+  | ({ kind: "usage" } & Partial<MessageUsageSnapshot>)
   | { kind: "usage_limits"; provider: ProviderId; usage: unknown }
   | { kind: "text_delta"; text: string }
   | { kind: "thinking_delta"; text: string }
@@ -103,7 +100,7 @@ export type ForkEvent =
       isError: boolean;
       parentToolCallId?: string;
     }
-  | {
+  | ({
       kind: "fork_usage";
       forkId: string;
       // The fork's own provider/model — usage is attributed to these, not the
@@ -117,7 +114,7 @@ export type ForkEvent =
       thoughtTokens?: number;
       parentToolCallId?: string;
       isSnapshot?: boolean;
-    }
+    } & Pick<MessageUsageSnapshot, "contextTokens">)
   | {
       kind: "fork_retry_status";
       forkId: string;
@@ -217,6 +214,10 @@ export type AgentEvent =
       clearedToolUseIds?: string[];
     }
   | { kind: "turn_end"; turn: number; stopReason: string }
+  /** A /loop wakeup opened the turn; `folds` hides the previous quiet tick. */
+  | { kind: "loop_tick"; firedAt: string; text: string; folds: boolean }
+  /** A cron task's prompt opened the turn. */
+  | { kind: "scheduled_task_fire"; firedAt: string; text: string }
   | { kind: "silent_turn_end_recovery"; turn: number; iteration: number }
   | { kind: "goal_eval_start"; condition: string; iteration: number }
   | { kind: "goal_met"; condition: string; iteration: number }

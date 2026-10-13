@@ -7,6 +7,13 @@ const INLINE_PATTERN = /(?<=^|\s)!`([^`]+)`/gm;
 const COMMAND_TIMEOUT_MS = 30_000;
 const MAX_OUTPUT_BYTES = 65_536;
 
+/** Whether a text runs shell commands when expanded (a ```! block or an inline !`cmd`). */
+export function hasShellPrefix(text: string): boolean {
+  return (
+    new RegExp(BLOCK_PATTERN.source).test(text) || new RegExp(INLINE_PATTERN.source, "m").test(text)
+  );
+}
+
 export interface ShellPrefixOptions {
   cwd?: string;
   timeoutMs?: number;

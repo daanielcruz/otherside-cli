@@ -30,9 +30,11 @@ import {
 registerAllProviders();
 
 const SESSION_PROVIDER = "anthropic";
-const SESSION_MODEL = "claude-opus-5";
+const SESSION_MODEL = "claude-opus-5-5";
 const OTHER_PROVIDER = "codex";
-const OTHER_MODEL = "gpt-5.5";
+const OTHER_MODEL = "gpt-5.6-terra";
+// Every Codex model serves `max`; a Gemini route is the one that cannot.
+const NO_MAX_ROUTE = { provider: "antigravity", model: "gemini-3.8-flash" } as const;
 
 // Hermetic bundle: only the two providers the pins under test name are
 // credentialed, so nothing else can be picked up as a usable route.
@@ -119,7 +121,7 @@ describe("fork route pairs on the wire", () => {
       route: { provider: OTHER_PROVIDER, model: OTHER_MODEL },
     });
     expect(forkRouteFromRoutingField({ model: OTHER_MODEL }).ok).toBe(false);
-    expect(forkRouteFromRoutingField("codex/gpt-5.5").ok).toBe(false);
+    expect(forkRouteFromRoutingField("codex/gpt-5.6-terra").ok).toBe(false);
   });
 });
 
@@ -344,14 +346,14 @@ describe("SendMessage route switch classification", () => {
 
 describe("pinning a route", () => {
   it("drops an effort level the pinned model cannot serve", () => {
-    const target = { provider: OTHER_PROVIDER, model: OTHER_MODEL } as const;
+    const target = NO_MAX_ROUTE;
     expect(effortLevelsForModel(target)).not.toContain("max");
     const ctx = { ...ctxWith(true), effort: "max" } as RequestContext;
 
     const pinned = withPinnedForkRoute(ctx, target);
 
-    expect(pinned.provider).toBe(OTHER_PROVIDER);
-    expect(pinned.model).toBe(OTHER_MODEL);
+    expect(pinned.provider).toBe(target.provider);
+    expect(pinned.model).toBe(target.model);
     expect(pinned.effort).toBe(defaultEffortForModel(target));
     expect(pinned.sessionId).toBe(ctx.sessionId);
   });

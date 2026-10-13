@@ -11,8 +11,11 @@ import {
   resolveAntigravityModel,
 } from "@/engine/providers/antigravity/models.ts";
 import {
+  type AntigravityTurnIds,
+  CODE_ASSIST_SESSION_ID,
   lastExecutionId,
-  trajectoryStepCount,
+  lastStepIndex,
+  priorModelReplies,
   turnIds,
 } from "@/engine/providers/antigravity/turn.ts";
 import { ProviderHttpError } from "@/kernel/std/types/error-meta.ts";
@@ -20,26 +23,28 @@ import type { ProviderEvent } from "@/kernel/std/types/events.ts";
 import type { Message } from "@/kernel/std/types/message.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 
-const FUNCTION_CALLING_MODE = "VALIDATED";
-
 export interface AntigravityBodyExtras {
   sessionContext?: string | undefined;
 }
 
+// Labels go out in key order, as the installed client sends them.
 function buildLabels(
   spec: AntigravityModelSpec,
-  trajectoryId: string,
-  stepIndex: number,
-  lastExecution?: string,
+  ids: AntigravityTurnIds,
+  request: Record<string, unknown>,
+  lastExecution: string | undefined,
 ): Record<string, string> {
   const usedClaude = spec.usedClaude ? "true" : "false";
   // Every non-gemini family (claude, gpt-oss) trips this; gemini models don't.
   const usedNonGemini = spec.wireModel.startsWith("gemini") ? "false" : "true";
   return {
+    cascade_id: ids.conversationId,
     ...(lastExecution ? { last_execution_id: lastExecution } : {}),
-    last_step_index: String(stepIndex),
+    last_step_index: String(lastStepIndex(request)),
     model_enum: spec.modelEnum,
-    trajectory_id: trajectoryId,
+    request_id: `${ids.trajectoryId}-${priorModelReplies(request)}`,
+    root_cascade_id: ids.rootConversationId,
+    trajectory_id: ids.trajectoryId,
     used_claude: usedClaude,
     used_claude_conservative: usedClaude,
     used_non_gemini_model: usedNonGemini,
@@ -50,12 +55,13 @@ function buildGenerationConfig(
   ctx: RequestContext,
   spec: AntigravityModelSpec,
 ): Record<string, unknown> {
+  const includeThoughts = ctx.disableThinking !== true && ctx.suppressThinkingSummary !== true;
   return {
     maxOutputTokens: spec.maxOutputTokens,
-    thinkingConfig: {
-      includeThoughts: ctx.disableThinking !== true && ctx.suppressThinkingSummary !== true,
-      thinkingBudget: spec.thinkingBudget,
-    },
+    thinkingConfig:
+      spec.thinkingLevel !== undefined
+        ? { includeThoughts, thinkingLevel: spec.thinkingLevel }
+        : { includeThoughts, thinkingBudget: spec.thinkingBudget },
   };
 }
 
@@ -186,6 +192,10 @@ export function translateRequestAntigravity(
       replayThinking: true,
       wrapToolOutput: true,
       alwaysSignFunctionCall: true,
+      // Gemini replies and their tool results are model-authored steps; other
+      // families send tool results back as the user.
+      toolResultsAsModel: spec.wireModel.startsWith("gemini"),
+      signFinalText: true,
       targetUsedClaude: spec.usedClaude,
       supportsPdf: canSendPdfNatively(ctx.provider, ctx.model),
     },
@@ -198,15 +208,14 @@ export function translateRequestAntigravity(
   }
   const toolEntries = buildAntigravityToolEntries(tools, spec);
   if (toolEntries.length > 0) request.tools = toolEntries;
-  request.toolConfig = { functionCallingConfig: { mode: FUNCTION_CALLING_MODE } };
   request.labels = buildLabels(
     spec,
-    ids.trajectoryId,
-    trajectoryStepCount(request),
+    ids,
+    request,
     lastExecutionId(ctx.sessionId, ctx.agentOwnerId, request),
   );
   request.generationConfig = buildGenerationConfig(ctx, spec);
-  request.sessionId = ids.sessionId;
+  request.sessionId = CODE_ASSIST_SESSION_ID;
   return request;
 }
 

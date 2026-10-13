@@ -2,6 +2,7 @@ import {
   defaultEffortForModel,
   defaultModelForProvider,
   effortLevelsForModel,
+  offeredModelId,
   resolveModelId,
 } from "@/engine/model/catalog.ts";
 import type { UsageSnapshot } from "@/engine/session/compact/token-count.ts";
@@ -10,8 +11,10 @@ import {
   isOrchestrationMode,
   type OrchestrationMode,
 } from "@/kernel/std/types/orchestration-mode.ts";
+import { type PermissionMode, parsePermissionMode } from "@/kernel/std/types/permission-mode.ts";
 import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
-import type { BrokerState, PermissionMode } from "@/kernel/std/types/request.ts";
+import type { BrokerState } from "@/kernel/std/types/request.ts";
+import { nullableNonNegativeFiniteOrUndefined } from "@/kernel/std/value-guards.ts";
 import type {
   AssistantRequestUsage,
   Session,
@@ -51,7 +54,7 @@ export function resolveSessionBrokerState(
   fallback: SessionBrokerState,
 ): SessionBrokerState {
   let provider = fallback.provider;
-  let model = resolveModelId({ provider, model: fallback.model });
+  let model = offeredModelId({ provider, model: fallback.model });
   let effort: EffortLevel | null = fallback.effort;
   let fastMode = fallback.fastMode;
   let ultracode: boolean | undefined;
@@ -74,7 +77,7 @@ export function resolveSessionBrokerState(
     if (hasProviderOrModel) {
       if (isMeta) sawMetaRoute = true;
       const nextProvider = scoped.provider ?? provider;
-      const nextModel = resolveModelId({
+      const nextModel = offeredModelId({
         provider: nextProvider,
         model:
           scoped.model ??
@@ -111,9 +114,9 @@ export function resolveSessionBrokerState(
   for (let i = records.length - 1; i >= 0; i -= 1) {
     const rec = records[i];
     if (!rec || recordHasSidechainFlag(rec)) continue;
-    if (rec.type === "user_message" && typeof rec.permissionMode === "string") {
-      const pm = rec.permissionMode;
-      if (pm === "default" || pm === "accept-edits" || pm === "plan" || pm === "yolo") {
+    if (rec.type === "user_message") {
+      const pm = parsePermissionMode(rec.permissionMode);
+      if (pm !== undefined) {
         permissionMode = pm;
         break;
       }
@@ -198,6 +201,7 @@ export function latestContextUsageSnapshotFromSessionRecords(
     if (target && !requestUsageMatches(usage, target.provider, targetModel)) break;
 
     const { snapshot } = usage;
+    if (snapshot.contextTokens !== undefined) return snapshot;
     const contextTokens =
       snapshot.inputTokens + snapshot.cacheCreationInputTokens + snapshot.cacheReadInputTokens;
     if (contextTokens <= 0) continue;
@@ -364,6 +368,8 @@ export function usageSnapshotFromAssistantUsage(usage: AssistantRequestUsage): U
     cacheReadInputTokens: normalizedToken(usage.cache_read_input_tokens),
   };
   if (thought > 0) snap.thoughtTokens = thought;
+  const contextTokens = nullableNonNegativeFiniteOrUndefined(usage.contextTokens);
+  if (contextTokens !== undefined) snap.contextTokens = contextTokens;
   return snap;
 }
 

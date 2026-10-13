@@ -82,6 +82,41 @@ describe("Codex Transport Fixes", () => {
     expect(prewarmCount).toBe(1);
   });
 
+  it("keeps the Lite protocol fields on HTTP prewarm and turn requests", async () => {
+    const requests: Array<{ headers: Headers; body: Record<string, unknown> }> = [];
+    global.fetch = mock(async (_url, init) => {
+      requests.push({
+        headers: new Headers(init?.headers),
+        body: JSON.parse(String(init?.body)),
+      });
+      return new Response("data: {}\n\n", { status: 200 });
+    }) as unknown as typeof fetch;
+    const ctx: RequestContext = {
+      provider: "codex",
+      model: "gpt-6.1-sol",
+      effort: "high",
+      sessionId: "session-lite-prewarm-test",
+      permissionMode: "default",
+      cwd: "/workspace/fixture",
+    };
+    const body = {
+      model: ctx.model,
+      parallel_tool_calls: false,
+      reasoning: { effort: "high", context: "all_turns" },
+      input: [{ role: "user", content: "hello" }],
+    };
+    for await (const _chunk of streamHttp(ctx, body)) {
+    }
+    expect(requests).toHaveLength(2);
+    for (const request of requests) {
+      expect(request.headers.get("x-openai-internal-codex-responses-lite")).toBe("true");
+      expect(request.body.reasoning).toEqual(body.reasoning);
+      expect(request.body.parallel_tool_calls).toBe(false);
+    }
+    expect(requests[0]?.body.generate).toBe(false);
+    expect(requests[1]?.body.input).toEqual(body.input);
+  });
+
   it("wsStreamFailures threshold flips getTransport to http", async () => {
     const sessionId = "session-failures-test";
     const ctx = {

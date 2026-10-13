@@ -1,3 +1,4 @@
+import { restoreSessionTasks } from "@/engine/background/cron/restore.ts";
 import { setTaskOutputSession } from "@/engine/background/tasks/output-files.ts";
 import { Agent } from "@/engine/queue/index.ts";
 import { restoreGoalFromRecords } from "@/engine/queue/state.ts";
@@ -6,6 +7,7 @@ import {
   Session,
   sessionMetaFromBrokerState,
 } from "@/engine/session/index.ts";
+import { restoreReadStateFromRecords } from "@/engine/session/read-state-restore.ts";
 import type { ToolOutputArchiveSessionRecord } from "@/engine/session/record/schema.ts";
 import { sessionRecordsToMessages } from "@/engine/session/transcript/to-messages.ts";
 import {
@@ -69,6 +71,8 @@ export async function buildResumedSession(args: {
     session.chain.seed(chainHead);
   }
   session.messages.push(...sanitizeMessages(sessionRecordsToMessages(resumeModelRecords)));
+  restoreReadStateFromRecords(resumeModelRecords);
+  if (isResume) restoreSessionTasks(resumeModelRecords);
   if (isResume) {
     const archiveRecords = resumeRecords
       .filter(

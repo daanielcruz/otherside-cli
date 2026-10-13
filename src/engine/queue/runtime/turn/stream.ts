@@ -22,6 +22,10 @@ import {
   buildTaskReminderInjection,
 } from "@/engine/session/task-reminder.ts";
 import {
+  type ContextUsageSnapshot,
+  mergeContextUsageSnapshot,
+} from "@/engine/session/usage/snapshot.ts";
+import {
   applyToolOutputBudget,
   createToolOutputArchive,
 } from "@/engine/tool-output-archive/index.ts";
@@ -119,6 +123,7 @@ export async function* openProviderStream(
     mainAgent: ctx.agentOwnerId === undefined && ctx.isForkChild !== true,
     permissionRules: loadRulesSync(ctx.cwd),
     ...(ctx.orchestrationMode !== undefined ? { orchestrationMode: ctx.orchestrationMode } : {}),
+    session: { id: ctx.sessionId, permissionMode: ctx.permissionMode },
   });
   const taskReminder = buildTaskReminderInjection({
     messages: deps.agentDeps.session.messages,
@@ -264,21 +269,19 @@ export async function* fireStopPromptHooks(
   return blocked;
 }
 
-export interface AssistantUsageSnap {
-  inputTokens: number;
-  outputTokens: number;
-  cacheCreationInputTokens: number;
-  cacheReadInputTokens: number;
-}
+export type AssistantUsageSnap = ContextUsageSnapshot;
 
 export function mergeUsageSnap(
   prev: AssistantUsageSnap | null,
   ev: ProviderEvent & { kind: "usage" },
 ): AssistantUsageSnap {
-  return {
-    inputTokens: ev.inputTokens ?? prev?.inputTokens ?? 0,
-    outputTokens: ev.outputTokens ?? prev?.outputTokens ?? 0,
-    cacheCreationInputTokens: ev.cacheCreationInputTokens ?? prev?.cacheCreationInputTokens ?? 0,
-    cacheReadInputTokens: ev.cacheReadInputTokens ?? prev?.cacheReadInputTokens ?? 0,
-  };
+  return mergeContextUsageSnapshot(
+    prev ?? {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0,
+    },
+    ev,
+  );
 }

@@ -134,7 +134,7 @@ describe("fork-event-router stream isolation", () => {
       parentToolCallId: "agent-call",
       name: "worker",
       provider: "codex",
-      model: "gpt-5.5",
+      model: "gpt-5.6-terra",
     });
 
     routeForkEvent({ kind: "fork_text_delta", forkId: "agent-fork", text: "private reasoning" });

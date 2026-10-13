@@ -36,24 +36,31 @@ mock.module("@/kernel/config/config.ts", () => ({
   loadConfig: async () => ({ ...realConfigModule.DEFAULT_CONFIG }),
 }));
 
+import { spyOn } from "bun:test";
+import * as transport from "@/engine/transport/http1-socket.ts";
 import { generateImage } from "../image.ts";
 
-const originalFetch = global.fetch;
+async function* bodyBytes(text: string): AsyncIterable<Uint8Array> {
+  yield Buffer.from(text, "utf8");
+}
 
-function jsonResponse(value: unknown, status = 200): Response {
-  return new Response(JSON.stringify(value), {
+function jsonReply(value: unknown, status = 200): transport.Http1Response {
+  return {
     status,
-    headers: { "Content-Type": "application/json" },
-  });
+    headers: new Map([["content-type", "application/json"]]),
+    body: bodyBytes(JSON.stringify(value)),
+  };
 }
 
 describe("Gemini image generation", () => {
+  let sendSpy: ReturnType<typeof spyOn> | undefined;
+
   beforeEach(() => {
-    global.fetch = originalFetch;
+    sendSpy?.mockRestore();
   });
 
   afterEach(() => {
-    global.fetch = originalFetch;
+    sendSpy?.mockRestore();
   });
 
   afterAll(() => {
@@ -64,22 +71,22 @@ describe("Gemini image generation", () => {
   });
 
   it("selects the catalog image model and sends the image_gen envelope", async () => {
-    const calls: Array<{ url: string; init: RequestInit | undefined }> = [];
-    global.fetch = mock((url: string | URL | Request, init?: RequestInit) => {
-      calls.push({ url: String(url), init });
-      if (calls.length === 1) {
-        return Promise.resolve(jsonResponse({ imageGenerationModelIds: ["imagen-model"] }));
-      }
-      return Promise.resolve(
-        jsonResponse({
+    const calls: Array<{ input: transport.Http1RequestInput; contentLengthAt: number }> = [];
+    sendSpy = spyOn(transport, "sendSizedRequest").mockImplementation(
+      async (input, contentLengthAt) => {
+        calls.push({ input, contentLengthAt });
+        if (calls.length === 1) {
+          return jsonReply({ imageGenerationModelIds: ["imagen-model"] });
+        }
+        return jsonReply({
           response: {
             candidates: [
               { content: { parts: [{ inlineData: { mimeType: "image/png", data: "png-data" } }] } },
             ],
           },
-        }),
-      );
-    }) as unknown as typeof fetch;
+        });
+      },
+    );
 
     const result = await generateImage({
       prompt: "paint a moonlit lake",
@@ -88,20 +95,25 @@ describe("Gemini image generation", () => {
 
     expect(result).toMatchObject({ base64: "png-data", mediaType: "image/png" });
     expect(calls).toHaveLength(2);
-    expect(calls[0]?.url).toBe(
+    expect(calls[0]?.input.url.toString()).toBe(
       "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
     );
-    expect(calls[0]?.init?.method).toBe("POST");
-    expect(calls[0]?.init?.headers).toMatchObject({
-      Authorization: "Bearer google-access",
-      "User-Agent": "antigravity-test-agent",
+    expect(calls[0]?.input.method).toBe("POST");
+    expect(calls[0]?.contentLengthAt).toBe(1);
+    expect(calls[0]?.input.headerLines).toEqual([
+      "User-Agent: antigravity-test-agent",
+      "Authorization: Bearer google-access",
+      "Content-Type: application/json",
+      "Accept-Encoding: gzip",
+    ]);
+    expect(JSON.parse(calls[0]!.input.payload.toString("utf8"))).toEqual({
+      project: "project-123",
     });
-    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({ project: "project-123" });
 
-    expect(calls[1]?.url).toBe(
+    expect(calls[1]?.input.url.toString()).toBe(
       "https://daily-cloudcode-pa.googleapis.com/v1internal:generateContent",
     );
-    const envelope = JSON.parse(String(calls[1]?.init?.body));
+    const envelope = JSON.parse(calls[1]!.input.payload.toString("utf8"));
     expect(envelope).toMatchObject({
       project: "project-123",
       model: "imagen-model",
@@ -125,7 +137,7 @@ describe("Gemini image generation", () => {
   });
 
   it("rejects more than three references before making a request", async () => {
-    global.fetch = mock(() => Promise.resolve(jsonResponse({}))) as unknown as typeof fetch;
+    sendSpy = spyOn(transport, "sendSizedRequest").mockResolvedValue(jsonReply({}));
     const images = Array.from({ length: 4 }, (_, index) => ({
       mediaType: "image/png" as const,
       data: String(index),
@@ -134,13 +146,13 @@ describe("Gemini image generation", () => {
     await expect(generateImage({ prompt: "combine", images })).rejects.toThrow(
       "supports at most 3 image references",
     );
-    expect(global.fetch).not.toHaveBeenCalled();
+    expect(sendSpy).not.toHaveBeenCalled();
   });
 
   it("fails when the catalog has no image model", async () => {
-    global.fetch = mock(() =>
-      Promise.resolve(jsonResponse({ imageGenerationModelIds: [] })),
-    ) as unknown as typeof fetch;
+    sendSpy = spyOn(transport, "sendSizedRequest").mockResolvedValue(
+      jsonReply({ imageGenerationModelIds: [] }),
+    );
 
     await expect(generateImage({ prompt: "missing model" })).rejects.toThrow(
       "no Gemini image generation models are available",
@@ -149,16 +161,14 @@ describe("Gemini image generation", () => {
 
   it("fails when the generation response has no supported media", async () => {
     let calls = 0;
-    global.fetch = mock(() => {
+    sendSpy = spyOn(transport, "sendSizedRequest").mockImplementation(async () => {
       calls += 1;
-      return Promise.resolve(
-        calls === 1
-          ? jsonResponse({ imageGenerationModelIds: ["imagen-model"] })
-          : jsonResponse({
-              response: { candidates: [{ content: { parts: [{ text: "none" }] } }] },
-            }),
-      );
-    }) as unknown as typeof fetch;
+      return calls === 1
+        ? jsonReply({ imageGenerationModelIds: ["imagen-model"] })
+        : jsonReply({
+            response: { candidates: [{ content: { parts: [{ text: "none" }] } }] },
+          });
+    });
 
     await expect(generateImage({ prompt: "missing media" })).rejects.toThrow(
       "response contained no supported image",
@@ -168,9 +178,9 @@ describe("Gemini image generation", () => {
   it("normalizes aborted catalog requests", async () => {
     const controller = new AbortController();
     controller.abort();
-    global.fetch = mock(() =>
-      Promise.reject(new DOMException("aborted", "AbortError")),
-    ) as unknown as typeof fetch;
+    sendSpy = spyOn(transport, "sendSizedRequest").mockRejectedValue(
+      new DOMException("aborted", "AbortError"),
+    );
 
     await expect(
       generateImage({ prompt: "cancelled", abortSignal: controller.signal }),

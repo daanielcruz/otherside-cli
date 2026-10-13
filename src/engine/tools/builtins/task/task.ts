@@ -18,7 +18,6 @@ import {
 interface TaskCreateInput {
   subject?: unknown;
   description?: unknown;
-  activeForm?: unknown;
   metadata?: unknown;
 }
 
@@ -35,7 +34,6 @@ interface TaskUpdateInput {
   taskId?: unknown;
   subject?: unknown;
   description?: unknown;
-  activeForm?: unknown;
   status?: unknown;
   owner?: unknown;
   addBlocks?: unknown;
@@ -75,7 +73,6 @@ export const TaskCreate: ToolHandler = {
     const description = typeof args.description === "string" ? args.description : null;
     if (!subject) return err(call.id, "subject is required");
     if (!description) return err(call.id, "description is required");
-    const activeForm = typeof args.activeForm === "string" ? args.activeForm : undefined;
     const metadata =
       args.metadata !== null && typeof args.metadata === "object" && !Array.isArray(args.metadata)
         ? (args.metadata as Record<string, unknown>)
@@ -85,7 +82,6 @@ export const TaskCreate: ToolHandler = {
       {
         subject,
         description,
-        ...(activeForm !== undefined ? { activeForm } : {}),
         ...(metadata !== undefined ? { metadata } : {}),
       },
       scope,
@@ -194,10 +190,6 @@ export const TaskUpdate: ToolHandler = {
     if (typeof args.description === "string" && args.description !== cur.description) {
       patch.description = args.description;
       updated.push("description");
-    }
-    if (typeof args.activeForm === "string" && args.activeForm !== (cur.activeForm ?? "")) {
-      patch.activeForm = args.activeForm;
-      updated.push("activeForm");
     }
     if (owner !== undefined && owner !== cur.owner) {
       patch.owner = owner;

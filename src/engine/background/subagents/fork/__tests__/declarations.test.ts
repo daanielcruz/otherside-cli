@@ -67,7 +67,7 @@ function context(
   sessions.add(sessionId);
   return {
     provider,
-    model: provider === "anthropic" ? "claude-opus-5" : "gpt-5.4",
+    model: provider === "anthropic" ? "claude-opus-5-5" : "gpt-5.6-terra",
     effort: null,
     permissionMode: "default",
     orchestrationMode,
@@ -344,21 +344,21 @@ describe("subagent wire declarations", () => {
     expect(declarations.some((declaration) => declaration.name.startsWith("Task"))).toBe(false);
   });
 
-  // Live failure regression: the parent session loaded EnterPlanMode via
-  // ToolSearch (a tool_reference landed in its transcript), then spawned a
-  // context-inheriting fork. EnterPlanMode is fork-disallowed, so the fork
-  // never declares it — the outgoing fork request body must therefore not
-  // carry the inherited tool_reference or the provider rejects it at
-  // pre-flight ("Tool reference 'EnterPlanMode' not found in available tools").
+  // Live failure regression: the parent session loaded a fork-disallowed tool
+  // via ToolSearch (a tool_reference landed in its transcript), then spawned a
+  // context-inheriting fork. The fork never declares it — the outgoing fork
+  // request body must therefore not carry the inherited tool_reference or the
+  // provider rejects it at pre-flight ("Tool reference '…' not found in
+  // available tools").
   test("inherited fork request drops tool references to tools the fork does not declare", () => {
     const ctx = context("anthropic", "fork-undeclared-reference");
     seedParent(ctx);
-    announceDeferredTool("EnterPlanMode");
+    announceDeferredTool("WaitForMcpServers");
     announceDeferredTool("EnterWorktree");
 
     const { declarations } = buildSubagentBaseDeclarations(spec(ctx, true), ctx);
     const declaredNames = new Set(declarations.map((declaration) => declaration.name));
-    expect(declaredNames.has("EnterPlanMode")).toBe(false);
+    expect(declaredNames.has("WaitForMcpServers")).toBe(false);
 
     const inherited: Message[] = [
       {
@@ -372,7 +372,7 @@ describe("subagent wire declarations", () => {
             type: "tool_result",
             tool_use_id: "search-1",
             content: [
-              { type: "tool_reference", tool_name: "EnterPlanMode" },
+              { type: "tool_reference", tool_name: "WaitForMcpServers" },
               { type: "tool_reference", tool_name: "EnterWorktree" },
             ],
           },
@@ -394,7 +394,7 @@ describe("subagent wire declarations", () => {
     for (const reference of referenced) {
       expect(declaredNames.has(reference.tool_name)).toBe(true);
     }
-    expect(referenced.some((reference) => reference.tool_name === "EnterPlanMode")).toBe(false);
+    expect(referenced.some((reference) => reference.tool_name === "WaitForMcpServers")).toBe(false);
   });
 });
 

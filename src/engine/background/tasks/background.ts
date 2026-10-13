@@ -18,6 +18,8 @@ import {
   buildAgentSummary,
   buildBashSummary,
   buildCompletionNotification,
+  stopCauseNote,
+  type TaskStopCause,
 } from "./notification.ts";
 import {
   linkTaskOutput,
@@ -93,11 +95,13 @@ export interface BackgroundTask {
   shellOutput: string;
   inputTokens: number;
   outputTokens: number;
+  contextTokens?: number | null;
   exitCode?: number;
   result?: { content: string; isError: boolean };
   error?: string;
   notified: boolean;
   stoppedByUser?: boolean;
+  stopCause?: TaskStopCause;
 }
 
 type Listener = () => void;
@@ -351,6 +355,7 @@ export function appendShellOutput(taskId: string, text: string): void {
 export interface TaskUsageDelta {
   inputTokens: number;
   outputTokens: number;
+  contextTokens?: number | null;
   cacheCreationInputTokens?: number | undefined;
   cacheReadInputTokens?: number | undefined;
 }
@@ -370,6 +375,7 @@ function contextInputTokens(usage: TaskUsageDelta): number {
 export function addUsage(taskId: string, usage: TaskUsageDelta): void {
   const task = store.get(taskId);
   if (!task) return;
+  if (usage.contextTokens !== undefined) task.contextTokens = usage.contextTokens;
   const contextInput = contextInputTokens(usage);
   if (contextInput > 0) task.inputTokens = contextInput;
   // Since turn is complete, outputTokens is turn-cumulative. Add to completed base.
@@ -383,6 +389,7 @@ export function addUsage(taskId: string, usage: TaskUsageDelta): void {
 export function setUsageSnapshot(taskId: string, usage: TaskUsageDelta): void {
   const task = store.get(taskId);
   if (!task) return;
+  if (usage.contextTokens !== undefined) task.contextTokens = usage.contextTokens;
   const contextInput = contextInputTokens(usage);
   if (contextInput > 0) task.inputTokens = contextInput;
   // Update task.outputTokens to the base of prior completed turns plus current turn's snapshot.
@@ -664,6 +671,7 @@ function prepareTaskForResume(task: BackgroundTask): void {
   delete task.parkedAt;
   delete task.exitCode;
   delete task.stoppedByUser;
+  delete task.stopCause;
   delete task.result;
   delete task.error;
   // The resumed run streams fresh output; stale text from the previous run
@@ -709,11 +717,13 @@ export interface TaskCompletion {
   killed?: boolean;
   exitCode?: number;
   userInitiated?: boolean;
+  stopCause?: TaskStopCause;
 }
 
 export interface CancelTaskTreeOptions {
   reason: string;
   userInitiated?: boolean;
+  stopCause?: TaskStopCause;
   includeDetached?: boolean;
   suppressRootNotification?: boolean;
 }
@@ -723,6 +733,7 @@ export function completeTaskForRun(ref: TaskRunRef, result: TaskCompletion): boo
     return cancelTaskTree(ref, {
       reason: result.content,
       ...(result.userInitiated === true ? { userInitiated: true } : {}),
+      ...(result.stopCause !== undefined ? { stopCause: result.stopCause } : {}),
     });
   }
   return finishTaskForRun(ref, result);
@@ -762,6 +773,7 @@ function finishTaskForRun(
   delete task.parkedAt;
   if (result.exitCode !== undefined) task.exitCode = result.exitCode;
   if (result.userInitiated === true) task.stoppedByUser = true;
+  if (result.stopCause !== undefined) task.stopCause = result.stopCause;
   task.result = { content: result.content, isError: result.isError };
   if (result.isError) task.error = result.error ?? result.content;
   else delete task.error;
@@ -804,6 +816,15 @@ function agentResultText(
   return undefined;
 }
 
+function notificationNote(
+  task: BackgroundTask,
+  stopCause: TaskStopCause | undefined,
+): string | undefined {
+  if (task.kind === "agent") return AGENT_NOTIFICATION_NOTE;
+  if (stopCause !== undefined) return stopCauseNote(stopCause);
+  return undefined;
+}
+
 function routeBackgroundedNotification(ref: TaskRunRef): void {
   const task = store.get(ref.taskId);
   if (!taskMatchesRun(task, ref) || task.notified) return;
@@ -813,6 +834,7 @@ function routeBackgroundedNotification(ref: TaskRunRef): void {
   const isAgent = task.kind === "agent";
   const failureError = status === "failed" ? task.error : undefined;
   const byUser = status === "killed" && task.stoppedByUser === true;
+  const stopCause = status === "killed" ? task.stopCause : undefined;
   const summary = isAgent
     ? buildAgentSummary(description, status, {
         ...(failureError !== undefined ? { error: failureError } : {}),
@@ -821,7 +843,9 @@ function routeBackgroundedNotification(ref: TaskRunRef): void {
     : buildBashSummary(description, status, {
         ...(task.exitCode !== undefined ? { exitCode: task.exitCode } : {}),
         byUser,
+        ...(stopCause !== undefined ? { stopCause } : {}),
       });
+  const note = notificationNote(task, stopCause);
   const agentResult = isAgent ? agentResultText(task, status) : undefined;
   const agentUsage =
     isAgent && task.endedAt !== undefined
@@ -838,7 +862,7 @@ function routeBackgroundedNotification(ref: TaskRunRef): void {
     status,
     summary,
     ...(isAgent && failureError !== undefined ? { error: failureError } : {}),
-    ...(isAgent ? { note: AGENT_NOTIFICATION_NOTE } : {}),
+    ...(note !== undefined ? { note } : {}),
     ...(agentResult !== undefined && agentResult.length > 0 ? { result: agentResult } : {}),
     ...(agentUsage !== undefined ? { usage: agentUsage } : {}),
   });
@@ -920,6 +944,7 @@ export function cancelTaskTree(ref: TaskRunRef, options: CancelTaskTreeOptions):
         isError: false,
         killed: true,
         ...(options.userInitiated === true ? { userInitiated: true } : {}),
+        ...(options.stopCause !== undefined ? { stopCause: options.stopCause } : {}),
       },
       suppress ? "discarded" : undefined,
       options.includeDetached === true,

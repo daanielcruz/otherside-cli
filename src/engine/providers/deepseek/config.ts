@@ -28,7 +28,16 @@ export const MODELS: readonly ModelEntry[] = [
     contextWindow: 1_000_000,
     autoCompactTokenLimit: 967_000,
     provider: "deepseek",
-    efforts: ["high", "max"],
+    efforts: ["low", "high", "max"],
+    defaultEffort: "max",
+  },
+  {
+    id: "deepseek-flash",
+    displayName: "DeepSeek V4.1 Flash",
+    contextWindow: 1_000_000,
+    autoCompactTokenLimit: 967_000,
+    provider: "deepseek",
+    efforts: ["low", "high", "max"],
     defaultEffort: "max",
   },
   {
@@ -37,7 +46,7 @@ export const MODELS: readonly ModelEntry[] = [
     contextWindow: 1_000_000,
     autoCompactTokenLimit: 967_000,
     provider: "deepseek",
-    efforts: ["high", "max"],
+    efforts: ["low", "high", "max"],
     defaultEffort: "max",
   },
 ];
@@ -54,10 +63,10 @@ export const config: ProviderConfig<"anthropic-messages"> = {
   featureFlags: {
     fastMode: false,
     thinkingSuffix: true,
-    supportsImages: false,
+    supportsImages: true,
   },
   defaultModelId: "deepseek-v4-pro",
-  fallbackEfforts: { levels: ["high", "max"], default: "max" },
+  fallbackEfforts: { levels: ["low", "high", "max"], default: "max" },
   deferredOverrides: PERMISSIVE_DEFERRED,
   promptAdapter: anthropicPromptAdapter,
   recoverableError: (err, ctx, attempt) =>

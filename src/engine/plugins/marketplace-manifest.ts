@@ -11,6 +11,7 @@ export type PluginSource =
 
 export interface MarketplacePluginEntry {
   name: string;
+  version?: string;
   description?: string;
   category?: string;
   tags?: string[];
@@ -92,6 +93,7 @@ export function parseMarketplaceManifest(raw: unknown): MarketplaceManifest | nu
       name: e.name,
       source,
     };
+    if (typeof e.version === "string" && e.version.trim()) item.version = e.version;
     if (typeof e.description === "string") item.description = e.description;
     if (typeof e.category === "string") item.category = e.category;
     if (typeof e.installCount === "number") item.installCount = e.installCount;

@@ -18,7 +18,7 @@ function imagesIn(blocks: ContentBlock[]): string[] {
 describe("buildPostCompactRehydration image carry-forward cap", () => {
   it("caps preserved images to the most-recent 5 across compaction", () => {
     const preserved = Array.from({ length: 12 }, (_, i) => image(`img-${i}`));
-    const { blocks } = buildPostCompactRehydration("default", preserved);
+    const { blocks } = buildPostCompactRehydration(preserved);
     const kept = imagesIn(blocks);
     expect(kept).toHaveLength(5);
     // keeps the newest 5 (slice from the tail), drops the oldest 7
@@ -27,12 +27,12 @@ describe("buildPostCompactRehydration image carry-forward cap", () => {
 
   it("carries all images through when at or below the cap", () => {
     const preserved = [image("a"), image("b"), image("c")];
-    const { blocks } = buildPostCompactRehydration("default", preserved);
+    const { blocks } = buildPostCompactRehydration(preserved);
     expect(imagesIn(blocks)).toEqual(["a", "b", "c"]);
   });
 
   it("emits no image blocks when none are preserved", () => {
-    const { blocks } = buildPostCompactRehydration("default", []);
+    const { blocks } = buildPostCompactRehydration([]);
     expect(imagesIn(blocks)).toHaveLength(0);
   });
 });

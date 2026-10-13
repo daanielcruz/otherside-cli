@@ -1,17 +1,49 @@
 import type { EffortLevel } from "@/kernel/std/types/effort.ts";
 
+/** A model the catalog gives a thinking level is asked for that level instead of a budget. */
+export type AntigravityThinkingLevel = "LOW" | "MEDIUM" | "HIGH";
+
 export interface AntigravityModelSpec {
   wireModel: string;
   maxOutputTokens: number;
   thinkingBudget: number;
+  thinkingLevel?: AntigravityThinkingLevel;
   modelEnum: string;
   usedClaude: boolean;
 }
 
 // Spec values are copied verbatim from live fetchAvailableModels: catalog key →
 // wireModel, entry `model` → modelEnum, thinkingBudget as listed (-1 = server-side
-// dynamic thinking on High tiers). The catalog is filtered by the declared client
-// version, so re-read it with the current version before adding a family.
+// dynamic thinking on High tiers); an entry's `thinkingLevel` 1/2/3 is LOW/MEDIUM/HIGH.
+// The catalog is filtered by the declared client version, so re-read it with the
+// current version before adding a family.
+const ARGON_4_HIGH: AntigravityModelSpec = {
+  wireModel: "gemini-4-argon-high",
+  maxOutputTokens: 65536,
+  thinkingBudget: -1,
+  thinkingLevel: "HIGH",
+  modelEnum: "MODEL_PLACEHOLDER_M417",
+  usedClaude: false,
+};
+
+const ARGON_4_MEDIUM: AntigravityModelSpec = {
+  wireModel: "gemini-4-argon-medium",
+  maxOutputTokens: 65536,
+  thinkingBudget: -1,
+  thinkingLevel: "MEDIUM",
+  modelEnum: "MODEL_PLACEHOLDER_M418",
+  usedClaude: false,
+};
+
+const ARGON_4_LOW: AntigravityModelSpec = {
+  wireModel: "gemini-4-argon-low",
+  maxOutputTokens: 65536,
+  thinkingBudget: -1,
+  thinkingLevel: "LOW",
+  modelEnum: "MODEL_PLACEHOLDER_M419",
+  usedClaude: false,
+};
+
 const FLASH_38_HIGH: AntigravityModelSpec = {
   wireModel: "gemini-3.8-flash-high",
   maxOutputTokens: 65536,
@@ -101,6 +133,10 @@ const PRO_31_LOW: AntigravityModelSpec = {
 };
 
 const SPECS: Record<string, AntigravityModelSpec> = {
+  "gemini-4-argon": ARGON_4_MEDIUM,
+  "gemini-4-argon-high": ARGON_4_HIGH,
+  "gemini-4-argon-medium": ARGON_4_MEDIUM,
+  "gemini-4-argon-low": ARGON_4_LOW,
   "gemini-3.8-flash": FLASH_38_HIGH,
   "gemini-3.8-flash-high": FLASH_38_HIGH,
   "gemini-3.8-flash-medium": FLASH_38_MEDIUM,
@@ -143,6 +179,12 @@ export function resolveAntigravityModel(
   modelId: string,
   effort?: EffortLevel | null,
 ): AntigravityModelSpec {
+  if (modelId === "gemini-4-argon") {
+    if (effort === "low") return ARGON_4_LOW;
+    if (effort === "high") return ARGON_4_HIGH;
+    return ARGON_4_MEDIUM;
+  }
+
   const eff = effort ?? "high";
 
   if (modelId === "gemini-3.8-flash") {

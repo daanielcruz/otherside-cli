@@ -11,7 +11,7 @@ const MAIN_ASSISTANT_RECORD = {
   type: "assistant_message",
   ts: "2026-07-02T10:00:00.000Z",
   provider: "codex",
-  model: "gpt-5.5-codex",
+  model: "gpt-5.6-terra-codex",
   content: [{ type: "text", text: "hi" }],
   usage: {
     request_count: 1,
@@ -25,7 +25,7 @@ const MAIN_ASSISTANT_RECORD = {
 
 const FORK_USAGE_RECORD = usageRecordFromDelta({
   provider: "codex",
-  model: "gpt-5.5-codex",
+  model: "gpt-5.6-terra-codex",
   sessionId: "s1",
   usage: {
     inputTokens: 90_000,

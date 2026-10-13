@@ -16,9 +16,9 @@ describe("computeAutoCompactRemainingPct", () => {
   });
 
   it("shows 0% only at the model compact threshold", () => {
-    expect(computeAutoCompactRemainingPct(107_999, "gpt-5.3-codex-spark", "codex")).toBe(1);
-    expect(computeAutoCompactRemainingPct(108_000, "gpt-5.3-codex-spark", "codex")).toBe(0);
-    expect(computeAutoCompactRemainingPct(108_001, "gpt-5.3-codex-spark", "codex")).toBe(0);
+    expect(computeAutoCompactRemainingPct(334_799, "gpt-5.6-luna", "codex")).toBe(1);
+    expect(computeAutoCompactRemainingPct(334_800, "gpt-5.6-luna", "codex")).toBe(0);
+    expect(computeAutoCompactRemainingPct(334_801, "gpt-5.6-luna", "codex")).toBe(0);
   });
 
   it("uses provider-scoped compact limits when model ids collide", () => {

@@ -114,7 +114,7 @@ const DEFERRED_TOOL_PLACEHOLDER: ProviderToolDeclaration = {
 
 function inputSchemaForSubagent(schema: ToolSchema, ctx: RequestContext): Record<string, unknown> {
   if (schema.name === "Agent") {
-    return buildAgentInputSchema(ctx.provider, ctx.orchestrationMode ?? "disabled");
+    return buildAgentInputSchema(ctx.provider, ctx.orchestrationMode ?? "disabled", false);
   }
   return typeof schema.inputSchema.type === "string"
     ? schema.inputSchema
@@ -128,6 +128,7 @@ function toSubagentDeclaration(schema: ToolSchema, ctx: RequestContext): Provide
       providerId: ctx.provider,
       model: ctx.model,
       orchestrationMode: ctx.orchestrationMode ?? "disabled",
+      session: { id: ctx.sessionId, permissionMode: ctx.permissionMode },
     }),
     input_schema: inputSchemaForSubagent(schema, ctx),
   };
@@ -250,6 +251,7 @@ export function buildSubagentBaseDeclarations(
         providerId: provider.id,
         model: ctx.model,
         orchestrationMode: ctx.orchestrationMode ?? "disabled",
+        session: { id: ctx.sessionId, permissionMode: ctx.permissionMode },
       }),
       input_schema: inputSchemaForSubagent(schema, ctx),
     });
@@ -270,6 +272,7 @@ export function buildSubagentBaseDeclarations(
         providerId: provider.id,
         model: ctx.model,
         orchestrationMode: ctx.orchestrationMode ?? "disabled",
+        session: { id: ctx.sessionId, permissionMode: ctx.permissionMode },
       }),
       input_schema:
         typeof schema.inputSchema.type === "string"

@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from "bun:test";
+import { afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,6 +11,7 @@ import {
   forceAnnounceDeferredTool,
   pruneAnnouncedMcpTools,
 } from "@/engine/tools/deferred.ts";
+import { forgetDedicatedToolSteer } from "@/engine/tools/dynamic/Bash.ts";
 import { registerAllBuiltins } from "@/engine/tools/register-builtins.ts";
 import * as toolRegistry from "@/engine/tools/registry.ts";
 import { assembleProviderTurn } from "@/engine/translator/assemble.ts";
@@ -42,9 +43,17 @@ function assembledAgentDescription(
   ctxOverrides: Partial<RequestContext>,
   config: UserConfig = DEFAULT_CONFIG,
 ): string {
+  return assembledToolDescription("Agent", ctxOverrides, config);
+}
+
+function assembledToolDescription(
+  name: string,
+  ctxOverrides: Partial<RequestContext>,
+  config: UserConfig = DEFAULT_CONFIG,
+): string {
   const ctx: RequestContext = {
     provider: "anthropic",
-    model: "claude-opus-4-8",
+    model: "claude-sonnet-5",
     effort: null,
     permissionMode: "default",
     sessionId: "tool-description-fixture",
@@ -61,9 +70,9 @@ function assembledAgentDescription(
     currentDate: "2026-07-12",
     gitStatus: "On branch main",
   });
-  const agentTool = turn.tools.find((tool) => tool.name === "Agent");
-  expect(agentTool).toBeDefined();
-  return agentTool!.description;
+  const tool = turn.tools.find((candidate) => candidate.name === name);
+  expect(tool).toBeDefined();
+  return tool!.description;
 }
 
 describe("provider tool declarations", () => {
@@ -343,6 +352,39 @@ describe("provider tool declarations", () => {
     expect(subagentDescription).toContain("## Writing the prompt");
   });
 
+  it("opens When to use with what an agent costs for Sonnet 5.5 and Haiku 5.5 only", () => {
+    const costFirst = "A fresh agent costs more than it looks.";
+    const standard = "Reach for this when the task matches an available agent type";
+    for (const model of ["claude-sonnet-5-5", "claude-haiku-5-5"]) {
+      const description = assembledAgentDescription({ model });
+      expect(description).toContain(costFirst);
+      expect(description).toContain("When in doubt, don't spawn.");
+      expect(description).toContain(
+        "you do not understand the task well enough to hand it off.\n\n- The agent's final message",
+      );
+      expect(description).not.toContain(standard);
+    }
+    const opus = assembledAgentDescription({ model: "claude-opus-5-5" });
+    expect(opus).toContain(standard);
+    expect(opus).not.toContain(costFirst);
+    // The full prompt tier carries no "When to use" section at all.
+    expect(assembledAgentDescription({ model: "claude-sonnet-5" })).not.toContain(costFirst);
+  });
+
+  it("tells only the main agent that a fork ignores the effort parameter", () => {
+    const forkNote = 'Ignored for subagent_type: "fork": a fork runs at your own effort.';
+    const effortOf = (mainAgent: boolean): string | undefined => {
+      const agent = providerToolDeclarations(providers.get("anthropic"), undefined, {
+        mainAgent,
+      }).find((tool) => tool.name === "Agent");
+      const properties = agent?.input_schema.properties as Record<string, { description: string }>;
+      return properties.effort?.description;
+    };
+    expect(effortOf(true)).toEndWith(` ${forkNote}`);
+    expect(effortOf(false)).toStartWith("Reasoning effort for this agent.");
+    expect(effortOf(false)).not.toContain(forkNote);
+  });
+
   it("drops announced MCP tools removed during a runtime refresh", () => {
     const retained = "mcp__playwright__navigate";
     const removed = "mcp__playwright__screenshot";
@@ -403,5 +445,34 @@ describe("provider tool declarations", () => {
       clearDeferredAnnouncements();
       for (const announcement of previousAnnouncements) forceAnnounceDeferredTool(announcement);
     }
+  });
+});
+
+describe("lean Bash description per session", () => {
+  const STEER = "IMPORTANT: Avoid using this tool to run";
+
+  afterEach(() => {
+    for (const id of ["lean-bash-yolo", "lean-bash-prompted"]) forgetDedicatedToolSteer(id);
+  });
+
+  it("drops the dedicated-tool steer for a session that opened in yolo", () => {
+    const bash = (permissionMode: RequestContext["permissionMode"]): string =>
+      assembledToolDescription("Bash", {
+        model: "claude-opus-5-5",
+        sessionId: "lean-bash-yolo",
+        permissionMode,
+      });
+    expect(bash("yolo")).not.toContain(STEER);
+    expect(bash("accept-edits")).not.toContain(STEER);
+  });
+
+  it("keeps the steer for a session that opened with permission prompts", () => {
+    const bash = assembledToolDescription("Bash", {
+      model: "claude-opus-5-5",
+      sessionId: "lean-bash-prompted",
+      permissionMode: "accept-edits",
+    });
+    expect(bash).toContain(STEER);
+    expect(bash).toContain("- Command output is displayed to you, not reliably to the user.");
   });
 });

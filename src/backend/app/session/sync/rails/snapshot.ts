@@ -17,6 +17,7 @@ import {
 // is a compile error instead of the provider silently missing from the app.
 const CATALOG_PROVIDER_SLUGS: Record<ProviderId, ProviderSlug> = {
   anthropic: "anthropic",
+  "anthropic-cloud": "anthropic-cloud",
   antigravity: "antigravity",
   codex: "codex",
   deepseek: "deepseek",

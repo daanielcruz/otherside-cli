@@ -3,6 +3,7 @@ import type {
   ErrorClassifier,
   ErrorClassifierInput,
 } from "@/engine/transport/_infra/classify/error-classifier.ts";
+import { requestTooLargeMessage } from "@/engine/transport/_infra/classify/request-size.ts";
 import type {
   ErrorAction,
   ErrorActionId,
@@ -67,6 +68,20 @@ export function classifyBaseline(input: ErrorClassifierInput): ErrorMeta {
     };
   }
 
+  // Bytes, not tokens: switching to a model with a larger context window cannot help,
+  // while compacting replaces the images that usually account for the size.
+  if (decision.kind === "fail" && decision.reason === "request_too_large") {
+    return {
+      ...base,
+      errorClass: "request-too-large",
+      modal: true,
+      retryable: false,
+      title: "Request too large",
+      summary: decision.userMessage ?? requestTooLargeMessage(),
+      actions: actions("compact", "cancel"),
+    };
+  }
+
   if (decision.kind === "fail" && decision.reason === "context_window_exceeded") {
     return {
       ...base,
@@ -103,6 +118,7 @@ export function classifyBaseline(input: ErrorClassifierInput): ErrorMeta {
       retryable: true,
       title: "The request failed after repeated attempts",
       summary:
+        (decision.kind === "fail" ? decision.userMessage : undefined) ??
         "The model request did not complete. Retry with the same history, switch model, or cancel.",
       actions: actions("retry", "switch-model", "cancel"),
     };
@@ -115,7 +131,9 @@ export function classifyBaseline(input: ErrorClassifierInput): ErrorMeta {
       modal: true,
       retryable: true,
       title: "Network error",
-      summary: "A transient network error interrupted the request.",
+      summary:
+        (decision.kind === "fail" ? decision.userMessage : undefined) ??
+        "A transient network error interrupted the request.",
       actions: actions("retry", "cancel"),
     };
   }

@@ -5,6 +5,7 @@ export type ErrorKind =
   | "network-transient"
   | "auth"
   | "context-window"
+  | "request-too-large"
   | "tool"
   | "subagent-background"
   | "hook"
@@ -17,6 +18,7 @@ export const ERROR_KIND_HTTP_STATUS: Readonly<Record<ErrorKind, number | null>> 
   "network-transient": 503,
   auth: 401,
   "context-window": 413,
+  "request-too-large": 413,
   tool: null,
   "subagent-background": null,
   hook: null,
@@ -38,6 +40,28 @@ export class QuotaExhaustedError extends Error {
     this.provider = opts.provider;
     this.model = opts.model;
     this.resetEpochMs = opts.resetEpochMs;
+  }
+}
+
+/** A message followed by the page that verifies the account, when there is one. */
+export function withVerificationLink(message: string, verificationUrl: string): string {
+  return verificationUrl ? `${message} — verify at ${verificationUrl}` : message;
+}
+
+/**
+ * The provider refuses the account until its holder verifies it at `verificationUrl`.
+ * The message carries the link too, for any surface that shows only the message.
+ */
+export class AccountVerificationError extends Error {
+  provider: string;
+  reason: string;
+  verificationUrl: string;
+  constructor(opts: { provider: string; reason: string; verificationUrl: string }) {
+    super(withVerificationLink(opts.reason, opts.verificationUrl));
+    this.name = "AccountVerificationError";
+    this.provider = opts.provider;
+    this.reason = opts.reason;
+    this.verificationUrl = opts.verificationUrl;
   }
 }
 

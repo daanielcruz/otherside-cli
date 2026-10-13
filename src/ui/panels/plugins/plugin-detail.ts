@@ -1,4 +1,5 @@
-import { findPluginInstallation } from "@/engine/plugins/installations.ts";
+import { resolve } from "node:path";
+import { findPluginInstallation, type PluginInstallation } from "@/engine/plugins/installations.ts";
 import { type LoadedPlugin, resolvePluginComponents } from "@/engine/plugins/loader.ts";
 import { gatherPluginMcpServers } from "@/engine/plugins/mcp.ts";
 import * as plugins from "@/engine/plugins/registry.ts";
@@ -13,6 +14,7 @@ import {
   MENU_ROW_WIDTH,
   type PanelDetailView,
 } from "@/ui/panels/plugins/chrome.ts";
+import type { PanelNotice } from "@/ui/panels/plugins/panel-state.ts";
 import { Color, Glyph } from "@/ui/theme/theme.ts";
 
 export interface InstalledDetailsAction {
@@ -67,7 +69,7 @@ export function pluginDetailView(input: {
   contentWidth: number;
   actions: readonly InstalledDetailsAction[];
   actionIndex: number;
-  notice: string | null;
+  notice: PanelNotice | null;
 }): PanelDetailView {
   const { plugin, contentWidth, actions, actionIndex, notice } = input;
   const identity = plugins.pluginIdForPlugin(plugin);
@@ -90,10 +92,11 @@ export function pluginDetailView(input: {
       DETAIL_ROW_WIDTH,
     ),
   );
-  if (plugin.manifest.version) {
+  const version = versionValue(plugin, installation);
+  if (version) {
     body.push(
       renderPanelRowLine(
-        { label: "Version", value: plugin.manifest.version, muted: true },
+        { label: "Version", value: version, muted: true },
         contentWidth,
         DETAIL_ROW_WIDTH,
       ),
@@ -166,10 +169,32 @@ export function pluginDetailView(input: {
   }
   if (notice) {
     body.push("");
-    body.push(renderTextWithStyles(notice, { color: Color.muted }));
+    body.push(noticeLine(notice));
   }
 
   return { body, footerHints: INSTALLED_DETAILS_HINTS };
+}
+
+/**
+ * The version the drill-down reports. An update installed while the session still
+ * runs the previous copy names the recorded version and what activates it.
+ */
+function versionValue(
+  plugin: LoadedPlugin,
+  installation: PluginInstallation | undefined,
+): string | undefined {
+  const loaded = plugin.manifest.version;
+  if (!installation || resolve(installation.installPath) === resolve(plugin.path)) return loaded;
+  const pending = `${installation.version}${Glyph.divider}Run /reload to activate`;
+  return loaded ? `${loaded} ${Glyph.arrowRight} ${pending}` : pending;
+}
+
+/** A failed action reads as an error; anything else is guidance under the menu. */
+function noticeLine(notice: PanelNotice): string {
+  if (notice.isError) {
+    return renderTextWithStyles(`${Glyph.cross} ${notice.text}`, { color: Color.error });
+  }
+  return renderTextWithStyles(notice.text, { color: Color.muted });
 }
 
 /** A plugin that would not load, with every reason it gave and how to recover. */

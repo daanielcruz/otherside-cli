@@ -9,6 +9,7 @@ import {
   writeSync,
 } from "node:fs";
 import { isErrno } from "@/kernel/std/errno.ts";
+import { isProcessAlive } from "@/kernel/std/proc/process-alive.ts";
 
 const DEFAULT_RETRY_MS = 50;
 const DEFAULT_MAX_WAIT_MS = 5_000;
@@ -34,15 +35,6 @@ interface FileLockOptions {
 
 function lockPath(target: string): string {
   return `${target}.lock`;
-}
-
-function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return isErrno(error, "EPERM");
-  }
 }
 
 function readLockMeta(path: string): LockMeta | null {

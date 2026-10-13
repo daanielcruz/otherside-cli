@@ -14,23 +14,38 @@ export type TierModel = {
 };
 
 export const LEAN_MODELS: readonly TierModel[] = [
-  { provider: "anthropic", name: "claude-opus-5", pos: 1 },
+  { provider: "anthropic", name: "claude-opus-5-5", pos: 1 },
+  { provider: "anthropic", name: "claude-sonnet-5-5", pos: 2 },
+  { provider: "anthropic", name: "claude-haiku-5-5", pos: 3 },
 ];
 
 export function isLeanModel(provider: ProviderId, model: string): boolean {
   return LEAN_MODELS.some((m) => m.provider === provider && m.name === baseModelId(model));
 }
 
+// Models whose Agent tool opens its "When to use" with what a delegated agent
+// costs before when to reach for one.
+const DELEGATION_COST_FIRST_MODELS: readonly Pick<TierModel, "provider" | "name">[] = [
+  { provider: "anthropic", name: "claude-sonnet-5-5" },
+  { provider: "anthropic", name: "claude-haiku-5-5" },
+];
+
+export function weighsDelegationCostFirst(provider: ProviderId, model: string): boolean {
+  return DELEGATION_COST_FIRST_MODELS.some(
+    (m) => m.provider === provider && m.name === baseModelId(model),
+  );
+}
+
 export const EMPEROR_MODELS: readonly TierModel[] = [
-  { provider: "anthropic", name: "claude-opus-5", pos: 1 },
+  { provider: "anthropic", name: "claude-opus-5-5", pos: 1 },
   { provider: "codex", name: "gpt-6-astra", pos: 2 },
 ];
 
 export const SHOGUN_MODELS: readonly TierModel[] = [
-  { provider: "xai", name: "grok-4.6", pos: 1 },
+  { provider: "xai", name: "grok-4.7", pos: 1 },
   { provider: "kimi", name: "k3", pos: 2 },
   { provider: "codex", name: "gpt-5.6-terra", pos: 3 },
-  { provider: "anthropic", name: "claude-sonnet-5", pos: 4 },
+  { provider: "anthropic", name: "claude-sonnet-5-5", pos: 4 },
   { provider: "glm", name: "glm-5.2", pos: 5 },
 ];
 
@@ -47,8 +62,8 @@ export const SAMURAI_MODELS: readonly TierModel[] = [
   { provider: "antigravity", name: "gemini-3.8-flash-low", pos: 1 },
   { provider: "antigravity", name: "gemini-3.8-flash-medium", pos: 2 },
   { provider: "glm", name: "glm-5-turbo", pos: 3 },
-  { provider: "anthropic", name: "claude-haiku-4-5", pos: 4 },
-  { provider: "deepseek", name: "deepseek-v4-flash", pos: 5 },
+  { provider: "anthropic", name: "claude-haiku-5-5", pos: 4 },
+  { provider: "deepseek", name: "deepseek-flash", pos: 5 },
   { provider: "minimax", name: "minimax-m3", pos: 6 },
   { provider: "kimi", name: "kimi-for-coding-highspeed", pos: 7 },
 ];

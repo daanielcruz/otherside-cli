@@ -14,9 +14,11 @@ import {
   emptyTokenTotals,
   hasTokenUsage,
   positiveTokenDelta,
+  type TokenTotals,
 } from "@/engine/session/usage/provider.ts";
 import { type ContextUsageSnapshot, contextUsageTotal } from "@/engine/session/usage/snapshot.ts";
 import type { AgentEvent } from "@/kernel/std/types/events.ts";
+import type { MessageUsageSnapshot } from "@/kernel/std/types/message.ts";
 import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 import type { BrokerHandle } from "@/kernel/std/types/request.ts";
 
@@ -43,12 +45,7 @@ export interface TurnUsageTrackerDeps {
   ) => void;
   mergeContextUsageSnapshot: (
     previous: ContextUsageSnapshot,
-    event: {
-      inputTokens?: number | undefined;
-      outputTokens?: number | undefined;
-      cacheCreationInputTokens?: number | undefined;
-      cacheReadInputTokens?: number | undefined;
-    },
+    event: Partial<ContextUsageSnapshot>,
   ) => ContextUsageSnapshot;
   setProgressInputTokens: SetState<number>;
   setLiveOutputTokens: (tokens: number) => void;
@@ -56,13 +53,7 @@ export interface TurnUsageTrackerDeps {
 
 export interface TurnUsageTracker {
   applyToProgress: (ev: AgentEvent) => void;
-  applyUsageEvent: (ev: {
-    inputTokens?: number;
-    outputTokens?: number;
-    thoughtTokens?: number;
-    cacheCreationInputTokens?: number;
-    cacheReadInputTokens?: number;
-  }) => void;
+  applyUsageEvent: (ev: Partial<MessageUsageSnapshot>) => void;
   flushUsage: () => void;
   flushTurnEnd: () => void;
   takeRequestUsageStamp: () => AssistantRequestUsage | null;
@@ -86,14 +77,17 @@ export function createTurnUsageTracker(deps: TurnUsageTrackerDeps): TurnUsageTra
 
   let progressState = emptyProgressState();
   let sawUsageEvent = false;
-  let lastUsageSnapshot = emptyTokenTotals();
+  let lastUsageSnapshot: TokenTotals & ContextUsageSnapshot = emptyTokenTotals();
+  let pendingContextUpdate = false;
+  let pendingContextStamp = false;
   let pendingUsage = emptyTokenTotals();
   let requestCounted = false;
-  let requestUsage = emptyTokenTotals();
+  let stampedUsage = emptyTokenTotals();
   let requestStamped = false;
 
   const flushUsage = (): void => {
-    if (!hasTokenUsage(pendingUsage)) return;
+    const hasSpend = hasTokenUsage(pendingUsage);
+    if (!hasSpend && !pendingContextUpdate) return;
     recordProviderUsage(
       turnState.provider,
       turnState.model,
@@ -102,24 +96,37 @@ export function createTurnUsageTracker(deps: TurnUsageTrackerDeps): TurnUsageTra
       pendingUsage.thoughtTokens,
       pendingUsage.cacheCreationInputTokens,
       pendingUsage.cacheReadInputTokens,
-      { countRequest: !requestCounted, contextUsage: lastUsageSnapshot },
+      { countRequest: !requestCounted && hasSpend, contextUsage: lastUsageSnapshot },
     );
-    requestCounted = true;
+    if (hasSpend) requestCounted = true;
     pendingUsage = emptyTokenTotals();
+    pendingContextUpdate = false;
   };
 
   const takeRequestUsageStamp = (): AssistantRequestUsage | null => {
-    if (!hasTokenUsage(requestUsage)) return null;
+    const uncommitted = positiveTokenDelta(stampedUsage, lastUsageSnapshot);
+    const hasSpend = hasTokenUsage(uncommitted);
+    if (!hasSpend && !pendingContextStamp) return null;
     const stamp: AssistantRequestUsage = {
-      input_tokens: requestUsage.inputTokens,
-      output_tokens: requestUsage.outputTokens,
-      thought_tokens: requestUsage.thoughtTokens,
-      cache_creation_input_tokens: requestUsage.cacheCreationInputTokens,
-      cache_read_input_tokens: requestUsage.cacheReadInputTokens,
-      request_count: requestStamped ? 0 : 1,
+      ...(lastUsageSnapshot.contextTokens !== undefined
+        ? { contextTokens: lastUsageSnapshot.contextTokens }
+        : {}),
+      input_tokens: uncommitted.inputTokens,
+      output_tokens: uncommitted.outputTokens,
+      thought_tokens: uncommitted.thoughtTokens,
+      cache_creation_input_tokens: uncommitted.cacheCreationInputTokens,
+      cache_read_input_tokens: uncommitted.cacheReadInputTokens,
+      request_count: requestStamped || !hasSpend ? 0 : 1,
     };
-    requestStamped = true;
-    requestUsage = emptyTokenTotals();
+    if (hasSpend) requestStamped = true;
+    stampedUsage = {
+      inputTokens: lastUsageSnapshot.inputTokens,
+      outputTokens: lastUsageSnapshot.outputTokens,
+      thoughtTokens: lastUsageSnapshot.thoughtTokens,
+      cacheCreationInputTokens: lastUsageSnapshot.cacheCreationInputTokens,
+      cacheReadInputTokens: lastUsageSnapshot.cacheReadInputTokens,
+    };
+    pendingContextStamp = false;
     return stamp;
   };
 
@@ -154,10 +161,13 @@ export function createTurnUsageTracker(deps: TurnUsageTrackerDeps): TurnUsageTra
     const usageDelta = positiveTokenDelta(lastUsageSnapshot, nextUsageSnapshot);
     setProgressInputTokens((prev) => prev + usageDelta.inputTokens);
     pendingUsage = addTokenTotals(pendingUsage, usageDelta);
-    requestUsage = addTokenTotals(requestUsage, usageDelta);
     lastUsageSnapshot = nextUsageSnapshot;
+    if (ev.contextTokens !== undefined) {
+      pendingContextUpdate = true;
+      pendingContextStamp = true;
+    }
     sawUsageEvent = true;
-    if (contextUsageTotal(usageDelta) > 0) flushUsage();
+    if ((contextUsageTotal(usageDelta) ?? 0) > 0 || pendingContextUpdate) flushUsage();
   };
 
   const resetForMessageStart = (): void => {
@@ -165,9 +175,11 @@ export function createTurnUsageTracker(deps: TurnUsageTrackerDeps): TurnUsageTra
     const straggler = takeRequestUsageStamp();
     if (straggler) void appendUsageOnlyAssistantRecord(straggler).catch(() => {});
     lastUsageSnapshot = emptyTokenTotals();
+    pendingContextUpdate = false;
+    pendingContextStamp = false;
     pendingUsage = emptyTokenTotals();
     requestCounted = false;
-    requestUsage = emptyTokenTotals();
+    stampedUsage = emptyTokenTotals();
     requestStamped = false;
   };
 

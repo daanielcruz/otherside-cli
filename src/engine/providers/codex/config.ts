@@ -77,7 +77,7 @@ export const config: ProviderConfig<"codex-responses"> = {
   defaultModelId: "gpt-6-astra",
   fallbackEfforts: {
     levels: ["low", "medium", "high", "xhigh"],
-    default: "xhigh",
+    default: "high",
   },
   deferredOverrides: {
     excludeFromCatalog: [],

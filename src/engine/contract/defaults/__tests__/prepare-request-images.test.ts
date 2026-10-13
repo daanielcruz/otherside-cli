@@ -123,7 +123,7 @@ describe("request image preparation", () => {
       [],
     ) as Message[];
     const codex = captureCodex.translateRequest(
-      context("codex", "gpt-5.5"),
+      context("codex", "gpt-5.6-terra"),
       messages,
       [],
     ) as Message[];
@@ -321,7 +321,7 @@ describe("request image preparation", () => {
     ];
 
     const prepared = captureCodex.translateRequest(
-      context("codex", "gpt-5.5"),
+      context("codex", "gpt-5.6-terra"),
       messages,
       [],
     ) as Message[];

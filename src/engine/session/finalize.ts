@@ -13,6 +13,7 @@ import {
 } from "@/engine/session/infra.ts";
 import { restampSessionTitles } from "@/engine/session/title/store.ts";
 import { clearReadStateForScope, MAIN_SCOPE } from "@/engine/tools/builtins/read/state.ts";
+import { forgetDedicatedToolSteer } from "@/engine/tools/dynamic/Bash.ts";
 import { clearAssembledTurn } from "@/engine/translator/assembled.ts";
 import { shutdownAll as shutdownAllLspServers } from "@/kernel/lsp/client.ts";
 import { closeAllClients } from "@/kernel/mcp/client/registry.ts";
@@ -34,6 +35,7 @@ export function cleanupSessionHeapState(sessionId: string, cwd: string): void {
   releaseSessionForkChains(sessionId);
   evictFileHistoryCache(sessionId);
   clearCodexSessionState(sessionId);
+  forgetDedicatedToolSteer(sessionId);
   invalidateOffsetIndex(sessionPathForCwd(cwd, sessionId));
 }
 

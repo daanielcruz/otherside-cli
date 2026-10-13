@@ -70,6 +70,9 @@ export function accountFingerprint(provider: ProviderId): string {
       const tokens = bundle.anthropic;
       return tokens?.accountUuid ?? "";
     }
+    case "anthropic-cloud": {
+      return bundle["anthropic-cloud"]?.accountUuid ?? "";
+    }
     case "codex": {
       const tokens = bundle.codex;
       return tokens?.accountId ?? "";

@@ -19,7 +19,11 @@ import {
   CodexWsBackpressureController,
   type WsBackpressureController,
 } from "@/engine/providers/codex/transport/ws-backpressure.ts";
-import { buildWsFrame, sendWsJsonFrame } from "@/engine/providers/codex/transport/ws-frames.ts";
+import {
+  buildWsFrame,
+  buildWsPrewarmFrame,
+  sendWsJsonFrame,
+} from "@/engine/providers/codex/transport/ws-frames.ts";
 import {
   buildWsFrameRouter,
   CodexWsClosedBeforeCompletionError,
@@ -262,17 +266,8 @@ export async function* streamWs(ctx: RequestContext, body: unknown): AsyncIterab
   }
 
   try {
-    const src = (body ?? {}) as Record<string, unknown>;
-
     if (prewarmMetadata) {
-      const prewarmFrame: Record<string, unknown> = { type: "response.create" };
-      if (src.model !== undefined) prewarmFrame.model = src.model;
-      if (src.instructions !== undefined) prewarmFrame.instructions = src.instructions;
-      if (src.tools !== undefined) prewarmFrame.tools = src.tools;
-      prewarmFrame.generate = false;
-      prewarmFrame.input = [];
-      if (src.prompt_cache_key !== undefined) prewarmFrame.prompt_cache_key = src.prompt_cache_key;
-      prewarmFrame.client_metadata = prewarmMetadata.clientMetadata;
+      const prewarmFrame = buildWsPrewarmFrame(body, prewarmMetadata);
       const prewarmSend = sendWsJsonFrame(sock.ws, prewarmFrame, {
         ...rawCaptureContext,
         direction: "outbound",

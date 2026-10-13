@@ -8,6 +8,14 @@ export function trimmedStringOrUndefined(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+export function nonNegativeFiniteOrUndefined(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+export function nullableNonNegativeFiniteOrUndefined(value: unknown): number | null | undefined {
+  return value === null ? null : nonNegativeFiniteOrUndefined(value);
+}
+
 export function integerOrUndefined(value: unknown): number | undefined {
   return typeof value === "number" && Number.isInteger(value) ? value : undefined;
 }

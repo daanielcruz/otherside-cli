@@ -27,6 +27,8 @@ export interface SlashContext {
     summary?: string,
   ) => void;
   onCompactRetry?: (attempt: number, maxAttempts: number, delayMs: number, reason: string) => void;
+  /** The summary stream answered again after a retry. */
+  onCompactRetrySettled?: () => void;
   onCompactProgress?: (charsDelta: number) => void;
   onCompactStart?: (info: { preTokens: number }) => void;
   onCompactDone?: (info: {

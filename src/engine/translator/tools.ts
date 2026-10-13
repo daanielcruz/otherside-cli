@@ -1,5 +1,6 @@
 import { isWorkflowEnabled } from "@/engine/background/workflows/runtime/gate.ts";
 import { adapterExcludedBaseTools } from "@/engine/contract/prompt-adapter.ts";
+import { weighsDelegationCostFirst } from "@/engine/model/tier/tiers.ts";
 import { isLeanPromptForModel } from "@/engine/providers/_shared/prompt-tier.ts";
 import { resolveImageGeneratorProvider } from "@/engine/providers/image-generation.ts";
 import { editToolDescription } from "@/engine/tools/builtins/edit/edit.ts";
@@ -13,7 +14,7 @@ import {
   buildTierAwareAgentDescription,
 } from "@/engine/tools/dynamic/Agent.ts";
 import { getAskUserQuestionToolDescription } from "@/engine/tools/dynamic/AskUserQuestion.ts";
-import { getBashPrompt } from "@/engine/tools/dynamic/Bash.ts";
+import { getBashPrompt, leanDedicatedToolSteer } from "@/engine/tools/dynamic/Bash.ts";
 import { getWebFetchDescription } from "@/engine/tools/dynamic/WebFetch.ts";
 import { buildWorkflowDescription } from "@/engine/tools/dynamic/Workflow.ts";
 import { writeToolDescription } from "@/engine/tools/dynamic/Write.ts";
@@ -28,6 +29,7 @@ import { isMcpToolName } from "@/kernel/mcp/index.ts";
 import { hasWholeToolDenyRule } from "@/kernel/permissions/index.ts";
 import type { PermissionRule } from "@/kernel/permissions/types.ts";
 import type { OrchestrationMode } from "@/kernel/std/types/orchestration-mode.ts";
+import type { PermissionMode } from "@/kernel/std/types/permission-mode.ts";
 import { hasCredentialSync } from "@/kernel/storage/credentials.ts";
 
 export interface ProviderToolDescriptionOptions {
@@ -36,6 +38,21 @@ export interface ProviderToolDescriptionOptions {
   mainAgent?: boolean;
   orchestrationMode?: OrchestrationMode;
   workflowSizeGuideline?: UserConfig["workflowSizeGuideline"];
+  session?: ToolDescriptionSession;
+}
+
+/** The session a description is assembled for, when the caller has one. */
+export interface ToolDescriptionSession {
+  id: string;
+  permissionMode: PermissionMode;
+}
+
+function bashDescription(lean: boolean, session: ToolDescriptionSession | undefined): string {
+  if (!lean || session === undefined) return getBashPrompt({ lean });
+  return getBashPrompt({
+    lean,
+    dedicatedToolSteer: leanDedicatedToolSteer(session.id, session.permissionMode),
+  });
 }
 
 export function providerToolDescription(
@@ -48,7 +65,12 @@ export function providerToolDescription(
     case "Agent":
       return opts.orchestrationMode === "feudalism"
         ? buildTierAwareAgentDescription(opts.providerId, mainAgent)
-        : buildAgentDescription({ lean, mainAgent });
+        : buildAgentDescription({
+            lean,
+            mainAgent,
+            delegationCostFirst:
+              opts.model !== undefined && weighsDelegationCostFirst(opts.providerId, opts.model),
+          });
     case "Workflow":
       return buildWorkflowDescription(
         opts.providerId,
@@ -64,7 +86,7 @@ export function providerToolDescription(
     case "Skill":
       return getSkillToolDescription({ lean });
     case "Bash":
-      return getBashPrompt({ lean });
+      return bashDescription(lean, opts.session);
     case "Write":
       return writeToolDescription({ lean });
     case "WebFetch":
@@ -82,6 +104,7 @@ export function providerToolDeclarations(
     mainAgent?: boolean;
     permissionRules?: readonly PermissionRule[];
     orchestrationMode?: OrchestrationMode;
+    session?: ToolDescriptionSession;
   } = {},
 ): ProviderToolDeclaration[] {
   // The session's mode when the caller carries it; config only covers callers
@@ -93,6 +116,7 @@ export function providerToolDeclarations(
     mainAgent: opts.mainAgent ?? true,
     orchestrationMode,
     workflowSizeGuideline: config?.workflowSizeGuideline,
+    ...(opts.session !== undefined ? { session: opts.session } : {}),
   };
   const excludedBase = adapterExcludedBaseTools(provider.promptAdapter());
   const generateImageActive = shouldExposeGenerateImage(provider, config);
@@ -116,7 +140,11 @@ export function providerToolDeclarations(
   return schemas.map((schema) => {
     const description = providerToolDescription(schema, descriptionOpts);
     if (schema.name === "Agent") {
-      const agentSchema = buildAgentInputSchema(provider.id, orchestrationMode);
+      const agentSchema = buildAgentInputSchema(
+        provider.id,
+        orchestrationMode,
+        descriptionOpts.mainAgent,
+      );
       return toProviderTool({ ...schema, description, inputSchema: agentSchema });
     }
     return toProviderTool({

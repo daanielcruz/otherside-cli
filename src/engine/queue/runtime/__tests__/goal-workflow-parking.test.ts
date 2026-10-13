@@ -59,13 +59,13 @@ function makeHost(sessionId: string): TurnLoopHost {
       broker: {
         read: () => ({
           provider: "xai",
-          model: "grok-4.5",
+          model: "grok-4.6",
           effort: null,
           permissionMode: "default",
           ultracode: false,
         }),
       } as never,
-      config: { defaultProvider: "xai", defaultModel: "grok-4.5" } as never,
+      config: { defaultProvider: "xai", defaultModel: "grok-4.6" } as never,
     },
     compactState: {
       rapidRefillBreakerOpen: false,

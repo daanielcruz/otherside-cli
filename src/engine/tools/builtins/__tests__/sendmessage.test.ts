@@ -192,7 +192,7 @@ describe("SendMessage tool", () => {
         input: {
           to: "fork-routed",
           message: "switch and continue",
-          routing: { provider: "codex", model: "gpt-5.5" },
+          routing: { provider: "codex", model: "gpt-5.6-terra" },
         },
       },
       ctx,
@@ -202,7 +202,7 @@ describe("SendMessage tool", () => {
     expect(resumeForkWithMessageMock).toHaveBeenCalledTimes(1);
     expect(resumeForkWithMessageMock.mock.calls[0]?.[3]).toEqual({
       provider: "codex",
-      model: "gpt-5.5",
+      model: "gpt-5.6-terra",
     });
     // The inbox was never used, so nothing is sitting in the target's queue.
     expect(dequeue("fork-routed")).toBeNull();
@@ -215,7 +215,7 @@ describe("SendMessage tool", () => {
     } as unknown as RequestContext;
     registerAgent("fork-noop");
     const warning =
-      "routing ignored: agent fork-noop already runs codex/gpt-5.5. Omit `routing` unless the agent must move to a different provider/model.";
+      "routing ignored: agent fork-noop already runs codex/gpt-5.6-terra. Omit `routing` unless the agent must move to a different provider/model.";
     resumeForkWithMessageMock.mockImplementationOnce(() =>
       Promise.resolve({ delivered: true, agentId: "fork-noop", resumed: false, warning }),
     );
@@ -227,7 +227,7 @@ describe("SendMessage tool", () => {
         input: {
           to: "fork-noop",
           message: "keep going",
-          routing: { provider: "codex", model: "gpt-5.5" },
+          routing: { provider: "codex", model: "gpt-5.6-terra" },
         },
       },
       ctx,
@@ -249,7 +249,7 @@ describe("SendMessage tool", () => {
       {
         id: "call-partial",
         name: "SendMessage",
-        input: { to: "fork-partial", message: "hi", routing: { model: "gpt-5.5" } },
+        input: { to: "fork-partial", message: "hi", routing: { model: "gpt-5.6-terra" } },
       },
       ctx,
     );

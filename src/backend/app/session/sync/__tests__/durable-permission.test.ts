@@ -88,6 +88,28 @@ describe("remote permission_response through durable events", () => {
     ]);
   });
 
+  it("allow_always persists every rule the CLI computed for a compound command", async () => {
+    const tracked = track(
+      ask({
+        toolName: "Bash",
+        argsPreview: "cargo build && make check",
+        rule: null,
+        rules: ["Bash(cargo build *)", "Bash(make check *)"],
+      }),
+    );
+    const id = peek()?.id;
+    if (!id) throw new Error("no pending prompt");
+
+    respond(id, "allow_always", { rule: "Bash(*)" });
+    await Bun.sleep(0);
+
+    const [update] = tracked.value().updates;
+    expect(update?.type === "addRules" ? update.rules.map((rule) => rule.ruleValue) : []).toEqual([
+      { toolName: "Bash", ruleContent: "cargo build *" },
+      { toolName: "Bash", ruleContent: "make check *" },
+    ]);
+  });
+
   it("allow_always without a CLI rule downgrades to a one-shot allow", async () => {
     const { tracked, id } = raisePrompt({ rule: null });
 
@@ -97,70 +119,18 @@ describe("remote permission_response through durable events", () => {
     expect(tracked.value()).toEqual({ decision: "allow", updates: [] });
   });
 
-  it("plan_bypass on a non-ExitPlanMode prompt is ignored and the prompt stays up", async () => {
-    const { tracked, id } = raisePrompt({ toolName: "Bash" });
+  it("ignores a retired mode-escalation answer and keeps the prompt up", async () => {
+    for (const response of ["plan_bypass", "plan_accept_edits", "plan_default", "plan_feedback"]) {
+      const { tracked, id } = raisePrompt({ toolName: "Edit" });
 
-    respond(id, "plan_bypass");
-    await Bun.sleep(0);
+      respond(id, response);
+      await Bun.sleep(0);
 
-    expect(tracked.settled()).toBe(false);
-    expect(peek()?.id).toBe(id);
-  });
-
-  it("plan_accept_edits on a non-ExitPlanMode prompt is ignored and the prompt stays up", async () => {
-    const { tracked, id } = raisePrompt({ toolName: "Edit" });
-
-    respond(id, "plan_accept_edits");
-    await Bun.sleep(0);
-
-    expect(tracked.settled()).toBe(false);
-    expect(peek()?.id).toBe(id);
-  });
-
-  it("plan_bypass on an ExitPlanMode prompt sets yolo mode", async () => {
-    const { tracked, id } = raisePrompt({ toolName: "ExitPlanMode", rule: null });
-
-    respond(id, "plan_bypass");
-    await Bun.sleep(0);
-
-    expect(tracked.value()).toEqual({
-      decision: "allow",
-      updates: [{ type: "setMode", mode: "yolo" }],
-    });
-  });
-
-  it("plan_accept_edits on an ExitPlanMode prompt sets accept-edits mode", async () => {
-    const { tracked, id } = raisePrompt({ toolName: "ExitPlanMode", rule: null });
-
-    respond(id, "plan_accept_edits");
-    await Bun.sleep(0);
-
-    expect(tracked.value()).toEqual({
-      decision: "allow",
-      updates: [{ type: "setMode", mode: "accept-edits" }],
-    });
-  });
-
-  it("plan_default on an ExitPlanMode prompt sets default mode", async () => {
-    const { tracked, id } = raisePrompt({ toolName: "ExitPlanMode", rule: null });
-
-    respond(id, "plan_default");
-    await Bun.sleep(0);
-
-    expect(tracked.value()).toEqual({
-      decision: "allow",
-      updates: [{ type: "setMode", mode: "default" }],
-    });
-  });
-
-  it("plan_default on a non-ExitPlanMode prompt is ignored and the prompt stays up", async () => {
-    const { tracked, id } = raisePrompt({ toolName: "Edit" });
-
-    respond(id, "plan_default");
-    await Bun.sleep(0);
-
-    expect(tracked.settled()).toBe(false);
-    expect(peek()?.id).toBe(id);
+      expect(tracked.settled()).toBe(false);
+      expect(peek()?.id).toBe(id);
+      respond(id, "deny");
+      await Bun.sleep(0);
+    }
   });
 
   it("deny passes feedback through", async () => {

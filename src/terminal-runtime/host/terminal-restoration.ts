@@ -1,4 +1,5 @@
 import { writeSync } from "node:fs";
+import { deliverClaimedInterrupt } from "@/kernel/std/proc/interrupt-claim.ts";
 import { C0, ESC } from "@/terminal-runtime/terminal/ansi-control.js";
 import {
   csi,
@@ -47,6 +48,7 @@ export function registerTerminalRecovery(): void {
   process.on("exit", recoverTerminal);
   for (const [signal, status] of SIGNAL_STATUS) {
     process.on(signal, () => {
+      if (signal === "SIGINT" && deliverClaimedInterrupt()) return;
       recoverTerminal();
       process.exit(status);
     });

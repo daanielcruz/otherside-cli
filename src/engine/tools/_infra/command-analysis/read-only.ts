@@ -361,8 +361,8 @@ function hasCommandSubstitution(command: string): boolean {
 // Commands whose glob-expanded operands stay read-only no matter what the
 // pattern matches: every member can only ever READ whatever paths the shell
 // hands it (no write/exec flag can be smuggled in via a filename because the
-// member's flags are still validated by its ALWAYS/GUARDED entry). Plan mode
-// and the read-only auto-allow both lean on this: `ls src/*` or `cat *.json`
+// member's flags are still validated by its ALWAYS/GUARDED entry). The
+// read-only auto-allow leans on this: `ls src/*` or `cat *.json`
 // must flow without a prompt, while a glob under any other command stays
 // unknowable and prompts. Path containment for glob operands is enforced
 // separately by the Bash read-path gate (lexical resolution against the

@@ -9,7 +9,7 @@ import { findCatalogModel } from "@/kernel/storage/model-catalog.ts";
 export function sessionModelFields(broker: Broker): {
   provider: string;
   model: string;
-  permission_mode: "accept" | "auto" | "plan" | "yolo";
+  permission_mode: "accept" | "auto" | "yolo";
 } {
   const brokerState = broker.read();
   const modelEntry = findCatalogModel({ provider: brokerState.provider, model: brokerState.model });

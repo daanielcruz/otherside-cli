@@ -147,17 +147,6 @@ describe("viewReducer", () => {
   });
 
   describe("session-migrated lower-panel state", () => {
-    it("setWorkflowDetailTarget sets + clears the id, preserves identity when unchanged", () => {
-      const set = viewReducer(initialViewSlice, {
-        type: "view/setWorkflowDetailTarget",
-        id: "wf_1",
-      });
-      expect(set.workflowDetailTargetId).toBe("wf_1");
-      expect(viewReducer(set, { type: "view/setWorkflowDetailTarget", id: "wf_1" })).toBe(set);
-      const cleared = viewReducer(set, { type: "view/setWorkflowDetailTarget", id: null });
-      expect(cleared.workflowDetailTargetId).toBeNull();
-    });
-
     it("setBgPillFocused flips focused, preserves identity when unchanged", () => {
       const on = viewReducer(initialViewSlice, { type: "view/setBgPillFocused", focused: true });
       expect(on.bgPillFocused).toBe(true);

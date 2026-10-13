@@ -79,7 +79,7 @@ describe("sanitizeMessages thinking normalization", () => {
 
   // A tool_reference is validated against the request's declared toolset at
   // the provider boundary. An inherited transcript (context-inheriting fork)
-  // can reference tools the child request never declares — e.g. EnterPlanMode
+  // can reference tools the child request never declares — e.g. WaitForMcpServers
   // is fork-disallowed but the parent loaded it via ToolSearch. Preserving
   // such a reference makes the whole request invalid at pre-flight.
   it("keeps only tool_reference blocks whose tools are declared for this request", () => {
@@ -95,7 +95,7 @@ describe("sanitizeMessages thinking normalization", () => {
             type: "tool_result",
             tool_use_id: "search-1",
             content: [
-              { type: "tool_reference", tool_name: "EnterPlanMode" },
+              { type: "tool_reference", tool_name: "WaitForMcpServers" },
               { type: "tool_reference", tool_name: "EnterWorktree" },
             ],
           },
@@ -123,7 +123,7 @@ describe("sanitizeMessages thinking normalization", () => {
           {
             type: "tool_result",
             tool_use_id: "search-1",
-            content: [{ type: "tool_reference", tool_name: "EnterPlanMode" }],
+            content: [{ type: "tool_reference", tool_name: "WaitForMcpServers" }],
           },
         ],
       },

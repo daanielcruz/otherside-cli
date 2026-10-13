@@ -101,6 +101,23 @@ function statFn(p: string) {
   Reflect.set(error, "code", "ENOENT");
   throw error;
 }
+/** The in-memory tree holds no links, so an entry's own stats are its stat. */
+function lstatFn(p: string) {
+  return { ...statFn(p), isSymbolicLink: () => false, mode: 0o644 };
+}
+function readdirFn(p: string): string[] {
+  const resolved = resolvePath(p);
+  if (!dirs.has(resolved)) {
+    const error = new Error(`ENOENT: no such file or directory, scandir '${p}'`);
+    Reflect.set(error, "code", "ENOENT");
+    throw error;
+  }
+  const names = new Set<string>();
+  for (const entry of [...files.keys(), ...dirs]) {
+    if (dirname(entry) === resolved) names.add(relative(resolved, entry));
+  }
+  return [...names];
+}
 function renameFn(src: string, dest: string): void {
   const resolvedSrc = resolvePath(src);
   const resolvedDest = resolvePath(dest);
@@ -163,6 +180,8 @@ fsMock[`rm${S}`] = rmFn;
 fsMock[`writeFile${S}`] = writeFileFn;
 fsMock[`readFile${S}`] = readFileFn;
 fsMock[`stat${S}`] = statFn;
+fsMock[`lstat${S}`] = lstatFn;
+fsMock[`readdir${S}`] = readdirFn;
 fsMock[`rename${S}`] = renameFn;
 fsMock[`unlink${S}`] = (p: string) => {
   const resolved = resolvePath(p);
@@ -354,10 +373,12 @@ describe("marketplace file-source end-to-end", () => {
     const res = installMarketplacePlugin(mpName, pluginName);
 
     expect(res.success).toBe(true);
+    // An unversioned payload is keyed by its content, not by a fixed placeholder version.
+    expect(res.version).not.toBe("0.0.0");
     expect(
       existsFn(
         join(
-          activeInstallPath(pluginName, "user", mpName, "0.0.0"),
+          activeInstallPath(pluginName, "user", mpName, res.version ?? ""),
           ".claude-plugin",
           "plugin.json",
         ),

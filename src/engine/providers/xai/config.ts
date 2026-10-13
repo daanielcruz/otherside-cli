@@ -1,11 +1,11 @@
 import type { ApiProvider, ProviderConfig } from "@/engine/contract/types.ts";
 import { composeFlatMessages } from "@/engine/providers/_shared/compose-flat.ts";
+import { markReasoningReplayRejected } from "@/engine/providers/_shared/reasoning-replay-state.ts";
 import { ProviderHttpError } from "@/engine/providers/_shared/retry.ts";
 import { Auth, beginLogin as xaiBeginLogin } from "@/engine/providers/xai/auth.ts";
 import { fingerprint } from "@/engine/providers/xai/fingerprint.ts";
 import { GROK_MODELS } from "@/engine/providers/xai/models.ts";
 import { xaiPromptAdapter } from "@/engine/providers/xai/prompt-adapter.ts";
-import { markEncryptedReasoningRejected } from "@/engine/providers/xai/reasoning-state.ts";
 import { xaiStream } from "@/engine/providers/xai/stream.ts";
 import {
   translateRequestGrok as translateRequest,
@@ -65,7 +65,7 @@ export const config: ProviderConfig<"codex-responses"> = {
     thinkingSuffix: true,
     supportsImages: false,
   },
-  defaultModelId: "grok-4.6",
+  defaultModelId: "grok-4.7",
   fallbackEfforts: { levels: ["low", "medium", "high", "xhigh"], default: "high" },
   // WebSearch is served by the hosted web_search tool the translator injects, so
   // keep it out of the client catalog (no local DuckDuckGo fallback for xai).
@@ -79,7 +79,7 @@ export const config: ProviderConfig<"codex-responses"> = {
     const body = err instanceof ProviderHttpError ? err.body : "";
     if (
       carriesEncryptedReasoningRejection(err, body) &&
-      markEncryptedReasoningRejected(ctx.sessionId)
+      markReasoningReplayRejected(ctx.sessionId, ctx.provider)
     ) {
       return { kind: "retry", delayMs: 0, reason: "dropped stale encrypted reasoning" };
     }

@@ -122,7 +122,7 @@ describe("buildAnthropicMessages PDF blocks", () => {
         ],
       },
     ];
-    const ctx = { provider: "anthropic", model: "claude-opus-4-8" } as RequestContext;
+    const ctx = { provider: "anthropic", model: "claude-opus-5-5" } as RequestContext;
     expect(buildAnthropicMessages(messages, ctx).out[0]?.content).toEqual([
       {
         type: "tool_result",
@@ -141,7 +141,7 @@ describe("buildAnthropicMessages PDF blocks", () => {
 describe("side-question cache anchor", () => {
   const ctx: RequestContext = {
     provider: "anthropic",
-    model: "claude-opus-5",
+    model: "claude-opus-5-5",
     sessionId: "s-1",
     cwd: "/tmp",
     cacheRole: "side-question",
@@ -181,5 +181,49 @@ describe("side-question cache anchor", () => {
         cacheRole: undefined,
       } as unknown as RequestContext),
     ).toBe(true);
+  });
+});
+
+describe("tool_use input on the wire", () => {
+  it("replays arguments the model streamed as malformed JSON as an empty object", () => {
+    const messages: Message[] = [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "toolu_1",
+            name: "Read",
+            input: '{"file_path": "/tmp/a.ts", "offset": 122, 135}',
+          },
+        ],
+      },
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "invalid input" }],
+      },
+    ];
+    const ctx = { provider: "anthropic", model: "claude-sonnet-5" } as RequestContext;
+    const [assistant] = buildAnthropicMessages(messages, ctx).out;
+    expect(assistant?.content).toEqual([
+      { type: "tool_use", id: "toolu_1", name: "Read", input: {}, caller: { type: "direct" } },
+    ]);
+  });
+});
+
+describe("streamed tool arguments", () => {
+  it("records malformed arguments as an empty object", async () => {
+    const events = await collect(
+      translateResponseAnthropic(
+        sse([
+          'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"Read"}}\n\n',
+          `event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":${JSON.stringify('{"file_path": "/a.ts", "offset": 122, 135}')}}}\n\n`,
+          'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+          'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+        ]),
+      ),
+    );
+    const complete = events.find((e) => e.kind === "tool_call_complete");
+    expect(complete).toMatchObject({ id: "toolu_1", name: "Read", input: {} });
   });
 });

@@ -148,7 +148,6 @@ export function createApplySlashResult(deps: ApplySlashResultDeps) {
         const userId = nextTranscriptId("user");
         setTranscript((t) => [...t, { id: userId, kind: "user", text: result.feedback ?? "" }]);
       } else if (
-        result.command?.name === "plan" ||
         result.command?.name === "fast" ||
         result.command?.name === "effort" ||
         result.command?.name === "copy" ||

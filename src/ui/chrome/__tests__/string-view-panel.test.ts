@@ -7,6 +7,7 @@ import {
   type ListPanelSpec,
   renderFooterPanel,
   renderListPanel,
+  renderPanelChoiceRowLines,
   renderPanelRowLine,
 } from "@/ui/chrome/string-view-panel.ts";
 import { Color, Glyph } from "@/ui/theme/theme.ts";
@@ -196,6 +197,27 @@ describe("renderFooterPanel", () => {
     expect(plain.find((line) => line.includes("↑↓ select"))).toBeDefined();
     expect(plain.find((line) => line.includes("Tab amend"))).toBeDefined();
   });
+
+  it("sets every row under the rule at the requested inset", () => {
+    const lines = renderFooterPanel(
+      {
+        title: "Heading",
+        paddingX: 0,
+        footerHints: [["Esc", "to cancel"]],
+        body: ["body row"],
+      },
+      WIDTH,
+    );
+
+    expect(lines.map(stripAnsi).slice(1)).toEqual([
+      "Heading",
+      "",
+      "body row",
+      "",
+      "Esc to cancel",
+      "",
+    ]);
+  });
 });
 
 describe("renderPanelRowLine", () => {
@@ -279,5 +301,44 @@ describe("renderListPanel", () => {
     ).map(stripAnsi);
     expect(panel.length + 7).toBeLessThanOrEqual(terminalRows);
     expect(panel.some((line) => line.includes(`${Glyph.chevron}session 50`))).toBe(true);
+  });
+});
+
+describe("renderPanelChoiceRowLines", () => {
+  it("points at the selected row in the accent with its number dim", () => {
+    const [row] = renderPanelChoiceRowLines({ key: "1", label: "Alpha", selected: true }, WIDTH);
+
+    expect(stripAnsi(row ?? "")).toBe(`${Glyph.chevron}1. Alpha`);
+    expect(row).toContain(renderTextWithStyles(Glyph.chevron, { color: Color.panelAccent }));
+    expect(row).toContain(renderTextWithStyles("1.", { color: Color.muted }));
+    expect(row).toContain(renderTextWithStyles("Alpha", { color: Color.panelAccent }));
+  });
+
+  it("keeps an unselected label in the text color", () => {
+    const [row] = renderPanelChoiceRowLines({ key: "2", label: "Beta", selected: false }, WIDTH);
+
+    expect(stripAnsi(row ?? "")).toBe("  2. Beta");
+    expect(row).toContain(renderTextWithStyles("Beta", { color: Color.text }));
+  });
+
+  it("wraps a long label under its own first column", () => {
+    const rows = renderPanelChoiceRowLines(
+      { key: "3", label: "alpha beta gamma delta epsilon", selected: false },
+      20,
+    ).map((row) => stripAnsi(row).trimEnd());
+
+    expect(rows).toEqual(["  3. alpha beta", "     gamma delta", "     epsilon"]);
+  });
+});
+
+describe("footer hint style", () => {
+  it("sets hints upright when the panel asks for it", () => {
+    const lines = renderFooterPanel(
+      { title: "Title", body: ["body"], footerHints: [["Esc", "to cancel"]], footerItalic: false },
+      WIDTH,
+    );
+    const hintRow = lines.find((line) => stripAnsi(line).includes("Esc to cancel"));
+
+    expect(hintRow).toContain(renderTextWithStyles("Esc to cancel", { color: Color.muted }));
   });
 });

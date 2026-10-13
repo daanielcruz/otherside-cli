@@ -2,14 +2,14 @@
 
 <img src="assets/banner.png" alt="otherside cli" width="720">
 
-![status](https://img.shields.io/badge/status-1.0.0-EC4899?style=for-the-badge&labelColor=1a1a2e)
+![status](https://img.shields.io/badge/status-1.2.0-EC4899?style=for-the-badge&labelColor=1a1a2e)
 ![typescript](https://img.shields.io/badge/typescript-5+-51158C?style=for-the-badge&logo=typescript&logoColor=white&labelColor=1a1a2e)
 ![license](https://img.shields.io/badge/license-MIT-51158C?style=for-the-badge&labelColor=1a1a2e)
 
 <img src="assets/demo.gif" alt="otherside demo" width="720">
 
 ### _a shell for the reversed world._
-Terminal coding agent for Anthropic, Codex, Antigravity, xAI, Kimi, DeepSeek, MiniMax, GLM (Z.AI), and self-hosted LLMs.
+Terminal coding agent for Anthropic, Anthropic Cloud, Codex, Antigravity, xAI, Kimi, DeepSeek, MiniMax, GLM (Z.AI), and self-hosted LLMs.
 
 **Privacy. Control. Provider choice.**
 
@@ -51,10 +51,10 @@ Tier rosters, rank-ordered (rank 1 is the resolver's first choice):
 
 | Tier | Models |
 |---|---|
-| **emperor** | `claude-opus-5` · `gpt-6-astra` |
-| **shogun** | `grok-4.6` · `k3` · `gpt-5.6-terra` · `claude-sonnet-5` · `glm-5.2` |
+| **emperor** | `claude-opus-5-5` · `gpt-6-astra` |
+| **shogun** | `grok-4.7` · `k3` · `gpt-5.6-terra` · `claude-sonnet-5-5` · `glm-5.2` |
 | **daimyo** | `gpt-5.6-luna` · `gemini-3.8-flash` · `gemini-3.1-pro-high` · `grok-composer-2.5-fast` · `deepseek-v4-pro` · `kimi-for-coding` |
-| **samurai** | `gemini-3.8-flash-low` · `gemini-3.8-flash-medium` · `glm-5-turbo` · `claude-haiku-4-5` · `deepseek-v4-flash` · `minimax-m3` · `kimi-for-coding-highspeed` |
+| **samurai** | `gemini-3.8-flash-low` · `gemini-3.8-flash-medium` · `glm-5-turbo` · `claude-haiku-5-5` · `deepseek-flash` · `minimax-m3` · `kimi-for-coding-highspeed` |
 
 Routing rules:
 
@@ -85,14 +85,15 @@ Design uses the same provider you are signed into, with no separate subscription
 
 | | |
 | --- | --- |
-| **Native toolset** | Built-in shell, search, web, read, edit, write, image-generation, and image-parsing tools for codebases. |
-| **Provider choice** | Anthropic, Codex, Antigravity, xAI, Kimi, DeepSeek, MiniMax, GLM (Z.AI), and OpenAI-compatible endpoints, including local models. |
+| **Native toolset** | Built-in shell, search, web, read, edit, write, numbered task list, image-generation, and image-parsing tools for codebases. |
+| **Provider choice** | Anthropic, Anthropic Cloud, Codex, Antigravity, xAI, Kimi, DeepSeek, MiniMax, GLM (Z.AI), and OpenAI-compatible endpoints, including local models. |
 | **Accessible terminal UI** | Keyboard-first interface designed for screen readers, low-bandwidth links, and high-latency connections. |
 | **Mobile companion** | Pair an iOS or Android app over an end-to-end encrypted channel to follow sessions, read logs, and respond remotely. |
 | **Goal-driven execution** | Use `/goal` to set success criteria and continue work across compaction until the result is met and approved. |
 | **Deterministic workflows** | Coordinate subagents with JavaScript workflows, including parallel, pipeline, and nested runs; manage them with `/workflows`. |
 | **Planning and side questions** | `/ultraplan` coordinates multi-agent planning; `/btw` keeps secondary questions out of the main thread. |
-| **Background work** | Manage long-running tasks with `/tasks` and shell sessions with `/bashes`. |
+| **Background work** | Manage long-running tasks with `/tasks`, shell sessions with `/bashes`, scheduled prompts, and recurring loops with `/loop`. |
+| **Interactive permissions** | Per-tool permission prompts with file previews and diffs; approvals are saved as rules you manage with `/permissions`. |
 | **Sessions and checkpoints** | Resume saved sessions and restore code or conversation history with `/rewind`. |
 | **MCP and plugins** | Connect external tools through MCP (`/mcp`) and manage extensions with `/plugins`. |
 | **Images** | Generate images through Codex, Grok, or Gemini; `ParseImage` and `Read` can route images through a configurable vision provider. |
@@ -151,11 +152,11 @@ irm https://othersidecli.com/install.ps1 | iex
 Pin a release:
 
 ```bash
-OTHERSIDE_VERSION=v1.0.0 bash -c "$(curl -fsSL https://othersidecli.com/install.sh)"
+OTHERSIDE_VERSION=v1.2.0 bash -c "$(curl -fsSL https://othersidecli.com/install.sh)"
 ```
 
 ```powershell
-$env:OTHERSIDE_VERSION = "v1.0.0"
+$env:OTHERSIDE_VERSION = "v1.2.0"
 irm https://othersidecli.com/install.ps1 | iex
 ```
 
@@ -260,12 +261,13 @@ otherside --provider openai --model <your-model>
 
 | Provider | Slug | Auth | Default model | Notes |
 |---|---|---|---|---|
-| Anthropic | `anthropic` | OAuth | `claude-opus-5` | Fable 5.1 is also available for explicit selection; subscription usage and web search. |
-| Codex | `codex` | OAuth | `gpt-6-astra` | Astra uses an 872k-token context window; GPT-5.x models and hosted image generation are also available. |
-| Antigravity | `antigravity` | OAuth | `gemini-3.8-flash` | Google account path; Gemini, Claude, and GPT-OSS models. |
-| xAI | `xai` | OAuth | `grok-4.6` | Grok models through SuperGrok OAuth. |
+| Anthropic | `anthropic` | OAuth | `claude-opus-5-5` | Sonnet 5.5 and Haiku 5.5; Fable 5.1 is also available for explicit selection; subscription usage and web search. |
+| Anthropic Cloud | `anthropic-cloud` | OAuth | `claude-opus-5-5` | Runs Opus 5.5 in managed Cloud sessions while tools and permissions execute locally. |
+| Codex | `codex` | OAuth | `gpt-6-astra` | Astra uses an 872k-token context window; GPT-6.1 Sol, GPT Daybreak Blue, and GPT-5.6 Terra/Luna are also available; hosted image generation. |
+| Antigravity | `antigravity` | OAuth | `gemini-3.8-flash` | Google account path; Gemini 4 Argon (Ultra accounts), Gemini 3.x Flash/Pro, Claude, and GPT-OSS models. |
+| xAI | `xai` | OAuth | `grok-4.7` | Grok models through SuperGrok OAuth. |
 | Kimi | `kimi` | API key | `k3` | K3 and K2.7 Code models; usage limits in `/usage`. |
-| DeepSeek | `deepseek` | API key | `deepseek-v4-pro` | V4 Pro and Flash; configurable vision side-channel. |
+| DeepSeek | `deepseek` | API key | `deepseek-v4-pro` | V4 Pro, V4.1 Flash, and V4 Flash; configurable vision side-channel. |
 | MiniMax | `minimax` | API key | `minimax-m2.7` | M2.7 and M3 models. |
 | GLM (Z.AI) | `glm` | OAuth | `glm-5.2` | GLM-5.2 and GLM-5-Turbo; native web search. |
 | OpenAI Custom | `openai` | API key | (set your own) | Any OpenAI-compatible endpoint, including local runtimes. |

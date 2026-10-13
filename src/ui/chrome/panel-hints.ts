@@ -62,9 +62,12 @@ export const HINT_ACTION_SPECS = {
   xClear: { keys: ["x"], label: "to clear" },
   stopAllAgents: { keys: ["ctrl+x ctrl+k"], label: "to stop all agents" },
   arrowsSelect: { keys: [Glyph.arrowUp, Glyph.arrowDown], label: "to select" },
+  arrowsNavigate: { keys: [Glyph.arrowUp, Glyph.arrowDown], label: "to navigate" },
+  tabsNavigate: { keys: ["Tab/Arrow keys"], label: "to navigate" },
   xPause: { keys: ["x"], label: "to pause" },
   xKill: { keys: ["x"], label: "to kill" },
   sSave: { keys: ["s"], label: "to save" },
+  amend: { keys: ["Tab"], label: "to amend" },
 } as const satisfies Record<string, PanelHint>;
 
 export type HintAction = keyof typeof HINT_ACTION_SPECS;

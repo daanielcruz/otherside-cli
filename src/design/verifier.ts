@@ -11,6 +11,7 @@ import { awaitEvalResult, awaitScreenshot, awaitWebviewLogs } from "@/design/pen
 import { recordToolEnd, recordToolStart } from "@/design/tool-cards.ts";
 import type { DesignSnapshot, RpcContext } from "@/design/types.ts";
 import { stableArtifactId } from "@/design/types.ts";
+import { writeDebugError } from "@/devtools/output.ts";
 import { runForkLoopExternal } from "@/engine/background/subagents/dispatcher.ts";
 import { canSendNatively } from "@/engine/model/capabilities-runtime.ts";
 import { describeImageViaProvider } from "@/engine/tools/builtins/parse-image.ts";
@@ -439,8 +440,9 @@ async function runDesignVerifier(args: {
     } else {
       await runForkLoopExternal({ ...spec, prompt });
     }
-  } catch {
+  } catch (error) {
     // A crashed verifier must never fail the design turn — treat as no verdict.
+    if (!verifierContext.abortSignal?.aborted) writeDebugError("design verifier failed", error);
   } finally {
     if (verifierForkId) unregisterDesignFork(verifierForkId);
   }

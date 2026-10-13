@@ -18,30 +18,21 @@ import {
   type CredentialsBundle,
   hasCredential,
   type OpenAiCustomCreds,
-  type ProviderSlug,
   saveFor,
 } from "@/kernel/storage/credentials.ts";
 import type { Broker } from "@/store/app-store/broker.ts";
 import { Color, type ColorValue, Glyph } from "@/ui/theme/theme.ts";
 
 export interface ProviderRow {
-  id:
-    | "anthropic"
-    | "codex"
-    | "xai"
-    | "kimi"
-    | "deepseek"
-    | "minimax"
-    | "glm"
-    | "antigravity"
-    | "openai";
+  id: ProviderId;
   label: string;
   hint: string;
   signedIn: boolean;
 }
 
-const PICKER_LABELS: Record<string, string> = {
+const PICKER_LABELS: Record<ProviderId, string> = {
   anthropic: "Anthropic - OAuth",
+  "anthropic-cloud": "Anthropic Cloud - OAuth",
   antigravity: "Antigravity - OAuth",
   codex: "Codex - OAuth",
   deepseek: "DeepSeek - API Key",
@@ -56,10 +47,10 @@ export function buildProviderRows(bundle: CredentialsBundle | null): ProviderRow
   return listProviderConfigs()
     .sort((a, b) => providerSortRank(a.provider.id) - providerSortRank(b.provider.id))
     .map((c) => ({
-      id: c.provider.id as ProviderRow["id"],
-      label: PICKER_LABELS[c.provider.id] ?? c.provider.label,
+      id: c.provider.id,
+      label: PICKER_LABELS[c.provider.id],
       hint: c.signupHint ?? "",
-      signedIn: hasCredential(bundle, c.provider.id as ProviderSlug),
+      signedIn: hasCredential(bundle, c.provider.id),
     }));
 }
 

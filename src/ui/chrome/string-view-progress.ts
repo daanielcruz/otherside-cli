@@ -4,6 +4,7 @@ import {
   type TaskRecord,
   taskListIdForScope,
 } from "@/engine/background/tasks/index.ts";
+import { isAwaitingDecision } from "@/kernel/channels/awaiting-decision.ts";
 import type { EffortLevel } from "@/kernel/std/types/effort.ts";
 import { appStore } from "@/store/app-store/index.ts";
 import type { RetryStatusLine } from "@/store/app-store/slices/view.ts";
@@ -11,8 +12,10 @@ import type {
   StringComponent,
   StringViewContext,
 } from "@/terminal-runtime/string-view/component.js";
+import { cellClip } from "@/terminal-runtime/text/cell-clip.js";
 import { stringWidth } from "@/terminal-runtime/text/cell-width.js";
 import { renderTextWithStyles } from "@/terminal-runtime/text/color-codes.js";
+import { splitByColumnWidth } from "@/terminal-runtime/text/column-chunks.js";
 import {
   type ViewedThread,
   viewedAgentId,
@@ -33,7 +36,6 @@ import {
 } from "@/ui/chrome/progress/index.ts";
 import {
   computeMaxTaskRows,
-  findCurrentTask,
   findNextPendingTask,
   hiddenTaskSummary,
   isInternalTask,
@@ -41,6 +43,8 @@ import {
   RecentCompletions,
   selectVisibleTasks,
   taskCountsHeader,
+  taskLabel,
+  taskLabelWidth,
   taskRowText,
 } from "@/ui/chrome/progress/task-list.ts";
 import { FALLBACK_TERMINAL_ROWS } from "@/ui/chrome/string-view-panel.ts";
@@ -52,6 +56,8 @@ const FRAME_MS = 120;
 /** Announced beside the next task, and only while the list it opens is closed. */
 const TASK_LIST_HINT = "  (ctrl+t to show tasks)";
 const COMPACTING_VERB = "Compacting conversation";
+/** What live reasoning shrinks to when its effort-suffixed label does not fit. */
+const REASONING_LABEL = "reasoning";
 
 export class StringViewProgress implements StringComponent {
   private timer: ReturnType<typeof setInterval> | undefined;
@@ -99,7 +105,9 @@ export class StringViewProgress implements StringComponent {
     // leader's own, main generator idle or not. Registered frame clients (a busy
     // panel's spinner) ride the same clock.
     this.timer = setInterval(() => {
-      if (viewedThreadBusy() || anyFrameClientAnimating()) ctx.requestRender();
+      if ((viewedThreadBusy() && !isAwaitingDecision()) || anyFrameClientAnimating()) {
+        ctx.requestRender();
+      }
     }, FRAME_MS);
   }
 
@@ -129,52 +137,61 @@ export class StringViewProgress implements StringComponent {
       this.displayedTokens = 0;
       return this.idleTaskRows(width, now);
     }
+    // The turn waits on the user's answer, so nothing is working to animate.
+    if (isAwaitingDecision()) return this.idleTaskRows(width, now);
     const view = appStore.getState().view;
     // A retry belongs to the leader's request; an open agent reports its own work.
     if (view.retryStatus && thread.agent === null) {
       return retryProgressRows(view.retryStatus, width, now);
     }
-    // The task being worked on speaks for the turn: its activeForm is written to be
-    // read here, and its subject stands in when it has none. Compaction is the
-    // exception — it owns the whole turn, so its verb (and the bar under it)
-    // outranks whatever task the board still marks in progress.
-    const current = findCurrentTask(this.tasks);
+    // Rolled per turn; a provider's reasoning titles replace it while they stream.
     const compacting = thread.agent === null && view.turnVerb === COMPACTING_VERB;
-    const verb = compacting
-      ? COMPACTING_VERB
-      : (thread.verb ?? (current?.activeForm || current?.subject || view.turnVerb || "Thinking"));
+    const verb = compacting ? COMPACTING_VERB : (thread.verb ?? (view.turnVerb || "Thinking"));
     const startedAt = thread.startedAt ?? now;
-    const { before, shimmer, after } = shimmerSegments(verb, now);
     this.displayedTokens = syncCounter(this.displayedTokens, thread.outputTokens);
     const tokenPart =
       this.displayedTokens > 0 && !compacting
         ? ` · ${view.spinnerMode === "requesting" ? Glyph.arrowUp : Glyph.arrowDown} ${formatTokenCount(this.displayedTokens)} tokens`
         : "";
     const reasoningLive = !compacting && view.thinkingStatus === "thinking";
-    let thinkingPart = compacting
+    const fullThinkingPart = compacting
       ? ""
       : formatThinkingStatus(view.thinkingStatus, thread.broker.effort);
     const elapsedPart = formatElapsed(now - startedAt);
+    const frameGlyph = spinnerFrame(now);
+    const readout = (part: string) => statusReadout(`${elapsedPart}${tokenPart}`, part);
     // When the suffixed label overflows the row, the bare label still earns
     // its slot before the readout drops it entirely.
-    const plainLine = (part: string) =>
-      `${spinnerFrame(now)} ${verb}… (${elapsedPart}${tokenPart}${part ? ` · ${part}` : ""})`;
-    if (reasoningLive && stringWidth(plainLine(thinkingPart)) > width) {
-      thinkingPart = "reasoning";
-    }
+    const thinkingFallbacks = reasoningLive
+      ? [fullThinkingPart, REASONING_LABEL]
+      : [fullThinkingPart];
+    const thinkingPart =
+      thinkingFallbacks.find(
+        (part) => stringWidth(`${frameGlyph} ${verb}… ${readout(part)}`) <= width,
+      ) ?? "";
+    // A reasoning title longer than the room the readout leaves gives up its tail.
+    const shownVerb = verbWithin(
+      verb,
+      width - stringWidth(`${frameGlyph} … ${readout(thinkingPart)}`),
+    );
+    const { before, shimmer, after } = shimmerSegments(shownVerb, now);
     const statusHead = `(${elapsedPart}${tokenPart}${thinkingPart ? " · " : ""}`;
     const statusRendered = reasoningLive
       ? renderTextWithStyles(statusHead, { color: Color.muted }) +
         renderTextWithStyles(thinkingPart, { color: reasoningGlowColor(now - startedAt) }) +
         renderTextWithStyles(")", { color: Color.muted })
       : renderTextWithStyles(`${statusHead}${thinkingPart})`, { color: Color.muted });
-    const line =
-      `${renderTextWithStyles(spinnerFrame(now), { color: Color.primary, bold: true })} ` +
-      renderTextWithStyles(before, { color: Color.primary }) +
-      renderTextWithStyles(shimmer, { color: Color.primaryGlow, bold: true }) +
-      renderTextWithStyles(after, { color: Color.primary }) +
-      renderTextWithStyles("… ", { color: Color.primary }) +
-      statusRendered;
+    // The spinner is one row. A readout wider than the terminal on its own is cut
+    // here rather than left to soft-wrap onto a row the frame never counted.
+    const line = cellClip(
+      `${renderTextWithStyles(frameGlyph, { color: Color.primary, bold: true })} ` +
+        renderTextWithStyles(before, { color: Color.primary }) +
+        renderTextWithStyles(shimmer, { color: Color.primaryGlow, bold: true }) +
+        renderTextWithStyles(after, { color: Color.primary }) +
+        renderTextWithStyles("… ", { color: Color.primary }) +
+        statusRendered,
+      width,
+    );
     // The toggle decides whether the list is open; unopened, the slot carries a
     // single row naming what comes next. Compaction keeps the list because its rows
     // are what the compaction is preserving.
@@ -204,8 +221,9 @@ export class StringViewProgress implements StringComponent {
     const next = findNextPendingTask(this.tasks);
     if (next !== undefined) {
       return gutterWrappedRows(
-        renderTextWithStyles(`Next: ${next.subject}`, { color: Color.muted }) +
-          renderTextWithStyles(TASK_LIST_HINT, { color: Color.muted, dim: true }),
+        renderTextWithStyles(`Next: ${taskLabel(next.id)} ${next.subject}`, {
+          color: Color.muted,
+        }) + renderTextWithStyles(TASK_LIST_HINT, { color: Color.muted, dim: true }),
         width,
         true,
       );
@@ -252,6 +270,7 @@ export class StringViewProgress implements StringComponent {
       tasks.filter((task) => task.status !== "completed").map((task) => task.id),
     );
     const activeOwners = new Set(listRunningAgents().map((agent) => agent.agentName));
+    const labelWidth = taskLabelWidth(visible);
     const listRows = (text: string, head: boolean): string[] =>
       inline ? gutterWrappedRows(text, width, head) : indentedRows(text, width);
 
@@ -264,6 +283,7 @@ export class StringViewProgress implements StringComponent {
             openBlockers: openBlockerIds(task, unresolved),
             activeOwners,
             columns: width,
+            labelWidth,
           }),
           index === 0,
         ),
@@ -351,6 +371,19 @@ export function retryProgressRows(status: RetryStatusLine, width: number, now: n
 function retryMessage(reason: string): string {
   if (RATE_LIMIT_PATTERN.test(reason)) return "Rate limited";
   return reason.replace(/^HTTP \d+[^:]*:\s*/, "").slice(0, 200);
+}
+
+/** The spinner's parenthesized readout: counters first, then the thinking state. */
+function statusReadout(counters: string, thinkingPart: string): string {
+  if (thinkingPart.length === 0) return `(${counters})`;
+  return `(${counters} · ${thinkingPart})`;
+}
+
+/** The head of `verb` that fits `columns` cells; the ellipsis the row puts after it marks the cut. */
+function verbWithin(verb: string, columns: number): string {
+  if (stringWidth(verb) <= columns) return verb;
+  if (columns <= 0) return "";
+  return (splitByColumnWidth(verb, columns)[0]?.text ?? "").trimEnd();
 }
 
 export function formatThinkingStatus(

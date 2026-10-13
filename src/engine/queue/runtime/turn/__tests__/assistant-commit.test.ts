@@ -38,29 +38,29 @@ describe("commitAssistantMessage thinking provenance", () => {
     // or the grok signature later replays onto the anthropic wire as a 400.
     const session = { messages: [] as Message[] };
     commitAssistantMessage(
-      depsWithBroker("anthropic", "claude-opus-4-8", session),
+      depsWithBroker("anthropic", "claude-opus-5-5", session),
       attemptWith({
         text: "answer",
         thinking: "grok reasoning",
         thinkingSignature: SIGNATURE,
         producedProvider: "xai",
-        producedModel: "grok-4.5",
+        producedModel: "grok-4.6",
       }),
     );
     const thinking = thinkingBlock(session);
     expect(thinking?.producedBy).toBe("xai");
-    expect(thinking?.producedModel).toBe("grok-4.5");
+    expect(thinking?.producedModel).toBe("grok-4.6");
   });
 
   it("falls back to the live broker route when no producer is given", () => {
     const session = { messages: [] as Message[] };
     commitAssistantMessage(
-      depsWithBroker("anthropic", "claude-opus-4-8", session),
+      depsWithBroker("anthropic", "claude-opus-5-5", session),
       attemptWith({ text: "answer", thinking: "reasoning", thinkingSignature: "A".repeat(420) }),
     );
     const thinking = thinkingBlock(session);
     expect(thinking?.producedBy).toBe("anthropic");
-    expect(thinking?.producedModel).toBe("claude-opus-4-8");
+    expect(thinking?.producedModel).toBe("claude-opus-5-5");
   });
 });
 
@@ -76,7 +76,7 @@ describe("a restarted attempt carries nothing forward", () => {
       messageId: "m1",
       requestId: "r1",
       producedProvider: "xai",
-      producedModel: "grok-4.5",
+      producedModel: "grok-4.6",
       charCapTripped: true,
       usage: {
         inputTokens: 1,
@@ -91,7 +91,7 @@ describe("a restarted attempt carries nothing forward", () => {
 
     // A restarted attempt has nothing to commit, so the re-send starts clean.
     const session = { messages: [] as Message[] };
-    commitAssistantMessage(depsWithBroker("anthropic", "claude-opus-4-8", session), attempt);
+    commitAssistantMessage(depsWithBroker("anthropic", "claude-opus-5-5", session), attempt);
     expect(session.messages).toEqual([]);
   });
 });

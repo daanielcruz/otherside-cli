@@ -1,5 +1,5 @@
 import { OTHERSIDE_VERSION } from "@/boot/version.ts";
-import { startCronScheduler } from "@/engine/background/cron/scheduler.ts";
+import { startCronScheduler, stopCronScheduler } from "@/engine/background/cron/scheduler.ts";
 import { setTaskOutputSession } from "@/engine/background/tasks/output-files.ts";
 import { startSharedOutputPoller } from "@/engine/background/tasks/output-poller.ts";
 import type { Agent } from "@/engine/queue/index.ts";
@@ -13,12 +13,14 @@ import {
 } from "@/engine/session/index.ts";
 import type { loadConfig } from "@/kernel/config/config.ts";
 import { fireConfiguredHooks } from "@/kernel/hooks/handler.ts";
+import { claimInterrupt } from "@/kernel/std/proc/interrupt-claim.ts";
 import { installWatchdogCaptureHooks } from "@/kernel/std/stream/debug-capture.ts";
 import { PROVIDER_ID_VALUES, type ProviderId } from "@/kernel/std/types/provider-ids.ts";
 import { hasCredential, type loadAll as loadAllCredentials } from "@/kernel/storage/credentials.ts";
 import type { Broker } from "@/store/app-store/broker.ts";
 import { submitMcpFailuresNotice } from "@/store/app-store/right-region-notices.ts";
 import { bootSubscribers } from "@/store/subscribers/index.ts";
+import { runningRef } from "@/store/turn-run/index.ts";
 import {
   ERASE_DISPLAY_TO_END,
   emitTerminalProgress,
@@ -83,7 +85,6 @@ export async function runInteractiveEntrypoint(args: {
     resumeTailRecords,
     agentFailures,
   } = args;
-  startCronScheduler(agent);
 
   const needsLogin =
     !PROVIDER_ID_VALUES.some((provider) => hasCredential(allCreds, provider)) ||
@@ -103,7 +104,7 @@ export async function runInteractiveEntrypoint(args: {
   startEventLoopMonitor();
   installWatchdogCaptureHooks();
   startSharedOutputPoller();
-  bootSubscribers({ broker });
+  const disposeSubscribers = bootSubscribers({ agent, broker });
   const { resumeDesign } = await import("@/design/launcher.ts");
   try {
     await resumeDesign({
@@ -212,6 +213,10 @@ export async function runInteractiveEntrypoint(args: {
     requestRepaint: inlineController.repaint,
     requestBackgroundResume: turnDispatch.requestBackgroundResume,
   });
+  // Started once a queued auto-turn can wake the session: a saved task missed while
+  // otherside was closed is raised as soon as the scheduler starts. A compaction or
+  // a skill fork holds fires back just like a turn does.
+  startCronScheduler({ isBusy: () => runningRef.current });
   const { registerSession, unregisterSession, touchSession, isSessionAlive } = await import(
     "@/engine/session/registry.ts"
   );
@@ -235,10 +240,33 @@ export async function runInteractiveEntrypoint(args: {
       })
       .catch(() => {}),
   );
+  const showResumeHint = () => process.stdout.isTTY && hasSessionTranscript(session);
+  const writeResumeHint = async (customTitle: string | null): Promise<void> => {
+    // A kept worktree is part of the resume command: rejoining the session
+    // means re-entering its worktree.
+    const { latchedWorktreeName } = await import("@/engine/session/worktree.ts");
+    // Take the whole row before clearing: teardown leaves the cursor parked on the
+    // prompt caret, so erasing from where it stands would keep the prompt's own
+    // opening on screen with nothing after it.
+    process.stdout.write(
+      `\r${ERASE_DISPLAY_TO_END}${resumeExitText(session.id, "otherside", latchedWorktreeName(), customTitle)}`,
+    );
+  };
   try {
     await inlineController.finished();
   } finally {
+    // The keyboard is back in line mode, so a Ctrl+C pressed while teardown runs
+    // arrives as SIGINT: it cuts the teardown short but still leaves the way back.
+    let leaving = false;
+    claimInterrupt(() => {
+      if (leaving) return;
+      leaving = true;
+      const hinted = showResumeHint() ? writeResumeHint(null) : Promise.resolve();
+      void hinted.finally(() => process.exit(130));
+    });
     turnDispatch.dispose();
+    disposeSubscribers();
+    stopCronScheduler();
     deactivateBackgroundCompletions();
     deactivateUsage();
     stopBindingWatch();
@@ -249,27 +277,18 @@ export async function runInteractiveEntrypoint(args: {
     const { stopAllDesign } = await import("@/design/index.ts");
     await stopAllDesign();
   }
-  const showResumeHint = process.stdout.isTTY && hasSessionTranscript(session);
+  const hintAfterTeardown = showResumeHint();
   await drainPendingAsyncRewakeHooks();
   await fireConfiguredHooks(cfg, "sessionEnd", {
     kind: "sessionEnd",
     ctx: { sessionId: session.id, cwd: session.cwd, reason: "prompt_input_exit" },
   });
   await finalizeSession(session);
-  if (showResumeHint) {
-    // A kept worktree is part of the resume command: rejoining the session
-    // means re-entering its worktree.
-    const { latchedWorktreeName } = await import("@/engine/session/worktree.ts");
-    // Take the whole row before clearing: teardown leaves the cursor parked on the
-    // prompt caret, so erasing from where it stands would keep the prompt's own
-    // opening on screen with nothing after it.
+  if (hintAfterTeardown) {
     // Read the title back off the transcript rather than from the in-session store:
     // resume looks up the persisted rename, so that is the one the command must name.
     const { loadCustomSessionTitle } = await import("@/engine/session/title/store.ts");
-    const customTitle = await loadCustomSessionTitle(session.id).catch(() => null);
-    process.stdout.write(
-      `\r${ERASE_DISPLAY_TO_END}${resumeExitText(session.id, "otherside", latchedWorktreeName(), customTitle)}`,
-    );
+    await writeResumeHint(await loadCustomSessionTitle(session.id).catch(() => null));
   }
   process.exit(0);
 }

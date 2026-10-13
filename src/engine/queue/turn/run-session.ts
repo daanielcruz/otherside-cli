@@ -61,6 +61,10 @@ async function dispatchTurnEvent(event: AgentEvent, observer: TurnObserver): Pro
       return observer.micro_compact?.(event);
     case "turn_end":
       return observer.turn_end?.(event);
+    case "loop_tick":
+      return observer.loop_tick?.(event);
+    case "scheduled_task_fire":
+      return observer.scheduled_task_fire?.(event);
     case "silent_turn_end_recovery":
       return observer.silent_turn_end_recovery?.(event);
     case "goal_eval_start":

@@ -9,7 +9,7 @@ import { applyBrokerEvent, readBrokerSlice } from "@/store/subscribers/broker.ts
 
 export const STRING_VIEW_DEMO_BROKER_STATE: BrokerState = {
   provider: "codex",
-  model: "gpt-5.6-sol",
+  model: "gpt-5.6-terra",
   effort: "high",
   fastMode: true,
   permissionMode: "yolo",

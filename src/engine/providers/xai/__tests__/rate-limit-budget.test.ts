@@ -6,7 +6,7 @@ import type { RequestContext } from "@/kernel/std/types/request.ts";
 function ctx(): RequestContext {
   return {
     provider: "xai",
-    model: "grok-4.5",
+    model: "grok-4.6",
     effort: "high",
     permissionMode: "default",
     sessionId: "xai-rate-limit-budget",

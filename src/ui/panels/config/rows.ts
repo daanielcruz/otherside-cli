@@ -408,7 +408,6 @@ export function cycleOrchestrationMode(
 export const PERMISSION_MODE_SHORT_TITLE: Record<PermissionMode, string> = {
   default: "Default",
   "accept-edits": "Accept",
-  plan: "Plan",
   yolo: "Bypass",
 };
 
@@ -427,6 +426,7 @@ export function effortColor(value: string): ColorValue {
 
 export const PROVIDER_AUTH_RANK: Record<ProviderId, number> = {
   anthropic: 0,
+  "anthropic-cloud": 0,
   antigravity: 0,
   codex: 0,
   xai: 0,

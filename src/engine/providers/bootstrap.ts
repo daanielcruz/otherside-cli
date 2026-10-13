@@ -4,6 +4,8 @@ import { config as anthropicConfig } from "@/engine/providers/anthropic/config.t
 import anthropic from "@/engine/providers/anthropic/index.ts";
 import { config as antigravityConfig } from "@/engine/providers/antigravity/config.ts";
 import antigravity from "@/engine/providers/antigravity/index.ts";
+import { config as cloudConfig } from "@/engine/providers/cloud/config.ts";
+import cloud from "@/engine/providers/cloud/index.ts";
 import { config as codexConfig } from "@/engine/providers/codex/config.ts";
 import codex from "@/engine/providers/codex/index.ts";
 import { config as deepseekConfig } from "@/engine/providers/deepseek/config.ts";
@@ -35,6 +37,7 @@ function descriptor<A extends Api>(
 
 export const PROVIDERS = [
   descriptor(anthropic, anthropicConfig),
+  descriptor(cloud, cloudConfig),
   descriptor(kimi, kimiConfig),
   descriptor(deepseek, deepseekConfig),
   descriptor(minimax, minimaxConfig),

@@ -17,7 +17,6 @@ Reach for this when the task matches an available agent type, when you have inde
 - The agent's final message is returned to you as the tool result; it is not shown to the user — relay what matters.
 - Use SendMessage with the agent's ID to continue a previously spawned agent with its context intact; a new Agent call starts fresh.
 - \`isolation: "worktree"\` gives the agent its own git worktree (auto-cleaned if unchanged).
-- \`run_in_background: true\` runs the agent asynchronously; you'll be notified when it completes.
 
 ## Background execution
 
@@ -105,6 +104,17 @@ Agent({
           "description": "A short (3-5 word) description of the task",
           "type": "string",
         },
+        "effort": {
+          "description": "Reasoning effort for this agent. Set this ONLY when the user, or instructions such as OTHERSIDE.md or a skill, explicitly ask that this agent or delegated work run at a specific effort level, never on your own judgment; otherwise omit it and the agent runs at its usual effort. Ignored for subagent_type: "fork": a fork runs at your own effort.",
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+          ],
+          "type": "string",
+        },
         "isolation": {
           "description": "Isolation mode. "worktree" creates a temporary git worktree so the agent works on an isolated copy of the repo. "remote" launches the agent in a remote cloud environment (always runs in background; availability is gated).",
           "enum": [
@@ -143,7 +153,7 @@ Agent({
         },
       ],
     },
-    "max_tokens": 64000,
+    "max_tokens": 128000,
     "messages": [
       {
         "content": [
@@ -178,9 +188,7 @@ Today's date is 2026-07-12.
 CronCreate
 CronDelete
 CronList
-EnterPlanMode
 EnterWorktree
-ExitPlanMode
 ExitWorktree
 GenerateImage
 NotebookEdit
@@ -204,14 +212,14 @@ ReadDesign"
     "metadata": {
       "user_id": "{"device_id":"0000000000000000000000000000000000000000000000000000000000000000","account_uuid":"acct-fixture","session_id":"sess-fixture-00000000-0000-0000-0000-000000000000"}",
     },
-    "model": "claude-opus-5",
+    "model": "claude-opus-5-5",
     "output_config": {
       "effort": "high",
     },
     "stream": true,
     "system": [
       {
-        "text": "x-anthropic-billing-header: cc_version=2.1.257.b43; cc_entrypoint=cli; cch=a0458;",
+        "text": "x-anthropic-billing-header: cc_version=2.1.296.44d; cc_entrypoint=cli; cch=0d36d;",
         "type": "text",
       },
       {
@@ -252,22 +260,11 @@ IMPORTANT: Assist with authorized security testing, defensive security, CTF chal
           "type": "ephemeral",
         },
         "text": 
-"# Communicating with the user
-
-Your text output is what the user reads between tool calls; they usually can't see your thinking or the raw tool results. Write it for a teammate who stepped away and is catching up, not for a log file: they don't know the codenames or shorthand you created along the way, and they didn't watch your process unfold. Before your first tool call, say in a sentence what you're about to do; while working, give brief updates when you find something load-bearing or change direction.
-
-Lead with the outcome. Your first sentence after finishing should answer "what happened" or "what did you find" — the thing the user would ask for if they said "just give me the TLDR." Supporting detail and reasoning come after, for readers who want them.
-
-Being readable and being concise are different things, and readable matters more. If the user has to reread your summary or ask you to explain, any time saved by brevity is gone. The way to keep output short is to be selective about what you include (drop details that don't change what the reader would do next), not to compress the writing into fragments, abbreviations, arrow chains like \`A → B → fails\`, or jargon. What you do include, write in complete sentences with the technical terms spelled out. Don't make the reader cross-reference labels or numbering you invented earlier; say what you mean in place.
-
-Match the response to the question: a simple question gets a direct answer in prose, not headers and sections. Use tables only for short enumerable facts, with explanations in the surrounding prose rather than the cells. Calibrate to the user — a bit tighter for an expert, more explanatory for someone newer.
-
-Write code that reads like the surrounding code: match its comment density, naming, and idiom.
-Only write a code comment to state a constraint the code itself can't show — never to say where it came from, what the next line does, or why your change is correct; that's you talking to the reviewer, not the next reader, and it's noise the moment the PR merges.
+"Write code that reads like the surrounding code: match its comment density, naming, and idiom.
 
 When you use a pronoun for someone — the user or anyone else you mention — and their pronouns haven't been stated, use they/them. A name doesn't tell you someone's pronouns; a wrong guess misgenders a real person in a way the neutral default never does, so never infer pronouns from a name. This applies to all user-visible text, including visible thinking.
 
-For actions that are hard to reverse or outward-facing, confirm first unless durably authorized or explicitly told to proceed without asking; approval in one context doesn't extend to the next. Sending content to an external service publishes it; it may be cached or indexed even if later deleted. Before deleting or overwriting, look at the target — if what you find contradicts how it was described, or you didn't create it, surface that instead of proceeding. Report outcomes faithfully: if tests fail, say so with the output; if a step was skipped, say that; when something is done and verified, state it plainly without hedging.
+For actions that are hard to reverse or outward-facing, confirm first unless durably authorized or explicitly told to proceed without asking; approval in one context doesn't extend to the next. Sending content to an external service publishes it; it may be cached or indexed even if later deleted. Before deleting or overwriting, look at the target. Report outcomes faithfully: if tests fail, say so with the output; if a step was skipped, say that; when something is done and verified, state it plainly without hedging.
 
 # Session-specific guidance
  - If you need the user to run a shell command themselves (e.g., an interactive login like \`gcloud auth login\`), suggest they type \`! <command>\` in the prompt — the \`!\` prefix runs the command in this session so its output lands directly in the conversation.
@@ -279,12 +276,11 @@ Providers or models without remaining quota are omitted.
 
 ## anthropic
 ### Default
-- claude-opus-5 (Opus 5)
+- claude-opus-5-5 (Opus 5.5)
 - claude-fable-5-1 (Fable 5.1)
-- claude-opus-4-8 (Opus 4.8)
-- claude-sonnet-5 (Sonnet 5)
+- claude-sonnet-5-5 (Sonnet 5.5)
 ### On-demand
-- claude-haiku-4-5 (Haiku 4.5)
+- claude-haiku-5-5 (Haiku 5.5)
 
 # Memory
 
@@ -320,8 +316,8 @@ You have been invoked in the following environment:
  - Platform: darwin
  - Shell: bash
  - OS Version: Darwin 0.0.0
- - You are powered by the model named Opus 5. The exact model ID is claude-opus-5.
- - Assistant knowledge cutoff is January 2026.
+ - You are powered by the model named Opus 5.5. The exact model ID is claude-opus-5-5.
+ - Assistant knowledge cutoff is June 2026.
  - otherside is available as a CLI in the terminal, with a companion mobile app (iOS/Android) for remote pairing and steering sessions on the go.
 
 # Output Style: default
@@ -420,7 +416,6 @@ Reach for this when the task matches an available agent type, when you have inde
 - The agent's final message is returned to you as the tool result; it is not shown to the user — relay what matters.
 - Use SendMessage with the agent's ID to continue a previously spawned agent with its context intact; a new Agent call starts fresh.
 - \`isolation: "worktree"\` gives the agent its own git worktree (auto-cleaned if unchanged).
-- \`run_in_background: true\` runs the agent asynchronously; you'll be notified when it completes.
 
 ## Background execution
 
@@ -509,6 +504,17 @@ Agent({
               "description": "A short (3-5 word) description of the task",
               "type": "string",
             },
+            "effort": {
+              "description": "Reasoning effort for this agent. Set this ONLY when the user, or instructions such as OTHERSIDE.md or a skill, explicitly ask that this agent or delegated work run at a specific effort level, never on your own judgment; otherwise omit it and the agent runs at its usual effort. Ignored for subagent_type: "fork": a fork runs at your own effort.",
+              "enum": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max",
+              ],
+              "type": "string",
+            },
             "isolation": {
               "description": "Isolation mode. "worktree" creates a temporary git worktree so the agent works on an isolated copy of the repo. "remote" launches the agent in a remote cloud environment (always runs in background; availability is gated).",
               "enum": [
@@ -546,8 +552,6 @@ Usage notes:
 - Users will always be able to select "Other" to provide custom text input
 - Use multiSelect: true to allow multiple answers to be selected for a question
 - If you recommend a specific option, make that the first option in the list and add "(Recommended)" at the end of the label
-
-Plan mode note: To switch into plan mode, use EnterPlanMode (not this tool). Once in plan mode, use this tool to clarify requirements or choose between approaches BEFORE finalizing your plan. Do NOT use this tool to ask "Is my plan ready?", "Should I proceed?", or otherwise reference "the plan" in questions — the user cannot see the plan until you call ExitPlanMode for approval.
 
 Reserve this for decisions where the user's answer changes what you do next — not for choices with a conventional default or facts you can verify in the codebase yourself. In those cases pick the obvious option, mention it in your response, and proceed.
 
@@ -681,7 +685,8 @@ Preview content is rendered as markdown in a monospace box. Multi-line text with
 
 - Working directory persists between calls, but prefer absolute paths — \`cd\` in a compound command can trigger a permission prompt. Shell state (env vars, functions) does not persist; the shell is initialized from the user's profile.
 - IMPORTANT: Avoid using this tool to run \`cat\`, \`head\`, \`tail\`, \`sed\`, \`awk\`, or \`echo\` commands, unless explicitly instructed or after you have verified that a dedicated tool cannot accomplish your task. Instead, use the appropriate dedicated tool as this will provide a much better experience for the user.
-- \`timeout\` is in milliseconds: default 120000, max 600000.
+- Command output is displayed to you, not reliably to the user.
+- \`timeout\` is in milliseconds: default 120000, max 600000 for a foreground command.
 - \`run_in_background\` runs the command detached: it keeps running across turns and re-invokes you when it exits. No \`&\` needed.
 
 # Git
@@ -723,7 +728,7 @@ For commands that are harder to parse at a glance (piped commands, obscure flags
               "type": "boolean",
             },
             "timeout": {
-              "description": "Optional timeout in milliseconds (max 600000)",
+              "description": "Optional timeout in milliseconds (max 600000 for a foreground command)",
               "type": "number",
             },
           },
@@ -783,13 +788,18 @@ For commands that are harder to parse at a glance (piped commands, obscure flags
 - When you already know which part of the file you need, only read that part. This can be important for larger files.
 - Results are returned using cat -n format, with line numbers starting at 1
 - Reads images (PNG, JPG, …) and presents them visually. Reads PDFs via the \`pages\` parameter (e.g. "1-5", max 20 pages/request; required for PDFs over 10 pages). Reads Jupyter notebooks (.ipynb) as cells with outputs.
-- Reading a directory, a missing file, or an empty file returns an error or system reminder rather than content."
+- Reading a directory, a missing file, or an empty file returns an error or system reminder rather than content.
+- Do NOT re-read a file you just edited to verify — Edit/Write would have errored if the change failed, and the harness tracks file state for you."
 ,
         "eager_input_streaming": true,
         "input_schema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
           "properties": {
+            "allow_large": {
+              "description": "Set to true to read a text file, or a line range of one, that is over the usual size limits, up to what still fits in your context. Only use this when you genuinely need all of it or the user asked for the whole file; otherwise read it in parts with offset and limit, or search it.",
+              "type": "boolean",
+            },
             "file_path": {
               "description": "The absolute path to the file to read",
               "type": "string",
@@ -907,13 +917,13 @@ For commands that are harder to parse at a glance (piped commands, obscure flags
       },
       {
         "description": 
-"Schedule when to resume work in /loop dynamic mode (always pass the \`prompt\` arg unless stopping). Call before ending the turn to keep the loop alive; call with \`stop: true\` to end the loop immediately.
-
-Schedule when to resume work in /loop dynamic mode — the user invoked /loop without an interval, asking you to self-pace iterations of a specific task.
+"Schedule when to resume work in /loop dynamic mode — the user invoked /loop without an interval, asking you to self-pace iterations of a specific task.
 
 Do NOT schedule a short-interval wakeup to poll for background work you started — when harness-tracked work finishes, you are re-invoked automatically, so polling is wasted. Instead schedule a long fallback (1200s+) so the loop survives if the work hangs or never notifies. The exception is external work the harness cannot track (a CI run, a deploy, a remote queue) — there, pick a delay matched to how fast that state actually changes.
 
 Pass the same /loop prompt back via \`prompt\` each turn so the next firing repeats the task. For an autonomous /loop (no user prompt), pass the literal sentinel \`<<autonomous-loop-dynamic>>\` as \`prompt\` instead — the runtime resolves it back to the autonomous-loop instructions at fire time. (There is a similar \`<<autonomous-loop>>\` sentinel for CronCreate-based autonomous loops; do not confuse the two — ScheduleWakeup always uses the \`-dynamic\` variant.) To end the loop, call this tool with \`stop: true\` (omit every other field) — the loop ends immediately and no further wakeups fire.
+
+Set \`noop: true\` if nothing changed — you checked and there's nothing to report ("no change", "still waiting", "quiet hold"). Set \`noop: false\` if something happened worth keeping — you edited a file, posted a message, advanced state, or surfaced a finding. Consecutive \`noop: true\` ticks are collapsed in the user's terminal view and tracked as a streak, so long quiet holds stay legible to the user without scrolling. Omit \`noop\` when stopping (\`stop: true\`).
 
 ## Picking delaySeconds
 
@@ -937,6 +947,10 @@ One short sentence on what you chose and why. Goes to telemetry and is shown bac
             "delaySeconds": {
               "description": "Seconds from now to wake up. Clamped to [60, 3600] by the runtime. Required unless \`stop\` is true.",
               "type": "number",
+            },
+            "noop": {
+              "description": "true = nothing changed (you checked and there is nothing to report). false = something happened worth keeping (edited a file, posted a message, advanced state, surfaced a finding). Consecutive noop:true ticks are collapsed in the user's terminal view and tracked as a streak. Required unless \`stop\` is true.",
+              "type": "boolean",
             },
             "prompt": {
               "description": "The /loop input to fire on wake-up. Pass the same /loop input verbatim each turn so the next firing re-enters the skill and continues the loop. For autonomous /loop (no user prompt), pass the literal sentinel \`<<autonomous-loop-dynamic>>\` instead (the dynamic-pacing variant, not the CronCreate-mode \`<<autonomous-loop>>\`). Required unless \`stop\` is true.",
@@ -1266,7 +1280,7 @@ When to use: creating a new file, or fully replacing one you've already Read. Ov
       },
     ],
   },
-  "bodyHash": "142270f28c23b368354bd7ec359ca1a5e4431c79e96f6f0e7d23e444fcd49fb9",
+  "bodyHash": "bb7d37fdd1f121a1244478a65c841258f14be36846cd32510bd2e518e047c972",
   "harness": {
     "midSystemBlocks": [
       {
@@ -1277,9 +1291,7 @@ When to use: creating a new file, or fully replacing one you've already Read. Ov
 CronCreate
 CronDelete
 CronList
-EnterPlanMode
 EnterWorktree
-ExitPlanMode
 ExitWorktree
 GenerateImage
 NotebookEdit
@@ -1330,22 +1342,11 @@ IMPORTANT: Assist with authorized security testing, defensive security, CTF chal
         "bundleKey": "text-output",
         "phase": "dynamic",
         "text": 
-"# Communicating with the user
-
-Your text output is what the user reads between tool calls; they usually can't see your thinking or the raw tool results. Write it for a teammate who stepped away and is catching up, not for a log file: they don't know the codenames or shorthand you created along the way, and they didn't watch your process unfold. Before your first tool call, say in a sentence what you're about to do; while working, give brief updates when you find something load-bearing or change direction.
-
-Lead with the outcome. Your first sentence after finishing should answer "what happened" or "what did you find" — the thing the user would ask for if they said "just give me the TLDR." Supporting detail and reasoning come after, for readers who want them.
-
-Being readable and being concise are different things, and readable matters more. If the user has to reread your summary or ask you to explain, any time saved by brevity is gone. The way to keep output short is to be selective about what you include (drop details that don't change what the reader would do next), not to compress the writing into fragments, abbreviations, arrow chains like \`A → B → fails\`, or jargon. What you do include, write in complete sentences with the technical terms spelled out. Don't make the reader cross-reference labels or numbering you invented earlier; say what you mean in place.
-
-Match the response to the question: a simple question gets a direct answer in prose, not headers and sections. Use tables only for short enumerable facts, with explanations in the surrounding prose rather than the cells. Calibrate to the user — a bit tighter for an expert, more explanatory for someone newer.
-
-Write code that reads like the surrounding code: match its comment density, naming, and idiom.
-Only write a code comment to state a constraint the code itself can't show — never to say where it came from, what the next line does, or why your change is correct; that's you talking to the reviewer, not the next reader, and it's noise the moment the PR merges.
+"Write code that reads like the surrounding code: match its comment density, naming, and idiom.
 
 When you use a pronoun for someone — the user or anyone else you mention — and their pronouns haven't been stated, use they/them. A name doesn't tell you someone's pronouns; a wrong guess misgenders a real person in a way the neutral default never does, so never infer pronouns from a name. This applies to all user-visible text, including visible thinking.
 
-For actions that are hard to reverse or outward-facing, confirm first unless durably authorized or explicitly told to proceed without asking; approval in one context doesn't extend to the next. Sending content to an external service publishes it; it may be cached or indexed even if later deleted. Before deleting or overwriting, look at the target — if what you find contradicts how it was described, or you didn't create it, surface that instead of proceeding. Report outcomes faithfully: if tests fail, say so with the output; if a step was skipped, say that; when something is done and verified, state it plainly without hedging."
+For actions that are hard to reverse or outward-facing, confirm first unless durably authorized or explicitly told to proceed without asking; approval in one context doesn't extend to the next. Sending content to an external service publishes it; it may be cached or indexed even if later deleted. Before deleting or overwriting, look at the target. Report outcomes faithfully: if tests fail, say so with the output; if a step was skipped, say that; when something is done and verified, state it plainly without hedging."
 ,
       },
       {
@@ -1367,12 +1368,11 @@ Providers or models without remaining quota are omitted.
 
 ## anthropic
 ### Default
-- claude-opus-5 (Opus 5)
+- claude-opus-5-5 (Opus 5.5)
 - claude-fable-5-1 (Fable 5.1)
-- claude-opus-4-8 (Opus 4.8)
-- claude-sonnet-5 (Sonnet 5)
+- claude-sonnet-5-5 (Sonnet 5.5)
 ### On-demand
-- claude-haiku-4-5 (Haiku 4.5)"
+- claude-haiku-5-5 (Haiku 5.5)"
 ,
       },
       {
@@ -1418,8 +1418,8 @@ You have been invoked in the following environment:
  - Platform: darwin
  - Shell: bash
  - OS Version: Darwin 0.0.0
- - You are powered by the model named Opus 5. The exact model ID is claude-opus-5.
- - Assistant knowledge cutoff is January 2026.
+ - You are powered by the model named Opus 5.5. The exact model ID is claude-opus-5-5.
+ - Assistant knowledge cutoff is June 2026.
  - otherside is available as a CLI in the terminal, with a companion mobile app (iOS/Android) for remote pairing and steering sessions on the go."
 ,
       },
@@ -1766,7 +1766,6 @@ Reach for this when the task matches an available agent type, when you have inde
 - The agent's final message is returned to you as the tool result; it is not shown to the user — relay what matters.
 - Use SendMessage with the agent's ID to continue a previously spawned agent with its context intact; a new Agent call starts fresh.
 - \`isolation: "worktree"\` gives the agent its own git worktree (auto-cleaned if unchanged).
-- \`run_in_background: true\` runs the agent asynchronously; you'll be notified when it completes.
 
 ## Background execution
 
@@ -1854,6 +1853,17 @@ Agent({
           "description": "A short (3-5 word) description of the task",
           "type": "string",
         },
+        "effort": {
+          "description": "Reasoning effort for this agent. Set this ONLY when the user, or instructions such as OTHERSIDE.md or a skill, explicitly ask that this agent or delegated work run at a specific effort level, never on your own judgment; otherwise omit it and the agent runs at its usual effort. Ignored for subagent_type: "fork": a fork runs at your own effort.",
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+          ],
+          "type": "string",
+        },
         "isolation": {
           "description": "Isolation mode. "worktree" creates a temporary git worktree so the agent works on an isolated copy of the repo. "remote" launches the agent in a remote cloud environment (always runs in background; availability is gated).",
           "enum": [
@@ -1871,7 +1881,7 @@ Agent({
           "type": "string",
         },
         "provider": {
-          "description": "Provider id that carries \`model\` (requires \`model\`). Use for an explicit cross-provider pin, e.g. provider "codex" + model "gpt-5.5". The pin is validated against the provider's catalog and credentials.",
+          "description": "Provider id that carries \`model\` (requires \`model\`). Use for an explicit cross-provider pin, e.g. provider "codex" + model "gpt-5.6-terra". The pin is validated against the provider's catalog and credentials.",
           "type": "string",
         },
         "subagent_type": {
@@ -1896,7 +1906,7 @@ Agent({
         },
       ],
     },
-    "max_tokens": 64000,
+    "max_tokens": 128000,
     "messages": [
       {
         "content": [
@@ -1931,9 +1941,7 @@ Today's date is 2026-07-12.
 CronCreate
 CronDelete
 CronList
-EnterPlanMode
 EnterWorktree
-ExitPlanMode
 ExitWorktree
 GenerateImage
 NotebookEdit
@@ -1957,14 +1965,14 @@ ReadDesign"
     "metadata": {
       "user_id": "{"device_id":"0000000000000000000000000000000000000000000000000000000000000000","account_uuid":"acct-fixture","session_id":"sess-fixture-00000000-0000-0000-0000-000000000000"}",
     },
-    "model": "claude-opus-5",
+    "model": "claude-opus-5-5",
     "output_config": {
       "effort": "high",
     },
     "stream": true,
     "system": [
       {
-        "text": "x-anthropic-billing-header: cc_version=2.1.257.b43; cc_entrypoint=cli; cch=5816c;",
+        "text": "x-anthropic-billing-header: cc_version=2.1.296.44d; cc_entrypoint=cli; cch=d4714;",
         "type": "text",
       },
       {
@@ -2005,22 +2013,11 @@ IMPORTANT: Assist with authorized security testing, defensive security, CTF chal
           "type": "ephemeral",
         },
         "text": 
-"# Communicating with the user
-
-Your text output is what the user reads between tool calls; they usually can't see your thinking or the raw tool results. Write it for a teammate who stepped away and is catching up, not for a log file: they don't know the codenames or shorthand you created along the way, and they didn't watch your process unfold. Before your first tool call, say in a sentence what you're about to do; while working, give brief updates when you find something load-bearing or change direction.
-
-Lead with the outcome. Your first sentence after finishing should answer "what happened" or "what did you find" — the thing the user would ask for if they said "just give me the TLDR." Supporting detail and reasoning come after, for readers who want them.
-
-Being readable and being concise are different things, and readable matters more. If the user has to reread your summary or ask you to explain, any time saved by brevity is gone. The way to keep output short is to be selective about what you include (drop details that don't change what the reader would do next), not to compress the writing into fragments, abbreviations, arrow chains like \`A → B → fails\`, or jargon. What you do include, write in complete sentences with the technical terms spelled out. Don't make the reader cross-reference labels or numbering you invented earlier; say what you mean in place.
-
-Match the response to the question: a simple question gets a direct answer in prose, not headers and sections. Use tables only for short enumerable facts, with explanations in the surrounding prose rather than the cells. Calibrate to the user — a bit tighter for an expert, more explanatory for someone newer.
-
-Write code that reads like the surrounding code: match its comment density, naming, and idiom.
-Only write a code comment to state a constraint the code itself can't show — never to say where it came from, what the next line does, or why your change is correct; that's you talking to the reviewer, not the next reader, and it's noise the moment the PR merges.
+"Write code that reads like the surrounding code: match its comment density, naming, and idiom.
 
 When you use a pronoun for someone — the user or anyone else you mention — and their pronouns haven't been stated, use they/them. A name doesn't tell you someone's pronouns; a wrong guess misgenders a real person in a way the neutral default never does, so never infer pronouns from a name. This applies to all user-visible text, including visible thinking.
 
-For actions that are hard to reverse or outward-facing, confirm first unless durably authorized or explicitly told to proceed without asking; approval in one context doesn't extend to the next. Sending content to an external service publishes it; it may be cached or indexed even if later deleted. Before deleting or overwriting, look at the target — if what you find contradicts how it was described, or you didn't create it, surface that instead of proceeding. Report outcomes faithfully: if tests fail, say so with the output; if a step was skipped, say that; when something is done and verified, state it plainly without hedging.
+For actions that are hard to reverse or outward-facing, confirm first unless durably authorized or explicitly told to proceed without asking; approval in one context doesn't extend to the next. Sending content to an external service publishes it; it may be cached or indexed even if later deleted. Before deleting or overwriting, look at the target. Report outcomes faithfully: if tests fail, say so with the output; if a step was skipped, say that; when something is done and verified, state it plainly without hedging.
 
 # Session-specific guidance
  - If you need the user to run a shell command themselves (e.g., an interactive login like \`gcloud auth login\`), suggest they type \`! <command>\` in the prompt — the \`!\` prefix runs the command in this session so its output lands directly in the conversation.
@@ -2035,24 +2032,19 @@ Default models form the normal routing pool. On-demand models are used only when
 
 ## anthropic
 ### Default
-- claude-opus-5 (Opus 5)
+- claude-opus-5-5 (Opus 5.5)
 - claude-fable-5-1 (Fable 5.1)
-- claude-opus-4-8 (Opus 4.8)
-- claude-sonnet-5 (Sonnet 5)
+- claude-sonnet-5-5 (Sonnet 5.5)
 ### On-demand
-- claude-haiku-4-5 (Haiku 4.5)
+- claude-haiku-5-5 (Haiku 5.5)
 
 ## codex
 ### Default
 - gpt-6-astra (GPT-6 Astra)
-- gpt-5.6-sol (GPT-5.6 Sol)
+- gpt-6.1-sol (GPT-6.1 Sol)
+- gpt-daybreak-blue-latest (GPT Daybreak Blue)
 - gpt-5.6-terra (GPT-5.6 Terra)
 - gpt-5.6-luna (GPT-5.6 Luna)
-### On-demand
-- gpt-5.5 (GPT-5.5)
-- gpt-5.4 (GPT-5.4)
-- gpt-5.4-mini (GPT-5.4 Mini)
-- gpt-5.3-codex-spark (GPT-5.3 Codex Spark)
 
 ## glm
 ### Default
@@ -2061,6 +2053,7 @@ Default models form the normal routing pool. On-demand models are used only when
 
 ## antigravity
 ### Default
+- gemini-4-argon (Gemini 4 Argon)
 - gemini-3.8-flash (Gemini 3.8 Flash)
 - gemini-3.7-flash (Gemini 3.7 Flash)
 - gemini-3.6-flash (Gemini 3.6 Flash)
@@ -2104,8 +2097,8 @@ You have been invoked in the following environment:
  - Platform: darwin
  - Shell: bash
  - OS Version: Darwin 0.0.0
- - You are powered by the model named Opus 5. The exact model ID is claude-opus-5.
- - Assistant knowledge cutoff is January 2026.
+ - You are powered by the model named Opus 5.5. The exact model ID is claude-opus-5-5.
+ - Assistant knowledge cutoff is June 2026.
  - otherside is available as a CLI in the terminal, with a companion mobile app (iOS/Android) for remote pairing and steering sessions on the go.
 
 # Output Style: default
@@ -2204,7 +2197,6 @@ Reach for this when the task matches an available agent type, when you have inde
 - The agent's final message is returned to you as the tool result; it is not shown to the user — relay what matters.
 - Use SendMessage with the agent's ID to continue a previously spawned agent with its context intact; a new Agent call starts fresh.
 - \`isolation: "worktree"\` gives the agent its own git worktree (auto-cleaned if unchanged).
-- \`run_in_background: true\` runs the agent asynchronously; you'll be notified when it completes.
 
 ## Background execution
 
@@ -2293,6 +2285,17 @@ Agent({
               "description": "A short (3-5 word) description of the task",
               "type": "string",
             },
+            "effort": {
+              "description": "Reasoning effort for this agent. Set this ONLY when the user, or instructions such as OTHERSIDE.md or a skill, explicitly ask that this agent or delegated work run at a specific effort level, never on your own judgment; otherwise omit it and the agent runs at its usual effort. Ignored for subagent_type: "fork": a fork runs at your own effort.",
+              "enum": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max",
+              ],
+              "type": "string",
+            },
             "isolation": {
               "description": "Isolation mode. "worktree" creates a temporary git worktree so the agent works on an isolated copy of the repo. "remote" launches the agent in a remote cloud environment (always runs in background; availability is gated).",
               "enum": [
@@ -2310,7 +2313,7 @@ Agent({
               "type": "string",
             },
             "provider": {
-              "description": "Provider id that carries \`model\` (requires \`model\`). Use for an explicit cross-provider pin, e.g. provider "codex" + model "gpt-5.5". The pin is validated against the provider's catalog and credentials.",
+              "description": "Provider id that carries \`model\` (requires \`model\`). Use for an explicit cross-provider pin, e.g. provider "codex" + model "gpt-5.6-terra". The pin is validated against the provider's catalog and credentials.",
               "type": "string",
             },
             "subagent_type": {
@@ -2334,8 +2337,6 @@ Usage notes:
 - Users will always be able to select "Other" to provide custom text input
 - Use multiSelect: true to allow multiple answers to be selected for a question
 - If you recommend a specific option, make that the first option in the list and add "(Recommended)" at the end of the label
-
-Plan mode note: To switch into plan mode, use EnterPlanMode (not this tool). Once in plan mode, use this tool to clarify requirements or choose between approaches BEFORE finalizing your plan. Do NOT use this tool to ask "Is my plan ready?", "Should I proceed?", or otherwise reference "the plan" in questions — the user cannot see the plan until you call ExitPlanMode for approval.
 
 Reserve this for decisions where the user's answer changes what you do next — not for choices with a conventional default or facts you can verify in the codebase yourself. In those cases pick the obvious option, mention it in your response, and proceed.
 
@@ -2469,7 +2470,8 @@ Preview content is rendered as markdown in a monospace box. Multi-line text with
 
 - Working directory persists between calls, but prefer absolute paths — \`cd\` in a compound command can trigger a permission prompt. Shell state (env vars, functions) does not persist; the shell is initialized from the user's profile.
 - IMPORTANT: Avoid using this tool to run \`cat\`, \`head\`, \`tail\`, \`sed\`, \`awk\`, or \`echo\` commands, unless explicitly instructed or after you have verified that a dedicated tool cannot accomplish your task. Instead, use the appropriate dedicated tool as this will provide a much better experience for the user.
-- \`timeout\` is in milliseconds: default 120000, max 600000.
+- Command output is displayed to you, not reliably to the user.
+- \`timeout\` is in milliseconds: default 120000, max 600000 for a foreground command.
 - \`run_in_background\` runs the command detached: it keeps running across turns and re-invokes you when it exits. No \`&\` needed.
 
 # Git
@@ -2511,7 +2513,7 @@ For commands that are harder to parse at a glance (piped commands, obscure flags
               "type": "boolean",
             },
             "timeout": {
-              "description": "Optional timeout in milliseconds (max 600000)",
+              "description": "Optional timeout in milliseconds (max 600000 for a foreground command)",
               "type": "number",
             },
           },
@@ -2571,13 +2573,18 @@ For commands that are harder to parse at a glance (piped commands, obscure flags
 - When you already know which part of the file you need, only read that part. This can be important for larger files.
 - Results are returned using cat -n format, with line numbers starting at 1
 - Reads images (PNG, JPG, …) and presents them visually. Reads PDFs via the \`pages\` parameter (e.g. "1-5", max 20 pages/request; required for PDFs over 10 pages). Reads Jupyter notebooks (.ipynb) as cells with outputs.
-- Reading a directory, a missing file, or an empty file returns an error or system reminder rather than content."
+- Reading a directory, a missing file, or an empty file returns an error or system reminder rather than content.
+- Do NOT re-read a file you just edited to verify — Edit/Write would have errored if the change failed, and the harness tracks file state for you."
 ,
         "eager_input_streaming": true,
         "input_schema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
           "properties": {
+            "allow_large": {
+              "description": "Set to true to read a text file, or a line range of one, that is over the usual size limits, up to what still fits in your context. Only use this when you genuinely need all of it or the user asked for the whole file; otherwise read it in parts with offset and limit, or search it.",
+              "type": "boolean",
+            },
             "file_path": {
               "description": "The absolute path to the file to read",
               "type": "string",
@@ -2695,13 +2702,13 @@ For commands that are harder to parse at a glance (piped commands, obscure flags
       },
       {
         "description": 
-"Schedule when to resume work in /loop dynamic mode (always pass the \`prompt\` arg unless stopping). Call before ending the turn to keep the loop alive; call with \`stop: true\` to end the loop immediately.
-
-Schedule when to resume work in /loop dynamic mode — the user invoked /loop without an interval, asking you to self-pace iterations of a specific task.
+"Schedule when to resume work in /loop dynamic mode — the user invoked /loop without an interval, asking you to self-pace iterations of a specific task.
 
 Do NOT schedule a short-interval wakeup to poll for background work you started — when harness-tracked work finishes, you are re-invoked automatically, so polling is wasted. Instead schedule a long fallback (1200s+) so the loop survives if the work hangs or never notifies. The exception is external work the harness cannot track (a CI run, a deploy, a remote queue) — there, pick a delay matched to how fast that state actually changes.
 
 Pass the same /loop prompt back via \`prompt\` each turn so the next firing repeats the task. For an autonomous /loop (no user prompt), pass the literal sentinel \`<<autonomous-loop-dynamic>>\` as \`prompt\` instead — the runtime resolves it back to the autonomous-loop instructions at fire time. (There is a similar \`<<autonomous-loop>>\` sentinel for CronCreate-based autonomous loops; do not confuse the two — ScheduleWakeup always uses the \`-dynamic\` variant.) To end the loop, call this tool with \`stop: true\` (omit every other field) — the loop ends immediately and no further wakeups fire.
+
+Set \`noop: true\` if nothing changed — you checked and there's nothing to report ("no change", "still waiting", "quiet hold"). Set \`noop: false\` if something happened worth keeping — you edited a file, posted a message, advanced state, or surfaced a finding. Consecutive \`noop: true\` ticks are collapsed in the user's terminal view and tracked as a streak, so long quiet holds stay legible to the user without scrolling. Omit \`noop\` when stopping (\`stop: true\`).
 
 ## Picking delaySeconds
 
@@ -2725,6 +2732,10 @@ One short sentence on what you chose and why. Goes to telemetry and is shown bac
             "delaySeconds": {
               "description": "Seconds from now to wake up. Clamped to [60, 3600] by the runtime. Required unless \`stop\` is true.",
               "type": "number",
+            },
+            "noop": {
+              "description": "true = nothing changed (you checked and there is nothing to report). false = something happened worth keeping (edited a file, posted a message, advanced state, surfaced a finding). Consecutive noop:true ticks are collapsed in the user's terminal view and tracked as a streak. Required unless \`stop\` is true.",
+              "type": "boolean",
             },
             "prompt": {
               "description": "The /loop input to fire on wake-up. Pass the same /loop input verbatim each turn so the next firing re-enters the skill and continues the loop. For autonomous /loop (no user prompt), pass the literal sentinel \`<<autonomous-loop-dynamic>>\` instead (the dynamic-pacing variant, not the CronCreate-mode \`<<autonomous-loop>>\`). Required unless \`stop\` is true.",
@@ -3054,7 +3065,7 @@ When to use: creating a new file, or fully replacing one you've already Read. Ov
       },
     ],
   },
-  "bodyHash": "25d59907f4b36d7ebc37b6876d0d86cf82bf1a140f47fa551d70735eef4eefc3",
+  "bodyHash": "e9c6100531802b93e81d881daff6863b6ec196b1c8276a67bd7a769ffac8c543",
   "harness": {
     "midSystemBlocks": [
       {
@@ -3065,9 +3076,7 @@ When to use: creating a new file, or fully replacing one you've already Read. Ov
 CronCreate
 CronDelete
 CronList
-EnterPlanMode
 EnterWorktree
-ExitPlanMode
 ExitWorktree
 GenerateImage
 NotebookEdit
@@ -3118,22 +3127,11 @@ IMPORTANT: Assist with authorized security testing, defensive security, CTF chal
         "bundleKey": "text-output",
         "phase": "dynamic",
         "text": 
-"# Communicating with the user
-
-Your text output is what the user reads between tool calls; they usually can't see your thinking or the raw tool results. Write it for a teammate who stepped away and is catching up, not for a log file: they don't know the codenames or shorthand you created along the way, and they didn't watch your process unfold. Before your first tool call, say in a sentence what you're about to do; while working, give brief updates when you find something load-bearing or change direction.
-
-Lead with the outcome. Your first sentence after finishing should answer "what happened" or "what did you find" — the thing the user would ask for if they said "just give me the TLDR." Supporting detail and reasoning come after, for readers who want them.
-
-Being readable and being concise are different things, and readable matters more. If the user has to reread your summary or ask you to explain, any time saved by brevity is gone. The way to keep output short is to be selective about what you include (drop details that don't change what the reader would do next), not to compress the writing into fragments, abbreviations, arrow chains like \`A → B → fails\`, or jargon. What you do include, write in complete sentences with the technical terms spelled out. Don't make the reader cross-reference labels or numbering you invented earlier; say what you mean in place.
-
-Match the response to the question: a simple question gets a direct answer in prose, not headers and sections. Use tables only for short enumerable facts, with explanations in the surrounding prose rather than the cells. Calibrate to the user — a bit tighter for an expert, more explanatory for someone newer.
-
-Write code that reads like the surrounding code: match its comment density, naming, and idiom.
-Only write a code comment to state a constraint the code itself can't show — never to say where it came from, what the next line does, or why your change is correct; that's you talking to the reviewer, not the next reader, and it's noise the moment the PR merges.
+"Write code that reads like the surrounding code: match its comment density, naming, and idiom.
 
 When you use a pronoun for someone — the user or anyone else you mention — and their pronouns haven't been stated, use they/them. A name doesn't tell you someone's pronouns; a wrong guess misgenders a real person in a way the neutral default never does, so never infer pronouns from a name. This applies to all user-visible text, including visible thinking.
 
-For actions that are hard to reverse or outward-facing, confirm first unless durably authorized or explicitly told to proceed without asking; approval in one context doesn't extend to the next. Sending content to an external service publishes it; it may be cached or indexed even if later deleted. Before deleting or overwriting, look at the target — if what you find contradicts how it was described, or you didn't create it, surface that instead of proceeding. Report outcomes faithfully: if tests fail, say so with the output; if a step was skipped, say that; when something is done and verified, state it plainly without hedging."
+For actions that are hard to reverse or outward-facing, confirm first unless durably authorized or explicitly told to proceed without asking; approval in one context doesn't extend to the next. Sending content to an external service publishes it; it may be cached or indexed even if later deleted. Before deleting or overwriting, look at the target. Report outcomes faithfully: if tests fail, say so with the output; if a step was skipped, say that; when something is done and verified, state it plainly without hedging."
 ,
       },
       {
@@ -3163,24 +3161,19 @@ Default models form the normal routing pool. On-demand models are used only when
 
 ## anthropic
 ### Default
-- claude-opus-5 (Opus 5)
+- claude-opus-5-5 (Opus 5.5)
 - claude-fable-5-1 (Fable 5.1)
-- claude-opus-4-8 (Opus 4.8)
-- claude-sonnet-5 (Sonnet 5)
+- claude-sonnet-5-5 (Sonnet 5.5)
 ### On-demand
-- claude-haiku-4-5 (Haiku 4.5)
+- claude-haiku-5-5 (Haiku 5.5)
 
 ## codex
 ### Default
 - gpt-6-astra (GPT-6 Astra)
-- gpt-5.6-sol (GPT-5.6 Sol)
+- gpt-6.1-sol (GPT-6.1 Sol)
+- gpt-daybreak-blue-latest (GPT Daybreak Blue)
 - gpt-5.6-terra (GPT-5.6 Terra)
 - gpt-5.6-luna (GPT-5.6 Luna)
-### On-demand
-- gpt-5.5 (GPT-5.5)
-- gpt-5.4 (GPT-5.4)
-- gpt-5.4-mini (GPT-5.4 Mini)
-- gpt-5.3-codex-spark (GPT-5.3 Codex Spark)
 
 ## glm
 ### Default
@@ -3189,6 +3182,7 @@ Default models form the normal routing pool. On-demand models are used only when
 
 ## antigravity
 ### Default
+- gemini-4-argon (Gemini 4 Argon)
 - gemini-3.8-flash (Gemini 3.8 Flash)
 - gemini-3.7-flash (Gemini 3.7 Flash)
 - gemini-3.6-flash (Gemini 3.6 Flash)
@@ -3242,8 +3236,8 @@ You have been invoked in the following environment:
  - Platform: darwin
  - Shell: bash
  - OS Version: Darwin 0.0.0
- - You are powered by the model named Opus 5. The exact model ID is claude-opus-5.
- - Assistant knowledge cutoff is January 2026.
+ - You are powered by the model named Opus 5.5. The exact model ID is claude-opus-5-5.
+ - Assistant knowledge cutoff is June 2026.
  - otherside is available as a CLI in the terminal, with a companion mobile app (iOS/Android) for remote pairing and steering sessions on the go."
 ,
       },
@@ -3703,6 +3697,17 @@ Agent({
           "description": "A short (3-5 word) description of the task",
           "type": "string",
         },
+        "effort": {
+          "description": "Reasoning effort for this agent. Set this ONLY when the user, or instructions such as OTHERSIDE.md or a skill, explicitly ask that this agent or delegated work run at a specific effort level, never on your own judgment; otherwise omit it and the agent runs at its usual effort. Ignored for subagent_type: "fork": a fork runs at your own effort.",
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+          ],
+          "type": "string",
+        },
         "isolation": {
           "description": "Isolation mode. "worktree" creates a temporary git worktree so the agent works on an isolated copy of the repo. "remote" launches the agent in a remote cloud environment (always runs in background; availability is gated).",
           "enum": [
@@ -3755,7 +3760,7 @@ Agent({
         },
       ],
     },
-    "max_tokens": 64000,
+    "max_tokens": 128000,
     "messages": [
       {
         "content": [
@@ -3790,9 +3795,7 @@ Today's date is 2026-07-12.
 CronCreate
 CronDelete
 CronList
-EnterPlanMode
 EnterWorktree
-ExitPlanMode
 ExitWorktree
 GenerateImage
 NotebookEdit
@@ -3816,14 +3819,14 @@ ReadDesign"
     "metadata": {
       "user_id": "{"device_id":"0000000000000000000000000000000000000000000000000000000000000000","account_uuid":"acct-fixture","session_id":"sess-fixture-00000000-0000-0000-0000-000000000000"}",
     },
-    "model": "claude-opus-5",
+    "model": "claude-opus-5-5",
     "output_config": {
       "effort": "high",
     },
     "stream": true,
     "system": [
       {
-        "text": "x-anthropic-billing-header: cc_version=2.1.257.b43; cc_entrypoint=cli; cch=d2a2a;",
+        "text": "x-anthropic-billing-header: cc_version=2.1.296.44d; cc_entrypoint=cli; cch=dc35a;",
         "type": "text",
       },
       {
@@ -3864,22 +3867,11 @@ IMPORTANT: Assist with authorized security testing, defensive security, CTF chal
           "type": "ephemeral",
         },
         "text": 
-"# Communicating with the user
-
-Your text output is what the user reads between tool calls; they usually can't see your thinking or the raw tool results. Write it for a teammate who stepped away and is catching up, not for a log file: they don't know the codenames or shorthand you created along the way, and they didn't watch your process unfold. Before your first tool call, say in a sentence what you're about to do; while working, give brief updates when you find something load-bearing or change direction.
-
-Lead with the outcome. Your first sentence after finishing should answer "what happened" or "what did you find" — the thing the user would ask for if they said "just give me the TLDR." Supporting detail and reasoning come after, for readers who want them.
-
-Being readable and being concise are different things, and readable matters more. If the user has to reread your summary or ask you to explain, any time saved by brevity is gone. The way to keep output short is to be selective about what you include (drop details that don't change what the reader would do next), not to compress the writing into fragments, abbreviations, arrow chains like \`A → B → fails\`, or jargon. What you do include, write in complete sentences with the technical terms spelled out. Don't make the reader cross-reference labels or numbering you invented earlier; say what you mean in place.
-
-Match the response to the question: a simple question gets a direct answer in prose, not headers and sections. Use tables only for short enumerable facts, with explanations in the surrounding prose rather than the cells. Calibrate to the user — a bit tighter for an expert, more explanatory for someone newer.
-
-Write code that reads like the surrounding code: match its comment density, naming, and idiom.
-Only write a code comment to state a constraint the code itself can't show — never to say where it came from, what the next line does, or why your change is correct; that's you talking to the reviewer, not the next reader, and it's noise the moment the PR merges.
+"Write code that reads like the surrounding code: match its comment density, naming, and idiom.
 
 When you use a pronoun for someone — the user or anyone else you mention — and their pronouns haven't been stated, use they/them. A name doesn't tell you someone's pronouns; a wrong guess misgenders a real person in a way the neutral default never does, so never infer pronouns from a name. This applies to all user-visible text, including visible thinking.
 
-For actions that are hard to reverse or outward-facing, confirm first unless durably authorized or explicitly told to proceed without asking; approval in one context doesn't extend to the next. Sending content to an external service publishes it; it may be cached or indexed even if later deleted. Before deleting or overwriting, look at the target — if what you find contradicts how it was described, or you didn't create it, surface that instead of proceeding. Report outcomes faithfully: if tests fail, say so with the output; if a step was skipped, say that; when something is done and verified, state it plainly without hedging.
+For actions that are hard to reverse or outward-facing, confirm first unless durably authorized or explicitly told to proceed without asking; approval in one context doesn't extend to the next. Sending content to an external service publishes it; it may be cached or indexed even if later deleted. Before deleting or overwriting, look at the target. Report outcomes faithfully: if tests fail, say so with the output; if a step was skipped, say that; when something is done and verified, state it plainly without hedging.
 
 # Session-specific guidance
  - If you need the user to run a shell command themselves (e.g., an interactive login like \`gcloud auth login\`), suggest they type \`! <command>\` in the prompt — the \`!\` prefix runs the command in this session so its output lands directly in the conversation.
@@ -3924,8 +3916,8 @@ You have been invoked in the following environment:
  - Platform: darwin
  - Shell: bash
  - OS Version: Darwin 0.0.0
- - You are powered by the model named Opus 5. The exact model ID is claude-opus-5.
- - Assistant knowledge cutoff is January 2026.
+ - You are powered by the model named Opus 5.5. The exact model ID is claude-opus-5-5.
+ - Assistant knowledge cutoff is June 2026.
  - otherside is available as a CLI in the terminal, with a companion mobile app (iOS/Android) for remote pairing and steering sessions on the go.
 
 # Output Style: default
@@ -4138,6 +4130,17 @@ Agent({
               "description": "A short (3-5 word) description of the task",
               "type": "string",
             },
+            "effort": {
+              "description": "Reasoning effort for this agent. Set this ONLY when the user, or instructions such as OTHERSIDE.md or a skill, explicitly ask that this agent or delegated work run at a specific effort level, never on your own judgment; otherwise omit it and the agent runs at its usual effort. Ignored for subagent_type: "fork": a fork runs at your own effort.",
+              "enum": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max",
+              ],
+              "type": "string",
+            },
             "isolation": {
               "description": "Isolation mode. "worktree" creates a temporary git worktree so the agent works on an isolated copy of the repo. "remote" launches the agent in a remote cloud environment (always runs in background; availability is gated).",
               "enum": [
@@ -4189,8 +4192,6 @@ Usage notes:
 - Users will always be able to select "Other" to provide custom text input
 - Use multiSelect: true to allow multiple answers to be selected for a question
 - If you recommend a specific option, make that the first option in the list and add "(Recommended)" at the end of the label
-
-Plan mode note: To switch into plan mode, use EnterPlanMode (not this tool). Once in plan mode, use this tool to clarify requirements or choose between approaches BEFORE finalizing your plan. Do NOT use this tool to ask "Is my plan ready?", "Should I proceed?", or otherwise reference "the plan" in questions — the user cannot see the plan until you call ExitPlanMode for approval.
 
 Reserve this for decisions where the user's answer changes what you do next — not for choices with a conventional default or facts you can verify in the codebase yourself. In those cases pick the obvious option, mention it in your response, and proceed.
 
@@ -4324,7 +4325,8 @@ Preview content is rendered as markdown in a monospace box. Multi-line text with
 
 - Working directory persists between calls, but prefer absolute paths — \`cd\` in a compound command can trigger a permission prompt. Shell state (env vars, functions) does not persist; the shell is initialized from the user's profile.
 - IMPORTANT: Avoid using this tool to run \`cat\`, \`head\`, \`tail\`, \`sed\`, \`awk\`, or \`echo\` commands, unless explicitly instructed or after you have verified that a dedicated tool cannot accomplish your task. Instead, use the appropriate dedicated tool as this will provide a much better experience for the user.
-- \`timeout\` is in milliseconds: default 120000, max 600000.
+- Command output is displayed to you, not reliably to the user.
+- \`timeout\` is in milliseconds: default 120000, max 600000 for a foreground command.
 - \`run_in_background\` runs the command detached: it keeps running across turns and re-invokes you when it exits. No \`&\` needed.
 
 # Git
@@ -4366,7 +4368,7 @@ For commands that are harder to parse at a glance (piped commands, obscure flags
               "type": "boolean",
             },
             "timeout": {
-              "description": "Optional timeout in milliseconds (max 600000)",
+              "description": "Optional timeout in milliseconds (max 600000 for a foreground command)",
               "type": "number",
             },
           },
@@ -4426,13 +4428,18 @@ For commands that are harder to parse at a glance (piped commands, obscure flags
 - When you already know which part of the file you need, only read that part. This can be important for larger files.
 - Results are returned using cat -n format, with line numbers starting at 1
 - Reads images (PNG, JPG, …) and presents them visually. Reads PDFs via the \`pages\` parameter (e.g. "1-5", max 20 pages/request; required for PDFs over 10 pages). Reads Jupyter notebooks (.ipynb) as cells with outputs.
-- Reading a directory, a missing file, or an empty file returns an error or system reminder rather than content."
+- Reading a directory, a missing file, or an empty file returns an error or system reminder rather than content.
+- Do NOT re-read a file you just edited to verify — Edit/Write would have errored if the change failed, and the harness tracks file state for you."
 ,
         "eager_input_streaming": true,
         "input_schema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
           "properties": {
+            "allow_large": {
+              "description": "Set to true to read a text file, or a line range of one, that is over the usual size limits, up to what still fits in your context. Only use this when you genuinely need all of it or the user asked for the whole file; otherwise read it in parts with offset and limit, or search it.",
+              "type": "boolean",
+            },
             "file_path": {
               "description": "The absolute path to the file to read",
               "type": "string",
@@ -4550,13 +4557,13 @@ For commands that are harder to parse at a glance (piped commands, obscure flags
       },
       {
         "description": 
-"Schedule when to resume work in /loop dynamic mode (always pass the \`prompt\` arg unless stopping). Call before ending the turn to keep the loop alive; call with \`stop: true\` to end the loop immediately.
-
-Schedule when to resume work in /loop dynamic mode — the user invoked /loop without an interval, asking you to self-pace iterations of a specific task.
+"Schedule when to resume work in /loop dynamic mode — the user invoked /loop without an interval, asking you to self-pace iterations of a specific task.
 
 Do NOT schedule a short-interval wakeup to poll for background work you started — when harness-tracked work finishes, you are re-invoked automatically, so polling is wasted. Instead schedule a long fallback (1200s+) so the loop survives if the work hangs or never notifies. The exception is external work the harness cannot track (a CI run, a deploy, a remote queue) — there, pick a delay matched to how fast that state actually changes.
 
 Pass the same /loop prompt back via \`prompt\` each turn so the next firing repeats the task. For an autonomous /loop (no user prompt), pass the literal sentinel \`<<autonomous-loop-dynamic>>\` as \`prompt\` instead — the runtime resolves it back to the autonomous-loop instructions at fire time. (There is a similar \`<<autonomous-loop>>\` sentinel for CronCreate-based autonomous loops; do not confuse the two — ScheduleWakeup always uses the \`-dynamic\` variant.) To end the loop, call this tool with \`stop: true\` (omit every other field) — the loop ends immediately and no further wakeups fire.
+
+Set \`noop: true\` if nothing changed — you checked and there's nothing to report ("no change", "still waiting", "quiet hold"). Set \`noop: false\` if something happened worth keeping — you edited a file, posted a message, advanced state, or surfaced a finding. Consecutive \`noop: true\` ticks are collapsed in the user's terminal view and tracked as a streak, so long quiet holds stay legible to the user without scrolling. Omit \`noop\` when stopping (\`stop: true\`).
 
 ## Picking delaySeconds
 
@@ -4580,6 +4587,10 @@ One short sentence on what you chose and why. Goes to telemetry and is shown bac
             "delaySeconds": {
               "description": "Seconds from now to wake up. Clamped to [60, 3600] by the runtime. Required unless \`stop\` is true.",
               "type": "number",
+            },
+            "noop": {
+              "description": "true = nothing changed (you checked and there is nothing to report). false = something happened worth keeping (edited a file, posted a message, advanced state, surfaced a finding). Consecutive noop:true ticks are collapsed in the user's terminal view and tracked as a streak. Required unless \`stop\` is true.",
+              "type": "boolean",
             },
             "prompt": {
               "description": "The /loop input to fire on wake-up. Pass the same /loop input verbatim each turn so the next firing re-enters the skill and continues the loop. For autonomous /loop (no user prompt), pass the literal sentinel \`<<autonomous-loop-dynamic>>\` instead (the dynamic-pacing variant, not the CronCreate-mode \`<<autonomous-loop>>\`). Required unless \`stop\` is true.",
@@ -4931,7 +4942,7 @@ When to use: creating a new file, or fully replacing one you've already Read. Ov
       },
     ],
   },
-  "bodyHash": "33d9bfe1342f57955c444edc08a54644d308a08f0b7477ae06f30a64e22639af",
+  "bodyHash": "15b4e7fb0b6bcabd11364bbe90d65a9ab492f7948aabb11e4e0d26c33530b89e",
   "harness": {
     "midSystemBlocks": [
       {
@@ -4942,9 +4953,7 @@ When to use: creating a new file, or fully replacing one you've already Read. Ov
 CronCreate
 CronDelete
 CronList
-EnterPlanMode
 EnterWorktree
-ExitPlanMode
 ExitWorktree
 GenerateImage
 NotebookEdit
@@ -4995,22 +5004,11 @@ IMPORTANT: Assist with authorized security testing, defensive security, CTF chal
         "bundleKey": "text-output",
         "phase": "dynamic",
         "text": 
-"# Communicating with the user
-
-Your text output is what the user reads between tool calls; they usually can't see your thinking or the raw tool results. Write it for a teammate who stepped away and is catching up, not for a log file: they don't know the codenames or shorthand you created along the way, and they didn't watch your process unfold. Before your first tool call, say in a sentence what you're about to do; while working, give brief updates when you find something load-bearing or change direction.
-
-Lead with the outcome. Your first sentence after finishing should answer "what happened" or "what did you find" — the thing the user would ask for if they said "just give me the TLDR." Supporting detail and reasoning come after, for readers who want them.
-
-Being readable and being concise are different things, and readable matters more. If the user has to reread your summary or ask you to explain, any time saved by brevity is gone. The way to keep output short is to be selective about what you include (drop details that don't change what the reader would do next), not to compress the writing into fragments, abbreviations, arrow chains like \`A → B → fails\`, or jargon. What you do include, write in complete sentences with the technical terms spelled out. Don't make the reader cross-reference labels or numbering you invented earlier; say what you mean in place.
-
-Match the response to the question: a simple question gets a direct answer in prose, not headers and sections. Use tables only for short enumerable facts, with explanations in the surrounding prose rather than the cells. Calibrate to the user — a bit tighter for an expert, more explanatory for someone newer.
-
-Write code that reads like the surrounding code: match its comment density, naming, and idiom.
-Only write a code comment to state a constraint the code itself can't show — never to say where it came from, what the next line does, or why your change is correct; that's you talking to the reviewer, not the next reader, and it's noise the moment the PR merges.
+"Write code that reads like the surrounding code: match its comment density, naming, and idiom.
 
 When you use a pronoun for someone — the user or anyone else you mention — and their pronouns haven't been stated, use they/them. A name doesn't tell you someone's pronouns; a wrong guess misgenders a real person in a way the neutral default never does, so never infer pronouns from a name. This applies to all user-visible text, including visible thinking.
 
-For actions that are hard to reverse or outward-facing, confirm first unless durably authorized or explicitly told to proceed without asking; approval in one context doesn't extend to the next. Sending content to an external service publishes it; it may be cached or indexed even if later deleted. Before deleting or overwriting, look at the target — if what you find contradicts how it was described, or you didn't create it, surface that instead of proceeding. Report outcomes faithfully: if tests fail, say so with the output; if a step was skipped, say that; when something is done and verified, state it plainly without hedging."
+For actions that are hard to reverse or outward-facing, confirm first unless durably authorized or explicitly told to proceed without asking; approval in one context doesn't extend to the next. Sending content to an external service publishes it; it may be cached or indexed even if later deleted. Before deleting or overwriting, look at the target. Report outcomes faithfully: if tests fail, say so with the output; if a step was skipped, say that; when something is done and verified, state it plainly without hedging."
 ,
       },
       {
@@ -5075,8 +5073,8 @@ You have been invoked in the following environment:
  - Platform: darwin
  - Shell: bash
  - OS Version: Darwin 0.0.0
- - You are powered by the model named Opus 5. The exact model ID is claude-opus-5.
- - Assistant knowledge cutoff is January 2026.
+ - You are powered by the model named Opus 5.5. The exact model ID is claude-opus-5-5.
+ - Assistant knowledge cutoff is June 2026.
  - otherside is available as a CLI in the terminal, with a companion mobile app (iOS/Android) for remote pairing and steering sessions on the go."
 ,
       },

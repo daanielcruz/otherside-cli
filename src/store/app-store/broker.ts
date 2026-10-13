@@ -102,30 +102,11 @@ export function reduce(
       return state.orchestrationMode === event.mode
         ? state
         : { ...state, orchestrationMode: event.mode };
-    case "set_permission_mode": {
-      if (event.mode === state.permissionMode) return state;
-      const next: BrokerState = { ...state, permissionMode: event.mode };
-      if (event.mode === "plan") {
-        if (state.permissionMode !== "plan" && state.prePlanMode === undefined) {
-          next.prePlanMode = state.permissionMode;
-        }
-      } else {
-        delete next.prePlanMode;
-      }
-      return next;
-    }
+    case "set_permission_mode":
+      return event.mode === state.permissionMode ? state : { ...state, permissionMode: event.mode };
     case "cycle_permission_mode": {
       const mode = nextPermissionMode(state.permissionMode);
-      if (mode === state.permissionMode) return state;
-      const next: BrokerState = { ...state, permissionMode: mode };
-      if (mode === "plan") {
-        if (state.permissionMode !== "plan" && state.prePlanMode === undefined) {
-          next.prePlanMode = state.permissionMode;
-        }
-      } else {
-        delete next.prePlanMode;
-      }
-      return next;
+      return mode === state.permissionMode ? state : { ...state, permissionMode: mode };
     }
   }
 }

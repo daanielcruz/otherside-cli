@@ -7,7 +7,10 @@ import type { RequestContext } from "@/kernel/std/types/request.ts";
 const IMAGE_DATA = "aW1hZ2U=";
 
 interface WirePart {
-  functionResponse?: { id?: string };
+  functionResponse?: {
+    id?: string;
+    parts?: Array<{ inlineData?: { mimeType: string; data: string } }>;
+  };
   inlineData?: { mimeType: string; data: string };
 }
 
@@ -75,7 +78,8 @@ describe("antigravity image wire", () => {
     const toolResultContent = requestContents(messages).find((content) =>
       content.parts.some((part) => part.functionResponse?.id === "call_1"),
     );
-    expect(toolResultContent?.parts).toContainEqual({
+    expect(toolResultContent?.role).toBe("model");
+    expect(toolResultContent?.parts[0]?.functionResponse?.parts).toContainEqual({
       inlineData: { mimeType: "image/png", data: IMAGE_DATA },
     });
   });

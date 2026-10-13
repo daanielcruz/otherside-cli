@@ -3,7 +3,8 @@ import type { Provider } from "@/engine/contract/types.ts";
 import * as providers from "@/engine/providers/registry.ts";
 import type { Agent } from "@/engine/queue/index.ts";
 import type { ComposedHarness } from "@/harness/composer/injections.ts";
-import { permissionDirectoryGlob, serializeRuleValue } from "@/kernel/permissions/types.ts";
+import { directoryPathPattern } from "@/kernel/permissions/path-rules.ts";
+import { serializeRuleValue } from "@/kernel/permissions/types.ts";
 import { uuidv4 } from "@/kernel/std/id.ts";
 import { isProviderId, type ProviderId } from "@/kernel/std/types/provider-ids.ts";
 import { isRecord } from "@/kernel/std/value-guards.ts";
@@ -134,9 +135,9 @@ export function applyPrintSessionFlags(agent: Agent, runtime: PrintRuntime): str
   if (sessionAllowed) {
     for (const dir of readCliAddDirs()) {
       const absolute = resolve(runtime.cwd, dir);
-      for (const ruleContent of [absolute, permissionDirectoryGlob(absolute)]) {
-        sessionAllowed.add(serializeRuleValue({ toolName: "Read", ruleContent }));
-      }
+      sessionAllowed.add(
+        serializeRuleValue({ toolName: "Read", ruleContent: directoryPathPattern(absolute) }),
+      );
     }
   }
   return effectiveSessionId;

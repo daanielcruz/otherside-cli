@@ -39,7 +39,10 @@ function pluginCommandBody(name: string): string | null {
 export function expandCommand(name: string, args: string): CommandExpansion | null {
   const skill = skillsRegistry.get(name);
   if (skill) {
-    return { prompt: skill.body.replaceAll(ARGUMENT_PLACEHOLDER, args), source: skill.source };
+    return {
+      prompt: skillsRegistry.promptBody(skill, args).replaceAll(ARGUMENT_PLACEHOLDER, args),
+      source: skill.source,
+    };
   }
   const body = pluginCommandBody(name);
   if (body === null) return null;

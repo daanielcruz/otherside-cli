@@ -1,7 +1,6 @@
 const COMMAND_HINTS: Readonly<Record<string, string>> = {
   exit: "exit the TUI",
   clear: "clear conversation history",
-  plan: "enter plan mode",
   fast: "toggle fast mode",
   parallel: "toggle parallel agent tasks",
   multiprovider: "set orchestration mode",

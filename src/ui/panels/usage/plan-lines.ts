@@ -9,6 +9,7 @@ import {
 import { QUOTA_BLOCK_RATIO, QUOTA_WARN_RATIO } from "@/engine/session/usage/thresholds.ts";
 import { clamp } from "@/kernel/std/math.ts";
 import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
+import { wrapProse } from "@/terminal-runtime/text/ansi-wrap.js";
 import { renderTextWithStyles } from "@/terminal-runtime/text/color-codes.js";
 import type { TerminalColor } from "@/terminal-runtime/text/style-model.js";
 import {
@@ -24,6 +25,7 @@ import {
   type PlanQuotaLoadState,
 } from "@/ui/panels/usage/data.ts";
 import { Color, Glyph } from "@/ui/theme/theme.ts";
+import { withUrlLinks } from "@/ui/transcript/entry-text.ts";
 
 function mutedLine(text: string): string {
   return renderTextWithStyles(text, { color: Color.muted });
@@ -35,6 +37,13 @@ function errorLine(text: string): string {
 
 function warningLine(text: string): string {
   return renderTextWithStyles(text, { color: Color.warning });
+}
+
+/** A message wrapped to the width with its web addresses linked, so a long link stays whole. */
+function messageLines(text: string, width: number, color: TerminalColor): string[] {
+  return wrapProse(withUrlLinks(text), Math.max(1, width)).map((line) =>
+    renderTextWithStyles(line, { color }),
+  );
 }
 
 function boldLine(text: string): string {
@@ -154,7 +163,9 @@ export function antigravityPlanLines(
   ];
 
   if (!state.data) {
-    if (state.status === "error") return [errorLine(antigravityUsageErrorMessage(state.message))];
+    if (state.status === "error") {
+      return messageLines(antigravityUsageErrorMessage(state.message), contentWidth, Color.error);
+    }
     if (state.status === "loaded") return localFallback();
     return [mutedLine("Loading usage data...")];
   }
@@ -194,7 +205,9 @@ export function antigravityPlanLines(
   }
   if (creditLine) lines.push(creditLine);
   if (state.status === "error") {
-    lines.push(warningLine(antigravityUsageErrorMessage(state.message)));
+    lines.push(
+      ...messageLines(antigravityUsageErrorMessage(state.message), contentWidth, Color.warning),
+    );
   }
   return trimTrailingBlank(lines);
 }

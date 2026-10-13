@@ -1,5 +1,6 @@
 import { execFile, execFileSync } from "node:child_process";
 import { existsSync, rmSync } from "node:fs";
+import { join } from "node:path";
 
 export interface CloneOptions {
   ref?: string;
@@ -102,4 +103,22 @@ function execGit(args: string[], timeoutMs?: number): Promise<void> {
       },
     );
   });
+}
+
+/**
+ * The commit a checkout's HEAD points at, or null when the directory holds no
+ * repository of its own. The git directory is named explicitly so a checkout
+ * missing its `.git` never reports the commit of an enclosing repository.
+ */
+export function headCommitSync(checkoutDir: string): string | null {
+  const gitDir = join(checkoutDir, ".git");
+  if (!existsSync(gitDir)) return null;
+  try {
+    const commit = execFileSync("git", ["--git-dir", gitDir, "rev-parse", "HEAD"], {
+      stdio: "pipe",
+    });
+    return commit.toString().trim() || null;
+  } catch {
+    return null;
+  }
 }

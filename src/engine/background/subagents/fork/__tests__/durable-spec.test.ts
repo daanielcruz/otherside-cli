@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { forkSpecPathForCwd } from "@/engine/session/paths.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 import {
   type DurableForkSpecV1,
@@ -36,7 +37,7 @@ describe("durable fork spec", () => {
       description: "Durable worker",
       agentId: "general-purpose",
       parentToolCallId: "agent-call",
-      permissionMode: "plan",
+      permissionMode: "accept-edits",
       permissionModeIsDefinitionPinned: true,
       isolation: "worktree",
     };
@@ -46,7 +47,7 @@ describe("durable fork spec", () => {
     await writeDurableForkSpec(ref, durable);
 
     expect(await readDurableForkSpec(ref)).toEqual(durable);
-    expect(durable.permissionMode).toBe("plan");
+    expect(durable.permissionMode).toBe("accept-edits");
     expect(durable.permissionModeIsDefinitionPinned).toBe(true);
     expect(durable.effort).toBeNull();
     const {
@@ -59,6 +60,30 @@ describe("durable fork spec", () => {
     expect(inherited.permissionModeIsDefinitionPinned).toBe(false);
     expect(durable.allowSet).toEqual(["Read", "Write"]);
     expect(durable.deferredAllow).toEqual(["WebFetch"]);
+  });
+
+  test("reads a spec persisted with plan mode as the asking mode", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "otherside-fork-spec-"));
+    const ref = { cwd, sessionId: "durable-session", forkId: "fork-legacy-plan" };
+    const stored = {
+      version: 1,
+      forkId: ref.forkId,
+      kind: "fork",
+      agentId: "fork",
+      prompt: "Original directive.",
+      permissionMode: "plan",
+      effort: null,
+      cwd,
+      provider: "anthropic",
+      model: "claude-opus-5-5",
+      sessionId: ref.sessionId,
+      allowSet: null,
+    };
+    const path = forkSpecPathForCwd(cwd, ref.sessionId, ref.forkId);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, JSON.stringify(stored), "utf8");
+
+    expect((await readDurableForkSpec(ref))?.permissionMode).toBe("default");
   });
 
   test("persists a stop marker without altering the durable spec", async () => {

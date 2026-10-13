@@ -43,15 +43,24 @@ const FEUDALISM_FORK_MODEL_DESCRIPTION =
 const FEUDALISM_FORK_PROVIDER_DESCRIPTION =
   'Provider id for subagent_type: "fork" only. Pass it together with `model` to name a literal fork route; no model catalog is listed here.';
 
+// Only the main agent is offered the fork subagent type, so only its effort
+// parameter says what a fork does with it.
+const FORK_EFFORT_NOTE = ' Ignored for subagent_type: "fork": a fork runs at your own effort.';
+
 export function buildAgentInputSchema(
   provider?: ProviderId,
   orchestrationMode: OrchestrationMode = "disabled",
+  mainAgent = true,
 ): Record<string, unknown> {
   const schema = structuredClone(tool.inputSchema) as Record<string, unknown>;
   const properties = {
     ...((schema.properties ?? {}) as Record<string, unknown>),
   };
   for (const field of orchestrationModeForAgentFields(orchestrationMode)) delete properties[field];
+  if (mainAgent) {
+    const effort = properties.effort as { description: string };
+    properties.effort = { ...effort, description: `${effort.description}${FORK_EFFORT_NOTE}` };
+  }
   if (orchestrationMode === "disabled" && properties.model !== undefined) {
     properties.model = {
       ...(properties.model as Record<string, unknown>),

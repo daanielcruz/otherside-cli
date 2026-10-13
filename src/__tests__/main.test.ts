@@ -1,6 +1,7 @@
 import { afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { resolveStartupBroker } from "@/boot/startup-broker.ts";
 import { formatDirectResumeError } from "@/boot/startup-resume.ts";
+import { modelsForProvider } from "@/engine/model/catalog.ts";
 import { registerAllProviders } from "@/engine/providers/bootstrap.ts";
 import type { UserConfig } from "@/kernel/config/config.ts";
 import type { CredentialsBundle } from "@/kernel/storage/credentials.ts";
@@ -27,7 +28,7 @@ describe("resolveStartupBroker fresh-session default", () => {
 
   const baseCfg: UserConfig = {
     defaultProvider: "anthropic",
-    defaultModel: "claude-opus-4-8",
+    defaultModel: "claude-opus-5-5",
   } as unknown as UserConfig;
 
   const dummyAllCreds: CredentialsBundle = {
@@ -154,8 +155,7 @@ describe("resolveStartupBroker fresh-session default", () => {
       isResume: false,
     });
 
-    // defaultEffort for claude-opus-4-8 is xhigh
-    expect(result.broker.read().effort).toBe("xhigh");
+    expect(result.broker.read().effort).toBe("high");
   });
 
   it("treats legacy GLM apiKey as missing credentials", () => {
@@ -177,6 +177,26 @@ describe("resolveStartupBroker fresh-session default", () => {
     expect(result.cliProviderMissingCreds).toBe(true);
   });
 
+  it("opens a saved default the catalog dropped on the provider default, unlisted", () => {
+    const result = resolveStartupBroker({
+      mode: interactiveMode,
+      cfg: {
+        ...baseCfg,
+        defaultProvider: "deepseek",
+        defaultModel: "deepseek-retired-1",
+      } as unknown as UserConfig,
+      allCreds: { deepseek: { apiKey: "dummy-key" } } as unknown as CredentialsBundle,
+      customCreds: null,
+      resumeRecords: [],
+      isResume: false,
+    });
+
+    expect(result.broker.read().model).toBe("deepseek-v4-pro");
+    expect(modelsForProvider("deepseek").map((model) => model.id)).not.toContain(
+      "deepseek-retired-1",
+    );
+  });
+
   it("resolves a bare family shorthand passed via --model to its catalog id", () => {
     const result = resolveStartupBroker({
       mode: { ...interactiveMode, model: "sonnet" },
@@ -187,7 +207,33 @@ describe("resolveStartupBroker fresh-session default", () => {
       isResume: false,
     });
     expect(result.initialProvider).toBe("anthropic");
-    expect(result.initialModel).toBe("claude-sonnet-5");
+    expect(result.initialModel).toBe("claude-sonnet-5-5");
+  });
+
+  it("routes a provider-qualified --model to the provider named in the flag", () => {
+    const result = resolveStartupBroker({
+      mode: { ...interactiveMode, model: "xai/grok-4.6" },
+      cfg: baseCfg,
+      allCreds: dummyAllCreds,
+      customCreds: null,
+      resumeRecords: [],
+      isResume: false,
+    });
+    expect(result.initialProvider).toBe("xai");
+    expect(result.initialModel).toBe("grok-4.6");
+  });
+
+  it("lets an explicit --provider win over the prefix of a qualified --model", () => {
+    const result = resolveStartupBroker({
+      mode: { ...interactiveMode, provider: "anthropic", model: "xai/claude-sonnet-5-5" },
+      cfg: baseCfg,
+      allCreds: dummyAllCreds,
+      customCreds: null,
+      resumeRecords: [],
+      isResume: false,
+    });
+    expect(result.initialProvider).toBe("anthropic");
+    expect(result.initialModel).toBe("claude-sonnet-5-5");
   });
 
   it("applies resume provider overrides only when devtools explicitly enables them", () => {
@@ -199,7 +245,7 @@ describe("resolveStartupBroker fresh-session default", () => {
         ts: "2026-07-14T00:00:00.000Z",
         cwd: "/repo",
         provider: "anthropic",
-        model: "claude-opus-4-8",
+        model: "claude-opus-5-5",
         effort: "xhigh",
         fastMode: false,
       },
@@ -219,7 +265,7 @@ describe("resolveStartupBroker fresh-session default", () => {
       isResume: true,
     });
     expect(persisted.initialProvider).toBe("anthropic");
-    expect(persisted.initialModel).toBe("claude-opus-4-8");
+    expect(persisted.initialModel).toBe("claude-opus-5-5");
 
     process.env.OTHERSIDE_DEVTOOLS_RESUME_PROVIDER = "codex";
     process.env.OTHERSIDE_DEVTOOLS_RESUME_MODEL = "gpt-5.6-luna";
@@ -237,9 +283,8 @@ describe("resolveStartupBroker fresh-session default", () => {
   });
 
   it("yolo wins over an explicit --permission-mode (bypass-first)", () => {
-    // Reproduces: otherside -p 'write a file' --permission-mode plan --dangerously-skip-permissions
     const result = resolveStartupBroker({
-      mode: { ...printMode, yolo: true, permissionMode: "plan" },
+      mode: { ...printMode, yolo: true, permissionMode: "accept-edits" },
       cfg: baseCfg,
       allCreds: dummyAllCreds,
       customCreds: null,
@@ -251,14 +296,14 @@ describe("resolveStartupBroker fresh-session default", () => {
 
   it("still honors an explicit --permission-mode when yolo is not set", () => {
     const result = resolveStartupBroker({
-      mode: { ...printMode, yolo: false, permissionMode: "plan" },
+      mode: { ...printMode, yolo: false, permissionMode: "accept-edits" },
       cfg: baseCfg,
       allCreds: dummyAllCreds,
       customCreds: null,
       resumeRecords: [],
       isResume: false,
     });
-    expect(result.broker.read().permissionMode).toBe("plan");
+    expect(result.broker.read().permissionMode).toBe("accept-edits");
   });
 
   it("accepts GLM zcodeJwtToken as credentials", () => {

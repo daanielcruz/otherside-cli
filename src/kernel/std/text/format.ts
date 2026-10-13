@@ -41,3 +41,10 @@ export function formatDuration(ms: number): string {
   if (hours > 0) return `${hours}h ${minutes}m ${seconds}s`;
   return `${minutes}m ${seconds}s`;
 }
+
+const TRAILING_ZERO_UNITS = /( 0[a-z])+$/;
+
+// formatDuration without its trailing zero units: 30m, 2h, 1h 30m.
+export function formatDurationCompact(ms: number): string {
+  return formatDuration(ms).replace(TRAILING_ZERO_UNITS, "");
+}

@@ -5,7 +5,7 @@ import { forkSpecPathForCwd, forkStopPathForCwd } from "@/engine/session/paths.t
 import { atomicWriteFileSync, mkdirSecure } from "@/kernel/std/fs/secure-fs.ts";
 import { EFFORT_LEVEL_VALUES, type EffortLevel } from "@/kernel/std/types/effort.ts";
 import type { Message } from "@/kernel/std/types/message.ts";
-import { PERMISSION_MODES, type PermissionMode } from "@/kernel/std/types/permission-mode.ts";
+import { type PermissionMode, parsePermissionMode } from "@/kernel/std/types/permission-mode.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 import { isRecord } from "@/kernel/std/value-guards.ts";
 import type { ForkSpec } from "./types.ts";
@@ -154,8 +154,9 @@ function parseDurableForkSpec(value: unknown): DurableForkSpecV1 | null {
   ) {
     return null;
   }
+  const permissionMode = parsePermissionMode(value.permissionMode);
   if (
-    !isPermissionMode(value.permissionMode) ||
+    permissionMode === undefined ||
     !(
       value.permissionModeIsDefinitionPinned === undefined ||
       typeof value.permissionModeIsDefinitionPinned === "boolean"
@@ -172,7 +173,7 @@ function parseDurableForkSpec(value: unknown): DurableForkSpecV1 | null {
   ) {
     return null;
   }
-  return value as unknown as DurableForkSpecV1;
+  return { ...value, permissionMode } as unknown as DurableForkSpecV1;
 }
 
 function isOptionalString(value: unknown): boolean {
@@ -196,10 +197,6 @@ function isMessageArray(value: unknown): value is Message[] {
 
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
-}
-
-function isPermissionMode(value: unknown): value is PermissionMode {
-  return PERMISSION_MODES.some((mode) => mode === value);
 }
 
 function isEffort(value: unknown): value is EffortLevel | null {

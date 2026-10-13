@@ -9,9 +9,14 @@ import {
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { configRoot } from "@/kernel/std/fs/paths.ts";
-import { cloneRepoSync } from "@/kernel/std/proc/git.ts";
+import { cloneRepoSync, headCommitSync } from "@/kernel/std/proc/git.ts";
 import { getTrackedCwd } from "@/kernel/std/state/cwd-state.ts";
-import { canonicalProjectPath, createPluginId, type InstallationId } from "./identity.ts";
+import {
+  canonicalProjectPath,
+  createPluginId,
+  type InstallationId,
+  type PluginId,
+} from "./identity.ts";
 import type { InstallResult } from "./install.ts";
 import {
   activeInstallPath,
@@ -19,16 +24,19 @@ import {
   formatPluginLookupFailure,
   listPluginInstallations,
   lookupPluginInstallation,
+  type PluginInstallation,
   type PluginInstallScope,
   recordPluginInstallation,
   restorePluginInstallation,
 } from "./installations.ts";
 import { loadPluginFromDirectory } from "./loader.ts";
 import {
+  type AddMarketplaceResult,
   cacheDirFor,
   fetchMarketplace,
   getCachedManifest,
   listMarketplacePlugins,
+  refreshMarketplace,
 } from "./marketplace.ts";
 import {
   cloneTargetFor,
@@ -43,9 +51,11 @@ import {
 } from "./marketplace-manifest.ts";
 import {
   getKnownMarketplace,
+  type KnownMarketplace,
   listAvailableMarketplaces,
   OFFICIAL_MARKETPLACE_NAME,
 } from "./marketplaces-store.ts";
+import { payloadDigest } from "./payload-digest.ts";
 import { get as getRegisteredPlugin } from "./registry.ts";
 import {
   beginInstallation,
@@ -132,11 +142,11 @@ function installationForTarget(
   });
 }
 
-export function updateMarketplacePlugin(
+export async function updateMarketplacePlugin(
   target: string,
   requestedScope?: PluginInstallScope,
   exactInstallationId?: InstallationId,
-): InstallResult {
+): Promise<InstallResult> {
   const result = exactInstallationId
     ? lookupPluginInstallation(exactInstallationId, {
         cwd: getTrackedCwd(),
@@ -145,12 +155,30 @@ export function updateMarketplacePlugin(
     : installationForTarget(target, requestedScope);
   if (!result.ok) return { success: false, message: formatPluginLookupFailure(result) };
   const installation = result.installation;
+  const refreshed = await refreshMarketplaceCheckout(installation.marketplace);
+  if (!refreshed.ok) {
+    return {
+      success: false,
+      message: `Could not refresh marketplace ${installation.marketplace}: ${refreshed.error ?? "unknown error"}`,
+    };
+  }
   return installMarketplacePlugin(
     installation.marketplace,
     installation.pluginName,
     installation.scope,
     installation.installationId,
   );
+}
+
+/**
+ * An update reinstalls from the marketplace's local copy, so a git marketplace is
+ * re-fetched first. A local directory marketplace is read in place and has
+ * nothing to fetch.
+ */
+function refreshMarketplaceCheckout(marketplaceName: string): Promise<AddMarketplaceResult> {
+  const known = getKnownMarketplace(marketplaceName);
+  if (!known || known.sourceType === "file") return Promise.resolve({ ok: true });
+  return refreshMarketplace(known);
 }
 
 export function findMarketplacePlugin(pluginName: string): {
@@ -240,7 +268,6 @@ export function installMarketplacePlugin(
   let createdCachePath = "";
   let installation: ReturnType<typeof recordPluginInstallation> | undefined;
   try {
-    const sourceVersion = "0.0.0";
     mkdirSync(join(configRoot(), "plugins"), { recursive: true });
     const sourceStagingRoot = mkdtempSync(join(configRoot(), "plugins", ".plugin-install-"));
     stagingRoot = sourceStagingRoot;
@@ -257,7 +284,17 @@ export function installMarketplacePlugin(
     if (!stagedPlugin) {
       return complete({ success: false, message: `plugin ${pluginName} could not be loaded` });
     }
-    const version = stagedPlugin.manifest.version || sourceVersion;
+    const stagedDigest = payloadDigest(staged);
+    if (previous && hasPayloadDigest(previous.installPath, stagedDigest)) {
+      replaceSnapshot(stateBefore);
+      return alreadyUpToDate(previous);
+    }
+    const version = installedVersionKey({
+      manifestVersion: stagedPlugin.manifest.version,
+      entry,
+      marketplace: known,
+      digest: stagedDigest,
+    });
     destination = activeInstallPath(
       pluginName,
       scope,
@@ -277,13 +314,15 @@ export function installMarketplacePlugin(
     if (previous && resolve(previous.installPath) === destination) {
       if (!existsSync(destination))
         throw new Error(`previous plugin payload is missing: ${previous.installPath}`);
-      if (getRegisteredPlugin(pluginId))
-        throw new Error("plugin version is already active; reload before replacing it");
+      if (isLoadedFrom(pluginId, destination))
+        throw new Error(
+          `${version} changed without a version bump and cannot be replaced while it is loaded`,
+        );
       renameSync(destination, backup);
     } else if (previous) {
       if (existsSync(destination)) {
-        if (getRegisteredPlugin(pluginId))
-          throw new Error(`installation destination is occupied: ${destination}`);
+        if (isLoadedFrom(pluginId, destination))
+          throw new Error(`${version} is still loaded; run /reload before updating again`);
         renameSync(destination, backup);
       }
       if (!existsSync(previous.installPath))
@@ -309,7 +348,7 @@ export function installMarketplacePlugin(
     const result = complete({
       success: true,
       message: previous
-        ? `Updated ${installation.identity}. Run /reload to activate.`
+        ? `Updated ${installation.identity} to ${version}. Run /reload to activate.`
         : `Installed ${installation.identity}. Run /reload to activate.`,
       pluginName,
       identity: installation.identity,
@@ -320,10 +359,10 @@ export function installMarketplacePlugin(
   } catch (error) {
     if (installation) restorePluginInstallation(installation.installationId, previous);
     if (swapped && existsSync(destination)) rmSync(destination, { recursive: true, force: true });
+    // Every branch above moves `destination` aside, so that is where the backup returns.
     if (backup && existsSync(backup)) {
-      const restorePath = previous?.installPath ?? destination;
-      mkdirSync(dirname(restorePath), { recursive: true });
-      renameSync(backup, restorePath);
+      mkdirSync(dirname(destination), { recursive: true });
+      renameSync(backup, destination);
     }
     if (cacheCreated && createdCachePath)
       rmSync(createdCachePath, { recursive: true, force: true });
@@ -334,4 +373,63 @@ export function installMarketplacePlugin(
   } finally {
     if (stagingRoot) rmSync(stagingRoot, { recursive: true, force: true });
   }
+}
+
+function hasPayloadDigest(payloadDir: string, digest: string): boolean {
+  return existsSync(payloadDir) && payloadDigest(payloadDir) === digest;
+}
+
+function alreadyUpToDate(installation: PluginInstallation): InstallResult {
+  return {
+    success: true,
+    changed: false,
+    message: `${installation.identity} is already up to date.`,
+    pluginName: installation.pluginName,
+    identity: installation.identity,
+    version: installation.version,
+  };
+}
+
+interface StagedPayload {
+  readonly manifestVersion: string | undefined;
+  readonly entry: MarketplacePluginEntry;
+  readonly marketplace: KnownMarketplace;
+  readonly digest: string;
+}
+
+/**
+ * The folder key an installed payload is stored under. A declared version wins:
+ * the plugin's own, then its marketplace entry's. An unversioned payload is keyed
+ * by its source revision, so changed content lands in a new folder and the copy a
+ * session has loaded stays intact until /reload.
+ */
+function installedVersionKey(payload: StagedPayload): string {
+  return payload.manifestVersion || payload.entry.version || sourceRevision(payload);
+}
+
+const SOURCE_REVISION_LENGTH = 12;
+
+/**
+ * The commit of the git marketplace checkout an unversioned plugin ships inside.
+ * A local marketplace is edited in place and a plugin fetched from its own
+ * repository moves independently of the marketplace commit, so both are keyed
+ * by the payload's own digest instead.
+ */
+function sourceRevision({ entry, marketplace, digest }: StagedPayload): string {
+  const checkoutCommit =
+    marketplace.sourceType !== "file" && shipsInsideMarketplace(entry.source)
+      ? headCommitSync(cacheDirFor(marketplace.name))
+      : null;
+  return (checkoutCommit ?? digest).slice(0, SOURCE_REVISION_LENGTH);
+}
+
+function shipsInsideMarketplace(source: PluginSource): boolean {
+  if (typeof source === "string") return detectSourceType(source) === "file";
+  return source.source === "file";
+}
+
+/** Whether this session's registered copy of the plugin is read from `payloadDir`. */
+function isLoadedFrom(pluginId: PluginId, payloadDir: string): boolean {
+  const loaded = getRegisteredPlugin(pluginId);
+  return !!loaded && resolve(loaded.path) === resolve(payloadDir);
 }

@@ -138,7 +138,7 @@ describe("translateRequestGrok", () => {
 
     const anthropic = buildAnthropicMessages(sessionMessages, {
       provider: "anthropic",
-      model: "claude-opus-4-8",
+      model: "claude-opus-5-5",
     } as RequestContext);
     expect(anthropic.out[1]?.content).toEqual([
       {
@@ -187,18 +187,9 @@ describe("translateRequestGrok", () => {
     >;
     expect(off.include).toBeUndefined();
     expect(reasoningOf({ effort: "low" })).toEqual({ summary: "concise", effort: "low" });
-    // 4.6 lists xhigh on the wire; max is otherside-only and folds to the highest listed.
+    // xhigh is on the wire; max is otherside-only and folds to the highest listed.
     expect(reasoningOf({ effort: "xhigh" })).toEqual({ summary: "concise", effort: "xhigh" });
     expect(reasoningOf({ effort: "max" })).toEqual({ summary: "concise", effort: "xhigh" });
-    // 4.5 does not list xhigh — both xhigh and max fold to high.
-    expect(reasoningOf({ model: "grok-4.5", effort: "xhigh" })).toEqual({
-      summary: "concise",
-      effort: "high",
-    });
-    expect(reasoningOf({ model: "grok-4.5", effort: "max" })).toEqual({
-      summary: "concise",
-      effort: "high",
-    });
     // no tools declared -> no tools / tool_choice fields
     const bare = translateRequestGrok(ctx({}), messages, []) as Record<string, unknown>;
     expect(bare.tools).toBeUndefined();

@@ -90,6 +90,23 @@ describe("carried assistant usage", () => {
     expect(message.usage.inputTokens).toBe(10);
   });
 
+  it("invalidates an active-context snapshot without mutating the original message", () => {
+    const message: Message = {
+      role: "assistant",
+      content: [{ type: "text", text: "answer" }],
+      usage: {
+        inputTokens: 190_000,
+        outputTokens: 10_000,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+        contextTokens: 50_000,
+      },
+    };
+    expect(scrubCarriedAssistantUsage(message).usage).not.toHaveProperty("contextTokens");
+    expect(message.usage?.contextTokens).toBe(50_000);
+    expect(message.usage?.inputTokens).toBe(190_000);
+  });
+
   it("adds the complete zero shape to partial assistant usage", () => {
     const message = {
       role: "assistant",

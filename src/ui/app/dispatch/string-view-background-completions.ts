@@ -31,6 +31,7 @@ export function backgroundTaskNoticeData(task: BackgroundTask): Record<string, u
     durationMs: task.endedAt !== undefined ? task.endedAt - task.startedAt : 0,
     taskId: task.id,
     ...(task.kind === "shell" && task.exitCode !== undefined ? { exitCode: task.exitCode } : {}),
+    ...(task.stopCause !== undefined ? { stopCause: task.stopCause } : {}),
     ...(task.kind === "agent" && status === "failed" && task.error !== undefined
       ? { error: task.error }
       : {}),

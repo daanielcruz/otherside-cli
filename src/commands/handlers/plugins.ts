@@ -216,7 +216,7 @@ export async function handlePlugins(args: string): Promise<SlashResult> {
         ...(parsed.scope === undefined ? {} : { scope: parsed.scope }),
       });
       if (!resolved.ok) return { kind: "instant", feedback: lookupFeedback(resolved) };
-      const res = updateMarketplacePlugin(
+      const res = await updateMarketplacePlugin(
         resolved.pluginId,
         parsed.scope,
         resolved.installation.installationId,

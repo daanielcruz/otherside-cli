@@ -4,6 +4,7 @@ import {
   resolveProviderError,
 } from "@/engine/providers/_shared/provider-error.ts";
 import { getRetryDelay, ProviderHttpError } from "@/engine/providers/_shared/retry.ts";
+import { requestTooLargeMessage } from "@/engine/transport/_infra/classify/request-size.ts";
 import { StreamSilenceError } from "@/kernel/std/stream/idle-timeout.ts";
 import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 
@@ -107,6 +108,16 @@ export function classifyProviderError(
       kind: "retry",
       delayMs: getRetryDelay(attempt, classified.retryAfterMs ?? null),
       reason: formatted,
+      ...(classified.status !== undefined ? { status: classified.status } : {}),
+      message: classified.detail,
+    };
+  }
+
+  if (classified.class === "request_too_large") {
+    return {
+      kind: "fail",
+      reason: "request_too_large",
+      userMessage: requestTooLargeMessage(),
       ...(classified.status !== undefined ? { status: classified.status } : {}),
       message: classified.detail,
     };

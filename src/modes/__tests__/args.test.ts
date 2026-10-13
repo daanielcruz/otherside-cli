@@ -344,6 +344,12 @@ describe("permission-mode validation", () => {
     expect(mode.code).toBe(1);
   });
 
+  it("reads the retired plan mode as the asking mode", () => {
+    const mode = parseArgs(["bun", "cli", "-p", "hi", "--permission-mode", "plan"]);
+    if (mode.kind !== "print") throw new Error("expected print");
+    expect(mode.permissionMode).toBe("default");
+  });
+
   it("accepts a valid camelCase --permission-mode", () => {
     const mode = parseArgs(["bun", "cli", "-p", "hi", "--permission-mode", "acceptEdits"]);
     if (mode.kind !== "print") throw new Error("expected print");
@@ -424,7 +430,6 @@ describe("permissionModeToWire", () => {
   it("maps internal modes to their camelCase wire values", () => {
     expect(permissionModeToWire("default")).toBe("default");
     expect(permissionModeToWire("accept-edits")).toBe("acceptEdits");
-    expect(permissionModeToWire("plan")).toBe("plan");
     expect(permissionModeToWire("yolo")).toBe("bypassPermissions");
   });
 });

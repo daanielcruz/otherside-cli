@@ -1,9 +1,11 @@
 import { codexRawReplayHasRequestRole } from "@/devtools/codex-raw-stream.ts";
 import { auxiliaryModelFor } from "@/engine/model/tier/tiers.ts";
+import { requestNoThinking } from "@/engine/providers/_shared/thinking-off.ts";
 import * as providers from "@/engine/providers/registry.ts";
 import { sanitizeMessages } from "@/engine/translator/index.ts";
 import { streamWithRetry } from "@/engine/transport/_infra/classify/retry.ts";
 import type { ComposedHarness } from "@/harness/composer/injections.ts";
+import type { EffortLevel } from "@/kernel/std/types/effort.ts";
 import type { Message } from "@/kernel/std/types/message.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 
@@ -22,6 +24,7 @@ Bad (too long): {"title": "Investigate and fix the issue where the login button 
 Bad (wrong case): {"title": "Fix Login Button On Mobile"}`;
 
 const TITLE_MAX_OUTPUT_TOKENS = 32000;
+const TITLE_EFFORT: EffortLevel = "medium";
 const SESSION_TITLE_MAX_LENGTH = 200;
 
 export function titleModelFor(ctx: RequestContext): string {
@@ -156,6 +159,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** A wire body built from plain JSON. A provider-owned request object is not one. */
+function isPlainWireBody(value: unknown): value is Record<string, unknown> {
+  if (!isRecord(value)) return false;
+  const prototype: unknown = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
 const TITLE_OUTPUT_CONFIG = {
   format: {
     type: "json_schema",
@@ -169,7 +179,8 @@ const TITLE_OUTPUT_CONFIG = {
 };
 
 export function clampTitleRequest(body: unknown): unknown {
-  if (!isRecord(body)) return body;
+  // A copy of a provider-owned request object would lose the identity its stream requires.
+  if (!isPlainWireBody(body)) return body;
   const next = { ...body };
 
   const target = isRecord(next.request) ? (next.request as Record<string, unknown>) : next;
@@ -191,12 +202,18 @@ export function clampTitleRequest(body: unknown): unknown {
     return next;
   }
 
-  if (typeof next.max_tokens === "number") {
-    next.max_tokens = Math.min(next.max_tokens, TITLE_MAX_OUTPUT_TOKENS);
+  // A model that keeps thinking on is asked for its title at a low effort, within
+  // its own output budget.
+  const thinkingOff = requestNoThinking(next);
+  if (thinkingOff) {
+    if (typeof next.max_tokens === "number") {
+      next.max_tokens = Math.min(next.max_tokens, TITLE_MAX_OUTPUT_TOKENS);
+    }
+    next.temperature = 1;
   }
-  next.thinking = { type: "disabled" };
-  next.temperature = 1;
   next.tools = [];
-  next.output_config = TITLE_OUTPUT_CONFIG;
+  next.output_config = thinkingOff
+    ? TITLE_OUTPUT_CONFIG
+    : { effort: TITLE_EFFORT, ...TITLE_OUTPUT_CONFIG };
   return next;
 }

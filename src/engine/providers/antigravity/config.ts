@@ -28,6 +28,17 @@ const GPT_OSS_CONTEXT_WINDOW = 131_072;
 
 export const MODELS: readonly ModelEntry[] = [
   {
+    id: "gemini-4-argon",
+    displayName: "Gemini 4 Argon",
+    contextWindow: GEMINI_CONTEXT_WINDOW,
+    autoCompactTokenLimit: 1_015_576,
+    provider: "antigravity",
+    supports1m: true,
+    supportsPdf: true,
+    efforts: ["low", "medium", "high"],
+    defaultEffort: "medium",
+  },
+  {
     id: "gemini-3.8-flash",
     displayName: "Gemini 3.8 Flash",
     contextWindow: GEMINI_CONTEXT_WINDOW,

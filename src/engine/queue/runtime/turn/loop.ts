@@ -1,4 +1,15 @@
 import { recordCodexRawReplayDiagnostic } from "@/devtools/codex-raw-stream.ts";
+import {
+  scheduledTaskFireRecord,
+  scheduledTaskFireText,
+} from "@/engine/background/cron/fire-record.ts";
+import { beginLoopTick, settleLoopTick } from "@/engine/background/loop/dynamic.ts";
+import {
+  loopTickFireText,
+  loopTickFolds,
+  loopTickNoteBlocks,
+  openLoopTick,
+} from "@/engine/background/loop/tick.ts";
 import { recordTurnCacheUsage } from "@/engine/providers/_shared/cache.ts";
 import { emitQueue } from "@/engine/queue/emit.ts";
 import {
@@ -18,6 +29,7 @@ import { stopHookBlockCap } from "@/engine/queue/runtime/stop-hook-classifier.ts
 import { setStopHookActiveTurn } from "@/engine/queue/runtime/stop-hook-rewake.ts";
 import { queuedInputBlocks } from "@/engine/queue/runtime/turn-prompts.ts";
 import { getActiveGoal } from "@/engine/queue/state.ts";
+import { appendRecord } from "@/engine/session/index.ts";
 import { fireConfiguredHooks } from "@/kernel/hooks/handler.ts";
 import { uuidv4 } from "@/kernel/std/id.ts";
 import type { AgentEvent } from "@/kernel/std/types/events.ts";
@@ -27,7 +39,6 @@ import { TurnAttempt } from "./attempt.ts";
 import { beginTurnEpoch, isSuperseded } from "./epoch.ts";
 import { loopErrorMeta } from "./loop-error-meta.ts";
 import { compactDepsFor, runningSessionWorkCount } from "./loop-support.ts";
-import { EXITED_PLAN_MODE_REMINDER, planModeReminder } from "./plan-reminders.ts";
 import {
   fireStopPromptHooks,
   mergeUsageSnap,
@@ -66,8 +77,39 @@ export async function* runTurn(
   const turnStartDrain = emitQueue.setTurnActive(true);
   const turnStartPushedMessages = turnStartDrain !== null && turnStartDrain.llmBlocks.length > 0;
   if (turnStartPushedMessages && turnStartDrain !== null) {
-    host.deps.session.messages.push({ role: "user", content: turnStartDrain.llmBlocks });
+    const fires = turnStartDrain.scheduledFires ?? [];
+    const loopFire = fires.find((fire) => fire.kind === "loop");
+    // Read before this drain's own records land: only the previous tick's span decides a fold.
+    const loopTick =
+      loopFire === undefined ? null : openLoopTick(host.deps.session.records, loopFire.prompt);
+    host.deps.session.messages.push({
+      role: "user",
+      content:
+        loopTick === null
+          ? turnStartDrain.llmBlocks
+          : [...turnStartDrain.llmBlocks, ...loopTickNoteBlocks(loopTick.attachment)],
+    });
     appendNotificationRecords(host, turnStartDrain.notificationTexts);
+    for (const fire of fires) {
+      if (fire.kind === "task") {
+        const record = scheduledTaskFireRecord(fire.prompt);
+        appendRecord(host.deps.session, record).catch(() => {});
+        yield {
+          kind: "scheduled_task_fire",
+          firedAt: record.ts,
+          text: scheduledTaskFireText(new Date(record.ts)),
+        };
+      } else if (loopTick !== null) {
+        beginLoopTick();
+        appendRecord(host.deps.session, loopTick).catch(() => {});
+        yield {
+          kind: "loop_tick",
+          firedAt: loopTick.ts,
+          text: loopTickFireText(loopTick.attachment, new Date(loopTick.ts)),
+          folds: loopTickFolds(loopTick.attachment),
+        };
+      }
+    }
   }
   // A turn started by a stop-hook rewake runs its own Stop hooks with
   // STOP_HOOK_ACTIVE so a hook script can break the rewake loop.
@@ -96,7 +138,6 @@ export async function* runTurn(
     let turn = 0;
     let goalContinueCount = 0;
     let stopHookBlockCount = 0;
-    let lastSeenPermissionMode = turnState.permissionMode;
     let consecutiveSilentTurns = 0;
     let maxOutputTokensRecoveryCount = 0;
     let hasRetriedMalformedToolUse = false;
@@ -105,35 +146,15 @@ export async function* runTurn(
       if (turn > 0) {
         yield* maybeMicroCompact(compactDepsFor(host));
         yield* maybeCompact(compactDepsFor(host));
-        // Permission mode can flip mid-turn (shift+tab, a remote client).
-        // Re-evaluated at the top of every continuation so the imminent
-        // request carries the change. Ultracode reminders deliberately do NOT
-        // re-evaluate here — they belong to the initial prompt pass only, so
-        // a /ultracode flip mid-turn surfaces on the next typed prompt.
-        const liveState = host.deps.broker.read();
-        const midTurnReminders: string[] = [];
-        if (liveState.permissionMode === "plan" && lastSeenPermissionMode !== "plan") {
-          midTurnReminders.push(planModeReminder(host.deps.session.id));
-        }
-        if (liveState.permissionMode !== "plan" && lastSeenPermissionMode === "plan") {
-          midTurnReminders.push(EXITED_PLAN_MODE_REMINDER);
-        }
-        lastSeenPermissionMode = liveState.permissionMode;
         // Injections pushed WHILE the turn runs (e.g. /goal set) drain at the
         // next continuation boundary so they enter the running turn as urgent,
         // instead of waiting for the next turn start. Same queue, same shape as
         // turn-start injections — a goal meta-message is raw instruction text.
         const midTurnInjections = host.injections.drain();
-        const midTurnBlocks: ContentBlock[] = [
-          ...midTurnReminders.map((text) => ({
-            type: "text" as const,
-            text: `<system-reminder>\n${text}\n</system-reminder>`,
-          })),
-          ...(midTurnInjections.length > 0
-            ? [{ type: "text" as const, text: midTurnInjections.join("\n\n") }]
-            : []),
-        ];
-        if (midTurnBlocks.length > 0) {
+        if (midTurnInjections.length > 0) {
+          const midTurnBlocks: ContentBlock[] = [
+            { type: "text", text: midTurnInjections.join("\n\n") },
+          ];
           host.deps.session.messages.push({ role: "user", content: midTurnBlocks });
         }
       }
@@ -313,8 +334,7 @@ export async function* runTurn(
         return;
       }
 
-      // Refusal is deterministic — retrying re-refuses. Surface the model's
-      // explanation via the retry modal and stop; never recover/retry silently.
+      // Refusals are terminal; resending the same request cannot recover them.
       if (attempt.stopReason === "refusal") {
         const refusalMsg =
           attempt.refusalExplanation && attempt.refusalExplanation.trim().length > 0
@@ -326,7 +346,17 @@ export async function* runTurn(
           model: turnState.model,
           attempt: turn,
         });
-        yield { kind: "error", error: refusalMsg, meta: refusalMeta };
+        yield {
+          kind: "error",
+          error: refusalMsg,
+          meta: {
+            ...refusalMeta,
+            errorClass: "loop-halt",
+            title: "Request refused",
+            retryable: false,
+            actions: [{ id: "cancel", label: "Cancel" }],
+          },
+        };
         return;
       }
 
@@ -561,6 +591,7 @@ export async function* runTurn(
     if (!isSuperseded(host, turnEpoch)) {
       emitQueue.setTurnActive(false);
       setStopHookActiveTurn(false);
+      settleLoopTick();
     }
     if (host.activeAbortController === controller) host.activeAbortController = null;
   }

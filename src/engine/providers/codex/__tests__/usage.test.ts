@@ -275,7 +275,7 @@ describe("applyCodexQuotaWarning (provider+scope SoT)", () => {
     expect(getRoutingUsageSnapshot().byProviderScope?.codex?.primary?.routing?.utilizationPct).toBe(
       1,
     );
-    expect(providerRouteability("codex", undefined, "gpt-5.6-sol").usable).toBe(true);
+    expect(providerRouteability("codex", undefined, "gpt-5.6-terra").usable).toBe(true);
   });
 
   it("account/workspace reached reasons block globally rather than selecting a window", () => {
@@ -287,14 +287,14 @@ describe("applyCodexQuotaWarning (provider+scope SoT)", () => {
       }),
     );
     expect(getRoutingUsage("codex")?.balanceStatus).toBe("exhausted");
-    const route = providerRouteability("codex", undefined, "gpt-5.6-sol");
+    const route = providerRouteability("codex", undefined, "gpt-5.6-terra");
     expect(route.usable).toBe(false);
     expect(route.blockedReasons.some((reason) => reason.includes("balance exhausted"))).toBe(true);
   });
 
   it("spend-control reached blocks the account below 100% usage", () => {
     applyCodexQuotaWarning(usage({ spendControl: { reached: true } }));
-    expect(providerRouteability("codex", undefined, "gpt-5.6-sol").usable).toBe(false);
+    expect(providerRouteability("codex", undefined, "gpt-5.6-terra").usable).toBe(false);
   });
 
   it("an unrecognized additional limit is informational: visible but never blocks any model", () => {
@@ -310,7 +310,7 @@ describe("applyCodexQuotaWarning (provider+scope SoT)", () => {
         ],
       }),
     );
-    expect(providerRouteability("codex", undefined, "gpt-5.6-sol").usable).toBe(true);
+    expect(providerRouteability("codex", undefined, "gpt-5.6-terra").usable).toBe(true);
     expect(providerRouteability("codex", undefined, "gpt-5.3-codex-spark").usable).toBe(true);
     // Still visible in the full scoped snapshot even though it cannot gate routing.
     const scopes = getRoutingUsageSnapshot().byProviderScope?.codex ?? {};
@@ -324,7 +324,7 @@ describe("applyCodexQuotaWarning (provider+scope SoT)", () => {
       secondary: { utilization: 10, windowMinutes: 10080, resetsAt: null },
       // rateLimitReachedType intentionally omitted (undefined, not present).
     });
-    expect(providerRouteability("codex", undefined, "gpt-5.6-sol").usable).toBe(false);
+    expect(providerRouteability("codex", undefined, "gpt-5.6-terra").usable).toBe(false);
   });
 
   it("clears every scope when usage is null", () => {

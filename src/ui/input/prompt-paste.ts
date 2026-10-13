@@ -2,6 +2,7 @@ import { getActivePasteStore } from "@/kernel/std/paste/registry.ts";
 import { createAutoClearDispatch } from "@/kernel/std/state/auto-clear-dispatch.ts";
 import { setPromptPasteExpandHint } from "@/store/prompt/index.ts";
 import { readImageFromClipboard } from "@/ui/input/paste/clipboard.ts";
+import { readPastedImageFile, splitPastedImagePaths } from "@/ui/input/paste/image-path.ts";
 import { joinWithLeadingSpace, normalizePastedText } from "@/ui/input/paste/references.ts";
 import { pasteEdit } from "@/ui/input/prompt-edit-ops.ts";
 
@@ -41,7 +42,8 @@ export class PromptPaste {
   }
 
   insert(raw: string): void {
-    const data = normalizePastedText(raw);
+    const data = this.attachPastedImageFiles(normalizePastedText(raw));
+    if (data.length === 0) return;
     const edit = pasteEdit(
       this.io.text(),
       this.io.caret(),
@@ -53,6 +55,39 @@ export class PromptPaste {
     this.io.leaveHistory();
     this.io.apply(edit.text, edit.caret);
     if (edit.collapsed) this.showExpandHint();
+  }
+
+  /**
+   * A pasted image file path becomes the image itself. Returns the text left
+   * to insert; a path whose file cannot be read stays as text so the user
+   * sees what arrived instead of losing it.
+   */
+  private attachPastedImageFiles(data: string): string {
+    const store = getActivePasteStore();
+    if (!store) return data;
+    const { imagePaths, text } = splitPastedImagePaths(data);
+    if (imagePaths.length === 0) return data;
+    const unreadable: string[] = [];
+    for (const path of imagePaths) {
+      const image = readPastedImageFile(path);
+      if (!image) {
+        unreadable.push(path);
+        continue;
+      }
+      this.io.leaveHistory();
+      const { placeholder } = store.add({
+        type: "image",
+        content: image.base64,
+        mediaType: image.mediaType,
+      });
+      const { next, insertedLength } = joinWithLeadingSpace(
+        this.io.text(),
+        this.io.caret(),
+        placeholder,
+      );
+      this.io.apply(next, this.io.caret() + insertedLength);
+    }
+    return [...unreadable, text].filter((part) => part.length > 0).join("\n");
   }
 
   hideExpandHint(): void {

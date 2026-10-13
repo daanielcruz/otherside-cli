@@ -29,7 +29,7 @@ beforeEach(() => {
     key: "broker",
     value: {
       provider: "anthropic",
-      model: "claude-opus-5",
+      model: "claude-opus-5-5",
       effort: "high",
       fastMode: false,
       permissionMode: "yolo",

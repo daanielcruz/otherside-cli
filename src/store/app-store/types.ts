@@ -48,7 +48,6 @@ export type AppAction =
   | { readonly type: "view/setContextWarningSuppressed"; readonly suppressed: boolean }
   | { readonly type: "view/setTurnTipIndex"; readonly index: number | null }
   | { readonly type: "view/setPanelFocus"; readonly focus: string | null }
-  | { readonly type: "view/setWorkflowDetailTarget"; readonly id: string | null }
   | { readonly type: "view/setWorkflowDetailOpen"; readonly open: boolean }
   | { readonly type: "view/setBgPillFocused"; readonly focused: boolean }
   | { readonly type: "view/setPanelFocused"; readonly focused: boolean }

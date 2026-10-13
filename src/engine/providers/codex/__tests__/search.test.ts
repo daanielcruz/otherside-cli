@@ -14,7 +14,7 @@ const originalFetch = global.fetch;
 function ctx(abortSignal?: AbortSignal): RequestContext {
   return {
     provider: "codex",
-    model: "gpt-5.6-sol",
+    model: "gpt-5.6-terra",
     sessionId: "codex-search-session",
     cwd: "/workspace/fixture",
     effort: "medium",
@@ -83,7 +83,7 @@ describe("Codex web search", () => {
     expect(headers.Accept).toBe("application/json");
     expect(JSON.parse(String(capturedInit?.body))).toEqual({
       id: "codex-search-session",
-      model: "gpt-5.6-sol",
+      model: "gpt-5.6-terra",
       commands: {
         search_query: [{ q: "Codex documentation" }],
         response_length: "short",

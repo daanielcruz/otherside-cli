@@ -108,11 +108,6 @@ export function findNextPendingTask(tasks: readonly TaskRecord[]): TaskRecord | 
   return pending.find((task) => !task.blockedBy.some((id) => unresolved.has(id))) ?? pending[0];
 }
 
-/** The task whose activeForm the spinner speaks: the one being worked on now. */
-export function findCurrentTask(tasks: readonly TaskRecord[]): TaskRecord | undefined {
-  return tasks.find((task) => task.status !== "pending" && task.status !== "completed");
-}
-
 export function openBlockerIds(task: TaskRecord, unresolved: ReadonlySet<string>): string[] {
   return task.blockedBy.filter((id) => unresolved.has(id)).sort(compareIds);
 }
@@ -190,22 +185,46 @@ export function taskStatusColor(status: TaskStatus): ColorValue {
   return Color.text;
 }
 
-/** One task's line, without the gutter the caller wraps it in. */
+/** How a task is referred to everywhere it is named: rows, `Next:`, and `blocked by`. */
+export function taskLabel(id: string): string {
+  return `#${id}`;
+}
+
+/**
+ * Columns the widest label among `tasks` takes, so the rows of one list start their
+ * subjects in the same column whether a task is #1 or #88.
+ */
+export function taskLabelWidth(tasks: readonly TaskRecord[]): number {
+  return tasks.reduce((widest, task) => Math.max(widest, stringWidth(taskLabel(task.id))), 0);
+}
+
+/**
+ * One task's line, without the gutter the caller wraps it in. The task's number leads
+ * the subject because `blocked by` names tasks by number; without it on every row that
+ * reference has nothing to point at.
+ */
 export function taskRowText(options: {
   task: TaskRecord;
   openBlockers: readonly string[];
   activeOwners: ReadonlySet<string>;
   columns: number;
+  /** Width the label pads to; the list's widest label keeps subjects aligned. */
+  labelWidth?: number;
 }): string {
   const { task, openBlockers, activeOwners, columns } = options;
   const blocked = openBlockers.length > 0;
   const badge = ownerBadge({ task, activeOwners, columns });
   const badgeWidth = badge === null ? 0 : stringWidth(badge);
-  const subjectWidth = Math.max(MIN_SUBJECT_WIDTH, columns - SUBJECT_WIDTH_RESERVE - badgeWidth);
+  const labelText = taskLabel(task.id).padEnd(options.labelWidth ?? 0);
+  const subjectWidth = Math.max(
+    MIN_SUBJECT_WIDTH,
+    columns - SUBJECT_WIDTH_RESERVE - badgeWidth - stringWidth(labelText) - 1,
+  );
 
   const glyph = renderTextWithStyles(`${taskStatusGlyph(task.status)} `, {
     color: taskStatusColor(task.status),
   });
+  const label = renderTextWithStyles(`${labelText} `, { color: Color.muted });
   const subject = renderTextWithStyles(limitColumnWidth(task.subject, subjectWidth), {
     color: task.status === "completed" || blocked ? Color.muted : Color.text,
     bold: task.status === "in_progress",
@@ -214,11 +233,11 @@ export function taskRowText(options: {
   const owner = badge === null ? "" : renderTextWithStyles(badge, { color: Color.muted });
   const blockedLabel = blocked
     ? renderTextWithStyles(
-        ` ${Glyph.chevronThin}blocked by ${openBlockers.map((id) => `#${id}`).join(", ")}`,
+        ` ${Glyph.chevronThin}blocked by ${openBlockers.map(taskLabel).join(", ")}`,
         { color: Color.muted },
       )
     : "";
-  return `${glyph}${subject}${owner}${blockedLabel}`;
+  return `${glyph}${label}${subject}${owner}${blockedLabel}`;
 }
 
 /**

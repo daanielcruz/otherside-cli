@@ -19,7 +19,13 @@ export type ToolPayload =
   | { kind: "hint"; text: string }
   | { kind: "interrupt" }
   | { kind: "workflow"; task: WorkflowTaskLifecycle }
-  | { kind: "diff"; fragment: string; filePath?: string }
+  | {
+      kind: "diff";
+      fragment: string;
+      filePath?: string;
+      /** Reads in place of the count of added and removed lines. */
+      header?: string;
+    }
   | {
       kind: "findings";
       findings: Array<{

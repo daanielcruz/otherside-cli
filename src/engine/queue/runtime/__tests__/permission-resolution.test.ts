@@ -1,24 +1,31 @@
 import { describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, parse } from "node:path";
+import { dirname, join, parse, resolve } from "node:path";
 import { type AgentContext, withSpawnedAgentScope } from "@/engine/agents/agent-context.ts";
+import {
+  replaceSnapshot as replaceSkillSnapshot,
+  type Skill,
+  snapshot as skillSnapshot,
+} from "@/engine/skills/registry.ts";
 import { isReadOnlyBashCommand } from "@/engine/tools/_infra/command-analysis/read-only.ts";
-import { dispatch as dispatchTool } from "@/engine/tools/pipeline.ts";
-import { activePlanFilePath } from "@/engine/tools/plan-gate.ts";
+import { dispatch as dispatchTool, type PermissionDecision } from "@/engine/tools/pipeline.ts";
 import { runWithPreToolUseHookPermissionSignal } from "@/engine/tools/pretooluse-hook-permission-context.ts";
 import * as toolRegistry from "@/engine/tools/registry.ts";
 import {
   answer as answerPermission,
   clear as clearPermissionQueue,
+  notifyPermissionContextChanged,
   type PendingPermission,
   PermissionResults,
   peek as peekPermission,
+  subscribe as subscribePermissions,
 } from "@/kernel/channels/permission.ts";
 import type { UserConfig } from "@/kernel/config/config.ts";
 import { firePermissionDeniedHooks } from "@/kernel/hooks/handler.ts";
 import {
-  permissionDirectoryGlob,
+  directoryPathPattern,
+  filePathPattern,
   permissionPatternMatches,
   RuleStore,
 } from "@/kernel/permissions/index.ts";
@@ -30,17 +37,31 @@ import {
 } from "@/kernel/permissions/types.ts";
 import { setRuntimeKind } from "@/kernel/std/proc/runtime-mode.ts";
 import type { ToolCall } from "@/kernel/std/types/message.ts";
+import type { PermissionMode } from "@/kernel/std/types/permission-mode.ts";
 import type { RequestContext, ScopedToolHandler } from "@/kernel/std/types/request.ts";
 import { autoMemDir } from "@/kernel/storage/memory/entrypoint.ts";
 import {
-  activeSessionAllowSet,
   type CompoundBashProbes,
   compoundBashDecision,
   isWorkspaceRead,
   type PermissionResolutionDeps,
   resolvePermission,
-  sessionAllowPatternsForMatch,
 } from "../permission-resolution.ts";
+import {
+  AGENT_TOOL_REJECTED_RESULT,
+  AGENT_TOOL_REJECTED_WITH_FEEDBACK_PREFIX,
+  USER_REJECTED_TOOL_RESULT,
+  USER_REJECTED_WITH_FEEDBACK_PREFIX,
+} from "../rejection-text.ts";
+
+/** What a prompt the user turned down without directions resolves to. */
+const USER_REJECTED: PermissionDecision = {
+  kind: "deny",
+  message: USER_REJECTED_TOOL_RESULT,
+  stopsTurn: true,
+};
+/** What an agent's prompt the user turned down without directions resolves to. */
+const AGENT_REJECTED: PermissionDecision = { kind: "deny", message: AGENT_TOOL_REJECTED_RESULT };
 
 describe("isWorkspaceRead", () => {
   const fsRoot = parse(process.cwd()).root;
@@ -117,10 +138,6 @@ describe("isWorkspaceRead", () => {
   });
 });
 
-function depsWith(set: Set<string>): PermissionResolutionDeps {
-  return { sessionAllowedToolPatterns: set } as PermissionResolutionDeps;
-}
-
 function bashPath(path: string): string {
   return path.replaceAll("\\", "/");
 }
@@ -143,7 +160,7 @@ async function withPermissionFixture<T>(run: (cwd: string) => Promise<T>): Promi
 
 function resolutionDeps(
   cwd: string,
-  mode: "default" | "accept-edits" | "plan" | "yolo",
+  mode: PermissionMode,
   sessionAllowedToolPatterns = new Set<string>(),
   dispatch: (action: unknown) => void = () => {},
   additionalWorkingDirectories = new Set<string>(),
@@ -173,14 +190,13 @@ async function waitForPermission(): Promise<PendingPermission> {
   throw new Error("permission ask never surfaced");
 }
 
-function forkContext(set: Set<string>): AgentContext {
+function forkContext(): AgentContext {
   return {
     agentId: "fork-1",
     depth: 1,
     parentSessionId: "parent",
     agentType: "subagent",
     subagentName: "worker",
-    sessionAllowedToolPatterns: set,
   };
 }
 
@@ -206,7 +222,7 @@ describe("MCP wildcard allow rules", () => {
       const pending = await waitForPermission();
       expect(pending.toolName).toBe("mcp__production__run");
       answerPermission(pending.id, { decision: "deny", updates: [] });
-      expect(await decisionPromise).toBe("deny");
+      expect(await decisionPromise).toEqual(USER_REJECTED);
     });
   });
 
@@ -238,7 +254,7 @@ describe("MCP wildcard allow rules", () => {
       const pending = await waitForPermission();
       expect(pending.toolName).toBe(toolName);
       answerPermission(pending.id, { decision: "deny", updates: [] });
-      expect(await decisionPromise).toBe("deny");
+      expect(await decisionPromise).toEqual(USER_REJECTED);
     });
   });
 
@@ -283,73 +299,668 @@ describe("MCP wildcard allow rules", () => {
       const pending = await waitForPermission();
       expect(pending.toolName).toBe("Write");
       answerPermission(pending.id, { decision: "deny", updates: [] });
-      expect(await userDeny).toBe("deny");
+      expect(await userDeny).toEqual(USER_REJECTED);
     });
   });
 });
 
-describe("fork session-allow isolation", () => {
-  it("uses the parent deps set on the main turn (no agent context)", () => {
-    const parent = new Set(["Bash:ls"]);
-    expect(activeSessionAllowSet(depsWith(parent))).toBe(parent);
-  });
+describe("session grants made inside an agent", () => {
+  it("cover the same call on the main session and in other agents", async () => {
+    await withPermissionFixture(async (cwd) => {
+      const sessionGrants = new Set<string>();
+      const deps = resolutionDeps(cwd, "default", sessionGrants);
+      const outsideDir = join(cwd, "..", "agent-granted");
+      mkdirSync(outsideDir);
+      const call = (id: string): ToolCall => ({
+        id,
+        name: "Read",
+        input: { file_path: join(outsideDir, "notes.txt") },
+      });
 
-  it("uses the fork's own set inside a fork, NOT the parent's grants", () => {
-    const parent = new Set(["Bash:ls"]);
-    const forkSet = new Set<string>();
-    withSpawnedAgentScope(forkContext(forkSet), () => {
-      const active = activeSessionAllowSet(depsWith(parent));
-      expect(active).toBe(forkSet);
-      expect(active.has("Bash:ls")).toBe(false); // parent grant does not leak in
-    });
-  });
+      const agentAsk = withSpawnedAgentScope(forkContext(), () =>
+        resolvePermission(deps, call("t-agent-grant")),
+      );
+      const pending = await waitForPermission();
+      expect(pending.source?.name).toBe("worker");
+      answerPermission(
+        pending.id,
+        PermissionResults.allowSession(pending.rule!, pending.suggestions),
+      );
+      expect(await agentAsk).toBe("allow");
+      expect(sessionGrants.size).toBeGreaterThan(0);
 
-  it("accumulates a fork's own grants in its set, leaving the parent's untouched", () => {
-    const parent = new Set<string>();
-    const forkSet = new Set<string>();
-    withSpawnedAgentScope(forkContext(forkSet), () => {
-      activeSessionAllowSet(depsWith(parent)).add("Write:src/x.ts");
+      expect(await resolvePermission(deps, call("t-main-after-agent-grant"))).toBe("allow");
+      expect(
+        await withSpawnedAgentScope({ ...forkContext(), agentId: "fork-2" }, () =>
+          resolvePermission(deps, call("t-sibling-after-agent-grant")),
+        ),
+      ).toBe("allow");
+      expect(peekPermission()).toBeNull();
     });
-    expect(forkSet.has("Write:src/x.ts")).toBe(true);
-    expect(parent.size).toBe(0);
   });
 });
 
-describe("sessionAllowPatternsForMatch (AGENT-PERM-001)", () => {
-  it("matches against the parent deps set directly on the main turn (no agent context)", () => {
-    const parent = new Set(["Bash:ls"]);
-    expect(sessionAllowPatternsForMatch(depsWith(parent))).toBe(parent);
+/** Deps whose broker holds a live permission mode, as a session's own broker does. */
+function liveModeDeps(
+  cwd: string,
+  initial: PermissionMode,
+  sessionAllowedToolPatterns = new Set<string>(),
+): { deps: PermissionResolutionDeps; setMode: (mode: PermissionMode) => void } {
+  let mode = initial;
+  const base = resolutionDeps(cwd, initial, sessionAllowedToolPatterns);
+  const deps = {
+    ...base,
+    agentDeps: {
+      ...base.agentDeps,
+      broker: {
+        read: () => ({ permissionMode: mode }),
+        dispatch: (action: { kind: string; mode?: PermissionMode }) => {
+          if (action.kind === "set_permission_mode" && action.mode) mode = action.mode;
+        },
+      },
+    },
+  } as unknown as PermissionResolutionDeps;
+  return { deps, setMode: (next) => (mode = next) };
+}
+
+function bashCall(id: string, command: string): ToolCall {
+  return { id, name: "Bash", input: { command } };
+}
+
+async function until(condition: () => boolean): Promise<void> {
+  for (let i = 0; i < 200; i += 1) {
+    if (condition()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error("condition never held");
+}
+
+async function withQueueSize<T>(run: (size: () => number) => Promise<T>): Promise<T> {
+  let size = 0;
+  const stop = subscribePermissions((queue) => {
+    size = queue.length;
+  });
+  try {
+    return await run(() => size);
+  } finally {
+    stop();
+  }
+}
+
+describe("waiting prompts re-check when the permission context changes", () => {
+  it("settles a waiting prompt once a lasting approval's rule covers it", async () => {
+    await withPermissionFixture((cwd) =>
+      withQueueSize(async (queueSize) => {
+        const deps = resolutionDeps(cwd, "default");
+        const first = resolvePermission(deps, bashCall("t-recheck-first", "npm test"));
+        await waitForPermission();
+        const second = resolvePermission(deps, bashCall("t-recheck-second", "npm test --watch"));
+        await until(() => queueSize() === 2);
+
+        const pending = peekPermission()!;
+        expect(pending.rule).toBe("Bash(npm test *)");
+        answerPermission(pending.id, PermissionResults.allowAlways(pending.rule!));
+
+        expect(await first).toBe("allow");
+        expect(await second).toBe("allow");
+        expect(peekPermission()).toBeNull();
+      }),
+    );
   });
 
-  it("layers a fork's inherited parent grant into match patterns, without moving it into the fork's own set", () => {
-    const parent = new Set(["Bash:ls"]);
-    const forkSet = new Set<string>();
-    withSpawnedAgentScope(forkContext(forkSet), () => {
-      const matched = new Set(sessionAllowPatternsForMatch(depsWith(parent)));
-      expect(matched.has("Bash:ls")).toBe(true);
-    });
-    // The fork's own write-target set never absorbs the inherited grant.
-    expect(forkSet.has("Bash:ls")).toBe(false);
+  it("leaves the other prompts waiting after a one-time approval", async () => {
+    await withPermissionFixture((cwd) =>
+      withQueueSize(async (queueSize) => {
+        const deps = resolutionDeps(cwd, "default");
+        const first = resolvePermission(deps, bashCall("t-once-first", "npm test"));
+        await waitForPermission();
+        const second = resolvePermission(deps, bashCall("t-once-second", "npm test --watch"));
+        await until(() => queueSize() === 2);
+
+        answerPermission(peekPermission()!.id, PermissionResults.allow());
+        expect(await first).toBe("allow");
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        expect(queueSize()).toBe(1);
+
+        answerPermission(peekPermission()!.id, PermissionResults.deny());
+        expect(await second).toEqual(USER_REJECTED);
+      }),
+    );
   });
 
-  it("layers both the parent's grant and the fork's own accumulated grant", () => {
-    const parent = new Set(["Bash:ls"]);
-    const forkSet = new Set(["Write:src/x.ts"]);
-    withSpawnedAgentScope(forkContext(forkSet), () => {
-      const matched = new Set(sessionAllowPatternsForMatch(depsWith(parent)));
-      expect(matched.has("Bash:ls")).toBe(true);
-      expect(matched.has("Write:src/x.ts")).toBe(true);
+  it("settles waiting prompts a mode switch allows, never one an ask rule holds", async () => {
+    await withPermissionFixture(async (cwd) => {
+      await saveRules(
+        [
+          {
+            source: "localSettings",
+            ruleBehavior: "ask",
+            ruleValue: { toolName: "Bash", ruleContent: "make deploy *" },
+          },
+        ],
+        cwd,
+      );
+      const { deps, setMode } = liveModeDeps(cwd, "default");
+
+      await withQueueSize(async (queueSize) => {
+        const allowedByMode = resolvePermission(deps, bashCall("t-mode-open", "npm test"));
+        await waitForPermission();
+        const heldByRule = resolvePermission(deps, bashCall("t-mode-held", "make deploy"));
+        await until(() => queueSize() === 2);
+
+        setMode("yolo");
+        notifyPermissionContextChanged();
+
+        expect(await allowedByMode).toBe("allow");
+        expect(queueSize()).toBe(1);
+        const held = peekPermission()!;
+        expect(held.argsPreview).toContain("make deploy");
+        answerPermission(held.id, PermissionResults.deny());
+        expect(await heldByRule).toEqual(USER_REJECTED);
+      });
+    });
+  });
+});
+
+describe("lasting approvals of compound commands", () => {
+  it("saves a rule for each segment nothing allows yet, and the compound runs next time", async () => {
+    await withPermissionFixture(async (cwd) => {
+      mkdirSync(join(cwd, "sub"));
+      const deps = resolutionDeps(cwd, "default");
+
+      const withCd = resolvePermission(deps, bashCall("t-compound-cd", "cd sub && npm test"));
+      const cdPending = await waitForPermission();
+      expect(cdPending.rule).toBe("Bash(npm test *)");
+      expect(cdPending.rules).toBeUndefined();
+      answerPermission(cdPending.id, PermissionResults.allowAlways(cdPending.rule!));
+      expect(await withCd).toBe("allow");
+      expect(
+        await resolvePermission(deps, bashCall("t-compound-cd-again", "cd sub && npm test")),
+      ).toBe("allow");
+
+      const pair = resolvePermission(
+        deps,
+        bashCall("t-compound-pair", "cargo build && make check"),
+      );
+      const pairPending = await waitForPermission();
+      expect(pairPending.rule).toBeNull();
+      expect(pairPending.reason).toBe("This command requires approval");
+      expect(pairPending.rules).toEqual(["Bash(cargo build *)", "Bash(make check *)"]);
+      answerPermission(pairPending.id, PermissionResults.allowAlwaysAll(pairPending.rules!));
+      expect(await pair).toBe("allow");
+      expect(
+        await resolvePermission(
+          deps,
+          bashCall("t-compound-pair-again", "cargo build && make check"),
+        ),
+      ).toBe("allow");
+      expect(peekPermission()).toBeNull();
     });
   });
 
-  it("does not mutate either set while layering", () => {
-    const parent = new Set(["Bash:ls"]);
-    const forkSet = new Set(["Write:src/x.ts"]);
-    withSpawnedAgentScope(forkContext(forkSet), () => {
-      void [...sessionAllowPatternsForMatch(depsWith(parent))];
+  it("saves a segment with no second command word exactly as it ran", async () => {
+    await withPermissionFixture(async (cwd) => {
+      const command = "make --version && cmake --version";
+      const first = resolvePermission(
+        resolutionDeps(cwd, "default"),
+        bashCall("t-versions", command),
+      );
+      const pending = await waitForPermission();
+      expect(pending.rules).toEqual(["Bash(make --version)", "Bash(cmake --version)"]);
+      answerPermission(pending.id, PermissionResults.allowAlwaysAll(pending.rules!));
+      expect(await first).toBe("allow");
+      const deps = resolutionDeps(cwd, "default");
+      expect(await resolvePermission(deps, bashCall("t-versions-2", command))).toBe("allow");
+      const other = resolvePermission(deps, bashCall("t-make-other", "make install"));
+      const otherPending = await waitForPermission();
+      answerPermission(otherPending.id, PermissionResults.deny());
+      expect(await other).toEqual(USER_REJECTED);
     });
-    expect(parent).toEqual(new Set(["Bash:ls"]));
-    expect(forkSet).toEqual(new Set(["Write:src/x.ts"]));
+  });
+
+  it("offers at most five rules, leftmost first", async () => {
+    await withPermissionFixture(async (cwd) => {
+      const command = ["a", "b", "c", "d", "e", "f", "g"].map((target) => `make ${target}`);
+      const decision = resolvePermission(
+        resolutionDeps(cwd, "default"),
+        bashCall("t-compound-cap", command.join(" && ")),
+      );
+      const pending = await waitForPermission();
+      expect(pending.rules).toEqual(command.slice(0, 5).map((segment) => `Bash(${segment} *)`));
+      answerPermission(pending.id, PermissionResults.deny());
+      expect(await decision).toEqual(USER_REJECTED);
+    });
+  });
+
+  it("still asks before a read-only segment reads outside the workspace", async () => {
+    await withPermissionFixture(async (cwd) => {
+      await saveRules([allowRule("npm test *")], cwd);
+      const deps = resolutionDeps(cwd, "default");
+      const outsideFile = bashPath(join(cwd, "..", "outside.txt"));
+
+      expect(
+        await resolvePermission(deps, bashCall("t-compound-inside-read", "npm test && cat a.txt")),
+      ).toBe("allow");
+      const outside = resolvePermission(
+        deps,
+        bashCall("t-compound-outside-read", `npm test && cat ${outsideFile}`),
+      );
+      const pending = await waitForPermission();
+      expect(pending.argsPreview).toContain("outside.txt");
+      answerPermission(pending.id, PermissionResults.deny());
+      expect(await outside).toEqual(USER_REJECTED);
+    });
+  });
+});
+
+describe("Bash reads outside the workspace", () => {
+  function outsideDirectory(cwd: string, name: string): string {
+    const directory = join(cwd, "..", name);
+    mkdirSync(directory);
+    return directory;
+  }
+
+  it("offer the directory for the project, and that grant covers the next read there", async () => {
+    await withPermissionFixture(async (cwd) => {
+      const deps = resolutionDeps(cwd, "default");
+      const notes = outsideDirectory(cwd, "notes");
+      const other = outsideDirectory(cwd, "other");
+
+      const first = resolvePermission(
+        deps,
+        bashCall("t-bash-outside-read", `cat ${bashPath(join(notes, "a.txt"))}`),
+      );
+      const pending = await waitForPermission();
+      expect(pending.rule).toBeNull();
+      expect(pending.readDirectories).toEqual([resolve(notes)]);
+      expect(
+        pending.suggestions?.every(
+          (update) => "destination" in update && update.destination === "localSettings",
+        ),
+      ).toBe(true);
+      answerPermission(pending.id, PermissionResults.allowSession(null, pending.suggestions));
+      expect(await first).toBe("allow");
+
+      // The grant is the project's: a fresh session reads it back from settings.
+      const next = resolutionDeps(cwd, "default");
+      for (const command of [`head ${join(notes, "b.txt")}`, `wc -l ${join(notes, "c.txt")}`]) {
+        expect(await resolvePermission(next, bashCall(`t-${command}`, bashPath(command)))).toBe(
+          "allow",
+        );
+      }
+      const elsewhere = resolvePermission(
+        deps,
+        bashCall("t-bash-other-dir", `cat ${bashPath(join(other, "a.txt"))}`),
+      );
+      const otherPending = await waitForPermission();
+      expect(otherPending.readDirectories).toEqual([resolve(other)]);
+      answerPermission(otherPending.id, PermissionResults.deny());
+      expect(await elsewhere).toEqual(USER_REJECTED);
+    });
+  });
+
+  it("are covered by the directory a Read approval opened", async () => {
+    await withPermissionFixture(async (cwd) => {
+      const deps = resolutionDeps(cwd, "default");
+      const notes = outsideDirectory(cwd, "notes");
+
+      const read = resolvePermission(deps, {
+        id: "t-read-outside",
+        name: "Read",
+        input: { file_path: join(notes, "a.txt") },
+      });
+      const pending = await waitForPermission();
+      expect(pending.readDirectories).toEqual([resolve(notes)]);
+      // The directory settles the read, so no rule for the one file is offered.
+      expect(pending.rule).toBeNull();
+      expect(pending.rules).toBeUndefined();
+      expect(
+        pending.suggestions?.every(
+          (update) => "destination" in update && update.destination === "session",
+        ),
+      ).toBe(true);
+      answerPermission(
+        pending.id,
+        PermissionResults.allowSession(pending.rule, pending.suggestions),
+      );
+      expect(await read).toBe("allow");
+
+      expect(
+        await resolvePermission(
+          deps,
+          bashCall("t-bash-after-read-grant", `cat ${bashPath(join(notes, "b.txt"))}`),
+        ),
+      ).toBe("allow");
+    });
+  });
+
+  it("are denied by a Read deny rule, ahead of the directory grant and yolo", async () => {
+    await withPermissionFixture(async (cwd) => {
+      const notes = outsideDirectory(cwd, "notes");
+      const secret = join(notes, "secret.txt");
+      await saveRules(
+        [
+          {
+            source: "localSettings",
+            ruleBehavior: "deny",
+            ruleValue: { toolName: "Read", ruleContent: secret },
+          },
+          {
+            source: "localSettings",
+            ruleBehavior: "deny",
+            ruleValue: { toolName: "Read", ruleContent: join(cwd, ".env") },
+          },
+        ],
+        cwd,
+      );
+      const grants = new Set([`Read(${join(notes, "*")})`]);
+
+      for (const command of [`cat ${secret}`, `npm test && head ${secret}`, "cat .env"]) {
+        expect(
+          await resolvePermission(
+            resolutionDeps(cwd, "yolo", grants),
+            bashCall(`t-${command}`, bashPath(command)),
+          ),
+        ).toBe("deny");
+      }
+      expect(peekPermission()).toBeNull();
+    });
+  });
+
+  it("after cd outside the workspace offer that directory, and the grant covers the next one", async () => {
+    await withPermissionFixture(async (cwd) => {
+      const deps = resolutionDeps(cwd, "default");
+      const notes = outsideDirectory(cwd, "notes");
+
+      const first = resolvePermission(
+        deps,
+        bashCall("t-cd-outside", `cd ${bashPath(notes)} && ls`),
+      );
+      const pending = await waitForPermission();
+      expect(pending.rule).toBeNull();
+      expect(pending.readDirectories).toEqual([resolve(notes)]);
+      answerPermission(pending.id, PermissionResults.allowSession(null, pending.suggestions));
+      expect(await first).toBe("allow");
+
+      for (const command of [`cd ${notes} && ls -la`, `cd ${notes} && cat a.txt`]) {
+        expect(await resolvePermission(deps, bashCall(`t-${command}`, bashPath(command)))).toBe(
+          "allow",
+        );
+      }
+      const escaping = resolvePermission(
+        deps,
+        bashCall("t-cd-escape", `cd ${bashPath(notes)} && cat ../../elsewhere.txt`),
+      );
+      const escapingPending = await waitForPermission();
+      answerPermission(escapingPending.id, PermissionResults.deny());
+      expect(await escaping).toEqual(USER_REJECTED);
+    });
+  });
+});
+
+describe("Skill calls", () => {
+  function registeredSkill(name: string, body: string): Skill {
+    return {
+      name,
+      aliases: [],
+      description: name,
+      whenToUse: "",
+      argumentHint: null,
+      userInvocable: true,
+      modelInvocable: true,
+      context: "inline",
+      body,
+      builtin: false,
+      source: "project",
+      authorModelLock: false,
+    };
+  }
+
+  function skillCall(id: string, skill: string): ToolCall {
+    return { id, name: "Skill", input: { skill } };
+  }
+
+  it("run a skill that only carries instructions without a prompt; deny rules still apply", async () => {
+    const previous = skillSnapshot();
+    // Loaded after the tool index so the Skill handler's own imports settle first.
+    const { Skill: SkillTool } = await import("@/engine/tools/builtins/skill.ts");
+    toolRegistry.register(SkillTool);
+    try {
+      replaceSkillSnapshot([
+        registeredSkill("notes", "Summarize the notes."),
+        registeredSkill("release", "Current branch: !`git branch --show-current`"),
+      ]);
+      await withPermissionFixture(async (cwd) => {
+        const deps = resolutionDeps(cwd, "default");
+        expect(await resolvePermission(deps, skillCall("t-skill-plain", "notes"))).toBe("allow");
+
+        const shell = resolvePermission(deps, skillCall("t-skill-shell", "release"));
+        const pending = await waitForPermission();
+        expect(pending.rule).toBe("Skill(release)");
+        answerPermission(pending.id, PermissionResults.deny());
+        expect(await shell).toEqual(USER_REJECTED);
+
+        await saveRules(
+          [
+            {
+              source: "localSettings",
+              ruleBehavior: "deny",
+              ruleValue: { toolName: "Skill", ruleContent: "not:*" },
+            },
+          ],
+          cwd,
+        );
+        expect(await resolvePermission(deps, skillCall("t-skill-denied", "notes"))).toBe("deny");
+      });
+    } finally {
+      toolRegistry.unregister("Skill");
+      replaceSkillSnapshot(previous);
+    }
+  });
+});
+
+describe("file rules written relative", () => {
+  it("cover the file wherever it sits under the project, from Read and from Bash", async () => {
+    await withPermissionFixture(async (cwd) => {
+      await saveRules(
+        [
+          {
+            source: "localSettings",
+            ruleBehavior: "deny",
+            ruleValue: { toolName: "Read", ruleContent: "./.env" },
+          },
+        ],
+        cwd,
+      );
+      mkdirSync(join(cwd, "apps"));
+      const deps = resolutionDeps(cwd, "yolo");
+      const read = (id: string, path: string): ToolCall => ({
+        id,
+        name: "Read",
+        input: { file_path: path },
+      });
+
+      expect(await resolvePermission(deps, read("t-relative-root", join(cwd, ".env")))).toBe(
+        "deny",
+      );
+      expect(
+        await resolvePermission(deps, read("t-relative-nested", join(cwd, "apps", ".env"))),
+      ).toBe("deny");
+      expect(await resolvePermission(deps, bashCall("t-relative-cat", "cat apps/.env"))).toBe(
+        "deny",
+      );
+      expect(await resolvePermission(deps, read("t-relative-other", join(cwd, "README.md")))).toBe(
+        "allow",
+      );
+    });
+  });
+});
+
+describe("Bash writes and file deny rules", () => {
+  it("deny a write an Edit deny rule covers, even in yolo", async () => {
+    await withPermissionFixture(async (cwd) => {
+      await saveRules(
+        [
+          {
+            source: "localSettings",
+            ruleBehavior: "deny",
+            ruleValue: { toolName: "Edit", ruleContent: join(cwd, "locked", "*") },
+          },
+        ],
+        cwd,
+      );
+      mkdirSync(join(cwd, "locked"));
+      expect(
+        await resolvePermission(
+          resolutionDeps(cwd, "yolo"),
+          bashCall("t-bash-denied-write", "touch locked/a.txt"),
+        ),
+      ).toBe("deny");
+      expect(
+        await resolvePermission(
+          resolutionDeps(cwd, "yolo"),
+          bashCall("t-bash-open-write", "touch open.txt"),
+        ),
+      ).toBe("allow");
+    });
+  });
+});
+
+describe("lasting approvals of web tools", () => {
+  it("save the fetched host and the whole search tool, and the next call runs", async () => {
+    await withPermissionFixture(async (cwd) => {
+      const cases = [
+        {
+          name: "WebFetch",
+          first: { url: "https://example.com/", prompt: "Summarize" },
+          next: { url: "https://example.com/other", prompt: "List links" },
+          rule: "WebFetch(domain:example.com)",
+        },
+        {
+          name: "WebSearch",
+          first: { query: "first query" },
+          next: { query: "second query" },
+          rule: "WebSearch",
+        },
+      ];
+      for (const { name, first, next, rule } of cases) {
+        const asked = resolvePermission(resolutionDeps(cwd, "default"), {
+          id: `t-${name}`,
+          name,
+          input: first,
+        });
+        const pending = await waitForPermission();
+        expect(pending.rule).toBe(rule);
+        answerPermission(pending.id, PermissionResults.allowAlways(pending.rule!));
+        expect(await asked).toBe("allow");
+        expect(
+          await resolvePermission(resolutionDeps(cwd, "default"), {
+            id: `t-${name}-next`,
+            name,
+            input: next,
+          }),
+        ).toBe("allow");
+      }
+    });
+  });
+});
+
+describe("lasting approvals of command writes", () => {
+  it("open the working directory for the project, and the next write there runs", async () => {
+    await withPermissionFixture(async (cwd) => {
+      const first = resolvePermission(
+        resolutionDeps(cwd, "default"),
+        bashCall("t-touch", "touch created.txt"),
+      );
+      const pending = await waitForPermission();
+      expect(pending.rule).toBeNull();
+      expect(pending.rules).toBeUndefined();
+      expect(pending.reason).toBeUndefined();
+      expect(pending.writeDirectories).toEqual([cwd]);
+      answerPermission(pending.id, { decision: "allow", updates: pending.suggestions ?? [] });
+      expect(await first).toBe("allow");
+
+      // A fresh session reads the grant back from the project's settings.
+      const next = resolutionDeps(cwd, "default");
+      for (const command of ["touch other.txt", "mkdir logs"]) {
+        expect(await resolvePermission(next, bashCall(`t-${command}`, command))).toBe("allow");
+      }
+      expect(peekPermission()).toBeNull();
+    });
+  });
+
+  it("save a compound's write as a directory and its other segments as rules", async () => {
+    await withPermissionFixture(async (cwd) => {
+      const command = "touch created.txt && make check";
+      const first = resolvePermission(resolutionDeps(cwd, "default"), bashCall("t-mixed", command));
+      const pending = await waitForPermission();
+      expect(pending.rule).toBeNull();
+      expect(pending.rules).toEqual(["Bash(make check *)"]);
+      expect(pending.writeDirectories).toEqual([cwd]);
+      answerPermission(pending.id, { decision: "allow", updates: pending.suggestions ?? [] });
+      expect(await first).toBe("allow");
+      expect(
+        await resolvePermission(resolutionDeps(cwd, "default"), bashCall("t-mixed-2", command)),
+      ).toBe("allow");
+    });
+  });
+});
+
+describe("writes outside the workspace", () => {
+  it("open the directory for the project, and Bash and Write both reuse that approval", async () => {
+    await withPermissionFixture(async (cwd) => {
+      const { deps } = liveModeDeps(cwd, "default");
+      const shared = join(cwd, "..", "shared");
+      mkdirSync(shared);
+
+      const first = resolvePermission(
+        deps,
+        bashCall("t-bash-outside-write", `touch ${bashPath(join(shared, "a.txt"))}`),
+      );
+      const pending = await waitForPermission();
+      expect(pending.rule).toBeNull();
+      expect(pending.writeDirectories).toEqual([resolve(shared)]);
+      answerPermission(pending.id, { decision: "allow", updates: pending.suggestions ?? [] });
+      expect(await first).toBe("allow");
+
+      for (const command of [`touch ${join(shared, "b.txt")}`, `mkdir ${join(shared, "logs")}`]) {
+        expect(await resolvePermission(deps, bashCall(`t-${command}`, bashPath(command)))).toBe(
+          "allow",
+        );
+      }
+      expect(
+        await resolvePermission(deps, {
+          id: "t-write-after-bash-grant",
+          name: "Write",
+          input: { file_path: join(shared, "c.txt"), content: "c" },
+        }),
+      ).toBe("allow");
+      expect(peekPermission()).toBeNull();
+    });
+  });
+
+  it("covers Bash writes after a Write approval opened the directory", async () => {
+    await withPermissionFixture(async (cwd) => {
+      const { deps } = liveModeDeps(cwd, "default");
+      const shared = join(cwd, "..", "shared");
+      mkdirSync(shared);
+
+      const write = resolvePermission(deps, {
+        id: "t-write-outside",
+        name: "Write",
+        input: { file_path: join(shared, "a.txt"), content: "a" },
+      });
+      const pending = await waitForPermission();
+      answerPermission(pending.id, PermissionResults.allowSessionEdits(pending.editDirectory));
+      expect(await write).toBe("allow");
+
+      expect(
+        await resolvePermission(
+          deps,
+          bashCall("t-bash-after-write-grant", `touch ${bashPath(join(shared, "b.txt"))}`),
+        ),
+      ).toBe("allow");
+    });
   });
 });
 
@@ -377,13 +988,12 @@ describe("fork inherits the parent's session-scoped approval (AGENT-PERM-001)", 
       expect(await parentAsk).toBe("allow");
       expect(sessionGrants.size).toBeGreaterThan(0);
 
-      // A fresh named Agent fork spawns afterward (its own AgentContext set
-      // starts empty, per fork/loop.ts) and makes the identical Read call.
-      // It must be auto-allowed off the parent's grant, never re-prompted.
+      // A fresh named Agent fork spawns afterward and makes the identical Read
+      // call. It must be auto-allowed off the parent's grant, never re-prompted.
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 2_000);
       try {
-        const childDecision = await withSpawnedAgentScope(forkContext(new Set<string>()), () =>
+        const childDecision = await withSpawnedAgentScope(forkContext(), () =>
           resolvePermission(
             deps,
             {
@@ -409,7 +1019,7 @@ describe("fork inherits the parent's session-scoped approval (AGENT-PERM-001)", 
       const outsideDir = join(cwd, "..", "ungranted");
       mkdirSync(outsideDir);
 
-      const decisionPromise = withSpawnedAgentScope(forkContext(new Set<string>()), () =>
+      const decisionPromise = withSpawnedAgentScope(forkContext(), () =>
         resolvePermission(deps, {
           id: "t-child-no-grant",
           name: "Read",
@@ -418,7 +1028,7 @@ describe("fork inherits the parent's session-scoped approval (AGENT-PERM-001)", 
       );
       const pending = await waitForPermission();
       answerPermission(pending.id, { decision: "deny", updates: [] });
-      expect(await decisionPromise).toBe("deny");
+      expect(await decisionPromise).toEqual(AGENT_REJECTED);
     });
   });
 
@@ -445,7 +1055,7 @@ describe("fork inherits the parent's session-scoped approval (AGENT-PERM-001)", 
         cwd,
       );
 
-      const childDecision = await withSpawnedAgentScope(forkContext(new Set<string>()), () =>
+      const childDecision = await withSpawnedAgentScope(forkContext(), () =>
         resolvePermission(deps, {
           id: "t-child-deny-over-inherited-allow",
           name: "Read",
@@ -466,7 +1076,7 @@ describe("fork inherits the parent's session-scoped approval (AGENT-PERM-001)", 
         cwd,
       );
 
-      const decisionPromise = withSpawnedAgentScope(forkContext(new Set<string>()), () =>
+      const decisionPromise = withSpawnedAgentScope(forkContext(), () =>
         resolvePermission(deps, {
           id: "t-child-ask-over-inherited-allow",
           name: "Bash",
@@ -475,7 +1085,7 @@ describe("fork inherits the parent's session-scoped approval (AGENT-PERM-001)", 
       );
       const pending = await waitForPermission();
       answerPermission(pending.id, { decision: "deny", updates: [] });
-      expect(await decisionPromise).toBe("deny");
+      expect(await decisionPromise).toEqual(AGENT_REJECTED);
     });
   });
 });
@@ -484,7 +1094,7 @@ describe("subagent permission prompts", () => {
   it("auto-denies a background subagent ask without enqueueing a prompt", async () => {
     await withPermissionFixture(async (cwd) => {
       const context = {
-        ...forkContext(new Set<string>()),
+        ...forkContext(),
         shouldAvoidPermissionPrompts: true,
       };
       const decision = await withSpawnedAgentScope(context, () =>
@@ -510,7 +1120,7 @@ describe("subagent permission prompts", () => {
       // no longer sets shouldAvoidPermissionPrompts just because runInBackground
       // is true (forks always keep a parent turn able to answer, per
       // fork/types.ts), so this must bubble rather than auto-deny.
-      const backgroundedForkContext = forkContext(new Set<string>());
+      const backgroundedForkContext = forkContext();
       const decisionPromise = withSpawnedAgentScope(backgroundedForkContext, () =>
         resolvePermission(resolutionDeps(cwd, "default"), {
           id: "t-fork-background-rm-outside",
@@ -521,7 +1131,7 @@ describe("subagent permission prompts", () => {
       const pending = await waitForPermission();
       expect(pending.toolName).toBe("Bash");
       answerPermission(pending.id, { decision: "deny", updates: [] });
-      expect(await decisionPromise).toBe("deny");
+      expect(await decisionPromise).toEqual(AGENT_REJECTED);
     });
   });
 
@@ -531,7 +1141,7 @@ describe("subagent permission prompts", () => {
         [{ source: "localSettings", ruleBehavior: "deny", ruleValue: { toolName: "Bash" } }],
         cwd,
       );
-      const decision = await withSpawnedAgentScope(forkContext(new Set<string>()), () =>
+      const decision = await withSpawnedAgentScope(forkContext(), () =>
         resolvePermission(resolutionDeps(cwd, "default"), {
           id: "t-fork-background-rm-outside-denied-by-rule",
           name: "Bash",
@@ -546,7 +1156,7 @@ describe("subagent permission prompts", () => {
   it("still auto-denies a genuinely detached (named background subagent) ask, unaffected by the fork fix", async () => {
     await withPermissionFixture(async (cwd) => {
       const decision = await withSpawnedAgentScope(
-        { ...forkContext(new Set<string>()), shouldAvoidPermissionPrompts: true },
+        { ...forkContext(), shouldAvoidPermissionPrompts: true },
         () =>
           resolvePermission(resolutionDeps(cwd, "default"), {
             id: "t-named-background-rm-outside",
@@ -567,7 +1177,7 @@ describe("subagent permission prompts", () => {
       setRuntimeKind("interactive");
       try {
         const decisionPromise = withSpawnedAgentScope(
-          { ...forkContext(new Set<string>()), shouldAvoidPermissionPrompts: true },
+          { ...forkContext(), shouldAvoidPermissionPrompts: true },
           () =>
             resolvePermission(resolutionDeps(cwd, "default"), {
               id: "t-named-background-interactive-bubble",
@@ -579,7 +1189,7 @@ describe("subagent permission prompts", () => {
         expect(pending.toolName).toBe("Bash");
         expect(pending.source).toEqual({ name: "worker", depth: 1 });
         answerPermission(pending.id, { decision: "deny", updates: [] });
-        expect(await decisionPromise).toBe("deny");
+        expect(await decisionPromise).toEqual(AGENT_REJECTED);
       } finally {
         setRuntimeKind(null);
       }
@@ -591,7 +1201,7 @@ describe("subagent permission prompts", () => {
       setRuntimeKind("piped");
       try {
         const decision = await withSpawnedAgentScope(
-          { ...forkContext(new Set<string>()), shouldAvoidPermissionPrompts: true },
+          { ...forkContext(), shouldAvoidPermissionPrompts: true },
           () =>
             resolvePermission(resolutionDeps(cwd, "default"), {
               id: "t-named-background-piped-autodeny",
@@ -619,7 +1229,7 @@ describe("subagent permission prompts", () => {
           cwd,
         );
         const decision = await withSpawnedAgentScope(
-          { ...forkContext(new Set<string>()), shouldAvoidPermissionPrompts: true },
+          { ...forkContext(), shouldAvoidPermissionPrompts: true },
           () =>
             resolvePermission(resolutionDeps(cwd, "default"), {
               id: "t-named-background-interactive-explicit-deny",
@@ -637,7 +1247,7 @@ describe("subagent permission prompts", () => {
 
   it("bubbles an outside Write from a foreground named subagent", async () => {
     await withPermissionFixture(async (cwd) => {
-      const decisionPromise = withSpawnedAgentScope(forkContext(new Set<string>()), () =>
+      const decisionPromise = withSpawnedAgentScope(forkContext(), () =>
         resolvePermission(resolutionDeps(cwd, "default"), {
           id: "t-foreground-named-write",
           name: "Write",
@@ -648,7 +1258,7 @@ describe("subagent permission prompts", () => {
       expect(pending.toolName).toBe("Write");
       expect(pending.source).toEqual({ name: "worker", depth: 1 });
       answerPermission(pending.id, { decision: "deny", updates: [] });
-      expect(await decisionPromise).toBe("deny");
+      expect(await decisionPromise).toEqual(AGENT_REJECTED);
     });
   });
 
@@ -659,7 +1269,7 @@ describe("subagent permission prompts", () => {
         cwd,
       );
       expect(
-        await withSpawnedAgentScope(forkContext(new Set<string>()), () =>
+        await withSpawnedAgentScope(forkContext(), () =>
           resolvePermission(resolutionDeps(cwd, "yolo"), {
             id: "t-foreground-named-deny",
             name: "Write",
@@ -673,7 +1283,7 @@ describe("subagent permission prompts", () => {
         [{ source: "localSettings", ruleBehavior: "ask", ruleValue: { toolName: "Write" } }],
         cwd,
       );
-      const askDecision = withSpawnedAgentScope(forkContext(new Set<string>()), () =>
+      const askDecision = withSpawnedAgentScope(forkContext(), () =>
         resolvePermission(resolutionDeps(cwd, "yolo"), {
           id: "t-foreground-named-ask",
           name: "Write",
@@ -683,7 +1293,7 @@ describe("subagent permission prompts", () => {
       const pending = await waitForPermission();
       expect(pending.source).toEqual({ name: "worker", depth: 1 });
       answerPermission(pending.id, { decision: "deny", updates: [] });
-      expect(await askDecision).toBe("deny");
+      expect(await askDecision).toEqual(AGENT_REJECTED);
     });
   });
 });
@@ -724,7 +1334,7 @@ describe("PreToolUse hook permissionDecision allow/ask (PERM-HOOK-ALLOW-BYPASS-0
         name: "Bash",
         input: { command: `rm ${bashPath(join(cwd, "..", "outside-background.txt"))}` },
       };
-      const context = { ...forkContext(new Set<string>()), shouldAvoidPermissionPrompts: true };
+      const context = { ...forkContext(), shouldAvoidPermissionPrompts: true };
 
       const decision = await withSpawnedAgentScope(context, () =>
         runWithPreToolUseHookPermissionSignal("allow", () =>
@@ -771,7 +1381,7 @@ describe("PreToolUse hook permissionDecision allow/ask (PERM-HOOK-ALLOW-BYPASS-0
       const pending = await waitForPermission();
       expect(pending.toolName).toBe("Bash");
       answerPermission(pending.id, { decision: "deny", updates: [] });
-      expect(await decisionPromise).toBe("deny");
+      expect(await decisionPromise).toEqual(USER_REJECTED);
     });
   });
 
@@ -812,7 +1422,7 @@ describe("PreToolUse hook permissionDecision allow/ask (PERM-HOOK-ALLOW-BYPASS-0
       );
       const pending = await waitForPermission();
       answerPermission(pending.id, { decision: "deny", updates: [] });
-      expect(await decisionPromise).toBe("deny");
+      expect(await decisionPromise).toEqual(USER_REJECTED);
     });
   });
 });
@@ -996,54 +1606,6 @@ describe("cancelled permission prompts", () => {
       expect(peekPermission()).toBeNull();
     });
   });
-
-  it("cancels ExitPlanMode prompts without accepting a stale approval", async () => {
-    await withPermissionFixture(async (cwd) => {
-      const controller = new AbortController();
-      const result = resolvePermission(
-        resolutionDeps(cwd, "plan"),
-        { id: "t-cancelled-exit-plan", name: "ExitPlanMode", input: {} },
-        controller.signal,
-      );
-
-      const pending = await waitForPermission();
-      controller.abort();
-
-      expect(answerPermission(pending.id, PermissionResults.allow())).toBe(false);
-      expect(await result).toEqual({
-        kind: "deny",
-        message:
-          "User wants to revise the plan. Wait for them to describe the changes they want, then update the plan and call ExitPlanMode again.",
-      });
-    });
-  });
-
-  it("does not apply updates after a rejected ExitPlanMode prompt", async () => {
-    await withPermissionFixture(async (cwd) => {
-      const additional = new Set([join(cwd, "..", "shared")]);
-      const dispatched: unknown[] = [];
-      const result = resolvePermission(
-        resolutionDeps(cwd, "plan", new Set(), (action) => dispatched.push(action), additional),
-        { id: "t-denied-exit-plan-update", name: "ExitPlanMode", input: {} },
-      );
-      const pending = await waitForPermission();
-      answerPermission(pending.id, {
-        decision: "deny",
-        updates: [
-          { type: "setMode", mode: "yolo" },
-          { type: "removeDirectories", dirs: [...additional] },
-        ],
-      });
-
-      expect(await result).toEqual({
-        kind: "deny",
-        message:
-          "User wants to revise the plan. Wait for them to describe the changes they want, then update the plan and call ExitPlanMode again.",
-      });
-      expect(dispatched).toEqual([]);
-      expect(additional).toEqual(new Set([join(cwd, "..", "shared")]));
-    });
-  });
 });
 
 describe("mode and rule resolution", () => {
@@ -1107,7 +1669,7 @@ describe("mode and rule resolution", () => {
       const pending = await waitForPermission();
       expect(pending.toolName).toBe(toolName);
       answerPermission(pending.id, { decision: "deny", updates: [] });
-      expect(await decisionPromise).toBe("deny");
+      expect(await decisionPromise).toEqual(USER_REJECTED);
     });
   });
 
@@ -1161,7 +1723,7 @@ describe("mode and rule resolution", () => {
       const pending = await waitForPermission();
       expect(pending.toolName).toBe(toolName);
       answerPermission(pending.id, { decision: "deny", updates: [] });
-      expect(await decisionPromise).toBe("deny");
+      expect(await decisionPromise).toEqual(USER_REJECTED);
     });
   });
 
@@ -1240,7 +1802,7 @@ describe("mode and rule resolution", () => {
       });
       const pending = await waitForPermission();
       answerPermission(pending.id, PermissionResults.deny());
-      expect(await asked).toBe("deny");
+      expect(await asked).toEqual(USER_REJECTED);
 
       expect(
         await resolvePermission(resolutionDeps(cwd, "yolo"), {
@@ -1252,46 +1814,46 @@ describe("mode and rule resolution", () => {
     });
   });
 
-  it("requires workflow approval unless a matching allow rule or yolo permits it", async () => {
+  it("launches a workflow without a prompt unless an explicit rule says otherwise", async () => {
     await withPermissionFixture(async (cwd) => {
-      const workflow = (id: string): ToolCall => ({
+      const workflow = (id: string, input: Record<string, unknown>): ToolCall => ({
         id,
         name: "Workflow",
-        input: { name: "harmless-probe" },
+        input,
       });
+      const named = { name: "harmless-probe" };
+      const inline = { script: "export const meta = { name: 'inline-probe' }" };
 
-      for (const mode of ["default", "plan"] as const) {
-        const decision = resolvePermission(
-          resolutionDeps(cwd, mode),
-          workflow(`t-workflow-${mode}`),
-        );
-        const pending = await waitForPermission();
-        expect(pending.toolName).toBe("Workflow");
-        expect(pending.rule).toBe("Workflow(harmless-probe)");
-        answerPermission(pending.id, PermissionResults.deny());
-        expect(await decision).toBe("deny");
+      for (const mode of ["default", "accept-edits"] as const) {
+        expect(
+          await resolvePermission(resolutionDeps(cwd, mode), workflow(`t-workflow-${mode}`, named)),
+        ).toBe("allow");
+        expect(
+          await resolvePermission(
+            resolutionDeps(cwd, mode),
+            workflow(`t-workflow-inline-${mode}`, inline),
+          ),
+        ).toBe("allow");
       }
-
-      const backgroundDecision = await withSpawnedAgentScope(
-        { ...forkContext(new Set<string>()), shouldAvoidPermissionPrompts: true },
-        () => resolvePermission(resolutionDeps(cwd, "default"), workflow("t-workflow-background")),
-      );
-      expect(backgroundDecision).toEqual({
-        kind: "deny",
-        message: expect.stringContaining("Permission to use Workflow has been denied."),
-      });
-      expect(peekPermission()).toBeNull();
-
       expect(
-        await resolvePermission(resolutionDeps(cwd, "yolo"), workflow("t-workflow-yolo")),
+        await withSpawnedAgentScope({ ...forkContext(), shouldAvoidPermissionPrompts: true }, () =>
+          resolvePermission(
+            resolutionDeps(cwd, "default"),
+            workflow("t-workflow-background", named),
+          ),
+        ),
       ).toBe("allow");
+      expect(peekPermission()).toBeNull();
 
       await saveRules(
         [{ source: "localSettings", ruleBehavior: "deny", ruleValue: { toolName: "Workflow" } }],
         cwd,
       );
       expect(
-        await resolvePermission(resolutionDeps(cwd, "yolo"), workflow("t-workflow-whole-deny")),
+        await resolvePermission(
+          resolutionDeps(cwd, "yolo"),
+          workflow("t-workflow-whole-deny", named),
+        ),
       ).toBe("deny");
 
       await saveRules(
@@ -1305,7 +1867,10 @@ describe("mode and rule resolution", () => {
         cwd,
       );
       expect(
-        await resolvePermission(resolutionDeps(cwd, "yolo"), workflow("t-workflow-name-deny")),
+        await resolvePermission(
+          resolutionDeps(cwd, "default"),
+          workflow("t-workflow-name-deny", named),
+        ),
       ).toBe("deny");
 
       await saveRules(
@@ -1318,25 +1883,14 @@ describe("mode and rule resolution", () => {
         ],
         cwd,
       );
-      const asked = resolvePermission(resolutionDeps(cwd, "yolo"), workflow("t-workflow-rule-ask"));
-      const askedPending = await waitForPermission();
-      answerPermission(askedPending.id, PermissionResults.deny());
-      expect(await asked).toBe("deny");
-
-      await saveRules(
-        [
-          {
-            source: "localSettings",
-            ruleBehavior: "allow",
-            ruleValue: { toolName: "Workflow", ruleContent: "harmless-probe" },
-          },
-        ],
-        cwd,
+      const asked = resolvePermission(
+        resolutionDeps(cwd, "yolo"),
+        workflow("t-workflow-rule-ask", named),
       );
-      expect(
-        await resolvePermission(resolutionDeps(cwd, "default"), workflow("t-workflow-rule-allow")),
-      ).toBe("allow");
-      expect(peekPermission()).toBeNull();
+      const askedPending = await waitForPermission();
+      expect(askedPending.rule).toBe("Workflow(harmless-probe)");
+      answerPermission(askedPending.id, PermissionResults.deny());
+      expect(await asked).toEqual(USER_REJECTED);
     });
   });
 
@@ -1350,7 +1904,7 @@ describe("mode and rule resolution", () => {
       const defaultDecision = resolvePermission(resolutionDeps(cwd, "default"), editCall);
       const pending = await waitForPermission();
       answerPermission(pending.id, { decision: "deny", updates: [] });
-      expect(await defaultDecision).toBe("deny");
+      expect(await defaultDecision).toEqual(USER_REJECTED);
 
       expect(await resolvePermission(resolutionDeps(cwd, "accept-edits"), editCall)).toBe("allow");
       expect(
@@ -1372,7 +1926,7 @@ describe("mode and rule resolution", () => {
       });
       const pending = await waitForPermission();
       answerPermission(pending.id, { decision: "deny", updates: [] });
-      expect(await decision).toBe("deny");
+      expect(await decision).toEqual(USER_REJECTED);
     });
   });
 
@@ -1397,7 +1951,7 @@ describe("mode and rule resolution", () => {
       });
       const pending = await waitForPermission();
       answerPermission(pending.id, { decision: "deny", updates: [] });
-      expect(await outside).toBe("deny");
+      expect(await outside).toEqual(USER_REJECTED);
     });
   });
 
@@ -1445,7 +1999,7 @@ describe("mode and rule resolution", () => {
         decision: "deny",
         updates: [{ type: "removeDirectories", dirs: [addedDir] }],
       });
-      expect(await updatePrompt).toBe("deny");
+      expect(await updatePrompt).toEqual(USER_REJECTED);
       expect(additional.has(addedDir)).toBe(true);
 
       expect(
@@ -1505,14 +2059,14 @@ describe("mode and rule resolution", () => {
             {
               source: "session",
               ruleBehavior: "allow",
-              ruleValue: { toolName: "Read", ruleContent: permissionDirectoryGlob(outsideDir) },
+              ruleValue: { toolName: "Read", ruleContent: directoryPathPattern(outsideDir) },
             },
             {
               source: "session",
               ruleBehavior: "allow",
               ruleValue: {
                 toolName: "Read",
-                ruleContent: permissionDirectoryGlob(resolvedOutsideDir),
+                ruleContent: directoryPathPattern(resolvedOutsideDir),
               },
             },
           ]),
@@ -1527,11 +2081,11 @@ describe("mode and rule resolution", () => {
         new Set([
           serializeRuleValue({
             toolName: "Read",
-            ruleContent: permissionDirectoryGlob(outsideDir),
+            ruleContent: directoryPathPattern(outsideDir),
           }),
           serializeRuleValue({
             toolName: "Read",
-            ruleContent: permissionDirectoryGlob(resolvedOutsideDir),
+            ruleContent: directoryPathPattern(resolvedOutsideDir),
           }),
         ]),
       );
@@ -1550,12 +2104,18 @@ describe("mode and rule resolution", () => {
           {
             source: "localSettings",
             ruleBehavior: "ask",
-            ruleValue: { toolName: "Read", ruleContent: join(outsideDir, "asked.txt") },
+            ruleValue: {
+              toolName: "Read",
+              ruleContent: filePathPattern(join(outsideDir, "asked.txt")),
+            },
           },
           {
             source: "localSettings",
             ruleBehavior: "deny",
-            ruleValue: { toolName: "Read", ruleContent: join(outsideDir, "denied.txt") },
+            ruleValue: {
+              toolName: "Read",
+              ruleContent: filePathPattern(join(outsideDir, "denied.txt")),
+            },
           },
         ],
         cwd,
@@ -1567,7 +2127,7 @@ describe("mode and rule resolution", () => {
       });
       const askedPending = await waitForPermission();
       answerPermission(askedPending.id, PermissionResults.deny());
-      expect(await asked).toBe("deny");
+      expect(await asked).toEqual(USER_REJECTED);
       expect(
         await resolvePermission(deps, {
           id: "t-outside-read-explicit-deny",
@@ -1603,7 +2163,10 @@ describe("mode and rule resolution", () => {
         },
       );
       const pending = await waitForPermission();
-      answerPermission(pending.id, PermissionResults.setMode("accept-edits"));
+      answerPermission(pending.id, {
+        decision: "allow",
+        updates: [{ type: "setMode", mode: "accept-edits" }],
+      });
       expect(await decision).toBe("allow");
       expect(dispatched).toEqual([]);
     });
@@ -1630,7 +2193,7 @@ describe("mode and rule resolution", () => {
         decision: "deny",
         updates: [{ type: "setMode", mode: "yolo" }],
       });
-      expect(await first).toBe("deny");
+      expect(await first).toEqual(USER_REJECTED);
       expect(dispatched).toEqual([]);
 
       const second = resolvePermission(deps, {
@@ -1640,7 +2203,7 @@ describe("mode and rule resolution", () => {
       });
       const secondPending = await waitForPermission();
       answerPermission(secondPending.id, { decision: "deny", updates: [] });
-      expect(await second).toBe("deny");
+      expect(await second).toEqual(USER_REJECTED);
 
       expect(
         await resolvePermission(deps, { id: "t-deny-after-denial", name: "DenyTool", input: {} }),
@@ -1753,7 +2316,7 @@ describe("mode and rule resolution", () => {
       });
       const afterPending = await waitForPermission();
       answerPermission(afterPending.id, PermissionResults.deny());
-      expect(await after).toBe("deny");
+      expect(await after).toEqual(USER_REJECTED);
     });
   });
 
@@ -1806,7 +2369,7 @@ describe("mode and rule resolution", () => {
       });
       const afterPending = await waitForPermission();
       answerPermission(afterPending.id, { decision: "deny", updates: [] });
-      expect(await after).toBe("deny");
+      expect(await after).toEqual(USER_REJECTED);
     });
   });
 
@@ -1841,7 +2404,7 @@ describe("mode and rule resolution", () => {
       });
       const pending = await waitForPermission();
       answerPermission(pending.id, { decision: "deny", updates: [] });
-      expect(await askDecision).toBe("deny");
+      expect(await askDecision).toEqual(USER_REJECTED);
     });
   });
 
@@ -1855,7 +2418,7 @@ describe("mode and rule resolution", () => {
       });
       const pending = await waitForPermission();
       answerPermission(pending.id, { decision: "deny", updates: [] });
-      expect(await decision).toBe("deny");
+      expect(await decision).toEqual(USER_REJECTED);
     });
   });
 
@@ -1883,7 +2446,7 @@ describe("mode and rule resolution", () => {
       });
       const pending = await waitForPermission();
       answerPermission(pending.id, { decision: "deny", updates: [] });
-      expect(await decision).toBe("deny");
+      expect(await decision).toEqual(USER_REJECTED);
     });
   });
 
@@ -1904,7 +2467,7 @@ describe("mode and rule resolution", () => {
         });
         const pending = await waitForPermission();
         answerPermission(pending.id, { decision: "deny", updates: [] });
-        expect(await decision).toBe("deny");
+        expect(await decision).toEqual(USER_REJECTED);
       }
     });
   });
@@ -1924,7 +2487,7 @@ describe("mode and rule resolution", () => {
       });
       const pending = await waitForPermission();
       answerPermission(pending.id, { decision: "deny", updates: [] });
-      expect(await asked).toBe("deny");
+      expect(await asked).toEqual(USER_REJECTED);
 
       await saveRules(
         [
@@ -1959,7 +2522,7 @@ describe("mode and rule resolution", () => {
       });
       const pending = await waitForPermission();
       answerPermission(pending.id, { decision: "deny", updates: [] });
-      expect(await decision).toBe("deny");
+      expect(await decision).toEqual(USER_REJECTED);
     });
   });
 
@@ -1994,7 +2557,7 @@ describe("mode and rule resolution", () => {
       const pending = await waitForPermission();
       expect(pending.toolName).toBe("Bash");
       answerPermission(pending.id, { decision: "deny", updates: [] });
-      expect(await decision).toBe("deny");
+      expect(await decision).toEqual(USER_REJECTED);
     });
   });
 
@@ -2046,7 +2609,7 @@ describe("mode and rule resolution", () => {
 
   it("prompts before auto-allowing read-only Bash paths outside working directories", async () => {
     await withPermissionFixture(async (cwd) => {
-      for (const mode of ["default", "accept-edits", "plan"] as const) {
+      for (const mode of ["default", "accept-edits"] as const) {
         for (const command of ["cat /etc/passwd", "ls /etc"]) {
           const decision = resolvePermission(resolutionDeps(cwd, mode), {
             id: `t-outside-read-${mode}-${command}`,
@@ -2056,7 +2619,7 @@ describe("mode and rule resolution", () => {
           const pending = await waitForPermission();
           expect(pending.toolName).toBe("Bash");
           answerPermission(pending.id, { decision: "deny", updates: [] });
-          expect(await decision).toBe("deny");
+          expect(await decision).toEqual(USER_REJECTED);
         }
       }
     });
@@ -2100,7 +2663,7 @@ describe("mode and rule resolution", () => {
       });
       const pending = await waitForPermission();
       answerPermission(pending.id, { decision: "deny", updates: [] });
-      expect(await asked).toBe("deny");
+      expect(await asked).toEqual(USER_REJECTED);
     });
   });
 
@@ -2169,7 +2732,7 @@ describe("mode and rule resolution", () => {
           {
             source: "localSettings",
             ruleBehavior: "deny",
-            ruleValue: { toolName: "Edit", ruleContent: targetFile },
+            ruleValue: { toolName: "Edit", ruleContent: filePathPattern(targetFile) },
           },
         ],
         cwd,
@@ -2184,12 +2747,12 @@ describe("mode and rule resolution", () => {
           {
             source: "localSettings",
             ruleBehavior: "ask",
-            ruleValue: { toolName: "Edit", ruleContent: linkedFile },
+            ruleValue: { toolName: "Edit", ruleContent: filePathPattern(linkedFile) },
           },
           {
             source: "localSettings",
             ruleBehavior: "deny",
-            ruleValue: { toolName: "Edit", ruleContent: targetFile },
+            ruleValue: { toolName: "Edit", ruleContent: filePathPattern(targetFile) },
           },
         ],
         cwd,
@@ -2207,7 +2770,7 @@ describe("mode and rule resolution", () => {
           {
             source: "localSettings",
             ruleBehavior: "ask",
-            ruleValue: { toolName: "Edit", ruleContent: targetFile },
+            ruleValue: { toolName: "Edit", ruleContent: filePathPattern(targetFile) },
           },
         ],
         cwd,
@@ -2218,7 +2781,7 @@ describe("mode and rule resolution", () => {
       });
       const pending = await waitForPermission();
       answerPermission(pending.id, { decision: "deny", updates: [] });
-      expect(await askDecision).toBe("deny");
+      expect(await askDecision).toEqual(USER_REJECTED);
     });
   });
 
@@ -2237,7 +2800,7 @@ describe("mode and rule resolution", () => {
       });
       const writePending = await waitForPermission();
       answerPermission(writePending.id, { decision: "deny", updates: [] });
-      expect(await writeDecision).toBe("deny");
+      expect(await writeDecision).toEqual(USER_REJECTED);
 
       const bashDecision = resolvePermission(deps, {
         id: "t-symlink-sensitive-bash",
@@ -2246,7 +2809,7 @@ describe("mode and rule resolution", () => {
       });
       const bashPending = await waitForPermission();
       answerPermission(bashPending.id, { decision: "deny", updates: [] });
-      expect(await bashDecision).toBe("deny");
+      expect(await bashDecision).toEqual(USER_REJECTED);
     });
   });
 
@@ -2265,7 +2828,7 @@ describe("mode and rule resolution", () => {
       });
       const pending = await waitForPermission();
       answerPermission(pending.id, { decision: "deny", updates: [] });
-      expect(await decision).toBe("deny");
+      expect(await decision).toEqual(USER_REJECTED);
     });
   });
 
@@ -2349,7 +2912,7 @@ describe("mode and rule resolution", () => {
       });
       const pending = await waitForPermission();
       answerPermission(pending.id, { decision: "deny", updates: [] });
-      expect(await decision).toBe("deny");
+      expect(await decision).toEqual(USER_REJECTED);
     });
   });
 
@@ -2387,7 +2950,7 @@ describe("mode and rule resolution", () => {
       });
       const pending = await waitForPermission();
       answerPermission(pending.id, { decision: "deny", updates: [] });
-      expect(await asked).toBe("deny");
+      expect(await asked).toEqual(USER_REJECTED);
 
       // Quoted, braced, rmdir, and compound variants of the same pattern
       // must also stay bypass-immune (answered "allow" here just to prove
@@ -2480,7 +3043,7 @@ describe("mode and rule resolution", () => {
         const pending = await waitForPermission();
         expect(pending.toolName).toBe("Bash");
         answerPermission(pending.id, { decision: "deny", updates: [] });
-        expect(await asked).toBe("deny");
+        expect(await asked).toEqual(USER_REJECTED);
       }
 
       // Same scenario reproduces in default mode when a benign Bash(rm *)
@@ -2503,7 +3066,7 @@ describe("mode and rule resolution", () => {
       });
       const pendingWithAllowRule = await waitForPermission();
       answerPermission(pendingWithAllowRule.id, { decision: "deny", updates: [] });
-      expect(await askedWithAllowRule).toBe("deny");
+      expect(await askedWithAllowRule).toEqual(USER_REJECTED);
 
       // An explicit deny rule on the same command still wins outright, with
       // no prompt at all — this fix must not weaken existing deny precedence.
@@ -2593,7 +3156,7 @@ describe("permission feedback delivery", () => {
     }
   });
 
-  it("carries rejection feedback on the denial the model sees", async () => {
+  it("carries rejection directions on the denial the model sees, without ending the turn", async () => {
     const injected: string[] = [];
     const decisionPromise = resolvePermission(feedbackDeps(injected), {
       id: "t-deny",
@@ -2605,13 +3168,12 @@ describe("permission feedback delivery", () => {
       answerPermission(pending.id, {
         decision: "deny",
         updates: [],
-        feedback: "use the staging config instead",
+        feedback: "<directions>",
       });
       const decision = await decisionPromise;
       expect(decision).toEqual({
         kind: "deny",
-        message:
-          "permission denied\nThe user rejected this tool call with feedback: use the staging config instead",
+        message: `${USER_REJECTED_WITH_FEEDBACK_PREFIX}<directions>`,
       });
       expect(injected).toEqual([]);
     } finally {
@@ -2619,7 +3181,7 @@ describe("permission feedback delivery", () => {
     }
   });
 
-  it("keeps a feedback-free denial on the plain deny path", async () => {
+  it("stops the turn when the user rejects without directions", async () => {
     const injected: string[] = [];
     const decisionPromise = resolvePermission(feedbackDeps(injected), {
       id: "t-deny-plain",
@@ -2629,355 +3191,37 @@ describe("permission feedback delivery", () => {
     const pending = await waitForPending();
     try {
       answerPermission(pending.id, { decision: "deny", updates: [] });
-      expect(await decisionPromise).toBe("deny");
+      expect(await decisionPromise).toEqual({
+        kind: "deny",
+        message: USER_REJECTED_TOOL_RESULT,
+        stopsTurn: true,
+      });
       expect(injected).toEqual([]);
     } finally {
       clearPermissionQueue();
     }
   });
-});
 
-describe("EnterPlanMode permission", () => {
-  function enterPlanDeps(mode: string): PermissionResolutionDeps {
-    return {
-      injections: { push: () => {}, drain: () => [], peek: () => [] },
-      sessionAllowedToolPatterns: new Set<string>(),
-      agentDeps: {
-        broker: { read: () => ({ permissionMode: mode }) },
-        session: { id: "enter-plan-test-session", cwd: "/nonexistent-enter-plan-test" },
-        config: {},
-      },
-    } as unknown as PermissionResolutionDeps;
-  }
-
-  for (const mode of ["default", "accept-edits", "plan", "yolo"]) {
-    it(`auto-allows silently in ${mode} mode`, async () => {
-      const decision = await resolvePermission(enterPlanDeps(mode), {
-        id: `t-enter-${mode}`,
-        name: "EnterPlanMode",
-        input: {},
-      });
-
-      expect(decision).toBe("allow");
-      expect(peekPermission()).toBeNull();
-    });
-  }
-});
-
-describe("plan-mode permission semantics", () => {
-  it("silently allows Write to the active session plan file", async () => {
-    await withPermissionFixture(async (cwd) => {
-      const sessionId = "plan-write-permission-session";
-      const deps = resolutionDeps(cwd, "plan");
-      deps.agentDeps.session.id = sessionId;
-
-      expect(
-        await resolvePermission(deps, {
-          id: "t-write-plan",
-          name: "Write",
-          input: { file_path: activePlanFilePath(sessionId), content: "# Plan" },
-        }),
-      ).toBe("allow");
-      expect(peekPermission()).toBeNull();
-    });
-  });
-
-  it("allows a test command covered by an explicit Bash rule", async () => {
-    await withPermissionFixture(async (cwd) => {
-      await saveRules([allowRule("npm test:*")], cwd);
-
-      expect(
-        await resolvePermission(resolutionDeps(cwd, "plan"), {
-          id: "t-plan-test-command",
-          name: "Bash",
-          input: { command: "npm test:unit" },
-        }),
-      ).toBe("allow");
-      expect(peekPermission()).toBeNull();
-    });
-  });
-
-  it("routes Write outside the plan file through normal permission rules", async () => {
-    await withPermissionFixture(async (cwd) => {
-      const decisionPromise = resolvePermission(resolutionDeps(cwd, "plan"), {
-        id: "t-write-elsewhere",
-        name: "Write",
-        input: { file_path: join(cwd, "not-the-active-plan.md"), content: "ask first" },
-      });
-      const pending = await waitForPermission();
-      expect(pending.toolName).toBe("Write");
-      answerPermission(pending.id, { decision: "deny", updates: [] });
-      expect(await decisionPromise).toBe("deny");
-    });
-  });
-
-  // Plan mode auto-allows read-only commands: inspection must flow without a
-  // prompt so the model can research while mutations stay gated.
-  it("auto-allows in-workspace read-only Bash commands without prompting", async () => {
-    await withPermissionFixture(async (cwd) => {
-      mkdirSync(join(cwd, "sub"));
-      for (const command of ["ls", "ls sub", `ls ${bashPath(join(cwd, "sub"))}`, "ls sub/*"]) {
-        expect(
-          await resolvePermission(resolutionDeps(cwd, "plan"), {
-            id: `t-plan-readonly-${command}`,
-            name: "Bash",
-            input: { command },
-          }),
-        ).toBe("allow");
-      }
-      expect(peekPermission()).toBeNull();
-    });
-  });
-
-  // Subagents inherit the parent's live permission mode unless their
-  // definition pins one: the same read-only auto-allow applies inside a
-  // spawned-agent scope, so a delegated agent's `ls` never prompts in plan
-  // mode.
-  it("auto-allows a subagent's in-workspace read-only Bash command under live plan mode", async () => {
-    await withPermissionFixture(async (cwd) => {
-      mkdirSync(join(cwd, "sub"));
-      for (const command of ["ls sub", "ls sub/*"]) {
-        const decision = await withSpawnedAgentScope(forkContext(new Set<string>()), () =>
-          resolvePermission(resolutionDeps(cwd, "plan"), {
-            id: `t-plan-subagent-readonly-${command}`,
-            name: "Bash",
-            input: { command },
-          }),
-        );
-        expect(decision).toBe("allow");
-      }
-      expect(peekPermission()).toBeNull();
-    });
-  });
-
-  it("keeps the plan-mode write gate inside a subagent scope under live plan mode", async () => {
-    await withPermissionFixture(async (cwd) => {
-      const decisionPromise = withSpawnedAgentScope(forkContext(new Set<string>()), () =>
-        resolvePermission(resolutionDeps(cwd, "plan"), {
-          id: "t-plan-subagent-write",
-          name: "Write",
-          input: { file_path: join(cwd, "impl.ts"), content: "not yet" },
-        }),
+  it("lets an agent whose call the user rejected look for another way", async () => {
+    for (const [feedback, message] of [
+      [undefined, AGENT_TOOL_REJECTED_RESULT],
+      ["<directions>", `${AGENT_TOOL_REJECTED_WITH_FEEDBACK_PREFIX}<directions>`],
+    ] as const) {
+      const decisionPromise = withSpawnedAgentScope(forkContext(), () =>
+        resolvePermission(feedbackDeps([]), { id: "t-agent-deny", name: "ProbeTool", input: {} }),
       );
-      const pending = await waitForPermission();
-      expect(pending.toolName).toBe("Write");
-      answerPermission(pending.id, { decision: "deny", updates: [] });
-      expect(await decisionPromise).toBe("deny");
-    });
-  });
-
-  // Workspace containment is mode-independent: plan mode's read-only
-  // auto-allow never extends to paths outside the working directories —
-  // including a glob whose static prefix leaves the workspace.
-  it("still prompts for a read-only Bash command targeting a path outside the workspace", async () => {
-    await withPermissionFixture(async (cwd) => {
-      const outsideDir = join(cwd, "..", "outside-plan-read");
-      mkdirSync(outsideDir);
-      for (const command of [
-        `ls ${bashPath(outsideDir)}`,
-        `ls ${bashPath(outsideDir)}/*`,
-        "ls ../*",
-      ]) {
-        const decisionPromise = resolvePermission(resolutionDeps(cwd, "plan"), {
-          id: `t-plan-outside-${command}`,
-          name: "Bash",
-          input: { command },
+      const pending = await waitForPending();
+      try {
+        answerPermission(pending.id, {
+          decision: "deny",
+          updates: [],
+          ...(feedback ? { feedback } : {}),
         });
-        const pending = await waitForPermission();
-        expect(pending.toolName).toBe("Bash");
-        answerPermission(pending.id, { decision: "deny", updates: [] });
-        expect(await decisionPromise).toBe("deny");
+        expect(await decisionPromise).toEqual({ kind: "deny", message });
+      } finally {
+        clearPermissionQueue();
       }
-    });
-  });
-});
-
-// MCP-PLAN-001: plan mode must stay bypass-immune to an already-granted
-// always-allow rule for write-shaped calls (Write/Edit/NotebookEdit, a Bash
-// write command, or a non-read-only MCP tool). Only yolo — a distinct,
-// mutually exclusive mode — ever lets such a call through.
-describe("MCP-PLAN-001: plan mode blocks already-allowed writes", () => {
-  it("still asks for a Write with a matching allow rule while in plan mode", async () => {
-    await withPermissionFixture(async (cwd) => {
-      const filePath = join(cwd, "notes.md");
-      await saveRules(
-        [
-          {
-            source: "localSettings",
-            ruleBehavior: "allow",
-            ruleValue: { toolName: "Write", ruleContent: filePath },
-          },
-        ],
-        cwd,
-      );
-
-      // Sanity: the same rule silently allows outside plan mode.
-      expect(
-        await resolvePermission(resolutionDeps(cwd, "default"), {
-          id: "t-write-allow-rule-default",
-          name: "Write",
-          input: { file_path: filePath, content: "v1" },
-        }),
-      ).toBe("allow");
-
-      const decisionPromise = resolvePermission(resolutionDeps(cwd, "plan"), {
-        id: "t-write-allow-rule-plan",
-        name: "Write",
-        input: { file_path: filePath, content: "v2" },
-      });
-      const pending = await waitForPermission();
-      expect(pending.toolName).toBe("Write");
-      answerPermission(pending.id, { decision: "deny", updates: [] });
-      expect(await decisionPromise).toBe("deny");
-    });
-  });
-
-  it("still asks for an already-allowed Bash write command while in plan mode", async () => {
-    await withPermissionFixture(async (cwd) => {
-      await saveRules([allowRule("mkdir test:*")], cwd);
-
-      // Sanity: the same rule silently allows outside plan mode.
-      expect(
-        await resolvePermission(resolutionDeps(cwd, "default"), {
-          id: "t-bash-write-allow-rule-default",
-          name: "Bash",
-          input: { command: "mkdir test:unit" },
-        }),
-      ).toBe("allow");
-
-      const decisionPromise = resolvePermission(resolutionDeps(cwd, "plan"), {
-        id: "t-bash-write-allow-rule-plan",
-        name: "Bash",
-        input: { command: "mkdir test:unit" },
-      });
-      const pending = await waitForPermission();
-      expect(pending.toolName).toBe("Bash");
-      answerPermission(pending.id, { decision: "deny", updates: [] });
-      expect(await decisionPromise).toBe("deny");
-    });
-  });
-
-  it("does not gate a non-write Bash allow rule in plan mode (e.g. running tests)", async () => {
-    // Regression guard for the narrow scope of the fix: an explicit allow
-    // rule for a command that isn't a recognized filesystem write (mkdir/
-    // touch/rm/rmdir/mv/cp/sed) must keep auto-allowing in plan mode exactly
-    // as before.
-    await withPermissionFixture(async (cwd) => {
-      await saveRules([allowRule("npm test:*")], cwd);
-      expect(
-        await resolvePermission(resolutionDeps(cwd, "plan"), {
-          id: "t-plan-non-write-bash-rule",
-          name: "Bash",
-          input: { command: "npm test:unit" },
-        }),
-      ).toBe("allow");
-      expect(peekPermission()).toBeNull();
-    });
-  });
-
-  it("still asks for an already-allowed non-read-only MCP tool while in plan mode", async () => {
-    await withPermissionFixture(async (cwd) => {
-      const toolName = "mcp__filesystem__write_file";
-      await saveRules(
-        [{ source: "localSettings", ruleBehavior: "allow", ruleValue: { toolName } }],
-        cwd,
-      );
-
-      // Sanity: the same rule silently allows outside plan mode.
-      expect(
-        await resolvePermission(resolutionDeps(cwd, "default"), {
-          id: "t-mcp-write-allow-rule-default",
-          name: toolName,
-          input: { path: "a.txt", content: "x" },
-        }),
-      ).toBe("allow");
-
-      const decisionPromise = resolvePermission(resolutionDeps(cwd, "plan"), {
-        id: "t-mcp-write-allow-rule-plan",
-        name: toolName,
-        input: { path: "a.txt", content: "x" },
-      });
-      const pending = await waitForPermission();
-      expect(pending.toolName).toBe(toolName);
-      answerPermission(pending.id, { decision: "deny", updates: [] });
-      expect(await decisionPromise).toBe("deny");
-    });
-  });
-
-  it("keeps an explicit deny rule ahead of the plan-mode ask for a write tool", async () => {
-    // Precedence guard: the new plan-mode gate must not weaken (or hide
-    // behind) an existing explicit deny rule — deny still wins outright.
-    await withPermissionFixture(async (cwd) => {
-      const toolName = "mcp__filesystem__write_file";
-      await saveRules(
-        [{ source: "localSettings", ruleBehavior: "deny", ruleValue: { toolName } }],
-        cwd,
-      );
-      expect(
-        await resolvePermission(resolutionDeps(cwd, "plan"), {
-          id: "t-mcp-write-deny-rule-plan",
-          name: toolName,
-          input: { path: "a.txt", content: "x" },
-        }),
-      ).toBe("deny");
-      expect(peekPermission()).toBeNull();
-    });
-  });
-
-  it("does not gate a read-only MCP tool's allow rule in plan mode", async () => {
-    // Read-only MCP tools (readOnlyHint === true, surfaced on the registered
-    // ToolHandler as isConcurrencySafe) are never plan-mode-gated.
-    const toolName = "mcp__inspector__read_file";
-    toolRegistry.register({
-      schema: { name: toolName, description: "test", inputSchema: { type: "object" } },
-      isConcurrencySafe: true,
-      run: async (call) => ({ tool_use_id: call.id, content: "unused" }),
-    });
-    try {
-      await withPermissionFixture(async (cwd) => {
-        await saveRules(
-          [{ source: "localSettings", ruleBehavior: "allow", ruleValue: { toolName } }],
-          cwd,
-        );
-        expect(
-          await resolvePermission(resolutionDeps(cwd, "plan"), {
-            id: "t-mcp-read-only-allow-rule-plan",
-            name: toolName,
-            input: {},
-          }),
-        ).toBe("allow");
-        expect(peekPermission()).toBeNull();
-      });
-    } finally {
-      toolRegistry.unregister(toolName);
     }
-  });
-
-  it("still lets yolo mode bypass a write allow rule despite the plan-mode gate", async () => {
-    // yolo is a distinct, mutually exclusive mode from plan (see
-    // currentPermissionMode) — it must remain the one mode that bypasses
-    // this gate entirely.
-    await withPermissionFixture(async (cwd) => {
-      const filePath = join(cwd, "yolo-notes.md");
-      await saveRules(
-        [
-          {
-            source: "localSettings",
-            ruleBehavior: "allow",
-            ruleValue: { toolName: "Write", ruleContent: filePath },
-          },
-        ],
-        cwd,
-      );
-      expect(
-        await resolvePermission(resolutionDeps(cwd, "yolo"), {
-          id: "t-write-allow-rule-yolo",
-          name: "Write",
-          input: { file_path: filePath, content: "v1" },
-        }),
-      ).toBe("allow");
-      expect(peekPermission()).toBeNull();
-    });
   });
 });
 

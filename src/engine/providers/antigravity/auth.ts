@@ -1,9 +1,12 @@
 import type { FinalizeLoginResult, ValidationHandler } from "@/engine/contract/login.ts";
 import type { AuthStrategy } from "@/engine/contract/types.ts";
+import { parseWireError } from "@/engine/providers/_shared/error-wire.ts";
 import { buildOauthAuthStrategy } from "@/engine/providers/_shared/oauth/auth-strategy.ts";
 import { type PkceFlowHandle, runPkceFlow } from "@/engine/providers/_shared/oauth/handle.ts";
 import { backendHost, userAgent } from "@/engine/providers/antigravity/fingerprint.ts";
+import { callCodeAssist, replyJson } from "@/engine/providers/antigravity/rpc.ts";
 import { openBrowser } from "@/kernel/std/browser.ts";
+import { AccountVerificationError } from "@/kernel/std/types/error-meta.ts";
 import { type GoogleOauthTokens, loadFor, saveFor } from "@/kernel/storage/credentials.ts";
 
 const REFRESH_SAFETY_MARGIN_MS = 60_000;
@@ -38,6 +41,8 @@ export const LOAD_CODE_ASSIST_PATH = "/v1internal:loadCodeAssist";
 const ONBOARD_USER_PATH = "/v1internal:onboardUser";
 const ANTIGRAVITY_IDE_TYPE = "ANTIGRAVITY";
 const VALIDATION_REQUIRED_CODE = "VALIDATION_REQUIRED";
+const FREE_TIER_ID = "free-tier";
+const VERIFY_ACCOUNT_MESSAGE = "Verify your account to continue.";
 const ONBOARD_POLL_ATTEMPTS = 20;
 const ONBOARD_POLL_INTERVAL_MS = 2000;
 export const CODE_ASSIST_METADATA = { ideType: ANTIGRAVITY_IDE_TYPE };
@@ -231,6 +236,8 @@ export async function authorizationHeader(): Promise<string> {
 
 interface CodeAssistTier {
   id?: string;
+  /** An ineligible tier names itself by `tierId`; an allowed one by `id`. */
+  tierId?: string;
   isDefault?: boolean;
   userDefinedCloudaicompanionProject?: boolean;
   reasonCode?: string;
@@ -273,16 +280,32 @@ export function codeAssistHeaders(accessToken: string): Record<string, string> {
   };
 }
 
-async function loadCodeAssist(accessToken: string): Promise<LoadCodeAssistResponse | null> {
+/** The account must be verified before the backend serves it: why, and the page that does it. */
+interface AccountVerification {
+  url: string;
+  message: string;
+}
+
+type CodeAssistLoad =
+  | { kind: "loaded"; response: LoadCodeAssistResponse }
+  | { kind: "verify"; verification: AccountVerification };
+
+async function loadCodeAssist(accessToken: string): Promise<CodeAssistLoad | null> {
   try {
-    const resp = await fetch(`${backendHost()}${LOAD_CODE_ASSIST_PATH}`, {
-      method: "POST",
-      headers: codeAssistHeaders(accessToken),
-      body: JSON.stringify({ metadata: CODE_ASSIST_METADATA }),
+    const resp = await callCodeAssist({
+      url: `${backendHost()}${LOAD_CODE_ASSIST_PATH}`,
+      accessToken,
+      body: { metadata: CODE_ASSIST_METADATA },
     });
-    if (!resp.ok) return null;
-    const json = (await resp.json()) as LoadCodeAssistResponse;
-    return json;
+    if (!resp.ok) {
+      const parsed = parseWireError(resp.text);
+      if (!parsed.verificationUrl) return null;
+      const message = parsed.message || VERIFY_ACCOUNT_MESSAGE;
+      return { kind: "verify", verification: { url: parsed.verificationUrl, message } };
+    }
+    const response = replyJson(resp) as LoadCodeAssistResponse | null;
+    if (!response) return null;
+    return { kind: "loaded", response };
   } catch {
     return null;
   }
@@ -293,16 +316,41 @@ function defaultOnboardTier(tiers: CodeAssistTier[] | undefined): CodeAssistTier
   return tiers.find((tier) => tier.isDefault === true) ?? tiers[0] ?? null;
 }
 
-function validationTier(
-  tiers: CodeAssistTier[] | undefined,
-): { url: string; message: string } | null {
-  if (!tiers) return null;
-  for (const tier of tiers) {
-    if (tier.reasonCode !== VALIDATION_REQUIRED_CODE) continue;
-    if (!tier.validationUrl) continue;
-    return { url: tier.validationUrl, message: tier.reasonMessage ?? "account needs verification" };
+/**
+ * The verification an account needs before it is served: a tier flagged as needing it,
+ * or a free tier the account may not use while no free tier is on offer. The latter
+ * may carry no page to verify at, only the reason.
+ */
+function accountVerification(response: LoadCodeAssistResponse): AccountVerification | null {
+  const ineligible = response.ineligibleTiers ?? [];
+  const flagged = ineligible.find(
+    (tier) => tier.reasonCode === VALIDATION_REQUIRED_CODE && tier.validationUrl,
+  );
+  if (flagged?.validationUrl) {
+    return { url: flagged.validationUrl, message: flagged.reasonMessage ?? VERIFY_ACCOUNT_MESSAGE };
   }
-  return null;
+  if (response.allowedTiers?.some((tier) => tier.id === FREE_TIER_ID)) return null;
+  const freeTier = ineligible.find((tier) => tier.tierId === FREE_TIER_ID);
+  if (!freeTier?.reasonMessage) return null;
+  return { url: freeTier.validationUrl ?? "", message: freeTier.reasonMessage };
+}
+
+/** Hands a verification to the user and returns once they report it done. */
+async function verifyAccount(
+  verification: AccountVerification,
+  onValidation: ValidationHandler | undefined,
+): Promise<void> {
+  if (!verification.url || !onValidation) {
+    throw new AccountVerificationError({
+      provider: "antigravity",
+      reason: verification.message,
+      verificationUrl: verification.url,
+    });
+  }
+  const intent = await onValidation(verification.url, verification.message);
+  if (intent === "verify") return;
+  if (intent === "change_auth") throw new ChangeAuthRequestedError();
+  throw new ValidationCancelledError();
 }
 
 async function pollOnboardOperation(
@@ -312,9 +360,9 @@ async function pollOnboardOperation(
   const url = `${backendHost()}/${operationName}`;
   for (let attempt = 0; attempt < ONBOARD_POLL_ATTEMPTS; attempt++) {
     try {
-      const resp = await fetch(url, { method: "GET", headers: codeAssistHeaders(accessToken) });
-      const op = (await resp.json()) as OnboardOperation;
-      if (op.done === true) {
+      const resp = await callCodeAssist({ url, accessToken });
+      const op = replyJson(resp) as OnboardOperation | null;
+      if (op?.done === true) {
         const id = op.response?.cloudaicompanionProject?.id?.trim();
         return id && id.length > 0 ? id : null;
       }
@@ -326,14 +374,14 @@ async function pollOnboardOperation(
 
 async function onboardUser(accessToken: string, tierId: string): Promise<string | null> {
   try {
-    const resp = await fetch(`${backendHost()}${ONBOARD_USER_PATH}`, {
-      method: "POST",
-      headers: codeAssistHeaders(accessToken),
-      body: JSON.stringify({ tierId, metadata: CODE_ASSIST_METADATA }),
+    const resp = await callCodeAssist({
+      url: `${backendHost()}${ONBOARD_USER_PATH}`,
+      accessToken,
+      body: { tierId, metadata: CODE_ASSIST_METADATA },
     });
     if (!resp.ok) return null;
-    const op = (await resp.json()) as OnboardOperation;
-    if (!op.name) return null;
+    const op = replyJson(resp) as OnboardOperation | null;
+    if (!op?.name) return null;
     return await pollOnboardOperation(accessToken, op.name);
   } catch {
     return null;
@@ -345,19 +393,19 @@ async function discoverProjectId(
   onValidation?: ValidationHandler,
 ): Promise<string | null> {
   while (true) {
-    const response = await loadCodeAssist(accessToken);
-    if (!response) return null;
+    const load = await loadCodeAssist(accessToken);
+    if (!load) return null;
+    if (load.kind === "verify") {
+      await verifyAccount(load.verification, onValidation);
+      continue;
+    }
+    const { response } = load;
     const existing = response.cloudaicompanionProject?.trim();
     if (existing && existing.length > 0) return existing;
-    const validation = validationTier(response.ineligibleTiers);
-    if (validation) {
-      if (!onValidation) {
-        throw new Error(`antigravity: ${validation.message}\nVerify at: ${validation.url}`);
-      }
-      const intent = await onValidation(validation.url, validation.message);
-      if (intent === "verify") continue;
-      if (intent === "change_auth") throw new ChangeAuthRequestedError();
-      throw new ValidationCancelledError();
+    const verification = accountVerification(response);
+    if (verification) {
+      await verifyAccount(verification, onValidation);
+      continue;
     }
     const tier = defaultOnboardTier(response.allowedTiers);
     if (!tier?.id) return null;

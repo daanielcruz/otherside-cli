@@ -165,6 +165,14 @@ export async function addMarketplace(
   return { ok: true, name: manifest.name, count: manifest.plugins.length, bumped };
 }
 
+/**
+ * Re-fetch a marketplace from the source it was added with. Adding a source that is
+ * already on the roster replaces its checkout, so the add path is the one refresh.
+ */
+export function refreshMarketplace(known: KnownMarketplace): Promise<AddMarketplaceResult> {
+  return addMarketplace(known.source);
+}
+
 export function getCachedManifest(name: string): MarketplaceManifest | null {
   const known = getKnownMarketplace(name);
   if (!known) return null;

@@ -50,10 +50,16 @@ export interface DiscoverSurfaceState {
   readonly marked: ReadonlySet<string>;
 }
 
+/** A line a drill-down reports beside its action menu. */
+export interface PanelNotice {
+  readonly text: string;
+  readonly isError: boolean;
+}
+
 export interface InstalledSurfaceState {
   readonly detail: InstalledDetail;
   readonly actionIndex: number;
-  readonly notice: string | null;
+  readonly notice: PanelNotice | null;
   readonly skillStateIndex: number;
   readonly mcpMenuIndex: number;
   readonly mcpToolsIndex: number;
@@ -66,7 +72,7 @@ export interface MarketplacesSurfaceState {
   readonly detailsSelection: number;
   readonly addInput: string | null;
   /** Outcome of the last detail-screen update, reported above the action menu. */
-  readonly detailNotice: { text: string; isError: boolean } | null;
+  readonly detailNotice: PanelNotice | null;
 }
 
 /** What the async side feeds the surfaces: busy line, loads, and cache ticks. */

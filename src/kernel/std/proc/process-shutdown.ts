@@ -1,3 +1,5 @@
+import { interruptIsClaimed } from "@/kernel/std/proc/interrupt-claim.ts";
+
 type ShutdownHandler = () => void | Promise<void>;
 
 const shutdownHandlers = new Set<ShutdownHandler>();
@@ -8,8 +10,8 @@ export function installProcessSignalHandlers(handler?: ShutdownHandler): void {
   if (handler) shutdownHandlers.add(handler);
   if (signalHandlersInstalled) return;
   signalHandlersInstalled = true;
-  process.once("SIGINT", () => {
-    void shutdown();
+  process.on("SIGINT", () => {
+    if (!interruptIsClaimed()) void shutdown();
   });
   process.once("SIGTERM", () => {
     void shutdown();

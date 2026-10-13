@@ -37,7 +37,7 @@ function mixedSessionRecords(): SessionRecord[] {
       thinking: "grok reasoning",
       thinkingSignature: GROK_SIGNATURE,
       provider: "xai",
-      model: "grok-4.5",
+      model: "grok-4.6",
       ...(accountFingerprint("xai") ? { producedAccount: accountFingerprint("xai") } : {}),
     }),
     assistantRecord({
@@ -45,7 +45,7 @@ function mixedSessionRecords(): SessionRecord[] {
       thinking: "anthropic reasoning",
       thinkingSignature: ANTHROPIC_SIGNATURE,
       provider: "anthropic",
-      model: "claude-fable-5",
+      model: "claude-fable-5-1",
       ...(accountFingerprint("anthropic")
         ? { producedAccount: accountFingerprint("anthropic") }
         : {}),
@@ -61,7 +61,7 @@ function mixedSessionRecords(): SessionRecord[] {
 function anthropicCtx(): RequestContext {
   return {
     provider: "anthropic",
-    model: "claude-fable-5",
+    model: "claude-fable-5-1",
     effort: "high",
     permissionMode: "default",
     sessionId: "mixed",
@@ -72,7 +72,7 @@ function anthropicCtx(): RequestContext {
 function grokCtx(): RequestContext {
   return {
     provider: "xai",
-    model: "grok-4.5",
+    model: "grok-4.6",
     effort: "high",
     permissionMode: "default",
     sessionId: "mixed",
@@ -120,7 +120,7 @@ describe("per-block provenance on a fused message", () => {
         // Message-level stamp describes the LAST producer only — exactly what
         // a rebuild merge leaves behind.
         producedBy: "anthropic",
-        producedModel: "claude-fable-5",
+        producedModel: "claude-fable-5-1",
         ...(accountFingerprint("anthropic")
           ? { producedAccount: accountFingerprint("anthropic") }
           : {}),
@@ -130,7 +130,7 @@ describe("per-block provenance on a fused message", () => {
             text: "grok reasoning",
             signature: GROK_SIGNATURE,
             producedBy: "xai",
-            producedModel: "grok-4.5",
+            producedModel: "grok-4.6",
             ...(accountFingerprint("xai") ? { producedAccount: accountFingerprint("xai") } : {}),
           },
           {
@@ -138,7 +138,7 @@ describe("per-block provenance on a fused message", () => {
             text: "anthropic reasoning",
             signature: ANTHROPIC_SIGNATURE,
             producedBy: "anthropic",
-            producedModel: "claude-fable-5",
+            producedModel: "claude-fable-5-1",
             ...(accountFingerprint("anthropic")
               ? { producedAccount: accountFingerprint("anthropic") }
               : {}),
@@ -173,7 +173,7 @@ describe("per-block provenance on a fused message", () => {
       {
         role: "assistant",
         producedBy: "anthropic",
-        producedModel: "claude-fable-5",
+        producedModel: "claude-fable-5-1",
         ...(accountFingerprint("anthropic")
           ? { producedAccount: accountFingerprint("anthropic") }
           : {}),

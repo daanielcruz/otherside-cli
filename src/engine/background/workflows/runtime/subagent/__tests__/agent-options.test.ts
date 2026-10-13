@@ -46,7 +46,7 @@ import { setWorkflowBackoffSleepForTests } from "../fork-retries.ts";
 registerAllProviders();
 
 function ctx(orchestrationMode: OrchestrationMode = "feudalism"): RequestContext {
-  return ctxWith("codex", "gpt-5.5", orchestrationMode);
+  return ctxWith("codex", "gpt-5.6-terra", orchestrationMode);
 }
 
 function ctxWith(
@@ -343,7 +343,7 @@ describe("workflow agent runtime overrides", () => {
 
     try {
       const bridge = await createWorkflowSubagentBridge({
-        ctx: ctxWith("codex", "gpt-5.5", "feudalism", repoDir),
+        ctx: ctxWith("codex", "gpt-5.6-terra", "feudalism", repoDir),
         parentToolCallId: "parent-tool-call",
         runId: "wf-test-run",
         signal,
@@ -864,7 +864,7 @@ describe("resolveWorkflowAgentModelContext gating", () => {
     const resolved = resolveWorkflowAgentModelContext(ctx("feudalism"), {});
     expect(resolved.ok).toBe(true);
     if (!resolved.ok) throw new Error(resolved.error);
-    expect(resolved.ctx.model).toBe("gpt-5.5");
+    expect(resolved.ctx.model).toBe("gpt-5.6-terra");
   });
 });
 
@@ -875,7 +875,7 @@ describe("orchestration mode runtime boundary", () => {
     expect(resolved.ok).toBe(true);
     if (!resolved.ok) throw new Error(resolved.error);
     expect(resolved.ctx.provider).toBe("codex");
-    expect(resolved.ctx.model).toBe("gpt-5.5");
+    expect(resolved.ctx.model).toBe("gpt-5.6-terra");
   });
 
   it("uses tier inference only in feudalism mode", () => {
@@ -963,18 +963,18 @@ describe("resolveWorkflowAgentModelContextDetailed", () => {
 
   it("inherits the caller's own model only when it already belongs to the tier and is usable", () => {
     setCredentialsLoaderForTests(codexAndAnthropicCreds);
-    const context = ctxWith("anthropic", "claude-opus-5");
+    const context = ctxWith("anthropic", "claude-opus-5-5");
     const resolved = resolveWorkflowAgentModelContextDetailed(context, {
       tier: "emperor",
     });
     expect(resolved.ok).toBe(true);
     expect(resolved.ctx.provider).toBe("anthropic");
-    expect(resolved.ctx.model).toBe("claude-opus-5");
+    expect(resolved.ctx.model).toBe("claude-opus-5-5");
     expect(resolved.degradedReasons).toBeUndefined();
   });
 
   it("falls back when the caller's in-tier provider is not usable", () => {
-    const context = ctxWith("anthropic", "claude-opus-5");
+    const context = ctxWith("anthropic", "claude-opus-5-5");
     const resolved = resolveWorkflowAgentModelContextDetailed(context, {
       tier: "emperor",
     });
@@ -989,7 +989,7 @@ describe("resolveWorkflowAgentModelContextDetailed", () => {
     // resolve through the roster (here only codex is credentialed and usage-observed)
     // instead of self.
     observeProvider("codex");
-    const context = ctxWith("anthropic", "claude-opus-5");
+    const context = ctxWith("anthropic", "claude-opus-5-5");
     const resolved = resolveWorkflowAgentModelContextDetailed(context, {
       tier: "emperor",
       diversify: true,
@@ -1005,7 +1005,7 @@ describe("resolveWorkflowAgentModelContextDetailed", () => {
       trackingStatus: "untracked",
       balanceStatus: "exhausted",
     });
-    const context = ctxWith("anthropic", "claude-haiku-4-5");
+    const context = ctxWith("anthropic", "claude-haiku-5-5");
     const resolved = resolveWorkflowAgentModelContextDetailed(context, {
       tier: "samurai",
     });
@@ -1031,7 +1031,7 @@ describe("resolveWorkflowAgentModelContextDetailed", () => {
     // A runtime cooldown drops the active provider from the spread, same as any
     // other member — there is no active-provider exemption.
     markProviderCooldown("anthropic", Date.now() + 60_000, "rate_limited");
-    const context = ctxWith("anthropic", "claude-haiku-4-5");
+    const context = ctxWith("anthropic", "claude-haiku-5-5");
     const first = resolveWorkflowAgentModelContextDetailed(
       context,
       { tier: "samurai", diversify: true },
@@ -1058,7 +1058,7 @@ describe("resolveWorkflowAgentModelContextDetailed", () => {
       trackingStatus: "untracked",
       balanceStatus: "exhausted",
     });
-    const context = ctxWith("anthropic", "claude-haiku-4-5");
+    const context = ctxWith("anthropic", "claude-haiku-5-5");
     const first = resolveWorkflowAgentModelContextDetailed(
       context,
       { tier: "samurai", diversify: true },
@@ -1076,7 +1076,7 @@ describe("resolveWorkflowAgentModelContextDetailed", () => {
   it("pins the run's tier pool so it does not flap when a higher-rank provider recovers", () => {
     setCredentialsLoaderForTests(scoutCreds);
     // Caller is on an emperor model, so samurai is a cross-tier resolve (top-N pool).
-    const context = ctxWith("anthropic", "claude-opus-5");
+    const context = ctxWith("anthropic", "claude-opus-5-5");
     // Samurai ranks 1 and 2 (antigravity) are cooled down, so the run's first
     // agent resolves to rank 3.
     markProviderCooldown("antigravity", Date.now() + 60_000, "rate_limited");
@@ -1103,7 +1103,7 @@ describe("resolveWorkflowAgentModelContextDetailed", () => {
 
   it("drops a newly blocked member from a pinned diversify pool", () => {
     setCredentialsLoaderForTests(scoutCreds);
-    const context = ctxWith("anthropic", "claude-opus-5");
+    const context = ctxWith("anthropic", "claude-opus-5-5");
     const first = resolveWorkflowAgentModelContextDetailed(
       context,
       { tier: "samurai", diversify: true },
@@ -1130,7 +1130,7 @@ describe("resolveWorkflowAgentModelContextDetailed", () => {
       trackingStatus: "untracked",
       balanceStatus: "exhausted",
     });
-    const resolved = resolveToolTierOverride(ctxWith("anthropic", "claude-haiku-4-5"), "samurai");
+    const resolved = resolveToolTierOverride(ctxWith("anthropic", "claude-haiku-5-5"), "samurai");
     expect(resolved.ok).toBe(true);
     if (!resolved.ok) throw new Error(resolved.error);
     expect(resolved.ctx.provider).toBe("antigravity");
@@ -1168,7 +1168,7 @@ describe("resolveWorkflowAgentModelContextDetailed", () => {
 
   it("Workflow: skips antigravity when exhausted and selects it when available", () => {
     setCredentialsLoaderForTests(scoutCreds);
-    const context = ctxWith("anthropic", "claude-opus-5");
+    const context = ctxWith("anthropic", "claude-opus-5-5");
 
     setRoutingUsage("antigravity", {
       trackingStatus: "tracked",
@@ -1197,7 +1197,7 @@ describe("resolveWorkflowAgentModelContextDetailed", () => {
 
   it("direct Agent: skips antigravity when exhausted and selects it when available", () => {
     setCredentialsLoaderForTests(scoutCreds);
-    const context = ctxWith("anthropic", "claude-opus-5");
+    const context = ctxWith("anthropic", "claude-opus-5-5");
 
     setRoutingUsage("antigravity", {
       trackingStatus: "tracked",
@@ -1245,7 +1245,7 @@ describe("resolveWorkflowAgentModelContextDetailed", () => {
     observeProvider("antigravity");
     observeProvider("codex");
 
-    const context = ctxWith("codex", "gpt-5.5");
+    const context = ctxWith("codex", "gpt-5.6-terra");
 
     const wfRes = resolveWorkflowAgentModelContextDetailed(context, {
       tier: "emperor",
@@ -1284,7 +1284,7 @@ describe("resolveWorkflowAgentModelContextDetailed", () => {
     observeProvider("antigravity");
     observeProvider("codex");
 
-    const context = ctxWith("codex", "gpt-5.5");
+    const context = ctxWith("codex", "gpt-5.6-terra");
     const wfRes = resolveWorkflowAgentModelContextDetailed(context, {
       tier: "emperor",
       diversify: true,
@@ -1328,7 +1328,7 @@ describe("resolveWorkflowAgentModelContextDetailed", () => {
     markProviderCooldown("antigravity", Date.now() + 60_000, "rate_limited");
 
     const context = {
-      ...ctxWith("anthropic", "claude-opus-5"),
+      ...ctxWith("anthropic", "claude-opus-5-5"),
       quotaFallbackEnabled: false,
     };
 

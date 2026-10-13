@@ -110,14 +110,8 @@ export function routeForkEventToTask(taskId: string, event: ForkEvent): void {
     return;
   }
   if (event.kind === "fork_usage") {
-    const usage = {
-      inputTokens: event.inputTokens,
-      outputTokens: event.outputTokens,
-      cacheCreationInputTokens: event.cacheCreationInputTokens,
-      cacheReadInputTokens: event.cacheReadInputTokens,
-    };
-    if (event.isSnapshot) setUsageSnapshot(taskId, usage);
-    else addUsage(taskId, usage);
+    if (event.isSnapshot) setUsageSnapshot(taskId, event);
+    else addUsage(taskId, event);
     return;
   }
   if (event.kind === "fork_text_delta") {

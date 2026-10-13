@@ -12,12 +12,18 @@ export interface TaskRecord {
   id: string;
   subject: string;
   description: string;
-  activeForm?: string;
   status: TaskStatus;
   owner?: string | undefined;
   blocks: string[];
   blockedBy: string[];
   metadata: Record<string, unknown>;
+  /**
+   * The board's user turn when this task last changed. Records written before turns
+   * were counted carry none and read as turn 0.
+   */
+  changedAtTurn?: number;
+  /** The board's user turn when the model was last reminded that this open task sat idle. */
+  remindedAtTurn?: number;
 }
 
 export type TaskClaimResult =
@@ -36,6 +42,9 @@ export const MAIN_TASK_SCOPE: Scope = MAIN_SCOPE;
 
 const stores = new Map<Scope, Map<string, TaskRecord>>();
 const counters = new Map<Scope, number>();
+const boardTurns = new Map<Scope, number>();
+const HIGHWATERMARK_FILE = ".highwatermark";
+const BOARD_TURN_FILE = ".turn";
 const subscribersByScope = new Map<Scope, Set<() => void>>();
 // Hydration is keyed by the RESOLVED task-list id, not the scope: the MAIN
 // scope follows the active session, so a session rebind (/clear, resume) must
@@ -79,8 +88,14 @@ function writeHighwatermark(scope: Scope, id: string): void {
   const taskListId = resolveTaskListId(scope);
   const dir = taskDirectoryFor(taskListId);
   mkdirSecure(dir, 0o755);
-  const hwmPath = join(dir, ".highwatermark");
+  const hwmPath = join(dir, HIGHWATERMARK_FILE);
   atomicWriteFileSync(hwmPath, id);
+}
+
+function writeBoardTurn(scope: Scope, turn: number): void {
+  const dir = taskDirectoryFor(resolveTaskListId(scope));
+  mkdirSecure(dir, 0o755);
+  atomicWriteFileSync(join(dir, BOARD_TURN_FILE), turn.toString());
 }
 
 function deleteTaskFile(scope: Scope, id: string): void {
@@ -102,6 +117,7 @@ function ensureHydrated(scope: Scope): void {
   // directory; the store is write-through, so dropping it loses nothing.
   storeFor(scope).clear();
   counters.delete(scope);
+  boardTurns.delete(scope);
 
   const dir = taskDirectoryFor(taskListId);
 
@@ -111,7 +127,14 @@ function ensureHydrated(scope: Scope): void {
       const store = storeFor(scope);
       let maxId = 0;
       for (const file of files) {
-        if (file === ".highwatermark") {
+        if (file === BOARD_TURN_FILE) {
+          try {
+            const turn = parseInt(readFileSync(join(dir, file), "utf8").trim(), 10);
+            if (!Number.isNaN(turn) && turn > 0) boardTurns.set(scope, turn);
+          } catch {}
+          continue;
+        }
+        if (file === HIGHWATERMARK_FILE) {
           try {
             const hwmContent = readFileSync(join(dir, file), "utf8").trim();
             const hwm = parseInt(hwmContent, 10);
@@ -198,7 +221,6 @@ export function create(
   input: {
     subject: string;
     description: string;
-    activeForm?: string;
     metadata?: Record<string, unknown>;
   },
   scope: Scope = MAIN_SCOPE,
@@ -209,11 +231,11 @@ export function create(
     id,
     subject: input.subject,
     description: input.description,
-    ...(input.activeForm !== undefined ? { activeForm: input.activeForm } : {}),
     status: "pending",
     blocks: [],
     blockedBy: [],
     metadata: input.metadata !== undefined ? { ...input.metadata } : {},
+    changedAtTurn: currentBoardTurn(scope),
   };
   storeFor(scope).set(id, rec);
   writeTaskFile(scope, rec);
@@ -241,14 +263,15 @@ export function block(fromId: string, toId: string, scope: Scope = MAIN_SCOPE): 
   if (!from || !to) return false;
 
   let changed = false;
+  const changedAtTurn = currentBoardTurn(scope);
   if (!from.blocks.includes(toId)) {
-    const updatedFrom = { ...from, blocks: [...from.blocks, toId] };
+    const updatedFrom = { ...from, blocks: [...from.blocks, toId], changedAtTurn };
     store.set(fromId, updatedFrom);
     writeTaskFile(scope, updatedFrom);
     changed = true;
   }
   if (!to.blockedBy.includes(fromId)) {
-    const updatedTo = { ...to, blockedBy: [...to.blockedBy, fromId] };
+    const updatedTo = { ...to, blockedBy: [...to.blockedBy, fromId], changedAtTurn };
     store.set(toId, updatedTo);
     writeTaskFile(scope, updatedTo);
     changed = true;
@@ -258,23 +281,31 @@ export function block(fromId: string, toId: string, scope: Scope = MAIN_SCOPE): 
 }
 
 export function remove(id: string, scope: Scope = MAIN_SCOPE): boolean {
+  return removeMany([id], scope).length > 0;
+}
+
+/**
+ * Delete records and every reference other records hold to them, with one change
+ * notice for the whole batch. Answers the ids that existed.
+ */
+export function removeMany(ids: readonly string[], scope: Scope = MAIN_SCOPE): string[] {
   ensureHydrated(scope);
   const store = storeFor(scope);
-  const ok = store.delete(id);
-  if (ok) {
-    deleteTaskFile(scope, id);
-    for (const [otherId, task] of store) {
-      const blocks = task.blocks.filter((ref) => ref !== id);
-      const blockedBy = task.blockedBy.filter((ref) => ref !== id);
-      if (blocks.length !== task.blocks.length || blockedBy.length !== task.blockedBy.length) {
-        const updatedTask = { ...task, blocks, blockedBy };
-        store.set(otherId, updatedTask);
-        writeTaskFile(scope, updatedTask);
-      }
+  const removed = ids.filter((id) => store.delete(id));
+  if (removed.length === 0) return removed;
+  const gone = new Set(removed);
+  for (const id of removed) deleteTaskFile(scope, id);
+  for (const [otherId, task] of store) {
+    const blocks = task.blocks.filter((ref) => !gone.has(ref));
+    const blockedBy = task.blockedBy.filter((ref) => !gone.has(ref));
+    if (blocks.length !== task.blocks.length || blockedBy.length !== task.blockedBy.length) {
+      const updatedTask = { ...task, blocks, blockedBy };
+      store.set(otherId, updatedTask);
+      writeTaskFile(scope, updatedTask);
     }
-    notify(scope);
   }
-  return ok;
+  notify(scope);
+  return removed;
 }
 
 export function updateTaskRecord(
@@ -286,7 +317,7 @@ export function updateTaskRecord(
   const store = storeFor(scope);
   const cur = store.get(id);
   if (!cur) return undefined;
-  const next: TaskRecord = { ...cur, ...patch };
+  const next: TaskRecord = { ...cur, ...patch, changedAtTurn: currentBoardTurn(scope) };
   store.set(id, next);
   writeTaskFile(scope, next);
   notify(scope);
@@ -320,7 +351,8 @@ export function applyTaskUpdate(
   const recordFor = (recordId: string): TaskRecord | undefined =>
     next.get(recordId) ?? store.get(recordId);
 
-  if (Object.keys(patch).length > 0) next.set(id, { ...target, ...patch });
+  const changedAtTurn = currentBoardTurn(scope);
+  if (Object.keys(patch).length > 0) next.set(id, { ...target, ...patch, changedAtTurn });
 
   let blocksChanged = false;
   let blockedByChanged = false;
@@ -329,13 +361,13 @@ export function applyTaskUpdate(
     const to = recordFor(toId);
     if (!from || !to || fromId === toId) continue;
     if (!from.blocks.includes(toId)) {
-      next.set(fromId, { ...from, blocks: [...from.blocks, toId] });
+      next.set(fromId, { ...from, blocks: [...from.blocks, toId], changedAtTurn });
       fromId === id ? (blocksChanged = true) : (blockedByChanged = true);
     }
     // Re-read: the same record can be both ends across two edges of one update.
     const linked = recordFor(toId);
     if (linked && !linked.blockedBy.includes(fromId)) {
-      next.set(toId, { ...linked, blockedBy: [...linked.blockedBy, fromId] });
+      next.set(toId, { ...linked, blockedBy: [...linked.blockedBy, fromId], changedAtTurn });
       fromId === id ? (blocksChanged = true) : (blockedByChanged = true);
     }
   }
@@ -427,6 +459,45 @@ export function claimTask(id: string, owner: string, scope: Scope = MAIN_SCOPE):
   }
 }
 
+function currentBoardTurn(scope: Scope): number {
+  return boardTurns.get(scope) ?? 0;
+}
+
+/** The board's count of user turns so far; a board from before turns were counted reads 0. */
+export function boardTurn(scope: Scope = MAIN_SCOPE): number {
+  ensureHydrated(scope);
+  return currentBoardTurn(scope);
+}
+
+/** Count one more user turn on the board, durably, and answer the new count. */
+export function advanceBoardTurn(scope: Scope = MAIN_SCOPE): number {
+  ensureHydrated(scope);
+  const turn = currentBoardTurn(scope) + 1;
+  writeBoardTurn(scope, turn);
+  boardTurns.set(scope, turn);
+  return turn;
+}
+
+/**
+ * Record that the model was reminded about these tasks. A reminder is not a change to
+ * the task, so the turn it last changed stays as it was and nothing visible repaints.
+ */
+export function markReminded(
+  ids: readonly string[],
+  turn: number,
+  scope: Scope = MAIN_SCOPE,
+): void {
+  ensureHydrated(scope);
+  const store = storeFor(scope);
+  for (const id of ids) {
+    const cur = store.get(id);
+    if (!cur) continue;
+    const next = { ...cur, remindedAtTurn: turn };
+    writeTaskFile(scope, next);
+    store.set(id, next);
+  }
+}
+
 const TASK_STATUS_SET: ReadonlySet<string> = new Set(TASK_STATUSES);
 
 export function isValidStatus(s: string): s is TaskStatus {
@@ -465,21 +536,23 @@ export function clear(scope: Scope = MAIN_SCOPE): void {
     deleteTaskFile(scope, id);
   }
 
-  try {
-    const hwmPath = join(dir, ".highwatermark");
-    if (existsSync(hwmPath)) {
-      unlinkSync(hwmPath);
-    }
-  } catch {}
+  for (const file of [HIGHWATERMARK_FILE, BOARD_TURN_FILE]) {
+    try {
+      const path = join(dir, file);
+      if (existsSync(path)) unlinkSync(path);
+    } catch {}
+  }
 
   store.clear();
   counters.set(scope, 1);
+  boardTurns.delete(scope);
   notify(scope);
 }
 
 export function clearAll(): void {
   stores.clear();
   counters.clear();
+  boardTurns.clear();
   subscribersByScope.clear();
   hydratedListIdByScope.clear();
   resetTaskOutputPathPins();
@@ -495,6 +568,7 @@ export function clearAll(): void {
 export function clearScope(scope: Scope): void {
   stores.delete(scope);
   counters.delete(scope);
+  boardTurns.delete(scope);
   hydratedListIdByScope.delete(scope);
 }
 

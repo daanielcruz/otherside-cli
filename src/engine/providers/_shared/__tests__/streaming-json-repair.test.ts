@@ -1,5 +1,8 @@
 import { describe, expect, it } from "bun:test";
-import { parseJsonWithPartialRecovery } from "@/engine/providers/_shared/streaming-json-repair.ts";
+import {
+  parseJsonWithPartialRecovery,
+  toolArgumentsObject,
+} from "@/engine/providers/_shared/streaming-json-repair.ts";
 
 describe("parseJsonWithPartialRecovery", () => {
   it("preserves complete JSON values", () => {
@@ -47,5 +50,19 @@ describe("parseJsonWithPartialRecovery", () => {
 
   it("returns false for irrecoverable non-JSON", () => {
     expect(parseJsonWithPartialRecovery("not json")).toEqual({ ok: false });
+  });
+});
+
+describe("toolArgumentsObject", () => {
+  it("keeps complete and recoverable argument objects", () => {
+    expect(toolArgumentsObject('{"file_path":"/a.ts"}')).toEqual({ file_path: "/a.ts" });
+    expect(toolArgumentsObject('{"command":"printf ok"')).toEqual({ command: "printf ok" });
+  });
+
+  it("has no object for empty, malformed, or non-object arguments", () => {
+    expect(toolArgumentsObject("")).toBeNull();
+    expect(toolArgumentsObject('{"file_path": "/a.ts", "offset": 122, 135}')).toBeNull();
+    expect(toolArgumentsObject("[1,2]")).toBeNull();
+    expect(toolArgumentsObject('"text"')).toBeNull();
   });
 });

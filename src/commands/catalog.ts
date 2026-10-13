@@ -57,12 +57,6 @@ export function buildCatalog(): SlashCommand[] {
       argumentHint: "<path>",
     },
     {
-      name: "plan",
-      kind: "toggle",
-      description: "enable plan mode",
-      argumentHint: "[<description>]",
-    },
-    {
       name: "fast",
       kind: "toggle",
       description: "toggle fast mode - codex only",

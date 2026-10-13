@@ -304,7 +304,6 @@ function dispatchToolWithAgentContext(
     depth: agentSpawnDepth(ctx),
     parentSessionId: ctx.parentThreadId ?? ctx.sessionId,
     agentType: "subagent" as const,
-    sessionAllowedToolPatterns: new Set<string>(),
   };
   return withSpawnedAgentScope(context, () => dispatchTool(call, ctx, deps));
 }

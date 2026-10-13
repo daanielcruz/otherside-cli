@@ -15,6 +15,7 @@ export interface AnthropicTokens {
   accountEmail?: string;
   accountUuid?: string;
   organizationName?: string;
+  organizationUuid?: string;
 }
 
 export interface CodexTokens {
@@ -86,6 +87,7 @@ export interface OpenAiCustomCreds {
 
 export interface CredentialsBundle {
   anthropic?: AnthropicTokens;
+  "anthropic-cloud"?: AnthropicTokens;
   codex?: CodexTokens;
   xai?: XaiTokens;
   deepseek?: DeepseekCreds;
@@ -96,16 +98,7 @@ export interface CredentialsBundle {
   openai?: OpenAiCustomCreds;
 }
 
-export type ProviderSlug =
-  | "anthropic"
-  | "antigravity"
-  | "codex"
-  | "deepseek"
-  | "glm"
-  | "xai"
-  | "kimi"
-  | "minimax"
-  | "openai";
+export type ProviderSlug = keyof CredentialsBundle;
 
 type CredentialSlug = ProviderSlug;
 type AnyCredential = CredentialsBundle[keyof CredentialsBundle];
@@ -180,6 +173,7 @@ export const PROVIDER_FALLBACK_ORDER: ProviderSlug[] = [
   "minimax",
   "glm",
   "openai",
+  "anthropic-cloud",
 ];
 
 export function firstLoggedProvider(

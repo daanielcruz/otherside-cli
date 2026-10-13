@@ -58,11 +58,7 @@ import {
 } from "@/store/turn-tracking/index.ts";
 import { createPromoteContinuation } from "@/ui/app/dispatch/promote-continuation.ts";
 import type { DispatchLoop, DispatchLoopDeps } from "@/ui/app/dispatch/types.ts";
-import {
-  formatTurnDuration,
-  pickVerbForTurn,
-  TURN_COMPLETION_VERB,
-} from "@/ui/chrome/progress/index.ts";
+import { pickVerbForTurn, turnCompletionText } from "@/ui/chrome/progress/index.ts";
 import { expandToContentBlocks } from "@/ui/input/paste/references.ts";
 import {
   askAnswerEntry,
@@ -85,6 +81,18 @@ function applyAdditionalContext(
     },
     ...blocks,
   ];
+}
+
+/**
+ * A turn that ran to its end closes with the line naming how long it took, once it
+ * showed anything: its last words still streaming, or rows it already settled, as when
+ * a rejected call ends it.
+ */
+export function turnEndsWithCompletionLine(turn: {
+  unflushedText: string;
+  showedOutput: boolean;
+}): boolean {
+  return turn.unflushedText.trim().length > 0 || turn.showedOutput;
 }
 
 function formatTurnError(err: unknown): string {
@@ -164,7 +172,7 @@ export function createRunSubmittedTurn(
         return;
       }
       sessionTitleActions.setTitle(title);
-      void appendAiTitle(session.cwd, forSessionId, title);
+      void appendAiTitle(session.storageCwd, forSessionId, title);
     });
   };
 
@@ -422,20 +430,22 @@ export function createRunSubmittedTurn(
         );
       }
       if (
-        (acc.trim().length > 0 || accThinking.trim().length > 0) &&
+        turnEndsWithCompletionLine({
+          unflushedText: acc + accThinking,
+          showedOutput: turnHadVisibleOutputRef.current,
+        }) &&
         turnGuard.generation === generation
       ) {
         await flushAssistant();
         const startedAt = turnStartedAtRef.current;
         const elapsedMs = startedAt !== null ? Date.now() - startedAt : 0;
-        const durationText = formatTurnDuration(elapsedMs);
         const durationId = nextTranscriptId("turn_done");
         setTranscript((t) => [
           ...t,
           {
             id: durationId,
             kind: "compact_done",
-            text: `${TURN_COMPLETION_VERB} for ${durationText}`,
+            text: turnCompletionText(elapsedMs, new Date()),
             muted: true,
           },
         ]);

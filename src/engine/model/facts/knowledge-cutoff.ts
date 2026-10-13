@@ -3,19 +3,23 @@
 // resolves it and injects the string into the harness LayerContext; harness
 // imports nothing from here. The future model registry absorbs this table.
 
+// Prefix match, first hit wins: a point release is listed before its family.
 const KNOWLEDGE_CUTOFFS: readonly (readonly [prefix: string, cutoff: string])[] = [
-  ["claude-fable-5-1", "January 2026"],
-  ["claude-opus-5", "January 2026"],
+  ["claude-fable-5-1", "June 2026"],
+  ["claude-fable-5", "January 2026"],
+  ["claude-opus-5-5", "June 2026"],
+  ["claude-opus-5", "May 2026"],
   ["claude-opus-4-8", "January 2026"],
   ["claude-opus-4-6", "May 2025"],
   ["claude-opus-4-5", "May 2025"],
   ["claude-opus-4-1", "January 2025"],
   ["claude-opus-4-0", "January 2025"],
+  ["claude-sonnet-5-5", "June 2026"],
   ["claude-sonnet-5", "January 2026"],
   ["claude-sonnet-4-6", "August 2025"],
   ["claude-sonnet-4-5", "January 2025"],
   ["claude-sonnet-4-0", "January 2025"],
-  ["claude-haiku-4-5", "February 2025"],
+  ["claude-haiku-5-5", "June 2026"],
   ["gpt-5.6", "December 2025"],
   ["gpt-5.5", "December 2025"],
   ["gpt-5.4", "August 2025"],

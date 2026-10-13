@@ -1,7 +1,11 @@
 import type { CompactionSummaryRef } from "@/engine/session/compact/summary-spill.ts";
 import { isTruthyCompactionSummaryRef } from "@/engine/session/compact/summary-spill.ts";
 import type { McpCallIdentity } from "@/kernel/mcp/protocol/tool-label.ts";
-import type { ContentBlock, ToolResultMeta } from "@/kernel/std/types/message.ts";
+import type {
+  ContentBlock,
+  MessageUsageSnapshot,
+  ToolResultMeta,
+} from "@/kernel/std/types/message.ts";
 import {
   isProviderId,
   type ProviderId,
@@ -74,7 +78,7 @@ export interface UserMessageRecord {
   isRemote?: boolean;
 }
 
-export interface AssistantRequestUsage {
+export interface AssistantRequestUsage extends Pick<MessageUsageSnapshot, "contextTokens"> {
   input_tokens: number;
   output_tokens: number;
   thought_tokens: number;
@@ -238,10 +242,10 @@ export interface InjectionQueuedRecord {
 }
 
 // Records that a queued user input left the queue WITHOUT being delivered to
-// the model (cancel restores queue text to the prompt; the user may edit or
-// discard it). Replay treats it like a delivery: it consumes one earlier
-// queued copy of the same text so resume/rewind never re-deliver input the
-// user took back.
+// the model: cancel restored its text to the prompt, or a rewind cut the
+// conversation it belonged to. Replay treats it like a delivery: it consumes
+// one earlier queued copy of the same text so resume/rewind never re-deliver
+// input the user took back.
 export interface InjectionDequeuedRecord {
   type: "injection_dequeued";
   ts: Timestamp;
@@ -280,6 +284,21 @@ export function goalStatusAttachment(
   };
 }
 
+// One /loop wakeup opening a turn. The record's `ts` is when the tick fired; a tick
+// that hides the quiet ticks before it carries the streak it now stands for.
+export interface LoopTickAttachment {
+  type: "loop_tick";
+  prompt: string;
+  quietStreak?: number;
+  quietSince?: Timestamp;
+}
+
+// A cron task firing a prompt into the session. The record's `ts` is when it fired.
+export interface ScheduledTaskFireAttachment {
+  type: "scheduled_task_fire";
+  prompt: string;
+}
+
 export interface ForeignAttachment {
   type: string;
   [key: string]: unknown;
@@ -289,7 +308,12 @@ export interface AttachmentRecord {
   type: "attachment";
   ts: Timestamp;
   uuid?: string;
-  attachment: GoalStatusAttachment | QueuedCommandAttachment | ForeignAttachment;
+  attachment:
+    | GoalStatusAttachment
+    | QueuedCommandAttachment
+    | LoopTickAttachment
+    | ScheduledTaskFireAttachment
+    | ForeignAttachment;
   isSidechain?: boolean;
 }
 
@@ -380,7 +404,7 @@ export interface OsCompactionSidecar {
   consecutiveFailures?: number;
 }
 
-export interface OsSidecar {
+export interface OsSidecar extends Pick<MessageUsageSnapshot, "contextTokens"> {
   /** Atomic provider+model when both are known. Prefer over independent fields. */
   route?: ProviderModelRoute;
   provider?: string;

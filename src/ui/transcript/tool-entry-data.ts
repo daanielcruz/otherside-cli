@@ -2,6 +2,7 @@ import { getWorkflowTaskByParentToolCallId } from "@/engine/background/workflows
 import { isInterruptionMessage } from "@/engine/queue/runtime/interruption-text.ts";
 import type { TranscriptEntry } from "@/engine/session/record/types.ts";
 import { get as getToolHandler } from "@/engine/tools/registry.ts";
+import { isAwaitingDecision } from "@/kernel/channels/awaiting-decision.ts";
 import { isProviderId } from "@/kernel/std/types/provider-ids.ts";
 import { agentChipFromEvent } from "@/ui/transcript/agent-chip-data.ts";
 import type { ToolEntryData } from "@/ui/transcript/string-view-tool.ts";
@@ -11,6 +12,7 @@ import {
   payloadFromMeta,
   payloadFromResult,
 } from "@/ui/transcript/tool-render/payload.ts";
+import { rejectedToolPayload } from "@/ui/transcript/tool-render/rejected.ts";
 import type { ToolPayload, ToolStatus } from "@/ui/transcript/tool-render/types.ts";
 
 export interface ToolMeta {
@@ -39,11 +41,16 @@ export function parseToolMeta(entry: TranscriptEntry): ToolMeta {
 
 export function toolRenderStatus(meta: ToolMeta, entry: TranscriptEntry): ToolStatus {
   if (meta.phase === "running") {
-    if (entry.startedAt === undefined) return "queued";
+    if (entry.startedAt === undefined || waitsOnUser(meta, entry)) return "queued";
     return "running";
   }
   if (entry.isError) return "error";
   return "ok";
+}
+
+/** A call a prompt holds has not started: it waits on the user's answer. */
+function waitsOnUser(meta: ToolMeta, entry: TranscriptEntry): boolean {
+  return meta.name !== "Agent" && !entry.liveOutput && isAwaitingDecision();
 }
 
 export interface CompleteToolPayloadInput {
@@ -56,6 +63,8 @@ export interface CompleteToolPayloadInput {
 export function completeToolPayload(input: CompleteToolPayloadInput): ToolPayload | null {
   const { meta, entry, toolText, metaPayload } = input;
   if (isInterruptionMessage(toolText)) return { kind: "interrupt" as const };
+  const rejected = rejectedToolPayload(meta.name, meta.input, toolText);
+  if (rejected) return rejected;
   if (metaPayload) return metaPayload;
   if (toolText.length === 0) return null;
   if (entry.isError) {

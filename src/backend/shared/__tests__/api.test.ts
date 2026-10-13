@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { listSessionEvents, registerEnvironment } from "@/backend/shared/api.ts";
+import { listSessionEvents, RemoteApiError, registerEnvironment } from "@/backend/shared/api.ts";
 import { saveAuth } from "@/backend/shared/auth.ts";
 
 const originalFetch = globalThis.fetch;
@@ -57,6 +57,76 @@ describe("session event pages", () => {
     expect(url.searchParams.get("limit")).toBe("100");
     expect(url.searchParams.get("after_ts")).toBe("2026-07-21T00:00:00.000Z");
     expect(url.searchParams.get("after_id")).toBe("22222222-2222-4222-8222-222222222222");
+  });
+
+  test("refreshes once and replays the page when the server rejects the token", async () => {
+    home = mkdtempSync(join(tmpdir(), "otherside-event-page-test-"));
+    process.env.OTHERSIDE_REMOTE_HOME = home;
+    signIn("account-a");
+    const bearerTokens: string[] = [];
+    let refreshes = 0;
+    globalThis.fetch = Object.assign(
+      async (input: string | URL | Request, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/v1/auth/refresh")) {
+          refreshes += 1;
+          return Response.json({
+            status: "success",
+            data: {
+              access_token: accessToken("account-a-renewed"),
+              refresh_token: "refresh-renewed",
+              expires_in: 3600,
+            },
+            request_id: "request-refresh",
+          });
+        }
+        const headers = new Headers(init?.headers);
+        bearerTokens.push(headers.get("Authorization") ?? "");
+        if (bearerTokens.length === 1) {
+          return Response.json(
+            {
+              status: "error",
+              error_code: "unauthorized",
+              message: "invalid token",
+              request_id: "request-401",
+            },
+            { status: 401 },
+          );
+        }
+        return Response.json({ status: "success", data: [], request_id: "request-2" });
+      },
+      { preconnect: originalFetch.preconnect },
+    );
+
+    await expect(listSessionEvents("11111111-1111-4111-8111-111111111111")).resolves.toEqual([]);
+
+    expect(refreshes).toBe(1);
+    expect(bearerTokens).toEqual([
+      `Bearer ${accessToken("account-a")}`,
+      `Bearer ${accessToken("account-a-renewed")}`,
+    ]);
+  });
+
+  test("names missing credentials instead of a generic rejection", async () => {
+    home = mkdtempSync(join(tmpdir(), "otherside-event-page-test-"));
+    process.env.OTHERSIDE_REMOTE_HOME = home;
+    let requests = 0;
+    globalThis.fetch = Object.assign(
+      async () => {
+        requests += 1;
+        return Response.json({ status: "success", data: [], request_id: "request-1" });
+      },
+      { preconnect: originalFetch.preconnect },
+    );
+
+    const failure = await listSessionEvents("11111111-1111-4111-8111-111111111111").catch(
+      (err: unknown) => err,
+    );
+
+    expect(failure).toBeInstanceOf(RemoteApiError);
+    expect((failure as RemoteApiError).code).toBe("unauthorized");
+    expect((failure as RemoteApiError).message).toBe("CLI is not paired — run /remote pair");
+    expect(requests).toBe(0);
   });
 });
 

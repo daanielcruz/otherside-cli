@@ -19,7 +19,6 @@ export interface BrokerState {
   effort: EffortLevel | null;
   fastMode: boolean;
   permissionMode: PermissionMode;
-  prePlanMode?: PermissionMode;
   ultracode?: boolean;
   /** Session-scoped orchestration mode; config only seeds new sessions. */
   orchestrationMode: OrchestrationMode;
@@ -44,6 +43,16 @@ export interface ScopedToolHandler {
 export interface ToolOutputArchive {
   observedCallIds: Set<string>;
   notices: Map<string, string>;
+}
+
+/** The context a round of tool calls may still fill before the conversation compacts. */
+export interface ContextRoom {
+  /** Tokens at which the conversation compacts. */
+  threshold: number;
+  /** Tokens the conversation holds now, plus what earlier reads in the round claimed. */
+  used(): number;
+  /** Records tokens a read added to the context this round. */
+  claim(tokens: number): void;
 }
 
 export interface RequestContext {
@@ -123,11 +132,14 @@ export interface RequestContext {
   agentic?: boolean;
   parentMessages?: Message[];
   isForkChild?: boolean;
+  /** The request summarizes the conversation for compaction rather than answering a turn. */
+  isCompaction?: boolean;
   forkAllowSet?: ReadonlySet<string> | null | undefined;
   forkDeferredAllow?: ReadonlySet<string> | null | undefined;
   scopedToolHandlers?: ReadonlyMap<string, ScopedToolHandler>;
   taskHooks?: { created: HookEntry[]; completed: HookEntry[] };
   toolOutputArchive?: ToolOutputArchive;
+  contextRoom?: ContextRoom;
   bgTaskId?: string | undefined;
   childTaskIdMap?: Map<string, string> | undefined;
 }

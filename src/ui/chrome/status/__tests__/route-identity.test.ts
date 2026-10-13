@@ -8,7 +8,7 @@ registerAllProviders();
 
 const MIRRORED: BrokerState = {
   provider: "codex",
-  model: "gpt-5.6-sol",
+  model: "gpt-5.6-terra",
   effort: "high",
   fastMode: false,
   permissionMode: "default",
@@ -18,13 +18,13 @@ const MIRRORED: BrokerState = {
 const LIVE: BrokerState = {
   ...MIRRORED,
   provider: "anthropic",
-  model: "claude-opus-5",
+  model: "claude-opus-5-5",
 };
 
 describe("chrome route identity", () => {
   it("answers from the live broker, not the store mirror it may be ahead of", () => {
     dispatch({ type: "engine/setSlice", key: "broker", value: MIRRORED });
-    expect(readStringViewBrokerState().model).toBe("gpt-5.6-sol");
+    expect(readStringViewBrokerState().model).toBe("gpt-5.6-terra");
 
     const live = new Broker(LIVE, {
       findModel: (route) => ({ provider: route.provider }),
@@ -34,7 +34,7 @@ describe("chrome route identity", () => {
     });
 
     expect(readStringViewBrokerState().provider).toBe("anthropic");
-    expect(readStringViewBrokerState().model).toBe("claude-opus-5");
+    expect(readStringViewBrokerState().model).toBe("claude-opus-5-5");
 
     live.dispatch({ kind: "cycle_permission_mode" });
     // Read straight after the change, before any mirror write could land.
@@ -42,6 +42,6 @@ describe("chrome route identity", () => {
     expect(readStringViewBrokerState().permissionMode).not.toBe(MIRRORED.permissionMode);
 
     live.release();
-    expect(readStringViewBrokerState().model).toBe("gpt-5.6-sol");
+    expect(readStringViewBrokerState().model).toBe("gpt-5.6-terra");
   });
 });

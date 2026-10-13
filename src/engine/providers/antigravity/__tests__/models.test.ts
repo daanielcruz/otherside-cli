@@ -13,6 +13,7 @@ describe("model catalog and request selection", () => {
   });
 
   it.each([
+    "gemini-4-argon",
     "gemini-3.6-flash",
     "gemini-3.7-flash",
     "gemini-3.8-flash",
@@ -23,6 +24,24 @@ describe("model catalog and request selection", () => {
         resolveAntigravityModel(model, effort),
       );
     }
+  });
+
+  it("maps Gemini 4 Argon efforts to thinkingLevel LOW/MEDIUM/HIGH with medium as default", () => {
+    expect(resolveAntigravityModel("gemini-4-argon")).toMatchObject({
+      wireModel: "gemini-4-argon-medium",
+      thinkingLevel: "MEDIUM",
+      modelEnum: "MODEL_PLACEHOLDER_M418",
+    });
+    expect(resolveAntigravityModel("gemini-4-argon", "low")).toMatchObject({
+      wireModel: "gemini-4-argon-low",
+      thinkingLevel: "LOW",
+      modelEnum: "MODEL_PLACEHOLDER_M419",
+    });
+    expect(resolveAntigravityModel("gemini-4-argon", "high")).toMatchObject({
+      wireModel: "gemini-4-argon-high",
+      thinkingLevel: "HIGH",
+      modelEnum: "MODEL_PLACEHOLDER_M417",
+    });
   });
 
   it.each([

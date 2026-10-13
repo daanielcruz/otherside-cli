@@ -157,3 +157,27 @@ describe("workflows list shared select keys", () => {
     panel.unmount?.();
   });
 });
+
+describe("opening one workflow directly", () => {
+  it("shows that workflow's detail instead of the list, and leaving it closes the panel", () => {
+    workflow("alpha");
+    workflow("beta");
+    let closed = false;
+    const panel = createWorkflowsPanel(
+      () => {
+        closed = true;
+      },
+      { initialDetailItemId: "beta" },
+    );
+    panel.mount?.(context);
+
+    const rows = panelRows(panel).join("\n");
+    expect(rows).toContain("beta");
+    expect(rows).not.toContain("Dynamic workflows");
+    expect(panel.fullscreen?.()).toBe(true);
+
+    panel.handleKey(key("escape"));
+    expect(closed).toBe(true);
+    panel.unmount?.();
+  });
+});

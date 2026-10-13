@@ -51,6 +51,8 @@ function state(overrides: Partial<Parameters<typeof renderWorkflowDetail>[0]["st
     cardScroll: 0,
     expandedPrompts: new Set<string>(),
     agentFilter: "all" as const,
+    phaseListStart: 0,
+    agentListStart: 0,
     ...overrides,
   };
 }
@@ -286,5 +288,80 @@ describe("the phase level's two columns", () => {
 
     expect(lines.some((row) => row.includes("┬"))).toBe(false);
     expect(lines.join("\n")).toContain("auditor-0");
+  });
+});
+
+describe("an agent list longer than its box", () => {
+  const COUNT = 40;
+  function manyAgents(): WorkflowProgressItem[] {
+    return Array.from({ length: COUNT }, (_, index) =>
+      agent({ index, label: `worker-${index}`, agentId: `agent-${index}` }),
+    );
+  }
+
+  function walk(detailLevel: "agents" | "agent", width: number, to: number) {
+    let rendered = renderWorkflowDetail({
+      item: item(manyAgents()),
+      state: state({ detailLevel }),
+      terminalRows: 24,
+      width,
+    });
+    // Step the cursor one row at a time, carrying the window the way the panel does.
+    for (let cursor = 1; cursor <= to; cursor++) {
+      rendered = renderWorkflowDetail({
+        item: item(manyAgents()),
+        state: state({
+          detailLevel,
+          agentCursor: cursor,
+          agentListStart: rendered.agentListStart,
+          phaseListStart: rendered.phaseListStart,
+        }),
+        terminalRows: 24,
+        width,
+      });
+    }
+    return { rendered, text: rendered.lines.map(stripAnsi).join("\n") };
+  }
+
+  for (const [label, detailLevel, width] of [
+    ["beside the phases", "agents", WIDTH],
+    ["beside the agent card", "agent", WIDTH],
+    ["stacked in a narrow frame", "agents", 60],
+  ] as const) {
+    it(`keeps the selected agent on screen ${label}`, () => {
+      const { rendered, text } = walk(detailLevel, width, COUNT - 1);
+
+      expect(rendered.lines).toHaveLength(24);
+      expect(text).toContain(`worker-${COUNT - 1}`);
+      expect(text).not.toContain("worker-0 ");
+      expect(text).toMatch(/↑ \d+ more above/);
+      expect(text).not.toMatch(/more below/);
+    });
+  }
+
+  it("says how many agents wait below before the cursor gets there", () => {
+    const { text } = walk("agents", WIDTH, 0);
+
+    expect(text).toContain("worker-0");
+    expect(text).toMatch(/↓ \d+ more below/);
+    expect(text).not.toContain(`worker-${COUNT - 1}`);
+  });
+
+  it("slides only when the cursor leaves the visible rows", () => {
+    const top = walk("agents", WIDTH, 3).rendered;
+    expect(top.agentListStart).toBe(0);
+
+    const scrolled = walk("agents", WIDTH, COUNT - 1).rendered;
+    const back = renderWorkflowDetail({
+      item: item(manyAgents()),
+      state: state({
+        detailLevel: "agents",
+        agentCursor: COUNT - 2,
+        agentListStart: scrolled.agentListStart,
+      }),
+      terminalRows: 24,
+      width: WIDTH,
+    });
+    expect(back.agentListStart).toBe(scrolled.agentListStart);
   });
 });

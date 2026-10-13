@@ -169,26 +169,15 @@ describe("recency across viewed boards", () => {
 });
 
 describe("the spinner verb", () => {
-  it("speaks the in-progress task's activeForm", () => {
-    const task = createTask({
-      subject: "Audit the emitter",
-      description: "",
-      activeForm: "Auditing the emitter",
-    });
-    updateTaskRecord(task.id, { status: "in_progress" });
-    startTurn();
-
-    const rows = new StringViewProgress().render(80).map(stripAnsi);
-    expect(rows[0]).toContain("Auditing the emitter");
-  });
-
-  it("falls back to the subject when the task carries no activeForm", () => {
+  it("keeps the turn's verb while a task is in progress", () => {
     const task = createTask({ subject: "Audit the emitter", description: "" });
     updateTaskRecord(task.id, { status: "in_progress" });
+    dispatch({ type: "view/setTurnVerb", verb: "Pondering" });
     startTurn();
 
     const rows = new StringViewProgress().render(80).map(stripAnsi);
-    expect(rows[0]).toContain("Audit the emitter");
+    expect(rows[0]).toContain("Pondering");
+    expect(rows[0]).not.toContain("Audit the emitter");
   });
 
   it("keeps the turn's own verb when nothing is in progress", () => {
@@ -200,17 +189,8 @@ describe("the spinner verb", () => {
     expect(rows[0]).toContain("Pondering");
   });
 
-  /**
-   * Regression: a compaction started with a task still in progress rendered that
-   * task's activeForm instead, which read as a normal request — no compact bar,
-   * no feedback that the conversation was being compacted.
-   */
-  it("lets a running compaction outrank the in-progress task's activeForm", () => {
-    const task = createTask({
-      subject: "Audit the emitter",
-      description: "",
-      activeForm: "Auditing the emitter",
-    });
+  it("shows a running compaction with its progress bar", () => {
+    const task = createTask({ subject: "Audit the emitter", description: "" });
     updateTaskRecord(task.id, { status: "in_progress" });
     dispatch({ type: "view/setTurnVerb", verb: "Compacting conversation" });
     startTurn();
@@ -218,30 +198,29 @@ describe("the spinner verb", () => {
     const rows = new StringViewProgress().render(80).map(stripAnsi);
     expect(rows[1]).toContain("Compacting conversation");
     expect(rows[2]).toMatch(/\d+%$/);
-    expect(rows.some((row) => row.includes("Auditing the emitter"))).toBe(false);
   });
 });
 
 describe("the collapsed detail row", () => {
   it("names the next pending task rather than a tip", () => {
-    createTask({ subject: "Write the test", description: "" });
+    const next = createTask({ subject: "Write the test", description: "" });
     startTurn();
 
     const rows = new StringViewProgress().render(80).map(stripAnsi);
-    expect(rows.some((row) => row.includes("Next: Write the test"))).toBe(true);
+    expect(rows.some((row) => row.includes(`Next: #${next.id} Write the test`))).toBe(true);
     expect(rows.some((row) => row.includes("Tip:"))).toBe(false);
   });
 
   it("skips a pending task whose blocker is still open", () => {
     const blocker = createTask({ subject: "Land the fix", description: "" });
     const blocked = createTask({ subject: "Ship the release", description: "" });
-    createTask({ subject: "Write the test", description: "" });
+    const next = createTask({ subject: "Write the test", description: "" });
     updateTaskRecord(blocked.id, { blockedBy: [blocker.id] });
     updateTaskRecord(blocker.id, { status: "in_progress" });
     startTurn();
 
     const rows = new StringViewProgress().render(80).map(stripAnsi);
-    expect(rows.some((row) => row.includes("Next: Write the test"))).toBe(true);
+    expect(rows.some((row) => row.includes(`Next: #${next.id} Write the test`))).toBe(true);
   });
 
   it("falls back to a tip when nothing is pending", () => {

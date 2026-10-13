@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import {
   COMPACT_MAX_RATIO,
   compactProgressRatio,
@@ -6,6 +6,7 @@ import {
   SHIMMER_TICK_MS,
   shimmerColumnForTime,
   spinnerFrame,
+  turnCompletionText,
 } from "@/ui/chrome/progress/index.ts";
 
 describe("progress animation cadence", () => {
@@ -26,5 +27,20 @@ describe("progress animation cadence", () => {
   it("caps compact progress under 100%", () => {
     expect(compactProgressRatio(0)).toBe(0);
     expect(compactProgressRatio(Number.MAX_SAFE_INTEGER)).toBe(COMPACT_MAX_RATIO);
+  });
+});
+
+describe("turn completion line", () => {
+  const priorLocale = process.env.LC_ALL;
+  beforeAll(() => {
+    process.env.LC_ALL = "en_US.UTF-8";
+  });
+  afterAll(() => {
+    if (priorLocale === undefined) delete process.env.LC_ALL;
+    else process.env.LC_ALL = priorLocale;
+  });
+
+  it("appends the done time to the duration", () => {
+    expect(turnCompletionText(5_000, new Date())).toMatch(/^Floated for 5s · done \S/);
   });
 });

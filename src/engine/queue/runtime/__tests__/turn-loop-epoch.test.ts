@@ -20,13 +20,13 @@ function makeHost(messages: { role: "user"; content: ContentBlock[] }[]): TurnLo
       broker: {
         read: () => ({
           provider: "codex",
-          model: "gpt-5.5",
+          model: "gpt-5.6-terra",
           effort: null,
           permissionMode: "default",
           ultracode: false,
         }),
       } as never,
-      config: { defaultProvider: "codex", defaultModel: "gpt-5.5" } as never,
+      config: { defaultProvider: "codex", defaultModel: "gpt-5.6-terra" } as never,
     },
     compactState: {} as never,
     sessionAllowedToolPatterns: new Set(),

@@ -75,6 +75,7 @@ export const Agent: ToolHandler = {
       tier,
       model,
       provider,
+      effort,
       isolation,
       validationError,
     } = parseAgentInput(call.input ?? {});
@@ -162,6 +163,7 @@ export const Agent: ToolHandler = {
         ...(tier !== undefined ? { tierOverride: tier } : {}),
         ...(model !== undefined ? { modelOverride: model } : {}),
         ...(provider !== undefined ? { providerOverride: provider } : {}),
+        ...(effort !== undefined ? { effortOverride: effort } : {}),
         ...(effectiveIsolation !== undefined ? { isolation: effectiveIsolation } : {}),
       },
       ctx,

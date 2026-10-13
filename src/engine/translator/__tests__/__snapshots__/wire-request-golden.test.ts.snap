@@ -11,7 +11,7 @@ exports[`anthropic wire-request golden (gates #1/#2/#5 final assembly) opus / ag
         },
       ],
     },
-    "max_tokens": 64000,
+    "max_tokens": 128000,
     "messages": [
       {
         "content": [
@@ -83,14 +83,14 @@ memory body line
     "metadata": {
       "user_id": "{"device_id":"0000000000000000000000000000000000000000000000000000000000000000","account_uuid":"acct-fixture","session_id":"sess-fixture-00000000-0000-0000-0000-000000000000"}",
     },
-    "model": "claude-opus-4-8",
+    "model": "claude-opus-5-5",
     "output_config": {
-      "effort": "xhigh",
+      "effort": "high",
     },
     "stream": true,
     "system": [
       {
-        "text": "x-anthropic-billing-header: cc_version=2.1.257.b43; cc_entrypoint=cli; cch=ff9c7;",
+        "text": "x-anthropic-billing-header: cc_version=2.1.296.44d; cc_entrypoint=cli; cch=1cb9a;",
         "type": "text",
       },
       {
@@ -158,25 +158,26 @@ FIXED-STATIC-B"
       },
     ],
   },
-  "bodyHash": "fcf1e9236ddf8eb5ec7bc0a49a3459250bb295911289775a4e36764046d4b3ee",
+  "bodyHash": "6b3bb85fb957612d99422df88013659d44a37644db97458b78b8fcf256cea693",
   "headers": {
     "Accept": "application/json",
     "Authorization": "<authorization>",
     "Content-Type": "application/json",
-    "User-Agent": "claude-cli/2.1.257 (external, cli)",
+    "User-Agent": "claude-cli/2.1.296 (external, cli)",
     "X-Claude-Code-Session-Id": "sess-fixture-00000000-0000-0000-0000-000000000000",
     "X-Stainless-Arch": "<x-stainless-arch>",
     "X-Stainless-Lang": "js",
     "X-Stainless-OS": "<x-stainless-os>",
-    "X-Stainless-Package-Version": "0.112.1",
+    "X-Stainless-Package-Version": "0.128.0",
     "X-Stainless-Retry-Count": "0",
     "X-Stainless-Runtime": "node",
     "X-Stainless-Runtime-Version": "v26.3.0",
     "X-Stainless-Timeout": "600",
-    "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,effort-2025-11-24,extended-cache-ttl-2025-04-11",
+    "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,effort-2025-11-24,thinking-binding-controls-2026-08-01,extended-cache-ttl-2025-04-11",
     "anthropic-dangerous-direct-browser-access": "true",
     "anthropic-version": "2023-06-01",
     "x-app": "cli",
+    "x-claude-code-request-class": "main",
     "x-client-request-id": "<x-client-request-id>",
   },
   "url": "https://api.anthropic.com/v1/messages?beta=true",
@@ -194,7 +195,7 @@ exports[`anthropic wire-request golden (gates #1/#2/#5 final assembly) opus / ag
         },
       ],
     },
-    "max_tokens": 64000,
+    "max_tokens": 128000,
     "messages": [
       {
         "content": [
@@ -266,14 +267,14 @@ memory body line
     "metadata": {
       "user_id": "{"device_id":"0000000000000000000000000000000000000000000000000000000000000000","account_uuid":"acct-fixture","session_id":"sess-fixture-00000000-0000-0000-0000-000000000000"}",
     },
-    "model": "claude-opus-4-8",
+    "model": "claude-opus-5-5",
     "output_config": {
       "effort": "high",
     },
     "stream": true,
     "system": [
       {
-        "text": "x-anthropic-billing-header: cc_version=2.1.257.b43; cc_entrypoint=cli; cch=0cc56;",
+        "text": "x-anthropic-billing-header: cc_version=2.1.296.44d; cc_entrypoint=cli; cch=1cb9a;",
         "type": "text",
       },
       {
@@ -341,25 +342,26 @@ FIXED-STATIC-B"
       },
     ],
   },
-  "bodyHash": "a8ee4409072fa2817434e3fd0f2c668e55f232a5fce40cdd8627651c488da8f6",
+  "bodyHash": "6b3bb85fb957612d99422df88013659d44a37644db97458b78b8fcf256cea693",
   "headers": {
     "Accept": "application/json",
     "Authorization": "<authorization>",
     "Content-Type": "application/json",
-    "User-Agent": "claude-cli/2.1.257 (external, cli)",
+    "User-Agent": "claude-cli/2.1.296 (external, cli)",
     "X-Claude-Code-Session-Id": "sess-fixture-00000000-0000-0000-0000-000000000000",
     "X-Stainless-Arch": "<x-stainless-arch>",
     "X-Stainless-Lang": "js",
     "X-Stainless-OS": "<x-stainless-os>",
-    "X-Stainless-Package-Version": "0.112.1",
+    "X-Stainless-Package-Version": "0.128.0",
     "X-Stainless-Retry-Count": "0",
     "X-Stainless-Runtime": "node",
     "X-Stainless-Runtime-Version": "v26.3.0",
     "X-Stainless-Timeout": "600",
-    "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,effort-2025-11-24,extended-cache-ttl-2025-04-11",
+    "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,effort-2025-11-24,thinking-binding-controls-2026-08-01,extended-cache-ttl-2025-04-11",
     "anthropic-dangerous-direct-browser-access": "true",
     "anthropic-version": "2023-06-01",
     "x-app": "cli",
+    "x-claude-code-request-class": "main",
     "x-client-request-id": "<x-client-request-id>",
   },
   "url": "https://api.anthropic.com/v1/messages?beta=true",
@@ -377,7 +379,7 @@ exports[`anthropic wire-request golden (gates #1/#2/#5 final assembly) opus[1m] 
         },
       ],
     },
-    "max_tokens": 64000,
+    "max_tokens": 128000,
     "messages": [
       {
         "content": [
@@ -449,14 +451,14 @@ memory body line
     "metadata": {
       "user_id": "{"device_id":"0000000000000000000000000000000000000000000000000000000000000000","account_uuid":"acct-fixture","session_id":"sess-fixture-00000000-0000-0000-0000-000000000000"}",
     },
-    "model": "claude-opus-4-8",
+    "model": "claude-opus-5-5",
     "output_config": {
-      "effort": "xhigh",
+      "effort": "high",
     },
     "stream": true,
     "system": [
       {
-        "text": "x-anthropic-billing-header: cc_version=2.1.257.b43; cc_entrypoint=cli; cch=ff9c7;",
+        "text": "x-anthropic-billing-header: cc_version=2.1.296.44d; cc_entrypoint=cli; cch=1cb9a;",
         "type": "text",
       },
       {
@@ -524,25 +526,26 @@ FIXED-STATIC-B"
       },
     ],
   },
-  "bodyHash": "fcf1e9236ddf8eb5ec7bc0a49a3459250bb295911289775a4e36764046d4b3ee",
+  "bodyHash": "6b3bb85fb957612d99422df88013659d44a37644db97458b78b8fcf256cea693",
   "headers": {
     "Accept": "application/json",
     "Authorization": "<authorization>",
     "Content-Type": "application/json",
-    "User-Agent": "claude-cli/2.1.257 (external, cli)",
+    "User-Agent": "claude-cli/2.1.296 (external, cli)",
     "X-Claude-Code-Session-Id": "sess-fixture-00000000-0000-0000-0000-000000000000",
     "X-Stainless-Arch": "<x-stainless-arch>",
     "X-Stainless-Lang": "js",
     "X-Stainless-OS": "<x-stainless-os>",
-    "X-Stainless-Package-Version": "0.112.1",
+    "X-Stainless-Package-Version": "0.128.0",
     "X-Stainless-Retry-Count": "0",
     "X-Stainless-Runtime": "node",
     "X-Stainless-Runtime-Version": "v26.3.0",
     "X-Stainless-Timeout": "600",
-    "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,context-1m-2025-08-07,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,effort-2025-11-24,extended-cache-ttl-2025-04-11",
+    "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,context-1m-2025-08-07,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,effort-2025-11-24,thinking-binding-controls-2026-08-01,extended-cache-ttl-2025-04-11",
     "anthropic-dangerous-direct-browser-access": "true",
     "anthropic-version": "2023-06-01",
     "x-app": "cli",
+    "x-claude-code-request-class": "main",
     "x-client-request-id": "<x-client-request-id>",
   },
   "url": "https://api.anthropic.com/v1/messages?beta=true",
@@ -635,7 +638,7 @@ memory body line
     "stream": true,
     "system": [
       {
-        "text": "x-anthropic-billing-header: cc_version=2.1.257.b43; cc_entrypoint=cli; cch=b0b65;",
+        "text": "x-anthropic-billing-header: cc_version=2.1.296.44d; cc_entrypoint=cli; cch=08d9f;",
         "type": "text",
       },
       {
@@ -703,25 +706,26 @@ FIXED-STATIC-B"
       },
     ],
   },
-  "bodyHash": "fcde10ac26d87de3900f611ba3a172b28dc6bb5b82905e4798a96025ff4c43b9",
+  "bodyHash": "ce4f6ad79c0045d15c65c24571308f54233e9c82aa5493a84d34a699c9ed19ce",
   "headers": {
     "Accept": "application/json",
     "Authorization": "<authorization>",
     "Content-Type": "application/json",
-    "User-Agent": "claude-cli/2.1.257 (external, cli)",
+    "User-Agent": "claude-cli/2.1.296 (external, cli)",
     "X-Claude-Code-Session-Id": "sess-fixture-00000000-0000-0000-0000-000000000000",
     "X-Stainless-Arch": "<x-stainless-arch>",
     "X-Stainless-Lang": "js",
     "X-Stainless-OS": "<x-stainless-os>",
-    "X-Stainless-Package-Version": "0.112.1",
+    "X-Stainless-Package-Version": "0.128.0",
     "X-Stainless-Retry-Count": "0",
     "X-Stainless-Runtime": "node",
     "X-Stainless-Runtime-Version": "v26.3.0",
     "X-Stainless-Timeout": "600",
-    "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,effort-2025-11-24,extended-cache-ttl-2025-04-11",
+    "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,effort-2025-11-24,thinking-binding-controls-2026-08-01,extended-cache-ttl-2025-04-11",
     "anthropic-dangerous-direct-browser-access": "true",
     "anthropic-version": "2023-06-01",
     "x-app": "cli",
+    "x-claude-code-request-class": "main",
     "x-client-request-id": "<x-client-request-id>",
   },
   "url": "https://api.anthropic.com/v1/messages?beta=true",
@@ -739,7 +743,7 @@ exports[`anthropic wire-request golden (gates #1/#2/#5 final assembly) haiku / a
         },
       ],
     },
-    "max_tokens": 32000,
+    "max_tokens": 128000,
     "messages": [
       {
         "content": [
@@ -807,11 +811,14 @@ memory body line
     "metadata": {
       "user_id": "{"device_id":"0000000000000000000000000000000000000000000000000000000000000000","account_uuid":"acct-fixture","session_id":"sess-fixture-00000000-0000-0000-0000-000000000000"}",
     },
-    "model": "claude-haiku-4-5-20251001",
+    "model": "claude-haiku-5-5",
+    "output_config": {
+      "effort": "high",
+    },
     "stream": true,
     "system": [
       {
-        "text": "x-anthropic-billing-header: cc_version=2.1.257.b43; cc_entrypoint=cli; cch=43353;",
+        "text": "x-anthropic-billing-header: cc_version=2.1.296.44d; cc_entrypoint=cli; cch=08d9f;",
         "type": "text",
       },
       {
@@ -841,8 +848,8 @@ FIXED-STATIC-B"
       },
     ],
     "thinking": {
-      "budget_tokens": 31999,
-      "type": "enabled",
+      "display": "summarized",
+      "type": "adaptive",
     },
     "tools": [
       {
@@ -879,32 +886,33 @@ FIXED-STATIC-B"
       },
     ],
   },
-  "bodyHash": "896d4f53b2838258e3a75959528d8cd61a8151b07cf021e88c1df1a700bf099a",
+  "bodyHash": "ef89430e487592783bd97dc37c1548b820f3ec2bbc6d1aa4b168f7faa30ddd80",
   "headers": {
     "Accept": "application/json",
     "Authorization": "<authorization>",
     "Content-Type": "application/json",
-    "User-Agent": "claude-cli/2.1.257 (external, cli)",
+    "User-Agent": "claude-cli/2.1.296 (external, cli)",
     "X-Claude-Code-Session-Id": "sess-fixture-00000000-0000-0000-0000-000000000000",
     "X-Stainless-Arch": "<x-stainless-arch>",
     "X-Stainless-Lang": "js",
     "X-Stainless-OS": "<x-stainless-os>",
-    "X-Stainless-Package-Version": "0.112.1",
+    "X-Stainless-Package-Version": "0.128.0",
     "X-Stainless-Retry-Count": "0",
     "X-Stainless-Runtime": "node",
     "X-Stainless-Runtime-Version": "v26.3.0",
     "X-Stainless-Timeout": "600",
-    "anthropic-beta": "oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,claude-code-20250219,extended-cache-ttl-2025-04-11",
+    "anthropic-beta": "oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,claude-code-20250219,effort-2025-11-24,thinking-binding-controls-2026-08-01,extended-cache-ttl-2025-04-11",
     "anthropic-dangerous-direct-browser-access": "true",
     "anthropic-version": "2023-06-01",
     "x-app": "cli",
+    "x-claude-code-request-class": "main",
     "x-client-request-id": "<x-client-request-id>",
   },
   "url": "https://api.anthropic.com/v1/messages?beta=true",
 }
 `;
 
-exports[`anthropic wire-request golden (gates #1/#2/#5 final assembly) haiku / subagent (agentic, sidechain → dated id) 1`] = `
+exports[`anthropic wire-request golden (gates #1/#2/#5 final assembly) haiku / subagent (agentic, sidechain) 1`] = `
 {
   "body": {
     "context_management": {
@@ -915,7 +923,7 @@ exports[`anthropic wire-request golden (gates #1/#2/#5 final assembly) haiku / s
         },
       ],
     },
-    "max_tokens": 32000,
+    "max_tokens": 128000,
     "messages": [
       {
         "content": [
@@ -983,11 +991,14 @@ memory body line
     "metadata": {
       "user_id": "{"device_id":"0000000000000000000000000000000000000000000000000000000000000000","account_uuid":"acct-fixture","session_id":"sess-fixture-00000000-0000-0000-0000-000000000000"}",
     },
-    "model": "claude-haiku-4-5-20251001",
+    "model": "claude-haiku-5-5",
+    "output_config": {
+      "effort": "high",
+    },
     "stream": true,
     "system": [
       {
-        "text": "x-anthropic-billing-header: cc_version=2.1.257.b43; cc_entrypoint=cli; cch=43353;",
+        "text": "x-anthropic-billing-header: cc_version=2.1.296.44d; cc_entrypoint=cli; cch=08d9f;",
         "type": "text",
       },
       {
@@ -1017,8 +1028,8 @@ FIXED-STATIC-B"
       },
     ],
     "thinking": {
-      "budget_tokens": 31999,
-      "type": "enabled",
+      "display": "summarized",
+      "type": "adaptive",
     },
     "tools": [
       {
@@ -1055,25 +1066,26 @@ FIXED-STATIC-B"
       },
     ],
   },
-  "bodyHash": "896d4f53b2838258e3a75959528d8cd61a8151b07cf021e88c1df1a700bf099a",
+  "bodyHash": "ef89430e487592783bd97dc37c1548b820f3ec2bbc6d1aa4b168f7faa30ddd80",
   "headers": {
     "Accept": "application/json",
     "Authorization": "<authorization>",
     "Content-Type": "application/json",
-    "User-Agent": "claude-cli/2.1.257 (external, cli)",
+    "User-Agent": "claude-cli/2.1.296 (external, cli)",
     "X-Claude-Code-Session-Id": "sess-fixture-00000000-0000-0000-0000-000000000000",
     "X-Stainless-Arch": "<x-stainless-arch>",
     "X-Stainless-Lang": "js",
     "X-Stainless-OS": "<x-stainless-os>",
-    "X-Stainless-Package-Version": "0.112.1",
+    "X-Stainless-Package-Version": "0.128.0",
     "X-Stainless-Retry-Count": "0",
     "X-Stainless-Runtime": "node",
     "X-Stainless-Runtime-Version": "v26.3.0",
     "X-Stainless-Timeout": "600",
-    "anthropic-beta": "oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,claude-code-20250219,extended-cache-ttl-2025-04-11",
+    "anthropic-beta": "oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,claude-code-20250219,effort-2025-11-24,thinking-binding-controls-2026-08-01,extended-cache-ttl-2025-04-11",
     "anthropic-dangerous-direct-browser-access": "true",
     "anthropic-version": "2023-06-01",
     "x-app": "cli",
+    "x-claude-code-request-class": "main",
     "x-client-request-id": "<x-client-request-id>",
   },
   "url": "https://api.anthropic.com/v1/messages?beta=true",
@@ -1083,7 +1095,7 @@ FIXED-STATIC-B"
 exports[`anthropic wire-request golden (gates #1/#2/#5 final assembly) haiku / title (non-agentic, structured) 1`] = `
 {
   "body": {
-    "max_tokens": 32000,
+    "max_tokens": 128000,
     "messages": [
       {
         "content": [
@@ -1147,12 +1159,12 @@ memory body line
     "metadata": {
       "user_id": "{"device_id":"0000000000000000000000000000000000000000000000000000000000000000","account_uuid":"acct-fixture","session_id":"sess-fixture-00000000-0000-0000-0000-000000000000"}",
     },
-    "model": "claude-haiku-4-5-20251001",
+    "model": "claude-haiku-5-5",
     "output_config": {},
     "stream": true,
     "system": [
       {
-        "text": "x-anthropic-billing-header: cc_version=2.1.257.b43; cc_entrypoint=cli; cch=66b98;",
+        "text": "x-anthropic-billing-header: cc_version=2.1.296.44d; cc_entrypoint=cli; cch=a4ab3;",
         "type": "text",
       },
       {
@@ -1207,25 +1219,26 @@ FIXED-STATIC-B"
       },
     ],
   },
-  "bodyHash": "8fd86d037e9ce008a8dc79249dee5d85a3e5b00dba052bef36b09704e3e055e0",
+  "bodyHash": "94b8279d6eddc2def5ec79d20cbd7afc34cc8a34fc2bf87912bffebcb6dbd978",
   "headers": {
     "Accept": "application/json",
     "Authorization": "<authorization>",
     "Content-Type": "application/json",
-    "User-Agent": "claude-cli/2.1.257 (external, cli)",
+    "User-Agent": "claude-cli/2.1.296 (external, cli)",
     "X-Claude-Code-Session-Id": "sess-fixture-00000000-0000-0000-0000-000000000000",
     "X-Stainless-Arch": "<x-stainless-arch>",
     "X-Stainless-Lang": "js",
     "X-Stainless-OS": "<x-stainless-os>",
-    "X-Stainless-Package-Version": "0.112.1",
+    "X-Stainless-Package-Version": "0.128.0",
     "X-Stainless-Retry-Count": "0",
     "X-Stainless-Runtime": "node",
     "X-Stainless-Runtime-Version": "v26.3.0",
     "X-Stainless-Timeout": "600",
-    "anthropic-beta": "oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,structured-outputs-2025-12-15",
+    "anthropic-beta": "oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,structured-outputs-2025-12-15",
     "anthropic-dangerous-direct-browser-access": "true",
     "anthropic-version": "2023-06-01",
     "x-app": "cli",
+    "x-claude-code-request-class": "auxiliary",
     "x-client-request-id": "<x-client-request-id>",
   },
   "url": "https://api.anthropic.com/v1/messages?beta=true",
@@ -1322,7 +1335,7 @@ memory body line
     "stream": true,
     "system": [
       {
-        "text": "x-anthropic-billing-header: cc_version=2.1.257.b43; cc_entrypoint=cli; cch=0cc56;",
+        "text": "x-anthropic-billing-header: cc_version=2.1.296.44d; cc_entrypoint=cli; cch=1cb9a;",
         "type": "text",
       },
       {
@@ -1390,25 +1403,26 @@ FIXED-STATIC-B"
       },
     ],
   },
-  "bodyHash": "5a83b3a357c4ac4aabe8d84ecd0860f861ed95a537ff51168ca84b1f0b15427a",
+  "bodyHash": "f48bbafc6680e69b048c547446ac7b3974c4ebf9b645f7a1022c0614085738e8",
   "headers": {
     "Accept": "application/json",
     "Authorization": "<authorization>",
     "Content-Type": "application/json",
-    "User-Agent": "claude-cli/2.1.257 (external, cli)",
+    "User-Agent": "claude-cli/2.1.296 (external, cli)",
     "X-Claude-Code-Session-Id": "sess-fixture-00000000-0000-0000-0000-000000000000",
     "X-Stainless-Arch": "<x-stainless-arch>",
     "X-Stainless-Lang": "js",
     "X-Stainless-OS": "<x-stainless-os>",
-    "X-Stainless-Package-Version": "0.112.1",
+    "X-Stainless-Package-Version": "0.128.0",
     "X-Stainless-Retry-Count": "0",
     "X-Stainless-Runtime": "node",
     "X-Stainless-Runtime-Version": "v26.3.0",
     "X-Stainless-Timeout": "600",
-    "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,effort-2025-11-24,extended-cache-ttl-2025-04-11",
+    "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,effort-2025-11-24,thinking-binding-controls-2026-08-01,extended-cache-ttl-2025-04-11",
     "anthropic-dangerous-direct-browser-access": "true",
     "anthropic-version": "2023-06-01",
     "x-app": "cli",
+    "x-claude-code-request-class": "main",
     "x-client-request-id": "<x-client-request-id>",
   },
   "url": "https://api.anthropic.com/v1/messages?beta=true",
@@ -1418,7 +1432,7 @@ FIXED-STATIC-B"
 exports[`anthropic wire-request golden (gates #1/#2/#5 final assembly) opus / agentic / disableThinking 1`] = `
 {
   "body": {
-    "max_tokens": 64000,
+    "max_tokens": 128000,
     "messages": [
       {
         "content": [
@@ -1490,12 +1504,12 @@ memory body line
     "metadata": {
       "user_id": "{"device_id":"0000000000000000000000000000000000000000000000000000000000000000","account_uuid":"acct-fixture","session_id":"sess-fixture-00000000-0000-0000-0000-000000000000"}",
     },
-    "model": "claude-opus-4-8",
+    "model": "claude-opus-5-5",
     "output_config": {},
     "stream": true,
     "system": [
       {
-        "text": "x-anthropic-billing-header: cc_version=2.1.257.b43; cc_entrypoint=cli; cch=5d017;",
+        "text": "x-anthropic-billing-header: cc_version=2.1.296.44d; cc_entrypoint=cli; cch=3a68a;",
         "type": "text",
       },
       {
@@ -1559,17 +1573,17 @@ FIXED-STATIC-B"
       },
     ],
   },
-  "bodyHash": "2199699941d5f28378a2b58f6dac1f2d3b42297bc370046f6d8b276db18c60f3",
+  "bodyHash": "06a4c7331f89086258c6b51aebd6d8057b8cfb66094e117c1b5f595bac7de0a4",
   "headers": {
     "Accept": "application/json",
     "Authorization": "<authorization>",
     "Content-Type": "application/json",
-    "User-Agent": "claude-cli/2.1.257 (external, cli)",
+    "User-Agent": "claude-cli/2.1.296 (external, cli)",
     "X-Claude-Code-Session-Id": "sess-fixture-00000000-0000-0000-0000-000000000000",
     "X-Stainless-Arch": "<x-stainless-arch>",
     "X-Stainless-Lang": "js",
     "X-Stainless-OS": "<x-stainless-os>",
-    "X-Stainless-Package-Version": "0.112.1",
+    "X-Stainless-Package-Version": "0.128.0",
     "X-Stainless-Retry-Count": "0",
     "X-Stainless-Runtime": "node",
     "X-Stainless-Runtime-Version": "v26.3.0",
@@ -1578,6 +1592,7 @@ FIXED-STATIC-B"
     "anthropic-dangerous-direct-browser-access": "true",
     "anthropic-version": "2023-06-01",
     "x-app": "cli",
+    "x-claude-code-request-class": "main",
     "x-client-request-id": "<x-client-request-id>",
   },
   "url": "https://api.anthropic.com/v1/messages?beta=true",
@@ -1687,7 +1702,7 @@ exports[`anthropic-compat wire-request golden kimi / k3 / max 1`] = `
   "headers": {
     "Accept": "application/json",
     "Content-Type": "application/json",
-    "User-Agent": "claude-cli/2.1.257 (external, sdk-cli)",
+    "User-Agent": "claude-cli/2.1.296 (external, sdk-cli)",
     "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20,effort-2025-11-24",
     "anthropic-dangerous-direct-browser-access": "true",
     "anthropic-version": "2023-06-01",
@@ -1698,7 +1713,7 @@ exports[`anthropic-compat wire-request golden kimi / k3 / max 1`] = `
     "x-stainless-arch": "<x-stainless-arch>",
     "x-stainless-lang": "js",
     "x-stainless-os": "<x-stainless-os>",
-    "x-stainless-package-version": "0.112.1",
+    "x-stainless-package-version": "0.128.0",
     "x-stainless-retry-count": "0",
     "x-stainless-runtime": "node",
     "x-stainless-runtime-version": "v26.3.0",
@@ -1810,7 +1825,7 @@ exports[`anthropic-compat wire-request golden kimi / kimi-for-coding 1`] = `
   "headers": {
     "Accept": "application/json",
     "Content-Type": "application/json",
-    "User-Agent": "claude-cli/2.1.257 (external, sdk-cli)",
+    "User-Agent": "claude-cli/2.1.296 (external, sdk-cli)",
     "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20,effort-2025-11-24",
     "anthropic-dangerous-direct-browser-access": "true",
     "anthropic-version": "2023-06-01",
@@ -1821,7 +1836,7 @@ exports[`anthropic-compat wire-request golden kimi / kimi-for-coding 1`] = `
     "x-stainless-arch": "<x-stainless-arch>",
     "x-stainless-lang": "js",
     "x-stainless-os": "<x-stainless-os>",
-    "x-stainless-package-version": "0.112.1",
+    "x-stainless-package-version": "0.128.0",
     "x-stainless-retry-count": "0",
     "x-stainless-runtime": "node",
     "x-stainless-runtime-version": "v26.3.0",
@@ -2054,7 +2069,7 @@ exports[`anthropic-compat wire-request golden minimax / minimax-m2.7 1`] = `
     "Accept": "application/json",
     "Authorization": "<authorization>",
     "Content-Type": "application/json",
-    "User-Agent": "claude-cli/2.1.257 (external, cli)",
+    "User-Agent": "claude-cli/2.1.296 (external, cli)",
     "anthropic-version": "2023-06-01",
     "x-client-request-id": "<x-client-request-id>",
   },
@@ -2168,7 +2183,7 @@ exports[`anthropic-compat wire-request golden deepseek / deepseek-v4-pro 1`] = `
     "Accept": "application/json",
     "Authorization": "<authorization>",
     "Content-Type": "application/json",
-    "User-Agent": "claude-cli/2.1.257 (external, cli)",
+    "User-Agent": "claude-cli/2.1.296 (external, cli)",
     "anthropic-version": "2023-06-01",
     "x-client-request-id": "<x-client-request-id>",
   },
@@ -2279,7 +2294,7 @@ exports[`anthropic-compat wire-request golden deepseek / deepseek-v4-pro / disab
     "Accept": "application/json",
     "Authorization": "<authorization>",
     "Content-Type": "application/json",
-    "User-Agent": "claude-cli/2.1.257 (external, cli)",
+    "User-Agent": "claude-cli/2.1.296 (external, cli)",
     "anthropic-version": "2023-06-01",
     "x-client-request-id": "<x-client-request-id>",
   },
@@ -2425,7 +2440,7 @@ exports[`Antigravity wire-request golden captures the Gemini-family wire envelop
               },
             },
           ],
-          "role": "user",
+          "role": "model",
         },
         {
           "parts": [
@@ -2444,15 +2459,18 @@ exports[`Antigravity wire-request golden captures the Gemini-family wire envelop
         },
       },
       "labels": {
+        "cascade_id": "f7800240-06c9-5354-bd61-8c630a93154f",
         "last_execution_id": "98a82813-fdd3-54b6-bb16-13521d3f9680",
-        "last_step_index": "2",
+        "last_step_index": "3",
         "model_enum": "MODEL_PLACEHOLDER_M319",
+        "request_id": "3dc3323c-b36b-54b9-b7c6-9879603a57a6-1",
+        "root_cascade_id": "f7800240-06c9-5354-bd61-8c630a93154f",
         "trajectory_id": "3dc3323c-b36b-54b9-b7c6-9879603a57a6",
         "used_claude": "false",
         "used_claude_conservative": "false",
         "used_non_gemini_model": "false",
       },
-      "sessionId": "6361632629695228385",
+      "sessionId": "-3750763034362895579",
       "systemInstruction": {
         "parts": [
           {
@@ -2460,11 +2478,6 @@ exports[`Antigravity wire-request golden captures the Gemini-family wire envelop
           },
         ],
         "role": "user",
-      },
-      "toolConfig": {
-        "functionCallingConfig": {
-          "mode": "VALIDATED",
-        },
       },
       "tools": [
         {
@@ -2511,13 +2524,13 @@ exports[`Antigravity wire-request golden captures the Gemini-family wire envelop
     "requestType": "agent",
     "userAgent": "antigravity",
   },
-  "bodyHash": "1fd1860b31fc244295e42610df73c631914adc9614c7004df770a5e619628b6b",
+  "bodyHash": "7877a8ea759545034500918d1110e1ab2042aa60295c8acf3fb40c105b7670af",
   "headers": {
     "Accept-Encoding": "gzip",
     "Authorization": "<authorization>",
     "Content-Type": "application/json",
     "Transfer-Encoding": "chunked",
-    "User-Agent": "antigravity/cli/1.1.13 (aidev_client; os_type=<os>; arch=<arch>; auth_method=consumer)",
+    "User-Agent": "antigravity/cli/1.3.4 (aidev_client; os_type=<os>; arch=<arch>; cl=998275202; auth_method=consumer)",
   },
   "url": "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse",
 }
@@ -2568,7 +2581,7 @@ exports[`Antigravity wire-request golden suppresses thinking summaries for a for
               },
             },
           ],
-          "role": "user",
+          "role": "model",
         },
         {
           "parts": [
@@ -2587,15 +2600,18 @@ exports[`Antigravity wire-request golden suppresses thinking summaries for a for
         },
       },
       "labels": {
+        "cascade_id": "839cc27d-41a7-58f7-8cad-c2897da1b6f0",
         "last_execution_id": "3b8316a7-d243-5930-9872-17c82173af16",
-        "last_step_index": "2",
+        "last_step_index": "3",
         "model_enum": "MODEL_PLACEHOLDER_M319",
+        "request_id": "7fd259ab-a884-52a2-8d24-16c77b9e34ca-1",
+        "root_cascade_id": "f7800240-06c9-5354-bd61-8c630a93154f",
         "trajectory_id": "7fd259ab-a884-52a2-8d24-16c77b9e34ca",
         "used_claude": "false",
         "used_claude_conservative": "false",
         "used_non_gemini_model": "false",
       },
-      "sessionId": "6361632629695228385",
+      "sessionId": "-3750763034362895579",
       "systemInstruction": {
         "parts": [
           {
@@ -2603,11 +2619,6 @@ exports[`Antigravity wire-request golden suppresses thinking summaries for a for
           },
         ],
         "role": "user",
-      },
-      "toolConfig": {
-        "functionCallingConfig": {
-          "mode": "VALIDATED",
-        },
       },
       "tools": [
         {
@@ -2654,13 +2665,13 @@ exports[`Antigravity wire-request golden suppresses thinking summaries for a for
     "requestType": "agent",
     "userAgent": "antigravity",
   },
-  "bodyHash": "91f47d300c92fb1b5d8e8aa0ff61a1f7dd2177f1417d5a9cc178c4e0d81771f9",
+  "bodyHash": "0bd227506e91ed4de306495e18ba68a9563a42d90b15032583145f0205a972e4",
   "headers": {
     "Accept-Encoding": "gzip",
     "Authorization": "<authorization>",
     "Content-Type": "application/json",
     "Transfer-Encoding": "chunked",
-    "User-Agent": "antigravity/cli/1.1.13 (aidev_client; os_type=<os>; arch=<arch>; auth_method=consumer)",
+    "User-Agent": "antigravity/cli/1.3.4 (aidev_client; os_type=<os>; arch=<arch>; cl=998275202; auth_method=consumer)",
   },
   "url": "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse",
 }

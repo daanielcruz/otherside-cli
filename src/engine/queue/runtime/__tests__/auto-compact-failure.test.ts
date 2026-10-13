@@ -8,6 +8,7 @@ import { registerAllProviders } from "@/engine/providers/bootstrap.ts";
 import * as providers from "@/engine/providers/registry.ts";
 import { maybeCompact } from "@/engine/queue/runtime/compact/auto.ts";
 import { forceCompact } from "@/engine/queue/runtime/compact/manual.ts";
+import { maybeMicroCompact } from "@/engine/queue/runtime/compact/micro.ts";
 import type {
   CompactOrchestrationDeps,
   CompactState,
@@ -68,7 +69,13 @@ describe("auto compact failure state", () => {
   it("surfaces terminal failures without mutating conversation state", async () => {
     for (const mode of ["refusal", "quota", "cancelled", "short"] as const) {
       const bodies: unknown[] = [];
-      providers.register(makeProvider(mode, bodies));
+      let notifications = 0;
+      providers.register({
+        ...makeProvider(mode, bodies),
+        onCompactionSucceeded: () => {
+          notifications += 1;
+        },
+      });
       const { deps, session, injections } = makeDeps(`submission-${mode}`);
       injections.push("existing injection");
       persistSessionRecords(session);
@@ -89,6 +96,77 @@ describe("auto compact failure state", () => {
       expect(resumed.records.some((record) => record.type === "compaction_mark")).toBe(false);
       expect(JSON.stringify(events)).not.toContain("disabled for this session");
       expect(bodies).toHaveLength(1);
+      expect(notifications).toBe(0);
+    }
+  });
+
+  it("notifies the provider after committing automatic compaction", async () => {
+    const bodies: unknown[] = [];
+    const { deps, session } = makeDeps("provider-notification");
+    persistSessionRecords(session);
+    let notifications = 0;
+    providers.register({
+      ...makeProvider("success", bodies),
+      onCompactionSucceeded: (ctx) => {
+        notifications += 1;
+        expect(ctx.sessionId).toBe(session.id);
+        expect(ctx.provider).toBe("xai");
+        expect(ctx.isCompaction).not.toBe(true);
+        expect(session.records.some((record) => record.type === "compaction_mark")).toBe(true);
+      },
+    });
+
+    const events = await collect(maybeCompact(deps));
+
+    expect(events.find((event) => event.kind === "compact_done")?.mode).toBe("summary");
+    expect(notifications).toBe(1);
+  });
+
+  it("notifies the provider only when microcompaction changes history", async () => {
+    const keys = [
+      "OTHERSIDE_MICROCOMPACT",
+      "OTHERSIDE_MICROCOMPACT_KEEP",
+      "OTHERSIDE_DISABLE_MICROCOMPACT",
+    ] as const;
+    const previous = new Map(keys.map((key) => [key, process.env[key]]));
+    process.env.OTHERSIDE_MICROCOMPACT = "token";
+    process.env.OTHERSIDE_MICROCOMPACT_KEEP = "1";
+    delete process.env.OTHERSIDE_DISABLE_MICROCOMPACT;
+    try {
+      const { deps, session } = makeDeps("micro-provider-notification");
+      persistSessionRecords(session);
+      for (let index = 0; index < 3; index += 1) {
+        session.messages.push(
+          {
+            role: "assistant",
+            content: [{ type: "tool_use", id: `read-${index}`, name: "Read", input: {} }],
+          },
+          {
+            role: "user",
+            content: [
+              { type: "tool_result", tool_use_id: `read-${index}`, content: "fixture output" },
+            ],
+          },
+        );
+      }
+      let notifications = 0;
+      providers.register({
+        ...makeProvider("success", []),
+        onCompactionSucceeded: (ctx) => {
+          notifications += 1;
+          expect(ctx.sessionId).toBe(session.id);
+        },
+      });
+
+      const events = await collect(maybeMicroCompact(deps));
+
+      expect(events).toHaveLength(1);
+      expect(events[0]?.kind).toBe("micro_compact");
+      expect(notifications).toBe(1);
+      expect(await collect(maybeMicroCompact(deps))).toEqual([]);
+      expect(notifications).toBe(1);
+    } finally {
+      for (const key of keys) restoreEnv(key, previous.get(key));
     }
   });
 

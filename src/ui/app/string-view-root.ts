@@ -41,6 +41,7 @@ import {
 } from "@/ui/chrome/status/string-view-state.ts";
 import { StringViewChromeRegion } from "@/ui/chrome/string-view-chrome-region.ts";
 import { StringViewProgress } from "@/ui/chrome/string-view-progress.ts";
+import { StringViewPromptDock } from "@/ui/chrome/string-view-prompt-dock.ts";
 import { StringViewQueue } from "@/ui/chrome/string-view-queue.ts";
 import { StringViewRunningAgents } from "@/ui/chrome/string-view-running-agents.ts";
 import {
@@ -159,14 +160,16 @@ export function buildStringViewRoot(
   promptScreen.addChild(overlayHost);
   promptScreen.addChild(new StringViewPermissionPrompt());
   promptScreen.addChild(new StringViewAskPrompt());
-  promptScreen.addChild(new StringViewQueue());
-  promptScreen.addChild(prompt);
-  promptScreen.addChild(new StringViewAutocomplete(prompt));
-  promptScreen.addChild(new StringViewMentionPicker(prompt));
-  promptScreen.addChild(new StringViewChromeRegion());
+  const promptDock = new StringViewPromptDock();
+  promptDock.addChild(new StringViewQueue());
+  promptDock.addChild(prompt);
+  promptDock.addChild(new StringViewAutocomplete(prompt));
+  promptDock.addChild(new StringViewMentionPicker(prompt));
+  promptDock.addChild(new StringViewChromeRegion(turnDispatch?.session.messages));
   // Running agents close the footer, under the status rows — the queue preview stays
   // above the input because it is about what the prompt will send next.
-  promptScreen.addChild(new StringViewRunningAgents());
+  promptDock.addChild(new StringViewRunningAgents());
+  promptScreen.addChild(promptDock);
   return new StringViewRoot(
     promptScreen,
     prompt,
@@ -176,6 +179,7 @@ export function buildStringViewRoot(
     overlayHost,
     turnDispatch?.cancel,
     turnDispatch?.backgroundCurrentTool,
+    turnDispatch?.cancelLoop,
   );
 }
 
@@ -208,6 +212,7 @@ export class StringViewRoot implements StringComponent {
     private readonly overlayHost: FullscreenPanelSource,
     private readonly cancelTurn?: () => boolean,
     private readonly backgroundCurrentTool?: () => boolean,
+    private readonly cancelLoop?: () => boolean,
   ) {}
 
   mount(ctx: StringViewContext): void {
@@ -382,9 +387,13 @@ export class StringViewRoot implements StringComponent {
     // The key is only consumed when a turn was actually aborted. `runningRef`
     // outlives the guard whenever a turn is still unwinding, so consuming on it
     // alone eats every later press in silence and reads as a dead keyboard.
+    // The same gesture also ends a dynamic /loop, running or waiting for its next
+    // wakeup: the user is taking the session back.
     const interruptsTurn = (key.ctrl && key.name === "c") || key.name === "escape";
-    if (interruptsTurn && runningRef.current && this.prompt.isEmpty()) {
-      if (this.cancelTurn?.() === true) return true;
+    if (interruptsTurn && this.prompt.isEmpty()) {
+      const loopCancelled = this.cancelLoop?.() === true;
+      if (runningRef.current && this.cancelTurn?.() === true) return true;
+      if (loopCancelled) return true;
     }
     // The `turn` context is pushed only while a turn runs, and pushed innermost:
     // the same chord moves the caret in the prompt when there is nothing to

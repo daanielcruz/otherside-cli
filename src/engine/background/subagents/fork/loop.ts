@@ -134,14 +134,6 @@ async function runForkLoop(spec: ForkSpec): Promise<SubagentResult> {
     parentSessionId: parentCtx.parentThreadId ?? parentCtx.sessionId,
     agentType: "subagent" as const,
     subagentName: spec.name,
-    // Seeded from the parent fork's own accumulated session grants (if the
-    // parent is itself a fork) so a nested spawn keeps what an ancestor fork
-    // already earned, without writing back into it (a fresh clone, not a
-    // shared reference). The main turn's session grants aren't captured here
-    // — they aren't reachable through AgentContext — but still apply live via
-    // `sessionAllowPatternsForMatch` in permission-resolution.ts, which layers
-    // this set on top of the root session's patterns at match time.
-    sessionAllowedToolPatterns: new Set(parentAls?.sessionAllowedToolPatterns ?? []),
     ...(permissionModeOverride !== undefined ? { permissionModeOverride } : {}),
     ...(spec.shouldAvoidPermissionPrompts === true ? { shouldAvoidPermissionPrompts: true } : {}),
   };

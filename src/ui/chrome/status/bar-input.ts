@@ -13,9 +13,6 @@ export function permissionChip(state: BrokerState): PermissionChip | null {
   if (state.permissionMode === "yolo") {
     return { symbol: fastForward, text: "yolo mode on", color: Color.modeYolo };
   }
-  if (state.permissionMode === "plan") {
-    return { symbol: Glyph.pause, text: "plan mode on", color: Color.modePlan };
-  }
   if (state.permissionMode === "accept-edits") {
     return { symbol: fastForward, text: "accept edits on", color: Color.modeAccept };
   }

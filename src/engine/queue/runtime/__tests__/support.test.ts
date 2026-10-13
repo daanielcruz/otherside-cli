@@ -5,7 +5,7 @@ import type { UsageSnapshot } from "@/engine/session/compact/token-count.ts";
 import type { Message } from "@/kernel/std/types/message.ts";
 
 const PROVIDER = "anthropic" as const;
-const MODEL = "claude-opus-4-8";
+const MODEL = "claude-opus-5-5";
 
 function usage(inputTokens: number): UsageSnapshot {
   return {

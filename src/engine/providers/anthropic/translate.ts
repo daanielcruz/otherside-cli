@@ -3,17 +3,15 @@ import {
   effortLevelsForModel,
   parseModelId,
 } from "@/engine/model/catalog.ts";
-import {
-  modelHasContextManagement as anthropicModelSupportsContextManagement,
-  isHaikuModel,
-} from "@/engine/model/facts/model-family.ts";
+import { modelHasContextManagement as anthropicModelSupportsContextManagement } from "@/engine/model/facts/model-family.ts";
 import {
   accountFingerprint,
   sameAccountFingerprint,
 } from "@/engine/providers/_shared/account-identity.ts";
 import { isAnthropicFamily } from "@/engine/providers/_shared/families.ts";
+import { isReasoningReplayRejected } from "@/engine/providers/_shared/reasoning-replay-state.ts";
 import { streamErrorToHttpError } from "@/engine/providers/_shared/retry.ts";
-import { parseJsonWithPartialRecovery } from "@/engine/providers/_shared/streaming-json-repair.ts";
+import { toolArgumentsObject } from "@/engine/providers/_shared/streaming-json-repair.ts";
 import { thinkingProvenance } from "@/engine/providers/_shared/thinking-provenance.ts";
 import {
   ensureNonEmptyErrorContent,
@@ -30,7 +28,6 @@ import {
   applyAnthropicThinkingDisplay,
 } from "@/engine/providers/anthropic/envelope.ts";
 import { anthropicUserIdMetadata } from "@/engine/providers/anthropic/metadata.ts";
-import { isThinkingReplayRejected } from "@/engine/providers/anthropic/reasoning-state.ts";
 import { parseSse } from "@/kernel/std/stream/sse.ts";
 import type { EffortLevel } from "@/kernel/std/types/effort.ts";
 import type { ProviderEvent } from "@/kernel/std/types/events.ts";
@@ -41,6 +38,7 @@ import {
 } from "@/kernel/std/types/message.ts";
 import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
+import { isRecord } from "@/kernel/std/value-guards.ts";
 
 interface AnthropicBlock {
   type: string;
@@ -145,7 +143,9 @@ function blockToAnthropic(block: ContentBlock, opts: BlockTranslateOpts): Anthro
         type: "tool_use",
         id: block.id,
         name: block.name,
-        input: block.input,
+        // The wire accepts only an object; malformed arguments the model streamed
+        // replay as an empty one so the conversation stays sendable.
+        input: isRecord(block.input) ? block.input : {},
         caller: { type: "direct" },
       };
     case "tool_result": {
@@ -186,7 +186,7 @@ export function buildAnthropicMessages(
   // switch — even one made mid-turn by another client — gates the very next
   // request, and tier-routed ctx clones can never carry a stale fingerprint.
   const currentAccount = accountFingerprint(target);
-  const suppressThinkingReplay = isThinkingReplayRejected(ctx.sessionId);
+  const suppressThinkingReplay = isReasoningReplayRejected(ctx.sessionId, target);
   const systemBlocks: AnthropicBlock[] = [];
   const out: AnthropicMessage[] = [];
   for (const msg of messages) {
@@ -312,7 +312,6 @@ export function translateRequestAnthropic(
     ctx.provider,
     ctx.effort,
     ctx.disableThinking === true,
-    ctx.agentic !== false,
   );
   if (ctx.showThinkingSummaries === false || ctx.suppressThinkingSummary === true) {
     applyAnthropicThinkingDisplay(body, "omitted");
@@ -342,25 +341,10 @@ function applyAnthropicEffortEnvelope(
   provider: ProviderId,
   effort: EffortLevel | null,
   disableThinking: boolean,
-  agentic: boolean,
 ): void {
   const levels = effortLevelsForModel({ provider, model });
   const selected = disableThinking ? null : (effort ?? defaultEffortForModel({ provider, model }));
   if (selected === null || levels.length === 0 || !levels.some((level) => level === selected)) {
-    // Effortless agentic main turns (haiku) still include thinking behavior: the main turn carries an explicit budget (max_tokens - 1) plus context_management and no output_config key.
-    if (!disableThinking && agentic && isHaikuModel(model)) {
-      const maxTokens =
-        typeof body.max_tokens === "number"
-          ? body.max_tokens
-          : anthropicMaxOutputTokensForModel(model);
-      const budget = maxTokens - 1;
-      body.thinking = {
-        budget_tokens: budget,
-        type: "enabled",
-      };
-      delete body.output_config;
-      return;
-    }
     delete body.thinking;
     delete body.context_management;
     stripAnthropicOutputEffort(body);
@@ -456,17 +440,12 @@ export async function* translateResponseAnthropic(
         const idx = typeof data.index === "number" ? data.index : -1;
         const tool = tools.get(idx);
         if (tool) {
-          let parsed: unknown = {};
-          if (tool.buffer.trim().length > 0) {
-            const result = parseJsonWithPartialRecovery(tool.buffer);
-            parsed = result.ok ? result.value : tool.buffer;
-          }
           tools.delete(idx);
           yield {
             kind: "tool_call_complete",
             id: tool.id,
             name: tool.name,
-            input: parsed,
+            input: toolArgumentsObject(tool.buffer) ?? {},
           };
         }
         break;

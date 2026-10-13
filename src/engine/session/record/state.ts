@@ -116,17 +116,8 @@ export class Session {
   }
 
   pushRecord(r: SessionRecord): void {
+    // A session_meta cwd names the storage home at write time; replaying it
+    // never moves the active cwd, which only /cd and worktrees own.
     this.records.push(r);
-    // storageCwd is project identity (updated only by /cd relocate). Active cwd
-    // is owned by enter/exit worktree and /cd; only mirror session_meta into
-    // active cwd when no session worktree is active.
-    if (
-      r.type === "session_meta" &&
-      typeof r.cwd === "string" &&
-      r.cwd.length > 0 &&
-      this.worktree === null
-    ) {
-      this.cwd = r.cwd;
-    }
   }
 }

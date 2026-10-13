@@ -1,116 +1,170 @@
+import { resolveFirePrompt } from "@/engine/background/loop/autonomous.ts";
+import { noteLoopWakeupFired } from "@/engine/background/loop/dynamic.ts";
 import { emitQueue } from "@/engine/queue/emit.ts";
-import {
-  DEFAULT_MAX_AGE_DAYS,
-  get as getJob,
-  list as listJobs,
-  remove as removeJob,
-} from "./index.ts";
-import { computeNextCronRun, parseCronExpression } from "./parser.ts";
+import { isProcessAlive } from "@/kernel/std/proc/process-alive.ts";
+import * as cron from "./index.ts";
+import { claimSchedulerLease, holdsSchedulerLease, releaseSchedulerLease } from "./lease.ts";
+import { firstFireMs, hasAgedOut, missedOneShots, nextRecurringFireMs } from "./timing.ts";
 
-export interface InjectionSink {
-  pushInjection(text: string): void;
-}
+const CHECK_INTERVAL_MS = 1_000;
+const LEASE_PROBE_INTERVAL_MS = 5_000;
 
-const TICK_INTERVAL_MS = 30_000;
-const ONE_SHOT_EARLY_GRACE_MS = 90_000;
-const MAX_AGE_MS = DEFAULT_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
-
-const lastFireAt = new Map<string, number>();
+// When each task fires next, computed the first time this process sees it.
+const nextFireAt = new Map<string, number>();
+// Tasks that fired their last time but the saved schedule has not let go of yet.
+const spent = new Set<string>();
 let timer: ReturnType<typeof setInterval> | null = null;
+// Whether the session is doing something a fire must wait for. Turns are always
+// visible here; the host adds what only it sees, like a compaction or a skill fork.
+let sessionBusy = (): boolean => emitQueue.isTurnActive();
+let nextLeaseProbeAt = 0;
 
-function jitterFor(cronExpr: string, isRecurring: boolean): number {
-  const parts = cronExpr.trim().split(/\s+/);
-  const minute = parts[0];
-  if (!isRecurring && (minute === "0" || minute === "30")) {
-    return -Math.floor(Math.random() * ONE_SHOT_EARLY_GRACE_MS);
-  }
-  if (isRecurring) {
-    return Math.floor(Math.random() * Math.min(15 * 60_000, 60_000));
-  }
-  return 0;
+/** Claims the scheduler lease now and then while the project has durable tasks. */
+function probeLease(saved: readonly cron.ScheduledTask[], now: number): void {
+  if (saved.length === 0 || now < nextLeaseProbeAt) return;
+  nextLeaseProbeAt = now + LEASE_PROBE_INTERVAL_MS;
+  claimSchedulerLease();
 }
 
-function tick(sink: InjectionSink): void {
-  const now = Date.now();
-  for (const job of listJobs()) {
-    const fields = parseCronExpression(job.cron);
-    if (!fields) continue;
-    const recurring = job.recurring === true;
-    const last = lastFireAt.get(job.id) ?? 0;
-    let targetMs = job.scheduledFor;
-    if (targetMs === undefined) {
-      const baseFrom = new Date(Math.max(last, now - 24 * 60 * 60 * 1000));
-      const next = computeNextCronRun(fields, baseFrom);
-      if (!next) continue;
-      targetMs = next.getTime() + jitterFor(job.cron, recurring);
-    }
-    if (now < targetMs) continue;
-    lastFireAt.set(job.id, now);
-    if (job.kind === "loop") {
-      // idle_prompt: a scheduled wakeup never interrupts a running tool loop —
-      // it drains only at turn_start (wakeups enqueue at priority "later";
-      // the mid-turn fold is capped at "next"). autoTurn still wakes an idle
-      // session immediately.
-      emitQueue.emit({
-        class: "idle_prompt",
-        target: "both",
-        payload: { kind: "user_interrupt_message", text: job.prompt },
-        autoTurn: true,
-        replayKey: `loop:${job.id}`,
-      });
-    } else {
-      sink.pushInjection(`[scheduled task ${job.id}: ${job.humanSchedule}]\n${job.prompt}`);
-    }
-    if (!recurring) {
-      removeJob(job.id);
-      lastFireAt.delete(job.id);
+/**
+ * Whether this process fires a task: its own session's, the durable ones it saved,
+ * and — while it holds the lease — durable ones whose saving process is gone.
+ */
+function firesHere(task: cron.ScheduledTask): boolean {
+  if (!task.durable || task.ownerPid === process.pid) return true;
+  if (!holdsSchedulerLease()) return false;
+  return task.ownerPid === undefined || !isProcessAlive(task.ownerPid);
+}
+
+/** A write to the saved schedule, which another session can hold up; a failed one is skipped. */
+function attempt(write: () => void): boolean {
+  try {
+    write();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Drops a task that fired its last time; one still saved is dropped again on the next check. */
+function retire(id: string): void {
+  if (attempt(() => cron.remove(id))) spent.delete(id);
+  else spent.add(id);
+}
+
+/** Queues a prompt as a turn the model reads but the transcript does not show as typed. */
+function deliver(text: string, replayKey: string, scheduledFire?: "loop" | "task"): void {
+  emitQueue.emit({
+    class: "idle_prompt",
+    target: "both",
+    payload: {
+      kind: "user_interrupt_message",
+      text,
+      ...(scheduledFire !== undefined ? { scheduledFire } : {}),
+    },
+    autoTurn: true,
+    replayKey,
+  });
+}
+
+function fire(task: cron.ScheduledTask, now: number): void {
+  if (task.kind === "loop") noteLoopWakeupFired(task.prompt);
+  deliver(
+    resolveFirePrompt(task.prompt, process.cwd()),
+    `scheduled:${task.id}:${now}`,
+    task.kind === "loop" ? "loop" : "task",
+  );
+}
+
+/**
+ * Fires every task that is due. Nothing fires while the session is busy: the fire
+ * waits for it to go idle, so a busy session gets one fire, not one per missed tick,
+ * and the prompt is worked out against the conversation it will actually join.
+ */
+function check(now: number): void {
+  if (cron.isSchedulingDisabled() || sessionBusy()) return;
+  const all = cron.tasks();
+  probeLease(
+    all.filter((task) => task.durable),
+    now,
+  );
+  const live = new Set<string>();
+  for (const task of all) {
+    // Re-anchored from the saved state if this process takes the task over later.
+    if (!firesHere(task)) continue;
+    live.add(task.id);
+    if (spent.has(task.id)) {
+      retire(task.id);
       continue;
     }
-    if (now - last > MAX_AGE_MS && last > 0) {
-      removeJob(job.id);
-      lastFireAt.delete(job.id);
+    let due = nextFireAt.get(task.id);
+    if (due === undefined) {
+      due = firstFireMs(task) ?? Number.POSITIVE_INFINITY;
+      nextFireAt.set(task.id, due);
+    }
+    if (now < due) continue;
+    fire(task, now);
+    if (task.recurring && !hasAgedOut(task, now)) {
+      // From now, not from the missed moment: a long-blocked session catches up once.
+      nextFireAt.set(
+        task.id,
+        nextRecurringFireMs(task.cron, now, task.id) ?? Number.POSITIVE_INFINITY,
+      );
+      if (task.durable) attempt(() => cron.markFired(task.id, now));
+    } else {
+      nextFireAt.delete(task.id);
+      retire(task.id);
     }
   }
+  for (const id of nextFireAt.keys()) if (!live.has(id)) nextFireAt.delete(id);
+  for (const id of spent) if (!live.has(id)) spent.delete(id);
 }
 
-function surfaceMissedOneShots(sink: InjectionSink): void {
-  const now = Date.now();
-  const missed: { id: string; cron: string; humanSchedule: string; prompt: string }[] = [];
-  for (const job of listJobs()) {
-    const fields = parseCronExpression(job.cron);
-    if (!fields) continue;
-    const recurring = job.recurring === true;
-    if (recurring) continue;
-    const full = getJob(job.id);
-    if (!full?.durable) continue;
-    const next = computeNextCronRun(fields, new Date(full.createdAt));
-    if (!next) continue;
-    if (next.getTime() < now) {
-      missed.push({
-        id: job.id,
-        cron: job.cron,
-        humanSchedule: job.humanSchedule,
-        prompt: job.prompt,
-      });
-    }
-  }
+function fence(prompt: string): string {
+  const longestRun = Math.max(0, ...(prompt.match(/`+/g) ?? []).map((run) => run.length));
+  return "`".repeat(Math.max(3, longestRun + 1));
+}
+
+/**
+ * The notice for saved one-shot tasks whose moment passed while otherside was closed.
+ * The prompts sit in fences behind the instruction to ask first, so a task written as
+ * an imperative is not taken as an order to act now.
+ */
+export function missedTaskNotice(missed: readonly cron.ScheduledTask[]): string {
+  const plural = missed.length > 1;
+  const header =
+    `The following one-shot scheduled task${plural ? "s were" : " was"} missed while otherside was not running. ` +
+    `${plural ? "They have" : "It has"} already been removed from the saved schedule.\n\n` +
+    `Do NOT execute ${plural ? "these prompts" : "this prompt"} yet. ` +
+    `First use the AskUserQuestion tool to ask whether to run ${plural ? "each one" : "it"} now. ` +
+    "Only execute if the user confirms.";
+  const blocks = missed.map((task) => {
+    const meta = `[${cron.cronToHuman(task.cron)}, created ${new Date(task.createdAt).toLocaleString()}]`;
+    const marks = fence(task.prompt);
+    return `${meta}\n${marks}\n${task.prompt}\n${marks}`;
+  });
+  return `${header}\n\n${blocks.join("\n\n")}`;
+}
+
+function surfaceMissedOneShots(now: number): void {
+  const all = cron.tasks();
+  probeLease(
+    all.filter((task) => task.durable),
+    now,
+  );
+  const missed = missedOneShots(all, now).filter(firesHere);
   if (missed.length === 0) return;
-  const lines = missed.map(
-    (m) => `- ${m.id} (${m.humanSchedule}) — was due before this session started: ${m.prompt}`,
-  );
-  sink.pushInjection(
-    `[catch-up: ${missed.length} one-shot durable cron task${missed.length === 1 ? "" : "s"} missed while otherside was closed]\n${lines.join("\n")}`,
-  );
-  for (const m of missed) {
-    removeJob(m.id);
-    lastFireAt.delete(m.id);
-  }
+  for (const task of missed) retire(task.id);
+  deliver(missedTaskNotice(missed), `scheduled:missed:${now}`);
 }
 
-export function startCronScheduler(sink: InjectionSink): () => void {
-  if (timer !== null) return stopCronScheduler;
-  surfaceMissedOneShots(sink);
-  timer = setInterval(() => tick(sink), TICK_INTERVAL_MS);
+/** Starts firing due tasks; `isBusy` adds what keeps the session busy besides a turn. */
+export function startCronScheduler(options: { isBusy?: () => boolean } = {}): () => void {
+  if (timer !== null || cron.isSchedulingDisabled()) return stopCronScheduler;
+  const { isBusy } = options;
+  if (isBusy !== undefined) sessionBusy = () => emitQueue.isTurnActive() || isBusy();
+  surfaceMissedOneShots(Date.now());
+  timer = setInterval(() => check(Date.now()), CHECK_INTERVAL_MS);
   return stopCronScheduler;
 }
 
@@ -119,8 +173,13 @@ export function stopCronScheduler(): void {
     clearInterval(timer);
     timer = null;
   }
+  sessionBusy = () => emitQueue.isTurnActive();
+  nextFireAt.clear();
+  spent.clear();
+  nextLeaseProbeAt = 0;
+  releaseSchedulerLease();
 }
 
-export function _testTick(sink: InjectionSink): void {
-  tick(sink);
+export function checkScheduledTasksForTests(now: number): void {
+  check(now);
 }

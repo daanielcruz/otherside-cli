@@ -8,12 +8,8 @@ import { ProviderHttpError } from "@/kernel/std/types/error-meta.ts";
 import type { ImageMediaType } from "@/kernel/std/types/image.ts";
 import { isRecord } from "@/kernel/std/value-guards.ts";
 import { currentTokens, resolveProjectId } from "./auth.ts";
-import {
-  backendHost,
-  buildCloudCodeEnvelope,
-  generateContentUrl,
-  userAgent,
-} from "./fingerprint.ts";
+import { backendHost, buildCloudCodeEnvelope, generateContentUrl } from "./fingerprint.ts";
+import { type CodeAssistReply, callCodeAssist } from "./rpc.ts";
 import { refreshAntigravityQuotaWarning } from "./usage.ts";
 
 const FETCH_AVAILABLE_MODELS_PATH = "/v1internal:fetchAvailableModels";
@@ -29,27 +25,18 @@ function isAborted(error: unknown, signal?: AbortSignal): boolean {
   return signal?.aborted === true || (error instanceof Error && error.name === "AbortError");
 }
 
-function headers(accessToken: string): Record<string, string> {
-  return {
-    Authorization: `Bearer ${accessToken}`,
-    "User-Agent": userAgent(),
-    "Content-Type": "application/json",
-    "Accept-Encoding": "gzip",
-  };
-}
-
 async function postJson(
   url: string,
   body: Record<string, unknown>,
   accessToken: string,
   signal?: AbortSignal,
 ): Promise<unknown> {
-  let resp: Response;
+  let resp: CodeAssistReply;
   try {
-    resp = await fetch(url, {
-      method: "POST",
-      headers: headers(accessToken),
-      body: JSON.stringify(body),
+    resp = await callCodeAssist({
+      url,
+      accessToken,
+      body,
       ...(signal ? { signal } : {}),
     });
   } catch (error) {
@@ -57,22 +44,20 @@ async function postJson(
     throw error;
   }
   if (resp.status === 401) {
-    const text = await resp.text().catch(() => "");
     throw new Error(
-      `HTTP 401 from antigravity image generation: ${truncateEllipsis(text, 300)} — run \`otherside login --provider antigravity\``,
+      `HTTP 401 from antigravity image generation: ${truncateEllipsis(resp.text, 300)} — run \`otherside login --provider antigravity\``,
     );
   }
   if (!resp.ok) {
-    const text = await resp.text().catch(() => "");
     throw new ProviderHttpError({
       provider: "antigravity image generation",
       status: resp.status,
-      body: text,
-      retryAfterHeader: resp.headers.get("retry-after"),
+      body: resp.text,
+      retryAfterHeader: resp.headers.get("retry-after") ?? null,
     });
   }
   try {
-    return await resp.json();
+    return JSON.parse(resp.text);
   } catch (error) {
     if (isAborted(error, signal)) throw new Error("image generation aborted");
     const message = error instanceof Error ? error.message : String(error);

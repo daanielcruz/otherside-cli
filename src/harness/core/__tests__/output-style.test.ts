@@ -10,13 +10,13 @@ import {
 } from "@/harness/routines/output-styles/built-in.ts";
 import { DEFAULT_CONFIG } from "@/kernel/config/config.ts";
 
-const INTRO_DEFAULT = "helps users with software engineering tasks.";
+const INTRO_DEFAULT = "You are an agent working with the user toward their goals";
 const INTRO_STYLED = 'helps users according to your "Output Style" below';
 
 function contextWith(outputStyle: OutputStyleRecord | null): LayerContext {
   return {
     provider: "anthropic",
-    model: "claude-opus-4-8",
+    model: "claude-opus-5-5",
     effort: null,
     permissionMode: "default",
     sessionId: "sess-fixture",

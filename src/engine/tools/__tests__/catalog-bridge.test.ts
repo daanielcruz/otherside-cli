@@ -81,8 +81,7 @@ describe("tool catalog ↔ handler bridge (gates #3)", () => {
 
   it("exposes worktree tools in the deferred order with handlers", () => {
     const names = deferredToolNames();
-    expect(names.indexOf("EnterWorktree")).toBe(names.indexOf("EnterPlanMode") + 1);
-    expect(names.indexOf("ExitWorktree")).toBe(names.indexOf("ExitPlanMode") + 1);
+    expect(names.indexOf("ExitWorktree")).toBe(names.indexOf("EnterWorktree") + 1);
     for (const name of ["EnterWorktree", "ExitWorktree"]) {
       expect(registeredSchemaNames.has(name)).toBe(true);
       expect(builtinHandlerNames.has(name)).toBe(true);

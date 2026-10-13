@@ -39,7 +39,7 @@ const initialAppState = appStore.getState();
 const initialPromptState = promptStore.getState();
 const broker: BrokerState = {
   provider: "codex",
-  model: "gpt-5.6-sol",
+  model: "gpt-5.6-terra",
   effort: "high",
   fastMode: true,
   permissionMode: "yolo",
@@ -80,8 +80,46 @@ describe("StringViewStatusLine", () => {
   it("renders provider, model, available context, and used context; effort rides the promptbar badge", () => {
     const [line] = new StringViewStatusLine().render(100);
 
-    expect(stripAnsi(line ?? "")).toBe("  [Codex] GPT-5.6 Sol Fast · 272K available · 27% used");
+    expect(stripAnsi(line ?? "")).toBe("  [Codex] GPT-5.6 Terra Fast · 272K available · 27% used");
     expect(line).toContain(renderTextWithStyles("Fast", { color: Color.fastMode, bold: true }));
+  });
+
+  it("derives available context from the latest snapshot and later messages, not billing", () => {
+    const usage = {
+      inputTokens: 190_000,
+      outputTokens: 10_000,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0,
+      contextTokens: 50_000,
+    };
+    dispatch({ type: "usage/setMainLastContext", value: usage });
+    const line = new StringViewStatusLine([
+      { role: "assistant", content: [], usage },
+      { role: "user", content: [{ type: "text", text: "x".repeat(40_000) }] },
+    ]);
+    const rendered = stripAnsi(line.render(100)[0] ?? "");
+    expect(rendered).toContain("312K available");
+    expect(rendered).toContain("16% used");
+    expect(appStore.getState().usage.mainLastContext).toEqual(usage);
+  });
+
+  it("uses estimated messages and harness once the latest inference invalidates context", () => {
+    const usage = {
+      inputTokens: 190_000,
+      outputTokens: 10_000,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0,
+      contextTokens: null,
+    };
+    dispatch({ type: "usage/setMainLastContext", value: usage });
+    const line = new StringViewStatusLine([
+      { role: "assistant", content: [], usage: { ...usage, contextTokens: 50_000 } },
+      { role: "user", content: [{ type: "text", text: "x".repeat(40_000) }] },
+    ]);
+    const rendered = stripAnsi(line.render(100)[0] ?? "");
+    expect(rendered).toContain("346K available");
+    expect(rendered).toContain("7% used");
+    expect(appStore.getState().usage.mainLastContext).toEqual(usage);
   });
 
   it("subscribes to broker and usage changes and unsubscribes on teardown", () => {
@@ -128,7 +166,7 @@ describe("StringViewStatusLine", () => {
     // Still one row: the warning owns the side while it lives, and the readout
     // comes back when it expires rather than being stacked under it.
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toContain("[Codex] GPT-5.6 Sol");
+    expect(rows[0]).toContain("[Codex] GPT-5.6 Terra");
     expect(rows[0]).toContain("weekly limit reached");
     expect(rows[0]).not.toContain("1200 tokens");
   });
@@ -319,9 +357,8 @@ describe("StringViewStatusBar", () => {
     );
   });
 
-  it("uses the plan and accept-edits chip vocabulary and colors", () => {
+  it("uses the accept-edits chip vocabulary and colors", () => {
     for (const [permissionMode, symbol, label, color] of [
-      ["plan", Glyph.pause, "plan mode on", Color.modePlan],
       ["accept-edits", Glyph.fastForward.repeat(2), "accept edits on", Color.modeAccept],
     ] as const) {
       dispatch({
@@ -455,7 +492,7 @@ describe("StringViewChromeRegion", () => {
     const rows = chrome.render(100).map(stripAnsi);
 
     expect(rows).toHaveLength(4);
-    expect(rows[0]).toContain("[Codex] GPT-5.6 Sol Fast");
+    expect(rows[0]).toContain("[Codex] GPT-5.6 Terra Fast");
     expect(rows[1]).toContain("yolo mode on");
     expect(rows[2]).toBe("");
     expect(rows[3]).toBe("");

@@ -1,3 +1,4 @@
+import { asEffortLevel, type EffortLevel } from "@/kernel/std/types/effort.ts";
 import type { OrchestrationMode } from "@/kernel/std/types/orchestration-mode.ts";
 import { trimmedStringOrUndefined } from "@/kernel/std/value-guards.ts";
 
@@ -9,6 +10,7 @@ export interface ParsedAgentInput {
   tier?: string;
   model?: string;
   provider?: string;
+  effort?: EffortLevel;
   isolation?: "worktree" | "remote";
   validationError?: string;
 }
@@ -80,6 +82,13 @@ export const AGENT_OPTIONS: readonly AgentOptionDescriptor[] = [
     parse: (raw, out) => {
       const provider = trimmedStringOrUndefined(raw.provider);
       if (provider !== undefined) out.provider = provider;
+    },
+  },
+  {
+    name: "effort",
+    parse: (raw, out) => {
+      const effort = asEffortLevel(raw.effort);
+      if (effort !== undefined) out.effort = effort;
     },
   },
   {

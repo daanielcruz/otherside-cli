@@ -7,6 +7,7 @@ import {
 import { getRetryDelay, ProviderHttpError } from "@/engine/providers/_shared/retry.ts";
 import { classifyProviderError } from "@/engine/transport/_infra/classify/classify.ts";
 import { StreamSilenceError } from "@/kernel/std/stream/idle-timeout.ts";
+import { AccountVerificationError } from "@/kernel/std/types/error-meta.ts";
 
 const GLM_CONCURRENT_LIMIT =
   '{"type":"error","error":{"type":"rate_limit_error","code":"1302","message":"[1302][Rate limit reached for requests]"}}';
@@ -15,7 +16,7 @@ describe("provider error classification", () => {
   it("classifies Anthropic overload envelopes and retry headers", () => {
     const result = resolveProviderError({
       provider: "anthropic",
-      model: "claude-fable-5",
+      model: "claude-fable-5-1",
       status: 529,
       body: '{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}',
       headers: { "retry-after": "1.5" },
@@ -26,7 +27,7 @@ describe("provider error classification", () => {
       retryable: true,
       retryAfterMs: 1500,
       provider: "anthropic",
-      model: "claude-fable-5",
+      model: "claude-fable-5-1",
       detail: "Overloaded",
     });
   });
@@ -149,13 +150,13 @@ describe("provider error classification", () => {
         class: "overloaded",
         retryable: true,
         provider: "anthropic",
-        model: "claude-fable-5",
+        model: "claude-fable-5-1",
         detail: "Overloaded",
       },
       { retries: 4, elapsedMs: 31_000 },
     );
 
-    expect(text).toBe("overloaded (anthropic/claude-fable-5): overloaded — 4 retries over 31s");
+    expect(text).toBe("overloaded (anthropic/claude-fable-5-1): overloaded — 4 retries over 31s");
   });
 
   it("does not retry authentication or certificate failures", () => {
@@ -172,7 +173,7 @@ describe("provider error classification", () => {
   it("classifies a silent stream as retryable network, never unknown", () => {
     const result = resolveProviderError({
       provider: "codex",
-      model: "gpt-5.6-sol",
+      model: "gpt-5.6-terra",
       error: new StreamSilenceError(300_000),
     });
 
@@ -180,7 +181,7 @@ describe("provider error classification", () => {
       class: "network",
       retryable: true,
       provider: "codex",
-      model: "gpt-5.6-sol",
+      model: "gpt-5.6-terra",
     });
   });
 
@@ -323,19 +324,66 @@ describe("provider wire fixtures", () => {
   it.each([
     ["MODEL_CAPACITY_EXHAUSTED", "overloaded"],
     ["PREFILL_QUEUE_OVERLOADED", "overloaded"],
-    ["VERIFICATION_REQUIRED", "auth"],
+    ["VALIDATION_REQUIRED", "auth"],
   ] as const)("maps Antigravity reason %s", (reason, errorClass) => {
     expect(
       resolveProviderError({
         provider: "antigravity",
         body: JSON.stringify({
           error: {
-            message: reason === "VERIFICATION_REQUIRED" ? "Verify this account" : "High traffic",
+            message: reason === "VALIDATION_REQUIRED" ? "Verify this account" : "High traffic",
             details: [{ reason }],
           },
         }),
       }),
     ).toMatchObject({ class: errorClass, retryable: errorClass === "overloaded" });
+  });
+
+  it("keeps the whole verification page when the account check itself refused", () => {
+    const verifyAt = `https://accounts.google.com/signin/continue?plt=${"y".repeat(400)}`;
+    const resolved = resolveProviderError({
+      provider: "antigravity",
+      error: new AccountVerificationError({
+        provider: "antigravity",
+        reason: "Verify your account to continue.",
+        verificationUrl: verifyAt,
+      }),
+    });
+    expect(resolved).toMatchObject({ class: "auth", retryable: false });
+    expect(resolved.detail).toBe(`Verify your account to continue. — verify at ${verifyAt}`);
+  });
+
+  it("carries the page that verifies an Antigravity account into the message", () => {
+    const verifyAt = `https://accounts.google.com/signin/continue?sarp=1&plt=${"x".repeat(320)}`;
+    const resolved = resolveProviderError({
+      provider: "antigravity",
+      status: 403,
+      body: JSON.stringify({
+        error: {
+          code: 403,
+          message: "Verify your account to continue.",
+          status: "PERMISSION_DENIED",
+          details: [
+            {
+              "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+              reason: "VALIDATION_REQUIRED",
+              domain: "cloudcode-pa.googleapis.com",
+              metadata: {
+                validation_url: verifyAt,
+                validation_error_message: "Verify your account to continue.",
+                validation_url_link_text: "Verify your account",
+              },
+            },
+            {
+              "@type": "type.googleapis.com/google.rpc.Help",
+              links: [{ description: "Verify your account", url: verifyAt }],
+            },
+          ],
+        },
+      }),
+    });
+    expect(resolved).toMatchObject({ class: "auth", retryable: false });
+    expect(resolved.detail).toBe(`Verify your account to continue. — verify at ${verifyAt}`);
   });
 
   it("maps bare Antigravity UNAVAILABLE and preemption text as retryable", () => {

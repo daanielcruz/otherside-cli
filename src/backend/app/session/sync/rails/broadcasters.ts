@@ -89,10 +89,12 @@ export function createBroadcasters(
     );
     if (!snap) return;
     const contextTokens =
-      snap.inputTokens +
-      snap.cacheCreationInputTokens +
-      snap.cacheReadInputTokens +
-      snap.outputTokens;
+      snap.contextTokens !== undefined
+        ? snap.contextTokens
+        : snap.inputTokens +
+          snap.cacheCreationInputTokens +
+          snap.cacheReadInputTokens +
+          snap.outputTokens;
     const plaintext = ENC.encode(
       JSON.stringify({
         // session_id disambiguates concurrent sessions on one device — the env

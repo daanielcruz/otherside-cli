@@ -23,7 +23,6 @@ function contextAtDepth(depth: number): AgentContext {
     parentSessionId: "session-depth-test",
     agentType: "subagent",
     subagentName: "depth-probe",
-    sessionAllowedToolPatterns: new Set<string>(),
   };
 }
 

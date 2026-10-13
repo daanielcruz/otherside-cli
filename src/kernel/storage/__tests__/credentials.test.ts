@@ -2,7 +2,15 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { credentialsPath, loadAll, saveFor, type XaiTokens } from "../credentials.ts";
+import {
+  type AnthropicTokens,
+  credentialsPath,
+  firstLoggedProvider,
+  loadAll,
+  loadFor,
+  saveFor,
+  type XaiTokens,
+} from "../credentials.ts";
 
 describe("credentials storage", () => {
   const testConfigDir = join(
@@ -25,6 +33,23 @@ describe("credentials storage", () => {
     try {
       rmSync(testConfigDir, { recursive: true, force: true });
     } catch {}
+  });
+
+  it("stores Cloud tokens without creating or aliasing Anthropic credentials", async () => {
+    const tokens: AnthropicTokens = {
+      accessToken: "cloud-access-token",
+      refreshToken: "cloud-refresh-token",
+      expiresAt: Date.now() + 100_000,
+      organizationUuid: "cloud-organization-uuid",
+    };
+
+    await saveFor("anthropic-cloud", tokens);
+
+    expect(await loadAll()).toEqual({ "anthropic-cloud": tokens });
+    expect(await loadFor("anthropic-cloud")).toEqual(tokens);
+    expect(await loadFor("anthropic")).toBeNull();
+    expect(firstLoggedProvider(await loadAll(), "anthropic")).toBe("anthropic-cloud");
+    expect(firstLoggedProvider(await loadAll(), "anthropic-cloud")).toBeNull();
   });
 
   it("does not migrate legacy provider keys on load", async () => {

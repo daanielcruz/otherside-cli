@@ -1,4 +1,5 @@
 import { findModel } from "@/engine/model/catalog.ts";
+import * as providers from "@/engine/providers/registry.ts";
 import {
   modelAutoCompactTrigger,
   providerCompactOutputLimit,
@@ -71,6 +72,7 @@ export async function* maybeMicroCompact(
       shrinkToolResultRecord(deps.agentDeps.session, toolUseId, MICRO_COMPACT_CLEARED_MESSAGE);
     }
   }
+  providers.get(state.provider).onCompactionSucceeded?.(deps.makeCtx());
   yield {
     kind: "micro_compact",
     cleared: outcome.cleared,

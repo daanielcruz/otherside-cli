@@ -267,6 +267,7 @@ function assistantSidecar(r: AssistantMessageRecord): OsSidecar {
   const thoughtTokens = r.usage?.thought_tokens ?? 0;
   if (thoughtTokens > 0) out.thoughtTokens = thoughtTokens;
   if (r.usage) out.requestCount = r.usage.request_count;
+  if (r.usage?.contextTokens !== undefined) out.contextTokens = r.usage.contextTokens;
   return out;
 }
 

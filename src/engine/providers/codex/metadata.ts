@@ -173,8 +173,6 @@ function sandboxMode(mode: PermissionMode): SandboxMode {
   switch (mode) {
     case "yolo":
       return "danger-full-access";
-    case "plan":
-      return "read-only";
     default:
       return "workspace-write";
   }

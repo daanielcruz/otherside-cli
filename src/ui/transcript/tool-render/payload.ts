@@ -1,6 +1,7 @@
 import type { ToolResultMeta } from "@/kernel/std/types/message.ts";
 import { isRecord } from "@/kernel/std/value-guards.ts";
-import { osc8UrlLink, stringWidth, terminalAllowsLinks } from "@/terminal-runtime";
+import { stringWidth } from "@/terminal-runtime";
+import { withUrlLinks } from "@/ui/transcript/entry-text.ts";
 import {
   displayNameFor,
   formatNumberCompact,
@@ -21,13 +22,6 @@ import {
 } from "@/ui/transcript/tool-render/format.ts";
 import { removeSandboxViolationsBlock } from "@/ui/transcript/tool-render/shell-output.ts";
 import type { NestedEntry, ToolPayload } from "@/ui/transcript/tool-render/types.ts";
-
-const URL_PATTERN = /https?:\/\/[^\s)]+/g;
-
-function linkifyUrls(text: string): string {
-  if (!terminalAllowsLinks()) return text;
-  return text.replace(URL_PATTERN, (url) => osc8UrlLink({ url, label: url }));
-}
 
 export const TOOL_USE_ERROR_TAG = /^<tool_use_error>([\s\S]*?)<\/tool_use_error>$/;
 export const SANDBOX_VIOLATION_TAG = /<\/?sandbox_violation>/g;
@@ -84,7 +78,7 @@ export function payloadFromResult(input: PayloadFromResultInput): ToolPayload | 
   const base = basePayloadFromResult(input);
   if (isError || !name.startsWith("mcp__") || base?.kind !== "preview") return base;
   const warning = mcpSizeWarning(content);
-  const linked = linkifyUrls(base.text);
+  const linked = withUrlLinks(base.text);
   return { kind: "preview", text: warning ? `${warning}\n${linked}` : linked };
 }
 

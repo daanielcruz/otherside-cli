@@ -803,7 +803,7 @@ describe("loadSessionForResume", () => {
         uuid: "keep-assistant",
         content: "preserved assistant",
         provider: "codex",
-        model: "gpt-5.5",
+        model: "gpt-5.6-terra",
       },
       {
         type: "compaction_mark",
@@ -977,13 +977,13 @@ describe("loadSessionForResume", () => {
         ts: TS,
         cwd: "unused",
         provider: "codex",
-        model: "gpt-5.5",
+        model: "gpt-5.6-terra",
       },
       {
         type: "usage",
         ts: TS,
         provider: "codex",
-        model: "gpt-5.5",
+        model: "gpt-5.6-terra",
         session_id: SESSION_ID,
         request_count: 1,
         input_tokens: 100,
@@ -1033,7 +1033,7 @@ describe("loadSessionForResume", () => {
           ts: TS,
           cwd,
           provider: "codex",
-          model: "gpt-5.5",
+          model: "gpt-5.6-terra",
           effort: "xhigh",
           fastMode: true,
           ultracode: true,
@@ -1064,7 +1064,7 @@ describe("loadSessionForResume", () => {
     expect(headMeta).toMatchObject({
       type: "session_meta",
       provider: "codex",
-      model: "gpt-5.5",
+      model: "gpt-5.6-terra",
       effort: "xhigh",
       fastMode: true,
       ultracode: true,
@@ -1076,7 +1076,7 @@ describe("loadSessionForResume", () => {
 
     const restored = resolveSessionBrokerState(loaded.records, {
       provider: "anthropic",
-      model: "claude-fable-5",
+      model: "claude-fable-5-1",
       effort: "high",
       fastMode: false,
       ultracode: false,
@@ -1086,7 +1086,7 @@ describe("loadSessionForResume", () => {
     // sidecar; effort may fall back to the model default when later lines restate
     // provider/model without an effort field.
     expect(restored.provider).toBe("codex");
-    expect(restored.model).toBe("gpt-5.5");
+    expect(restored.model).toBe("gpt-5.6-terra");
     expect(restored.fastMode).toBe(true);
     expect(restored.ultracode).toBe(true);
   });
@@ -1114,13 +1114,13 @@ describe("loadSessionForResume", () => {
           uuid: "head-assistant",
           content: "head answer",
           provider: "codex",
-          model: "gpt-5.5",
+          model: "gpt-5.6-terra",
         },
         {
           type: "usage",
           ts: TS,
           provider: "codex",
-          model: "gpt-5.5",
+          model: "gpt-5.6-terra",
           session_id: SESSION_ID,
           request_count: 1,
           input_tokens: 4242,
@@ -1308,7 +1308,7 @@ function records(includeLargeHistory = true): SessionRecord[] {
       ts: TS,
       cwd: "unused",
       provider: "codex",
-      model: "gpt-5.5",
+      model: "gpt-5.6-terra",
     },
     {
       type: "user_message",
@@ -1320,7 +1320,7 @@ function records(includeLargeHistory = true): SessionRecord[] {
       ts: TS,
       content: "before answer",
       provider: "codex",
-      model: "gpt-5.5",
+      model: "gpt-5.6-terra",
     },
     {
       type: "compaction_mark",
@@ -1357,7 +1357,7 @@ function preservedSession(cwd: string): string[] {
       uuid: "keep-assistant",
       content: "preserved assistant",
       provider: "codex",
-      model: "gpt-5.5",
+      model: "gpt-5.6-terra",
       usage: {
         input_tokens: 10,
         output_tokens: 5,
@@ -1398,7 +1398,7 @@ function stalePreserveSession(cwd: string): string[] {
       uuid: "keep-assistant",
       content: "preserved assistant",
       provider: "codex",
-      model: "gpt-5.5",
+      model: "gpt-5.6-terra",
     },
     preserveBoundaryRecord(),
     {
@@ -1429,7 +1429,7 @@ function sessionMetaRecord(): SessionRecord {
     ts: TS,
     cwd: "unused",
     provider: "codex",
-    model: "gpt-5.5",
+    model: "gpt-5.6-terra",
   };
 }
 

@@ -2,12 +2,13 @@ import os from "node:os";
 import { providerEndpoint } from "@/devtools/config.ts";
 import type { WireFingerprint } from "@/engine/contract/types.ts";
 import type { CodexRequestMetadata } from "@/engine/providers/codex/metadata.ts";
+import { MODELS } from "@/engine/providers/codex/models.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 
 /** Responses/app-server client version observed on live ChatGPT Desktop wire. */
-export const CODEX_CLI_VERSION = "0.153.4";
+export const CODEX_CLI_VERSION = "0.159.2";
 /** Electron shell product version (ChatGPT.app CFBundleShortVersionString). */
-export const CODEX_APP_VERSION = "26.901.51231";
+export const CODEX_APP_VERSION = "26.928.40906";
 
 export const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 export const ISSUER = "https://auth.openai.com";
@@ -72,7 +73,7 @@ export type SubAgentLabel = "review" | "compact" | "memory_consolidation" | "col
 
 /**
  * App-server User-Agent, matching the live wire:
- * `Codex Desktop/0.153.4 (Mac OS 27.0.0; arm64) iTerm.app/3.6.11 (Codex Desktop; 26.901.51231)`
+ * `Codex Desktop/0.159.2 (Mac OS 27.0.0; arm64) iTerm.app/3.6.11 (Codex Desktop; 26.928.40906)`
  *
  * Shape: `{originator}/{cli_version} ({os} {os_version}; {arch}) [{term}/{ver} ]({originator}; {app_version})`.
  * The terminal segment is read from TERM_PROGRAM/TERM_PROGRAM_VERSION and omitted when absent.
@@ -150,6 +151,9 @@ export function buildHeaders(opts: CodexFingerprintOptions): Record<string, stri
   } else {
     headers["Content-Type"] = "application/json";
     headers.Accept = "text/event-stream";
+    if (MODELS.find((model) => model.id === opts.model)?.augment?.useResponsesLite) {
+      headers["x-openai-internal-codex-responses-lite"] = "true";
+    }
   }
   return headers;
 }

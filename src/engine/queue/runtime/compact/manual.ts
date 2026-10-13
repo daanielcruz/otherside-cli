@@ -15,12 +15,7 @@ import {
 import { summarizeConversation } from "@/engine/session/compact/summary.ts";
 import { estimateTokens } from "@/engine/session/compact/token-count.ts";
 import { pruneToolOutputArchiveForSession } from "@/engine/session/compact/tool-output-archive-prune.ts";
-import {
-  appendRecord,
-  nowIso,
-  restampSessionTitles,
-  sessionPathForCwd,
-} from "@/engine/session/index.ts";
+import { appendRecord, nowIso, sessionPathForCwd } from "@/engine/session/index.ts";
 import { MAIN_SCOPE, readSetClearExcept } from "@/engine/tools/builtins/read/state.ts";
 import { assembleProviderTurn } from "@/engine/translator/index.ts";
 import { makeQueue } from "@/harness/composer/queue.ts";
@@ -33,7 +28,11 @@ import { AsyncStream } from "@/kernel/std/stream/async.ts";
 import type { AgentEvent, ProviderEvent } from "@/kernel/std/types/events.ts";
 import type { Message } from "@/kernel/std/types/message.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
-import { type CompactOrchestrationDeps, resolveCompactWindow } from "./support.ts";
+import {
+  afterCompactionBoundary,
+  type CompactOrchestrationDeps,
+  resolveCompactWindow,
+} from "./support.ts";
 
 export interface ForceCompactOptions {
   customInstructions?: string;
@@ -178,10 +177,7 @@ async function applyCompactSummary(
   const preservedImages = collectImageBlocks(deps.agentDeps.session.messages).slice(
     -POST_COMPACT_MAX_IMAGES,
   );
-  const { blocks: rehydrationBlocks, restoredFiles } = buildPostCompactRehydration(
-    compactBrokerState.permissionMode,
-    preservedImages,
-  );
+  const { blocks: rehydrationBlocks, restoredFiles } = buildPostCompactRehydration(preservedImages);
   const newMessages: Message[] = [
     { role: "user", content: [{ type: "text", text: summaryMessage }] },
   ];
@@ -202,9 +198,7 @@ async function applyCompactSummary(
     trigger: "manual",
     ...(preservedImages.length > 0 ? { preservedImages } : {}),
   });
-  void restampSessionTitles(
-    sessionPathForCwd(deps.agentDeps.session.storageCwd, deps.agentDeps.session.id),
-  ).catch(() => {});
+  afterCompactionBoundary(deps.agentDeps.session);
 
   deps.agentDeps.session.messages.splice(0, deps.agentDeps.session.messages.length, ...newMessages);
   clearLastUsage();

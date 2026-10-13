@@ -4,7 +4,6 @@ import type { TaskRecord, TaskStatus } from "@/engine/background/tasks/index.ts"
 import { stripAnsi } from "@/terminal-runtime/text/presentation-sequences.js";
 import {
   computeMaxTaskRows,
-  findCurrentTask,
   findNextPendingTask,
   hiddenTaskSummary,
   isInternalTask,
@@ -13,6 +12,7 @@ import {
   RECENT_COMPLETED_TTL_MS,
   RecentCompletions,
   selectVisibleTasks,
+  taskLabelWidth,
   taskRowText,
 } from "@/ui/chrome/progress/task-list.ts";
 
@@ -170,17 +170,6 @@ describe("findNextPendingTask", () => {
   });
 });
 
-describe("findCurrentTask", () => {
-  it("picks the task being worked on, not a pending or finished one", () => {
-    const tasks = [task("1", "completed"), task("2", "in_progress"), task("3", "pending")];
-    expect(findCurrentTask(tasks)?.id).toBe("2");
-  });
-
-  it("has nothing to offer when nothing is in progress", () => {
-    expect(findCurrentTask([task("1", "pending"), task("2", "completed")])).toBeUndefined();
-  });
-});
-
 describe("ownerBadge", () => {
   const owners = new Set(["scout"]);
 
@@ -234,6 +223,48 @@ describe("taskRowText", () => {
     expect(row).toContain("task 1");
     expect(row).toContain("(@scout)");
     expect(row).toContain("blocked by #2");
+  });
+
+  it("leads with the task's number, so a blocked-by reference has a row to point at", () => {
+    const row = stripAnsi(
+      taskRowText({
+        task: task("88", "pending", { blockedBy: ["12"] }),
+        openBlockers: ["12"],
+        activeOwners: new Set(),
+        columns: 100,
+      }),
+    );
+    expect(row).toMatch(/^\S+ #88 task 88/);
+    expect(row).toContain("blocked by #12");
+  });
+
+  it("keeps the number outside a completed subject's strike-through", () => {
+    const row = taskRowText({
+      task: task("3", "completed"),
+      openBlockers: [],
+      activeOwners: new Set(),
+      columns: 100,
+    });
+    const strike = "\u001b[9m";
+    expect(row.indexOf("#3")).toBeLessThan(row.indexOf(strike));
+  });
+
+  it("aligns subjects across numbers of different widths", () => {
+    const rows = [task("1", "pending"), task("88", "pending")];
+    const labelWidth = taskLabelWidth(rows);
+    const [short, long] = rows.map((entry) =>
+      stripAnsi(
+        taskRowText({
+          task: entry,
+          openBlockers: [],
+          activeOwners: new Set(),
+          columns: 100,
+          labelWidth,
+        }),
+      ),
+    );
+    expect(labelWidth).toBe(3);
+    expect(short?.indexOf("task 1")).toBe(long?.indexOf("task 88"));
   });
 
   it("elides a subject too long for the columns it has", () => {

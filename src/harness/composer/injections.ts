@@ -52,7 +52,7 @@ export interface ResolvedHarnessFacts {
   /** Promoted reminders drop their wrapper; also latches the mid-system wording. */
   supportsMidSystem: boolean;
   lean: boolean;
-  modelFamily: "fable" | "sonnet" | "other";
+  modelFamily: "fable" | "sonnet" | "haiku" | "other";
   availableModels: readonly AvailableModelsRow[];
   knowledgeCutoff: string | null;
   agentRows: readonly AgentRowData[];

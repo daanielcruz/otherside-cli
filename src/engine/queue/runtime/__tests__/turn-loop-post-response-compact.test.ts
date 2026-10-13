@@ -72,7 +72,7 @@ function makeProvider(firstUsage = { inputTokens: 447_000, outputTokens: 84_603 
 
 function makeHost(
   messages: { role: "user"; content: ContentBlock[] }[] = [],
-  model = "grok-4.5",
+  model = "grok-4.6",
 ): TurnLoopHost {
   return {
     cancelled: false,

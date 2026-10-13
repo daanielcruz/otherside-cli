@@ -180,7 +180,7 @@ function makeSnapshotObject(
 
 const ctx: RequestContext = {
   provider: "anthropic",
-  model: "claude-opus-5",
+  model: "claude-opus-5-5",
   effort: "high",
   permissionMode: "default",
   sessionId: "sess-fixture-00000000-0000-0000-0000-000000000000",
@@ -299,7 +299,7 @@ describe("multiprovider assembly goldens", () => {
       expect(harnessText).toContain("Multi-provider orchestration is active in Default mode.");
       expect(harnessText).toContain("# Available models");
       expect(harnessText).toContain("## anthropic");
-      expect(harnessText).toContain("claude-opus-5");
+      expect(harnessText).toContain("claude-opus-5-5");
       expect(harnessText).not.toContain("Match the tier to the task shape");
       expect(harnessText).not.toContain("emperor — the highest reasoning rank");
 

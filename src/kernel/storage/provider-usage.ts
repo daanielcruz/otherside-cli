@@ -1,3 +1,4 @@
+import type { MessageUsageSnapshot } from "@/kernel/std/types/message.ts";
 import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 
 export interface QuotaBar {
@@ -31,13 +32,7 @@ export interface UsageSnapshot {
   providers: ProviderQuota[];
 }
 
-export interface ContextUsageSnapshot {
-  inputTokens: number;
-  outputTokens: number;
-  cacheCreationInputTokens: number;
-  cacheReadInputTokens: number;
-  thoughtTokens?: number;
-}
+export type ContextUsageSnapshot = MessageUsageSnapshot;
 
 export interface ProviderUsageTotals {
   requestCount: number;

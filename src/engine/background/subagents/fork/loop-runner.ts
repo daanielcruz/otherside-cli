@@ -13,6 +13,7 @@ import { listWorkflowTasks } from "@/engine/background/workflows/runtime/store/s
 import { accountFingerprint } from "@/engine/providers/_shared/account-identity.ts";
 import * as providers from "@/engine/providers/registry.ts";
 import { emitQueue } from "@/engine/queue/emit.ts";
+import { contextRoomFor } from "@/engine/queue/runtime/compact/support.ts";
 import { RAPID_REFILL_FAILURE_TEXT } from "@/engine/session/compact/index.ts";
 import type { UsageSnapshot } from "@/engine/session/compact/token-count.ts";
 import { releaseForkChain } from "@/engine/session/infra.ts";
@@ -460,6 +461,7 @@ export async function runForkLoopInContext(
           thoughtTokens: usage.thoughtTokens ?? 0,
           cacheCreationInputTokens: usage.cacheCreationInputTokens ?? 0,
           cacheReadInputTokens: usage.cacheReadInputTokens ?? 0,
+          ...(usage.contextTokens !== undefined ? { contextTokens: usage.contextTokens } : {}),
           ...parentRef,
         });
         appendSidechainRecord({
@@ -477,6 +479,7 @@ export async function runForkLoopInContext(
         });
         lastForkUsage = usage;
       }
+      if (usage.contextTokens !== undefined) lastForkUsage = usage;
 
       if (text.length > 0) lastText = text;
 
@@ -494,13 +497,27 @@ export async function runForkLoopInContext(
         blocks.push(block);
       }
       if (text.length > 0) blocks.push({ type: "text", text });
-      if (text.length > 0 || thinking.length > 0) {
+      if (text.length > 0 || thinking.length > 0 || usage.contextTokens !== undefined) {
         appendSidechainRecord({
           type: "assistant_message",
           ts: nowIso(),
           content: text,
           provider: ctx.provider,
           model: ctx.model,
+          ...(usage.contextTokens !== undefined
+            ? {
+                // Spend is recorded separately above; this stamp restores only context.
+                usage: {
+                  input_tokens: 0,
+                  output_tokens: 0,
+                  thought_tokens: 0,
+                  cache_creation_input_tokens: 0,
+                  cache_read_input_tokens: 0,
+                  request_count: 0,
+                  contextTokens: usage.contextTokens,
+                },
+              }
+            : {}),
           ...(thinking.length > 0 ? { thinking } : {}),
         });
       }
@@ -523,11 +540,12 @@ export async function runForkLoopInContext(
           model: ctx.model,
         });
       }
-      if (blocks.length > 0) {
+      if (blocks.length > 0 || usage.contextTokens !== undefined) {
         const account = accountFingerprint(ctx.provider);
         fork.push({
           role: "assistant",
           content: blocks,
+          ...(usage.contextTokens !== undefined ? { usage } : {}),
           producedBy: ctx.provider,
           producedModel: ctx.model,
           ...(account ? { producedAccount: account } : {}),
@@ -624,9 +642,10 @@ export async function runForkLoopInContext(
         break;
       }
 
+      const contextRoom = contextRoomFor(fork, () => lastForkUsage, ctx);
       const dispatchOutcome = await dispatchForkToolCalls({
         toolCalls,
-        ctx,
+        ctx: contextRoom === undefined ? ctx : { ...ctx, contextRoom },
         spec,
         forkId,
         name,

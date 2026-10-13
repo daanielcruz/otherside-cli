@@ -38,7 +38,6 @@ export interface ThemeRecord {
   system: TerminalColor;
   modeYolo: TerminalColor;
   modeAccept: TerminalColor;
-  modePlan: TerminalColor;
   designSession: TerminalColor;
   bashMode: TerminalColor;
   bashInputBg: TerminalColor;
@@ -74,7 +73,6 @@ const SHARED_TUI: Pick<
   | "highlight"
   | "modeYolo"
   | "modeAccept"
-  | "modePlan"
   | "designSession"
   | "bashMode"
   | "bashInputBg"
@@ -99,7 +97,6 @@ const SHARED_TUI: Pick<
   highlight: "#B1B9F9",
   modeYolo: "#FF6B80",
   modeAccept: "#48AAAA",
-  modePlan: "#48968C",
   designSession: "#4EBA65",
   bashMode: "#FD5DB1",
   bashInputBg: "#413C41",
@@ -332,9 +329,6 @@ export const Glyph = {
   promptBusy: "… ",
   bolt: "↯",
   fastForward: "⏵",
-  // Windows Terminal falls back to the emoji font for U+23F8 even with VS15;
-  // two heavy bars carry the pause meaning without an emoji mapping.
-  pause: getPlatform() === "macos" ? "⏸\uFE0E" : "❚❚",
   bullet: getPlatform() === "macos" ? "⏺" : "●",
   bulletFilled: "●",
   bulletHollow: "○",

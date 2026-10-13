@@ -10,7 +10,7 @@ function makeDeps(config: Record<string, unknown>): AgentDeps {
   const broker = {
     read: () => ({
       provider: "codex",
-      model: "gpt-5.6-sol",
+      model: "gpt-5.6-terra",
       effort: null,
       fastMode: false,
       permissionMode: "default",

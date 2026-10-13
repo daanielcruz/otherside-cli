@@ -1,16 +1,31 @@
+import { forgetDeliveredLoopInstructions } from "@/engine/background/loop/autonomous.ts";
+import { findModel } from "@/engine/model/catalog.ts";
 import type { AgentDeps } from "@/engine/queue/runtime/turn/types.ts";
 import { groupByApiRound } from "@/engine/session/compact/grouping.ts";
 import { estimateHarnessTokens } from "@/engine/session/compact/harness-baseline.ts";
-import { configuredCompactWindow } from "@/engine/session/compact/index.ts";
+import {
+  configuredCompactWindow,
+  modelAutoCompactTrigger,
+} from "@/engine/session/compact/index.ts";
 import {
   countTokensWithEstimates,
   hasAuthoritativeUsage,
   type UsageSnapshot,
 } from "@/engine/session/compact/token-count.ts";
+import { restampSessionTitles, sessionPathForCwd } from "@/engine/session/index.ts";
 import type { InjectionQueue } from "@/harness/composer/injections.ts";
 import type { Message } from "@/kernel/std/types/message.ts";
 import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
-import type { RequestContext } from "@/kernel/std/types/request.ts";
+import type { ContextRoom, RequestContext } from "@/kernel/std/types/request.ts";
+
+/**
+ * What every compaction does once its boundary is on disk: session titles restamp,
+ * and anything delivered only into the discarded history is delivered again.
+ */
+export function afterCompactionBoundary(session: AgentDeps["session"]): void {
+  void restampSessionTitles(sessionPathForCwd(session.storageCwd, session.id)).catch(() => {});
+  forgetDeliveredLoopInstructions();
+}
 
 // Consecutive summarization failures that pause auto-compaction until the
 // breaker re-arms. Auto-compaction is the only bound on session.messages
@@ -37,7 +52,7 @@ export interface CompactOrchestrationDeps {
 }
 
 export function computeUsedContextTokens(
-  messages: Message[],
+  messages: readonly Message[],
   lastUsage: UsageSnapshot | null,
   provider: ProviderId,
   model: string,
@@ -49,6 +64,33 @@ export function computeUsedContextTokens(
 
 export function resolveCompactWindow(model: { contextWindow: number }): number {
   return configuredCompactWindow(model.contextWindow).window;
+}
+
+/**
+ * The room one round of tool calls has before the conversation compacts: the
+ * conversation's size is read when asked, and reads that lift their size limit
+ * claim what they added so later reads in the same round see it.
+ */
+export function contextRoomFor(
+  messages: readonly Message[],
+  lastUsage: () => UsageSnapshot | null,
+  ctx: Pick<RequestContext, "provider" | "model">,
+): ContextRoom | undefined {
+  const model = findModel(ctx);
+  if (model === undefined) return undefined;
+  const threshold = modelAutoCompactTrigger({
+    model,
+    window: resolveCompactWindow(model),
+    provider: ctx.provider,
+  });
+  let claimed = 0;
+  return {
+    threshold,
+    used: () => computeUsedContextTokens(messages, lastUsage(), ctx.provider, ctx.model) + claimed,
+    claim: (tokens) => {
+      claimed += tokens;
+    },
+  };
 }
 
 export function splitPreservedTail(

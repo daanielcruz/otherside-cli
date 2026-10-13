@@ -5,8 +5,10 @@ import { registerDesignFork, unregisterDesignFork } from "@/design/fork-context.
 import { DESIGN_FORK_BODY } from "@/design/harness.ts";
 import { buildDesignHistory } from "@/design/history.ts";
 import { DESIGN_STREAM_TOOL_INPUTS, DesignStreamPreview } from "@/design/stream-preview.ts";
+import { drainDesignSteerMessages, setDesignTurnSteerable } from "@/design/turns.ts";
 import type { RpcContext } from "@/design/types.ts";
 import { drainVerificationQueue } from "@/design/verifier.ts";
+import { writeDebugError } from "@/devtools/output.ts";
 import { runForkLoopExternal } from "@/engine/background/subagents/dispatcher.ts";
 import type { ForkEvent } from "@/kernel/std/types/events.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
@@ -19,10 +21,11 @@ export async function runVerificationRounds(args: {
   designId: string;
   streamId: number;
   requestContext: RequestContext;
+  turnController: AbortController;
   toolset: DesignToolset;
   turnIndex: number;
 }): Promise<void> {
-  const { ctx, designId, streamId, requestContext, toolset, turnIndex } = args;
+  const { ctx, designId, streamId, requestContext, turnController, toolset, turnIndex } = args;
   const turnSignal = requestContext.abortSignal;
   const needsWorkStreak = new Map<string, number>();
   // One extra pass beyond the repair budget: the last repair's fixes still get
@@ -31,7 +34,9 @@ export async function runVerificationRounds(args: {
   for (let round = 0; round <= MAX_VERIFICATION_ROUNDS; round += 1) {
     if (turnSignal?.aborted) return;
     const findings = await drainVerificationQueue({ ctx, designId, requestContext });
-    if (findings.length === 0) return;
+    // The verifier is the long phase: a turn superseded meanwhile owns the
+    // design now, and its stale findings must not start a repair fork.
+    if (turnSignal?.aborted || findings.length === 0) return;
     if (round === MAX_VERIFICATION_ROUNDS) return;
     for (const finding of findings) {
       needsWorkStreak.set(finding.path, (needsWorkStreak.get(finding.path) ?? 0) + 1);
@@ -74,6 +79,9 @@ export async function runVerificationRounds(args: {
       if (event.kind === "fork_text_delta") return;
       emitForkEvent(ctx, streamId, event, designId);
     };
+    // A repair fork drains steers like the main turn did; between forks a
+    // message starts a new turn instead of waiting on a verifier.
+    setDesignTurnSteerable(designId, turnController, true);
     try {
       const result = await runForkLoopExternal({
         ctx: requestContext,
@@ -86,15 +94,18 @@ export async function runVerificationRounds(args: {
         scopedTools: toolset.scopedTools,
         prompt,
         initialMessages: [...history, { role: "user", content: [{ type: "text", text: prompt }] }],
+        pendingUserInputDrainer: () => drainDesignSteerMessages(designId),
         streamToolInputFor: DESIGN_STREAM_TOOL_INPUTS,
         sink,
       });
       if (!result.isError && result.output.trim().length > 0) {
         completeSnapshot(ctx, designId, result.output, turnIndex);
       }
-    } catch {
+    } catch (error) {
+      if (!turnSignal?.aborted) writeDebugError("design repair round failed", error);
       return;
     } finally {
+      setDesignTurnSteerable(designId, turnController, false);
       streamPreview.rollbackAll();
       if (roundForkId) unregisterDesignFork(roundForkId);
     }
