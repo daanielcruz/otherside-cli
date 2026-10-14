@@ -458,12 +458,13 @@ export function mapGeminiFinishReason(reason: string, sawTool: boolean): string 
       return sawTool ? "tool_calls" : "stop";
     case "MAX_TOKENS":
       return "length";
+    // A safety or content filter withheld the reply: the turn has nothing usable.
     case "SAFETY":
     case "RECITATION":
     case "BLOCKLIST":
     case "PROHIBITED_CONTENT":
     case "SPII":
-      return "content_filter";
+      return "refusal";
     case "MALFORMED_FUNCTION_CALL":
       return "error";
     case "LANGUAGE":
@@ -481,6 +482,8 @@ interface GeminiToolBuf {
 }
 
 export interface GeminiResponseErrorHandlers {
+  /** The provider the stream belongs to, named in errors the stream itself raises. */
+  provider: string;
   onRateLimit(body: string): never;
   onHttpError(code: number, body: string): never;
 }
@@ -593,7 +596,7 @@ async function* geminiResponseGenerator(
   if (!finished) {
     if (sawContent) {
       throw streamErrorToHttpError({
-        provider: "gemini",
+        provider: handlers.provider,
         rawBody: JSON.stringify({
           error: { type: "api_error", message: "stream closed before finishReason" },
         }),

@@ -19,6 +19,9 @@ const SYNTHETIC_ASSISTANT_ERROR_TYPES: ReadonlyMap<string, string> = new Map([
   ["server_error", "api_error"],
   ["unknown", "unknown"],
   ["max_output_tokens", "max_output_tokens"],
+  ["account_on_hold", "permission_error"],
+  ["verification_required", "permission_error"],
+  ["cloud_credential_error", "api_error"],
 ]);
 
 export class CloudSyntheticAssistantError extends ProviderHttpError {

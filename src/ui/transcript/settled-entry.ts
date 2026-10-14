@@ -3,6 +3,7 @@ import type {
   SkillProgressItem,
   TranscriptImage,
 } from "@/engine/session/record/types.ts";
+import type { TurnNoticeLevel } from "@/kernel/std/types/events.ts";
 import type { ToolEntryData } from "@/ui/transcript/string-view-tool.ts";
 import type { ToolPayload, ToolStatus } from "@/ui/transcript/tool-render/types.ts";
 
@@ -21,7 +22,12 @@ export type SettledEntry =
   | { readonly kind: "assistant"; readonly text: string; readonly continuation?: boolean }
   | { readonly kind: "tool"; readonly data: ToolEntryData }
   | { readonly kind: "thinking"; readonly text: string; readonly detailOnly?: boolean }
-  | { readonly kind: "system"; readonly text: string; readonly isError: boolean }
+  | {
+      readonly kind: "system";
+      readonly text: string;
+      readonly isError: boolean;
+      readonly level?: TurnNoticeLevel;
+    }
   | { readonly kind: "api_error"; readonly text: string }
   | {
       readonly kind: "bash_input";

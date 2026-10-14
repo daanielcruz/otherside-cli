@@ -1,6 +1,6 @@
 {
   "name": "otherside",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Multi-provider coding agent CLI.",
   "type": "module",
   "private": true,

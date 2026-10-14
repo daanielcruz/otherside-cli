@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   geminiSanitizeSchema,
   geminiToolsToFunctionDeclarations,
+  mapGeminiFinishReason,
 } from "@/engine/providers/_shared/gemini-wire.ts";
 import agentTool from "@/harness/tools/Agent/tool.json" with { type: "json" };
 
@@ -59,5 +60,17 @@ describe("geminiToolsToFunctionDeclarations", () => {
     const parameters = decls[0]!.parameters as Record<string, unknown>;
     const properties = parameters.properties as Record<string, Record<string, unknown>>;
     expect(properties.tier!.enum).toEqual(["emperor", "shogun", "daimyo", "samurai"]);
+  });
+});
+
+describe("mapGeminiFinishReason", () => {
+  test.each([
+    "SAFETY",
+    "RECITATION",
+    "BLOCKLIST",
+    "PROHIBITED_CONTENT",
+    "SPII",
+  ])("reports a %s block as a refusal", (reason) => {
+    expect(mapGeminiFinishReason(reason, false)).toBe("refusal");
   });
 });

@@ -66,16 +66,20 @@ export function streamErrorToHttpError(opts: {
   provider: string;
   rawBody: string;
   fallbackStatus?: number;
+  /** Headers an in-stream error frame carries, as an HTTP error would. */
+  headers?: Record<string, string>;
 }): ProviderHttpError {
   const classified = resolveProviderError({
     provider: opts.provider,
     ...(opts.fallbackStatus !== undefined ? { status: opts.fallbackStatus } : {}),
+    ...(opts.headers !== undefined ? { headers: opts.headers } : {}),
     body: opts.rawBody,
   });
   return new ProviderHttpError({
     provider: opts.provider,
     status: classified.status ?? opts.fallbackStatus ?? 500,
     body: opts.rawBody,
+    ...(opts.headers !== undefined ? { headers: opts.headers } : {}),
     quotaExhausted: classified.class === "quota_exhausted",
     quotaResetEpochMs: classified.quotaResetEpochMs ?? null,
   });

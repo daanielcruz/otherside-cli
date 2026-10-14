@@ -387,6 +387,25 @@ describe("antigravity wire", () => {
     ]);
   });
 
+  it("raises a bare mid-stream error frame instead of ending the turn as a success", async () => {
+    const frames = [
+      `data: ${JSON.stringify({ response: { candidates: [{ content: { parts: [{ text: "Partial" }] } }] } })}\n\n`,
+      `${JSON.stringify({ error: { code: 429, status: "RESOURCE_EXHAUSTED", message: "Quota exhausted", details: [{ reason: "QUOTA_EXHAUSTED" }] } })}\n\n`,
+    ];
+    async function* sse(): AsyncIterable<Uint8Array> {
+      for (const frame of frames) yield Buffer.from(frame, "utf8");
+    }
+    const events: ProviderEvent[] = [];
+    let thrown: unknown;
+    try {
+      for await (const ev of translateResponseAntigravity(sse())) events.push(ev);
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toMatchObject({ provider: "antigravity", status: 429 });
+    expect(events.some((ev) => ev.kind === "message_stop")).toBe(false);
+  });
+
   it("preserves valid contents across in-session transitions (gemini-4-argon -> gemini-3.8-flash -> non-antigravity -> claude-sonnet-4-6 -> gemini-4-argon)", () => {
     const priorConfigDir = process.env.OTHERSIDE_CONFIG_DIR;
     process.env.OTHERSIDE_CONFIG_DIR = "/nonexistent-wire-test-config-dir";

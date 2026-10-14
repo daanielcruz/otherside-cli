@@ -24,6 +24,7 @@ import { emitQueue } from "@/engine/queue/emit.ts";
 import { previewArgs } from "@/engine/queue/runtime/args-preview.ts";
 import { contextRoomFor } from "@/engine/queue/runtime/compact/support.ts";
 import { partitionForConcurrency } from "@/engine/queue/runtime/concurrency.ts";
+import { goalHeardFromUser } from "@/engine/queue/runtime/goal-after-turn.ts";
 import { TOOL_RESULT_INTERRUPTED } from "@/engine/queue/runtime/interruption-text.ts";
 import { mergeAsyncStreams } from "@/engine/queue/runtime/merge-async-streams.ts";
 import { collectNestedMemoryForTool } from "@/engine/queue/runtime/nested-memory.ts";
@@ -31,6 +32,10 @@ import { drainOrphanInterrupts } from "@/engine/queue/runtime/orphan-synth.ts";
 import { resolvePermission } from "@/engine/queue/runtime/permission-resolution.ts";
 import { queuedInputBlocks } from "@/engine/queue/runtime/turn-prompts.ts";
 import { appendRecord, nowIso } from "@/engine/session/index.ts";
+import {
+  isUnownedNotification,
+  taskNoticeTextFromNotification,
+} from "@/engine/session/transcript/record-format.ts";
 import {
   foldTextIntoToolResult,
   lastFoldableToolResult,
@@ -54,10 +59,14 @@ import type { TurnLoopHost } from "./types.ts";
 
 const BASH_PROMOTION_HANDOFF_GRACE_MS = 250;
 
-export function appendNotificationRecords(
+/**
+ * Records notifications the model just received. One no background task owns has
+ * no completion row of its own, so its summary becomes the row.
+ */
+export function* deliverNotificationRecords(
   host: TurnLoopHost,
   notifications: readonly string[],
-): void {
+): Generator<AgentEvent> {
   for (const text of notifications) {
     appendRecord(host.deps.session, {
       type: "attachment",
@@ -69,6 +78,9 @@ export function appendNotificationRecords(
         isMeta: true,
       },
     }).catch(() => {});
+    if (isUnownedNotification(text)) {
+      yield { kind: "notification_delivered", summary: taskNoticeTextFromNotification(text) };
+    }
   }
 }
 
@@ -417,7 +429,10 @@ async function* finalizeToolDispatchBatch(args: {
     host.cancelled || controller.signal.aborted || stopsTurn
       ? []
       : (host.pendingUserInputDrainer?.() ?? []);
-  if (queuedMessages.length > 0) resultBlocks.push(...queuedInputBlocks(queuedMessages));
+  if (queuedMessages.length > 0) {
+    goalHeardFromUser(host.deps.session.id);
+    resultBlocks.push(...queuedInputBlocks(queuedMessages));
+  }
   const toolLoopEndDrain = emitQueue.drainForBoundary("tool_loop_end");
   const notificationBlockTexts = new Set(
     toolLoopEndDrain.notificationTexts.map(wrapNotificationForModel),
@@ -436,7 +451,7 @@ async function* finalizeToolDispatchBatch(args: {
     }
     resultBlocks.push(block);
   }
-  appendNotificationRecords(host, toolLoopEndDrain.notificationTexts);
+  yield* deliverNotificationRecords(host, toolLoopEndDrain.notificationTexts);
   for (const call of toolCalls) {
     if (seen.has(call.id)) continue;
     if (resultBlocks.some((b) => (b as { tool_use_id?: string }).tool_use_id === call.id)) {

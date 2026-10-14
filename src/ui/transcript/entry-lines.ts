@@ -162,6 +162,10 @@ function systemEntryLines(
   if (entry.isError) {
     return errorEntryLines(entry.text, width, `${Glyph.bullet} `, presentation);
   }
+  if (entry.level !== undefined) {
+    const tone = entry.level === "warning" ? Color.warning : Color.muted;
+    return plainEntryLines(entry.text, width, `${Glyph.bullet} `, tone, tone);
+  }
   return plainEntryLines(entry.text, width, Glyph.systemBullet, Color.system, Color.system);
 }
 

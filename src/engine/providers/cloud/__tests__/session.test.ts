@@ -3173,6 +3173,7 @@ describe("Cloud protected local SDK sessions", () => {
       expect(adapter.recoverableError(error, CONTEXT, 9)).toEqual({
         kind: "fail",
         reason: actionable,
+        failure: "unclassified",
         userMessage: actionable,
       });
       const before = fixture.requests.length;
@@ -3753,6 +3754,7 @@ describe("Cloud protected local SDK sessions", () => {
     expect(adapter.recoverableError(error, CONTEXT, 9)).toEqual({
       kind: "fail",
       reason: actionable,
+      failure: "unclassified",
       userMessage: actionable,
     });
     const before = fixture.requests.length;

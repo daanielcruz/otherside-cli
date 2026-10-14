@@ -96,7 +96,7 @@ describe("xai stream 401 refresh-then-retry", () => {
     await expect(async () => {
       for await (const _ of xaiStream(ctx(), { model: "grok-4.6" }, new AbortController().signal)) {
       }
-    }).toThrow("HTTP 401 from grok /v1/responses");
+    }).toThrow("HTTP 401 from xai: unauthorized");
 
     expect(refreshCalls).toBe(1);
     expect(responseCalls).toBe(2);

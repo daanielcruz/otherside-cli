@@ -43,12 +43,17 @@ export function parseWireError(body: string): ParsedWireError {
       record(rootRecord.base_response) ??
       rootRecord;
     const errorText = typeof rootRecord.error === "string" ? rootRecord.error : "";
+    // A refusal can arrive as a bare `detail` string with no error object.
+    const detailText = typeof rootRecord.detail === "string" ? rootRecord.detail : "";
     const metadata = record(error.metadata) ?? {};
     const details = Array.isArray(error.details) ? error.details : [];
+    // Some providers name the precise failure in a details object beside the type.
+    const detailsCode = stringValue(record(error.details)?.error_code);
     let reason = stringValue(error.reason);
-    let uiMessage = stringValue(metadata.uiMessage);
+    let uiMessage = displayText(metadata.uiMessage);
     let retryDelayMs: number | null = null;
-    let quotaId = "";
+    let resetEpochMs: number | null = null;
+    let quotaId = stringValue(metadata.quota_limit);
     let domain = "";
     let verificationUrl = "";
     for (const rawDetail of details) {
@@ -56,10 +61,15 @@ export function parseWireError(body: string): ParsedWireError {
       if (!detail) continue;
       const detailMetadata = record(detail.metadata) ?? {};
       reason ||= stringValue(detail.reason);
-      uiMessage ||= stringValue(detailMetadata.uiMessage);
+      uiMessage ||= displayText(detailMetadata.uiMessage);
       domain ||= stringValue(detail.domain);
-      verificationUrl ||= stringValue(detailMetadata.validation_url);
+      verificationUrl ||=
+        stringValue(detailMetadata.validation_url) ||
+        stringValue(detailMetadata.validation_link) ||
+        helpLinkUrl(detail.links);
+      quotaId ||= stringValue(detailMetadata.quota_limit);
       retryDelayMs ??= durationMs(detail.retryDelay ?? detail.retry_delay);
+      resetEpochMs ??= quotaResetFrom(detailMetadata);
       const violations = Array.isArray(detail.violations) ? detail.violations : [];
       for (const rawViolation of violations) {
         const violation = record(rawViolation);
@@ -68,17 +78,27 @@ export function parseWireError(body: string): ParsedWireError {
     }
     const resetAt = numberValue(error.resets_at) ?? numberValue(metadata.resets_at);
     const resetsIn = numberValue(error.resets_in_seconds);
+    const message = stringValue(
+      error.message || error.msg || error.status_msg || errorText || detailText,
+    );
     return {
       eventType: stringValue(rootRecord.type),
-      code: stringValue(error.code || error.status_code || error.error_code),
+      code:
+        stringValue(error.code || error.status_code || error.error_code) ||
+        detailsCode ||
+        trailingCode(message),
       type: stringValue(error.type),
       status: stringValue(error.status),
       reason,
-      message: stringValue(error.message || error.msg || error.status_msg || errorText),
+      message,
       uiMessage,
       retryDelayMs,
       resetEpochMs:
-        resetAt !== null ? resetAt * 1000 : resetsIn !== null ? Date.now() + resetsIn * 1000 : null,
+        resetAt !== null
+          ? resetAt * 1000
+          : resetsIn !== null
+            ? Date.now() + resetsIn * 1000
+            : resetEpochMs,
       quotaId,
       domain,
       verificationUrl,
@@ -86,6 +106,34 @@ export function parseWireError(body: string): ParsedWireError {
   } catch {
     return empty;
   }
+}
+
+/**
+ * A display message. `"true"` and `"false"` are flags that say whether to show
+ * the error's own message, so they are never text to show.
+ */
+function displayText(value: unknown): string {
+  const text = stringValue(value);
+  return text === "true" || text === "false" ? "" : text;
+}
+
+/** A code some providers append to the message itself, as in `… (2056)`. */
+function trailingCode(message: string): string {
+  return message.match(/\((\d{4,5})\)\s*$/)?.[1] ?? "";
+}
+
+function helpLinkUrl(links: unknown): string {
+  if (!Array.isArray(links)) return "";
+  return stringValue(record(links[0])?.url);
+}
+
+/** When a spent quota resets, from the stamp or the delay the error carries. */
+function quotaResetFrom(metadata: Record<string, unknown>): number | null {
+  const stamp = stringValue(metadata.quotaResetTimeStamp);
+  const at = stamp ? Date.parse(stamp) : Number.NaN;
+  if (Number.isFinite(at)) return at;
+  const delay = durationMs(metadata.quotaResetDelay);
+  return delay === null ? null : Date.now() + delay;
 }
 
 function durationMs(value: unknown): number | null {

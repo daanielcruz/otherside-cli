@@ -18,6 +18,14 @@ import {
   maybeCompact,
   maybeMicroCompact,
 } from "@/engine/queue/runtime/compact/orchestration.ts";
+import { goalAfterTurn, goalHeardFromUser } from "@/engine/queue/runtime/goal-after-turn.ts";
+import {
+  armGoalIdleCheckIn,
+  cancelGoalIdleCheckIn,
+  holdGoalCheck,
+  releaseGoalCheck,
+  sessionDeferringWork,
+} from "@/engine/queue/runtime/goal-check-in.ts";
 import { evaluateGoal, goalContinuePrompt } from "@/engine/queue/runtime/goal-evaluation.ts";
 import { flushOrphanToolUses } from "@/engine/queue/runtime/orphan-synth.ts";
 import {
@@ -25,27 +33,39 @@ import {
   type MemoryRecallPrefetch,
 } from "@/engine/queue/runtime/prefetch.ts";
 import { makeRequestContext } from "@/engine/queue/runtime/request-context.ts";
-import { stopHookBlockCap } from "@/engine/queue/runtime/stop-hook-classifier.ts";
+import {
+  stopBlockCapReached,
+  stopBlockCapText,
+} from "@/engine/queue/runtime/stop-hook-classifier.ts";
 import { setStopHookActiveTurn } from "@/engine/queue/runtime/stop-hook-rewake.ts";
+import { turnNotice } from "@/engine/queue/runtime/turn-notice.ts";
 import { queuedInputBlocks } from "@/engine/queue/runtime/turn-prompts.ts";
 import { getActiveGoal } from "@/engine/queue/state.ts";
 import { appendRecord } from "@/engine/session/index.ts";
 import { fireConfiguredHooks } from "@/kernel/hooks/handler.ts";
 import { uuidv4 } from "@/kernel/std/id.ts";
+import { getRuntimeKind } from "@/kernel/std/proc/runtime-mode.ts";
+import type { RequestFailure } from "@/kernel/std/types/error-meta.ts";
 import type { AgentEvent } from "@/kernel/std/types/events.ts";
 import { type ContentBlock } from "@/kernel/std/types/message.ts";
 import { commitAssistantMessage } from "./assistant-commit.ts";
 import { TurnAttempt } from "./attempt.ts";
 import { beginTurnEpoch, isSuperseded } from "./epoch.ts";
 import { loopErrorMeta } from "./loop-error-meta.ts";
-import { compactDepsFor, runningSessionWorkCount } from "./loop-support.ts";
+import { compactDepsFor } from "./loop-support.ts";
 import {
   fireStopPromptHooks,
   mergeUsageSnap,
   openProviderStream,
   turnStreamDeps,
 } from "./stream.ts";
-import { appendNotificationRecords, dispatchTurnToolCalls } from "./tool-dispatch.ts";
+import { deliverNotificationRecords, dispatchTurnToolCalls } from "./tool-dispatch.ts";
+import {
+  requestFailed,
+  requestFailureOf,
+  requestFailureOfThrown,
+  type TurnEnding,
+} from "./turn-ending.ts";
 import { openTurnPrompt } from "./turn-opening.ts";
 import type { TurnLoopHost } from "./types.ts";
 
@@ -58,8 +78,31 @@ export async function* runTurn(
   userInput: string | ContentBlock[],
   keywordText?: string,
 ): AsyncIterable<AgentEvent> {
+  const session = host.deps.session;
+  let ending: TurnEnding | undefined;
+  try {
+    ending = yield* runTurnRounds(host, userInput, keywordText);
+  } catch (err) {
+    const { provider, model } = host.deps.broker.read();
+    yield* goalAfterTurn(session, requestFailed(requestFailureOfThrown(err, { provider, model })));
+    throw err;
+  }
+  if (ending !== undefined) yield* goalAfterTurn(session, ending);
+}
+
+/**
+ * The turn's rounds. The ending says why they stopped; there is none when the
+ * turn never started or a newer turn took over.
+ */
+async function* runTurnRounds(
+  host: TurnLoopHost,
+  userInput: string | ContentBlock[],
+  keywordText?: string,
+): AsyncGenerator<AgentEvent, TurnEnding | undefined> {
   const turnEpoch = beginTurnEpoch(host);
   const isCancelled = (): boolean => host.cancelled || isSuperseded(host, turnEpoch);
+  const cancelledEnding = (): TurnEnding | undefined =>
+    isSuperseded(host, turnEpoch) ? undefined : { reason: "cancelled" };
   host.cancelled = false;
   host.currentTurnId = uuidv4();
   const controller = new AbortController();
@@ -68,6 +111,9 @@ export async function* runTurn(
     typeof userInput === "string" && userInput.length === 0
       ? (host.pendingUserInputDrainer?.() ?? [])
       : [];
+  if (userInput.length > 0 || initialQueuedMessages.length > 0) {
+    goalHeardFromUser(host.deps.session.id);
+  }
   if (initialQueuedMessages.length > 0) {
     host.deps.session.messages.push({
       role: "user",
@@ -89,7 +135,7 @@ export async function* runTurn(
           ? turnStartDrain.llmBlocks
           : [...turnStartDrain.llmBlocks, ...loopTickNoteBlocks(loopTick.attachment)],
     });
-    appendNotificationRecords(host, turnStartDrain.notificationTexts);
+    yield* deliverNotificationRecords(host, turnStartDrain.notificationTexts);
     for (const fire of fires) {
       if (fire.kind === "task") {
         const record = scheduledTaskFireRecord(fire.prompt);
@@ -126,7 +172,7 @@ export async function* runTurn(
       abortSignal: controller.signal,
     });
     memoryRecall = opening.memoryRecall;
-    if (!opening.proceed) return;
+    if (!opening.proceed) return undefined;
     const turnState = opening.turnState;
 
     if (Number.isFinite(host.compactState.turnsSinceLast)) {
@@ -136,13 +182,25 @@ export async function* runTurn(
     yield* maybeCompact(compactDepsFor(host));
 
     let turn = 0;
-    let goalContinueCount = 0;
-    let stopHookBlockCount = 0;
+    let stopBlockCount = 0;
+    // An unmet goal, a goal check-in and a blocking Stop hook share one count:
+    // each keeps the turn from ending, and past the cap the turn ends with a
+    // warning. The rounds a block opens tell their Stop hooks so, which lets a
+    // hook allow the turn to end.
+    const holdTurnOpen = function* (): Generator<AgentEvent, boolean> {
+      stopBlockCount += 1;
+      if (stopBlockCapReached(stopBlockCount)) {
+        yield turnNotice(host.deps.session, stopBlockCapText(stopBlockCount), "warning");
+        return false;
+      }
+      setStopHookActiveTurn(true);
+      return true;
+    };
     let consecutiveSilentTurns = 0;
     let maxOutputTokensRecoveryCount = 0;
     let hasRetriedMalformedToolUse = false;
     while (true) {
-      if (isCancelled()) return;
+      if (isCancelled()) return cancelledEnding();
       if (turn > 0) {
         yield* maybeMicroCompact(compactDepsFor(host));
         yield* maybeCompact(compactDepsFor(host));
@@ -158,7 +216,7 @@ export async function* runTurn(
           host.deps.session.messages.push({ role: "user", content: midTurnBlocks });
         }
       }
-      if (isCancelled()) return;
+      if (isCancelled()) return cancelledEnding();
       const overflowGuard = checkContextOverflow(compactDepsFor(host));
       if (overflowGuard) {
         const emitOverflowError = function* (message: string): Generator<AgentEvent> {
@@ -172,14 +230,14 @@ export async function* runTurn(
         };
         if (overflowGuard.kind === "prefix") {
           yield* emitOverflowError(overflowGuard.message);
-          return;
+          return { reason: "context_full" };
         }
         yield* forceCompactOnOverflow(compactDepsFor(host));
-        if (isCancelled()) return;
+        if (isCancelled()) return cancelledEnding();
         const stillOverflowing = checkContextOverflow(compactDepsFor(host));
         if (stillOverflowing) {
           yield* emitOverflowError(stillOverflowing.message);
-          return;
+          return { reason: "context_full" };
         }
       }
       turn += 1;
@@ -187,6 +245,7 @@ export async function* runTurn(
 
       const attempt = new TurnAttempt();
       let errorEmittedThisTurn = false;
+      let requestFailure: RequestFailure = "unclassified";
       recordCodexRawReplayDiagnostic({
         event: "turn_stream_open",
         sessionId: host.deps.session.id,
@@ -194,7 +253,7 @@ export async function* runTurn(
       });
       try {
         for await (const ev of openProviderStream(turnStreamDeps(host), controller.signal)) {
-          if (isCancelled()) return;
+          if (isCancelled()) return cancelledEnding();
           yield ev;
           if (ev.kind === "text_delta") {
             attempt.text += ev.text;
@@ -243,6 +302,7 @@ export async function* runTurn(
           } else if (ev.kind === "error") {
             errorEmittedThisTurn = true;
             attempt.providerError = ev.error;
+            requestFailure = requestFailureOf(ev.meta);
           } else if (ev.kind === "retry_status") {
             recordCodexRawReplayDiagnostic({
               event: "turn_retry_status",
@@ -254,7 +314,10 @@ export async function* runTurn(
           } else if (ev.kind === "quota_exhausted") {
             commitAssistantMessage(host.deps, attempt);
             host.cancel();
-            return;
+            return requestFailed(
+              ev.meta?.providerContext?.failure ??
+                (ev.reason === "rate_limited" ? "rate_limited" : "usage_limit"),
+            );
           } else if (ev.kind === "message_start") {
             if (ev.id !== undefined) attempt.messageId = ev.id;
             if (ev.requestId !== undefined) attempt.requestId = ev.requestId;
@@ -331,7 +394,7 @@ export async function* runTurn(
 
       if (attempt.charCapTripped) {
         flushOrphanToolUses(host.deps, attempt.toolCalls, "char-cap aborted turn");
-        return;
+        return { reason: "model_failed" };
       }
 
       // Refusals are terminal; resending the same request cannot recover them.
@@ -357,7 +420,7 @@ export async function* runTurn(
             actions: [{ id: "cancel", label: "Cancel" }],
           },
         };
-        return;
+        return requestFailed("rejected");
       }
 
       if (attempt.stopReason === "tool_calls" && attempt.toolCalls.length === 0) {
@@ -385,7 +448,7 @@ export async function* runTurn(
             attempt: turn,
           });
           yield { kind: "error", error: toolParseMsg, meta: toolParseMeta };
-          return;
+          return { reason: "tool_call_unreadable" };
         }
       }
 
@@ -412,19 +475,33 @@ export async function* runTurn(
 
       if (attempt.stopReason !== "tool_calls" || attempt.toolCalls.length === 0) {
         if (!attempt.producedNothing()) consecutiveSilentTurns = 0;
-        const preEvalGoal = getActiveGoal(host.deps.session.id);
-        const runningBg = preEvalGoal ? runningSessionWorkCount(host.deps.session.id) : 0;
-        if (preEvalGoal && runningBg > 0) {
+        const sessionId = host.deps.session.id;
+        cancelGoalIdleCheckIn(sessionId);
+        const preEvalGoal = getActiveGoal(sessionId);
+        const deferringWork = preEvalGoal ? sessionDeferringWork(sessionId) : [];
+        if (preEvalGoal && deferringWork.length > 0) {
           yield {
             kind: "goal_paused_bg",
             condition: preEvalGoal.condition,
             iteration: preEvalGoal.iterations,
-            runningBackgroundTasks: runningBg,
+            runningBackgroundTasks: deferringWork.length,
           };
-          return;
+          // Background work holds the goal's check back; past the check-in
+          // interval the turn goes on with a check-in about that work.
+          const checkIn = holdGoalCheck(sessionId, preEvalGoal, deferringWork, Date.now());
+          if (checkIn !== undefined && (yield* holdTurnOpen())) {
+            host.deps.session.messages.push({
+              role: "user",
+              content: [{ type: "text", text: checkIn }],
+            });
+            continue;
+          }
+          if (getRuntimeKind() === "interactive") armGoalIdleCheckIn(sessionId, Date.now());
+          return { reason: "completed", goalCheck: "deferred" };
         }
+        if (preEvalGoal?.deferral !== undefined) releaseGoalCheck(sessionId);
         const goalResult = errorEmittedThisTurn
-          ? null
+          ? undefined
           : yield* evaluateGoal({
               session: host.deps.session,
               config: host.deps.config,
@@ -433,61 +510,36 @@ export async function* runTurn(
               ...(controller.signal ? { abortSignal: controller.signal } : {}),
             });
         const stopHookBlocked = yield* fireStopPromptHooks(turnStreamDeps(host), controller.signal);
-        const goal = getActiveGoal(host.deps.session.id);
-        if (goal && !errorEmittedThisTurn && !isCancelled() && !controller.signal.aborted) {
-          goalContinueCount += 1;
-          if (goalContinueCount > stopHookBlockCap()) {
-            const goalMsg = `goal remained unmet for ${goalContinueCount} continuations; halting to avoid a loop (cap ${stopHookBlockCap()}, set OTHERSIDE_STOP_HOOK_BLOCK_CAP to change)`;
-            const goalMeta = loopErrorMeta({
-              message: goalMsg,
-              provider: turnState.provider,
-              model: turnState.model,
-              attempt: goalContinueCount,
-            });
-            yield { kind: "error", error: goalMsg, meta: goalMeta };
-            return;
-          }
-          const reason =
-            goalResult?.met === false
-              ? (goalResult.reason ?? "condition not satisfied")
-              : "condition not satisfied";
-          host.deps.session.messages.push({
-            role: "user",
-            content: [
-              {
-                type: "text",
-                text: goalContinuePrompt(goal.condition, reason),
-              },
-            ],
-          });
-          yield {
-            kind: "goal_continue",
-            condition: goal.condition,
-            iteration: goal.iterations,
-          };
-          continue;
-        }
-        if (
-          stopHookBlocked &&
+        const goalUnmet = goalResult?.outcome === "not_met";
+        const stopBlocked =
+          (goalUnmet || stopHookBlocked) &&
           !errorEmittedThisTurn &&
           !isCancelled() &&
-          !controller.signal.aborted
-        ) {
-          stopHookBlockCount += 1;
-          if (stopHookBlockCount > stopHookBlockCap()) {
-            const hookMsg = `stop hook blocked ${stopHookBlockCount} times; halting to avoid a loop (cap ${stopHookBlockCap()}, set OTHERSIDE_STOP_HOOK_BLOCK_CAP to change)`;
-            const hookMeta = loopErrorMeta({
-              message: hookMsg,
-              provider: turnState.provider,
-              model: turnState.model,
-              attempt: stopHookBlockCount,
+          !controller.signal.aborted;
+        if (stopBlocked && (yield* holdTurnOpen())) {
+          const goal = getActiveGoal(sessionId);
+          if (goalUnmet && goal) {
+            host.deps.session.messages.push({
+              role: "user",
+              content: [
+                {
+                  type: "text",
+                  text: goalContinuePrompt(
+                    goal.condition,
+                    goalResult.reason ?? "condition not satisfied",
+                  ),
+                },
+              ],
             });
-            yield { kind: "error", error: hookMsg, meta: hookMeta };
-            return;
+            yield {
+              kind: "goal_continue",
+              condition: goal.condition,
+              iteration: goal.iterations,
+            };
           }
           continue;
         }
-        if (isCancelled() || controller.signal.aborted) return;
+        if (isCancelled() || controller.signal.aborted) return cancelledEnding();
         const midTurnDrain = emitQueue.drainForBoundary("mid_turn");
         const queuedMessages = host.pendingUserInputDrainer?.() ?? [];
         const hasMidTurnLlmInput = midTurnDrain.llmBlocks.length > 0;
@@ -496,10 +548,11 @@ export async function* runTurn(
             role: "user",
             content: midTurnDrain.llmBlocks,
           });
-          appendNotificationRecords(host, midTurnDrain.notificationTexts);
+          yield* deliverNotificationRecords(host, midTurnDrain.notificationTexts);
         }
 
         if (queuedMessages.length > 0) {
+          goalHeardFromUser(host.deps.session.id);
           const queuedBlocks: ContentBlock[] = [
             {
               type: "text",
@@ -539,7 +592,7 @@ export async function* runTurn(
               attempt: consecutiveSilentTurns,
             });
             yield { kind: "error", error: haltText, meta };
-            return;
+            return { reason: "model_failed" };
           }
           host.deps.session.messages.push({
             role: "user",
@@ -557,10 +610,12 @@ export async function* runTurn(
           };
           continue;
         }
-        if (!errorEmittedThisTurn && !isCancelled() && !controller.signal.aborted) {
-          yield* maybeCompact(compactDepsFor(host));
-        }
-        return;
+        if (errorEmittedThisTurn) return requestFailed(requestFailure);
+        if (isCancelled() || controller.signal.aborted) return cancelledEnding();
+        yield* maybeCompact(compactDepsFor(host));
+        return goalResult === undefined
+          ? { reason: "completed" }
+          : { reason: "completed", goalCheck: goalResult.outcome };
       }
 
       const ctx = makeRequestContext(host.deps, host.currentTurnId ?? undefined);
@@ -570,7 +625,8 @@ export async function* runTurn(
         toolCalls: attempt.toolCalls,
         ctx,
       });
-      if (dispatchStatus === "stop") return;
+      // A rejected tool or a quota stop inside a tool ends the turn like a cancel.
+      if (dispatchStatus === "stop") return cancelledEnding();
       if (!isCancelled() && !controller.signal.aborted) {
         for (const text of await collectRecallReminders(memoryRecall)) {
           host.deps.session.messages.push({
@@ -579,10 +635,10 @@ export async function* runTurn(
           });
         }
       }
-      if (isCancelled()) return;
+      if (isCancelled()) return cancelledEnding();
     }
   } catch (err) {
-    if (isCancelled()) return;
+    if (isCancelled()) return cancelledEnding();
     throw err;
   } finally {
     memoryRecall?.abort();

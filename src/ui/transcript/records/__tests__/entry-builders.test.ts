@@ -1,5 +1,53 @@
 import { describe, expect, it } from "bun:test";
+import { stripAnsi } from "@/terminal-runtime/text/presentation-sequences.js";
+import { Glyph } from "@/ui/theme/theme.ts";
 import { taskNoticeReplayTextFromNotification } from "@/ui/transcript/records/entry-builders.ts";
+import { sessionRecordsToTranscript } from "@/ui/transcript/records/from-records.ts";
+import { StringViewTranscript } from "@/ui/transcript/string-view-transcript.ts";
+
+describe("a turn notice after resume", () => {
+  const WARNING =
+    "A hook blocked the turn from ending 9 consecutive times — overriding and ending turn.";
+  const NOTICE = "Goal paused · the goal check timed out · send a message to continue";
+
+  it("replays from its record at the level it was shown with", () => {
+    const records = [WARNING, NOTICE].map((text, index) => ({
+      type: "attachment" as const,
+      ts: "2026-01-01T00:00:00.000Z",
+      attachment: { type: "turn_notice", text, level: index === 0 ? "warning" : "notice" },
+    }));
+    expect(sessionRecordsToTranscript(records)).toEqual([
+      { id: "rec_0", kind: "system", text: WARNING, level: "warning" },
+      { id: "rec_1", kind: "system", text: NOTICE, level: "notice" },
+    ]);
+  });
+
+  it("is drawn with a bullet, unlike a plain system line", () => {
+    const rowOf = (text: string, level?: "warning" | "notice"): string | undefined => {
+      const view = new StringViewTranscript();
+      view.setEntries([
+        { kind: "system", text, isError: false, ...(level !== undefined ? { level } : {}) },
+      ]);
+      return view
+        .render(200)
+        .map(stripAnsi)
+        .find((row) => row.includes(text));
+    };
+    expect(rowOf(WARNING, "warning")).toBe(`${Glyph.bullet} ${WARNING}`);
+    expect(rowOf(NOTICE, "notice")).toBe(`${Glyph.bullet} ${NOTICE}`);
+    expect(rowOf(WARNING)).not.toStartWith(Glyph.bullet);
+  });
+});
+
+describe("a notification no task owns, after resume", () => {
+  it("replays as its own summary", () => {
+    const text =
+      "<task-notification>\n<summary>Goal check-in: continuing after the last turn ended early</summary>\n</task-notification>\n<system-reminder>\nbody\n</system-reminder>";
+    expect(taskNoticeReplayTextFromNotification(text)).toBe(
+      "Goal check-in: continuing after the last turn ended early",
+    );
+  });
+});
 
 function notification(summary: string, extra = ""): string {
   const escaped = summary.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");

@@ -1,5 +1,10 @@
 import { stripCommandMarkup } from "@/engine/session/index.ts";
 import type { SessionRecord } from "@/engine/session/record/index.ts";
+import {
+  decodeTaskNoticeXml,
+  isUnownedNotification,
+  taskNoticeTextFromNotification,
+} from "@/engine/session/transcript/record-format.ts";
 import { stringifyForDisplay } from "@/kernel/std/text/json-display.ts";
 import { pluralize } from "@/kernel/std/text/pluralize.ts";
 import type { ToolResultMeta } from "@/kernel/std/types/message.ts";
@@ -8,6 +13,7 @@ import type { TranscriptEntry, TranscriptImage } from "@/ui/transcript/types.ts"
 
 export {
   formatToolInput,
+  taskNoticeTextFromNotification,
   taskNotificationFromAttachment,
 } from "@/engine/session/transcript/record-format.ts";
 
@@ -55,20 +61,6 @@ export function transcriptImagesFromRecord(
   });
 }
 
-function decodeTaskNoticeXml(value: string | undefined): string | undefined {
-  return value
-    ?.replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
-    .replace(/&amp;/g, "&");
-}
-
-export function taskNoticeTextFromNotification(content: string): string {
-  const summary = decodeTaskNoticeXml(content.match(/<summary>([\s\S]*?)<\/summary>/)?.[1]?.trim());
-  return summary && summary.length > 0 ? summary : "Background task completed";
-}
-
 type TaskNoticeStatus = "failed" | "killed" | "completed";
 type TaskNoticeKind = "shell" | "workflow" | "agent";
 
@@ -94,6 +86,8 @@ export function taskNoticeReplayTextFromNotification(content: string): string {
   const match = summary.match(
     /^(Agent|Background command|Dynamic workflow) "([\s\S]*)" (?:finished|completed|failed|was stopped)/,
   );
+  // A notification no task owns (a hook rewake, a goal check-in) is its summary alone.
+  if (match === null && isUnownedNotification(content)) return summary;
   const exitMatch = summary.match(/(?:\(exit code (-?\d+)\)|failed with exit code (-?\d+))/);
   const durationSuffix = summary.match(/ · ((?:\d+\s*(?:ms|h|m|s)\s*)+)$/)?.[1];
   const statusText = content.match(/<status>([^<]+)<\/status>/)?.[1];

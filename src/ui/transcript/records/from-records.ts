@@ -12,6 +12,7 @@ import {
   isInterruptionMessage,
   TOOL_INTERRUPT_MESSAGE,
 } from "@/engine/queue/runtime/interruption-text.ts";
+import { readTurnNotice } from "@/engine/queue/runtime/turn-notice.ts";
 import { parseBashTurnText } from "@/engine/queue/turn/bash-input.ts";
 import { isCompactionBoundary, type SessionRecord } from "@/engine/session/index.ts";
 import type { McpCallIdentity } from "@/kernel/mcp/index.ts";
@@ -255,6 +256,11 @@ export function sessionRecordsToTranscript(
       }
       if (readScheduledTaskFire(record.attachment) !== null) {
         entries.push({ id, kind: "system", text: scheduledTaskFireText(new Date(record.ts)) });
+        return;
+      }
+      const notice = readTurnNotice(record.attachment);
+      if (notice !== null) {
+        entries.push({ id, kind: "system", text: notice.text, level: notice.level });
         return;
       }
       const notification = taskNotificationFromAttachment(record.attachment);

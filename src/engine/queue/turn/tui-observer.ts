@@ -233,6 +233,7 @@ export function makeTuiTurnObserver(deps: TuiTurnObserverDeps): TuiTurnHandle {
     session,
     setTranscript,
     turnHadVisibleOutputRef,
+    settleLiveReply: () => settleIntoNextEntry(`a_${session.eventSeq}_${Date.now()}`),
   });
   const observer: TurnObserver = {
     onAny: (ev) => {

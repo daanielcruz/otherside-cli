@@ -95,9 +95,24 @@ export function clampVerdictRequest(body: unknown): unknown {
   return next;
 }
 
-export function stopHookBlockCap(): number {
+function stopHookBlockCap(): number {
   const parsed = Number.parseInt(process.env.OTHERSIDE_STOP_HOOK_BLOCK_CAP ?? "", 10);
   return Number.isNaN(parsed) ? STOP_HOOK_BLOCK_CAP_DEFAULT : parsed;
 }
 
 const STOP_HOOK_BLOCK_CAP_DEFAULT = 8;
+
+/** Whether this many consecutive blocks overrides them; a cap of zero or less never does. */
+export function stopBlockCapReached(blocks: number): boolean {
+  const cap = stopHookBlockCap();
+  return cap > 0 && blocks > cap;
+}
+
+/** The warning the turn ends with once the blocks reached the cap. */
+export function stopBlockCapText(blocks: number): string {
+  return (
+    `A hook blocked the turn from ending ${blocks} consecutive times — overriding and ending turn. ` +
+    "For Stop/SubagentStop hooks, check stop_hook_active in the input and return success while it's true. " +
+    "Set OTHERSIDE_STOP_HOOK_BLOCK_CAP to raise this limit."
+  );
+}

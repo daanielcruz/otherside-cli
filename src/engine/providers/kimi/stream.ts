@@ -13,7 +13,6 @@ import {
 } from "@/engine/providers/kimi/fingerprint.ts";
 import { refreshKimiQuotaWarning } from "@/engine/providers/kimi/usage.ts";
 import type { StreamFn } from "@/engine/transport/_infra/classify/types.ts";
-import { truncateEllipsis } from "@/kernel/std/text/text.ts";
 import type { RequestContext } from "@/kernel/std/types/request.ts";
 
 export const kimiStream: StreamFn = async function* kimiStreamFn(
@@ -41,11 +40,15 @@ export const kimiStream: StreamFn = async function* kimiStreamFn(
     ...connectionInit(ctx),
   });
 
+  // The body says whether the key is bad or only this model is out of reach.
   if (resp.status === 401) {
     const text = await resp.text().catch(() => "");
-    throw new Error(
-      `HTTP 401 from kimi /coding/v1/messages: ${truncateEllipsis(text, 300)} — run \`otherside login --provider kimi\``,
-    );
+    throw new ProviderHttpError({
+      provider: "kimi",
+      status: 401,
+      body: text,
+      headers: resp.headers,
+    });
   }
   if (!resp.ok) {
     const text = await resp.text().catch(() => "");

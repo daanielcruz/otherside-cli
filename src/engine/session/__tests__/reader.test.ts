@@ -391,6 +391,58 @@ describe("loadSessionForResume", () => {
     expect(modelText.some((text) => text.includes("after compact"))).toBe(true);
   });
 
+  it("reads a pre-compaction usage stamp from an older release as what its request held", async () => {
+    // One display entry, so the turn before the boundary is only summarized.
+    process.env.OTHERSIDE_RESUME_TAIL_ENTRIES = "1";
+    const cwd = join(base, "repo");
+    const path = sessionPathForCwd(cwd, SESSION_ID);
+    mkdirMock(dirname(path), { recursive: true });
+    const lines = serializeFixtureRecords(cwd, [
+      sessionMetaRecord(),
+      {
+        type: "user_message",
+        ts: TS,
+        content: `before compact ${"x".repeat(BIG_PRECOMPACT_TEXT)}`,
+      },
+      {
+        type: "assistant_message",
+        ts: TS,
+        uuid: "old-gemini-turn",
+        content: "before answer",
+        provider: "antigravity",
+        model: "gemini-3.8-flash",
+        usage: {
+          input_tokens: 478_023,
+          output_tokens: 119,
+          thought_tokens: 9,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 591_387,
+          request_count: 1,
+        },
+      },
+      { type: "compaction_mark", ts: TS, summary_ref: "summary", trigger: "manual" },
+      { type: "user_message", ts: TS, content: "after compact" },
+    ]).map((line) => {
+      const envelope = JSON.parse(line) as Record<string, unknown>;
+      return envelope.uuid === "old-gemini-turn"
+        ? JSON.stringify({ ...envelope, version: "1.1.0" })
+        : line;
+    });
+    writeFileMock(path, lines.join("\n") + "\n");
+
+    const loaded = await loadSessionForResume(SESSION_ID, cwd);
+
+    // History before the boundary is summarized into body-less usage stubs.
+    const stub = loaded.records.find(
+      (record) => record.type === "assistant_message" && record.provider === "antigravity",
+    );
+    expect(stub).toMatchObject({ content: "" });
+    expect(stub?.type === "assistant_message" ? stub.usage : undefined).toMatchObject({
+      input_tokens: 0,
+      cache_read_input_tokens: 591_387,
+    });
+  });
+
   it("keeps and relinks a preserved tail in a large transcript", async () => {
     const cwd = join(base, "repo");
     const path = sessionPathForCwd(cwd, SESSION_ID);

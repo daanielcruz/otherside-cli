@@ -1,4 +1,5 @@
 export { stripCommandMarkup } from "./foreign-line.ts";
+export { measuredStamp } from "./measured-stamp.ts";
 export { lineToRecord, lineToRecords, recordsFromParsedLine } from "./reader.ts";
 export type {
   AssistantMessageRecord,
@@ -24,6 +25,7 @@ export type {
   ToolCallRecord,
   ToolResultRecord,
   TurnCompletionRecord,
+  TurnNoticeAttachment,
   UpstreamMessageEnvelope,
   UsageRecord,
   UserMessagePastedImage,

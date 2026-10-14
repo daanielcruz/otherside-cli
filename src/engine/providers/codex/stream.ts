@@ -288,7 +288,14 @@ export async function* translateResponseCodex(
             | Record<string, unknown>
             | undefined) ?? (data.error as Record<string, unknown> | undefined);
         const rawBody = errObj ? JSON.stringify({ error: errObj }) : ev.data;
-        throw streamErrorToHttpError({ provider: "codex/responses", rawBody });
+        // A WebSocket error frame carries the HTTP status and headers of the failure.
+        const frameHeaders = stringHeaders(data.headers);
+        throw streamErrorToHttpError({
+          provider: "codex/responses",
+          rawBody,
+          ...(typeof data.status === "number" ? { fallbackStatus: data.status } : {}),
+          ...(frameHeaders !== undefined ? { headers: frameHeaders } : {}),
+        });
       }
       case "response.cancelled": {
         sawTerminal = true;
@@ -312,4 +319,14 @@ export async function* translateResponseCodex(
       fallbackStatus: 500,
     });
   }
+}
+
+function stringHeaders(value: unknown): Record<string, string> | undefined {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const headers: Record<string, string> = {};
+  for (const [name, raw] of Object.entries(value)) {
+    if (typeof raw === "string") headers[name.toLowerCase()] = raw;
+    else if (typeof raw === "number") headers[name.toLowerCase()] = String(raw);
+  }
+  return headers;
 }

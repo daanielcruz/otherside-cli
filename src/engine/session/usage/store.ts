@@ -156,7 +156,8 @@ interface UsageStatsCache {
   sessions: Record<string, CachedSessionUsage>;
 }
 
-const STATS_CACHE_VERSION = 3;
+/** Raised whenever a persisted usage stamp is read differently, so cached totals fold again. */
+const STATS_CACHE_VERSION = 4;
 const TAIL_UUID_WINDOW = 64;
 
 interface UsageFoldState {

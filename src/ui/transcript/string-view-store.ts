@@ -110,7 +110,12 @@ export function mapTranscriptEntries(entries: readonly TranscriptEntry[]): Settl
         });
         break;
       case "system":
-        mapped.push({ kind: "system", text: entry.text, isError: entry.isError === true });
+        mapped.push({
+          kind: "system",
+          text: entry.text,
+          isError: entry.isError === true,
+          ...(entry.level !== undefined ? { level: entry.level } : {}),
+        });
         break;
       case "task_notice":
         mapped.push({ kind: "task_notice", text: entry.text, isError: entry.isError === true });

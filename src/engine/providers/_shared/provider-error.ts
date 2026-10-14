@@ -1,6 +1,10 @@
 import { formatResetTime } from "@/kernel/std/intl.ts";
 import { StreamSilenceError } from "@/kernel/std/stream/idle-timeout.ts";
-import { AccountVerificationError, withVerificationLink } from "@/kernel/std/types/error-meta.ts";
+import {
+  AccountVerificationError,
+  type RequestFailure,
+  withVerificationLink,
+} from "@/kernel/std/types/error-meta.ts";
 import {
   AUTH_CODES,
   AUTH_PATTERNS,
@@ -11,6 +15,7 @@ import {
   matches,
   OVERLOAD_CODES,
   OVERLOAD_PATTERNS,
+  type ProviderWireRule,
   providerEventRule,
   providerFamily,
   providerWireRule,
@@ -45,6 +50,8 @@ export type ProviderErrorClass = (typeof PROVIDER_ERROR_CLASSES)[number];
 export interface ProviderErrorClassification {
   class: ProviderErrorClass;
   retryable: boolean;
+  /** What the failure means for the work that sent the request, whatever the provider. */
+  failure: RequestFailure;
   retryAfterMs?: number;
   provider: string;
   model?: string;
@@ -55,6 +62,9 @@ export interface ResolvedProviderError extends ProviderErrorClassification {
   status?: number;
   quotaResetEpochMs?: number | null;
 }
+
+/** A class resolved before its failure: a rule names the failure only when the class alone would misread it. */
+type ClassResolution = Omit<ResolvedProviderError, "failure"> & { failure?: RequestFailure };
 
 export interface ProviderErrorInput {
   provider: string;
@@ -72,8 +82,41 @@ export interface ProviderErrorRetrySummary {
 }
 
 export const RETRY_AFTER_TOO_LONG_MS = 60_000;
+/** A wait longer than this outlasts any throttle: the account waits for a usage window. */
+const USAGE_WINDOW_WAIT_MS = 300_000;
 
 export function resolveProviderError(input: ProviderErrorInput): ResolvedProviderError {
+  const resolved = resolveProviderClass(input);
+  return { ...resolved, failure: resolved.failure ?? failureOfClass(resolved) };
+}
+
+/** The failure a class stands for when no rule says more. */
+function failureOfClass(resolved: ClassResolution): RequestFailure {
+  switch (resolved.class) {
+    case "rate_limit":
+      return "rate_limited";
+    case "overloaded":
+    case "server":
+    case "network":
+      return "transient";
+    case "quota_exhausted":
+      return "usage_limit";
+    case "auth":
+      return "auth";
+    case "invalid_request":
+      // A request refused without a named reason may go through on a later try;
+      // a missing model will not.
+      return resolved.status === 404 ? "model_unavailable" : "unclassified";
+    case "context_overflow":
+      return "context_full";
+    case "request_too_large":
+      return "rejected";
+    case "unknown":
+      return "unclassified";
+  }
+}
+
+function resolveProviderClass(input: ProviderErrorInput): ClassResolution {
   const body = input.body ?? bodyFromError(input.error);
   const parsed = parseWireError(body);
   const status = input.status ?? statusFromError(input.error) ?? statusFromWire(parsed);
@@ -111,12 +154,17 @@ export function resolveProviderError(input: ProviderErrorInput): ResolvedProvide
     ...(retryAfterMs !== null ? { retryAfterMs } : {}),
   };
 
+  // No stored sign-in at all: nothing but signing in again serves the request.
+  if (/\bnot logged in\b/i.test(messageFromError(input.error))) {
+    return { ...common, class: "auth", retryable: false };
+  }
   // The link is longer than any excerpt of a message, so it rides outside the excerpt.
   if (input.error instanceof AccountVerificationError) {
     return {
       ...common,
       class: "auth",
       retryable: false,
+      failure: input.error.ineligible ? "auth" : "verification",
       detail: withVerificationLink(
         conciseDetail(input.error.reason, status),
         input.error.verificationUrl,
@@ -132,7 +180,11 @@ export function resolveProviderError(input: ProviderErrorInput): ResolvedProvide
       ...common,
       class: "quota_exhausted",
       retryable: false,
-      detail: detailWithReset(common.detail, resetEpochMs),
+      ...(wireRule?.failure !== undefined ? { failure: wireRule.failure } : {}),
+      detail: detailWithReset(
+        detailWithPrefix(common.detail, wireRule?.detailPrefix),
+        resetEpochMs,
+      ),
       quotaResetEpochMs: resetEpochMs,
     };
   }
@@ -140,7 +192,8 @@ export function resolveProviderError(input: ProviderErrorInput): ResolvedProvide
     return {
       ...common,
       class: wireRule.class,
-      retryable: wireRule.retryable,
+      retryable: ruleRetryable(wireRule, retryAfterMs),
+      ...(wireRule.failure !== undefined ? { failure: wireRule.failure } : {}),
       detail: detailWithPrefix(common.detail, wireRule.detailPrefix),
     };
   }
@@ -150,6 +203,7 @@ export function resolveProviderError(input: ProviderErrorInput): ResolvedProvide
       ...common,
       class: "quota_exhausted",
       retryable: false,
+      ...(quota.failure !== undefined ? { failure: quota.failure } : {}),
       detail: detailWithReset(common.detail, quota.resetEpochMs),
       quotaResetEpochMs: quota.resetEpochMs,
     };
@@ -167,11 +221,20 @@ export function resolveProviderError(input: ProviderErrorInput): ResolvedProvide
   if (
     CONTEXT_CODES.has(parsed.code) ||
     CONTEXT_CODES.has(parsed.type) ||
-    matches(CONTEXT_PATTERNS, haystack)
+    // A throttle that names a request size is about tokens per minute, not the context.
+    (status !== 429 && matches(CONTEXT_PATTERNS, haystack))
   ) {
     return { ...common, class: "context_overflow", retryable: false };
   }
-  if (eventRule) return { ...common, ...eventRule };
+  if (eventRule) {
+    return {
+      ...common,
+      class: eventRule.class,
+      retryable: ruleRetryable(eventRule, retryAfterMs),
+      ...(eventRule.failure !== undefined ? { failure: eventRule.failure } : {}),
+      detail: detailWithPrefix(common.detail, eventRule.detailPrefix),
+    };
+  }
   if (readHeader(input.headers, "x-should-retry") === "true") {
     const errorClass = status === 429 ? "rate_limit" : status === 529 ? "overloaded" : "server";
     return { ...common, class: errorClass, retryable: true };
@@ -179,7 +242,7 @@ export function resolveProviderError(input: ProviderErrorInput): ResolvedProvide
   if (
     OVERLOAD_CODES.has(parsed.code) ||
     OVERLOAD_CODES.has(parsed.type) ||
-    matches(OVERLOAD_PATTERNS, haystack)
+    matches(OVERLOAD_PATTERNS, parsed.message || body)
   ) {
     return { ...common, class: "overloaded", retryable: true };
   }
@@ -224,8 +287,13 @@ export function resolveProviderError(input: ProviderErrorInput): ResolvedProvide
   return { ...common, class: "unknown", retryable: false };
 }
 
+function ruleRetryable(rule: ProviderWireRule, retryAfterMs: number | null): boolean {
+  if (rule.retryWithinMs === undefined || retryAfterMs === null) return rule.retryable;
+  return retryAfterMs <= rule.retryWithinMs;
+}
+
 export function formatProviderError(
-  error: ProviderErrorClassification,
+  error: Pick<ProviderErrorClassification, "class" | "provider" | "model" | "detail">,
   retrySummary?: ProviderErrorRetrySummary,
 ): string {
   const target = error.model ? `${error.provider}/${error.model}` : error.provider;
@@ -317,26 +385,35 @@ function quotaResolution(input: {
   status: number | null;
   retryAfterMs: number | null;
   haystack: string;
-}): { exhausted: boolean; resetEpochMs: number | null } {
-  const unifiedStatus = readHeader(input.input.headers, "anthropic-ratelimit-unified-status");
+}): { exhausted: boolean; resetEpochMs: number | null; failure?: RequestFailure } {
+  const headers = input.input.headers;
+  const unifiedStatus = readHeader(headers, "anthropic-ratelimit-unified-status");
   if (unifiedStatus === "rejected") {
-    const resetSeconds = numericHeader(
-      readHeader(input.input.headers, "anthropic-ratelimit-unified-reset"),
-    );
+    const resetSeconds = numericHeader(readHeader(headers, "anthropic-ratelimit-unified-reset"));
     const resetEpochMs = resetSeconds === null ? null : resetSeconds * 1000;
     const waitMs =
       input.retryAfterMs ?? (resetEpochMs === null ? null : Math.max(0, resetEpochMs - Date.now()));
-    const shouldRetry = readHeader(input.input.headers, "x-should-retry");
+    const shouldRetry = readHeader(headers, "x-should-retry");
     const soft = shouldRetry === "true" && waitMs !== null && waitMs <= RETRY_AFTER_TOO_LONG_MS;
+    // Usage runs over into paid overage, or the window names no reset: the
+    // account is throttled, not out of its plan.
+    const overage =
+      readHeader(headers, "anthropic-ratelimit-unified-overage-in-use") === "true" ||
+      readHeader(headers, "anthropic-ratelimit-unified-overage-status") === "allowed";
     return {
       exhausted: !soft,
       resetEpochMs: soft ? null : (resetEpochMs ?? retryReset(input.retryAfterMs)),
+      ...(overage || resetEpochMs === null ? { failure: "rate_limited" as const } : {}),
     };
   }
 
-  const shouldRetry = readHeader(input.input.headers, "x-should-retry");
-  if ((input.status === 429 || input.status === 529) && shouldRetry === "false") {
-    return { exhausted: true, resetEpochMs: retryReset(input.retryAfterMs) };
+  const shouldRetry = readHeader(headers, "x-should-retry");
+  if (input.status === 429 && shouldRetry === "false") {
+    return {
+      exhausted: true,
+      resetEpochMs: retryReset(input.retryAfterMs),
+      failure: longWaitFailure(input.retryAfterMs),
+    };
   }
   const shortCapacityWindow =
     input.parsed.quotaId.includes("PerMinute") ||
@@ -344,16 +421,15 @@ function quotaResolution(input: {
     (input.parsed.retryDelayMs !== null && input.parsed.retryDelayMs <= 300_000);
   const dailyQuota =
     input.parsed.quotaId.includes("PerDay") || input.parsed.quotaId.includes("Daily");
-  if (
-    QUOTA_CODES.has(input.parsed.code) ||
-    QUOTA_CODES.has(input.parsed.type) ||
-    dailyQuota ||
-    input.parsed.reason === "GENERATIVE_MODEL_NOT_FOUND" ||
-    input.parsed.reason === "MODEL_NOT_FOUND"
-  ) {
+  if (QUOTA_CODES.has(input.parsed.code) || QUOTA_CODES.has(input.parsed.type) || dailyQuota) {
+    // A workspace whose credits ran out reports a usage limit, but no window resets it.
+    const creditsSpent = /credits_depleted|^workspace_\w+_usage_limit_reached$/.test(
+      readHeader(headers, "x-codex-rate-limit-reached-type") ?? "",
+    );
     return {
       exhausted: !shortCapacityWindow || dailyQuota,
       resetEpochMs: input.parsed.resetEpochMs ?? retryReset(input.retryAfterMs),
+      ...(creditsSpent ? { failure: "billing" as const } : {}),
     };
   }
   if (
@@ -369,9 +445,20 @@ function quotaResolution(input: {
     input.retryAfterMs !== null &&
     input.retryAfterMs > RETRY_AFTER_TOO_LONG_MS
   ) {
-    return { exhausted: true, resetEpochMs: Date.now() + input.retryAfterMs };
+    return {
+      exhausted: true,
+      resetEpochMs: Date.now() + input.retryAfterMs,
+      failure: longWaitFailure(input.retryAfterMs),
+    };
   }
   return { exhausted: false, resetEpochMs: null };
+}
+
+/** A wait of minutes is a throttle; one past several minutes is a usage window. */
+function longWaitFailure(retryAfterMs: number | null): RequestFailure {
+  return retryAfterMs !== null && retryAfterMs > USAGE_WINDOW_WAIT_MS
+    ? "usage_limit"
+    : "rate_limited";
 }
 
 function isTerminalNetworkError(error: object): boolean {

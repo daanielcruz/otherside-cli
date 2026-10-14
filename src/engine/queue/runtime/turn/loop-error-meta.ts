@@ -12,6 +12,7 @@ export function loopErrorMeta(opts: {
   const decision: RetryDecisionDetailed = {
     kind: "fail",
     reason: opts.message,
+    failure: "unclassified",
     userMessage: opts.message,
   };
   return classifyError({

@@ -7,7 +7,12 @@ import {
   type PreservedImageLedger,
 } from "./compact/preserved-image-ledger.ts";
 import { findSessionPath, sessionCwdFilterFor } from "./paths.ts";
-import { recordsFromParsedLine, type SessionRecord, type UsageRecord } from "./record/index.ts";
+import {
+  measuredStamp,
+  recordsFromParsedLine,
+  type SessionRecord,
+  type UsageRecord,
+} from "./record/index.ts";
 import { isChainEnvelope, isSessionMetaEnvelope, objectRecord } from "./record-envelope.ts";
 import {
   chainHeadFromLines,
@@ -497,7 +502,13 @@ function brokerUsageStubsFromEnvelope(
         stamp.thought_tokens > 0 ||
         stamp.cache_creation_input_tokens > 0 ||
         stamp.cache_read_input_tokens > 0;
-      if (hasTokens || requestCount !== undefined) usage = stamp;
+      if (hasTokens || requestCount !== undefined) {
+        usage = measuredStamp(stamp, {
+          version: envelope.version,
+          provider,
+          sidechain: envelope.isSidechain === true,
+        });
+      }
     }
     if (usage === undefined && provider === undefined && model === undefined) return out;
     out.push({

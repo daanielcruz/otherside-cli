@@ -1,6 +1,7 @@
 import type { CompactionSummaryRef } from "@/engine/session/compact/summary-spill.ts";
 import { isTruthyCompactionSummaryRef } from "@/engine/session/compact/summary-spill.ts";
 import type { McpCallIdentity } from "@/kernel/mcp/protocol/tool-label.ts";
+import type { TurnNoticeLevel } from "@/kernel/std/types/events.ts";
 import type {
   ContentBlock,
   MessageUsageSnapshot,
@@ -299,6 +300,14 @@ export interface ScheduledTaskFireAttachment {
   prompt: string;
 }
 
+// A line about how a turn ended. It is shown again when the session resumes,
+// and never reaches the model.
+export interface TurnNoticeAttachment {
+  type: "turn_notice";
+  text: string;
+  level: TurnNoticeLevel;
+}
+
 export interface ForeignAttachment {
   type: string;
   [key: string]: unknown;
@@ -313,6 +322,7 @@ export interface AttachmentRecord {
     | QueuedCommandAttachment
     | LoopTickAttachment
     | ScheduledTaskFireAttachment
+    | TurnNoticeAttachment
     | ForeignAttachment;
   isSidechain?: boolean;
 }

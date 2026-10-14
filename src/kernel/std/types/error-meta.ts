@@ -56,12 +56,20 @@ export class AccountVerificationError extends Error {
   provider: string;
   reason: string;
   verificationUrl: string;
-  constructor(opts: { provider: string; reason: string; verificationUrl: string }) {
+  /** Set when the account is refused for a reason verifying cannot lift (its region, its age). */
+  ineligible: boolean;
+  constructor(opts: {
+    provider: string;
+    reason: string;
+    verificationUrl: string;
+    ineligible?: boolean;
+  }) {
     super(withVerificationLink(opts.reason, opts.verificationUrl));
     this.name = "AccountVerificationError";
     this.provider = opts.provider;
     this.reason = opts.reason;
     this.verificationUrl = opts.verificationUrl;
+    this.ineligible = opts.ineligible === true;
   }
 }
 
@@ -126,12 +134,39 @@ export interface ErrorAction {
   label: string;
 }
 
+/**
+ * What a failed provider request means for the work that sent it, the same for
+ * every provider: whether waiting, the user, or nothing at all can recover it.
+ */
+export type RequestFailure =
+  /** A short throttle; the same request goes through shortly. */
+  | "rate_limited"
+  /** A usage window is spent until it resets. */
+  | "usage_limit"
+  /** Credits or payment ran out; nothing resets them on its own. */
+  | "billing"
+  /** Overload, a server fault or a dropped connection. */
+  | "transient"
+  /** A failure the provider did not explain. */
+  | "unclassified"
+  /** The provider refused this request as sent, its content included. */
+  | "rejected"
+  /** The credentials or the account cannot be used. */
+  | "auth"
+  /** The account must be verified before it is served again. */
+  | "verification"
+  /** The model does not exist or the account cannot use it. */
+  | "model_unavailable"
+  /** The conversation no longer fits the model's context. */
+  | "context_full";
+
 export interface ProviderContext {
   provider?: string | undefined;
   model?: string | undefined;
   status?: number | undefined;
   attempt?: number | undefined;
   resetEpochMs?: number | null | undefined;
+  failure?: RequestFailure | undefined;
 }
 
 export interface ErrorMeta {

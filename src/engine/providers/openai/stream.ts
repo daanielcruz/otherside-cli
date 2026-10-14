@@ -198,5 +198,5 @@ function openAiError(status: number, url: string, text: string): Error {
       `HTTP 401 from ${url}: ${truncateEllipsis(text, 300)} — set api key in \`/config → Providers → Custom\``,
     );
   }
-  return new Error(`HTTP ${status} from ${url}: ${truncateEllipsis(text, 500)}`);
+  return new ProviderHttpError({ provider: url, status, body: text });
 }

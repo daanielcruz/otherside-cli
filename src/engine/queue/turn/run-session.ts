@@ -99,6 +99,10 @@ async function dispatchTurnEvent(event: AgentEvent, observer: TurnObserver): Pro
       return observer.fork_quota_exhausted?.(event);
     case "sidechain_persist_error":
       return observer.sidechain_persist_error?.(event);
+    case "turn_notice":
+      return observer.turn_notice?.(event);
+    case "notification_delivered":
+      return observer.notification_delivered?.(event);
     default:
       return assertExhaustive(event);
   }

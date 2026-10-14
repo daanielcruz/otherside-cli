@@ -27,10 +27,13 @@ import {
   STOP_CONDITION_SYSTEM_PROMPT,
   type StopConditionVerdict,
 } from "./stop-hook-classifier.ts";
+import type { GoalCheckOutcome } from "./turn/turn-ending.ts";
+
+/** How long a goal check may run before the turn ends without its verdict. */
+export const GOAL_CHECK_TIMEOUT_MS = 30_000;
 
 export interface GoalEvaluationResult {
-  met: boolean;
-  failed?: boolean;
+  outcome: Exclude<GoalCheckOutcome, "deferred">;
   reason?: string | undefined;
   iteration: number;
 }
@@ -41,6 +44,7 @@ export interface GoalEvalDeps {
   ctx: RequestContext;
   cancelled: () => boolean;
   abortSignal?: AbortSignal;
+  timeoutMs?: number;
 }
 
 export async function runPromptClassifier(
@@ -110,10 +114,21 @@ export async function* evaluateGoal(
   const iteration = updated?.iterations ?? goal.iterations;
   yield { kind: "goal_eval_start", condition: goal.condition, iteration };
 
+  // The check gets its own deadline; the turn's signal still cancels it.
+  const check = new AbortController();
+  let timedOut = false;
+  const deadline = setTimeout(() => {
+    timedOut = true;
+    check.abort("goal-check-timeout");
+  }, deps.timeoutMs ?? GOAL_CHECK_TIMEOUT_MS);
+  const stopWithTurn = (): void => check.abort(deps.abortSignal?.reason);
+  if (deps.abortSignal?.aborted) stopWithTurn();
+  else deps.abortSignal?.addEventListener("abort", stopWithTurn, { once: true });
   let verdict: StopConditionVerdict;
   try {
-    verdict = await runPromptClassifier(deps, goal.condition);
+    verdict = await runPromptClassifier({ ...deps, abortSignal: check.signal }, goal.condition);
   } catch (err) {
+    if (timedOut) return { outcome: "timed_out", iteration };
     if (deps.cancelled() || deps.abortSignal?.aborted) return undefined;
     if (err instanceof QuotaExhaustedError) {
       yield {
@@ -123,13 +138,11 @@ export async function* evaluateGoal(
         resetEpochMs: err.resetEpochMs,
         message: err.message,
       };
-      return undefined;
     }
-    yield {
-      kind: "error",
-      error: `goal classifier error: ${err instanceof Error ? err.message : String(err)}`,
-    };
-    return undefined;
+    return { outcome: "failed", iteration };
+  } finally {
+    clearTimeout(deadline);
+    deps.abortSignal?.removeEventListener("abort", stopWithTurn);
   }
   if (verdict.ok) {
     clearActiveGoal(deps.session.id);
@@ -142,7 +155,7 @@ export async function* evaluateGoal(
       }),
     }).catch(() => {});
     yield { kind: "goal_met", condition: goal.condition, iteration };
-    return { met: true, iteration };
+    return { outcome: "met", iteration };
   }
 
   const reason = verdict.reason;
@@ -159,7 +172,7 @@ export async function* evaluateGoal(
       }),
     }).catch(() => {});
     yield { kind: "goal_not_met", condition: goal.condition, iteration, reason };
-    return { met: false, failed: true, reason, iteration };
+    return { outcome: "impossible", reason, iteration };
   }
 
   setGoalLastReason(deps.session.id, reason);
@@ -173,7 +186,7 @@ export async function* evaluateGoal(
     }),
   }).catch(() => {});
   yield { kind: "goal_not_met", condition: goal.condition, iteration, reason };
-  return { met: false, reason, iteration };
+  return { outcome: "not_met", reason, iteration };
 }
 
 export function goalContinuePrompt(condition: string, reason: string): string {

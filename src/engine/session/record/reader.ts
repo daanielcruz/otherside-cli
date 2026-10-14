@@ -9,6 +9,7 @@ import {
 } from "@/kernel/std/types/provider-ids.ts";
 import { nullableNonNegativeFiniteOrUndefined } from "@/kernel/std/value-guards.ts";
 import { recordsFromForeignLine } from "./foreign-line.ts";
+import { measuredStamp } from "./measured-stamp.ts";
 import type {
   AssistantMessageRecord,
   AssistantRequestUsage,
@@ -293,7 +294,14 @@ function flatAssistantRecords(
       });
     }
   }
-  const usage = assistantUsageFromLine(message?.usage, sidecar);
+  const recordedUsage = assistantUsageFromLine(message?.usage, sidecar);
+  const usage =
+    recordedUsage &&
+    measuredStamp(recordedUsage, {
+      version: env.version,
+      provider: routeFields.provider,
+      sidechain: common.isSidechain === true,
+    });
   const hasBody = textParts.length > 0 || thinking.length > 0 || thinkingSignature !== undefined;
   if (hasBody || out.length === 0) {
     const rec: AssistantMessageRecord = {

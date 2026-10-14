@@ -284,6 +284,8 @@ export function codeAssistHeaders(accessToken: string): Record<string, string> {
 interface AccountVerification {
   url: string;
   message: string;
+  /** The account is refused for a reason verifying cannot lift. */
+  ineligible?: true;
 }
 
 type CodeAssistLoad =
@@ -332,7 +334,13 @@ function accountVerification(response: LoadCodeAssistResponse): AccountVerificat
   if (response.allowedTiers?.some((tier) => tier.id === FREE_TIER_ID)) return null;
   const freeTier = ineligible.find((tier) => tier.tierId === FREE_TIER_ID);
   if (!freeTier?.reasonMessage) return null;
-  return { url: freeTier.validationUrl ?? "", message: freeTier.reasonMessage };
+  return {
+    url: freeTier.validationUrl ?? "",
+    message: freeTier.reasonMessage,
+    ...(freeTier.reasonCode !== undefined && freeTier.reasonCode !== VALIDATION_REQUIRED_CODE
+      ? { ineligible: true as const }
+      : {}),
+  };
 }
 
 /** Hands a verification to the user and returns once they report it done. */
@@ -345,6 +353,7 @@ async function verifyAccount(
       provider: "antigravity",
       reason: verification.message,
       verificationUrl: verification.url,
+      ...(verification.ineligible ? { ineligible: true } : {}),
     });
   }
   const intent = await onValidation(verification.url, verification.message);

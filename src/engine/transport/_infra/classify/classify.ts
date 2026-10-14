@@ -6,6 +6,7 @@ import {
 import { getRetryDelay, ProviderHttpError } from "@/engine/providers/_shared/retry.ts";
 import { requestTooLargeMessage } from "@/engine/transport/_infra/classify/request-size.ts";
 import { StreamSilenceError } from "@/kernel/std/stream/idle-timeout.ts";
+import type { RequestFailure } from "@/kernel/std/types/error-meta.ts";
 import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
 
 export interface ClassifyOptions {
@@ -20,12 +21,15 @@ export type RetryDecisionDetailed =
       kind: "retry";
       delayMs: number;
       reason: string;
+      /** What the failure means should the retries run out. */
+      failure: RequestFailure;
       status?: number;
       message?: string;
     }
   | {
       kind: "fail";
       reason: string;
+      failure: RequestFailure;
       userMessage?: string;
       status?: number;
       message?: string;
@@ -64,6 +68,7 @@ export function classifyProviderError(
       return {
         kind: "fail",
         reason: abortReason,
+        failure: "transient",
         userMessage: abortReason,
         message: abortReason,
       };
@@ -72,6 +77,7 @@ export function classifyProviderError(
       kind: "retry",
       delayMs: getRetryDelay(attempt),
       reason: `${reason} — reconnecting`,
+      failure: "transient",
     };
   }
 
@@ -81,6 +87,7 @@ export function classifyProviderError(
       return {
         kind: "fail",
         reason: terminalReason,
+        failure: "unclassified",
         userMessage: terminalReason,
         status: error.status,
         message: terminalReason,
@@ -108,6 +115,7 @@ export function classifyProviderError(
       kind: "retry",
       delayMs: getRetryDelay(attempt, classified.retryAfterMs ?? null),
       reason: formatted,
+      failure: classified.failure,
       ...(classified.status !== undefined ? { status: classified.status } : {}),
       message: classified.detail,
     };
@@ -117,6 +125,7 @@ export function classifyProviderError(
     return {
       kind: "fail",
       reason: "request_too_large",
+      failure: classified.failure,
       userMessage: requestTooLargeMessage(),
       ...(classified.status !== undefined ? { status: classified.status } : {}),
       message: classified.detail,
@@ -127,6 +136,7 @@ export function classifyProviderError(
     return {
       kind: "fail",
       reason: "context_window_exceeded",
+      failure: classified.failure,
       userMessage: `${classified.detail}\nRun /compact, switch to a model with a larger context window, or start a new session.`,
       ...(classified.status !== undefined ? { status: classified.status } : {}),
       message: classified.detail,
@@ -137,6 +147,7 @@ export function classifyProviderError(
     return {
       kind: "fail",
       reason: "quota_exhausted",
+      failure: classified.failure,
       userMessage: formatted,
       ...(classified.status !== undefined ? { status: classified.status } : {}),
       message: classified.detail,
@@ -148,6 +159,7 @@ export function classifyProviderError(
   return {
     kind: "fail",
     reason: classified.detail,
+    failure: classified.failure,
     userMessage: formatted,
     ...(classified.status !== undefined ? { status: classified.status } : {}),
     message: classified.detail,

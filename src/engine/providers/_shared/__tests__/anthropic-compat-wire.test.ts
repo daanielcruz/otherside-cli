@@ -276,3 +276,16 @@ describe("compat-wire stream termination", () => {
     expect(completion?.done).toBe(true);
   });
 });
+
+describe("compat-wire filtered replies", () => {
+  it.each(["refusal", "sensitive"])("reports a %s stop as a refusal", async (stopReason) => {
+    async function* source(): AsyncIterable<Uint8Array> {
+      yield new TextEncoder().encode(
+        `event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"${stopReason}"}}\n\nevent: message_stop\ndata: {"type":"message_stop"}\n\n`,
+      );
+    }
+    const events: ProviderEvent[] = [];
+    for await (const event of translateResponseKimi(source())) events.push(event);
+    expect(events).toContainEqual({ kind: "message_stop", stop_reason: "refusal" });
+  });
+});

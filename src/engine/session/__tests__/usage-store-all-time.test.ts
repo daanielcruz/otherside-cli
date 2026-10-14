@@ -1,13 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   allTimeUsageByProvider,
   allTimeUsageByProviderAsync,
 } from "@/engine/session/usage/store.ts";
+import { statsCachePath } from "@/kernel/std/fs/paths.ts";
 
-describe("allTimeUsageByProvider async and sync agree", () => {
+describe("all-time usage from session files", () => {
   const base = join(
     tmpdir(),
     `otherside-usage-store-${Date.now()}-${Math.random().toString(36).slice(2)}`,
@@ -61,5 +62,67 @@ describe("allTimeUsageByProvider async and sync agree", () => {
     expect(asyncTotals).toEqual(syncTotals);
     expect(syncTotals.anthropic?.inputTokens).toBe(500);
     expect(syncTotals.anthropic?.outputTokens).toBe(100);
+  });
+
+  it("folds an older release's summed stamp again instead of keeping its cached total", () => {
+    const sessionPath = join(configDir, "projects", "test-project", "s2.jsonl");
+    writeFileSync(
+      sessionPath,
+      `${JSON.stringify({
+        type: "assistant",
+        uuid: "old-gemini-turn",
+        parentUuid: null,
+        timestamp: "2026-10-13T07:41:35.118Z",
+        sessionId: "s2",
+        version: "1.1.0",
+        message: {
+          role: "assistant",
+          model: "gemini-3.8-flash",
+          content: [{ type: "text", text: "answer" }],
+          usage: {
+            input_tokens: 478_023,
+            output_tokens: 119,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 591_387,
+          },
+        },
+        _os: {
+          route: { provider: "antigravity", model: "gemini-3.8-flash" },
+          provider: "antigravity",
+          model: "gemini-3.8-flash",
+          requestCount: 1,
+        },
+      })}\n`,
+      "utf8",
+    );
+    // A cache from before the reader corrected such stamps, still matching the file.
+    const stale = {
+      version: 3,
+      updatedAt: "2026-10-13T08:00:00.000Z",
+      sessions: {
+        s2: {
+          mtime: statSync(sessionPath).mtimeMs,
+          foldedBytes: statSync(sessionPath).size,
+          tailUuids: ["old-gemini-turn"],
+          usage: {
+            antigravity: {
+              requestCount: 1,
+              inputTokens: 478_023,
+              outputTokens: 119,
+              thoughtTokens: 0,
+              cacheCreationInputTokens: 0,
+              cacheReadInputTokens: 591_387,
+            },
+          },
+        },
+      },
+    };
+    mkdirSync(dirname(statsCachePath()), { recursive: true });
+    writeFileSync(statsCachePath(), JSON.stringify(stale), "utf8");
+
+    const totals = allTimeUsageByProvider();
+
+    expect(totals.antigravity?.inputTokens).toBe(0);
+    expect(totals.antigravity?.cacheReadInputTokens).toBe(591_387);
   });
 });

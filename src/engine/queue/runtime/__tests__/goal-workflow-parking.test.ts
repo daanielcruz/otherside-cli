@@ -8,80 +8,20 @@ import {
   resetWorkflowTasksForTests,
 } from "@/engine/background/workflows/runtime/store/store.ts";
 import type { WorkflowTaskLifecycle } from "@/engine/background/workflows/runtime/store/types.ts";
-import type { Provider } from "@/engine/contract/types.ts";
 import { registerAllProviders } from "@/engine/providers/bootstrap.ts";
 import * as providers from "@/engine/providers/registry.ts";
 import { emitQueue } from "@/engine/queue/emit.ts";
-import { runTurn } from "@/engine/queue/runtime/turn/loop.ts";
-import type { TurnLoopHost } from "@/engine/queue/runtime/turn/types.ts";
-import { _resetGoalsForTesting, getActiveGoal, setActiveGoal } from "@/engine/queue/state.ts";
-import { makeQueue } from "@/harness/composer/queue.ts";
-import type { AgentEvent } from "@/kernel/std/types/events.ts";
+import { _resetGoalInterruptionsForTesting } from "@/engine/queue/runtime/goal-after-turn.ts";
+import {
+  _resetGoalsForTesting,
+  getActiveGoal,
+  setActiveGoal,
+  setGoalDeferral,
+} from "@/engine/queue/state.ts";
+import { setRuntimeKind } from "@/kernel/std/proc/runtime-mode.ts";
+import { scriptedProvider, turnEvents, turnHost } from "./turn-fixture.ts";
 
 registerAllProviders();
-
-function makeProvider(responses: readonly string[]): { provider: Provider; calls: () => number } {
-  let calls = 0;
-  const provider: Provider = {
-    ...providers.get("xai"),
-    id: "xai",
-    startStreamAttempt: () => {
-      const response = responses[calls];
-      calls += 1;
-      if (response === undefined) throw new Error(`unexpected provider call ${calls}`);
-      return {
-        events: (async function* () {
-          yield { kind: "message_start", id: `msg-${calls}` };
-          yield { kind: "text_delta", text: response };
-          yield { kind: "message_stop", stop_reason: "stop" };
-        })(),
-        abort: () => {},
-      };
-    },
-  };
-  return { provider, calls: () => calls };
-}
-
-function makeHost(sessionId: string): TurnLoopHost {
-  return {
-    cancelled: false,
-    currentTurnId: null,
-    activeAbortController: null,
-    activeToolAbortControllers: new Set(),
-    injections: makeQueue(),
-    deps: {
-      session: {
-        id: sessionId,
-        cwd: process.cwd(),
-        messages: [],
-        records: [],
-      } as never,
-      broker: {
-        read: () => ({
-          provider: "xai",
-          model: "grok-4.6",
-          effort: null,
-          permissionMode: "default",
-          ultracode: false,
-        }),
-      } as never,
-      config: { defaultProvider: "xai", defaultModel: "grok-4.6" } as never,
-    },
-    compactState: {
-      rapidRefillBreakerOpen: false,
-      rapidRefillCount: 0,
-      consecutiveCompactFailures: 0,
-      turnsSinceLast: Number.POSITIVE_INFINITY,
-      lastAutoCompactAttemptTurnId: null,
-    },
-    sessionAllowedToolPatterns: new Set(),
-    loadedNestedMemoryPaths: new Set(),
-    nestedMemoryByPath: new Map(),
-    pendingUserInputDrainer: () => [],
-    cancel: () => {},
-    getNestedMemorySnapshot: () => [],
-  };
-}
 
 function makeRunningWorkflow(id: string, sessionId: string): WorkflowTaskLifecycle {
   return {
@@ -105,14 +45,9 @@ function makeRunningWorkflow(id: string, sessionId: string): WorkflowTaskLifecyc
   };
 }
 
-async function collectEvents(host: TurnLoopHost): Promise<AgentEvent[]> {
-  const events: AgentEvent[] = [];
-  for await (const event of runTurn(host, "continue")) events.push(event);
-  return events;
-}
-
 beforeEach(() => {
   _resetGoalsForTesting();
+  _resetGoalInterruptionsForTesting();
   resetWorkflowTasksForTests();
   clearBackgroundTasks();
   emitQueue._resetForTests();
@@ -121,6 +56,7 @@ beforeEach(() => {
 
 afterEach(() => {
   _resetGoalsForTesting();
+  _resetGoalInterruptionsForTesting();
   resetWorkflowTasksForTests();
   clearBackgroundTasks();
   emitQueue._resetForTests();
@@ -130,12 +66,12 @@ afterEach(() => {
 describe("goal background workflow parking", () => {
   test("parks before goal classification while this session owns a running workflow", async () => {
     const sessionId = "session-1";
-    const fake = makeProvider(["The workflow is still running."]);
+    const fake = scriptedProvider(["The workflow is still running."]);
     providers.register(fake.provider);
     setActiveGoal(sessionId, "workflow completes");
     enrollWorkflowTask(makeRunningWorkflow("workflow-1", sessionId));
 
-    const events = await collectEvents(makeHost(sessionId));
+    const events = await turnEvents(turnHost(sessionId));
 
     expect(fake.calls()).toBe(1);
     expect(events).toContainEqual({
@@ -152,7 +88,7 @@ describe("goal background workflow parking", () => {
 
   test("parks before goal classification while this session owns a running background shell", async () => {
     const sessionId = "session-1";
-    const fake = makeProvider(["The background shell is still running."]);
+    const fake = scriptedProvider(["The background shell is still running."]);
     providers.register(fake.provider);
     setActiveGoal(sessionId, "shell completes");
     startShellTask({
@@ -162,7 +98,7 @@ describe("goal background workflow parking", () => {
       sessionId,
     });
 
-    const events = await collectEvents(makeHost(sessionId));
+    const events = await turnEvents(turnHost(sessionId));
 
     expect(fake.calls()).toBe(1);
     expect(events).toContainEqual({
@@ -177,9 +113,40 @@ describe("goal background workflow parking", () => {
     expect(getActiveGoal(sessionId)).toBeDefined();
   });
 
+  test("checks in on the background work once the goal has waited past the interval", async () => {
+    const sessionId = "session-1";
+    const fake = scriptedProvider(["Waiting on the shell.", "The shell is still making progress."]);
+    providers.register(fake.provider);
+    setActiveGoal(sessionId, "shell completes");
+    const now = Date.now();
+    setGoalDeferral(sessionId, { since: now - 31 * 60_000, checkIns: 0, lastPassAt: now - 60_000 });
+    startShellTask({
+      shellId: "shell-1",
+      command: "sleep 999",
+      parentToolCallId: "tool-shell-1",
+      sessionId,
+    });
+    const host = turnHost(sessionId);
+
+    const events = await turnEvents(host);
+
+    expect(fake.calls()).toBe(2);
+    expect(events.filter((event) => event.kind === "goal_paused_bg")).toHaveLength(2);
+    const checkIn = host.deps.session.messages.find(
+      (message) =>
+        message.role === "user" &&
+        message.content.some(
+          (block) =>
+            block.type === "text" && block.text.startsWith("Goal check-in: «shell completes»"),
+        ),
+    );
+    expect(checkIn).toBeDefined();
+    expect(getActiveGoal(sessionId)?.deferral?.checkIns).toBe(1);
+  });
+
   test("does not park for a background shell owned by another session", async () => {
     const sessionId = "session-1";
-    const fake = makeProvider([
+    const fake = scriptedProvider([
       "This session has no running background shell.",
       '{"ok":true,"reason":"the response confirms no work remains"}',
     ]);
@@ -192,7 +159,7 @@ describe("goal background workflow parking", () => {
       sessionId: "session-2",
     });
 
-    const events = await collectEvents(makeHost(sessionId));
+    const events = await turnEvents(turnHost(sessionId));
 
     expect(fake.calls()).toBe(2);
     expect(events.some((event) => event.kind === "goal_paused_bg")).toBe(false);
@@ -206,7 +173,7 @@ describe("goal background workflow parking", () => {
 
   test("does not park for a workflow owned by another session", async () => {
     const sessionId = "session-1";
-    const fake = makeProvider([
+    const fake = scriptedProvider([
       "This session has no running workflow.",
       '{"ok":true,"reason":"the response confirms no work remains"}',
     ]);
@@ -214,7 +181,7 @@ describe("goal background workflow parking", () => {
     setActiveGoal(sessionId, "no work remains");
     enrollWorkflowTask(makeRunningWorkflow("workflow-2", "session-2"));
 
-    const events = await collectEvents(makeHost(sessionId));
+    const events = await turnEvents(turnHost(sessionId));
 
     expect(fake.calls()).toBe(2);
     expect(events.some((event) => event.kind === "goal_paused_bg")).toBe(false);
@@ -229,9 +196,10 @@ describe("goal background workflow parking", () => {
   test("halts repeated unmet continuations at the stop-hook cap", async () => {
     const previousCap = process.env.OTHERSIDE_STOP_HOOK_BLOCK_CAP;
     process.env.OTHERSIDE_STOP_HOOK_BLOCK_CAP = "1";
+    setRuntimeKind("interactive");
     try {
       const sessionId = "session-1";
-      const fake = makeProvider([
+      const fake = scriptedProvider([
         "Still working.",
         '{"ok":false,"reason":"work remains"}',
         "Still working.",
@@ -240,19 +208,32 @@ describe("goal background workflow parking", () => {
       providers.register(fake.provider);
       setActiveGoal(sessionId, "all work completes");
 
-      const events = await collectEvents(makeHost(sessionId));
+      const events = await turnEvents(turnHost(sessionId));
 
       expect(fake.calls()).toBe(4);
       expect(events.filter((event) => event.kind === "goal_continue")).toHaveLength(1);
-      expect(
-        events.some(
-          (event) =>
-            event.kind === "error" &&
-            event.error.includes("goal remained unmet for 2 continuations"),
-        ),
-      ).toBe(true);
+      // Past the cap the turn ends with a warning, not a failure the reader must dismiss.
+      expect(events.some((event) => event.kind === "error")).toBe(false);
+      const notices = events.filter((event) => event.kind === "turn_notice");
+      expect(notices).toEqual([
+        {
+          kind: "turn_notice",
+          text: expect.stringContaining(
+            "A hook blocked the turn from ending 2 consecutive times — overriding and ending turn.",
+          ),
+          level: "warning",
+        },
+        {
+          kind: "turn_notice",
+          text: "Goal paused · goal checks kept finding it unmet this turn · send a message to continue",
+          level: "notice",
+        },
+      ]);
+      // Nothing runs after the notices: the turn ended there.
+      expect(events.at(-1)?.kind).toBe("turn_notice");
       expect(getActiveGoal(sessionId)).toBeDefined();
     } finally {
+      setRuntimeKind(null);
       if (previousCap === undefined) delete process.env.OTHERSIDE_STOP_HOOK_BLOCK_CAP;
       else process.env.OTHERSIDE_STOP_HOOK_BLOCK_CAP = previousCap;
     }

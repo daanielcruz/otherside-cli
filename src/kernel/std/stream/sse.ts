@@ -42,6 +42,12 @@ export function parseBlock(block: string): SseEvent {
       continue;
     }
     if (line.length === 0) continue;
+    // A server can break into the stream with a bare JSON object, an error
+    // frame most often; it is data, not a field.
+    if (line.startsWith("{")) {
+      dataLines.push(line);
+      continue;
+    }
     const colon = line.indexOf(":");
     const field = colon < 0 ? line : line.slice(0, colon);
     const value = colon < 0 ? "" : line.slice(colon + 1).replace(/^ /, "");

@@ -2,7 +2,7 @@
 
 <img src="assets/banner.png" alt="otherside cli" width="720">
 
-![status](https://img.shields.io/badge/status-1.2.0-EC4899?style=for-the-badge&labelColor=1a1a2e)
+![status](https://img.shields.io/badge/status-1.2.1-EC4899?style=for-the-badge&labelColor=1a1a2e)
 ![typescript](https://img.shields.io/badge/typescript-5+-51158C?style=for-the-badge&logo=typescript&logoColor=white&labelColor=1a1a2e)
 ![license](https://img.shields.io/badge/license-MIT-51158C?style=for-the-badge&labelColor=1a1a2e)
 
@@ -152,11 +152,11 @@ irm https://othersidecli.com/install.ps1 | iex
 Pin a release:
 
 ```bash
-OTHERSIDE_VERSION=v1.2.0 bash -c "$(curl -fsSL https://othersidecli.com/install.sh)"
+OTHERSIDE_VERSION=v1.2.1 bash -c "$(curl -fsSL https://othersidecli.com/install.sh)"
 ```
 
 ```powershell
-$env:OTHERSIDE_VERSION = "v1.2.0"
+$env:OTHERSIDE_VERSION = "v1.2.1"
 irm https://othersidecli.com/install.ps1 | iex
 ```
 

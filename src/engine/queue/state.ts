@@ -5,6 +5,19 @@ export interface ActiveGoal {
   iterations: number;
   setAt: number;
   lastReason?: string;
+  /** Present while background work holds the goal's check back. */
+  deferral?: GoalDeferral;
+  /** Check-ins sent while the session sat idle since the user last wrote. */
+  idleCheckIns?: number;
+}
+
+export interface GoalDeferral {
+  /** When the current wait began; a check-in starts the next wait. */
+  since: number;
+  /** Check-ins sent during this run of background work. */
+  checkIns: number;
+  /** The last time a turn ended with the check held back. */
+  lastPassAt: number;
 }
 
 const goalsBySession = new Map<string, ActiveGoal>();
@@ -41,6 +54,20 @@ export function setGoalLastReason(sessionId: string, reason: string | undefined)
   if (goal === undefined) return;
   if (reason === undefined) delete goal.lastReason;
   else goal.lastReason = reason;
+}
+
+export function setGoalDeferral(sessionId: string, deferral: GoalDeferral | undefined): void {
+  const goal = goalsBySession.get(sessionId);
+  if (goal === undefined) return;
+  if (deferral === undefined) delete goal.deferral;
+  else goal.deferral = deferral;
+}
+
+export function setGoalIdleCheckIns(sessionId: string, count: number | undefined): void {
+  const goal = goalsBySession.get(sessionId);
+  if (goal === undefined) return;
+  if (count === undefined) delete goal.idleCheckIns;
+  else goal.idleCheckIns = count;
 }
 
 export function _resetGoalsForTesting(): void {

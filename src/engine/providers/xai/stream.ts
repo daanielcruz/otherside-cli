@@ -13,7 +13,6 @@ import {
 } from "@/engine/providers/xai/fingerprint.ts";
 import { normalizeGrokBody } from "@/engine/providers/xai/normalize.ts";
 import type { StreamFn } from "@/engine/transport/_infra/classify/types.ts";
-import { truncateEllipsis } from "@/kernel/std/text/text.ts";
 
 export const xaiStream: StreamFn = async function* xaiStreamFn(
   ctx,
@@ -50,11 +49,15 @@ export const xaiStream: StreamFn = async function* xaiStreamFn(
     }
   }
 
+  // The body says whether the key is bad or only this model is out of reach.
   if (resp.status === 401) {
     const text = await resp.text().catch(() => "");
-    throw new Error(
-      `HTTP 401 from grok /v1/responses: ${truncateEllipsis(text, 300)} — run \`otherside login --provider xai\``,
-    );
+    throw new ProviderHttpError({
+      provider: "xai",
+      status: 401,
+      body: text,
+      headers: resp.headers,
+    });
   }
   if (!resp.ok) {
     const text = await resp.text().catch(() => "");

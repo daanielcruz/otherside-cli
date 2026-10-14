@@ -295,6 +295,10 @@ function mapCompatStopReason(r: string): string {
       return "length";
     case "tool_use":
       return "tool_calls";
+    // A content filter withheld the reply, named either way.
+    case "refusal":
+    case "sensitive":
+      return "refusal";
     default:
       return "stop";
   }

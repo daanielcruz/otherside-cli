@@ -229,7 +229,14 @@ export type AgentEvent =
       iteration: number;
       runningBackgroundTasks: number;
     }
+  /** A line about how the turn ended that the reader should see and that resume shows again. */
+  | { kind: "turn_notice"; text: string; level: TurnNoticeLevel }
+  /** A notification no background task owns reached the model; its summary is the row it shows as. */
+  | { kind: "notification_delivered"; summary: string }
   | ForkEvent;
+
+/** A warning asks for attention; a notice only reports where things stand. */
+export type TurnNoticeLevel = "warning" | "notice";
 
 export type CodexSubAgentLabel =
   | "review"

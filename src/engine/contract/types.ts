@@ -9,6 +9,7 @@ import type { WebSearchInput, WebSearchPayload } from "@/engine/tools/common.ts"
 import type { DeferredOverrides } from "@/engine/tools/deferred-overrides.ts";
 import type { Api } from "@/engine/translator/dispatch/types.ts";
 import type { ComposedHarness } from "@/harness/composer/injections.ts";
+import type { RequestFailure } from "@/kernel/std/types/error-meta.ts";
 import type { ProviderEvent } from "@/kernel/std/types/events.ts";
 import type { ContentBlock, Message } from "@/kernel/std/types/message.ts";
 import type { ProviderId } from "@/kernel/std/types/provider-ids.ts";
@@ -27,6 +28,8 @@ export type RetryDecision =
   | {
       kind: "fail";
       reason: string;
+      /** What the failure means; read from the error itself when the provider does not say. */
+      failure?: RequestFailure;
       userMessage?: string;
       quotaExhausted?: boolean;
       quotaResetEpochMs?: number | null;

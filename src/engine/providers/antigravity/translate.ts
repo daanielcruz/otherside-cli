@@ -223,6 +223,7 @@ export function translateResponseAntigravity(
   raw: AsyncIterable<Uint8Array>,
 ): AsyncIterable<ProviderEvent> {
   return translateGeminiResponse(raw, {
+    provider: "antigravity",
     onRateLimit(body) {
       throw new ProviderHttpError({
         provider: "antigravity",

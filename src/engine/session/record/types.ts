@@ -1,5 +1,6 @@
 import type { ContextUsageData } from "@/engine/session/usage/context.ts";
 import type { McpCallIdentity } from "@/kernel/mcp/protocol/tool-label.ts";
+import type { TurnNoticeLevel } from "@/kernel/std/types/events.ts";
 import type { ToolResultMeta } from "@/kernel/std/types/message.ts";
 import type { ProviderId, ProviderModelRoute } from "@/kernel/std/types/provider-ids.ts";
 
@@ -70,6 +71,8 @@ export interface TranscriptEntry {
   anchor?: string;
   input?: string;
   isError?: boolean;
+  /** A system line that warns or notes where things stand, rather than reporting a failure. */
+  level?: TurnNoticeLevel;
   resultMeta?: ToolResultMeta;
   /** Recorded with an MCP call so its label outlives the server that served it. */
   mcpIdentity?: McpCallIdentity;

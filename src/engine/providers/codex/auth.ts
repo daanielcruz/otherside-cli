@@ -33,9 +33,9 @@ interface RefreshResponse {
 class RefreshExchangeError extends Error {
   constructor(
     readonly status: number,
-    readonly responseText: string,
+    readonly body: string,
   ) {
-    super(`codex refresh ${status}: ${responseText}`);
+    super(`codex refresh ${status}: ${body}`);
   }
 }
 
@@ -47,7 +47,7 @@ function isRotatedRefreshTokenError(err: unknown): err is RefreshExchangeError {
   return (
     err instanceof RefreshExchangeError &&
     err.status === 400 &&
-    /\b(?:invalid_grant|refresh_token_reused)\b/i.test(err.responseText)
+    /\b(?:invalid_grant|refresh_token_reused)\b/i.test(err.body)
   );
 }
 

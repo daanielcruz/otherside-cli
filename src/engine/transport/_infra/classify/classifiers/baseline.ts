@@ -47,6 +47,7 @@ function buildContext(input: ErrorClassifierInput): ProviderContext {
     status: decision.kind === "fail" ? decision.status : undefined,
     attempt,
     resetEpochMs: decision.kind === "fail" ? (decision.quotaResetEpochMs ?? null) : null,
+    failure: decision.failure,
   };
 }
 
@@ -95,7 +96,8 @@ export function classifyBaseline(input: ErrorClassifierInput): ErrorMeta {
     };
   }
 
-  if (err instanceof ProviderHttpError && err.status === 401) {
+  // A 401 that names a model the plan lacks is not a session to sign in again for.
+  if (err instanceof ProviderHttpError && err.status === 401 && decision.failure === "auth") {
     return {
       ...base,
       errorClass: "auth",

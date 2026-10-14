@@ -279,13 +279,19 @@ export function createAnthropicCloudAdapter(options: CloudAdapterOptions) {
     const terminal = state?.failure ?? terminalSessionFailure(error);
     if (terminal) {
       const diagnostic = classifyProviderError(terminal, context);
-      const failure = diagnostic.kind === "fail" ? diagnostic : undefined;
+      const failed = diagnostic.kind === "fail" ? diagnostic : undefined;
       const userMessage =
         terminal instanceof CloudSessionSafetyError ||
         terminal instanceof CloudSyntheticAssistantError
           ? terminal.message
-          : (failure?.userMessage ?? terminal.message);
-      return { ...failure, kind: "fail", reason: terminal.message, userMessage };
+          : (failed?.userMessage ?? terminal.message);
+      return {
+        ...failed,
+        kind: "fail",
+        reason: terminal.message,
+        failure: diagnostic.failure,
+        userMessage,
+      };
     }
     if (error instanceof ProviderHttpError && error.status === 401)
       return classifyProviderError(error, context);
@@ -296,6 +302,7 @@ export function createAnthropicCloudAdapter(options: CloudAdapterOptions) {
         ...(diagnostic.kind === "fail" && diagnostic.status !== undefined ? diagnostic : {}),
         kind: "fail",
         reason: detached.message,
+        failure: diagnostic.failure,
         userMessage:
           detached.cause instanceof CloudSyntheticAssistantError
             ? `${detached.cause.message}\n${detached.message}`
@@ -320,6 +327,7 @@ export function createAnthropicCloudAdapter(options: CloudAdapterOptions) {
     return {
       kind: "fail",
       reason: decision.reason,
+      failure: decision.failure,
       userMessage: decision.message ?? decision.reason,
       ...(decision.status !== undefined ? { status: decision.status } : {}),
       ...(decision.message !== undefined ? { message: decision.message } : {}),

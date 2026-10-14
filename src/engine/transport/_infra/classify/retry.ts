@@ -299,6 +299,10 @@ export async function* streamWithRetry(
             : {
                 kind: "fail",
                 reason: sizeGuidance === undefined ? effectiveDecision.reason : detailed.reason,
+                failure:
+                  sizeGuidance === undefined
+                    ? (effectiveDecision.failure ?? detailed.failure)
+                    : detailed.failure,
                 userMessage: guidance,
                 ...(detailed.status !== undefined ? { status: detailed.status } : {}),
                 ...(detailed.message !== undefined ? { message: detailed.message } : {}),

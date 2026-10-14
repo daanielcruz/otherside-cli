@@ -148,7 +148,6 @@ describe("provider error classification", () => {
     const text = formatProviderError(
       {
         class: "overloaded",
-        retryable: true,
         provider: "anthropic",
         model: "claude-fable-5-1",
         detail: "Overloaded",
@@ -284,7 +283,7 @@ describe("provider wire fixtures", () => {
     ).toMatchObject({ class: errorClass, retryable, detail: message });
   });
 
-  it("uses Antigravity ErrorInfo reasons, RetryInfo duration, and uiMessage", () => {
+  it("uses Antigravity ErrorInfo reasons, RetryInfo duration, and the uiMessage flag", () => {
     const result = resolveProviderError({
       provider: "antigravity",
       status: 429,
@@ -292,12 +291,13 @@ describe("provider wire fixtures", () => {
         error: {
           code: 429,
           status: "RESOURCE_EXHAUSTED",
-          message: "Raw quota message",
+          message: "You have exhausted your capacity on this model.",
           details: [
             {
               "@type": "type.googleapis.com/google.rpc.ErrorInfo",
-              reason: "QUOTA_EXCEEDED",
-              metadata: { uiMessage: "Model allowance used" },
+              reason: "QUOTA_EXHAUSTED",
+              domain: "cloudcode-pa.googleapis.com",
+              metadata: { uiMessage: "true", quotaResetTimeStamp: "2030-01-01T00:00:00Z" },
             },
             {
               "@type": "type.googleapis.com/google.rpc.RetryInfo",
@@ -307,11 +307,15 @@ describe("provider wire fixtures", () => {
         },
       }),
     });
+    // The flag says to show the error's own message, and a spent quota stays
+    // spent however short the suggested retry is.
+    expect(result.detail).toStartWith("You have exhausted your capacity on this model.");
     expect(result).toMatchObject({
       class: "quota_exhausted",
       retryable: false,
+      failure: "usage_limit",
       retryAfterMs: 500,
-      detail: expect.stringContaining("Model allowance used"),
+      quotaResetEpochMs: Date.parse("2030-01-01T00:00:00Z"),
     });
     expect(
       resolveProviderError({
@@ -401,17 +405,33 @@ describe("provider wire fixtures", () => {
     ).toMatchObject({ class: "overloaded", retryable: true });
   });
 
-  it.each([
-    "server_is_overloaded",
-    "slow_down",
-  ])("keeps Codex capacity code %s terminal", (code) => {
+  it("keeps a Codex model at capacity terminal until the provider says when to come back", () => {
+    const body = JSON.stringify({
+      error: { code: "server_is_overloaded", message: "Capacity unavailable" },
+    });
+    expect(resolveProviderError({ provider: "codex", status: 503, body })).toMatchObject({
+      class: "overloaded",
+      retryable: false,
+      failure: "transient",
+    });
     expect(
       resolveProviderError({
         provider: "codex",
         status: 503,
-        body: JSON.stringify({ error: { code, message: "Capacity unavailable" } }),
+        body,
+        headers: { "retry-after": "2" },
       }),
-    ).toMatchObject({ class: "overloaded", retryable: false });
+    ).toMatchObject({ class: "overloaded", retryable: true, retryAfterMs: 2_000 });
+  });
+
+  it("retries a Codex slow_down as a throttle", () => {
+    expect(
+      resolveProviderError({
+        provider: "codex",
+        status: 503,
+        body: JSON.stringify({ error: { code: "slow_down", message: "Slow down" } }),
+      }),
+    ).toMatchObject({ class: "rate_limit", retryable: true, failure: "rate_limited" });
   });
 
   it.each([
@@ -556,7 +576,8 @@ describe("provider wire fixtures", () => {
     ).toMatchObject({
       class: "invalid_request",
       retryable: false,
-      detail: "Content violates usage guidelines.",
+      failure: "rejected",
+      detail: "content filtered: Content violates usage guidelines.",
     });
     expect(
       resolveProviderError({
