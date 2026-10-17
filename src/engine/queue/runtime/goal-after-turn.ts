@@ -231,7 +231,11 @@ function* clearGoal(session: Session, goal: ActiveGoal, cause: ClearCause): Gene
   appendRecord(session, {
     type: "attachment",
     ts: nowIso(),
-    attachment: goalStatusAttachment(goal.condition, { met: true }),
+    attachment: goalStatusAttachment(goal.condition, {
+      met: false,
+      failed: true,
+      reason: CLEAR_LABELS[cause],
+    }),
   }).catch(() => {});
   yield turnNotice(
     session,

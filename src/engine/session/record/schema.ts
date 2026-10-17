@@ -263,9 +263,12 @@ export interface QueuedCommandAttachment {
 export interface GoalStatusAttachment {
   type: "goal_status";
   condition: string;
+  /** True only when the goal condition was fulfilled. */
   met: boolean;
   sentinel: true;
+  /** Manually cancelled without fulfilling the condition. */
   cleared?: boolean;
+  /** Ended without fulfillment because progress is impossible or unrecoverable. */
   failed?: boolean;
   reason?: string;
   iteration?: number;
