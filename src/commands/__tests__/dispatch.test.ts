@@ -166,7 +166,7 @@ describe("goal command persistence", () => {
     expect(formatGoalStatusBar(restored!, setAt + 90 * 60_000)).toBe("◎ /goal active (1h)");
   });
 
-  it("writes a terminal marker when the goal is cleared", async () => {
+  it("writes an unmet, cleared terminal marker when the goal is cancelled", async () => {
     const session = new Session("goal-clear-session", base);
     const context = { session } as SlashContext;
     await dispatch("/goal tests pass", context);
@@ -181,7 +181,8 @@ describe("goal command persistence", () => {
       attachment: {
         type: "goal_status",
         condition: "tests pass",
-        met: true,
+        met: false,
+        cleared: true,
         sentinel: true,
       },
     });

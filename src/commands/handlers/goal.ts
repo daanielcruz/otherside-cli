@@ -14,7 +14,8 @@ export async function handleGoal(
       type: "attachment",
       ts: nowIso(),
       attachment: goalStatusAttachment(result.event.condition, {
-        met: result.event.kind !== "goal_set",
+        met: false,
+        ...(result.event.kind === "goal_cleared" ? { cleared: true } : {}),
       }),
     });
   }
